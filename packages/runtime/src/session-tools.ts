@@ -1959,6 +1959,89 @@ export function registerSessionTools(
     }
   )
 
+  // ── session_set_keepalive ───────────────────────────────────────
+  // The headless twin of `agent_start`'s `keepAlive` spawn option — lets an
+  // already-running session opt in/out of the idle-reaper exemption after
+  // the fact (e.g. a supervisor that only realizes it needs to park once
+  // it's already spawned). Modeled EXACTLY on session_rename: resolve +
+  // subtree-scope + delegate to the registry, which flips the field and
+  // persists.
+  server.tool(
+    "session_set_keepalive",
+    "Set or clear a session's idle-reaper exemption. When `keepAlive` is " +
+      "true, the idle-reaper (`isReapable`) never auto-retires this session " +
+      "no matter how long it sits idle — for a supervisor that legitimately " +
+      "parks waiting on a child or a scheduled wake, which otherwise looks " +
+      "identical to a finished session. Set false to clear the exemption. " +
+      "Persists across daemon restarts. Does NOT touch the running agent.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name to update — from `session_list`."),
+      keepAlive: mcpBool.describe(
+        "true to exempt this session from the idle-reaper, false to clear " +
+          "the exemption.",
+      ),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_rename — a scoped orchestrator
+      // may only touch sessions it (transitively) spawned.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_set_keepalive: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only update sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const desc = registry.setKeepAlive(prev.id, input.keepAlive)
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_set_keepalive: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
   server.tool(
     "terminal_start",
     "Spawn a process under a real PTY (node-pty) on the host. Bytes (including " +

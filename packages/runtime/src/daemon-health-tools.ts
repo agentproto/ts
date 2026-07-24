@@ -31,8 +31,10 @@ export interface RegisterDaemonHealthToolsOptions {
   /** Effective value of the `daemon.crashDetectIntervalMs` knob (crash-detect
    *  PR-1) — the sweep interval (ms) the crash-detect pass runs on, or 0 when
    *  explicitly disabled. Detection is default-on, so this is normally a
-   *  positive value even when the knob was never configured. */
-  crashDetectIntervalMs: number
+   *  positive value even when the knob was never configured. Optional (unlike
+   *  `idleReapAfterMs`) so a caller from before this knob existed still
+   *  type-checks; defaults to 0 where consumed. */
+  crashDetectIntervalMs?: number
 }
 
 function text(value: string | object): {
@@ -68,7 +70,7 @@ export function registerDaemonHealthTools(
         uptimeMs: Date.now() - opts.startedAt,
         resumeSessionsOnBoot: opts.resumeSessionsOnBoot,
         idleReapAfterMs: opts.idleReapAfterMs,
-        crashDetectIntervalMs: opts.crashDetectIntervalMs,
+        crashDetectIntervalMs: opts.crashDetectIntervalMs ?? 0,
       })
     },
   )

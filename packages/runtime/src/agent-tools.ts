@@ -441,6 +441,16 @@ export function registerAgentTools(
             "for a delegated (depth > 0) spawn with no `worktree` and no " +
             "`sandbox`; ignored otherwise. Default false = warn."
         ),
+      keepAlive: mcpBool
+        .optional()
+        .describe(
+          "Exempt this session from the idle-reaper: it is never auto-retired " +
+            "for sitting idle, no matter how long. For a supervisor that " +
+            "legitimately parks — waiting on a child, waiting on a scheduled " +
+            "wake — idle looks identical to finished, and the reaper would " +
+            "otherwise pull it out from under you. Default false = today's " +
+            "behaviour. Toggle later with `session_set_keepalive`."
+        ),
       options: jsonTolerant(
         z.record(z.string(), z.union([z.boolean(), z.number(), z.string()]))
       )
