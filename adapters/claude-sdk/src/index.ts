@@ -118,11 +118,22 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
       { id: "claude-sonnet-5", provider: "anthropic" },
       { id: "claude-opus-4-8", provider: "anthropic" },
       { id: "claude-fable-5", provider: "anthropic" },
-      // Gateway providers — routing is resolved by the runtime
+      // Gateway providers — routing is resolved by the runtime. OpenRouter ids
+      // carry the `@openrouter` route-identity suffix so the catalog join pins
+      // the gateway route (a bare 2-segment id resolves to the dead direct
+      // vendor route instead).
       { id: "kimi-k2.7-code", provider: "moonshot" },
-      { id: "z-ai/glm-5.2", provider: "openrouter" },
-      { id: "deepseek/deepseek-v4-pro", provider: "openrouter" },
-      { id: "moonshotai/kimi-k2", provider: "openrouter" },
+      { id: "z-ai/glm-5.2@openrouter", provider: "openrouter" },
+      { id: "deepseek/deepseek-v4-pro@openrouter", provider: "openrouter" },
+      { id: "moonshotai/kimi-k2@openrouter", provider: "openrouter" },
+      { id: "x-ai/grok-4.5@openrouter", provider: "openrouter" },
+      { id: "x-ai/grok-4.20@openrouter", provider: "openrouter" },
+      { id: "x-ai/grok-4.3@openrouter", provider: "openrouter" },
+      { id: "google/gemini-3.1-pro-preview@openrouter", provider: "openrouter" },
+      { id: "google/gemini-3.5-flash@openrouter", provider: "openrouter" },
+      { id: "google/gemini-2.5-flash@openrouter", provider: "openrouter" },
+      { id: "google/gemini-2.5-pro@openrouter", provider: "openrouter" },
+      { id: "moonshotai/kimi-k2.7-code@openrouter", provider: "openrouter" },
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",
@@ -166,7 +177,7 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
         "Model id → SDK options.model, applied as a `--model` arg at spawn. " +
         "Native Claude (e.g. 'claude-opus-4-8', 'claude-sonnet-5') in the " +
         "default mode, or any gateway id when base_url is set (e.g. " +
-        "'kimi-k2.7-code', 'z-ai/glm-5.2'). Omit for the adapter's default.",
+        "'kimi-k2.7-code', 'z-ai/glm-5.2@openrouter'). Omit for the adapter's default.",
       bin_args_template: ["--model", "{value}"],
     },
     {

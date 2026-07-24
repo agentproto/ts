@@ -129,13 +129,24 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       { id: "claude-fable-5", provider: "anthropic" },
       // Moonshot (Kimi) — route resolved from the catalog `@route`
       { id: "kimi-k2.7-code", provider: "moonshot" },
-      // OpenRouter — route resolved from the catalog `@route`
-      { id: "z-ai/glm-5.2", provider: "openrouter" },
-      { id: "deepseek/deepseek-v4-pro", provider: "openrouter" },
-      { id: "moonshotai/kimi-k2", provider: "openrouter" },
+      // OpenRouter — route resolved from the catalog `@route` route-identity
+      // suffix (a bare 2-segment id resolves to the direct vendor route, which
+      // is dead here; `@openrouter` pins the catalog join to the OpenRouter
+      // gateway, reachable via ANTHROPIC_BASE_URL like moonshot).
+      { id: "z-ai/glm-5.2@openrouter", provider: "openrouter" },
+      { id: "deepseek/deepseek-v4-pro@openrouter", provider: "openrouter" },
+      { id: "moonshotai/kimi-k2@openrouter", provider: "openrouter" },
+      { id: "x-ai/grok-4.5@openrouter", provider: "openrouter" },
+      { id: "x-ai/grok-4.20@openrouter", provider: "openrouter" },
+      { id: "x-ai/grok-4.3@openrouter", provider: "openrouter" },
+      { id: "google/gemini-3.1-pro-preview@openrouter", provider: "openrouter" },
+      { id: "google/gemini-3.5-flash@openrouter", provider: "openrouter" },
+      { id: "google/gemini-2.5-flash@openrouter", provider: "openrouter" },
+      { id: "google/gemini-2.5-pro@openrouter", provider: "openrouter" },
+      { id: "moonshotai/kimi-k2.7-code@openrouter", provider: "openrouter" },
       // Requesty — route resolved from the catalog `@route`
-      { id: "sference/thinkingcap-qwen3.6-27b", provider: "requesty" },
-      { id: "sference/glm-5.2", provider: "requesty" },
+      { id: "sference/thinkingcap-qwen3.6-27b@requesty", provider: "requesty" },
+      { id: "sference/glm-5.2@requesty", provider: "requesty" },
     ],
     env: { anthropic: "ANTHROPIC_API_KEY" },
   },

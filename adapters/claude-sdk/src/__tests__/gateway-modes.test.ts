@@ -20,7 +20,8 @@ describe("claude-sdk model routing", () => {
     const ids = allowed.map((m) => (typeof m === "string" ? m : m.id))
     expect(ids).toContain("claude-opus-4-8")
     expect(ids).toContain("kimi-k2.7-code")
-    expect(ids).toContain("z-ai/glm-5.2")
+    expect(ids).toContain("z-ai/glm-5.2@openrouter")
+    expect(ids).toContain("x-ai/grok-4.5@openrouter")
 
     const entries = allowed.filter((m): m is AgentCliModelEntry => typeof m !== "string")
     const byId = (id: string) => entries.find((e) => e.id === id)
@@ -29,7 +30,8 @@ describe("claude-sdk model routing", () => {
     // their provider/biller only; the runtime resolver injects the correct
     // ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN.
     expect(byId("kimi-k2.7-code")).toEqual({ id: "kimi-k2.7-code", provider: "moonshot" })
-    expect(byId("z-ai/glm-5.2")).toEqual({ id: "z-ai/glm-5.2", provider: "openrouter" })
+    expect(byId("z-ai/glm-5.2@openrouter")).toEqual({ id: "z-ai/glm-5.2@openrouter", provider: "openrouter" })
+    expect(byId("x-ai/grok-4.5@openrouter")).toEqual({ id: "x-ai/grok-4.5@openrouter", provider: "openrouter" })
     expect(byId("claude-opus-4-8")).toEqual({ id: "claude-opus-4-8", provider: "anthropic" })
   })
 })

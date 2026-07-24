@@ -30,6 +30,11 @@
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
     },
+    "./catalog-models": {
+      "types": "./dist/catalog-models.d.ts",
+      "import": "./dist/catalog-models.mjs",
+      "default": "./dist/catalog-models.mjs"
+    },
     "./conversations": {
       "types": "./dist/conversations.d.ts",
       "import": "./dist/conversations.mjs",

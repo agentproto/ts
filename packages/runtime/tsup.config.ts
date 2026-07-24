@@ -7,6 +7,7 @@ export default createTsupConfig({
  */`,
   entry: {
     index: "src/index.ts",
+    "catalog-models": "src/catalog-models.ts",
     conversations: "src/conversations.ts",
     heartbeat: "src/heartbeat.ts",
     "workspace-fs": "src/workspace-fs.ts",
