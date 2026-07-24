@@ -41,6 +41,9 @@ import type {
   DaemonHealth,
   DiscoveredCredential,
   ImportCredentialRequest,
+  LlmEndpointDescriptorResult,
+  LlmEndpointStartOptions,
+  LlmEndpointStatusResult,
   PendingPermission,
   ProviderPresetEntry,
   RouteSpec,
@@ -542,6 +545,41 @@ export class DaemonClient {
       provider ? { endpoint: provider } : {},
     )
     return result ?? { provider, models: [] }
+  }
+
+  /**
+   * `llm_endpoint_status` — the daemon-supervised `@agentproto/llm-endpoint`
+   * proxy sidecar's lifecycle state {running, pid, port, baseUrl, healthy,
+   * startedAt, status}. `healthy` reflects a live `GET /v1/models` probe. An
+   * endpoint never started this boot resolves `status: "never-started"`.
+   */
+  async llmEndpointStatus(): Promise<LlmEndpointStatusResult> {
+    return this.mcpCall<LlmEndpointStatusResult>("llm_endpoint_status")
+  }
+
+  /**
+   * `llm_endpoint_start` — spawn (or reuse) the proxy child, injecting the
+   * stored provider keys + port into its env. Idempotent: an already
+   * running+healthy endpoint returns its existing descriptor (with
+   * `wasAlreadyRunning: true`) rather than spawning a second process.
+   */
+  async llmEndpointStart(
+    opts: LlmEndpointStartOptions = {},
+  ): Promise<LlmEndpointDescriptorResult> {
+    return this.mcpCall<LlmEndpointDescriptorResult>("llm_endpoint_start", {
+      ...(opts.port != null ? { port: opts.port } : {}),
+      ...(opts.accessTokens != null ? { accessTokens: opts.accessTokens } : {}),
+      ...(opts.env ? { env: opts.env } : {}),
+      ...(opts.binPath ? { binPath: opts.binPath } : {}),
+    })
+  }
+
+  /**
+   * `llm_endpoint_stop` — SIGTERM the proxy child and mark it stopped.
+   * Idempotent on an already-stopped (or never-started) endpoint.
+   */
+  async llmEndpointStop(): Promise<{ ok: boolean }> {
+    return this.mcpCall<{ ok: boolean }>("llm_endpoint_stop")
   }
 
   /**

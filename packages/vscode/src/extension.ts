@@ -13,6 +13,7 @@ import * as vscode from "vscode"
 import { createDaemonClient, type DaemonClient } from "./client/daemonClient.js"
 import { registerHarnessCommands } from "./commands/harnesses.js"
 import { registerAuthProfileCommands } from "./commands/authProfiles.js"
+import { registerLocalRouterCommands } from "./commands/localRouter.js"
 import { registerOnboardingCommand } from "./commands/onboarding.js"
 import { maybeAutoAdoptLocalLogin } from "./commands/localLogin.js"
 import { registerCreateWorkspaceCommand } from "./commands/createWorkspace.js"
@@ -111,6 +112,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
   registerHarnessCommands(ctx, client, harnessesProvider)
   registerAuthProfileCommands(ctx, client, authProfilesProvider)
+  registerLocalRouterCommands(ctx, client, authProfilesProvider) // agentproto.start/stopLlmEndpoint
   registerOnboardingCommand(ctx, client, authProfilesProvider) // agentproto.runOnboarding
   registerAuthSettingsPanel(ctx, client, authProfilesProvider) // agentproto.openAuthSettings
 

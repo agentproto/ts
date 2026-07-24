@@ -8,6 +8,7 @@ import type {
   CatalogModelsResponse,
   ProviderPresetEntry,
 } from "../client/types.js"
+import type { LocalRouterTreeNode } from "./localRouterTree.logic.js"
 
 /** One model a profile can bill, flattened from the catalog for the expanded
  *  profile node. `runnable` = spawnable right now (rendered "active"); a
@@ -29,7 +30,10 @@ export type AuthProfileGroup =
   | { kind: "presets"; label: string }
   | { kind: "profiles"; label: string }
 
-export type AuthProfileTreeNode = AuthProfileGroup | AuthProfileNode
+export type AuthProfileTreeNode =
+  | AuthProfileGroup
+  | AuthProfileNode
+  | LocalRouterTreeNode
 
 export function isAuthProfileGroup(node: AuthProfileTreeNode): node is AuthProfileGroup {
   return node.kind === "presets" || node.kind === "profiles"

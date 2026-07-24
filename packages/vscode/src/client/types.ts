@@ -397,6 +397,49 @@ export interface CatalogProviderModelsResponse {
   models: CatalogProviderModel[]
 }
 
+/**
+ * Result of the `llm_endpoint_status` MCP verb — the daemon-supervised
+ * `@agentproto/llm-endpoint` proxy sidecar's lifecycle state. `running`
+ * reflects a live child, `healthy` a live `GET /v1/models` probe;
+ * `never-started` is the fresh-boot state before it has ever been spawned.
+ * Mirrors runtime LlmEndpointRegistry.status().
+ */
+export interface LlmEndpointStatusResult {
+  running: boolean
+  pid: number | null
+  port: number | null
+  baseUrl: string | null
+  healthy: boolean
+  startedAt: string | null
+  status: "starting" | "running" | "stopped" | "error" | "never-started"
+  lastError?: string
+  injectedProviders?: string[]
+}
+
+/** Descriptor returned by `llm_endpoint_start` — the freshly spawned (or
+ *  reused) proxy child. `wasAlreadyRunning` is true on an idempotent no-op. */
+export interface LlmEndpointDescriptorResult {
+  pid: number | null
+  port: number
+  baseUrl: string
+  status: "starting" | "running" | "stopped" | "error"
+  startedAt: string
+  stoppedAt?: string
+  lastError?: string
+  injectedProviders?: string[]
+  wasAlreadyRunning?: boolean
+}
+
+/** Options for the `llm_endpoint_start` verb — all optional; the daemon
+ *  defaults the port (LLM_ENDPOINT_PORT, then 18090) and leaves the proxy
+ *  open when no access tokens are supplied. */
+export interface LlmEndpointStartOptions {
+  port?: number
+  accessTokens?: string
+  env?: Record<string, string>
+  binPath?: string
+}
+
 /** User-facing info of a provider preset, from `list_provider_presets`. */
 export interface ProviderPresetInfo {
   schemaFlavor: string
