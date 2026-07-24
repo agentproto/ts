@@ -13,6 +13,8 @@
  * same catalog the read tool enumerated.
  */
 
+import { serviceableModelRoutes } from "@agentproto/runtime/catalog-models"
+
 import type { CatalogProviderModel } from "../client/types.js"
 
 /** One selectable model row, mapped from a read-tool catalog entry. The vscode
@@ -58,7 +60,22 @@ export function buildModelPickItems(
   return [...models]
     .map(m => {
       const price = modelPriceLabel(m)
-      const detailParts = [m.route ?? "", price].filter(Boolean)
+      // Flag LLM ids the static catalog knows NO billing route for (phantom
+      // dot-form ids, typos) — adding one still resolves to nothing runnable, so
+      // the chip would silently show red. This is the loose "no route at all"
+      // warning (`serviceableModelRoutes` is pure/synchronous, no daemon
+      // round-trip); it does not compute adapter-aware runnability. Scoped to
+      // `kind === "llm"`: `serviceableModelRoutes` only knows the LLM route
+      // catalog, so it returns `[]` for the media kinds (image/video/audio/voice)
+      // even though those ARE runnable on their own `route` — flagging them would
+      // be a false positive. It's a VISIBLE warning only — selection/toggle stay
+      // enabled so the user can still curate the id.
+      const unroutable = m.kind === "llm" && serviceableModelRoutes(m.id).length === 0
+      const detailParts = [
+        m.route ?? "",
+        price,
+        unroutable ? "⚠ no billing route — cannot run" : "",
+      ].filter(Boolean)
       const hasDistinctLabel = Boolean(m.label) && m.label !== m.id
       return {
         id: m.id,

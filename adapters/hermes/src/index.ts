@@ -82,12 +82,20 @@ export const hermes: AgentCliHandle = defineAgentCli({
     // are the go-to cheap coders. `allowed` is only the curated menu: the
     // `model` option is free-form, so any OpenRouter id (kimi, qwen, …) can
     // still be passed even when it isn't listed here.
-    default: "z-ai/glm-5.2",
+    default: "z-ai/glm-5.2@openrouter",
     allowed: [
-      "z-ai/glm-5.2",
-      "deepseek/deepseek-v4-pro",
-      "meta-llama/llama-3.3-70b",
+      "z-ai/glm-5.2@openrouter",
+      "deepseek/deepseek-v4-pro@openrouter",
+      "meta-llama/llama-3.3-70b-instruct@openrouter",
       "openai/gpt-4",
+      "x-ai/grok-4.5@openrouter",
+      "x-ai/grok-4.20@openrouter",
+      "x-ai/grok-4.3@openrouter",
+      "google/gemini-3.1-pro-preview@openrouter",
+      "google/gemini-3.5-flash@openrouter",
+      "google/gemini-2.5-flash@openrouter",
+      "google/gemini-2.5-pro@openrouter",
+      "moonshotai/kimi-k2.7-code@openrouter",
     ],
     // Anthropic models are reserved for the dedicated claude-code adapter —
     // hermes must NEVER route to them, even if a caller passes the id
@@ -155,7 +163,7 @@ export const hermes: AgentCliHandle = defineAgentCli({
       type: "string" as const,
       description:
         "Model ID routed through OpenRouter/OpenAI " +
-        "(e.g. 'deepseek/deepseek-v4-pro', 'z-ai/glm-5.2', 'moonshotai/kimi-k2'). " +
+        "(e.g. 'deepseek/deepseek-v4-pro', 'z-ai/glm-5.2@openrouter', 'moonshotai/kimi-k2@openrouter'). " +
         "Anthropic models are not permitted on hermes — use the claude-code " +
         "adapter for those. " +
         "Applied via a `/model <id>` control turn after the session is created " +

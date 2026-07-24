@@ -18,7 +18,7 @@ describe("@agentproto/adapter-hermes", () => {
 
   it("declares model routing slots", () => {
     // Cheap OpenRouter coder by default (hermes is the budget delegation arm).
-    expect(hermes.models?.default).toBe("z-ai/glm-5.2")
+    expect(hermes.models?.default).toBe("z-ai/glm-5.2@openrouter")
     // hermes ignores the ACP session model config — model is applied via a
     // `/model <id>` control turn (AgentCliModels.apply).
     expect(hermes.models?.apply).toBe("command")

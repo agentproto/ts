@@ -447,6 +447,18 @@ function billedVendor(vendor: string, route: string): string {
  * only when its catalog identity is in the list — matched against BOTH the
  * route-qualified `ref` (`z-ai/glm-5.2@openrouter`) and the route-independent
  * `vendor/product` (`z-ai/glm-5.2`), so a curated id in either form is honored.
+ * It ALSO honors the BARE product (`claude-opus-4-8` — everything after the
+ * first `/` of `vendorProduct`), but ONLY on a DIRECT route (a `ref` with no
+ * `@route` suffix). The vscode "+ Models" picker writes bare pricing-catalog
+ * ids verbatim into an allowlist for single-vendor DIRECT endpoints (anthropic,
+ * moonshot, …), and every existing user allowlist for those is in that form, so
+ * the bare tolerance keeps them working with zero migration. It is deliberately
+ * NOT extended to multi-vendor GATEWAY endpoints (openrouter/requesty host the
+ * same bare product under many vendor prefixes — `sference/glm-5.2` and
+ * `z-ai/glm-5.2` are distinct rows on the same endpoint), where a bare id would
+ * over-widen across sibling vendors. For those the `ref` (`z-ai/glm-5.2@openrouter`)
+ * or the `vendor/product` form (`z-ai/glm-5.2`) is required — which is exactly
+ * what the picker writes for gateway endpoints anyway.
  * This is deliberately downstream of `eligibleProfiles` (the endpoint/method
  * gate): a curated profile stays endpoint-eligible but services only its
  * chosen model refs.
@@ -454,7 +466,21 @@ function billedVendor(vendor: string, route: string): string {
 function profileAllowsModel(profile: AuthProfile, ref: string, vendorProduct: string): boolean {
   const curation = profile.models
   if (!curation || curation.mode === "all") return true
-  return curation.ids.includes(ref) || curation.ids.includes(vendorProduct)
+  // The bare product is everything after the FIRST `/` (the vendor is always
+  // the first segment; the product may itself contain `/`). No slash → treat
+  // the whole string as the product.
+  const slash = vendorProduct.indexOf("/")
+  const product = slash === -1 ? vendorProduct : vendorProduct.slice(slash + 1)
+  // A gateway/router route carries an `@route` suffix in its ref
+  // (`z-ai/glm-5.2@openrouter`); a direct route ref is bare `vendor/product`.
+  // Bare-product tolerance is DIRECT-only — on a multi-vendor gateway a bare id
+  // would admit every sibling vendor's same-named product.
+  const isDirect = !ref.includes("@")
+  return (
+    curation.ids.includes(ref) ||
+    curation.ids.includes(vendorProduct) ||
+    (isDirect && curation.ids.includes(product))
+  )
 }
 
 /** The pure join (SPEC §5): adapter-declared models + router widening +

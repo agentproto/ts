@@ -69,6 +69,42 @@ describe("buildModelPickItems", () => {
     )
     expect(items[0]?.id).toBe("z-ai/glm-5.2")
   })
+
+  it("flags an LLM id with zero serviceable routes (phantom/typo) in detail", () => {
+    // `totally-made-up-xyz` is unknown to the static route catalog →
+    // serviceableModelRoutes() === [] → the chip would silently show red.
+    const [item] = buildModelPickItems([llm("totally-made-up-xyz")], [])
+    expect(item?.detail).toContain("⚠ no billing route — cannot run")
+  })
+
+  it("does NOT flag a routable LLM id", () => {
+    // claude-opus-4-8 resolves to the anthropic route — no warning.
+    const [item] = buildModelPickItems([llm("claude-opus-4-8", 15, 75)], [])
+    expect(item?.detail).toBe("anthropic · $15/$75 per 1M")
+    expect(item?.detail).not.toContain("⚠")
+  })
+
+  it("never flags a media kind (image runs on its own route, not an LLM route)", () => {
+    // serviceableModelRoutes only knows the LLM catalog, so it returns [] for
+    // an image id — but the image IS runnable on `replicate`. The kind guard
+    // keeps that from becoming a false-positive warning.
+    const [item] = buildModelPickItems([media("google/nano-banana", "Nano Banana")], [])
+    expect(item?.detail).toBe("replicate")
+    expect(item?.detail).not.toContain("⚠")
+  })
+
+  it("keeps an unroutable id fully selectable — the warning is not a hard block", () => {
+    // Same fixture, but already in the allowlist: it stays picked (togglable),
+    // proving the warning is purely visual and doesn't disable selection.
+    const [item] = buildModelPickItems([llm("totally-made-up-xyz")], ["totally-made-up-xyz"])
+    expect(item?.picked).toBe(true)
+    expect(item?.detail).toContain("⚠ no billing route — cannot run")
+    // And toggling it off still round-trips through the normal allowlist path.
+    expect(toggleModelInAllowlist(["totally-made-up-xyz"], "totally-made-up-xyz")).toEqual({
+      mode: "all",
+      ids: [],
+    })
+  })
 })
 
 describe("resolveModelSelection", () => {

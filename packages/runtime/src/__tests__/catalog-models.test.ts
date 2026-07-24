@@ -198,6 +198,89 @@ describe("buildCatalogModels — whole-profile disable (WS2) + per-model curatio
   })
 })
 
+describe("buildCatalogModels — bare-product allowlist tolerance (WP-A)", () => {
+  // The vscode "+ Models" picker writes bare pricing-catalog ids
+  // (`claude-opus-4-8`) into a profile allowlist for single-vendor DIRECT
+  // endpoints, not the vendor/product or route-qualified form. The read-side
+  // curation gate accepts the bare product on DIRECT routes so those existing
+  // allowlists work with zero data migration — but NOT on multi-vendor gateway
+  // routes (openrouter/requesty), where a bare id would over-widen across
+  // sibling vendors and the vendor/product form is required instead.
+
+  it("a bare product id (`claude-opus-4-8`) keeps its model runnable", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [{ ...anthropicApiKey, models: { mode: "allow", ids: ["claude-opus-4-8"] } }],
+    })
+    const route = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["work-anthropic-key"])
+  })
+
+  it("a bare product id does NOT match a multi-vendor GATEWAY route (would over-widen across sibling vendors), but the vendor/product form does", () => {
+    // openrouter/requesty host the same bare product under many vendor
+    // prefixes, so a bare `glm-5.2` allow must NOT admit the `z-ai/glm-5.2@openrouter`
+    // gateway row — only the ref or the `vendor/product` form may.
+    const bareKey: AuthProfile = {
+      id: "or-bare",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref-or",
+      models: { mode: "allow", ids: ["glm-5.2"] },
+    }
+    const blocked = buildCatalogModels({ adapters: [MASTRA_AGENT], profiles: [bareKey] })
+    const blockedRoute = findRoute(blocked, "z-ai", "glm-5.2", "openrouter")
+    expect(blockedRoute?.runnable).toBe(false)
+    expect(blockedRoute?.eligibleProfiles).toEqual([])
+
+    const vendorProductKey: AuthProfile = {
+      id: "or-vp",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref-or",
+      models: { mode: "allow", ids: ["z-ai/glm-5.2"] },
+    }
+    const allowed = buildCatalogModels({ adapters: [MASTRA_AGENT], profiles: [vendorProductKey] })
+    const allowedRoute = findRoute(allowed, "z-ai", "glm-5.2", "openrouter")
+    expect(allowedRoute?.runnable).toBe(true)
+    expect(allowedRoute?.eligibleProfiles).toEqual(["or-vp"])
+  })
+
+  it("the `vendor/product` form still matches (no regression)", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [{ ...anthropicApiKey, models: { mode: "allow", ids: ["anthropic/claude-opus-4-8"] } }],
+    })
+    const route = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["work-anthropic-key"])
+  })
+
+  it("the route-qualified `ref` form still matches (no regression)", () => {
+    const openrouterKey: AuthProfile = {
+      id: "or-ref",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref-or",
+      models: { mode: "allow", ids: ["z-ai/glm-5.2@openrouter"] },
+    }
+    const response = buildCatalogModels({ adapters: [MASTRA_AGENT], profiles: [openrouterKey] })
+    const route = findRoute(response, "z-ai", "glm-5.2", "openrouter")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["or-ref"])
+  })
+
+  it("a bare id that matches nothing keeps the model blocked", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [{ ...anthropicApiKey, models: { mode: "allow", ids: ["not-a-real-model"] } }],
+    })
+    const route = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+})
+
 describe("buildCatalogModels — curated vs catalog-known routes (SPEC §5.1/§5.3)", () => {
   it("marks an adapter-declared route curated:true", () => {
     const response = buildCatalogModels({ adapters: [CLAUDE_CODE], profiles: [] })
