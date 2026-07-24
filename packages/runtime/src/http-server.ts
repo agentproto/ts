@@ -37,9 +37,6 @@ import type { SessionsRegistry, AgentSessionLike } from "./sessions.js"
 import { SessionNotAliveError } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { PairingRegistry } from "./pairing-registry.js"
-import type { RoutineRunner } from "./routine-workflow-shim.js"
-import type { RoutineStep } from "./step-run-types.js"
-import { logRoutineRunnerDeprecation } from "./step-run-types.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import {
   loadWorkspacesConfig,
@@ -632,20 +629,9 @@ export interface RuntimeHttpServerOptions {
    *  registers/updates/removes live cron jobs to match (the same pass
    *  `index.ts` runs once at boot, callable on demand so a routine dropped
    *  after boot schedules without a daemon restart). Also backs
-   *  `GET /routines` (routine DEFINITIONS — see `routineRunner` below for
-   *  the rest of that prefix). Without it `/routine-defs/*` 404s and
-   *  `GET /routines` 404s. */
+   *  `GET /routines` (routine DEFINITIONS). Without it `/routine-defs/*`
+   *  404s and `GET /routines` 404s. */
   routineRegistrar?: import("./routine-registrar.js").RoutineRegistrar
-  /** Optional — when wired, exposes the DEPRECATED `/routines/*` run routes
-   *  (`POST /routines`, `GET /routines/:id`, `POST /routines/:id/cancel`,
-   *  `POST /routines/:id/escalation/resolve`) for starting and managing
-   *  background routine runs (sequential steps with per-step fan-in) — use
-   *  `workflow_*` / `/workflows/*` instead; a sequence is a workflow with
-   *  single-step stages. Removed next release. Same service the MCP
-   *  `routine_start/status/cancel/escalation_resolve` tools call. `GET
-   *  /routines` itself is NOT gated on this — see `routineRegistrar`
-   *  above. Without it the run routes 404. */
-  routineRunner?: RoutineRunner
   /** Optional — when wired, exposes /workflows/* routes for starting and
    *  managing background workflow runs (stage-barrier parallel steps).
    *  Same service the MCP `workflow_start/status/cancel/
@@ -2285,17 +2271,10 @@ export async function startHttpServer(
           if (handled) return
         }
 
-        // Routine routes — /routines, /routines/:id, /routines/:id/cancel,
-        // /routines/:id/escalation/resolve. Mirrors the MCP `routine_*`
-        // tools (orchestration-tools.ts). GET /routines returns AIP-41
-        // routine DEFINITIONS from the registrar (routine_list's repointed
-        // target); the rest are RoutineRunner run routes — DEPRECATED, see
-        // handleRoutines.
-        if (
-          (opts.routineRunner || opts.routineRegistrar) &&
-          (path === "/routines" || path.startsWith("/routines/"))
-        ) {
-          const handled = await handleRoutines(req, res, path, opts.routineRunner, opts.routineRegistrar)
+        // GET /routines — AIP-41 routine DEFINITIONS from the registrar.
+        // Mirrors the MCP `routine_list` tool (orchestration-tools.ts).
+        if (opts.routineRegistrar && path === "/routines") {
+          const handled = await handleRoutinesListing(req, res, path, opts.routineRegistrar)
           if (handled) return
         }
 
@@ -2391,8 +2370,7 @@ export async function startHttpServer(
         }
 
         // AIP-41 routine-def manual trigger + reconcile — deliberately NOT
-        // under /routines/* (that prefix is routineRunner's, an unrelated
-        // primitive — see routine-registrar.ts). /routine-defs/:id/trigger
+        // under /routines/* (see routine-registrar.ts). /routine-defs/:id/trigger
         // and /routine-defs/reconcile.
         if (opts.routineRegistrar && path.startsWith("/routine-defs/")) {
           const handled = await handleRoutineDefs(req, res, path, opts.routineRegistrar)
@@ -4443,137 +4421,23 @@ async function handleTunnels(
 }
 
 /**
- * /routines routes.
- *
- *   GET  /routines                          → { routines: RoutineFrontmatter[] }
- *
- * repointed to the AIP-41 registrar's `list()` — routine DEFINITIONS from
- * `.routines/*`, NOT RoutineRunner runs (mirrors the MCP `routine_list`
- * repoint in orchestration-tools.ts). The rest are DEPRECATED thin
- * adapters over RoutineRunner (use `workflow_*` / `/workflows/*` instead;
- * a sequence is a workflow with single-step stages):
- *
- *   POST /routines                          → start a run (RoutineRun)
- *   GET  /routines/:id                      → RoutineRun
- *   POST /routines/:id/cancel               → { runId, status }
- *   POST /routines/:id/escalation/resolve   → { runId, ok }
+ * GET /routines → { routines: RoutineFrontmatter[] } — the AIP-41
+ * registrar's `list()` (routine DEFINITIONS from `.routines/*`), mirroring
+ * the MCP `routine_list` tool in orchestration-tools.ts.
  *
  * Returns `true` when it handled the request so the dispatcher skips the
  * 404 path.
  */
-async function handleRoutines(
+async function handleRoutinesListing(
   req: IncomingMessage,
   res: ServerResponse,
   path: string,
-  routineRunner: RoutineRunner | undefined,
-  routineRegistrar: import("./routine-registrar.js").RoutineRegistrar | undefined,
+  routineRegistrar: import("./routine-registrar.js").RoutineRegistrar,
 ): Promise<boolean> {
-  const json = (status: number, body: unknown): void => {
-    res.writeHead(status, { "content-type": "application/json" })
-    res.end(JSON.stringify(body))
-  }
-
-  if (path === "/routines" && req.method === "GET") {
-    if (!routineRegistrar) return false
-    json(200, { routines: routineRegistrar.list() })
-    return true
-  }
-
-  if (!routineRunner) return false
-
-  if (path === "/routines" && req.method === "POST") {
-    logRoutineRunnerDeprecation("POST /routines")
-    const body = await readJsonBody(req)
-    if (!body || typeof body !== "object") {
-      json(400, { error: "invalid_body" })
-      return true
-    }
-    const b = body as Record<string, unknown>
-    const routineId = typeof b.routineId === "string" ? b.routineId : ""
-    if (!routineId) {
-      json(400, { error: "missing_routineId" })
-      return true
-    }
-    if (!Array.isArray(b.steps) || b.steps.length === 0) {
-      json(400, {
-        error: "missing_steps",
-        message: "body must include a non-empty `steps` array",
-      })
-      return true
-    }
-    try {
-      const run = await routineRunner.start({
-        routineId,
-        steps: b.steps as RoutineStep[],
-        ...(typeof b.workspaceSlug === "string" ? { workspaceSlug: b.workspaceSlug } : {}),
-        ...(typeof b.cwd === "string" ? { cwd: b.cwd } : {}),
-        ...(typeof b.notifyUrl === "string" ? { notifyUrl: b.notifyUrl } : {}),
-      })
-      json(201, run)
-    } catch (err) {
-      json(400, {
-        error: "start_failed",
-        message: err instanceof Error ? err.message : String(err),
-      })
-    }
-    return true
-  }
-
-  // /routines/:id/cancel
-  const cancelMatch = path.match(/^\/routines\/([^/]+)\/cancel$/)
-  if (cancelMatch && req.method === "POST") {
-    logRoutineRunnerDeprecation("POST /routines/:id/cancel")
-    const runId = decodeURIComponent(cancelMatch[1] ?? "")
-    if (!routineRunner.status(runId)) {
-      json(404, { error: "run_not_found", runId })
-      return true
-    }
-    routineRunner.cancel(runId)
-    const run = routineRunner.status(runId)
-    json(200, { runId, status: run?.status ?? "not_found" })
-    return true
-  }
-
-  // /routines/:id/escalation/resolve
-  const resolveMatch = path.match(/^\/routines\/([^/]+)\/escalation\/resolve$/)
-  if (resolveMatch && req.method === "POST") {
-    logRoutineRunnerDeprecation("POST /routines/:id/escalation/resolve")
-    const runId = decodeURIComponent(resolveMatch[1] ?? "")
-    if (!routineRunner.status(runId)) {
-      json(404, { error: "run_not_found", runId })
-      return true
-    }
-    const body = await readJsonBody(req)
-    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
-    const stepIndex = typeof b.stepIndex === "number" ? b.stepIndex : undefined
-    const response = typeof b.response === "string" ? b.response : undefined
-    if (stepIndex === undefined || response === undefined) {
-      json(400, {
-        error: "invalid_body",
-        message: "body must include `stepIndex` (number) and `response` (string)",
-      })
-      return true
-    }
-    routineRunner.resolve(runId, stepIndex, response)
-    json(200, { runId, ok: true })
-    return true
-  }
-
-  // /routines/:id
-  const idMatch = path.match(/^\/routines\/([^/]+)$/)
-  if (idMatch && req.method === "GET") {
-    logRoutineRunnerDeprecation("GET /routines/:id")
-    const runId = decodeURIComponent(idMatch[1] ?? "")
-    const run = routineRunner.status(runId)
-    if (!run) {
-      json(404, { error: "run_not_found", runId })
-      return true
-    }
-    json(200, run)
-    return true
-  }
-
-  return false
+  if (path !== "/routines" || req.method !== "GET") return false
+  res.writeHead(200, { "content-type": "application/json" })
+  res.end(JSON.stringify({ routines: routineRegistrar.list() }))
+  return true
 }
 
 /**
@@ -5376,8 +5240,8 @@ async function handleCron(
  *   register/update/remove live cron jobs to match (the boot-time pass,
  *   callable on demand — see `routine_reconcile` in orchestration-tools.ts).
  *
- * Mounted at a different prefix than /routines/* on purpose — that prefix
- * already belongs to `routineRunner` (see routine-registrar.ts SPEC note).
+ * Mounted at a different prefix than /routines (the AIP-41 registrar
+ * listing) on purpose — see routine-registrar.ts SPEC note.
  */
 async function handleRoutineDefs(
   req: IncomingMessage,
