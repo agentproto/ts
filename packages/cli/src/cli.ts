@@ -31,6 +31,7 @@ import { runServe } from "./commands/serve.js"
 import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
 import { runConversation } from "./commands/conversation.js"
+import { runUsage } from "./commands/usage.js"
 import { runTunnel } from "./commands/tunnel.js"
 import { runProviderPresets } from "./commands/presets.js"
 import { runPreset } from "./commands/preset.js"
@@ -84,6 +85,8 @@ Usage:
   agentproto sessions  stop <id-or-name>
   agentproto conversation locate <sessionId | native-jsonl-path> [--json]
                                            session ↔ native transcript, either direction
+  agentproto usage    rollup --window <5h|7d|P7D> [--profile <ref>] [--json]
+                                           local spend estimate over a rolling window
   agentproto browser   install <adapter> [--force] [--dry-run]
   agentproto browser   start <adapter> [--port N] [--camofox-port N] [--label L]
   agentproto browser   list  [--alive] [--json]
@@ -165,6 +168,7 @@ const VERBS = new Set([
   "workspace",
   "sessions",
   "conversation",
+  "usage",
   "tunnel",
   "presets",
   "provider-preset",
@@ -243,6 +247,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSessions(rest)
     case "conversation":
       return runConversation(rest)
+    case "usage":
+      return runUsage(rest)
     case "tunnel":
       return runTunnel(rest)
     case "presets":
