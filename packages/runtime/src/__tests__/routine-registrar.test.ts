@@ -434,19 +434,14 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
 })
 
 // ── routine_trigger MCP tool — proves it's registered and dispatches over a
-// real MCP transport, and that it does not collide with the unrelated
-// `routine_start`/`routine_list`/... (deprecated routine-workflow-shim)
-// verbs when both are wired on the same server (see routine-registrar.ts
-// SPEC note). ──
+// real MCP transport. ──
 
 describe("routine_trigger MCP tool", () => {
-  it("registers alongside routine_start (deprecated shim) without colliding, and dispatches over MCP", async () => {
+  it("registers and dispatches over MCP", async () => {
     const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js")
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js")
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js")
     const { registerOrchestrationTools } = await import("../orchestration-tools.js")
-    const { createRoutineWorkflowShim } = await import("../routine-workflow-shim.js")
-    const { createWorkflowRunner } = await import("../workflow-runner.js")
     const { createEventRing } = await import("../event-ring.js")
 
     const workspace = mkdtempSync(join(tmpdir(), "routine-trigger-mcp-test-"))
@@ -468,12 +463,9 @@ describe("routine_trigger MCP tool", () => {
       const sessionEvents = createSessionEventBus()
       const eventRing = createEventRing()
       const registry = createSessionsRegistry({ sessionEvents, persistPath: join(workspace, "sessions.json") })
-      // Wire the unrelated deprecated routine shim too, to prove no name collision.
-      const workflowRunner = createWorkflowRunner({ registry, sessionEvents, resolveAgentAdapter: (async () => undefined) as never })
-      const routineRunner = createRoutineWorkflowShim({ workflowRunner })
 
       const server = new McpServer({ name: "routine-trigger-test", version: "0.0.0" })
-      registerOrchestrationTools(server, { registry, sessionEvents, eventRing, routineRunner, routineRegistrar })
+      registerOrchestrationTools(server, { registry, sessionEvents, eventRing, routineRegistrar })
 
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
       await server.connect(serverTransport)
@@ -483,7 +475,6 @@ describe("routine_trigger MCP tool", () => {
       const { tools } = await client.listTools()
       const names = tools.map(t => t.name)
       expect(names).toContain("routine_trigger")
-      expect(names).toContain("routine_start") // RoutineRunner still there, unaffected
 
       const result = await client.callTool({ name: "routine_trigger", arguments: { routineId: "mcp-demo" } })
       const content = (result as { content?: Array<{ type: string; text?: string }> }).content

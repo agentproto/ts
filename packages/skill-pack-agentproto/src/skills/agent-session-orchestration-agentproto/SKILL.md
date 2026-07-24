@@ -173,9 +173,10 @@ aux questions selon une policy, et **n'escalade à l'humain (webhook `notifyUrl`
 que quand c'est vraiment bloqué**. Livré via `workflow_*`
 (`workflow_start`/`workflow_status`/`workflow_cancel`/
 `workflow_escalation_resolve`) — `routine_start` et le reste de `routine_*`
-sont **DEPRECATED** (l'ancien moteur impératif `RoutineRunner` a été retiré en
-Phase B2 ; ces tools ne restent que comme alias le temps d'une fenêtre de
-dépréciation). Surfaces à exposer : `session_monitor({sessionIds})`,
+ont été **RETIRÉS** (l'ancien moteur impératif `RoutineRunner` a été retiré en
+Phase B2 ; les tools ont survécu comme alias DEPRECATED le temps d'une
+fenêtre de dépréciation, puis ont été retirés entièrement en Phase B3 — ils
+n'existent plus). Surfaces à exposer : `session_monitor({sessionIds})`,
 `session_events_poll({since})`, webhook de notification. C'est « un agent qui
 babysit un autre agent en jouant l'humain », sans polling tokenivore.
 

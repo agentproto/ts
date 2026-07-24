@@ -17,8 +17,6 @@ import type {
   SessionAwaitingQuestion,
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
-import type { RoutineRunner } from "./routine-workflow-shim.js"
-import { logRoutineRunnerDeprecation } from "./step-run-types.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
@@ -373,7 +371,6 @@ export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
   sessionEvents: SessionEventBus
   eventRing: EventRing
-  routineRunner?: RoutineRunner
   workflowRunner?: WorkflowRunner
   supervisor?: CompletionPolicySupervisor
   /** When wired, exposes start/stop/list_inbound_watcher tools. */
@@ -392,7 +389,7 @@ export interface RegisterOrchestrationToolsOptions {
    * `.routines/*` to register/update/remove live cron jobs on demand
    * (mirrors `reconcile()`'s boot-time pass — installs host cron jobs, so
    * like `cronScheduler` above, NOT added to `DEFAULT_ORCHESTRATOR_TOOLS`).
-   * Neither is a `RoutineRunner` verb — see `routine-registrar.ts` for the
+   * Neither is a `workflow_*` verb — see `routine-registrar.ts` for the
    * "routine" naming collision this repo already has between the two
    * primitives.
    */
@@ -634,133 +631,12 @@ export function registerOrchestrationTools(
     },
   )
 
-  // ── Routine tools (optional — only registered when routineRunner is provided) ─
-  // DEPRECATED — a sequence is a workflow with single-step stages; use
-  // `workflow_*` instead. Removed next release. Kept functional this PR;
-  // `routine_list` moved below to the routineRegistrar block (it now
-  // returns AIP-41 routine DEFINITIONS, not RoutineRunner runs).
-  const { routineRunner } = opts
-  if (routineRunner) {
-    server.tool(
-      "routine_start",
-      "DEPRECATED — use `workflow_*`; a sequence is a workflow with " +
-        "single-step stages. Removed next release. Start a routine — a " +
-        "named sequence of steps that spawn agent sessions and fan-in on " +
-        "their turn-end events. Returns a runId immediately; the routine " +
-        "executes in the background. Poll with `routine_status`.",
-      {
-        routineId: z.string().describe("Arbitrary label for this routine type (e.g. 'daily-brief')."),
-        steps: z
-          .array(
-            z.object({
-              label: z.string(),
-              adapter: z.string().optional().describe("Agent adapter slug to spawn."),
-              prompt: z.string().optional().describe("Prompt to send after spawning."),
-              waitFor: z
-                .array(z.string())
-                .optional()
-                .describe("Session ids that must fire turn-end before this step runs."),
-              policy: z
-                .discriminatedUnion("awaiting", [
-                  z.object({
-                    awaiting: z.literal("auto-allow"),
-                    prompt: z.string(),
-                  }),
-                  z.object({
-                    awaiting: z.literal("escalate"),
-                    webhookUrl: z.string().url().optional(),
-                    timeoutMs: z.number().int().positive().optional(),
-                  }),
-                  z.object({ awaiting: z.literal("fail") }),
-                ])
-                .optional()
-                .describe("What to do when a session asks for input mid-step."),
-            }),
-          )
-          .min(1)
-          .max(50)
-          .describe("Ordered list of steps. Steps with `waitFor` block until those sessions finish."),
-        workspaceSlug: z
-          .string()
-          .optional()
-          .describe("Workspace slug passed to each spawned session."),
-        cwd: z.string().optional().describe("Working directory for spawned sessions."),
-        notifyUrl: z
-          .string()
-          .url()
-          .optional()
-          .describe("Webhook URL to call on run completion or escalation."),
-      },
-      async input => {
-        logRoutineRunnerDeprecation("routine_start")
-        const run = await routineRunner.start(input)
-        return {
-          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
-        }
-      },
-    )
-
-    server.tool(
-      "routine_status",
-      "DEPRECATED — use `workflow_*`; a sequence is a workflow with " +
-        "single-step stages. Removed next release. Poll the status of a " +
-        "background routine run started with `routine_start`.",
-      {
-        runId: z.string().describe("Run id returned by `routine_start`."),
-      },
-      async input => {
-        logRoutineRunnerDeprecation("routine_status")
-        const run = routineRunner.status(input.runId)
-        if (!run) {
-          return {
-            content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
-          }
-        }
-        return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] }
-      },
-    )
-
-    server.tool(
-      "routine_cancel",
-      "DEPRECATED — use `workflow_*`; a sequence is a workflow with " +
-        "single-step stages. Removed next release. Cancel a running " +
-        "routine. Steps already in flight will finish, but no new steps " +
-        "will be started.",
-      {
-        runId: z.string().describe("Run id to cancel."),
-      },
-      async input => {
-        logRoutineRunnerDeprecation("routine_cancel")
-        routineRunner.cancel(input.runId)
-        const run = routineRunner.status(input.runId)
-        return { content: [{ type: "text", text: JSON.stringify({ runId: input.runId, status: run?.status ?? "not_found" }) }] }
-      },
-    )
-
-    server.tool(
-      "routine_escalation_resolve",
-      "DEPRECATED — use `workflow_*`; a sequence is a workflow with " +
-        "single-step stages. Removed next release. Provide an external " +
-        "answer to a routine step that escalated because a session asked " +
-        "for human input (policy=escalate).",
-      {
-        runId: z.string().describe("Run id."),
-        stepIndex: z.number().int().min(0).describe("Step index to resolve (0-based)."),
-        response: z.string().describe("The answer to inject into the awaiting session."),
-      },
-      async input => {
-        logRoutineRunnerDeprecation("routine_escalation_resolve")
-        routineRunner.resolve(input.runId, input.stepIndex, input.response)
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }
-      },
-    )
-  }
-
   // ── Workflow tools (optional — only registered when workflowRunner is provided) ─
-  // Sibling primitive to routine_*: a workflow is an ordered list of STAGES,
-  // each stage a group of steps that run in parallel with an explicit
-  // barrier before the next stage starts (routine_* stays a flat sequential
-  // list with per-step waitFor fan-in — see PLAN.md "Design decision").
+  // A workflow is an ordered list of STAGES, each stage a group of steps
+  // that run in parallel with an explicit barrier before the next stage
+  // starts. A flat sequential list is just a workflow of single-step
+  // stages — the retired `routine_*` verbs (PLAN.md Phase B) offered no
+  // capability this doesn't cover.
   const { workflowRunner } = opts
   if (workflowRunner) {
     const workflowStepSchema = z.object({
@@ -812,9 +688,9 @@ export function registerOrchestrationTools(
         "that spawn/reuse agent sessions and run CONCURRENTLY. An explicit barrier " +
         "gates entry into the next stage: stage N+1 does not start until every step " +
         "of stage N has finished (or failed). This is the `parallel()` half of a " +
-        "harness-style workflow primitive — for a flat sequential list with fan-in, " +
-        "use `routine_start` instead. Returns a runId immediately; the workflow " +
-        "executes in the background. Poll with `workflow_status`.",
+        "harness-style workflow primitive — for a flat sequential list, use a " +
+        "single-step-per-stage workflow instead. Returns a runId immediately; " +
+        "the workflow executes in the background. Poll with `workflow_status`.",
       {
         workflowId: z.string().describe("Arbitrary label for this workflow type (e.g. 'review-then-fix')."),
         stages: z
@@ -1814,8 +1690,7 @@ export function registerOrchestrationTools(
     server.tool(
       "routine_list",
       "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
-        "schedule, target, enabled). Not RoutineRunner runs — those are the " +
-        "unrelated ad-hoc step-sequence primitive being retired; see " +
+        "schedule, target, enabled). Unrelated to `workflow_*` runs; see " +
         "`workflow_list` / `activities_list` for run history.",
       {},
       async () => {
@@ -1830,7 +1705,7 @@ export function registerOrchestrationTools(
         "for testing/debugging a `.routines/<id>/ROUTINE.md` manifest without " +
         "waiting for its cron schedule. Works even when the routine is " +
         "`enabled: false` or hasn't been registered as a live cron job yet. " +
-        "NOT `routine_start` — that's the unrelated ad-hoc step-sequence runner.",
+        "Unrelated to `workflow_*` runs.",
       {
         routineId: z.string().min(1).describe("The routine's `id` field (matches `.routines/<id>/ROUTINE.md`)."),
       },
@@ -1864,8 +1739,7 @@ export function registerOrchestrationTools(
         "jobs to match — the same pass `index.ts` runs once at boot, callable " +
         "on demand so a newly-dropped or edited routine schedules without a " +
         "daemon restart. Safe to call repeatedly (idempotent when nothing " +
-        "changed). NOT `routine_start` — that's the unrelated ad-hoc " +
-        "step-sequence runner.",
+        "changed). Unrelated to `workflow_*` runs.",
       {},
       async () => {
         try {

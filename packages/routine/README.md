@@ -125,16 +125,19 @@ from source before writing any code:
 this change)
 
 `routine_start` / `routine_status` / `routine_cancel` / `routine_list` /
-`routine_escalation_resolve` (`orchestration-tools.ts:611-725`) and `POST
-/routines` etc. (`http-server.ts:4292` region) **already exist** — but they
-are `RoutineRunner`, an unrelated ad-hoc primitive ("a named sequence of
-steps that spawn agent sessions and fan-in on their turn-end events"), not
-AIP-41. `routine_trigger` as a tool name doesn't collide (that verb wasn't
-taken). The HTTP surface would have: `/routines/:id/trigger` legitimately
-risks a caller confusing an AIP-41 routine id with a `RoutineRunner` `runId`,
-so this bridge mounts its manual-fire route at **`/routine-defs/:id/trigger`**
-instead of reusing `/routines/*`. Flagged here for whoever eventually
-reconciles the two "routine" vocabularies — out of scope for this change.
+`routine_escalation_resolve` and `POST /routines` etc. **used to exist**,
+predating this bridge — they were `RoutineRunner`, an unrelated ad-hoc
+primitive ("a named sequence of steps that spawn agent sessions and fan-in
+on their turn-end events"), not AIP-41. `routine_trigger` as a tool name
+didn't collide (that verb wasn't taken). The HTTP surface had:
+`/routines/:id/trigger` legitimately risked a caller confusing an AIP-41
+routine id with a `RoutineRunner` `runId`, so this bridge mounts its
+manual-fire route at **`/routine-defs/:id/trigger`** instead of reusing
+`/routines/*`. RoutineRunner itself is now gone (Phase B2 retired the
+engine, Phase B3 removed the deprecated aliases) — `routine_list` was
+repointed onto this bridge's registrar and `GET /routines` now serves AIP-41
+routine definitions instead. Kept here as the historical record of why
+`/routine-defs/*` exists as a separate prefix.
 
 ### Specs-repo follow-up (not applied here — separate repo, per brief)
 

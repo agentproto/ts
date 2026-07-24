@@ -162,21 +162,24 @@ d'exception dans le hot-path. Déclenché sur `turn-end` / `awaiting-input` /
 `exitCode`/`status` à l'exit). C'est le seam « préviens-moi quand un agent
 attend » sans cowork ouvert.
 
-## 7. RoutineRunner — la cible « babysit durable » (source, MVP)
+## 7. RoutineRunner — historique, REMPLACÉ par `workflow_*` (source)
 
-> **DEPRECATED (Phase B2) — utilise `workflow_*` à la place.** Le moteur
-> impératif `routine-runner.ts` décrit ci-dessous a été retiré : une séquence
-> `RoutineStep[]` est maintenant un workflow AIP-15 à étapes mono-step, piloté
-> par `workflowRunner` (`routine-workflow-shim.ts`). Les tools
+> **RETIRÉ (Phase B3) — utilise `workflow_*`.** Le moteur impératif
+> `routine-runner.ts` décrit ci-dessous a été retiré en Phase B2 ; les tools
 > `routine_start`/`routine_status`/`routine_cancel`/`routine_escalation_resolve`
-> restent vivants comme alias DEPRECATED le temps d'une fenêtre de dépréciation
-> (retrait prévu en B3) — préfère `workflow_start`/`workflow_status`/
-> `workflow_cancel`/`workflow_escalation_resolve` pour tout nouveau code.
-> `waitFor` (fan-in externe) a été supprimé sans remplacement (aucun
-> consommateur in-repo) ; exprime le fan-in via des stages workflow parallèles.
-> Le reste de cette section décrit le comportement de la policy d'attente
-> (`auto-allow`/`escalate`/`fail`) — TOUJOURS vrai, juste porté par
-> `workflow_*` désormais.
+> (et les routes REST `/routines/*` correspondantes) ont survécu comme alias
+> DEPRECATED le temps d'une fenêtre de dépréciation, puis ont été **retirés
+> entièrement en Phase B3** — ils n'existent plus, aucun call ne les
+> atteindra. Utilise `workflow_start`/`workflow_status`/`workflow_cancel`/
+> `workflow_escalation_resolve` avec des stages mono-step pour tout ce qui
+> était une séquence `RoutineStep[]`. `waitFor` (fan-in externe) n'a pas
+> d'équivalent ; exprime le fan-in via des stages workflow parallèles.
+> `routine_list`/`routine_trigger`/`routine_reconcile` sont un primitive
+> SANS RAPPORT (AIP-41 `.routines/*` — définitions de routines planifiées) et
+> restent vivants, inchangés. Le reste de cette section décrit le
+> comportement historique de la policy d'attente (`auto-allow`/`escalate`/
+> `fail`) — toujours vrai en principe, mais porté par `workflow_*`
+> aujourd'hui ; gardé pour archive.
 
 `routine-runner.ts` est le superviseur durable complet : il exécute une séquence
 de `RoutineStep[]` **en réagissant aux events** (pas de polling), gère le
@@ -185,8 +188,7 @@ applique une **policy d'attente** par étape :
 
 - `auto-allow` (+`prompt`) : répond tout seul et continue.
 - `escalate` (+`webhookUrl?`, `timeoutMs?` défaut 5 min) : POST le webhook puis
-  attend un `routine_escalation_resolve({ runId, stepIndex, response })` ou
-  `workflow_escalation_resolve({ runId, stageIndex, stepIndex, response })`
+  attend un `workflow_escalation_resolve({ runId, stageIndex, stepIndex, response })`
   externe ; timeout = échec.
 - `fail` : marque l'étape/le run en échec.
 
@@ -221,8 +223,8 @@ bloqué** » (cf. le babysit live de `nested-orchestration`, ici rendu durable).
 - **Commit gouverné par un gate vert** → `policy_attach then:commit` +
   `requireHumanAck` + `policy_ack`.
 - **Plusieurs étapes enchaînées** → `next` (DAG de policies, pilotable) ou
-  `workflow_start` (stages mono-step) — PAS `routine_start`/`routine_*`,
-  DEPRECATED depuis la Phase B2 (voir §7).
+  `workflow_start` (stages mono-step) — `routine_start`/`routine_*` (le
+  moteur séquentiel) n'existe plus, RETIRÉ en Phase B3 (voir §7).
 - **Critère qualitatif** → gate `judge`.
 - **Prévenir un humain quand ça attend/bloque** → `notifyUrl` (per-session) ou
   global.
@@ -291,9 +293,9 @@ appel d'outil synchrone dans ton tour.
   session est re-promptée (`nudge`, `{code}` = exit code) jusqu'à `maxRetries`
   (défaut 2) puis `blocked` — la session doit être **encore running** pour
   recevoir le nudge.
-- **RoutineRunner DEPRECATED** : voir §7 — le moteur impératif est retiré
-  (Phase B2), `routine_*` reste vivant en alias le temps d'une fenêtre de
-  dépréciation ; utilise `workflow_*` pour tout nouveau code.
+- **RoutineRunner RETIRÉ** : voir §7 — le moteur impératif est retiré
+  (Phase B2) et ses alias `routine_start`/`routine_*` ont été retirés à leur
+  tour (Phase B3, n'existent plus) ; utilise `workflow_*`.
 
 ## Checklist supervision durable
 

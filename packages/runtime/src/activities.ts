@@ -118,9 +118,9 @@ export interface ActivityProjector {
 // Which projection owner each activity source belongs to — used to scope
 // the vanished-record sweep of a per-owner re-projection so one owner's
 // diff can never evict another owner's cached rows. `cron` maps to nothing
-// (no cron activities in v1). No separate "routine" owner: a deprecated
-// `routine_start` run is a `workflowRunner` run under the hood
-// (routine-workflow-shim.ts) and already projects via "workflow".
+// (no cron activities in v1). No separate "routine" owner: AIP-41 routines
+// dispatch through the registrar (routine-registrar.ts), not through a
+// step-run engine, so there's nothing to project as a run.
 type ActivityOwner = "session" | "supervisor" | "workflow"
 const OWNER_OF_SOURCE: Record<ActivitySource, ActivityOwner | undefined> = {
   session: "session",

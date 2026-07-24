@@ -9,9 +9,9 @@ building and extending those lanes. Everything below is grounded in
 > **Scope.** These are GitHub-Actions CI lanes that drive an agent over the
 > agentproto daemon's MCP. Do NOT confuse with agentproto's in-daemon
 > **workflow-engine** (`workflow_start` / `workflow_run_file` — `workflowRunner`;
-> `routine_start` is a DEPRECATED alias over the same engine, see B2) —
-> different thing. The word "workflow" here = an agentflow lane defined by a
-> `WORKFLOW.md`.
+> `routine_start` was a DEPRECATED alias over the same engine — removed
+> entirely in B3, it no longer exists) — different thing. The word
+> "workflow" here = an agentflow lane defined by a `WORKFLOW.md`.
 
 ---
 

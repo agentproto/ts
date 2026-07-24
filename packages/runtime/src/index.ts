@@ -83,7 +83,6 @@ import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
-import { createRoutineWorkflowShim } from "./routine-workflow-shim.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createFileStepCache } from "./workflow-step-cache.js"
@@ -1118,14 +1117,6 @@ export async function createGateway(
       })
     : undefined
 
-  // Routine runner — DEPRECATED thin shim over `workflowRunner`. The
-  // imperative RoutineRunner engine is gone (see PLAN.md Phase B / PR B2):
-  // `routine_start`'s flat `steps[]` now lowers to a single-step-per-stage
-  // workflow run, driven by the SAME runner/store `workflow_*` uses — see
-  // routine-workflow-shim.ts. Wired whenever `workflowRunner` is (i.e. same
-  // `resolveAgentAdapter` gate).
-  const routineRunner = workflowRunner ? createRoutineWorkflowShim({ workflowRunner }) : undefined
-
   // Task ledger — the multi-party write-model over declared intent
   // (task-ledger.ts). Declared after `sessions` (board resolution walks
   // lineage) and `supervisor` (Tier-1 done runs its gate through the real
@@ -1155,10 +1146,10 @@ export async function createGateway(
   // owners it projects over; disposed in stop(). The `taskLedger` lets it
   // derive `Activity.taskId` from the ledger's edges at read time.
   //
-  // No separate `routineRunner` owner: a deprecated `routine_start` run is
-  // now literally a `workflowRunner` run (routine-workflow-shim.ts), so it
-  // already projects as a `workflow-step` activity here — wiring the shim in
-  // too would double-count the same run under both "routine" and "workflow".
+  // No separate "routine run" owner: AIP-41 routines dispatch through the
+  // registrar (routine-registrar.ts), not through a step-run engine, so
+  // there's nothing here to project as a run — only `workflowRunner` runs
+  // project as `workflow-step` activities.
   const activityProjector = createActivityProjector({
     registry: sessions,
     sessionEvents,
@@ -1398,7 +1389,6 @@ export async function createGateway(
       supervisor,
       activityProjector,
       taskLedger,
-      ...(routineRunner ? { routineRunner } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
       cronScheduler,
@@ -1613,7 +1603,6 @@ export async function createGateway(
     supervisor,
     activityProjector,
     taskLedger,
-    ...(routineRunner ? { routineRunner } : {}),
     ...(workflowRunner ? { workflowRunner } : {}),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),

@@ -78,13 +78,19 @@ runs it through the same engine as `workflow_start`. Poll the returned
 
 | Use | Shape |
 | --- | --- |
-| **`workflow_start`** | Stages of **parallel** steps with a **barrier** between stages. |
-| **`routine_start`** | A **flat sequential** list of steps with per-step `waitFor` fan-in. |
+| **`workflow_start`** | Stages of **parallel** steps with a **barrier** between stages. A flat sequential list is just a workflow of single-step stages. |
 | [**`run-swarm`**](../verbs/run-swarm.md) | A **kernel-driven loop** — a dispatcher picks who speaks each turn over a shared conversation substrate. |
 
-Reach for a workflow when the work is a fixed DAG of stages; a routine when it's
-a straight sequence with joins; a swarm when turn-taking is dynamic and
-conversation-driven.
+Reach for a workflow when the work is a fixed DAG of stages (a straight
+sequence included — single-step stages, no barrier to wait on); a swarm when
+turn-taking is dynamic and conversation-driven.
+
+> `routine_start`/`routine_status`/`routine_cancel`/`routine_escalation_resolve`
+> (and the mirroring `/routines/*` REST run routes) have been **removed** —
+> use `workflow_start` with single-step stages instead. `routine_list` /
+> `routine_trigger` / `routine_reconcile` are a different, unrelated
+> primitive (AIP-41 `.routines/*` scheduled routine definitions) and are
+> unaffected.
 
 ## Resume cache
 
@@ -115,7 +121,7 @@ should stay uncached.
 
 ## The engine underneath
 
-Both `workflow_start` and `routine_start` translate onto one execution engine,
+`workflow_start` translates onto one execution engine,
 [`@agentproto/workflow-runtime`](https://github.com/agentproto/ts/blob/main/packages/workflow-runtime/README.md)
 — a typed step algebra (`tool`, `agent`, `pipeline`, `map`, `branch`, `loop`,
 `parallel`, `approval`, `suspend`, `subworkflow`, …) walked by a single
