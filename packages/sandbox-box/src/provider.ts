@@ -48,6 +48,11 @@ const DEFAULT_TTL_SECONDS = null
 const HEALTH_PROBE_TIMEOUT_MS = 3_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
 const POLL_INTERVAL_MS = 500
+/** Fixed per-request HTTP timeout for health-probe fetches, deliberately
+ *  decoupled from `pollIntervalMs` (the delay BETWEEN probe attempts) — a
+ *  short poll cadence must not also force each individual fetch to time out
+ *  almost immediately on slow/congested networks. */
+const HEALTH_FETCH_TIMEOUT_MS = 5_000
 const UPDATE_CLI_TIMEOUT_SECONDS = 120
 /** How long to wait for a fresh/resumed box to reach a usable state and get
  *  its subdomain assigned. Box is a fuller "cloud computer" than e2b's
@@ -179,7 +184,7 @@ function writeSystemdUnitCommand(
     "",
     "[Service]",
     `EnvironmentFile=-${ENV_FILE_PATH}`,
-    `ExecStart=agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace} --allow-origin https://${host}`,
+    `ExecStart=agentproto serve --port ${port} --bind 0.0.0.0 --workspace "${workspace}" --allow-origin https://${host}`,
     "Restart=always",
     "User=user",
     "",
@@ -224,7 +229,7 @@ async function ensureDaemonHealthy(
       const extras = (config.installPackages ?? [])
         .map(spec => ` '${spec.replace(/'/g, "")}'`)
         .join("")
-      const cli = `@agentproto/cli@${config.cliVersion ?? "latest"}`
+      const cli = `"@agentproto/cli@${config.cliVersion ?? "latest"}"`
       await api.command({
         boxId,
         commandRequest: {
@@ -342,7 +347,7 @@ async function probeHealth(url: string, timeoutMs: number, pollIntervalMs: numbe
   const deadline = Date.now() + timeoutMs
   for (;;) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(pollIntervalMs) })
+      const res = await fetch(url, { signal: AbortSignal.timeout(HEALTH_FETCH_TIMEOUT_MS) })
       if (res.ok) return true
     } catch {
       // not up yet — fall through to the deadline check
