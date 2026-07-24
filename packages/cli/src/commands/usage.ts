@@ -132,7 +132,9 @@ function printHuman(rollup: UsageRollup): void {
     }
   }
 
-  section("by profile", rollup.byProfile, r => r.profileRef)
+  section("by profile", rollup.byProfile, r =>
+    r.credits ? `${r.profileRef} · credits ${usd(r.credits.balanceUsd)}` : r.profileRef,
+  )
   section("by model", rollup.byModel, r => r.model)
   section("by harness", rollup.byHarness, r => r.harness)
 

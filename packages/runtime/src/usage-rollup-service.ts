@@ -9,7 +9,7 @@
  * side-effect-free fold. Surfaces call `collectSessionSnapshots` to build the
  * `SessionSnapshots[]` and hand that straight to `rollupUsage`.
  */
-import { listAuthProfiles, type AuthProfile } from "@agentproto/auth"
+import { KeychainStore, listAuthProfiles, type AuthProfile } from "@agentproto/auth"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionSnapshots, UsageRollup } from "./usage-rollup.js"
 import {
@@ -18,6 +18,13 @@ import {
   type RemainingQuota,
   type RemainingQuotaReader,
 } from "./remaining-quota.js"
+import {
+  ProviderAccountCreditsReader,
+  type AccountCredits,
+  type AccountCreditsReader,
+  type CreditReadableProfile,
+  type CreditReadCtx,
+} from "./account-credits.js"
 
 /**
  * Read every `agent-cli` session's durable usage snapshots and join them with
@@ -192,6 +199,129 @@ export async function enrichRollupWithProviderQuota(
         return profile ? toQuotaReadableProfile(profile) : undefined
       },
       window,
+      ...(deps?.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
+    })
+  } catch {
+    return rollup
+  }
+}
+
+/** Project a stored `AuthProfile` down to the minimal shape a credits reader
+ *  needs. */
+function toCreditReadableProfile(profile: AuthProfile): CreditReadableProfile {
+  return {
+    profileRef: profile.id,
+    endpoint: profile.endpoint,
+    method: profile.method,
+    ...(profile.credentialRef ? { credentialRef: profile.credentialRef } : {}),
+  }
+}
+
+/**
+ * Best-effort enrich a rollup's `byProfile` entries with each profile's live
+ * provider account credits (prepaid USD balance). Structurally identical to
+ * {@link enrichWithRemainingQuota}: pure over its inputs (returns a NEW rollup,
+ * never mutates), and non-fatal by construction:
+ *
+ *  - `"unknown"`/empty profileRefs are skipped (no real profile to query).
+ *  - an unresolvable profile is skipped.
+ *  - each `reader.readAccountCredits` runs under `Promise.allSettled`, so one
+ *    rejection attaches no `credits` and leaves every other entry intact.
+ *  - the whole fan-out is capped by `timeoutMs`; if the cap fires first the
+ *    ORIGINAL (un-enriched) rollup is returned.
+ *  - `credits` is attached only where defined; otherwise the entry is left
+ *    untouched (omitted, never null).
+ */
+export async function enrichWithAccountCredits(
+  rollup: UsageRollup,
+  opts: {
+    reader: AccountCreditsReader
+    resolveProfile: (profileRef: string) => CreditReadableProfile | undefined
+    ctx: CreditReadCtx
+    timeoutMs?: number
+  },
+): Promise<UsageRollup> {
+  const targets = rollup.byProfile
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.profileRef !== "unknown" && entry.profileRef.length > 0)
+
+  if (targets.length === 0) return rollup
+
+  const work = Promise.allSettled(
+    targets.map(async ({ entry, index }) => {
+      const profile = opts.resolveProfile(entry.profileRef)
+      const credits = profile
+        ? await opts.reader.readAccountCredits(profile, opts.ctx)
+        : undefined
+      return { index, credits }
+    }),
+  )
+
+  const capMs = opts.timeoutMs ?? DEFAULT_ENRICH_CAP_MS
+  const cap = new Promise<null>(resolve => {
+    setTimeout(() => resolve(null), capMs)
+  })
+  const settled = await Promise.race([work, cap])
+  if (settled === null) return rollup // overall cap fired → leave rollup as-is
+
+  const creditsByIndex = new Map<number, AccountCredits>()
+  for (const result of settled) {
+    if (result.status === "fulfilled" && result.value.credits) {
+      creditsByIndex.set(result.value.index, result.value.credits)
+    }
+  }
+  if (creditsByIndex.size === 0) return rollup
+
+  return {
+    ...rollup,
+    byProfile: rollup.byProfile.map((entry, index) => {
+      const credits = creditsByIndex.get(index)
+      return credits ? { ...entry, credits } : entry
+    }),
+  }
+}
+
+/**
+ * Surface-shared, fully non-fatal wrapper both the `usage_rollup` MCP tool and
+ * `GET /usage/rollup` call after `enrichRollupWithProviderQuota`. Instantiates
+ * the provider credits reader, builds a default read context (resolving a
+ * profile's `credentialRef` through the keychain, real `fetch`), resolves the
+ * auth profiles once, and enriches — but if ANYTHING throws (profile load,
+ * reader construction, enrichment) it returns the input rollup untouched.
+ *
+ * Default is SAFE: a balance GET fires only for an `openrouter`/`moonshot`
+ * api-key profile with a resolvable `credentialRef`. With none present, nothing
+ * is fetched and the rollup is byte-identical. `deps` is injectable purely for
+ * tests; production passes nothing.
+ */
+export async function enrichRollupWithAccountCredits(
+  rollup: UsageRollup,
+  deps?: {
+    reader?: AccountCreditsReader
+    loadProfiles?: () => Promise<AuthProfile[]>
+    ctx?: CreditReadCtx
+    timeoutMs?: number
+  },
+): Promise<UsageRollup> {
+  try {
+    const reader = deps?.reader ?? new ProviderAccountCreditsReader()
+    const ctx: CreditReadCtx =
+      deps?.ctx ?? {
+        resolveCredential: async ref => {
+          const stored = await new KeychainStore().read({ path: ref }).catch(() => undefined)
+          return stored?.value
+        },
+        fetchImpl: fetch,
+      }
+    const profiles = await (deps?.loadProfiles ?? (() => listAuthProfiles()))()
+    const byId = new Map(profiles.map(p => [p.id, p]))
+    return await enrichWithAccountCredits(rollup, {
+      reader,
+      resolveProfile: ref => {
+        const profile = byId.get(ref)
+        return profile ? toCreditReadableProfile(profile) : undefined
+      },
+      ctx,
       ...(deps?.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
     })
   } catch {
