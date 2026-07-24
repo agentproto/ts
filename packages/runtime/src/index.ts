@@ -307,6 +307,8 @@ import type { PairingRegistry } from "./pairing-registry.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
+import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
+import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
 import {
   registerTunnelAdapterTools,
   makeTunnelCredsStore,
@@ -881,6 +883,22 @@ export async function createGateway(
   // the rest of the gateway.
   void tunnels.restoreOnBoot().catch(() => {
     // restoreOnBoot already logs per-tunnel failures via onLog.
+  })
+
+  // Single-sidecar registry for the @agentproto/llm-endpoint proxy — the
+  // daemon spawns its built bin as a child (like cloudflared, never an
+  // in-process import) and manages its start/stop/status lifecycle
+  // (llm_endpoint_start / llm_endpoint_stop / llm_endpoint_status MCP tools).
+  // Logs flow through the same events stream as tunnels. Created idle — the
+  // child is only spawned on an explicit `llm_endpoint_start`.
+  const llmEndpoint = new LlmEndpointRegistry({
+    workspace,
+    onLog: line =>
+      events.emit({
+        type: "remote-log",
+        at: new Date().toISOString(),
+        line,
+      }),
   })
 
   // Build a server once eagerly so we can capture `registered` for
@@ -1485,6 +1503,8 @@ export async function createGateway(
     registerConversationReadTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
+    // llm-endpoint proxy sidecar lifecycle — same closure-rebind pattern.
+    registerLlmEndpointTools(server, { registry: llmEndpoint })
     // Tunnel adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
@@ -1765,6 +1785,8 @@ export async function createGateway(
       // controller's single-gateway tunnel. Both before HTTP so
       // cloudflared doesn't briefly proxy to a dead port.
       await tunnels.shutdown()
+      // Stop the llm-endpoint proxy child (if running) before HTTP tears down.
+      await llmEndpoint.shutdown()
       await remote.shutdown()
       await http.stop()
     },
