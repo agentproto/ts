@@ -1,0 +1,449 @@
+import { describe, expect, it } from "vitest"
+
+import {
+  buildCatalogPricingIndex,
+  buildRouterModelChildren,
+  formatPricing,
+  isLocalRouterNode,
+  lookupModelPricing,
+  modelRowDescription,
+  normalizeOwnedByVendor,
+  parseDiscoveredModels,
+  resolveRouterModelChildren,
+  routerBaseUrl,
+  routerContextValue,
+  routerDescription,
+  routerIcon,
+  routerLabel,
+  routerRunning,
+  routerServing,
+  routerTooltip,
+  type DiscoveredModel,
+  type LlmEndpointStatusResult,
+} from "./localRouterTree.logic.js"
+import type { CatalogModelsResponse, CatalogPricing, CatalogRoute } from "../client/types.js"
+
+/** A fully-shaped catalog route carrying just the fields these tests vary. */
+function mkRoute(route: string, ref: string, pricing: CatalogPricing | null): CatalogRoute {
+  return {
+    route,
+    ref,
+    baseUrl: null,
+    pricing,
+    runnable: true,
+    eligibleProfiles: [],
+    adapterModes: [],
+    adapters: [],
+    curated: true,
+  }
+}
+
+function status(over: Partial<LlmEndpointStatusResult> = {}): LlmEndpointStatusResult {
+  return {
+    running: true,
+    pid: 4242,
+    port: 18090,
+    baseUrl: "http://localhost:18090",
+    healthy: true,
+    startedAt: "2026-07-24T10:00:00.000Z",
+    status: "running",
+    ...over,
+  }
+}
+
+const STOPPED: LlmEndpointStatusResult = {
+  running: false,
+  pid: null,
+  port: null,
+  baseUrl: null,
+  healthy: false,
+  startedAt: null,
+  status: "never-started",
+}
+
+describe("isLocalRouterNode", () => {
+  it("classifies the three router kinds and rejects others", () => {
+    expect(isLocalRouterNode({ kind: "router" })).toBe(true)
+    expect(isLocalRouterNode({ kind: "router-model" })).toBe(true)
+    expect(isLocalRouterNode({ kind: "router-message" })).toBe(true)
+    expect(isLocalRouterNode({ kind: "profile" })).toBe(false)
+    expect(isLocalRouterNode({ kind: "presets" })).toBe(false)
+  })
+})
+
+describe("routerRunning / routerServing", () => {
+  it("is running while up or starting, not when stopped", () => {
+    expect(routerRunning(status({ status: "running" }))).toBe(true)
+    expect(routerRunning(status({ status: "starting" }))).toBe(true)
+    expect(routerRunning(status({ status: "stopped" }))).toBe(false)
+    expect(routerRunning(STOPPED)).toBe(false)
+    expect(routerRunning(null)).toBe(false)
+  })
+
+  it("serves only when running AND healthy", () => {
+    expect(routerServing(status({ status: "running", healthy: true }))).toBe(true)
+    expect(routerServing(status({ status: "running", healthy: false }))).toBe(false)
+    expect(routerServing(status({ status: "starting", healthy: false }))).toBe(false)
+    expect(routerServing(STOPPED)).toBe(false)
+    expect(routerServing(null)).toBe(false)
+  })
+})
+
+describe("routerLabel", () => {
+  it("shows the port while running", () => {
+    expect(routerLabel(status({ status: "running", port: 18090 }))).toBe(
+      "Local Router — running :18090",
+    )
+  })
+
+  it("shows the port while starting", () => {
+    expect(routerLabel(status({ status: "starting", port: 9000 }))).toBe(
+      "Local Router — starting :9000",
+    )
+  })
+
+  it("reads never-started as stopped, without a port", () => {
+    expect(routerLabel(STOPPED)).toBe("Local Router — stopped")
+    expect(routerLabel(null)).toBe("Local Router — stopped")
+  })
+
+  it("shows a bare stopped label for an explicitly stopped endpoint", () => {
+    expect(routerLabel(status({ status: "stopped", running: false, port: 18090 }))).toBe(
+      "Local Router — stopped",
+    )
+  })
+})
+
+describe("routerIcon", () => {
+  it("is a green check when running and healthy", () => {
+    expect(routerIcon(status({ status: "running", healthy: true }))).toBe("pass")
+  })
+
+  it("spins while starting or running-but-unhealthy", () => {
+    expect(routerIcon(status({ status: "starting", healthy: false }))).toBe("sync")
+    expect(routerIcon(status({ status: "running", healthy: false }))).toBe("sync")
+  })
+
+  it("is a slashed circle when stopped / never-started", () => {
+    expect(routerIcon(status({ status: "stopped", running: false }))).toBe("circle-slash")
+    expect(routerIcon(STOPPED)).toBe("circle-slash")
+    expect(routerIcon(null)).toBe("circle-slash")
+  })
+
+  it("is an error glyph on a hard error", () => {
+    expect(routerIcon(status({ status: "error", healthy: false }))).toBe("error")
+  })
+})
+
+describe("routerDescription", () => {
+  it("leads with health while running, empty when stopped", () => {
+    expect(routerDescription(status({ status: "running", healthy: true }))).toBe("healthy")
+    expect(routerDescription(status({ status: "running", healthy: false }))).toBe("unhealthy")
+    expect(routerDescription(STOPPED)).toBe("")
+    expect(routerDescription(null)).toBe("")
+  })
+})
+
+describe("routerContextValue", () => {
+  it("splits start vs stop by run state", () => {
+    expect(routerContextValue(status({ status: "running" }))).toBe("local-router-running")
+    expect(routerContextValue(status({ status: "starting" }))).toBe("local-router-running")
+    expect(routerContextValue(STOPPED)).toBe("local-router-stopped")
+    expect(routerContextValue(null)).toBe("local-router-stopped")
+  })
+})
+
+describe("routerTooltip", () => {
+  it("renders pid, base URL, start time, providers and last error", () => {
+    const md = routerTooltip(
+      status({
+        pid: 999,
+        port: 18090,
+        baseUrl: "http://localhost:18090",
+        startedAt: "2026-07-24T10:00:00.000Z",
+        injectedProviders: ["anthropic", "openai"],
+        lastError: "boom",
+      }),
+    )
+    expect(md).toContain("**Local Router**")
+    expect(md).toContain("- Status: running")
+    expect(md).toContain("- PID: 999")
+    expect(md).toContain("- Port: 18090")
+    expect(md).toContain("- Base URL: http://localhost:18090")
+    expect(md).toContain("- Started: 2026-07-24T10:00:00.000Z")
+    expect(md).toContain("- Providers: anthropic, openai")
+    expect(md).toContain("- Last error: boom")
+  })
+
+  it("degrades to a stopped tooltip when there's no status", () => {
+    expect(routerTooltip(null)).toContain("- Status: stopped")
+  })
+})
+
+describe("routerBaseUrl", () => {
+  it("prefers the reported base URL, trailing slash stripped", () => {
+    expect(routerBaseUrl(status({ baseUrl: "http://localhost:18090/" }))).toBe(
+      "http://localhost:18090",
+    )
+  })
+
+  it("synthesizes from the port on loopback when no base URL is reported", () => {
+    expect(routerBaseUrl(status({ baseUrl: null, port: 9000 }))).toBe("http://localhost:9000")
+  })
+
+  it("is undefined when neither is known", () => {
+    expect(routerBaseUrl(STOPPED)).toBeUndefined()
+    expect(routerBaseUrl(null)).toBeUndefined()
+  })
+})
+
+describe("parseDiscoveredModels", () => {
+  it("parses the OpenAI shape (owned_by)", () => {
+    expect(
+      parseDiscoveredModels({
+        data: [
+          { id: "gpt-4o", owned_by: "openai" },
+          { id: "claude-fable-5", owned_by: "anthropic" },
+        ],
+      }),
+    ).toEqual([
+      { id: "gpt-4o", ownedBy: "openai" },
+      { id: "claude-fable-5", ownedBy: "anthropic" },
+    ])
+  })
+
+  it("tolerates the anthropic shape (display_name → ownedBy)", () => {
+    expect(
+      parseDiscoveredModels({ data: [{ id: "claude-fable-5", display_name: "Claude Fable 5" }] }),
+    ).toEqual([{ id: "claude-fable-5", ownedBy: "Claude Fable 5" }])
+  })
+
+  it("keeps a bare id with no owner", () => {
+    expect(parseDiscoveredModels({ data: [{ id: "x" }] })).toEqual([{ id: "x" }])
+  })
+
+  it("drops rows without a string id and non-array bodies", () => {
+    expect(parseDiscoveredModels({ data: [{ owned_by: "openai" }, { id: 5 }, null] })).toEqual([])
+    expect(parseDiscoveredModels({})).toEqual([])
+    expect(parseDiscoveredModels(null)).toEqual([])
+    expect(parseDiscoveredModels({ data: "nope" })).toEqual([])
+  })
+})
+
+describe("buildCatalogPricingIndex / lookupModelPricing", () => {
+  const catalog: CatalogModelsResponse = {
+    vendors: [
+      {
+        vendor: "anthropic",
+        products: [
+          {
+            product: "claude-fable-5",
+            routes: [
+              {
+                route: "openrouter",
+                ref: "anthropic/claude-fable-5",
+                baseUrl: null,
+                pricing: { inPer1M: 3, outPer1M: 15 },
+                runnable: true,
+                eligibleProfiles: [],
+                adapterModes: [],
+                adapters: [],
+                curated: true,
+              },
+              {
+                route: "anthropic",
+                ref: "claude-fable-5",
+                baseUrl: null,
+                pricing: null,
+                runnable: false,
+                eligibleProfiles: [],
+                adapterModes: [],
+                adapters: [],
+                curated: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("indexes pricing by route ref, vendor/product, and product name", () => {
+    const index = buildCatalogPricingIndex(catalog)
+    expect(lookupModelPricing(index, "anthropic/claude-fable-5")).toEqual({ inPer1M: 3, outPer1M: 15 })
+    expect(lookupModelPricing(index, "claude-fable-5")).toEqual({ inPer1M: 3, outPer1M: 15 })
+  })
+
+  it("returns null for an unknown id", () => {
+    const index = buildCatalogPricingIndex(catalog)
+    expect(lookupModelPricing(index, "gpt-4o")).toBeNull()
+  })
+
+  it("skips routes with no pricing without throwing", () => {
+    const index = buildCatalogPricingIndex({ vendors: [] })
+    expect(lookupModelPricing(index, "anything")).toBeNull()
+  })
+})
+
+describe("formatPricing / modelRowDescription", () => {
+  it("formats a known price and the no-pricing sentinel", () => {
+    expect(formatPricing({ inPer1M: 3, outPer1M: 15 })).toBe("$3/$15 per 1M")
+    expect(formatPricing(null)).toBe("no catalog pricing")
+  })
+
+  it("joins owner and price for a fully-known model", () => {
+    const model: DiscoveredModel = { id: "claude-fable-5", ownedBy: "anthropic" }
+    expect(modelRowDescription(model, { inPer1M: 3, outPer1M: 15 })).toBe(
+      "anthropic · $3/$15 per 1M",
+    )
+  })
+
+  it("shows the no-pricing sentinel next to the owner when the catalog lacks a price", () => {
+    expect(modelRowDescription({ id: "x", ownedBy: "acme" }, null)).toBe("acme · no catalog pricing")
+  })
+
+  it("shows pricing alone when the proxy reported no owner", () => {
+    expect(modelRowDescription({ id: "x" }, { inPer1M: 1, outPer1M: 2 })).toBe("$1/$2 per 1M")
+    expect(modelRowDescription({ id: "x" }, null)).toBe("no catalog pricing")
+  })
+})
+
+describe("buildRouterModelChildren", () => {
+  it("maps each discovered model to a router-model node", () => {
+    const children = buildRouterModelChildren([
+      { id: "a", ownedBy: "openai" },
+      { id: "b" },
+    ])
+    expect(children).toEqual([
+      { kind: "router-model", model: { id: "a", ownedBy: "openai" } },
+      { kind: "router-model", model: { id: "b" } },
+    ])
+  })
+
+  it("renders a single 'no models' message when the proxy serves nothing", () => {
+    expect(buildRouterModelChildren([])).toEqual([
+      { kind: "router-message", message: "No models served" },
+    ])
+  })
+})
+
+describe("normalizeOwnedByVendor", () => {
+  it("maps known proxy provider names onto catalog vendor ids", () => {
+    expect(normalizeOwnedByVendor("zai")).toBe("z-ai")
+    expect(normalizeOwnedByVendor("xai")).toBe("x-ai")
+    expect(normalizeOwnedByVendor("moonshot")).toBe("moonshot")
+    expect(normalizeOwnedByVendor("openrouter")).toBe("openrouter")
+  })
+
+  it("is case-insensitive and falls back to identity for an unknown owner", () => {
+    expect(normalizeOwnedByVendor("ZAI")).toBe("z-ai")
+    expect(normalizeOwnedByVendor("acme")).toBe("acme")
+  })
+})
+
+describe("lookupModelPricing — owned_by-aware disambiguation", () => {
+  // `glm-4.6` served natively by z-ai AND re-exposed via an openrouter snapshot,
+  // at DIFFERENT prices — the exact collision the owned_by cross-ref must resolve.
+  const collision: CatalogModelsResponse = {
+    vendors: [
+      {
+        vendor: "z-ai",
+        products: [
+          { product: "glm-4.6", routes: [mkRoute("z-ai", "z-ai/glm-4.6", { inPer1M: 0.6, outPer1M: 2.2 })] },
+        ],
+      },
+      {
+        vendor: "openrouter",
+        products: [
+          { product: "glm-4.6", routes: [mkRoute("openrouter", "openrouter/glm-4.6", { inPer1M: 5, outPer1M: 15 })] },
+        ],
+      },
+    ],
+  }
+
+  it("prefers the ownedBy-scoped price over the bare 'first price wins' key", () => {
+    const index = buildCatalogPricingIndex(collision)
+    // Bare key resolves to z-ai (walked first) — but the owner decides the price.
+    expect(lookupModelPricing(index, "glm-4.6", "zai")).toEqual({ inPer1M: 0.6, outPer1M: 2.2 })
+    expect(lookupModelPricing(index, "glm-4.6", "openrouter")).toEqual({ inPer1M: 5, outPer1M: 15 })
+  })
+
+  it("refuses a bare-only match whose vendor differs from ownedBy (no misleading price)", () => {
+    const index = buildCatalogPricingIndex(collision)
+    // moonshot has no `moonshot/glm-4.6` route and the bare product is ambiguous
+    // (z-ai vs openrouter) — so "no catalog pricing" beats a wrong attribution.
+    expect(lookupModelPricing(index, "glm-4.6", "moonshot")).toBeNull()
+  })
+
+  it("still returns a single-vendor bare price when the product is unambiguous", () => {
+    const single: CatalogModelsResponse = {
+      vendors: [
+        {
+          vendor: "z-ai",
+          products: [
+            { product: "glm-4.6", routes: [mkRoute("z-ai", "z-ai/glm-4.6", { inPer1M: 0.6, outPer1M: 2.2 })] },
+          ],
+        },
+      ],
+    }
+    const index = buildCatalogPricingIndex(single)
+    // Even an owner with no vendor-scoped key gets the price — it's attributable.
+    expect(lookupModelPricing(index, "glm-4.6", "moonshot")).toEqual({ inPer1M: 0.6, outPer1M: 2.2 })
+    expect(lookupModelPricing(index, "glm-4.6")).toEqual({ inPer1M: 0.6, outPer1M: 2.2 })
+  })
+})
+
+describe("resolveRouterModelChildren", () => {
+  const serving = (): LlmEndpointStatusResult => status({ status: "running", healthy: true })
+
+  it("(a) maps a successful fetch to model children (pricing resolves via the index)", async () => {
+    const children = await resolveRouterModelChildren(serving(), async () => [
+      { id: "glm-4.6", ownedBy: "zai" },
+    ])
+    expect(children).toEqual([
+      { kind: "router-model", model: { id: "glm-4.6", ownedBy: "zai" } },
+    ])
+    // The view renders pricing off the shared index at getTreeItem time.
+    const index = buildCatalogPricingIndex({
+      vendors: [
+        {
+          vendor: "z-ai",
+          products: [
+            { product: "glm-4.6", routes: [mkRoute("z-ai", "z-ai/glm-4.6", { inPer1M: 0.6, outPer1M: 2.2 })] },
+          ],
+        },
+      ],
+    })
+    expect(lookupModelPricing(index, "glm-4.6", "zai")).toEqual({ inPer1M: 0.6, outPer1M: 2.2 })
+  })
+
+  it("(b) surfaces a single 'Models unavailable' message when the fetch throws", async () => {
+    const children = await resolveRouterModelChildren(serving(), async () => {
+      throw new Error("connection refused")
+    })
+    expect(children).toEqual([{ kind: "router-message", message: "Models unavailable" }])
+  })
+
+  it("(c) returns 'Router address unavailable' when healthy but no base URL / port", async () => {
+    let fetched = false
+    const children = await resolveRouterModelChildren(
+      status({ status: "running", healthy: true, baseUrl: null, port: null }),
+      async () => {
+        fetched = true
+        return []
+      },
+    )
+    expect(children).toEqual([{ kind: "router-message", message: "Router address unavailable" }])
+    expect(fetched).toBe(false)
+  })
+
+  it("returns no children (never fetches) when the router isn't serving", async () => {
+    let fetched = false
+    const children = await resolveRouterModelChildren(STOPPED, async () => {
+      fetched = true
+      return []
+    })
+    expect(children).toEqual([])
+    expect(fetched).toBe(false)
+  })
+})

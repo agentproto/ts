@@ -362,6 +362,18 @@
         "title": "agentproto: Open Auth Settings",
         "category": "agentproto",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "agentproto.startLlmEndpoint",
+        "title": "agentproto: Start Local Router",
+        "category": "agentproto",
+        "icon": "$(play)"
+      },
+      {
+        "command": "agentproto.stopLlmEndpoint",
+        "title": "agentproto: Stop Local Router",
+        "category": "agentproto",
+        "icon": "$(debug-stop)"
       }
     ],
     "menus": {
@@ -586,6 +598,26 @@
         {
           "command": "agentproto.enableAuthProfile",
           "when": "view == 'agentproto.authProfiles' && viewItem == auth-profile-disabled",
+          "group": "9_actions@1"
+        },
+        {
+          "command": "agentproto.startLlmEndpoint",
+          "when": "view == 'agentproto.authProfiles' && viewItem == local-router-stopped",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.stopLlmEndpoint",
+          "when": "view == 'agentproto.authProfiles' && viewItem == local-router-running",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.startLlmEndpoint",
+          "when": "view == 'agentproto.authProfiles' && viewItem == local-router-stopped",
+          "group": "9_actions@1"
+        },
+        {
+          "command": "agentproto.stopLlmEndpoint",
+          "when": "view == 'agentproto.authProfiles' && viewItem == local-router-running",
           "group": "9_actions@1"
         },
         {
