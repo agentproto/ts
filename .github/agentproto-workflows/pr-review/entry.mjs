@@ -21,10 +21,37 @@ const sandboxRef = (bindings) => sandboxRefFor(bindings?.input?.reviewConfig, "r
 
 const inSandbox = (bindings) => sandboxRef(bindings) !== undefined
 
+// The three delivery placements a review step can run under:
+//   - "host"    — CI runner checkout, `gh` CLI already authenticated.
+//   - "sandbox" — ephemeral e2b clone, no `gh`, curl-REST delivery.
+//   - "local"   — a dev's own pre-push gate: no PR, no GitHub call at all;
+//     the agent's job ends at printing a structured verdict for the caller
+//     to parse (the caller drives this over the LOCAL daemon — see
+//     scripts/agentflow/README.md for the current single-shot gate this
+//     placement is meant to eventually replace).
+const placementFor = (bindings) => {
+  if (bindings?.input?.placement === "local") return "local"
+  return inSandbox(bindings) && Boolean(bindings?.input?.repo) ? "sandbox" : "host"
+}
+
+// The single JSON shape a "local" run must emit as its FINAL message — no
+// markdown fences, no prose around it, so a caller can `JSON.parse` the tail
+// of the session's own output without an LLM-shaped extraction step.
+const LOCAL_VERDICT_SHAPE =
+  '{ "conclusion": "approve" | "request_changes", "summary": "one-line verdict", "findings": [{ "severity": "high|medium|low", "file": "path", "note": "what + why" }] }'
+
 // How to post the review — the ONE Phase-2 posting instruction, switched on
-// placement so the sandbox path never references the absent `gh` CLI.
-const postReviewInstruction = (sandboxed, prNumber, repo) =>
-  sandboxed
+// placement so the sandbox path never references the absent `gh` CLI, and
+// the local path never references GitHub at all.
+const postReviewInstruction = (placement, prNumber, repo) => {
+  if (placement === "local") {
+    return [
+      `   Do NOT call \`gh\` or \`curl\` — this is a LOCAL run, there is no PR to post to.`,
+      `   Emit your verdict as the LAST thing you output: a single JSON object matching this shape, with nothing before or after it (no markdown fences, no prose):`,
+      `   \`${LOCAL_VERDICT_SHAPE}\``,
+    ].join("\n")
+  }
+  return placement === "sandbox"
     ? restPostReviewBlock({ repo, prNumber })
     : [
         `   Run:`,
@@ -33,13 +60,14 @@ const postReviewInstruction = (sandboxed, prNumber, repo) =>
         `   \`\`\``,
         `   Replace --comment with --approve or --request-changes as appropriate.`,
       ].join("\n")
+}
 
 // Changeset delivery, switched on placement: the host lane's checkout is the
 // CI workspace (the job commits it); a sandbox clone is ephemeral, so the
 // changeset must be pushed to the PR head branch — head branch resolved via
-// REST (no `gh` in the box).
-const changesetDeliveryInstruction = (sandboxed, prNumber, repo) =>
-  sandboxed
+// REST (no `gh` in the box). A local run has no PR and writes nothing.
+const changesetDeliveryInstruction = (placement, prNumber, repo) =>
+  placement === "sandbox"
     ? [
         `   Sandbox delivery: heal any guessed package name, then commit the changeset file and push it to the PR head branch:`,
         `   \`\`\`bash`,
@@ -75,7 +103,9 @@ const reviewPrompt = (bindings) => {
       ? `If the PR touches any of these paths, be extra careful and flag risks explicitly, but review normally — merge-time escalation handles final approval: ${escalateGlobs.join(", ")}`
       : ""
 
-  const sandboxed = inSandbox(bindings) && Boolean(repo)
+  const placement = placementFor(bindings)
+  const sandboxed = placement === "sandbox"
+  const local = placement === "local"
 
   // Incremental review: the reviewer has already reviewed this PR through
   // `lastReviewedSha` (resolved host-side in ci.yml — the e2b box has no gh).
@@ -98,10 +128,71 @@ const reviewPrompt = (bindings) => {
       ].join("\n")
     : ""
 
+  const actPhase = local
+    ? [
+        `## Phase 2: Report`,
+        ``,
+        `1. **EMIT THE VERDICT** (mandatory — this is your only output):`,
+        postReviewInstruction(placement, prNumber, repo),
+        `   Every finding needs a \`file\` and a one-line \`note\` explaining what + why. Use "request_changes" only for real correctness problems (bugs, broken contracts, security) — simplifications are "low" findings under "approve".`,
+        `   Do NOT write to \`.changeset/\` — a local run has no PR to attach a changeset to.`,
+      ].join("\n")
+    : [
+        `## Phase 2: Act (in this order)`,
+        ``,
+        `1. **POST THE REVIEW FIRST** (mandatory — do this before anything else):`,
+        postReviewInstruction(placement, prNumber, repo),
+        `   The review body must follow this format:`,
+        ``,
+        `   \`\`\`markdown`,
+        `   ## Summary`,
+        `   [1-3 sentence overview]`,
+        ``,
+        `   ## Changeset`,
+        `   [Table: package | bump | reason]`,
+        ``,
+        `   ## Findings`,
+        `   ### [Category]`,
+        `   - [finding with file:line]`,
+        ``,
+        `   ## Verdict`,
+        `   [LGTM ✅ / Changes needed ❌ / Observations 💬] — [rationale]`,
+        `   \`\`\``,
+        ``,
+        `   Do NOT add a signature or footer — the CI runner stamps a deterministic`,
+        `   \`${cfg.botMention}\` provenance footer (session id, cost, run) onto your`,
+        `   posted review automatically. Just write the review body above.`,
+        ``,
+        `2. **Write a changeset** if the PR touches published packages:`,
+        `   Run \`node scripts/list-changed-packages.mjs\` — it prints the EXACT`,
+        `   \`package.json\` name of every workspace package this PR changed, one per`,
+        `   line. Use those names VERBATIM as the changeset keys; do NOT infer or`,
+        `   re-scope them. In particular the VS Code package is \`agentproto-vscode\``,
+        `   (unscoped), NOT \`@agentproto/vscode\` — inventing the scoped form is not a`,
+        `   real package and breaks every Release. If the script prints nothing, no`,
+        `   workspace package changed → no changeset.`,
+        `   Then write a changeset file to \`.changeset/pr-${prNumber}-agentic.md\` with the format:`,
+        ``,
+        `   \`\`\`yaml`,
+        `   ---`,
+        `   "package-name": patch`,
+        `   ---`,
+        ``,
+        `   Description of the change.`,
+        `   \`\`\``,
+        ``,
+        changesetRulesBlock(),
+        ``,
+        changesetDeliveryInstruction(placement, prNumber, repo),
+        `3. If you requested changes (REQUEST_CHANGES), note that the \`pr-fix\` job will later read your review and attempt to apply fixes automatically.`,
+      ].join("\n")
+
   return [
     `You are an expert code reviewer for the @agentproto/ts monorepo — a TypeScript implementation of open agent standards (AIPs).`,
     ``,
-    `Your job: review PR #${prNumber} and post a structured GitHub review.`,
+    local
+      ? `Your job: review the current branch diff (\`git diff origin/${baseRef}...HEAD\`) and return a structured verdict — this is a LOCAL pre-push check, there is no PR and nothing to post.`
+      : `Your job: review PR #${prNumber} and post a structured GitHub review.`,
     ``,
     sandboxed ? bootstrapBlock({ repo, baseRef, prNumber }) : "",
     `## Config (from .github/agentic-review.json)`,
@@ -117,53 +208,7 @@ const reviewPrompt = (bindings) => {
     `2. Use read_file and search (grep / rg) to follow references, check call-sites, and understand context.`,
     `3. Identify: correctness issues, type safety, AIP alignment, test coverage, and whether a changeset is needed.`,
     ``,
-    `## Phase 2: Act (in this order)`,
-    ``,
-    `1. **POST THE REVIEW FIRST** (mandatory — do this before anything else):`,
-    postReviewInstruction(sandboxed, prNumber, repo),
-    `   The review body must follow this format:`,
-    ``,
-    `   \`\`\`markdown`,
-    `   ## Summary`,
-    `   [1-3 sentence overview]`,
-    ``,
-    `   ## Changeset`,
-    `   [Table: package | bump | reason]`,
-    ``,
-    `   ## Findings`,
-    `   ### [Category]`,
-    `   - [finding with file:line]`,
-    ``,
-    `   ## Verdict`,
-    `   [LGTM ✅ / Changes needed ❌ / Observations 💬] — [rationale]`,
-    `   \`\`\``,
-    ``,
-    `   Do NOT add a signature or footer — the CI runner stamps a deterministic`,
-    `   \`${cfg.botMention}\` provenance footer (session id, cost, run) onto your`,
-    `   posted review automatically. Just write the review body above.`,
-    ``,
-    `2. **Write a changeset** if the PR touches published packages:`,
-    `   Run \`node scripts/list-changed-packages.mjs\` — it prints the EXACT`,
-    `   \`package.json\` name of every workspace package this PR changed, one per`,
-    `   line. Use those names VERBATIM as the changeset keys; do NOT infer or`,
-    `   re-scope them. In particular the VS Code package is \`agentproto-vscode\``,
-    `   (unscoped), NOT \`@agentproto/vscode\` — inventing the scoped form is not a`,
-    `   real package and breaks every Release. If the script prints nothing, no`,
-    `   workspace package changed → no changeset.`,
-    `   Then write a changeset file to \`.changeset/pr-${prNumber}-agentic.md\` with the format:`,
-    ``,
-    `   \`\`\`yaml`,
-    `   ---`,
-    `   "package-name": patch`,
-    `   ---`,
-    ``,
-    `   Description of the change.`,
-    `   \`\`\``,
-    ``,
-    changesetRulesBlock(),
-    ``,
-    changesetDeliveryInstruction(sandboxed, prNumber, repo),
-    `3. If you requested changes (REQUEST_CHANGES), note that the \`pr-fix\` job will later read your review and attempt to apply fixes automatically.`,
+    actPhase,
     ``,
     hardRulesBlock({
       sandboxed,
@@ -189,7 +234,17 @@ export default {
     "Agentic PR reviewer that reads the diff, writes an accurate changeset, and posts a structured review (APPROVE / REQUEST_CHANGES / COMMENT). Driven by claude-code over the agentproto daemon.",
   version: "0.1.0",
   inputs: {
-    prNumber: { type: "number", description: "The pull request number to review." },
+    placement: {
+      type: "string",
+      description:
+        "Delivery placement: \"host\" (gh CLI, default) | \"sandbox\" (inferred from reviewConfig.reviewerSandbox + repo) | \"local\" (no PR, no posting — emit a structured verdict as the final message).",
+      default: "host",
+    },
+    prNumber: {
+      type: "number",
+      description: "The pull request number to review. Unused (may be 0) when placement is \"local\".",
+      default: 0,
+    },
     baseRef: { type: "string", description: "Base branch ref.", default: "main" },
     repo: { type: "string", description: "owner/repo slug — required for the sandbox bootstrap clone.", default: "" },
     lastReviewedSha: { type: "string", description: "SHA the reviewer last posted a review against; empty on first review.", default: "" },
