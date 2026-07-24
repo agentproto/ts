@@ -121,6 +121,13 @@ describe("DaemonClient — URL + auth header mapping", () => {
         if (rpc.method === "tools/call" && rpc.params.name === "session_events_poll") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ events: [], nextCursor: 7 }) }] } } }
         }
+        if (rpc.method === "tools/call" && rpc.params.name === "llm_endpoint_list_links") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ links: { anthropic: "claude-subs" }, upstreams: [{ provider: "anthropic", linkedProfile: "claude-subs", eligible: [{ id: "claude-subs", method: "oauth-bearer", endpoint: "anthropic" }] }] }) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "llm_endpoint_set_upstream_link") {
+          const a = rpc.params.arguments as { provider: string; profileId: string | null }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ ok: true, provider: a.provider, profileId: a.profileId, applied: false, restartRequired: true }) }] } } }
+        }
         return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "{}" }] } } }
       }
       return { status: 404, body: { error: "not_found" } }
@@ -320,6 +327,27 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const presets = await client().listProviderPresets()
     expect(presets[0]?.slug).toBe("moonshot")
     expect(presets[0]?.info?.keyEnv).toBe("MOONSHOT_API_KEY")
+  })
+
+  it("llmEndpointListLinks() routes through mcpCall llm_endpoint_list_links", async () => {
+    const result = await client().llmEndpointListLinks()
+    expect(result.links).toEqual({ anthropic: "claude-subs" })
+    expect(result.upstreams[0]?.eligible[0]?.id).toBe("claude-subs")
+  })
+
+  it("llmEndpointSetUpstreamLink() sends provider + profileId and returns the restart signal", async () => {
+    const result = await client().llmEndpointSetUpstreamLink("anthropic", "claude-subs")
+    expect(result).toMatchObject({ ok: true, provider: "anthropic", profileId: "claude-subs", restartRequired: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect((last.body as { params: { arguments: unknown } }).params.arguments).toMatchObject({
+      provider: "anthropic",
+      profileId: "claude-subs",
+    })
+  })
+
+  it("llmEndpointSetUpstreamLink(null) clears a link", async () => {
+    const result = await client().llmEndpointSetUpstreamLink("anthropic", null)
+    expect(result.profileId).toBeNull()
   })
 
   it("listUserPresets() returns the user's saved presets from GET /user-presets", async () => {

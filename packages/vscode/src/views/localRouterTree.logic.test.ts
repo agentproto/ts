@@ -13,6 +13,8 @@ import {
   buildRouterPackChildren,
   parseRouterUpstreams,
   buildRouterUpstreamChildren,
+  annotatePendingLink,
+  pendingRestartTail,
   presentWord,
   resolveRouterModelChildren,
   resolveRouterPackChildren,
@@ -644,6 +646,53 @@ describe("buildRouterUpstreamChildren", () => {
 
   it("renders a 'No upstreams' message for an empty list", () => {
     expect(buildRouterUpstreamChildren([])).toEqual([{ kind: "router-message", message: "No upstreams" }])
+  })
+
+  it("annotates a pending link change when desired ≠ running", () => {
+    const u = { provider: "anthropic", linkedProfile: "old", source: "profile", method: "oauth-bearer", present: null } as const
+    const [node] = buildRouterUpstreamChildren([u], { anthropic: "new" })
+    expect(node).toMatchObject({
+      kind: "router-upstream",
+      upstream: { provider: "anthropic", pendingProfile: "new" },
+    })
+  })
+
+  it("leaves no pending annotation when desired matches running", () => {
+    const u = { provider: "anthropic", linkedProfile: "same", source: "profile", method: "oauth-bearer", present: null } as const
+    const [node] = buildRouterUpstreamChildren([u], { anthropic: "same" })
+    expect(node).toEqual({ kind: "router-upstream", upstream: u })
+  })
+})
+
+describe("annotatePendingLink / pendingRestartTail", () => {
+  const base = { provider: "anthropic", source: "profile", method: "api-key", present: null } as const
+
+  it("flags a pending link (desired string ≠ running)", () => {
+    const annotated = annotatePendingLink({ ...base, linkedProfile: null }, { anthropic: "p1" })
+    expect(annotated.pendingProfile).toBe("p1")
+    expect(pendingRestartTail(annotated)).toBe("pending restart → p1")
+  })
+
+  it("flags a pending UNLINK (desired absent, running set) as null", () => {
+    const annotated = annotatePendingLink({ ...base, linkedProfile: "p1" }, {})
+    expect(annotated.pendingProfile).toBeNull()
+    expect(pendingRestartTail(annotated)).toBe("pending restart (unlink)")
+  })
+
+  it("no annotation when desired === running (both null)", () => {
+    const annotated = annotatePendingLink({ ...base, linkedProfile: null }, {})
+    expect("pendingProfile" in annotated).toBe(false)
+    expect(pendingRestartTail(annotated)).toBe("")
+  })
+
+  it("routerUpstreamDescription appends the pending-restart tail", () => {
+    const annotated = annotatePendingLink({ ...base, linkedProfile: null }, { anthropic: "p1" })
+    expect(routerUpstreamDescription(annotated)).toContain("pending restart → p1")
+  })
+
+  it("routerUpstreamIcon is a spinner while pending", () => {
+    const annotated = annotatePendingLink({ ...base, linkedProfile: null, present: true }, { anthropic: "p1" })
+    expect(routerUpstreamIcon(annotated)).toBe("sync")
   })
 })
 

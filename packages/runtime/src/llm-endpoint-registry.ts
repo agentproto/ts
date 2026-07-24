@@ -33,6 +33,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { homedir } from "node:os"
 import { injectProviderKeysIntoEnv } from "./providers-store.js"
+import { injectLlmEndpointLinksIntoEnv } from "./llm-endpoint-links-store.js"
 
 export type LlmEndpointStatus = "starting" | "running" | "stopped" | "error"
 
@@ -49,6 +50,10 @@ export interface LlmEndpointDescriptor {
   lastError?: string
   /** Provider names whose keys were injected into the child's env (never values). */
   injectedProviders?: string[]
+  /** Upstream names mapped to an auth-profile link (`LLM_ENDPOINT_PROFILE_<P>`)
+   *  in the child's env. Profile IDS, not secrets — but only the provider names
+   *  are surfaced here, mirroring `injectedProviders`. */
+  linkedProviders?: string[]
   /**
    * Only populated on the value returned by {@link LlmEndpointRegistry.start}
    * (never stored on the in-memory descriptor): `true` when the call reused an
@@ -104,6 +109,12 @@ export interface LlmEndpointRegistryOptions {
    * env assembly is unit-testable without touching the on-disk providers store.
    */
   injectKeys?: (env: NodeJS.ProcessEnv) => Promise<string[]>
+  /**
+   * Per-upstream link injector — defaults to `injectLlmEndpointLinksIntoEnv`.
+   * Injected (like `injectKeys`) so env assembly is unit-testable without
+   * touching the on-disk links store.
+   */
+  injectLinks?: (env: NodeJS.ProcessEnv) => Promise<string[]>
   /** Max time `start` waits for the freshly-spawned child to answer health. */
   readyTimeoutMs?: number
   /** Poll interval for the readiness/health wait. */
@@ -114,8 +125,15 @@ export interface LlmEndpointRegistryOptions {
 
 /**
  * Assemble the child's env: base env → provider keys (`injectProviderKeysIntoEnv`,
- * which never overwrites a pre-set var) → `LLM_ENDPOINT_PORT` → optional
+ * which never overwrites a pre-set var) → per-upstream profile links
+ * (`injectLlmEndpointLinksIntoEnv`, `LLM_ENDPOINT_PROFILE_<P>=<profileId>`, also
+ * never overwriting a pre-set var) → `LLM_ENDPOINT_PORT` → optional
  * `LLM_ENDPOINT_ACCESS_TOKENS` → explicit `env` overrides last (explicit wins).
+ *
+ * The link injection sits AFTER the provider keys and BEFORE the explicit-env
+ * merge, so an explicit `LLM_ENDPOINT_PROFILE_*` passed to `start` still wins,
+ * exactly like an explicit provider key does. A link maps an upstream to a
+ * named auth-profile the proxy reads via `resolveUpstreamCredential`.
  *
  * The effective port honors an explicit `LLM_ENDPOINT_PORT` in `explicitEnv`
  * first, then the `port` arg, then the default — and is returned so the
@@ -127,10 +145,21 @@ export async function assembleLlmEndpointEnv(input: {
   explicitEnv?: Record<string, string>
   baseEnv?: NodeJS.ProcessEnv
   injectKeys?: (env: NodeJS.ProcessEnv) => Promise<string[]>
-}): Promise<{ env: NodeJS.ProcessEnv; port: number; injectedProviders: string[] }> {
+  injectLinks?: (env: NodeJS.ProcessEnv) => Promise<string[]>
+}): Promise<{
+  env: NodeJS.ProcessEnv
+  port: number
+  injectedProviders: string[]
+  linkedProviders: string[]
+}> {
   const env: NodeJS.ProcessEnv = { ...(input.baseEnv ?? process.env) }
   const inject = input.injectKeys ?? injectProviderKeysIntoEnv
   const injectedProviders = await inject(env)
+  // Per-upstream profile links, after keys, before the explicit-env merge —
+  // an explicit LLM_ENDPOINT_PROFILE_* override still wins (injected via a seam
+  // so env assembly is unit-testable without touching the on-disk links store).
+  const injectLinks = input.injectLinks ?? injectLlmEndpointLinksIntoEnv
+  const linkedProviders = await injectLinks(env)
 
   // Effective port: an explicit LLM_ENDPOINT_PORT in the override env wins,
   // then the `port` arg, then the built-in default. Resolved up front so the
@@ -155,7 +184,7 @@ export async function assembleLlmEndpointEnv(input: {
   // even if explicitEnv carried a differently-formatted LLM_ENDPOINT_PORT.
   env.LLM_ENDPOINT_PORT = String(port)
 
-  return { env, port, injectedProviders }
+  return { env, port, injectedProviders, linkedProviders }
 }
 
 /**
@@ -224,6 +253,9 @@ export class LlmEndpointRegistry {
   private readonly injectKeys:
     | ((env: NodeJS.ProcessEnv) => Promise<string[]>)
     | undefined
+  private readonly injectLinks:
+    | ((env: NodeJS.ProcessEnv) => Promise<string[]>)
+    | undefined
   private readonly readyTimeoutMs: number
   private readonly pollIntervalMs: number
   private readonly healthProbeTimeoutMs: number
@@ -233,6 +265,7 @@ export class LlmEndpointRegistry {
     this.onLog = opts.onLog
     this.binPath = opts.binPath
     this.injectKeys = opts.injectKeys
+    this.injectLinks = opts.injectLinks
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 6_000
     this.pollIntervalMs = opts.pollIntervalMs ?? 200
     this.healthProbeTimeoutMs = opts.healthProbeTimeoutMs ?? 3_000
@@ -285,11 +318,12 @@ export class LlmEndpointRegistry {
     // Resolve (and validate) the bin first — fail fast before assembling env
     // / injecting provider keys into a spawn that could never launch.
     const binPath = resolveLlmEndpointBin(input.binPath ?? this.binPath)
-    const { env, port, injectedProviders } = await assembleLlmEndpointEnv({
+    const { env, port, injectedProviders, linkedProviders } = await assembleLlmEndpointEnv({
       ...(input.port != null ? { port: input.port } : {}),
       ...(input.accessTokens != null ? { accessTokens: input.accessTokens } : {}),
       ...(input.env ? { explicitEnv: input.env } : {}),
       ...(this.injectKeys ? { injectKeys: this.injectKeys } : {}),
+      ...(this.injectLinks ? { injectLinks: this.injectLinks } : {}),
     })
     const baseUrl = `http://127.0.0.1:${port}`
 
@@ -302,6 +336,7 @@ export class LlmEndpointRegistry {
       status: "starting",
       startedAt,
       injectedProviders,
+      linkedProviders,
     }
 
     const logDir = join(this.workspace, ".agentproto")
@@ -380,6 +415,7 @@ export class LlmEndpointRegistry {
     status: LlmEndpointStatus | "never-started"
     lastError?: string
     injectedProviders?: string[]
+    linkedProviders?: string[]
   }> {
     if (!this.desc) {
       return {
@@ -407,6 +443,9 @@ export class LlmEndpointRegistry {
       ...(this.desc.lastError ? { lastError: this.desc.lastError } : {}),
       ...(this.desc.injectedProviders
         ? { injectedProviders: this.desc.injectedProviders }
+        : {}),
+      ...(this.desc.linkedProviders
+        ? { linkedProviders: this.desc.linkedProviders }
         : {}),
     }
   }

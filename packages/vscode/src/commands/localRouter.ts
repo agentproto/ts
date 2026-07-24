@@ -11,9 +11,13 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
 import type { LocalRouterNode } from "../views/localRouterTree.logic.js"
+import type { UpstreamLinkInfo } from "../client/types.js"
 import {
+  buildLinkQuickPickItems,
   localRouterErrorMessage,
+  noEligibleProfilesPlaceholder,
   reloadLlmEndpointPacksMessage,
+  setUpstreamLinkMessage,
   startLlmEndpointMessage,
   stopLlmEndpointMessage,
   testLlmEndpointUpstreamMessage,
@@ -37,6 +41,11 @@ export function registerLocalRouterCommands(
     vscode.commands.registerCommand("agentproto.testLlmEndpointUpstream", (node?: LocalRouterNode) => {
       if (node?.kind === "router-upstream") {
         void runTestLlmEndpointUpstream(client, provider, node.upstream.provider)
+      }
+    }),
+    vscode.commands.registerCommand("agentproto.linkLlmEndpointUpstream", (node?: LocalRouterNode) => {
+      if (node?.kind === "router-upstream") {
+        void runLinkLlmEndpointUpstream(client, provider, node.upstream.provider)
       }
     }),
   )
@@ -92,5 +101,77 @@ export async function runTestLlmEndpointUpstream(
     await provider.refresh()
   } catch (err) {
     void vscode.window.showErrorMessage(localRouterErrorMessage("test", err))
+  }
+}
+
+/**
+ * Link an upstream to an eligible auth-profile (or unlink to the env key) via a
+ * QuickPick of profiles the daemon reports eligible for that upstream. Persists
+ * the link, surfaces the restart-required outcome, and — when a restart is
+ * needed — offers to restart the router right away (stop → start, preserving the
+ * running port). Refreshes the tree so the row repaints.
+ */
+export async function runLinkLlmEndpointUpstream(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+  upstream: string,
+): Promise<void> {
+  try {
+    const links = await client.llmEndpointListLinks()
+    const info: UpstreamLinkInfo = links.upstreams.find(u => u.provider === upstream) ?? {
+      provider: upstream,
+      linkedProfile: links.links[upstream] ?? null,
+      eligible: [],
+    }
+    const items = buildLinkQuickPickItems(info).map(item => ({
+      label: item.label,
+      description: item.description,
+      picked: item.picked,
+      profileId: item.profileId,
+    }))
+    const placeholder =
+      info.eligible.length > 0
+        ? `Link ${upstream} to an auth-profile (or use its env key)`
+        : noEligibleProfilesPlaceholder(upstream)
+    const choice = await vscode.window.showQuickPick(items, {
+      title: `Link credential — ${upstream}`,
+      placeHolder: placeholder,
+    })
+    if (!choice) return // user dismissed the picker
+    const result = await client.llmEndpointSetUpstreamLink(upstream, choice.profileId)
+    await provider.refresh()
+    if (result.restartRequired) {
+      const restart = await vscode.window.showInformationMessage(
+        setUpstreamLinkMessage(result),
+        "Restart Router",
+      )
+      if (restart === "Restart Router") {
+        await runRestartForLink(client, provider)
+      }
+      return
+    }
+    void vscode.window.showInformationMessage(setUpstreamLinkMessage(result))
+  } catch (err) {
+    void vscode.window.showErrorMessage(localRouterErrorMessage("link", err))
+  }
+}
+
+/** Restart the router to apply a just-persisted link: stop, then start on the
+ *  same port the running child bound (access tokens can't be recovered — they
+ *  are never surfaced — so a token-gated router must be restarted by hand). */
+async function runRestartForLink(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+): Promise<void> {
+  try {
+    const status = await client.llmEndpointStatus()
+    await client.llmEndpointStop()
+    const desc = await client.llmEndpointStart(
+      typeof status.port === "number" ? { port: status.port } : {},
+    )
+    void vscode.window.showInformationMessage(startLlmEndpointMessage(desc))
+    await provider.refresh()
+  } catch (err) {
+    void vscode.window.showErrorMessage(localRouterErrorMessage("start", err))
   }
 }

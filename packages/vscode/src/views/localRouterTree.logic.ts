@@ -43,11 +43,22 @@ export interface RouterPack {
  */
 export interface RouterUpstream {
   provider: string
-  /** The mapped `LLM_ENDPOINT_PROFILE_<P>` profile id, or null. */
+  /** The mapped `LLM_ENDPOINT_PROFILE_<P>` profile id, or null. As seen by the
+   *  RUNNING proxy (from its env) — the desired/persisted link may differ, see
+   *  {@link pendingProfile}. */
   linkedProfile: string | null
   source: "profile" | "env" | "none"
   method: "api-key" | "oauth-bearer" | null
   present: boolean | null
+  /**
+   * A pending link change the RUNNING proxy hasn't applied yet — the persisted
+   * link differs from what the running child was spawned with, so a restart is
+   * needed to apply it. `undefined` ⇒ no pending change (running matches
+   * desired); `string` ⇒ pending link to that profile id; `null` ⇒ pending
+   * UNLINK (revert to the env key). Only computed when the desired-links map is
+   * known (the tree fetches it alongside `/v1/upstreams`).
+   */
+  pendingProfile?: string | null
 }
 
 export type LocalRouterNode =
@@ -488,10 +499,41 @@ export function parseRouterUpstreams(body: unknown): RouterUpstream[] {
 }
 
 /**
+ * Annotate an upstream with a pending link change: `pendingProfile` is set when
+ * the persisted/desired link (`desiredLinks[provider] ?? null`) differs from
+ * what the RUNNING proxy was spawned with (`upstream.linkedProfile`). Equal ⇒
+ * no annotation (the field stays absent). Returns a new object; never mutates.
+ */
+export function annotatePendingLink(
+  upstream: RouterUpstream,
+  desiredLinks: Record<string, string>,
+): RouterUpstream {
+  const desired = desiredLinks[upstream.provider] ?? null
+  const running = upstream.linkedProfile ?? null
+  if (desired === running) return upstream
+  return { ...upstream, pendingProfile: desired }
+}
+
+/** Whether a pending link change is present (a restart would apply it). */
+function hasPending(upstream: RouterUpstream): boolean {
+  return Object.prototype.hasOwnProperty.call(upstream, "pendingProfile")
+}
+
+/** The short pending-restart tail, e.g. `pending restart → work-key` or
+ *  `pending restart (unlink)`. Empty when nothing is pending. */
+export function pendingRestartTail(upstream: RouterUpstream): string {
+  if (!hasPending(upstream)) return ""
+  return upstream.pendingProfile === null || upstream.pendingProfile === undefined
+    ? "pending restart (unlink)"
+    : `pending restart → ${upstream.pendingProfile}`
+}
+
+/**
  * A compact one-line status for an upstream row: the source (`→ <profile>` when
- * linked, else `env` / `unlinked`), the auth method, and the credential
- * presence word (`present` / `absent` / `unprobed`). Joined with ` · `, omitting
- * the parts the proxy left null.
+ * linked, else `env` / `unlinked`), the auth method, the credential presence
+ * word (`present` / `absent` / `unprobed`), and — when the persisted link
+ * differs from the running proxy — a `pending restart …` hint. Joined with
+ * ` · `, omitting the parts the proxy left null.
  */
 export function routerUpstreamDescription(upstream: RouterUpstream): string {
   const parts: string[] = []
@@ -504,6 +546,8 @@ export function routerUpstreamDescription(upstream: RouterUpstream): string {
   }
   if (upstream.method) parts.push(upstream.method)
   parts.push(presentWord(upstream.present))
+  const pending = pendingRestartTail(upstream)
+  if (pending) parts.push(pending)
   return parts.join(" · ")
 }
 
@@ -521,6 +565,9 @@ export function presentWord(present: boolean | null): string {
  * resolvable (`present: false`) → `circle-slash`.
  */
 export function routerUpstreamIcon(upstream: RouterUpstream): string {
+  // A pending link change dominates: the running credential is stale until the
+  // proxy restarts, so flag it with the same `sync` spinner the router row uses.
+  if (hasPending(upstream)) return "sync"
   if (upstream.present === true) return "pass"
   if (upstream.present === null) return "question"
   return "circle-slash"
@@ -536,6 +583,15 @@ export function routerUpstreamTooltip(upstream: RouterUpstream): string {
     ...(upstream.linkedProfile ? [`- Linked profile: ${upstream.linkedProfile}`] : []),
     `- Method: ${upstream.method ?? "—"}`,
     `- Credential: ${presentWord(upstream.present)}`,
+    ...(hasPending(upstream)
+      ? [
+          `- Pending: ${
+            upstream.pendingProfile === null || upstream.pendingProfile === undefined
+              ? "unlink (env key)"
+              : `link → ${upstream.pendingProfile}`
+          } (restart the router to apply)`,
+        ]
+      : []),
   ].join("\n")
 }
 
@@ -544,11 +600,17 @@ export function routerUpstreamTooltip(upstream: RouterUpstream): string {
  * fetch with upstreams → one `router-upstream` per provider; an empty list → a
  * single "No upstreams" message. Pure: the async fetch happens in the view.
  */
-export function buildRouterUpstreamChildren(upstreams: RouterUpstream[]): LocalRouterNode[] {
+export function buildRouterUpstreamChildren(
+  upstreams: RouterUpstream[],
+  desiredLinks: Record<string, string> = {},
+): LocalRouterNode[] {
   if (upstreams.length === 0) {
     return [{ kind: "router-message", message: "No upstreams" }]
   }
-  return upstreams.map(upstream => ({ kind: "router-upstream", upstream }))
+  return upstreams.map(upstream => ({
+    kind: "router-upstream",
+    upstream: annotatePendingLink(upstream, desiredLinks),
+  }))
 }
 
 /** Fetches the proxy's live `/v1/upstreams` — the injectable seam so tests never
@@ -569,6 +631,7 @@ export type UpstreamsFetcher = (baseUrl: string) => Promise<RouterUpstream[]>
 export async function resolveRouterUpstreamChildren(
   status: LlmEndpointStatusResult | null,
   fetchUpstreams: UpstreamsFetcher,
+  desiredLinks: Record<string, string> = {},
 ): Promise<LocalRouterNode[]> {
   if (!routerServing(status)) return []
   const baseUrl = routerBaseUrl(status)
@@ -577,7 +640,7 @@ export async function resolveRouterUpstreamChildren(
   }
   try {
     const upstreams = await fetchUpstreams(baseUrl)
-    return buildRouterUpstreamChildren(upstreams)
+    return buildRouterUpstreamChildren(upstreams, desiredLinks)
   } catch {
     return [{ kind: "router-message", message: "Upstreams unavailable" }]
   }
