@@ -91,10 +91,18 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     description:
       "Local llm-endpoint Anthropic-compatible proxy. Upstream routing is " +
       "decided by the runtime resolver; the client just sees an Anthropic " +
-      "Messages surface at localhost:18090. Auth via LLM_ENDPOINT_API_KEY.",
+      "Messages surface at localhost:18090. Auth via LLM_ENDPOINT_ACCESS_TOKENS " +
+      "— the SAME shared-secret var the proxy's inbound gate accepts (see " +
+      "`parseAccessTokens(process.env.LLM_ENDPOINT_ACCESS_TOKENS)` in " +
+      "@agentproto/llm-endpoint), so one value serves both the server's " +
+      "allow-list and the client's presented bearer.",
     schemaFlavor: "anthropic",
     baseUrl: "http://localhost:18090",
-    keyEnv: "LLM_ENDPOINT_API_KEY",
+    // The proxy gates inbound requests on LLM_ENDPOINT_ACCESS_TOKENS and reads
+    // no other var; LLM_ENDPOINT_API_KEY was dead on both sides (never read by
+    // the proxy, never a real client key). Point the client's key-env at the
+    // one the gate actually checks so the profile's token reaches it.
+    keyEnv: "LLM_ENDPOINT_ACCESS_TOKENS",
     scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
     defaultModel: "kimi-k2.7-code",
   },

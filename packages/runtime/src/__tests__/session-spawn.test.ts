@@ -270,6 +270,47 @@ describe("spawnAgentSession", () => {
     expect(call).not.toHaveProperty("commandSandbox")
   })
 
+  it("strips the catalog `@route` suffix from the model delivered to the wire, but keeps it on the record", async () => {
+    // A gateway catalog id carries an `@<route>` suffix (#683) so the picker
+    // can pin the route. The upstream (ANTHROPIC_MODEL / wire `model`) does NOT
+    // understand the suffix — OpenRouter rejects `z-ai/glm-5.2@openrouter` and
+    // silently falls back to a default model. The suffix must be stripped for
+    // the adapter's wire, while the session record keeps the catalog id.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // Wire: bare id, no `@openrouter`. Gateway carried separately, untouched.
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "z-ai/glm-5.2" }),
+    )
+    // Record: the catalog id (suffix intact) for the UI/echo.
+    expect(result.descriptor).toMatchObject({
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+  })
+
+  it("passes a direct (routeless) model to the wire unchanged", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      model: "claude-opus-4-8",
+    })
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-opus-4-8" }),
+    )
+  })
+
   it("stamps `boardId` onto the spawned descriptor's meta — and omits meta without it", async () => {
     const { deps } = baseDeps()
     const pinned = await spawnAgentSession(deps, {

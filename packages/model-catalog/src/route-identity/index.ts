@@ -279,6 +279,40 @@ export function formatModelRef(ref: ModelRef): string {
   return out
 }
 
+/**
+ * Strip a route-identity `@route` SUFFIX from a model id, returning the bare
+ * id that an UPSTREAM (the provider/gateway, via `ANTHROPIC_MODEL` or the wire
+ * `model`) actually understands. The `@route` suffix is a catalog-join
+ * annotation used to pin which serving route a picked model uses — the gateway
+ * itself never sees it (OpenRouter/Requesty/the llm-endpoint proxy don't
+ * recognise `z-ai/glm-5.2@openrouter`, only `z-ai/glm-5.2`). At spawn the route
+ * is already carried separately (`route.gateway` → base_url), so the suffix is
+ * redundant metadata that must not leak to the wire.
+ *
+ * - `z-ai/glm-5.2@openrouter`            → `z-ai/glm-5.2`
+ * - `deepseek/deepseek-chat:free@openrouter` → `deepseek/deepseek-chat:free` (variant kept)
+ * - `glm-5.2@llm-endpoint`               → `glm-5.2` (routeless proxy alias)
+ * - `claude-opus-4-8`                    → `claude-opus-4-8` (no route, unchanged)
+ * - `openai/gpt-4o`                      → `openai/gpt-4o` (direct route, unchanged)
+ *
+ * Prefers the strict parser so an id is only altered when the trailing token is
+ * a genuine explicit route (`route !== vendor`); the pin (`:variant` /
+ * `:inferenceProvider`) is preserved because gateways accept it. Falls back to
+ * removing only a trailing `@…` for ids the strict grammar rejects (e.g. the
+ * vendor-less `glm-5.2@llm-endpoint`): the SEGMENT grammar forbids `@`
+ * anywhere but the route separator, so the last `@` can only be that.
+ */
+export function stripRouteSuffix(raw: string): string {
+  const ref = tryParseModelRef(raw)
+  if (ref) {
+    // Re-emit without the route suffix. `formatModelRef` omits `@route` exactly
+    // when `route === vendor`, so forcing that yields `vendor/product[:pin]`.
+    return formatModelRef({ ...ref, route: ref.vendor })
+  }
+  const atIdx = raw.lastIndexOf("@")
+  return atIdx === -1 ? raw : raw.slice(0, atIdx)
+}
+
 /** True when `raw` matches the `vendor/product[@route]` shape. */
 export function isModelRefString(raw: string): boolean {
   try {

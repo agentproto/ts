@@ -33,7 +33,11 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
         expect(preset.description).toBeTruthy()
         const url = new URL(preset.baseUrl)
         expect(url.protocol).toMatch(/^https?:$/)
-        expect(preset.keyEnv).toMatch(/_API_KEY$/)
+        // Conventionally a `<PROVIDER>_API_KEY` var — except the local
+        // llm-endpoint proxy, whose client bearer IS the proxy's own inbound
+        // shared-secret gate var (`LLM_ENDPOINT_ACCESS_TOKENS`), so one value
+        // serves both sides of the localhost loop.
+        expect(preset.keyEnv).toMatch(/(_API_KEY|_ACCESS_TOKENS)$/)
         expect(["anthropic", "openai"]).toContain(preset.schemaFlavor)
       })
 
@@ -83,7 +87,13 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     const ep = getAnthropicGatewayPreset("llm-endpoint")
     expect(ep.baseUrl).toBe("http://localhost:18090")
     expect(ep.schemaFlavor).toBe("anthropic")
-    expect(ep.keyEnv).toBe("LLM_ENDPOINT_API_KEY")
+    // keyEnv MUST be the same var the proxy's inbound gate reads
+    // (`parseAccessTokens(process.env.LLM_ENDPOINT_ACCESS_TOKENS)` in
+    // @agentproto/llm-endpoint) — otherwise the profile's presented bearer is
+    // read from a var the proxy never checks and the gate 401s. The dead
+    // `LLM_ENDPOINT_API_KEY` (read by neither side) must not reappear.
+    expect(ep.keyEnv).toBe("LLM_ENDPOINT_ACCESS_TOKENS")
+    expect(ep.keyEnv).not.toBe("LLM_ENDPOINT_API_KEY")
     expect(ep.defaultModel).toBe("kimi-k2.7-code")
     expect(ep.scrubEnv).toContain("ANTHROPIC_API_KEY")
   })
@@ -139,7 +149,7 @@ describe("getAnthropicGatewayPreset", () => {
 describe("findAnthropicGatewayPreset", () => {
   it("returns a built-in preset for a known id", () => {
     expect(findAnthropicGatewayPreset("moonshot")?.keyEnv).toBe("MOONSHOT_API_KEY")
-    expect(findAnthropicGatewayPreset("llm-endpoint")?.keyEnv).toBe("LLM_ENDPOINT_API_KEY")
+    expect(findAnthropicGatewayPreset("llm-endpoint")?.keyEnv).toBe("LLM_ENDPOINT_ACCESS_TOKENS")
   })
 
   it("returns undefined for an unknown id", () => {

@@ -18,6 +18,7 @@ import {
   parseModelRef,
   tryParseModelRef,
   formatModelRef,
+  stripRouteSuffix,
   isModelRefString,
   InvalidModelRefError,
   resolveLlmModelRoute,
@@ -227,6 +228,48 @@ describe("formatModelRef", () => {
     const ref = parseModelRef(original)
     expect(formatModelRef(ref)).toBe(original)
     expect(parseModelRef(formatModelRef(ref))).toEqual(ref)
+  })
+})
+
+describe("stripRouteSuffix", () => {
+  it("strips the gateway @route suffix from a canonical ref (OpenRouter form)", () => {
+    expect(stripRouteSuffix("z-ai/glm-5.2@openrouter")).toBe("z-ai/glm-5.2")
+  })
+
+  it("strips @requesty while keeping vendor/product", () => {
+    expect(stripRouteSuffix("sference/glm-5.2@requesty")).toBe("sference/glm-5.2")
+  })
+
+  it("keeps the pin (variant) but drops the route", () => {
+    expect(stripRouteSuffix("deepseek/deepseek-chat:free@openrouter")).toBe(
+      "deepseek/deepseek-chat:free",
+    )
+  })
+
+  it("keeps an inferenceProvider pin but drops the route", () => {
+    expect(stripRouteSuffix("meta-llama/Llama-3.1-8B:cerebras@huggingface")).toBe(
+      "meta-llama/Llama-3.1-8B:cerebras",
+    )
+  })
+
+  it("strips a trailing @route from a vendor-less proxy alias the strict grammar rejects", () => {
+    // `glm-5.2@llm-endpoint` has no vendor slash → parseModelRef rejects it;
+    // the naive-but-safe last-`@` fallback still bares it (the SEGMENT grammar
+    // forbids `@` anywhere but the route separator).
+    expect(stripRouteSuffix("glm-5.2@llm-endpoint")).toBe("glm-5.2")
+  })
+
+  it("leaves a bare native model id unchanged (no route)", () => {
+    expect(stripRouteSuffix("claude-opus-4-8")).toBe("claude-opus-4-8")
+  })
+
+  it("leaves a direct vendor/product route unchanged (route === vendor)", () => {
+    expect(stripRouteSuffix("openai/gpt-4o")).toBe("openai/gpt-4o")
+  })
+
+  it("is idempotent — a stripped id re-strips to itself", () => {
+    const bare = stripRouteSuffix("z-ai/glm-5.2@openrouter")
+    expect(stripRouteSuffix(bare)).toBe(bare)
   })
 })
 

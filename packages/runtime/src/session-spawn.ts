@@ -40,6 +40,7 @@ import {
 } from "./claude-code-oauth-source.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
+import { stripRouteSuffix } from "@agentproto/model-catalog/route-identity"
 import {
   checkModelWalletEligibility,
   modelWalletIneligibleMessage,
@@ -1461,6 +1462,19 @@ export async function spawnAgentSession(
     routedOptions,
     resolved?.declaredOptions,
   )
+  // The model id delivered to the UPSTREAM (ANTHROPIC_MODEL / the wire `model`)
+  // must be BARE. A catalog `@route` suffix (`z-ai/glm-5.2@openrouter`,
+  // shipped in #683) is a catalog-join annotation — the route is already
+  // carried separately via `route.gateway` → base_url above, and OpenRouter /
+  // Requesty / the llm-endpoint proxy reject the suffixed literal (silently
+  // falling back to a default model). Strip it exactly here, at the boundary
+  // into the adapter's wire, so BOTH manifest arms (claude-code's
+  // `ANTHROPIC_MODEL={value}` and claude-sdk's bespoke `env.ANTHROPIC_MODEL`)
+  // get the id the provider understands. Direct ids (no `@`) pass through
+  // unchanged. `input.model` itself stays suffixed for the session record /
+  // echo (the catalog id) and for the box-forward path below, where the box's
+  // own `agent_start` re-resolves the route from scratch.
+  const wireModel = input.model ? stripRouteSuffix(input.model) : undefined
   // Compose the role's disposition (+ optional promptAppend, layered on
   // top, never replacing it) into the initial prompt — the only text
   // channel this codebase has into a freshly-spawned child (there's no
@@ -1612,7 +1626,7 @@ export async function spawnAgentSession(
         ...(Object.keys(effectiveOptions).length > 0
           ? { options: effectiveOptions }
           : {}),
-        ...(input.model ? { model: input.model } : {}),
+        ...(wireModel ? { model: wireModel } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
