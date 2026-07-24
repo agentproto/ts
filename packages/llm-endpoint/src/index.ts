@@ -15,6 +15,8 @@ import {
   parseTransparentModel,
   KNOWN_TRANSPARENT_PROVIDERS,
   toAnthropicStyle,
+  validateLocalPacks,
+  isRecord,
 } from './packs.js';
 import {
   validateResponsesRequest,
@@ -49,11 +51,21 @@ function resolvePackMerged(packId: string | null | undefined): ModelPack {
 
 let _localPacksCache: Record<string, ModelPack> | null = null;
 
-// Load local pack overrides from gitignored JSON (ESM-safe; uses fileURLToPath).
-// Searches: CWD/packs.local.json, then src/packs.local.json (dev), then
-// the directory of this module file.
-function getLocalPacks(): Record<string, ModelPack> {
-  if (_localPacksCache !== null) return _localPacksCache;
+/** Outcome of reading packs.local.json from disk: the validated local packs,
+ *  any field-scoped validation errors, and which candidate file was used. */
+interface LocalPacksLoad {
+  packs: Record<string, ModelPack>;
+  errors: string[];
+  path: string | null;
+}
+
+// Read + validate local pack overrides from gitignored JSON (ESM-safe; uses
+// fileURLToPath). Searches: CWD/packs.local.json, then src/packs.local.json
+// (dev), then the directory of this module file. Returns the FIRST candidate
+// carrying a `{ packs: {...} }` envelope, validated against the ModelPack shape;
+// `errors` names each offending pack/field. Does NOT touch the cache — callers
+// decide fail-soft (load time) vs hard-fail (the reload endpoint).
+function readLocalPacksFromDisk(): LocalPacksLoad {
   const moduleDir = fileURLToPath(new URL('.', import.meta.url));
   const candidates = [
     resolvePath(process.cwd(), 'packs.local.json'),
@@ -68,19 +80,49 @@ function getLocalPacks(): Record<string, ModelPack> {
       // file doesn't exist — try next candidate
       continue;
     }
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw);
-      if (parsed.packs) {
-        // TODO: validate that each entry conforms to the ModelPack shape
-        _localPacksCache = parsed.packs as Record<string, ModelPack>;
-        return _localPacksCache;
-      }
+      parsed = JSON.parse(raw);
     } catch (err) {
-      console.warn(`[llm-endpoint] Skipping malformed packs.local.json at ${localPath}:`, err instanceof Error ? err.message : String(err));
+      return { packs: {}, errors: [`${localPath}: invalid JSON — ${err instanceof Error ? err.message : String(err)}`], path: localPath };
     }
+    // A file without a truthy `packs` envelope isn't a local-packs source —
+    // ignore it and try the next candidate (unchanged from prior behaviour).
+    if (!isRecord(parsed) || !('packs' in parsed) || !parsed.packs) {
+      continue;
+    }
+    const result = validateLocalPacks(parsed);
+    if (!result.ok) {
+      return { packs: {}, errors: result.errors.map((e) => `${localPath}: ${e}`), path: localPath };
+    }
+    return { packs: result.packs, errors: [], path: localPath };
   }
-  _localPacksCache = {};
+  return { packs: {}, errors: [], path: null };
+}
+
+// Load (and cache) local pack overrides. Fail-soft at load time: an invalid
+// packs.local.json is skipped so the proxy keeps serving the built-in registry,
+// but every offending pack/field is named in the warning — the reload endpoint
+// turns the same errors into a hard 400.
+function getLocalPacks(): Record<string, ModelPack> {
+  if (_localPacksCache !== null) return _localPacksCache;
+  const { packs, errors } = readLocalPacksFromDisk();
+  for (const e of errors) {
+    console.warn(`[llm-endpoint] Skipping invalid packs.local.json — ${e}`);
+  }
+  _localPacksCache = packs;
   return _localPacksCache;
+}
+
+/**
+ * Drop the cached local packs (and the derived merged-id cache) so the next
+ * getLocalPacks()/getMergedPackIds() re-reads packs.local.json from disk. The
+ * clear lives here rather than in the reload handler so the handler never
+ * reaches into the module cache vars directly.
+ */
+function resetLocalPacksCache(): void {
+  _localPacksCache = null;
+  _mergedPackIdsCache = null;
 }
 
 // Limite max d'outils par provider (au-delà, Groq renvoie 400 "maximum number of items is 128").
@@ -1662,6 +1704,38 @@ const server = createServer((req, res) => {
     console.log(`[Proxy] Returning pack list (${packsResponse.data.length} packs).`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(packsResponse));
+    return;
+  }
+
+  // 0a. Hot-reload local packs from packs.local.json (POST). Gated by the same
+  // access token as every other route (checked above). Re-reads + validates the
+  // local envelope; unlike the fail-soft load path, an EXPLICIT reload gets a
+  // hard 400 with the field-scoped errors so a bad edit is legible instead of
+  // silently ignored. On success the cache is dropped and repopulated, and the
+  // reloaded pack ids + count are returned.
+  if (req.method === 'POST' && (urlPath === '/v1/packs/reload' || urlPath === '/packs/reload')) {
+    const load = readLocalPacksFromDisk();
+    if (load.errors.length > 0) {
+      // Leave the previously-cached packs in place — a rejected reload must not
+      // wipe a working config.
+      console.warn(`[Proxy] Pack reload rejected — ${load.errors.length} validation error(s).`);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'Invalid packs.local.json', errors: load.errors } }));
+      return;
+    }
+    resetLocalPacksCache();
+    const localPacks = getLocalPacks(); // repopulate the cache from the now-validated file
+    const packIds = getMergedPackIds();
+    console.log(`[Proxy] Reloaded packs from ${load.path ?? '(no local file)'} — ${packIds.length} packs (${Object.keys(localPacks).length} local).`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      object: 'packs.reload',
+      reloaded: true,
+      source: load.path,
+      local_pack_ids: Object.keys(localPacks),
+      pack_ids: packIds,
+      count: packIds.length,
+    }));
     return;
   }
 

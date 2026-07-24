@@ -26,8 +26,19 @@ export interface DiscoveredModel {
   ownedBy?: string
 }
 
+/** One pack the proxy exposes, parsed from its `GET /v1/packs`. */
+export interface RouterPack {
+  id: string
+  /** The pack's human label, when the proxy reports one. */
+  label?: string
+  /** How many model routes the pack carries (the proxy's `model_count`). */
+  modelCount: number
+}
+
 export type LocalRouterNode =
   | { kind: "router" }
+  | { kind: "router-packs" }
+  | { kind: "router-pack"; pack: RouterPack }
   | { kind: "router-model"; model: DiscoveredModel }
   | { kind: "router-message"; message: string }
 
@@ -36,6 +47,8 @@ export type LocalRouterTreeNode = LocalRouterNode
 export function isLocalRouterNode(node: { kind: string }): node is LocalRouterNode {
   return (
     node.kind === "router" ||
+    node.kind === "router-packs" ||
+    node.kind === "router-pack" ||
     node.kind === "router-model" ||
     node.kind === "router-message"
   )
@@ -343,5 +356,82 @@ export async function resolveRouterModelChildren(
     return buildRouterModelChildren(models)
   } catch {
     return [{ kind: "router-message", message: "Models unavailable" }]
+  }
+}
+
+/**
+ * Parse the proxy's `GET /v1/packs` body into router packs. Tolerates the
+ * `{data:[{id, label, model_count, models:[…]}]}` shape, ignores rows without a
+ * string id, and falls back to `models.length` when `model_count` is absent.
+ * Mirrors parseDiscoveredModels' defensive style.
+ */
+export function parseRouterPacks(body: unknown): RouterPack[] {
+  const data = (body as { data?: unknown })?.data
+  if (!Array.isArray(data)) return []
+  const packs: RouterPack[] = []
+  for (const row of data) {
+    if (!row || typeof row !== "object") continue
+    const rec = row as Record<string, unknown>
+    const id = rec.id
+    if (typeof id !== "string" || !id) continue
+    const label = typeof rec.label === "string" && rec.label ? rec.label : undefined
+    const modelCount =
+      typeof rec.model_count === "number" && Number.isFinite(rec.model_count)
+        ? rec.model_count
+        : Array.isArray(rec.models)
+          ? rec.models.length
+          : 0
+    packs.push(label ? { id, label, modelCount } : { id, modelCount })
+  }
+  return packs
+}
+
+/** The description tail for a pack row: `<label> · N models`, or just
+ *  `N models` when the proxy reported no label. */
+export function routerPackDescription(pack: RouterPack): string {
+  const count = `${pack.modelCount} model${pack.modelCount === 1 ? "" : "s"}`
+  return pack.label ? `${pack.label} · ${count}` : count
+}
+
+/**
+ * Build the Packs subtree's child rows from a `/v1/packs` fetch. A fetch with
+ * packs → one `router-pack` per id; a proxy that exposes none → a single
+ * "No packs" message. Pure: the async fetch happens in the view.
+ */
+export function buildRouterPackChildren(packs: RouterPack[]): LocalRouterNode[] {
+  if (packs.length === 0) {
+    return [{ kind: "router-message", message: "No packs" }]
+  }
+  return packs.map(pack => ({ kind: "router-pack", pack }))
+}
+
+/** Fetches the proxy's live `/v1/packs` — the injectable seam so tests never
+ *  hit a real socket. Throws on a non-2xx / network failure so the subtree can
+ *  render an "unavailable" child instead of a silently-empty node. */
+export type PacksFetcher = (baseUrl: string) => Promise<RouterPack[]>
+
+/**
+ * The Packs subtree's children, resolved through the injected `fetchPacks`
+ * seam. Pure orchestration (no vscode), so it's testable without a live socket.
+ * Mirrors resolveRouterModelChildren:
+ * - not serving → `[]` (the node isn't expandable, so unreachable in the view).
+ * - serving but no resolvable base URL → a "Router address unavailable" message.
+ * - fetch throws / times out → a "Packs unavailable" message.
+ * - fetch succeeds → one `router-pack` per id (or the "No packs" message).
+ */
+export async function resolveRouterPackChildren(
+  status: LlmEndpointStatusResult | null,
+  fetchPacks: PacksFetcher,
+): Promise<LocalRouterNode[]> {
+  if (!routerServing(status)) return []
+  const baseUrl = routerBaseUrl(status)
+  if (!baseUrl) {
+    return [{ kind: "router-message", message: "Router address unavailable" }]
+  }
+  try {
+    const packs = await fetchPacks(baseUrl)
+    return buildRouterPackChildren(packs)
+  } catch {
+    return [{ kind: "router-message", message: "Packs unavailable" }]
   }
 }

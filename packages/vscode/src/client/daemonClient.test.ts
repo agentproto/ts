@@ -666,6 +666,139 @@ describe("DaemonClient — bearer refresh across a daemon restart", () => {
   })
 })
 
+describe("DaemonClient — llmEndpointReloadPacks", () => {
+  it("reads the status baseUrl, POSTs /v1/packs/reload directly, and returns the result", async () => {
+    let base = ""
+    const daemon = await mockDaemon(req => {
+      if (req.url === "/mcp" && req.method === "POST") {
+        const rpc = req.body as { params?: { name?: string } }
+        if (rpc.params?.name === "llm_endpoint_status") {
+          return {
+            status: 200,
+            body: {
+              jsonrpc: "2.0",
+              id: 1,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      running: true,
+                      pid: 1,
+                      port: 18090,
+                      baseUrl: base,
+                      healthy: true,
+                      startedAt: "t",
+                      status: "running",
+                    }),
+                  },
+                ],
+              },
+            },
+          }
+        }
+        return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "{}" }] } } }
+      }
+      if (req.url === "/v1/packs/reload" && req.method === "POST") {
+        return {
+          status: 200,
+          body: {
+            object: "packs.reload",
+            reloaded: true,
+            source: "/ws/packs.local.json",
+            local_pack_ids: ["mine"],
+            pack_ids: ["default", "mine"],
+            count: 2,
+          },
+        }
+      }
+      return { status: 404 }
+    })
+    base = daemon.url
+    try {
+      const client = new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+      const result = await client.llmEndpointReloadPacks()
+      expect(result.count).toBe(2)
+      expect(result.local_pack_ids).toEqual(["mine"])
+      expect(result.pack_ids).toContain("default")
+      // It resolved the status via MCP, then reached the proxy route directly.
+      expect(daemon.requests.some(r => r.url === "/v1/packs/reload" && r.method === "POST")).toBe(true)
+    } finally {
+      daemon.server.close()
+    }
+  })
+
+  it("throws with the field-scoped errors when the reload is rejected (HTTP 400)", async () => {
+    let base = ""
+    const daemon = await mockDaemon(req => {
+      if (req.url === "/mcp" && req.method === "POST") {
+        return {
+          status: 200,
+          body: {
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ running: true, pid: 1, port: 18090, baseUrl: base, healthy: true, startedAt: "t", status: "running" }),
+                },
+              ],
+            },
+          },
+        }
+      }
+      if (req.url === "/v1/packs/reload") {
+        return {
+          status: 400,
+          body: {
+            error: {
+              type: "invalid_request_error",
+              message: "Invalid packs.local.json",
+              errors: ["/ws/packs.local.json: packs.bad.models.z.provider: required non-empty string"],
+            },
+          },
+        }
+      }
+      return { status: 404 }
+    })
+    base = daemon.url
+    try {
+      const client = new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+      await expect(client.llmEndpointReloadPacks()).rejects.toThrow(/packs\.bad\.models\.z\.provider/)
+    } finally {
+      daemon.server.close()
+    }
+  })
+
+  it("throws when the router is not running (no base URL)", async () => {
+    const daemon = await mockDaemon(req => {
+      if (req.url === "/mcp" && req.method === "POST") {
+        return {
+          status: 200,
+          body: {
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              content: [
+                { type: "text", text: JSON.stringify({ running: false, pid: null, port: null, baseUrl: null, healthy: false, startedAt: null, status: "never-started" }) },
+              ],
+            },
+          },
+        }
+      }
+      return { status: 404 }
+    })
+    try {
+      const client = new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+      await expect(client.llmEndpointReloadPacks()).rejects.toThrow(/not running/)
+      expect(daemon.requests.every(r => r.url !== "/v1/packs/reload")).toBe(true)
+    } finally {
+      daemon.server.close()
+    }
+  })
+})
+
 // Inline mkdtemp to avoid a top-level import the linter would reorder.
 async function mkdtemp(prefix: string): Promise<string> {
   const { mkdtemp } = await import("node:fs/promises")

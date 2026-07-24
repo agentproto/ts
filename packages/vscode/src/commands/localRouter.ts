@@ -12,6 +12,7 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
 import {
   localRouterErrorMessage,
+  reloadLlmEndpointPacksMessage,
   startLlmEndpointMessage,
   stopLlmEndpointMessage,
 } from "./localRouter.logic.js"
@@ -27,6 +28,9 @@ export function registerLocalRouterCommands(
     }),
     vscode.commands.registerCommand("agentproto.stopLlmEndpoint", () => {
       void runStopLlmEndpoint(client, provider)
+    }),
+    vscode.commands.registerCommand("agentproto.reloadLlmEndpointPacks", () => {
+      void runReloadLlmEndpointPacks(client, provider)
     }),
   )
 }
@@ -54,5 +58,18 @@ export async function runStopLlmEndpoint(
     await provider.refresh()
   } catch (err) {
     void vscode.window.showErrorMessage(localRouterErrorMessage("stop", err))
+  }
+}
+
+export async function runReloadLlmEndpointPacks(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+): Promise<void> {
+  try {
+    const result = await client.llmEndpointReloadPacks()
+    void vscode.window.showInformationMessage(reloadLlmEndpointPacksMessage(result))
+    await provider.refresh()
+  } catch (err) {
+    void vscode.window.showErrorMessage(localRouterErrorMessage("reload", err))
   }
 }

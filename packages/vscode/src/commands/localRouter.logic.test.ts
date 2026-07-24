@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest"
 
-import type { LlmEndpointDescriptorResult } from "../client/types.js"
+import type {
+  LlmEndpointDescriptorResult,
+  LlmEndpointReloadPacksResult,
+} from "../client/types.js"
 import {
   localRouterErrorMessage,
+  reloadLlmEndpointPacksMessage,
   startLlmEndpointMessage,
   stopLlmEndpointMessage,
 } from "./localRouter.logic.js"
@@ -36,6 +40,30 @@ describe("stopLlmEndpointMessage", () => {
   })
 })
 
+describe("reloadLlmEndpointPacksMessage", () => {
+  function result(over: Partial<LlmEndpointReloadPacksResult> = {}): LlmEndpointReloadPacksResult {
+    return {
+      object: "packs.reload",
+      reloaded: true,
+      source: "/ws/packs.local.json",
+      local_pack_ids: ["mine"],
+      pack_ids: ["default", "xai", "mine"],
+      count: 3,
+      ...over,
+    }
+  }
+
+  it("names the reloaded count and the local subset", () => {
+    expect(reloadLlmEndpointPacksMessage(result())).toBe("Reloaded packs — 3 available (1 local).")
+  })
+
+  it("reports zero local packs when packs.local.json is absent", () => {
+    expect(reloadLlmEndpointPacksMessage(result({ local_pack_ids: [], source: null, pack_ids: ["default"], count: 1 }))).toBe(
+      "Reloaded packs — 1 available (0 local).",
+    )
+  })
+})
+
 describe("localRouterErrorMessage", () => {
   it("folds an Error's message into the start/stop verb", () => {
     expect(localRouterErrorMessage("start", new Error("boom"))).toBe(
@@ -43,6 +71,12 @@ describe("localRouterErrorMessage", () => {
     )
     expect(localRouterErrorMessage("stop", new Error("nope"))).toBe(
       "Could not stop the Local Router: nope",
+    )
+  })
+
+  it("uses a packs-specific phrasing for the reload verb", () => {
+    expect(localRouterErrorMessage("reload", new Error("HTTP 400 — packs.bad.models.z.provider: required non-empty string"))).toBe(
+      "Could not reload the Local Router's packs: HTTP 400 — packs.bad.models.z.provider: required non-empty string",
     )
   })
 
