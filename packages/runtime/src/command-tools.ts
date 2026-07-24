@@ -304,7 +304,7 @@ export interface ExecuteResult {
    * `signal:"SIGTERM-timeout"` marker — a caller shouldn't have to string-
    * match a signal to tell a timeout apart from any other SIGTERM.
    */
-  timedOut: boolean
+  timedOut?: boolean
   durationMs: number
 }
 
@@ -477,6 +477,7 @@ export function registerCommandTools(
         stdout: result.stdout,
         stderr: result.stderr,
         ...(result.truncated ? { truncated: true } : {}),
+        ...(result.timedOut ? { timedOut: true } : {}),
         // Never leave a bare call unlabeled — default to the tool's own
         // name when the caller didn't pass one.
         origin: origin ?? "command_execute",
