@@ -11,21 +11,27 @@ import {
   mapAdapterQuickPickItems,
   mapCatalogSpawnQuickPickItems,
   mapFolderQuickPickItems,
+  mapHarnessCatalogModelItems,
+  mapHarnessEntryItems,
+  mapHarnessManifestModelItems,
+  deriveRecentSpawns,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
   mapOrchestratorQuickPickItems,
   mapPermissionQuickPickItems,
   mapPresetQuickPickItems,
   mapProviderQuickPickItems,
+  mapQuickSpawnItems,
   mapSpawnQuickPickItems,
   modelEntriesOf,
+  relativeTime,
   prependPresetGroup,
   resolveDefaultCwd,
   resolveWorkspaceSlug,
   type SpawnAdapterInfo,
   type WorkspaceFolderLike,
 } from "./spawn.logic.js"
-import type { CatalogModelsResponse, UserPreset } from "../client/types.js"
+import type { CatalogModelsResponse, SessionDescriptor, UserPreset } from "../client/types.js"
 
 function adapter(overrides: Partial<SpawnAdapterInfo> = {}): SpawnAdapterInfo {
   return { slug: "claude-code", ...overrides }
@@ -649,17 +655,240 @@ describe("mapCatalogSpawnQuickPickItems", () => {
     ],
   }
 
-  it("carries route, eligibleProfiles, and runnable onto each row", () => {
+  it("collapses a product to one row on its best (runnable) route", () => {
     const items = mapCatalogSpawnQuickPickItems(catalog)
-    const runnableRow = items.find(i => i.model === "anthropic/claude-fable-5")
-    expect(runnableRow).toMatchObject({
+    // One product with two routes now yields ONE row, on the runnable route —
+    // not one row per (product × route) as before.
+    const rows = items.filter(i => i.kind === undefined && !i.configure)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      label: "claude-fable-5",
       route: "openrouter",
+      model: "anthropic/claude-fable-5",
       eligibleProfiles: ["openrouter-api"],
       runnable: true,
     })
-    const nonRunnableRow = items.find(i => i.model === "claude-fable-5")
-    expect(nonRunnableRow).toMatchObject({ route: "anthropic", eligibleProfiles: [], runnable: false })
-    // The non-runnable row still shows the gap rather than vanishing.
-    expect(nonRunnableRow?.description).toContain("no profile")
+    // The collapsed alternates are surfaced, not silently dropped.
+    expect(rows[0]?.description).toContain("+1 more")
+  })
+
+  it("sweeps a product whose best route is non-runnable into the Needs a profile section", () => {
+    const stranded: CatalogModelsResponse = {
+      vendors: [
+        {
+          vendor: "deepseek",
+          products: [
+            {
+              product: "deepseek-v4-pro",
+              routes: [
+                {
+                  route: "deepseek",
+                  ref: "deepseek/deepseek-v4-pro",
+                  baseUrl: null,
+                  pricing: null,
+                  runnable: false,
+                  eligibleProfiles: [],
+                  adapterModes: [],
+                  adapters: ["claude-code"],
+                  curated: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const items = mapCatalogSpawnQuickPickItems(stranded)
+    const sectionIdx = items.findIndex(i => i.label === "Needs a profile" && i.kind !== undefined)
+    // No vendor heading for a vendor with zero runnable products; the model
+    // lands under "Needs a profile" instead, ahead of only Configure….
+    expect(items.find(i => i.label === "deepseek" && i.kind !== undefined)).toBeUndefined()
+    expect(sectionIdx).toBeGreaterThanOrEqual(0)
+    const strandedRow = items.find(i => i.model === "deepseek/deepseek-v4-pro")
+    expect(strandedRow).toMatchObject({ route: "deepseek", runnable: false })
+    expect(strandedRow?.description).toContain("no profile")
+  })
+})
+
+describe("mapHarnessEntryItems", () => {
+  it("lists one harness row per adapter under a heading, ready-first, with a trailing Configure…", () => {
+    const items = mapHarnessEntryItems([
+      adapter({ slug: "hermes", status: "available" }),
+      adapter({ slug: "claude-code", status: "ready" }),
+    ])
+    expect(items[0]).toMatchObject({ label: "Harnesses", kind: -1 })
+    const rows = items.filter(i => i.harness)
+    // Ready adapter sorts ahead of the available one (mapAdapterQuickPickItems).
+    expect(rows.map(r => r.adapter?.slug)).toEqual(["claude-code", "hermes"])
+    for (const row of rows) {
+      expect(row.harness).toBe(true)
+      expect(row.model).toBeUndefined() // a harness row is a drill step, not a leaf
+    }
+    expect(items.at(-1)).toMatchObject({ label: CONFIGURE_LABEL, configure: true })
+  })
+})
+
+describe("mapHarnessCatalogModelItems", () => {
+  const catalog: CatalogModelsResponse = {
+    vendors: [
+      {
+        vendor: "anthropic",
+        products: [
+          {
+            product: "claude-sonnet-5",
+            routes: [
+              {
+                route: "anthropic", ref: "claude-sonnet-5", baseUrl: null, pricing: null,
+                runnable: true, eligibleProfiles: [], adapterModes: [], adapters: ["claude-code"], curated: true,
+              },
+              {
+                route: "openrouter", ref: "anthropic/claude-sonnet-5", baseUrl: null, pricing: null,
+                runnable: false, eligibleProfiles: [], adapterModes: ["openrouter"], adapters: ["hermes"], curated: true,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        vendor: "deepseek",
+        products: [
+          {
+            product: "deepseek-v4-pro",
+            routes: [
+              {
+                route: "deepseek", ref: "deepseek/deepseek-v4-pro", baseUrl: null, pricing: null,
+                runnable: false, eligibleProfiles: [], adapterModes: [], adapters: ["hermes"], curated: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("scopes models to the routes the harness serves, then collapses + sections them", () => {
+    const cc = mapHarnessCatalogModelItems(catalog, "claude-code")
+    // claude-code only serves the anthropic native route → one runnable row,
+    // and the deepseek/openrouter routes (hermes-only) are absent entirely.
+    const modelRows = cc.filter(i => i.kind === undefined && !i.custom)
+    expect(modelRows).toHaveLength(1)
+    expect(modelRows[0]).toMatchObject({ label: "claude-sonnet-5", route: "anthropic", runnable: true })
+    expect(cc.find(i => i.model === "deepseek/deepseek-v4-pro")).toBeUndefined()
+    // Trailing custom… row is scoped to the harness.
+    expect(cc.at(-1)).toMatchObject({ custom: true, adapter: { slug: "claude-code" } })
+  })
+
+  it("sweeps a harness's non-runnable models into Needs a profile", () => {
+    const hermes = mapHarnessCatalogModelItems(catalog, "hermes")
+    const section = hermes.findIndex(i => i.label === "Needs a profile" && i.kind !== undefined)
+    expect(section).toBeGreaterThanOrEqual(0)
+    // Both hermes routes are non-runnable → no vendor heading, both under the section.
+    expect(hermes.find(i => i.label === "anthropic" && i.kind !== undefined)).toBeUndefined()
+    expect(hermes.filter(i => i.runnable === false)).toHaveLength(2)
+  })
+})
+
+describe("mapHarnessManifestModelItems", () => {
+  it("groups the adapter's declared models by provider with a trailing custom row (old-daemon fallback)", () => {
+    const items = mapHarnessManifestModelItems(
+      adapter({
+        slug: "hermes",
+        modelDetails: [
+          { id: "glm-5.2", provider: "openrouter" },
+          { id: "kimi", provider: "openrouter" },
+        ],
+      }),
+    )
+    expect(items[0]).toMatchObject({ label: "openrouter", kind: -1 })
+    expect(items.filter(i => i.model).map(i => i.model)).toEqual(["glm-5.2", "kimi"])
+    expect(items.at(-1)).toMatchObject({ custom: true, adapter: { slug: "hermes" } })
+  })
+})
+
+function session(overrides: Partial<SessionDescriptor> = {}): SessionDescriptor {
+  return {
+    id: "s1",
+    kind: "agent-cli",
+    workspaceSlug: "agentik-studio",
+    command: "claude",
+    pid: 1,
+    status: "exited",
+    startedAt: "2026-07-24T10:00:00.000Z",
+    ...overrides,
+  } as SessionDescriptor
+}
+
+describe("relativeTime", () => {
+  const now = Date.parse("2026-07-24T12:00:00.000Z")
+  it("buckets by scale", () => {
+    expect(relativeTime(now - 10_000, now)).toBe("just now")
+    expect(relativeTime(now - 5 * 60_000, now)).toBe("5m ago")
+    expect(relativeTime(now - 2 * 3_600_000, now)).toBe("2h ago")
+    expect(relativeTime(now - 3 * 86_400_000, now)).toBe("3d ago")
+  })
+})
+
+describe("deriveRecentSpawns", () => {
+  it("dedupes by (adapter · model · gateway), newest first, capped", () => {
+    const recent = deriveRecentSpawns(
+      [
+        session({ id: "a", adapterSlug: "claude-code", model: "claude-sonnet-5", startedAt: "2026-07-24T09:00:00Z" }),
+        session({ id: "b", adapterSlug: "claude-code", model: "claude-sonnet-5", startedAt: "2026-07-24T11:00:00Z" }), // dup, newer
+        session({ id: "c", adapterSlug: "hermes", model: "glm-5.2", route: { gateway: "openrouter" }, accessProfile: { profileRef: "or-key", vendor: "openrouter", method: "api-key" }, startedAt: "2026-07-24T10:00:00Z" }),
+        session({ id: "d", kind: "terminal", adapterSlug: undefined, startedAt: "2026-07-24T11:30:00Z" }), // not agent-cli → skipped
+      ],
+      6,
+    )
+    // Two distinct combos, the claude-code one deduped to its newest instance.
+    expect(recent.map(r => `${r.adapter}/${r.model ?? ""}/${r.gateway ?? ""}`)).toEqual([
+      "claude-code/claude-sonnet-5/",
+      "hermes/glm-5.2/openrouter",
+    ])
+    // The recent hermes row carries the wallet to replay one-click.
+    expect(recent[1]).toMatchObject({ accessProfileRef: "or-key", gateway: "openrouter", workspaceSlug: "agentik-studio" })
+  })
+
+  it("honours the limit", () => {
+    const many = Array.from({ length: 10 }, (_, i) =>
+      session({ id: `s${i}`, adapterSlug: "hermes", model: `m${i}`, startedAt: `2026-07-24T${String(10 + i).padStart(2, "0")}:00:00Z` }),
+    )
+    expect(deriveRecentSpawns(many, 3)).toHaveLength(3)
+  })
+})
+
+describe("mapQuickSpawnItems", () => {
+  const now = Date.parse("2026-07-24T12:00:00.000Z")
+  const recent = deriveRecentSpawns([
+    session({ adapterSlug: "hermes", model: "glm-5.2", route: { gateway: "openrouter" }, accessProfile: { profileRef: "or-key", vendor: "openrouter", method: "api-key" }, startedAt: "2026-07-24T11:00:00Z" }),
+  ])
+
+  it("renders tall favorite + recent rows and trailing Browse/Configure", () => {
+    const items = mapQuickSpawnItems(
+      [preset({ label: "my-combo", adapter: "claude-code", model: "claude-sonnet-5" })],
+      recent,
+      now,
+    )
+    const favRow = items.find(i => i.preset)
+    expect(favRow?.detail).toBe("claude-code · claude-sonnet-5") // whole combo on the tall line
+    const recentRow = items.find(i => i.recent)
+    expect(recentRow).toMatchObject({
+      recent: true,
+      adapter: { slug: "hermes" },
+      model: "glm-5.2",
+      route: "openrouter",
+      accessProfileRef: "or-key",
+    })
+    expect(recentRow?.detail).toContain("1h ago")
+    expect(items.at(-2)).toMatchObject({ browse: true })
+    expect(items.at(-1)).toMatchObject({ configure: true })
+  })
+
+  it("is just the two trailing rows when there are no favorites or recents (caller falls back)", () => {
+    const items = mapQuickSpawnItems([], [], now)
+    expect(items).toHaveLength(2)
+    expect(items.map(i => ({ browse: i.browse, configure: i.configure }))).toEqual([
+      { browse: true, configure: undefined },
+      { browse: undefined, configure: true },
+    ])
   })
 })
