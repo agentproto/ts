@@ -21,6 +21,7 @@ import { runLint } from "./commands/lint.js"
 import { runVerify } from "./commands/verify.js"
 import { runEventsEmit, runEventsTail } from "./commands/events.js"
 import { runImportWeb } from "./commands/import-web.js"
+import { runImportCode } from "./commands/import-code.js"
 import { runImportPrs } from "./commands/import-prs.js"
 import { runDiscover } from "./commands/discover.js"
 import { runDistill } from "./commands/distill.js"
@@ -70,6 +71,12 @@ Commands:
                                          scrape MCP server (stealth + clean Markdown) for
                                          walled/JS pages, ahead of plain readability.
                                          --diarize: AssemblyAI speaker labels (interviews).
+  import-code [path] --root <dir> [--include glob … --granularity file|module --max n --tags t --lang l --dry-run]
+                                         Import a source tree as knowledge sources, one note
+                                         per code unit (file or module). Notes-only: ZERO
+                                         code indexing, no symbol/caller/callee graph —
+                                         that is the code-brain subsystem's job. --dry-run
+                                         lists the units without writing.
   import-prs [path] --repo <owner/name> [--pr n ... | --since <iso>] [--include-diff --max n --tags t --lang l --dry-run]
                                          Import a repo's pull requests as sources via the
                                          user's gh CLI (description + review discussion +
@@ -139,6 +146,8 @@ async function main(argv: readonly string[]): Promise<ExitCode> {
       return await runEventsTail(rest)
     case "import-web":
       return await runImportWeb(rest)
+    case "import-code":
+      return await runImportCode(rest)
     case "import-prs":
       return await runImportPrs(rest)
     case "discover":
