@@ -1545,7 +1545,14 @@ describe("runShellGate()", () => {
           sessionCwd: sibling,
           runCommand: async input => {
             calls.push({ cwd: input.cwd })
-            return { exitCode: 0, signal: null, stdout: "", stderr: "", durationMs: 0 }
+            return {
+              exitCode: 0,
+              signal: null,
+              stdout: "",
+              stderr: "",
+              timedOut: false,
+              durationMs: 0,
+            }
           },
         },
       )
