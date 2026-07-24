@@ -72,7 +72,7 @@
  * the host FAIL the call closed rather than run it unconfined.
  */
 
-import { spawn } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { readFile, stat } from "node:fs/promises"
 import {
@@ -297,6 +297,14 @@ export interface ExecuteResult {
   stdout: string
   stderr: string
   truncated?: boolean
+  /**
+   * `true` iff the run was killed by the `timeoutMs` cap (as opposed to
+   * exiting on its own, or dying to some other signal). A machine-readable
+   * companion to the human note appended to `stderr` and the legacy
+   * `signal:"SIGTERM-timeout"` marker — a caller shouldn't have to string-
+   * match a signal to tell a timeout apart from any other SIGTERM.
+   */
+  timedOut: boolean
   durationMs: number
 }
 
@@ -316,7 +324,7 @@ export function registerCommandTools(
 
   server.tool(
     "command_execute",
-    "Run a shell command on the host running the runtime. The command basename must be in `<workspace>/.agentproto/allowed-commands.json`; default-deny otherwise. Captures stdout / stderr / exit code and returns them as JSON. Use this to drive local CLIs (Claude Code, gh, pnpm, …) from a remote agent.",
+    "Run a shell command on the host running the runtime. The command basename must be in `<workspace>/.agentproto/allowed-commands.json`; default-deny otherwise. Captures stdout / stderr / exit code and returns them as JSON. Use this to drive local CLIs (Claude Code, gh, pnpm, …) from a remote agent. This is for SHORT synchronous commands: the subprocess is bound to this RPC and hard-killed at the `timeoutMs` cap, so long-running work (a build, a test gate, a `claude -p` run) belongs in a persistent session that outlives the call — the terminal_start / agent_start MCP tools, or `agentproto sessions start` on the CLI.",
     {
       command: z
         .string()
@@ -674,6 +682,34 @@ export function withSanePath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env, PATH: [...existing, ...missing].join(":") }
 }
 
+/**
+ * Signal the child's whole process group, falling back to the direct child.
+ *
+ * On POSIX we spawn `detached`, so the child leads a new process group whose
+ * id equals its pid; `process.kill(-pid, sig)` signals every member — the
+ * grandchildren a `bash -c "pnpm test"` fans out (pnpm → turbo → vitest) that
+ * a plain `child.kill()` would SIGTERM `bash` and orphan. The negative-pid
+ * form throws where there's no group to hit (Windows has no process groups;
+ * ESRCH once the group is already reaped), so we fall back to killing just the
+ * direct child — same behavior as before this function existed.
+ */
+function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid
+  if (pid !== undefined) {
+    try {
+      process.kill(-pid, signal)
+      return
+    } catch {
+      /* fall through: no group (non-POSIX) or already gone */
+    }
+  }
+  try {
+    child.kill(signal)
+  } catch {
+    /* noop — the child is already gone */
+  }
+}
+
 export async function runCommand(input: RunCommandInput): Promise<ExecuteResult> {
   return new Promise<ExecuteResult>(resolvePromise => {
     const startedAt = Date.now()
@@ -687,6 +723,12 @@ export async function runCommand(input: RunCommandInput): Promise<ExecuteResult>
       // always enough.
       env: withSanePath(process.env),
       stdio: ["pipe", "pipe", "pipe"],
+      // Lead a new process group on POSIX so a timeout can reap the whole
+      // subtree, not just the direct child — see `killProcessGroup`. Piped
+      // stdio keeps the parent attached despite `detached`, and we never
+      // `unref()` the child, so its lifetime still bounds this RPC exactly as
+      // before. No-op on Windows (no process groups).
+      detached: process.platform !== "win32",
     })
 
     let stdout = ""
@@ -721,20 +763,12 @@ export async function runCommand(input: RunCommandInput): Promise<ExecuteResult>
 
     const timer = setTimeout(() => {
       timedOut = true
-      // SIGTERM first; the close handler resolves either way. Ignore
-      // EPERM if the child is already gone.
-      try {
-        child.kill("SIGTERM")
-      } catch {
-        /* noop */
-      }
-      // Hard kill 2s later if it hasn't exited.
+      // SIGTERM the whole group first (not just the direct child — see
+      // `killProcessGroup`); the close handler resolves either way.
+      killProcessGroup(child, "SIGTERM")
+      // Hard kill the group 2s later if it hasn't exited.
       setTimeout(() => {
-        try {
-          child.kill("SIGKILL")
-        } catch {
-          /* noop */
-        }
+        killProcessGroup(child, "SIGKILL")
       }, 2_000).unref()
     }, input.timeoutMs)
     timer.unref()
@@ -749,17 +783,31 @@ export async function runCommand(input: RunCommandInput): Promise<ExecuteResult>
         stdout,
         stderr: stderr + (stderr ? "\n" : "") + (err as Error).message,
         truncated,
+        timedOut,
         durationMs: Date.now() - startedAt,
       })
     })
     child.on("close", (code, signal) => {
       clearTimeout(timer)
+      // On a timeout, tell the caller — in the human-readable stderr — exactly
+      // what killed the run and where long-running work actually belongs. A
+      // bare `signal:"SIGTERM-timeout"` (kept for back-compat) is opaque; this
+      // names the effective cap and steers them to a persistent session.
+      const timeoutNote = timedOut
+        ? (stderr ? "\n" : "") +
+          `[command_execute] killed after ${input.timeoutMs}ms (timeoutMs ` +
+          `cap, max ${MAX_TIMEOUT_MS}). command_execute is for SHORT ` +
+          `synchronous commands — for long-running work use a persistent ` +
+          `session that outlives the RPC: the terminal_start / agent_start ` +
+          "MCP tools, or `agentproto sessions start` on the CLI."
+        : ""
       resolvePromise({
         exitCode: typeof code === "number" ? code : -1,
         signal: signal ?? (timedOut ? "SIGTERM-timeout" : null),
         stdout,
-        stderr,
+        stderr: stderr + timeoutNote,
         truncated,
+        timedOut,
         durationMs: Date.now() - startedAt,
       })
     })

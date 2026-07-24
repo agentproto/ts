@@ -790,6 +790,7 @@ function mkResult(p: Partial<ExecuteResult>): ExecuteResult {
     signal: null,
     stdout: p.stdout ?? "",
     stderr: p.stderr ?? "",
+    timedOut: p.timedOut ?? false,
     durationMs: 1,
   }
 }
