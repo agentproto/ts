@@ -2162,6 +2162,9 @@ importers:
 
   packages/llm-endpoint:
     dependencies:
+      '@agentproto/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@agentproto/providers-store':
         specifier: workspace:*
         version: link:../providers-store
