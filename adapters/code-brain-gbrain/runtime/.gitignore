@@ -1,0 +1,3 @@
+# Secrets — never commit. Use .env.pg.example as the template.
+.env
+.env.pg

@@ -1,0 +1,9 @@
+[0.9059] packages-corpus-src-importers-types-ts -- [TypeScript] packages/corpus/src/importers/types.ts:90-102 interface CorpusImporter
+
+interface Corpu
+[0.8607] projects-guilde-packages-core-src-distill-corpus-source-importer-ts -- [TypeScript] projects/guilde/packages/core/src/distill/corpus-source-importer.ts:28-67 class CorpusS
+[0.7960] projects-browser-packages-footprint-src-land-social-importer-ts -- [TypeScript] projects/browser/packages/footprint/src/land/social-importer.ts:22-37 class SocialImpor
+[0.7652] packages-corpus-src-distill-__tests__-lens-test-ts -- [TypeScript] packages/corpus/src/distill/__tests__/lens.test.ts:29-44 function oneSourceImporter
+
+fu
+[0.5203] packages-corpus-src-importers-local-files-ts -- [TypeScript] packages/corpus/src/importers/local-files.ts:46-75 method definition enumerate (in Loca

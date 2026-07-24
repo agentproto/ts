@@ -1,0 +1,17 @@
+{
+  "symbol": "ImporterRunner",
+  "count": 1,
+  "status": "ready",
+  "ready": true,
+  "defs": [
+    {
+      "slug": "packages-corpus-src-importers-runner-ts",
+      "file": "packages/corpus/src/importers/runner.ts",
+      "language": "typescript",
+      "symbol_type": "class",
+      "start_line": 34,
+      "end_line": 161,
+      "snippet": "[TypeScript] packages/corpus/src/importers/runner.ts:34-161 class ImporterRunner\n\nclass ImporterRunner {\n\n// Members: constructor, run"
+    }
+  ]
+}
