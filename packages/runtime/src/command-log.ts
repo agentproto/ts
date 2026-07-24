@@ -34,6 +34,10 @@ export interface CommandLogEntry {
   stdout: string
   stderr: string
   truncated?: boolean
+  /** True when the process was killed after exceeding its `timeoutMs` cap
+   *  — mirrors `ExecuteResult.timedOut` (command-tools.ts) so the audit
+   *  log retains the same timeout signal returned to the caller. */
+  timedOut?: boolean
 }
 
 /** Append the entry to `<sessionId>`'s events.jsonl. Fire-and-forget —
