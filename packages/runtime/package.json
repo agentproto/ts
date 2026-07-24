@@ -112,7 +112,9 @@
     "@agentproto/acp": "workspace:*",
     "@agentproto/auth": "workspace:*",
     "@agentproto/command-sandbox": "workspace:*",
+    "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/tool": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
@@ -139,9 +141,7 @@
     "@agentproto/sandbox-e2b": "workspace:*"
   },
   "devDependencies": {
-    "@agentproto/driver": "workspace:*",
     "@agentproto/rendezvous": "workspace:*",
-    "@agentproto/tool": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
     "@types/ws": "^8.5.13",
