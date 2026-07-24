@@ -619,6 +619,41 @@ export interface SessionDescriptor {
    *  counter on a successful turn-end. Lets an operator see how recently the
    *  backoff last tripped. Absent until the first failure. */
   lastResumeAt?: string
+  /** Opt-in auto-restart policy (restart-scheduler, PR-2). Absent ⇒ a dead
+   *  session only comes back via lazy resume-on-prompt, exactly like today.
+   *  See {@link RestartPolicy}'s doc for the full contract. */
+  restartPolicy?: RestartPolicy
+  /** How many restarts the scheduler has PROACTIVELY fired in a row for this
+   *  session since its last sustained healthy turn-end (§ restart-scheduler
+   *  PR-2). DISTINCT from `resumeAttempts`: that counter caps consecutive
+   *  FAILED in-place revivals; this one feeds the exponential-backoff
+   *  exponent for a session that resumes FINE but keeps re-crashing — which
+   *  would reset `resumeAttempts` to 0 every time and loop forever without
+   *  its own counter. Reset to absent on the next turn that runs to
+   *  completion. PERSISTED so the backoff curve survives a daemon restart
+   *  mid-sequence. */
+  restartAttempts?: number
+  /** ISO 8601 timestamp of the most recent restart the scheduler scheduled
+   *  (not necessarily executed yet) for this session. Reset alongside
+   *  `restartAttempts`. */
+  lastRestartAt?: string
+  /** ISO 8601 timestamp the restart-scheduler's periodic sweep should next
+   *  attempt an in-place resume of this row (the backoff delay's landing
+   *  time). Absent ⇒ nothing scheduled. PERSISTED so a daemon restart
+   *  mid-backoff still resumes the schedule on the next sweep tick rather
+   *  than silently dropping it (eager resume-on-boot only covers
+   *  `endedReason:"daemon-restart"`, never `"crashed"`). Cleared once the
+   *  sweep executes it (whether the resume succeeds or fails — a failure
+   *  path re-schedules via the next `session:exited`) or the scheduler
+   *  gives up on the crash-loop cap. */
+  nextRestartAt?: string
+  /** Rolling window of ISO 8601 timestamps for restarts the scheduler has
+   *  fired, trimmed to entries within the policy's `windowMs` of "now" at
+   *  each evaluation. Distinct from `restartAttempts` (a single counter
+   *  driving the backoff exponent): this is what the crash-loop cap
+   *  actually counts against `maxRetries`. Reset alongside `restartAttempts`
+   *  on a healthy turn-end. */
+  recentRestartAts?: string[]
   /** Free-text label the spawner can attach (e.g. conversation id,
    *  operator name) so the UI can group/filter. */
   label?: string
@@ -1204,6 +1239,41 @@ export class ResumeDisabledError extends Error {
   }
 }
 
+/**
+ * Opt-in auto-restart policy (restart-scheduler, PR-2 of the crash-detect
+ * chantier). Absent (the default) ⇒ a dead session just sits there,
+ * lazy-resumable on the next prompt, exactly like today. When set, the
+ * restart-scheduler proactively drives `maybeResumeAgent` on an eligible
+ * death instead of waiting for a prompt — see `restart-scheduler.ts`.
+ */
+export interface RestartPolicy {
+  /** Which automatic death reasons trigger a restart: `"crashed"` (the
+   *  crash-detect sweep found the adapter process gone) and/or `"error"` (an
+   *  unexpected turn error with no other intentional `endedReason`). Never
+   *  restarts a clean exit, an operator `kill()`, `"idle-reaped"`, or
+   *  `"daemon-restart"` regardless of this list — see `isEligibleForRestart`
+   *  in `restart-scheduler.ts`. */
+  on: ("crashed" | "error")[]
+  /** Rolling-window crash-loop cap: once this many restarts have fired
+   *  within `windowMs`, the scheduler gives up (stamps a terminal
+   *  `[crash-loop]` line and leaves the row dead) instead of scheduling
+   *  another. Reset by a sustained healthy turn-end. */
+  maxRetries: number
+  /** The rolling window (ms) `maxRetries` counts restarts over. */
+  windowMs: number
+  /** First restart's backoff delay (ms), before `factor` compounds it. */
+  baseDelayMs: number
+  /** Exponential backoff multiplier applied per consecutive restart
+   *  (`baseDelayMs * factor ** attempt`, attempt 0-indexed). */
+  factor: number
+  /** Backoff ceiling (ms) — the computed delay never grows past this. */
+  maxDelayMs: number
+  /** Reserved for a future explicit resume-vs-fresh-spawn toggle. This PR
+   *  always revives in place via `maybeResumeAgent`; the field is accepted
+   *  and persisted but not yet read. */
+  resume?: boolean
+}
+
 /** Why an eager (boot-time) in-place resume of one row was skipped without
  *  ever reaching the adapter. Distinct from a `failed` outcome (the adapter WAS
  *  asked and refused / the worktree was gone): a skip is a decision made from
@@ -1747,6 +1817,49 @@ export interface SessionsRegistry {
    *  an already-terminal or non-agent-cli row. Returns true iff a row was
    *  actually marked crashed. */
   markCrashed(id: string): boolean
+  /** Whether an in-place resume is currently IN FLIGHT for this session
+   *  (`rt.resumePromise` set) — the restart-scheduler's periodic sweep
+   *  (`runRestartSweepPass`, PR-2) consults this to skip a row a concurrent
+   *  prompt or an overlapping tick is already reviving, rather than piling
+   *  on a redundant call. Returns false for an unknown id. */
+  isResuming(id: string): boolean
+  /** Proactively drive the SAME in-place resume path lazy resume-on-prompt
+   *  uses (`maybeResumeAgent`) for a row the restart-scheduler (PR-2) decided
+   *  is due — the sweep-side half of "reuse in-place resume, don't
+   *  reinvent". Emits `session:resumed` with `resumedFrom: "restarted"` on
+   *  success (distinct from the lazy path's `"daemon-restart"`). A resume
+   *  that fails (adapter refuses, `ResumeDisabledError` once
+   *  `MAX_RESUME_ATTEMPTS` is burned) is swallowed here — not re-thrown —
+   *  since the sweep drives many rows per tick and one bad row must never
+   *  abort the rest; the row simply stays dead until its next
+   *  `session:exited`-triggered re-schedule. Returns true iff the session is
+   *  live (`agentSession` bound) afterward; false for an unknown id or a
+   *  resume that didn't take. */
+  triggerResume(id: string): Promise<boolean>
+  /** Stamp a restart-scheduler (PR-2) schedule onto a row: the next sweep
+   *  landing time plus the rolling-window bookkeeping (`restartAttempts`/
+   *  `recentRestartAts`/`lastRestartAt`) the crash-loop cap reads on the
+   *  NEXT `session:exited` for this row. Purely mechanical — the caller
+   *  (the scheduler's event handler) owns the backoff/window-cap policy via
+   *  `evaluateRestartDecision`. Returns false (no-op) for an unknown id. */
+  applyRestartSchedule(
+    id: string,
+    update: {
+      nextRestartAt: string
+      restartAttempts: number
+      recentRestartAts: string[]
+      lastRestartAt: string
+    },
+  ): boolean
+  /** Terminally abandon the restart-scheduler's (PR-2) crash-loop for a row:
+   *  clears any pending `nextRestartAt` (so the sweep never picks it back
+   *  up) and stamps a `[crash-loop] …` line into both the ring buffer and
+   *  the durable transcript — the human-visible "gave up" signal `markCrashed`'s
+   *  `[crashed]` banner mirrors. `restartAttempts`/`recentRestartAts` are
+   *  left in place (only a healthy turn-end clears those) so the rolling
+   *  window keeps aging out naturally rather than being wiped by the
+   *  give-up itself. Returns false (no-op) for an unknown id. */
+  giveUpRestart(id: string, message: string): boolean
   /** List permission requests currently parked in the pending-permissions
    *  inbox across all permission-hold sessions, newest last. Optionally
    *  filtered to one session. */
@@ -1904,6 +2017,10 @@ export interface SpawnAgentInput {
    *  the spawn layer auto-attaches a governance policy that enforces it. Never
    *  kills the session — see {@link SessionRuntime.costBudget}. */
   costBudget?: CostBudget
+  /** Opt-in auto-restart policy (restart-scheduler, PR-2), recorded verbatim
+   *  onto {@link SessionDescriptor.restartPolicy}. Absent ⇒ today's
+   *  lazy-resume-only behaviour. */
+  restartPolicy?: RestartPolicy
   /** Best-effort usage reader, called on each turn-end to refresh the
    *  cost/token fields on the descriptor. Adapter-specific (e.g. hermes
    *  reads its state.db keyed by the adapter session id). Omit for adapters
@@ -3165,8 +3282,17 @@ export function createSessionsRegistry(opts?: {
    *
    * Concurrent prompt arrivals share one resume attempt via
    * `rt.resumePromise`.
+   *
+   * `resumedFrom` (default `"daemon-restart"`, the lazy/eager prompt-path
+   * value) is what the emitted `session:resumed` event's `resumedFrom` field
+   * carries — the restart-scheduler's `triggerResume` passes `"restarted"`
+   * so a proactive crash/error restart isn't misreported as a daemon-restart
+   * revival.
    */
-  const maybeResumeAgent = async (rt: SessionRuntime): Promise<void> => {
+  const maybeResumeAgent = async (
+    rt: SessionRuntime,
+    resumedFrom: "daemon-restart" | "restarted" = "daemon-restart",
+  ): Promise<void> => {
     if (rt.agentSession) return
     if (!resumeAgent) return
     // Descriptor-level eligibility (§5): agent-cli with the resume essentials
@@ -3242,6 +3368,15 @@ export function createSessionsRegistry(opts?: {
           delete rt.desc.exitCode
           rt.emitter.emit("status", rt.desc.status)
         }
+        // `emitExited` is a once-per-`rt`-lifetime latch (dedup via
+        // `exitedEmitted`) — without clearing it here, a session that
+        // crashes, resumes, then crashes AGAIN would never re-emit
+        // `session:exited` for the second death (the in-memory `rt` object
+        // survives the resume), silently breaking any consumer — including
+        // the restart-scheduler — that relies on that event firing once per
+        // death. A successful resume proves this session has a fresh death
+        // to report next time.
+        rt.exitedEmitted = false
         schedulePersist()
         // Write point 2/3: adapterSessionId just refreshed post-resume —
         // the old id's native transcript stops growing, the new one starts.
@@ -3269,7 +3404,7 @@ export function createSessionsRegistry(opts?: {
           type: "session:resumed",
           sessionId: rt.desc.id,
           interrupted,
-          resumedFrom: "daemon-restart",
+          resumedFrom,
           ...(rt.desc.label ? { label: rt.desc.label } : {}),
           ts: new Date().toISOString(),
         })
@@ -3501,6 +3636,19 @@ export function createSessionsRegistry(opts?: {
         if (rt.desc.resumeAttempts) {
           delete rt.desc.resumeAttempts
           delete rt.desc.lastResumeAt
+        }
+
+        // ── Crash-loop reset (restart-scheduler, PR-2): a turn that ran to
+        // completion proves the session is genuinely healthy again, not just
+        // resumed — so the crash-loop rolling window is cleared, letting a
+        // session that crashes again later start its backoff/cap fresh
+        // instead of inheriting a stale attempt count. Guarded the same way
+        // as the resumeAttempts reset above.
+        if (rt.desc.restartAttempts) {
+          delete rt.desc.restartAttempts
+          delete rt.desc.lastRestartAt
+          delete rt.desc.nextRestartAt
+          delete rt.desc.recentRestartAts
         }
 
         // ── Cost refresh (best-effort) ───────────────────────────────
@@ -3878,6 +4026,7 @@ export function createSessionsRegistry(opts?: {
         // gate would silently drop the empty-string case.
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
+        ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
@@ -4748,6 +4897,40 @@ export function createSessionsRegistry(opts?: {
       // which reads desc.endedReason) so existing session:exited consumers
       // see the row leave "running".
       emitExited(rt)
+      return true
+    },
+    isResuming(id) {
+      return !!sessions.get(id)?.resumePromise
+    },
+    async triggerResume(id) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      try {
+        await maybeResumeAgent(rt, "restarted")
+      } catch {
+        // ResumeDisabledError (MAX_RESUME_ATTEMPTS burned) or an adapter
+        // throw — either way this row stays dead; the sweep just moves on to
+        // the next candidate rather than aborting the whole tick.
+      }
+      return !!rt.agentSession
+    },
+    applyRestartSchedule(id, update) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      rt.desc.nextRestartAt = update.nextRestartAt
+      rt.desc.restartAttempts = update.restartAttempts
+      rt.desc.recentRestartAts = update.recentRestartAts
+      rt.desc.lastRestartAt = update.lastRestartAt
+      schedulePersist()
+      return true
+    },
+    giveUpRestart(id, message) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      delete rt.desc.nextRestartAt
+      appendLine(rt, message, "stderr")
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: message })
+      schedulePersist()
       return true
     },
     archiveSession(id) {

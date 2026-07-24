@@ -8,7 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import { mintSessionId, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor } from "./sessions.js"
+import { mintSessionId, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -387,6 +387,11 @@ export interface SpawnAgentSessionInput {
    *  auto-attached governance policy (`policy:failed` on windowed overage) — it
    *  never kills the session. Omit ⇒ no windowed budget. */
   costBudget?: CostBudget
+  /** Opt-in auto-restart policy (restart-scheduler, PR-2). When set, an
+   *  unexpected death (`crashed` and/or `error`, per `restartPolicy.on`) is
+   *  proactively revived in place — see `RestartPolicy`'s doc in
+   *  `sessions.ts`. Omitted ⇒ today's lazy-resume-only behaviour. */
+  restartPolicy?: RestartPolicy
   /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
    *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
    *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
@@ -1702,6 +1707,7 @@ export async function spawnAgentSession(
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
+      ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       // Verifiability: record the OBSERVABLE echo — resolved provider, mode,

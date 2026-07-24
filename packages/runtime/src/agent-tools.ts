@@ -627,6 +627,64 @@ export function registerAgentTools(
             "spend for `scope` crosses `maxCostUsd`. Never kills the session — it " +
             "trips a policy for a supervisor to act on."
         ),
+      restartPolicy: jsonTolerant(
+        z.object({
+          on: z
+            .array(z.enum(["crashed", "error"]))
+            .min(1)
+            .describe(
+              "Which automatic death reasons trigger a restart: \"crashed\" (the " +
+                "crash-detect sweep found the adapter process gone) and/or \"error\" " +
+                "(an unexpected turn error with no other intentional reason). Never " +
+                "restarts a clean exit, an operator kill, an idle-reap, a daemon-" +
+                "restart death, or a cost-budget kill, regardless of this list."
+            ),
+          maxRetries: z
+            .number()
+            .int()
+            .positive()
+            .describe(
+              "Rolling-window crash-loop cap: give up (leave the session dead, no " +
+                "further auto-restart) once this many restarts have fired within " +
+                "`windowMs`."
+            ),
+          windowMs: z
+            .number()
+            .int()
+            .positive()
+            .describe("Rolling window (ms) `maxRetries` counts restarts over."),
+          baseDelayMs: z
+            .number()
+            .int()
+            .positive()
+            .describe("First restart's backoff delay (ms), before `factor` compounds it."),
+          factor: z
+            .number()
+            .positive()
+            .describe("Exponential backoff multiplier applied per consecutive restart."),
+          maxDelayMs: z
+            .number()
+            .int()
+            .positive()
+            .describe("Backoff ceiling (ms) — the computed delay never grows past this."),
+          resume: z
+            .boolean()
+            .optional()
+            .describe(
+              "Reserved for a future explicit resume-vs-fresh-spawn toggle; this PR " +
+                "always revives in place (same session id, same conversation)."
+            ),
+        }),
+      )
+        .optional()
+        .describe(
+          "Opt-in auto-restart policy (restart-scheduler PR-2). When set, an " +
+            "unexpected death (`crashed` and/or `error`, per `on`) is automatically " +
+            "revived IN PLACE (reusing the resume machinery — same session id, same " +
+            "conversation) after an exponential backoff, up to a rolling-window " +
+            "crash-loop cap. Omit for today's behaviour: a dead session stays dead " +
+            "until a human/orchestrator prompts or restarts it."
+        ),
       role: z
         .string()
         .optional()

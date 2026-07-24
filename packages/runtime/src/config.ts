@@ -98,6 +98,16 @@ export interface DaemonConfig {
    *  set daemon.crashDetectIntervalMs <ms>`. Surfaced in `daemon_health` /
    *  `GET /health`. */
   crashDetectIntervalMs?: number
+  /** Restart-scheduler sweep interval in ms (restart-scheduler PR-2). OFF by
+   *  default (unset / 0 / negative ⇒ the sweep never runs), unlike
+   *  `crashDetectIntervalMs` — a positive value here only arms the periodic
+   *  sweep that EXECUTES an already-scheduled restart; it never opts a
+   *  session in by itself (that's the per-session `agent_start.restartPolicy`
+   *  field). Resolution order mirrors `idleReapAfterMs`:
+   *  `AGENTPROTO_RESTART_SWEEP_INTERVAL_MS` env > this field > off. Set via
+   *  `agentproto config set daemon.restartSweepIntervalMs <ms>`. Surfaced in
+   *  `daemon_health` / `GET /health`. */
+  restartSweepIntervalMs?: number
 }
 
 export interface TunnelConfig {

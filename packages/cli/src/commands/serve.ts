@@ -654,6 +654,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // unset value here passes `undefined` through so createGateway applies
         // its own sane default rather than reading "unset" as off.
         crashDetectIntervalMs: resolveCrashDetectIntervalMs(cfgDaemon.crashDetectIntervalMs),
+        // Restart-sweep tick (restart-scheduler PR-2). OFF by default —
+        // resolution order mirrors idleReapAfterMs's comment above (env >
+        // config field > off).
+        restartSweepIntervalMs: resolveRestartSweepIntervalMs(cfgDaemon.restartSweepIntervalMs),
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
@@ -1235,6 +1239,24 @@ function resolveCrashDetectIntervalMs(configured: number | undefined): number | 
     return undefined
   }
   return configured
+}
+
+/**
+ * Resolve the effective restart-sweep interval (restart-scheduler PR-2):
+ * `AGENTPROTO_RESTART_SWEEP_INTERVAL_MS` env > the
+ * `daemon.restartSweepIntervalMs` config field > off. Returns a positive ms
+ * value to arm the sweep, or 0 to leave it off (the default) — same
+ * off-by-default shape as `resolveIdleReapAfterMs` (unlike
+ * `resolveCrashDetectIntervalMs`, which is default-ON).
+ */
+function resolveRestartSweepIntervalMs(configured: number | undefined): number {
+  const raw = process.env.AGENTPROTO_RESTART_SWEEP_INTERVAL_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+    return 0
+  }
+  return typeof configured === "number" && configured > 0 ? configured : 0
 }
 
 /**
