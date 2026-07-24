@@ -28,6 +28,7 @@ import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync } fr
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
+import { readUsageSnapshots as readUsageSnapshotLines } from "./usage-snapshot-log.js"
 import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import { runShellGate } from "./supervisor.js"
@@ -1429,6 +1430,14 @@ export interface SessionsRegistry {
    *  reason as `readCommandLog`. Returns `[]` rather than throwing when the
    *  session has none. */
   readToolCallRecords(sessionId: string): Promise<ToolCallRecord[]>
+  /** Read back every durable `usage_snapshot` a session has logged, in
+   *  on-disk order — the cumulative per-turn/exit snapshots the usage-rollup
+   *  surface aggregates. Routed through the registry for the same
+   *  base-directory reason as `readToolCallRecords`. Returns `[]` rather than
+   *  throwing when the session has none. */
+  readUsageSnapshots(
+    sessionId: string,
+  ): Promise<import("./usage-rollup.js").UsageSnapshotRecord[]>
   /** Register an already-running browser service adapter as a tracked
    *  session (kind="browser"). Idempotent by identity — each call
    *  mints a fresh session id. The `stop` callback is invoked by
@@ -4070,6 +4079,9 @@ export function createSessionsRegistry(opts?: {
     },
     async readToolCallRecords(sessionId) {
       return readToolCallRecordLines(sessionId, transcriptBaseDir)
+    },
+    async readUsageSnapshots(sessionId) {
+      return readUsageSnapshotLines(sessionId, transcriptBaseDir)
     },
     registerBrowser(input) {
       const inputLocation = input.location ?? "local"

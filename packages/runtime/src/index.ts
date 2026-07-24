@@ -273,6 +273,14 @@ export type {
   PricingResolver,
   TokenPricing,
 } from "./usage.js"
+export { parseWindow, rollupUsage } from "./usage-rollup.js"
+export type {
+  UsageSnapshotRecord,
+  SessionSnapshots,
+  UsageBucket,
+  UsageRollup,
+} from "./usage-rollup.js"
+export { readUsageSnapshots } from "./usage-snapshot-log.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
