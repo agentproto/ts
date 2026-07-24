@@ -36,6 +36,29 @@ export interface ModelCuration {
   ids: string[]
 }
 
+/** Which spend surface a {@link CostBudget} caps. `"session"` bounds the
+ *  windowed spend of the ONE session the budget is evaluated against;
+ *  `"profile"` bounds the aggregate windowed spend of every session that
+ *  resolved to the same auth profile (the session's `accessProfile.profileRef`).
+ *  Additive — new scopes are back-compat. */
+export type CostBudgetScope = "session" | "profile"
+
+/** A windowed spend cap. DISTINCT from the scalar `maxCostUsd` session-kill
+ *  (`sessions.ts` turn-end) — a `CostBudget` never kills a session; it trips a
+ *  governance policy (`policy:failed` on the completion-policy bus) when the
+ *  ROLLING windowed spend for its {@link scope} crosses `maxCostUsd`. `window`
+ *  is a rolling spec (`parseWindow` shorthand `"5h"`/`"7d"` or ISO-8601 `"P7D"`);
+ *  spend is the priced local-estimate rollup over durable usage snapshots. */
+export interface CostBudget {
+  /** Windowed spend ceiling in USD. The budget trips when the window's priced
+   *  spend strictly exceeds this. */
+  maxCostUsd: number
+  /** Rolling window spec — `parseWindow`-parseable (`"5h"`, `"7d"`, `"P7D"`). */
+  window: string
+  /** Which spend surface the window is summed over. See {@link CostBudgetScope}. */
+  scope: CostBudgetScope
+}
+
 /** A named, billing-endpoint-scoped credential reference. */
 export interface AuthProfile {
   /** Stable id, unique across all profiles (the `profileRef` a session
@@ -74,6 +97,13 @@ export interface AuthProfile {
    *  — services every eligible model, byte-identical to a profile that
    *  predates this field. See {@link ModelCuration}. */
   models?: ModelCuration
+  /** Optional windowed spend cap attached to this profile (SPEC §1c). ABSENT ⇒
+   *  no profile-level budget — byte-identical to a profile that predates this
+   *  field. When present with `scope: "profile"`, a governance policy evaluates
+   *  the aggregate windowed spend of every session on this profile at each
+   *  turn-end and trips `policy:failed` on overage. Distinct from the scalar
+   *  session-kill `maxCostUsd` — see {@link CostBudget}. */
+  costBudget?: CostBudget
   /** Provenance: where this profile's credential was IMPORTED from, when it
    *  was materialized by the WS6 discovery→import flow
    *  (`auth_profile_import`) rather than created by hand. One of the discovery

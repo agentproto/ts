@@ -31,6 +31,11 @@
  *  4. The rollup is a priced ESTIMATE, tagged `basis: "local-estimate"`.
  */
 
+// Type-only import — this module stays pure (the import is erased at compile).
+// `remaining` on a `byProfile` entry is set exclusively by the impure
+// `enrichWithRemainingQuota` surface layer, never by `rollupUsage` here.
+import type { RemainingQuota } from "./remaining-quota.js"
+
 /** A single durable `usage_snapshot` record, projected to the fields the
  *  rollup needs. `source` decides priced vs unpriced (see pin 2). Cost/token
  *  fields are optional because the writer omits absent ones so a missing value
@@ -70,7 +75,10 @@ export interface UsageRollup {
   now: string
   windowStart: string
   total: UsageBucket
-  byProfile: Array<{ profileRef: string } & UsageBucket>
+  /** Per-profile spend. The optional `remaining` is populated ONLY by the
+   *  best-effort `enrichWithRemainingQuota` surface layer — the pure
+   *  `rollupUsage` below never sets it. */
+  byProfile: Array<{ profileRef: string } & UsageBucket & { remaining?: RemainingQuota }>
   byModel: Array<{ model: string } & UsageBucket>
   byHarness: Array<{ harness: string } & UsageBucket>
   sessionsConsidered: number

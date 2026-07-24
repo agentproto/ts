@@ -29,6 +29,12 @@ const modelCurationSchema = z.object({
   ids: z.array(z.string()),
 })
 
+const costBudgetSchema = z.object({
+  maxCostUsd: z.number(),
+  window: z.string(),
+  scope: z.enum(["session", "profile"]),
+})
+
 const authProfileSchema = z.object({
   id: z.string(),
   vendor: z.string(),
@@ -41,6 +47,7 @@ const authProfileSchema = z.object({
   // `vendor` alias below.
   disabled: z.boolean().optional(),
   models: modelCurationSchema.optional(),
+  costBudget: costBudgetSchema.optional(),
   origin: z.string().optional(),
 }).transform(({ vendor, ...profile }): AuthProfile => ({ ...profile, endpoint: vendor }))
 

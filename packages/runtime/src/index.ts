@@ -278,6 +278,27 @@ export type {
   UsageBucket,
   UsageRollup,
 } from "./usage-rollup.js"
+// Phase-2: best-effort per-provider live remaining-quota enrichment.
+export {
+  AnthropicRemainingQuotaReader,
+  parseAnthropicRateLimitHeaders,
+} from "./remaining-quota.js"
+export type {
+  RemainingQuota,
+  QuotaReadableProfile,
+  RemainingQuotaReader,
+  AnthropicReaderConfig,
+} from "./remaining-quota.js"
+export {
+  loadQuotaStore,
+  readProfileQuota,
+  recordProfileQuota,
+} from "./remaining-quota-store.js"
+export type { StoredProfileQuota, QuotaStoreFile, QuotaStoreOptions } from "./remaining-quota-store.js"
+export {
+  enrichWithRemainingQuota,
+  enrichRollupWithProviderQuota,
+} from "./usage-rollup-service.js"
 export { readUsageSnapshots } from "./usage-snapshot-log.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
@@ -1322,6 +1343,9 @@ export async function createGateway(
       registry: sessions,
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
+      // Phase 4: lets an `agent_start` carrying `costBudget` auto-attach a
+      // windowed cost-budget governance policy on the spawned session.
+      supervisor,
       buildOrchestratorMcp: orchestratorInjector,
       // Same `?callerSessionId=` query that attributes `command_execute` back
       // to the calling session (above) — here it's the implicit auto-parent so
@@ -1799,3 +1823,13 @@ async function runBoot(
     durationMs: 0,
   })
 }
+
+// ── Windowed cost-budget caps (phase 4) ──────────────────────────────────────
+// The pure decision helper + its result type, plus a re-export of the shared
+// `CostBudget`/`CostBudgetScope` record from `@agentproto/auth` so a runtime
+// consumer needn't reach into the auth package for the type. Placed at the end
+// of the file (not beside the usage-rollup exports) to avoid colliding with a
+// parallel edit in that region.
+export { evaluateCostBudget } from "./cost-budget.js"
+export type { CostBudgetDecision } from "./cost-budget.js"
+export type { CostBudget, CostBudgetScope } from "@agentproto/auth"

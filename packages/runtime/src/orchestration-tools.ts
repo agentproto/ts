@@ -44,9 +44,10 @@ import {
  * Zod schema for the `gate` field of `policy_attach`.
  * Exported so tests can validate the schema directly.
  *
- * Union of two variants:
+ * Union of three variants:
  *   • shell  — `{ command, args?, cwd?, timeoutMs? }`
  *   • judge  — `{ judge: { adapter, model?, prompt, timeoutMs? } }` (WP7)
+ *   • cost   — `{ costBudget: { maxCostUsd, window, scope }, sessionId? }` (phase 4)
  */
 export const gateInputSchema = z.union([
   z.object({
@@ -62,6 +63,17 @@ export const gateInputSchema = z.union([
       prompt: z.string().min(1).describe("Rubric / instructions for the judge. The supervisor appends a VERDICT instruction."),
       timeoutMs: z.number().int().positive().optional().describe("Max wall-clock for the judge before kill + FAIL. Default 120 000."),
     }),
+  }),
+  z.object({
+    costBudget: z.object({
+      maxCostUsd: z.number().positive().describe("Windowed spend ceiling in USD — trips when priced windowed spend exceeds it."),
+      window: z.string().min(1).describe("Rolling window spec (`parseWindow`: \"5h\"/\"7d\"/\"P7D\")."),
+      scope: z.enum(["session", "profile"]).describe("Spend surface: the watched session, or every session on its auth profile."),
+    }).describe(
+      "Windowed cost-budget cap (phase 4). PASSES when the rolling windowed spend " +
+        "is within the cap, FAILS (emits policy:failed) when over. Never kills the session.",
+    ),
+    sessionId: z.string().optional().describe("Session whose spend surface is summed. Defaults to the watched session."),
   }),
 ])
 

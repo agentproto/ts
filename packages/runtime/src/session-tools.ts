@@ -44,7 +44,10 @@ import {
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import { projectSessionUsage } from "./usage.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
-import { collectSessionSnapshots } from "./usage-rollup-service.js"
+import {
+  collectSessionSnapshots,
+  enrichRollupWithProviderQuota,
+} from "./usage-rollup-service.js"
 import { withToolSubset } from "./tool-subset.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
@@ -258,6 +261,10 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.resolveWorktreeIsolation`. */
   resolveWorktreeIsolation?: RegisterAgentToolsOptions["resolveWorktreeIsolation"]
+  /** Forwarded to `registerAgentTools` — the completion-policy supervisor used
+   *  to auto-attach a windowed cost-budget policy for an `agent_start` carrying
+   *  `costBudget` (phase 4). See `RegisterAgentToolsOptions.supervisor`. */
+  supervisor?: RegisterAgentToolsOptions["supervisor"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join
@@ -498,6 +505,18 @@ export function registerSessionTools(
         .string()
         .optional()
         .describe("Filter to a single auth profile by its `profileRef`."),
+      probe: z
+        .boolean()
+        .optional()
+        .describe(
+          "Opt in to a LIVE provider refresh of `byProfile[].remaining`. " +
+            "Default false — this read is side-effect-free and reports only " +
+            "the last-seen provider value (or omits `remaining` when none is " +
+            "known; never fabricated). When true, a best-effort minimal " +
+            "metadata call is made per Anthropic OAuth profile to refresh the " +
+            "value; that call consumes a sliver of that profile's OWN " +
+            "rate-limit budget and never blocks or fails the rollup.",
+        ),
     },
     async input => {
       const parsed = parseWindow(input.window)
@@ -526,7 +545,12 @@ export function registerSessionTools(
         ...(onlyIds ? { onlyIds } : {}),
         ...(input.profileRef ? { profileRef: input.profileRef } : {}),
       })
-      const rollup = rollupUsage(sessions, { window: input.window, nowMs: Date.now() })
+      const baseRollup = rollupUsage(sessions, { window: input.window, nowMs: Date.now() })
+      // Best-effort per-provider "remaining quota" enrichment — never fatal:
+      // any failure returns the un-enriched rollup unchanged.
+      const rollup = await enrichRollupWithProviderQuota(baseRollup, input.window, {
+        probe: input.probe ?? false,
+      })
       // Prune the breakdowns not requested; always keep total + window metadata.
       let result: unknown = rollup
       if (input.groupBy) {
