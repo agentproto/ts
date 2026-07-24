@@ -131,10 +131,11 @@ export interface SessionExitedEvent {
    *  operator targeting the session: `"daemon-restart"` (the daemon dying
    *  underneath it — crash-discovered-at-boot or a forced shutdown kill) or
    *  `"idle-reaped"` (the idle-session reaper retiring a long-idle row to free
-   *  the adapter process, PR-6). Lets a watcher (completion-policy supervisor,
-   *  `session_monitor`) tell an automatic teardown apart from a deliberate
-   *  kill. Absent otherwise. */
-  reason?: "daemon-restart" | "idle-reaped"
+   *  the adapter process, PR-6), or `"crashed"` (the crash-detect sweep found
+   *  the adapter's OS process gone between turns). Lets a watcher
+   *  (completion-policy supervisor, `session_monitor`) tell an automatic
+   *  teardown apart from a deliberate kill. Absent otherwise. */
+  reason?: "daemon-restart" | "idle-reaped" | "crashed"
 }
 
 /**

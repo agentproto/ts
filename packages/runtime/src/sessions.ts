@@ -537,11 +537,17 @@ export interface SessionDescriptor {
    *     it, but NEVER eager-resumed on boot — the eager pass (#638) gates on
    *     `endedReason === "daemon-restart"`, so an `"idle-reaped"` row is
    *     naturally excluded and a resume-storm of dead work is avoided.
+   *   - `"crashed"` — the crash-detect sweep (`markCrashed`) found the
+   *     adapter's OS process gone between turns, with no exit event ever
+   *     emitted for it (agent-cli holds its child alive across turns, so a
+   *     death outside a turn is otherwise silent until the next RPC throws).
+   *     `status` is set to `"error"` (not `"killed"`) since nothing targeted
+   *     it; see `lastError`/`crashedAt` for detail.
    *  Absent for every other terminal path (operator kill, natural exit, turn
    *  error) — the session's own fault, or at least not an automatic sweep's.
    *  Lets the UI show "crashed with the daemon" / "reaped while idle" instead
    *  of a bare "killed" that reads as deliberate. */
-  endedReason?: "daemon-restart" | "idle-reaped"
+  endedReason?: "daemon-restart" | "idle-reaped" | "crashed"
   /** Whether a turn was actually in flight the INSTANT `status` flipped to
    *  "killed" — captured before anything else runs, because `busy` itself
    *  cannot be trusted after the fact: `runAgentTurn`'s `finally` is what
@@ -575,6 +581,14 @@ export interface SessionDescriptor {
    *  every read since it's a live OS query, stale the instant it's
    *  written to disk. */
   processAlive?: boolean
+  /** Short human-readable string describing the most recent automatic
+   *  failure — currently only stamped by `markCrashed` (e.g. "adapter
+   *  process gone (pid 1234) — session crashed"). Not a stack trace or raw
+   *  error, just enough for a UI/log line. Absent unless something set it. */
+  lastError?: string
+  /** ISO 8601 timestamp of the crash-detect sweep that flipped this row to
+   *  `endedReason:"crashed"`. Absent for every other terminal path. */
+  crashedAt?: string
   /** DERIVED, read-time only (never persisted — stripped by `snapshotRows`,
    *  stamped by `stampInterrupted` in list()/get()/findByIdOrName). True when
    *  this session died with a turn in flight under a daemon restart —
@@ -1713,6 +1727,26 @@ export interface SessionsRegistry {
    *  emitted `session:reaped` event for observability. Returns true iff a row
    *  was actually reaped. */
   reapIdle(id: string, idleMs?: number): boolean
+  /** Flip a LIVE agent-cli row whose adapter OS process is gone to
+   *  `status:"error"`/`endedReason:"crashed"` — the primitive the crash-detect
+   *  sweep (`runCrashDetectPass`) drives on a periodic sweep. Unlike
+   *  `reapIdle`, this is discovering a death that already happened (no exit
+   *  event was ever emitted for it), not initiating one — so it never signals
+   *  the process, it just reconciles the descriptor to match reality: sets
+   *  `endedAt`/`crashedAt`/`lastError` (a short string naming the pid),
+   *  appends a `[crashed] …` stderr line, and — same as `reapIdle` — CLEARS
+   *  the in-memory `agentSession` binding so the row stays lazy-resumable
+   *  (adapterSessionId/cwd left intact). Emits the usual `session:exited`
+   *  (carrying `reason: "crashed"`). The row and its transcript are NOT
+   *  deleted.
+   *
+   *  Purely mechanical: the caller (the sweep) owns the liveness-probe
+   *  policy. This method only guards the invariant a crash-mark must never
+   *  violate — it refuses (returns false, no-op) a session that is not a
+   *  live (`running`) agent-cli row, so it is idempotent and safe to call on
+   *  an already-terminal or non-agent-cli row. Returns true iff a row was
+   *  actually marked crashed. */
+  markCrashed(id: string): boolean
   /** List permission requests currently parked in the pending-permissions
    *  inbox across all permission-hold sessions, newest last. Optionally
    *  filtered to one session. */
@@ -4676,6 +4710,43 @@ export function createSessionsRegistry(opts?: {
       // … alongside the usual lifecycle exit (carrying reason:"idle-reaped" via
       // emitExited, which reads desc.endedReason) so existing session:exited
       // consumers still see the row leave "running".
+      emitExited(rt)
+      return true
+    },
+    markCrashed(id) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      // Only a LIVE agent-cli row can be marked crashed — same guard as
+      // reapIdle, kept honest for any caller regardless of what the sweep
+      // already filtered for.
+      if (rt.desc.kind !== "agent-cli" || rt.desc.status !== "running") {
+        return false
+      }
+      const pid = rt.desc.pid
+      rt.desc.status = "error"
+      rt.desc.endedAt = new Date().toISOString()
+      rt.desc.endedReason = "crashed"
+      rt.desc.crashedAt = rt.desc.endedAt
+      rt.desc.lastError = `adapter process gone (pid ${pid}) — session crashed`
+      if (rt.agentSession) {
+        // Durable usage recap on exit — before close() flushes the stream.
+        recordExitUsageSnapshot(rt)
+        void rt.agentSession.close().catch(() => undefined)
+        void transcriptWriter.close(rt.desc.id)
+        tracedSessions.delete(rt.desc.id)
+        // THE difference from a plain kill(): drop the binding so the row is
+        // immediately lazy-resumable — `maybeResumeAgent` early-returns while
+        // `rt.agentSession` is set. adapterSessionId/cwd stay on the
+        // descriptor, so `isResumable` still holds.
+        rt.agentSession = undefined
+      }
+      schedulePersist()
+      const banner = `[crashed] adapter process gone (pid ${pid}) — session crashed`
+      appendLine(rt, banner, "stderr")
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+      // The usual lifecycle exit (carrying reason:"crashed" via emitExited,
+      // which reads desc.endedReason) so existing session:exited consumers
+      // see the row leave "running".
       emitExited(rt)
       return true
     },

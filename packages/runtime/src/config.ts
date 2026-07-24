@@ -83,6 +83,21 @@ export interface DaemonConfig {
    *  field > off. Set via `agentproto config set daemon.idleReapAfterMs
    *  <ms>`. Surfaced in `daemon_health` / `GET /health`. */
   idleReapAfterMs?: number
+  /** Crash-detect sweep interval in ms (crash-detect PR-1). Unlike
+   *  `idleReapAfterMs`, this is DEFAULT ON (non-destructive observability):
+   *  the daemon periodically probes every live agent-cli session's OS
+   *  process (`process.kill(pid, 0)`) and, when it's provably gone with no
+   *  exit event ever emitted for it, flips the row to
+   *  `error`/`endedReason:"crashed"` with a `lastError` string — surfacing a
+   *  death that would otherwise sit silently as `status:"running"` until the
+   *  next prompt's RPC throws (or forever, for a parked session with no next
+   *  prompt). Detects only; never restarts or notifies (later PRs). Set to a
+   *  non-positive value to disable the sweep entirely. Resolution order
+   *  mirrors `idleReapAfterMs`: `AGENTPROTO_CRASH_DETECT_INTERVAL_MS` env >
+   *  this field > the hardcoded default (30s). Set via `agentproto config
+   *  set daemon.crashDetectIntervalMs <ms>`. Surfaced in `daemon_health` /
+   *  `GET /health`. */
+  crashDetectIntervalMs?: number
 }
 
 export interface TunnelConfig {

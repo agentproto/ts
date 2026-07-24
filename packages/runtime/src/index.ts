@@ -74,6 +74,7 @@ import {
 } from "./sessions.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
+import { runCrashDetectPass } from "./crash-reaper.js"
 import { loadConfig } from "./config.js"
 import { resolveResumeAuth } from "./session-restart-core.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -254,6 +255,11 @@ export {
   type IdleReapSummary,
   type IdleReaperRegistry,
 } from "./idle-reaper.js"
+export {
+  runCrashDetectPass,
+  type CrashDetectSummary,
+  type CrashReaperRegistry,
+} from "./crash-reaper.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
 export {
@@ -541,6 +547,15 @@ export interface CreateGatewayOptions {
    *  kept lazy-resumable). Unset / 0 / negative ⇒ the reaper never runs.
    *  Surfaced in `daemon_health` / `GET /health`. */
   idleReapAfterMs?: number
+  /** Crash-detect sweep interval in ms (crash-detect PR-1). Mirrors the
+   *  `daemon.crashDetectIntervalMs` config knob; the CLI resolves it (env >
+   *  config > a sane default — DEFAULT ON, unlike `idleReapAfterMs`) and
+   *  passes it here. The gateway starts a periodic sweep that probes every
+   *  live agent-cli session's OS process and marks the row `error`/
+   *  `endedReason:"crashed"` when it's provably gone
+   *  (`registry.markCrashed`, driven by `runCrashDetectPass`). Non-positive ⇒
+   *  the sweep never runs. Surfaced in `daemon_health` / `GET /health`. */
+  crashDetectIntervalMs?: number
   /**
    * Resolves a heartbeat-runnable agent from its workspace id.
    * Required for HEARTBEAT.md to do anything; without it ticks emit
@@ -719,6 +734,13 @@ export interface CreateGatewayOptions {
  * workflow_*, policy_*, inbound_watcher_*, session_tree, agent_export,
  * adapter_list, ...) starts deferred.
  */
+/** Default crash-detect sweep interval (crash-detect PR-1) when
+ *  `crashDetectIntervalMs` is left unset — detection is default-on, so this
+ *  is what actually arms the sweep for the common case of a caller never
+ *  touching the knob. 30s is frequent enough to notice a crashed parked
+ *  session promptly without meaningfully taxing an idle daemon. */
+const DEFAULT_CRASH_DETECT_INTERVAL_MS = 30_000
+
 const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "daemon_health",
   "agent_start",
@@ -805,6 +827,16 @@ export async function createGateway(
     typeof opts.idleReapAfterMs === "number" && opts.idleReapAfterMs > 0
       ? opts.idleReapAfterMs
       : 0
+  // Effective crash-detect interval (crash-detect PR-1): DEFAULT ON, unlike
+  // idleReapAfterMs — an unset knob still gets a sane default sweep cadence
+  // since detection is non-destructive observability. A caller must pass an
+  // explicit non-positive value to actually disable the sweep.
+  const crashDetectIntervalMs =
+    typeof opts.crashDetectIntervalMs === "number"
+      ? opts.crashDetectIntervalMs > 0
+        ? opts.crashDetectIntervalMs
+        : 0
+      : DEFAULT_CRASH_DETECT_INTERVAL_MS
   const workspace = resolve(opts.workspace)
   if (!existsSync(workspace)) {
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
@@ -1323,6 +1355,7 @@ export async function createGateway(
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
+      crashDetectIntervalMs,
     })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
@@ -1665,6 +1698,7 @@ export async function createGateway(
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
+      crashDetectIntervalMs,
     },
     cronScheduler,
     routineRegistrar,
@@ -1705,6 +1739,36 @@ export async function createGateway(
       }
     }, intervalMs)
     idleReapTimer.unref?.()
+  }
+
+  // Crash-detect sweep (crash-detect PR-1). DEFAULT ON — armed whenever
+  // `crashDetectIntervalMs > 0`, which it is unless a caller explicitly
+  // disabled it (see the normalization above). Detects (and surfaces) a
+  // dead adapter process for a parked agent-cli session that would
+  // otherwise stay lying `status:"running"` until its next prompt's RPC
+  // throws. Never restarts or notifies — that's a later PR.
+  // `.unref()` so the ticker never keeps the process alive on its own.
+  let crashDetectTimer: ReturnType<typeof setInterval> | null = null
+  if (crashDetectIntervalMs > 0) {
+    crashDetectTimer = setInterval(() => {
+      try {
+        const summary = runCrashDetectPass({ registry: sessions, crashDetectIntervalMs })
+        if (summary.crashed > 0) {
+          // One line per sweep that actually found something (silent otherwise
+          // so a quiet daemon doesn't log every tick).
+          console.log(
+            `[crash-detect] marked ${summary.crashed}/${summary.candidates} ` +
+              `crashed agent session(s): ${summary.ids.join(", ")}`,
+          )
+        }
+      } catch (err) {
+        // A sweep must never crash the daemon — log and let the next tick retry.
+        console.warn(
+          `[crash-detect] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }, crashDetectIntervalMs)
+    crashDetectTimer.unref?.()
   }
 
   events.emit({
@@ -1761,6 +1825,8 @@ export async function createGateway(
       heartbeat.stop()
       // Stop the idle-reaper sweep before sessions shut down (PR-6).
       if (idleReapTimer) clearInterval(idleReapTimer)
+      // Stop the crash-detect sweep before sessions shut down (crash-detect PR-1).
+      if (crashDetectTimer) clearInterval(crashDetectTimer)
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
       // Stop the cron scheduler tick loop before sessions shut down.
