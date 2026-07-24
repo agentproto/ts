@@ -18,6 +18,7 @@ import type {
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { RoutineRunner } from "./routine-runner.js"
+import { logRoutineRunnerDeprecation } from "./step-run-types.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
@@ -622,13 +623,19 @@ export function registerOrchestrationTools(
   )
 
   // ── Routine tools (optional — only registered when routineRunner is provided) ─
+  // DEPRECATED — a sequence is a workflow with single-step stages; use
+  // `workflow_*` instead. Removed next release. Kept functional this PR;
+  // `routine_list` moved below to the routineRegistrar block (it now
+  // returns AIP-41 routine DEFINITIONS, not RoutineRunner runs).
   const { routineRunner } = opts
   if (routineRunner) {
     server.tool(
       "routine_start",
-      "Start a routine — a named sequence of steps that spawn agent sessions " +
-        "and fan-in on their turn-end events. Returns a runId immediately; " +
-        "the routine executes in the background. Poll with `routine_status`.",
+      "DEPRECATED — use `workflow_*`; a sequence is a workflow with " +
+        "single-step stages. Removed next release. Start a routine — a " +
+        "named sequence of steps that spawn agent sessions and fan-in on " +
+        "their turn-end events. Returns a runId immediately; the routine " +
+        "executes in the background. Poll with `routine_status`.",
       {
         routineId: z.string().describe("Arbitrary label for this routine type (e.g. 'daily-brief')."),
         steps: z
@@ -673,6 +680,7 @@ export function registerOrchestrationTools(
           .describe("Webhook URL to call on run completion or escalation."),
       },
       async input => {
+        logRoutineRunnerDeprecation("routine_start")
         const run = await routineRunner.start(input)
         return {
           content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
@@ -682,11 +690,14 @@ export function registerOrchestrationTools(
 
     server.tool(
       "routine_status",
-      "Poll the status of a background routine run started with `routine_start`.",
+      "DEPRECATED — use `workflow_*`; a sequence is a workflow with " +
+        "single-step stages. Removed next release. Poll the status of a " +
+        "background routine run started with `routine_start`.",
       {
         runId: z.string().describe("Run id returned by `routine_start`."),
       },
       async input => {
+        logRoutineRunnerDeprecation("routine_status")
         const run = routineRunner.status(input.runId)
         if (!run) {
           return {
@@ -699,12 +710,15 @@ export function registerOrchestrationTools(
 
     server.tool(
       "routine_cancel",
-      "Cancel a running routine. Steps already in flight will finish, but no " +
-        "new steps will be started.",
+      "DEPRECATED — use `workflow_*`; a sequence is a workflow with " +
+        "single-step stages. Removed next release. Cancel a running " +
+        "routine. Steps already in flight will finish, but no new steps " +
+        "will be started.",
       {
         runId: z.string().describe("Run id to cancel."),
       },
       async input => {
+        logRoutineRunnerDeprecation("routine_cancel")
         routineRunner.cancel(input.runId)
         const run = routineRunner.status(input.runId)
         return { content: [{ type: "text", text: JSON.stringify({ runId: input.runId, status: run?.status ?? "not_found" }) }] }
@@ -713,26 +727,19 @@ export function registerOrchestrationTools(
 
     server.tool(
       "routine_escalation_resolve",
-      "Provide an external answer to a routine step that escalated because a " +
-        "session asked for human input (policy=escalate).",
+      "DEPRECATED — use `workflow_*`; a sequence is a workflow with " +
+        "single-step stages. Removed next release. Provide an external " +
+        "answer to a routine step that escalated because a session asked " +
+        "for human input (policy=escalate).",
       {
         runId: z.string().describe("Run id."),
         stepIndex: z.number().int().min(0).describe("Step index to resolve (0-based)."),
         response: z.string().describe("The answer to inject into the awaiting session."),
       },
       async input => {
+        logRoutineRunnerDeprecation("routine_escalation_resolve")
         routineRunner.resolve(input.runId, input.stepIndex, input.response)
         return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }
-      },
-    )
-
-    server.tool(
-      "routine_list",
-      "List all routine runs (running, done, failed, cancelled).",
-      {},
-      async () => {
-        const runs = routineRunner.list()
-        return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
       },
     )
   }
@@ -1792,6 +1799,19 @@ export function registerOrchestrationTools(
   // requiring `reconcile()` to have registered a cron job for it first.
   const { routineRegistrar } = opts
   if (routineRegistrar) {
+    server.tool(
+      "routine_list",
+      "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
+        "schedule, target, enabled). Not RoutineRunner runs — those are the " +
+        "unrelated ad-hoc step-sequence primitive being retired; see " +
+        "`workflow_list` / `activities_list` for run history.",
+      {},
+      async () => {
+        const routines = routineRegistrar.list()
+        return { content: [{ type: "text", text: JSON.stringify(routines, null, 2) }] }
+      },
+    )
+
     server.tool(
       "routine_trigger",
       "Fire an AIP-41 routine's target immediately, bypassing its schedule — " +

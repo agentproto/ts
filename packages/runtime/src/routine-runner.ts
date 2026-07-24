@@ -37,25 +37,13 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
+import type { RoutineStep, RoutineStepState } from "./step-run-types.js"
 
 // ── Public types ─────────────────────────────────────────────────────
-
-export type RoutinePolicy =
-  | { awaiting: "auto-allow"; prompt: string }
-  | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
-  | { awaiting: "fail" }
-
-export interface RoutineStep {
-  label: string
-  /** Prompt to send to the agent. Omit to just wait without prompting. */
-  prompt?: string
-  /** Adapter slug for spawning a NEW session. Omit to reuse the current
-   *  run's last session. */
-  adapter?: string
-  /** Fan-in: wait for ALL these session ids to finish before executing. */
-  waitFor?: string[]
-  policy?: RoutinePolicy
-}
+// RoutinePolicy / RoutineStep / RoutineStepState now live in
+// step-run-types.ts (the neutral owner workflow-runner.ts also imports
+// from) — re-exported here so nothing importing from routine-runner.ts breaks.
+export type { RoutinePolicy, RoutineStep, RoutineStepState } from "./step-run-types.js"
 
 export type RoutineRunStatus =
   | "idle"
@@ -64,16 +52,6 @@ export type RoutineRunStatus =
   | "done"
   | "failed"
   | "cancelled"
-
-export interface RoutineStepState {
-  index: number
-  label: string
-  status: "pending" | "running" | "done" | "failed" | "skipped"
-  sessionId?: string
-  startedAt?: string
-  endedAt?: string
-  error?: string
-}
 
 export interface RoutineRun {
   runId: string

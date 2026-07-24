@@ -29,6 +29,19 @@ import { createEventRing } from "../event-ring.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { SessionEventBus } from "../session-event-bus.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+import type { RoutineRegistrar } from "../routine-registrar.js"
+
+// `routine_list` was repointed (PLAN.md PR B1 #2) to the AIP-41 registrar's
+// `list()` — routine DEFINITIONS, not RoutineRunner runs. This fixture
+// stands in for the registrar in tests that don't need real `.routines/*`
+// scanning.
+function makeMockRegistrar(definitions: unknown[] = []): RoutineRegistrar {
+  return {
+    reconcile: () => ({ registered: [], skipped: [], removed: [], errors: [] }),
+    trigger: async () => ({ ok: true, summary: "mock" }),
+    list: () => definitions as ReturnType<RoutineRegistrar["list"]>,
+  }
+}
 
 // ── Mock registry: spawn returns a fixed id; sendPrompt fires turn-end ──
 // synchronously (reproduces the production fast-session path). get() reports
@@ -76,7 +89,7 @@ function parseToolJson(result: unknown): any {
 }
 
 describe("routine orchestration — MCP transport e2e", () => {
-  async function setup() {
+  async function setup(routineRegistrar?: RoutineRegistrar) {
     const bus = createSessionEventBus()
     const eventRing = createEventRing()
     const registry = makeMockRegistry(bus)
@@ -88,7 +101,13 @@ describe("routine orchestration — MCP transport e2e", () => {
     })
 
     const server = new McpServer({ name: "routine-e2e-server", version: "0.0.0" })
-    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing, routineRunner })
+    registerOrchestrationTools(server, {
+      registry,
+      sessionEvents: bus,
+      eventRing,
+      routineRunner,
+      ...(routineRegistrar ? { routineRegistrar } : {}),
+    })
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
@@ -97,14 +116,26 @@ describe("routine orchestration — MCP transport e2e", () => {
     return { client, server }
   }
 
-  it("registers routine_start + routine_status + routine_list on the server", async () => {
+  it("registers routine_start + routine_status + routine_cancel on the server (routine_list needs a registrar, not just a runner)", async () => {
     const { client } = await setup()
     const { tools } = await client.listTools()
     const names = tools.map(t => t.name)
     expect(names).toContain("routine_start")
     expect(names).toContain("routine_status")
-    expect(names).toContain("routine_list")
     expect(names).toContain("routine_cancel")
+    // routine_list moved off RoutineRunner (PLAN.md PR B1 #2) — without a
+    // routineRegistrar wired, it's not registered at all.
+    expect(names).not.toContain("routine_list")
+  })
+
+  it("routine_start/status/cancel/escalation_resolve descriptions are stamped DEPRECATED", async () => {
+    const { client } = await setup()
+    const { tools } = await client.listTools()
+    for (const name of ["routine_start", "routine_status", "routine_cancel", "routine_escalation_resolve"]) {
+      const tool = tools.find(t => t.name === name)
+      expect(tool, `expected ${name} to be registered`).toBeDefined()
+      expect(tool?.description).toMatch(/^DEPRECATED — use `workflow_\*`/)
+    }
   })
 
   it("routine_start → routine_status reaches done over MCP", async () => {
@@ -141,17 +172,21 @@ describe("routine orchestration — MCP transport e2e", () => {
     expect(final.result.sessionIds.length).toBeGreaterThan(0)
   })
 
-  it("routine_list reflects the started run over MCP", async () => {
-    const { client } = await setup()
+  it("routine_list (wired with a registrar) returns AIP-41 routine DEFINITIONS, not RoutineRunner runs", async () => {
+    const definitions = [{ id: "daily-brief", enabled: true, schedule: { kind: "cron", cron: "0 9 * * *" } }]
+    const { client } = await setup(makeMockRegistrar(definitions))
+
+    // Start a RoutineRunner run — routine_list must NOT reflect it.
     const started = parseToolJson(
       await client.callTool({
         name: "routine_start",
         arguments: { routineId: "e2e-listed", steps: [{ label: "only", adapter: "mock", prompt: "go" }] },
       }),
     )
-    const runs = parseToolJson(await client.callTool({ name: "routine_list", arguments: {} }))
-    expect(Array.isArray(runs)).toBe(true)
-    expect(runs.some((r: { runId: string }) => r.runId === started.runId)).toBe(true)
+
+    const routines = parseToolJson(await client.callTool({ name: "routine_list", arguments: {} }))
+    expect(routines).toEqual(definitions)
+    expect(routines.some((r: { runId?: string }) => r.runId === started.runId)).toBe(false)
   })
 
   it("routine_status on an unknown runId returns a clean error over MCP", async () => {
