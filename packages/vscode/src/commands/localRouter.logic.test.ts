@@ -9,6 +9,7 @@ import {
   reloadLlmEndpointPacksMessage,
   startLlmEndpointMessage,
   stopLlmEndpointMessage,
+  testLlmEndpointUpstreamMessage,
 } from "./localRouter.logic.js"
 
 function desc(over: Partial<LlmEndpointDescriptorResult> = {}): LlmEndpointDescriptorResult {
@@ -80,7 +81,33 @@ describe("localRouterErrorMessage", () => {
     )
   })
 
+  it("uses an upstream-specific phrasing for the test verb", () => {
+    expect(localRouterErrorMessage("test", new Error("HTTP 500"))).toBe(
+      "Could not test the Local Router upstream: HTTP 500",
+    )
+  })
+
   it("stringifies a non-Error rejection", () => {
     expect(localRouterErrorMessage("start", "raw")).toBe("Could not start the Local Router: raw")
+  })
+})
+
+describe("testLlmEndpointUpstreamMessage", () => {
+  it("reports an ok verdict with the status and detail", () => {
+    expect(
+      testLlmEndpointUpstreamMessage({ provider: "groq", ok: true, status: 200, detail: "authenticated ok" }),
+    ).toBe("Upstream groq: OK (HTTP 200 — authenticated ok).")
+  })
+
+  it("reports a failed verdict with the status and detail", () => {
+    expect(
+      testLlmEndpointUpstreamMessage({ provider: "xai", ok: false, status: 401, detail: "credential rejected" }),
+    ).toBe("Upstream xai: failed (HTTP 401 — credential rejected).")
+  })
+
+  it("reports a no-probe upstream", () => {
+    expect(testLlmEndpointUpstreamMessage({ provider: "zai", ok: null, reason: "no-probe" })).toBe(
+      "Upstream zai: no cheap probe available (no-probe).",
+    )
   })
 })

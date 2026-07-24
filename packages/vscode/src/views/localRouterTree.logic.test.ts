@@ -11,9 +11,16 @@ import {
   parseDiscoveredModels,
   parseRouterPacks,
   buildRouterPackChildren,
+  parseRouterUpstreams,
+  buildRouterUpstreamChildren,
+  presentWord,
   resolveRouterModelChildren,
   resolveRouterPackChildren,
+  resolveRouterUpstreamChildren,
   routerPackDescription,
+  routerUpstreamDescription,
+  routerUpstreamIcon,
+  routerUpstreamTooltip,
   routerBaseUrl,
   routerContextValue,
   routerDescription,
@@ -539,6 +546,142 @@ describe("resolveRouterPackChildren", () => {
   it("returns no children (never fetches) when the router isn't serving", async () => {
     let fetched = false
     const children = await resolveRouterPackChildren(STOPPED, async () => {
+      fetched = true
+      return []
+    })
+    expect(children).toEqual([])
+    expect(fetched).toBe(false)
+  })
+})
+
+// ── Upstreams subtree ─────────────────────────────────────────────────────────
+
+describe("parseRouterUpstreams", () => {
+  it("parses the /v1/upstreams shape (profile / env / none, present nullable)", () => {
+    const upstreams = parseRouterUpstreams({
+      object: "list",
+      probe: false,
+      data: [
+        { provider: "anthropic", linkedProfile: "claude-subs", source: "profile", method: "oauth-bearer", present: null },
+        { provider: "groq", linkedProfile: null, source: "env", method: "api-key", present: true },
+        { provider: "requesty", linkedProfile: null, source: "none", method: null, present: false },
+      ],
+    })
+    expect(upstreams).toEqual([
+      { provider: "anthropic", linkedProfile: "claude-subs", source: "profile", method: "oauth-bearer", present: null },
+      { provider: "groq", linkedProfile: null, source: "env", method: "api-key", present: true },
+      { provider: "requesty", linkedProfile: null, source: "none", method: null, present: false },
+    ])
+  })
+
+  it("coerces unknown source/method/present and ignores rows without a provider", () => {
+    expect(
+      parseRouterUpstreams({
+        data: [
+          { linkedProfile: "x" }, // no provider → dropped
+          { provider: 7 }, // non-string → dropped
+          { provider: "openai", source: "weird", method: "bogus", present: "yes" },
+        ],
+      }),
+    ).toEqual([{ provider: "openai", linkedProfile: null, source: "none", method: null, present: null }])
+    expect(parseRouterUpstreams({ data: "nope" })).toEqual([])
+    expect(parseRouterUpstreams(null)).toEqual([])
+  })
+})
+
+describe("presentWord", () => {
+  it("maps the tri-state presence to a word", () => {
+    expect(presentWord(true)).toBe("present")
+    expect(presentWord(false)).toBe("absent")
+    expect(presentWord(null)).toBe("unprobed")
+  })
+})
+
+describe("routerUpstreamDescription", () => {
+  it("renders a linked profile with its method and presence", () => {
+    expect(
+      routerUpstreamDescription({ provider: "anthropic", linkedProfile: "claude-subs", source: "profile", method: "oauth-bearer", present: null }),
+    ).toBe("→ claude-subs · oauth-bearer · unprobed")
+  })
+
+  it("renders an env source", () => {
+    expect(
+      routerUpstreamDescription({ provider: "groq", linkedProfile: null, source: "env", method: "api-key", present: true }),
+    ).toBe("env · api-key · present")
+  })
+
+  it("renders an unlinked (none) source, omitting a null method", () => {
+    expect(
+      routerUpstreamDescription({ provider: "requesty", linkedProfile: null, source: "none", method: null, present: false }),
+    ).toBe("unlinked · absent")
+  })
+})
+
+describe("routerUpstreamIcon", () => {
+  it("maps presence to a codicon", () => {
+    expect(routerUpstreamIcon({ provider: "a", linkedProfile: null, source: "env", method: "api-key", present: true })).toBe("pass")
+    expect(routerUpstreamIcon({ provider: "a", linkedProfile: "p", source: "profile", method: "api-key", present: null })).toBe("question")
+    expect(routerUpstreamIcon({ provider: "a", linkedProfile: null, source: "none", method: null, present: false })).toBe("circle-slash")
+  })
+})
+
+describe("routerUpstreamTooltip", () => {
+  it("lists the provider, source, linked profile, method and presence (no secret)", () => {
+    const tip = routerUpstreamTooltip({ provider: "anthropic", linkedProfile: "claude-subs", source: "profile", method: "oauth-bearer", present: true })
+    expect(tip).toContain("**anthropic**")
+    expect(tip).toContain("- Source: profile")
+    expect(tip).toContain("- Linked profile: claude-subs")
+    expect(tip).toContain("- Method: oauth-bearer")
+    expect(tip).toContain("- Credential: present")
+  })
+})
+
+describe("buildRouterUpstreamChildren", () => {
+  it("maps each upstream to a router-upstream node", () => {
+    const u = { provider: "groq", linkedProfile: null, source: "env", method: "api-key", present: true } as const
+    expect(buildRouterUpstreamChildren([u])).toEqual([{ kind: "router-upstream", upstream: u }])
+  })
+
+  it("renders a 'No upstreams' message for an empty list", () => {
+    expect(buildRouterUpstreamChildren([])).toEqual([{ kind: "router-message", message: "No upstreams" }])
+  })
+})
+
+describe("resolveRouterUpstreamChildren", () => {
+  const serving = (): LlmEndpointStatusResult => status({ status: "running", healthy: true })
+
+  it("fetches and builds upstream rows when serving", async () => {
+    const children = await resolveRouterUpstreamChildren(serving(), async () => [
+      { provider: "groq", linkedProfile: null, source: "env", method: "api-key", present: true },
+    ])
+    expect(children).toEqual([
+      { kind: "router-upstream", upstream: { provider: "groq", linkedProfile: null, source: "env", method: "api-key", present: true } },
+    ])
+  })
+
+  it("renders 'Upstreams unavailable' when the fetch throws", async () => {
+    const children = await resolveRouterUpstreamChildren(serving(), async () => {
+      throw new Error("boom")
+    })
+    expect(children).toEqual([{ kind: "router-message", message: "Upstreams unavailable" }])
+  })
+
+  it("renders 'Router address unavailable' when serving with no base URL", async () => {
+    let fetched = false
+    const children = await resolveRouterUpstreamChildren(
+      status({ status: "running", healthy: true, baseUrl: null, port: null }),
+      async () => {
+        fetched = true
+        return []
+      },
+    )
+    expect(children).toEqual([{ kind: "router-message", message: "Router address unavailable" }])
+    expect(fetched).toBe(false)
+  })
+
+  it("returns no children (never fetches) when the router isn't serving", async () => {
+    let fetched = false
+    const children = await resolveRouterUpstreamChildren(STOPPED, async () => {
       fetched = true
       return []
     })

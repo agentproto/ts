@@ -598,6 +598,255 @@ export function isCredentialAllowedOnOpenAiSurface(
   return !cred || cred.method === 'api-key';
 }
 
+// ── Per-upstream credential status (GET /v1/upstreams) ────────────────────────
+// A read-only view of HOW a credential would resolve for each canonical
+// upstream — the profile/env/none precedence resolveUpstreamCredential itself
+// applies — WITHOUT ever returning the secret. Powers the vscode Upstreams
+// subtree + the optional live test below.
+
+// The 8 canonical upstreams. Built from a `Record<keyof ProviderKeys, …>` so
+// the compiler forces this list to stay exactly in sync with ProviderKeys
+// (every key required, no extras) — no drift, no runtime cost.
+const CANONICAL_UPSTREAM_ORDER: Record<keyof ProviderKeys, true> = {
+  anthropic: true,
+  moonshot: true,
+  openrouter: true,
+  requesty: true,
+  zai: true,
+  groq: true,
+  xai: true,
+  openai: true,
+};
+export const CANONICAL_UPSTREAMS = Object.keys(CANONICAL_UPSTREAM_ORDER) as (keyof ProviderKeys)[];
+
+/** Narrow an arbitrary provider string to one of the canonical upstreams. */
+export function isCanonicalUpstream(provider: string): provider is keyof ProviderKeys {
+  return (CANONICAL_UPSTREAMS as readonly string[]).includes(provider);
+}
+
+/** How a credential WOULD resolve for an upstream (never leaks the value). */
+export type UpstreamSource = 'profile' | 'env' | 'none';
+
+/**
+ * Non-secret status of one upstream's outbound credential:
+ *  - `linkedProfile`: the `LLM_ENDPOINT_PROFILE_<P>` profile id, or null.
+ *  - `source`: how a credential would resolve — a mapped profile ("profile",
+ *    even if that profile is missing/disabled), else a non-empty per-provider
+ *    env key ("env"), else "none".
+ *  - `method`: the outbound auth shape — the mapped profile's method, or
+ *    "api-key" for the env path, or null when nothing is configured.
+ *  - `present`: whether a credential actually resolves. Known for free for the
+ *    env ("env" ⇒ true) and none ("none" ⇒ false) sources; for a profile source
+ *    it is `null` unless `?probe=1` was requested, because confirming it reads
+ *    the OS keychain (one read per mapped profile).
+ */
+export interface UpstreamStatus {
+  provider: string;
+  linkedProfile: string | null;
+  source: UpstreamSource;
+  method: UpstreamAuthMethod | null;
+  present: boolean | null;
+}
+
+/**
+ * Whether a credential actually resolves for `provider`, as a pure boolean —
+ * reuses resolveUpstreamCredential's exact precedence (profile → keychain →
+ * env fallback) and NEVER exposes the value. For a profile source this reads
+ * the keychain, so it is only called on the `?probe=1` path.
+ */
+async function upstreamCredentialPresent(provider: string): Promise<boolean> {
+  const cred = await resolveUpstreamCredential(provider);
+  return Boolean(cred?.value);
+}
+
+/**
+ * Describe one upstream's credential status without returning a secret. The
+ * default (mapping-only) view is cheap — an env-var read plus, for a mapped
+ * provider, one auth-profiles.json read for the method. `present` for a profile
+ * source is filled only when `opts.probe` is set (it costs a keychain read).
+ */
+export async function describeUpstreamStatus(
+  provider: string,
+  opts: { probe: boolean },
+): Promise<UpstreamStatus> {
+  const linkedProfile = process.env[upstreamProfileEnvVar(provider)]?.trim() || null;
+  if (linkedProfile) {
+    // Profile metadata only (no keychain, no secret) — `method` and whether the
+    // mapped profile even exists. `source` stays "profile" regardless: a
+    // missing/disabled profile still describes intent, and `present` (on probe)
+    // tells the truth about whether it resolves.
+    const profile = await getAuthProfile(linkedProfile);
+    const present = opts.probe ? await upstreamCredentialPresent(provider) : null;
+    return { provider, linkedProfile, source: 'profile', method: profile?.method ?? null, present };
+  }
+  // getApiKey returns the env secret — used ONLY as a boolean here, never
+  // returned. A non-empty env key ⇒ present:true for free.
+  if (getApiKey(provider)) {
+    return { provider, linkedProfile: null, source: 'env', method: 'api-key', present: true };
+  }
+  return { provider, linkedProfile: null, source: 'none', method: null, present: false };
+}
+
+/** Status for all 8 canonical upstreams, in ProviderKeys order. */
+export async function collectUpstreamStatuses(opts: { probe: boolean }): Promise<UpstreamStatus[]> {
+  return Promise.all(CANONICAL_UPSTREAMS.map((provider) => describeUpstreamStatus(provider, opts)));
+}
+
+// ── Per-upstream live test (POST /v1/upstreams/:provider/test) ────────────────
+// Best-effort, time-boxed: the CHEAPEST authenticated call to an upstream (a
+// models-list GET / key-info GET — no token cost) using the resolved
+// credential, reporting only {ok, status, detail} — never a secret, never the
+// upstream body. Upstreams with no cheap safe probe return {ok:null,
+// reason:"no-probe"} rather than inventing a costly call.
+
+const UPSTREAM_TEST_TIMEOUT_MS = 4000;
+
+interface UpstreamProbe {
+  hostname: string;
+  path: string;
+}
+
+/**
+ * The cheapest authenticated GET that verifies an upstream credential. Most
+ * providers expose an OpenAI-style `/v1/models` that 401s without a valid key;
+ * anthropic has its native Models API; openrouter's `/api/v1/key` returns the
+ * key's own metadata. Returns null for a provider with no cheap safe probe
+ * (caller responds {ok:null, reason:"no-probe"}).
+ *
+ * NOTE (honesty): the zai / requesty paths are best-effort and unverified live
+ * — a wrong path surfaces honestly as a non-2xx `status` with a "not found"
+ * detail, distinct from the 401/403 "credential rejected" verdict.
+ */
+function getUpstreamProbe(provider: string): UpstreamProbe | null {
+  switch (provider) {
+    case 'anthropic':
+      return { hostname: 'api.anthropic.com', path: '/v1/models?limit=1' };
+    case 'moonshot':
+      return { hostname: 'api.moonshot.ai', path: '/v1/models' };
+    case 'openrouter':
+      return { hostname: 'openrouter.ai', path: '/api/v1/key' };
+    case 'requesty':
+      return { hostname: 'router.requesty.ai', path: '/v1/models' };
+    case 'zai':
+      return { hostname: 'open.bigmodel.cn', path: '/api/paas/v4/models' };
+    case 'groq':
+      return { hostname: 'api.groq.com', path: '/openai/v1/models' };
+    case 'xai':
+      return { hostname: 'api.x.ai', path: '/v1/models' };
+    case 'openai':
+      return { hostname: 'api.openai.com', path: '/v1/models' };
+    default:
+      return null;
+  }
+}
+
+/** The result of a per-upstream live test — a verdict, or "no cheap probe". */
+export type UpstreamTestResult =
+  | { ok: boolean; status: number; detail: string }
+  | { ok: null; reason: 'no-probe' };
+
+/** Human-readable interpretation of a probe's HTTP status (no secret). */
+function describeProbeStatus(status: number): string {
+  if (status >= 200 && status < 300) return 'authenticated ok';
+  if (status === 401 || status === 403) return 'credential rejected';
+  if (status === 404) return 'probe endpoint not found (best-effort path)';
+  if (status === 429) return 'rate limited';
+  return `unexpected status ${status}`;
+}
+
+/**
+ * Issue the time-boxed authenticated GET and resolve to {ok, status, detail}.
+ * The upstream body is drained and discarded — only the HTTP status shapes the
+ * verdict, so no account identifiers or secrets can leak through. Network
+ * errors / timeouts resolve (never reject) with ok:false and status 0.
+ */
+function probeUpstreamHttp(
+  probe: UpstreamProbe,
+  headers: Record<string, string>,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; detail: string }> {
+  return new Promise((resolvePromise) => {
+    const proxyReq = request(
+      { hostname: probe.hostname, port: 443, path: probe.path, method: 'GET', headers },
+      (proxyRes) => {
+        const status = proxyRes.statusCode ?? 0;
+        proxyRes.on('data', () => {}); // drain + discard — never parsed/returned
+        proxyRes.on('end', () =>
+          resolvePromise({ ok: status >= 200 && status < 300, status, detail: describeProbeStatus(status) }),
+        );
+      },
+    );
+    proxyReq.on('error', (err) =>
+      resolvePromise({ ok: false, status: 0, detail: `network error: ${err.message}` }),
+    );
+    proxyReq.setTimeout(timeoutMs, () => {
+      proxyReq.destroy();
+      resolvePromise({ ok: false, status: 0, detail: `timed out after ${timeoutMs}ms` });
+    });
+    proxyReq.end();
+  });
+}
+
+/**
+ * Run the cheapest authenticated call for `provider` and return a verdict.
+ * Resolves the credential through the same precedence as a real request, then
+ * uses buildUpstreamAuthHeaders for the exact per-provider header shape — so an
+ * oauth-bearer credential mis-mapped to a non-anthropic upstream is refused
+ * (never forwarded) rather than tested.
+ */
+export async function testUpstream(provider: string): Promise<UpstreamTestResult> {
+  const probe = getUpstreamProbe(provider);
+  if (!probe) return { ok: null, reason: 'no-probe' };
+  const cred = await resolveUpstreamCredential(provider);
+  if (!cred?.value) {
+    return { ok: false, status: 401, detail: 'no credential resolved for this upstream' };
+  }
+  const authHeaders = buildUpstreamAuthHeaders(provider, cred);
+  if (!authHeaders) {
+    return { ok: false, status: 401, detail: 'resolved credential is not forwardable to this upstream' };
+  }
+  return probeUpstreamHttp(probe, authHeaders, UPSTREAM_TEST_TIMEOUT_MS);
+}
+
+/**
+ * GET /v1/upstreams — write the per-upstream credential status list. Async
+ * (profile/keychain reads) so it's invoked fire-and-forget from the sync
+ * server callback; a resolution failure returns a 500 rather than hanging.
+ */
+async function handleUpstreamsStatus(res: ServerResponse, opts: { probe: boolean }): Promise<void> {
+  try {
+    const data = await collectUpstreamStatuses(opts);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ object: 'list', probe: opts.probe, data }));
+  } catch (e) {
+    console.error('[Proxy][upstreams] status error', e);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'api_error', message: e instanceof Error ? e.message : String(e) } }));
+  }
+}
+
+/**
+ * POST /v1/upstreams/:provider/test — write the per-upstream live-test verdict.
+ * A non-canonical provider is a 404; everything else returns {provider, ...}
+ * with the {ok, status, detail} or {ok:null, reason} shape.
+ */
+async function handleUpstreamTest(res: ServerResponse, provider: string): Promise<void> {
+  try {
+    if (!isCanonicalUpstream(provider)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown upstream "${provider}". Known: ${CANONICAL_UPSTREAMS.join(', ')}` } }));
+      return;
+    }
+    const result = await testUpstream(provider);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ provider, ...result }));
+  } catch (e) {
+    console.error('[Proxy][upstreams] test error', e);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'api_error', message: e instanceof Error ? e.message : String(e) } }));
+  }
+}
+
 /**
  * Handles POST /v1/responses (and /v1/{pack}/responses).
  *
@@ -1609,7 +1858,7 @@ const server = createServer((req, res) => {
     const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages|\/models|\/chat\/completions|\/responses)?$/);
     if (packPathMatch) {
       const potentialPack = packPathMatch[1];
-      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat', 'responses']);
+      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat', 'responses', 'upstreams']);
       if (potentialPack && !RESERVED_SEGMENTS.has(potentialPack)) {
         if (getMergedPackIds().includes(potentialPack)) {
           packId = potentialPack;
@@ -1736,6 +1985,27 @@ const server = createServer((req, res) => {
       pack_ids: packIds,
       count: packIds.length,
     }));
+    return;
+  }
+
+  // 0d. Per-upstream credential status (GET /v1/upstreams). Reports, for each
+  // canonical upstream, how a credential WOULD resolve (linked profile / env /
+  // none + method) WITHOUT returning a secret. `?probe=1` adds the profile-
+  // source `present` boolean at the cost of a keychain read; the default view
+  // stays mapping-only. Gated by the same access token as every route (checked
+  // above) — NOT covered by the /v1/models public exemption.
+  if (req.method === 'GET' && (urlPath === '/v1/upstreams' || urlPath === '/upstreams')) {
+    const probe = parsedUrl.searchParams.get('probe') === '1';
+    void handleUpstreamsStatus(res, { probe });
+    return;
+  }
+
+  // 0e. Optional per-upstream live test (POST /v1/upstreams/:provider/test).
+  // The cheapest authenticated call to the upstream; {ok, status, detail} or
+  // {ok:null, reason:"no-probe"}. Gated like every other route.
+  const upstreamTestMatch = urlPath.match(/^\/(?:v1\/)?upstreams\/([^/]+)\/test$/);
+  if (req.method === 'POST' && upstreamTestMatch) {
+    void handleUpstreamTest(res, upstreamTestMatch[1]!);
     return;
   }
 

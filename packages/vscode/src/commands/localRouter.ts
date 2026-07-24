@@ -10,11 +10,13 @@ import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
+import type { LocalRouterNode } from "../views/localRouterTree.logic.js"
 import {
   localRouterErrorMessage,
   reloadLlmEndpointPacksMessage,
   startLlmEndpointMessage,
   stopLlmEndpointMessage,
+  testLlmEndpointUpstreamMessage,
 } from "./localRouter.logic.js"
 
 export function registerLocalRouterCommands(
@@ -31,6 +33,11 @@ export function registerLocalRouterCommands(
     }),
     vscode.commands.registerCommand("agentproto.reloadLlmEndpointPacks", () => {
       void runReloadLlmEndpointPacks(client, provider)
+    }),
+    vscode.commands.registerCommand("agentproto.testLlmEndpointUpstream", (node?: LocalRouterNode) => {
+      if (node?.kind === "router-upstream") {
+        void runTestLlmEndpointUpstream(client, provider, node.upstream.provider)
+      }
     }),
   )
 }
@@ -71,5 +78,19 @@ export async function runReloadLlmEndpointPacks(
     await provider.refresh()
   } catch (err) {
     void vscode.window.showErrorMessage(localRouterErrorMessage("reload", err))
+  }
+}
+
+export async function runTestLlmEndpointUpstream(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+  upstream: string,
+): Promise<void> {
+  try {
+    const result = await client.llmEndpointTestUpstream(upstream)
+    void vscode.window.showInformationMessage(testLlmEndpointUpstreamMessage(result))
+    await provider.refresh()
+  } catch (err) {
+    void vscode.window.showErrorMessage(localRouterErrorMessage("test", err))
   }
 }
