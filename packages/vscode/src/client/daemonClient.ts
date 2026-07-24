@@ -119,6 +119,10 @@ export interface SpawnAgentOptions {
   mcpServers?: unknown[]
   trace?: boolean
   permissionHold?: boolean
+  /** Opt this spawn into a direct in-band `[child-crashed]` notice to its
+   *  parent session if it later crashes. Mirrors the daemon's
+   *  `notifyParentOnCrash` body field on POST /sessions/agent. Default false. */
+  notifyParentOnCrash?: boolean
   /** Source label recorded on the descriptor (this client stamps "vscode"). */
   origin?: string
   /** ID of a saved user preset from ~/.agentproto/presets.json whose axes are expanded server-side. */
