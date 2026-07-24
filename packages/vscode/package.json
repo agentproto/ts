@@ -380,6 +380,12 @@
         "title": "agentproto: Reload Local Router Packs",
         "category": "agentproto",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "agentproto.testLlmEndpointUpstream",
+        "title": "agentproto: Test Local Router Upstream",
+        "category": "agentproto",
+        "icon": "$(plug)"
       }
     ],
     "menus": {
@@ -634,6 +640,16 @@
         {
           "command": "agentproto.reloadLlmEndpointPacks",
           "when": "view == 'agentproto.authProfiles' && viewItem == local-router-packs",
+          "group": "9_actions@1"
+        },
+        {
+          "command": "agentproto.testLlmEndpointUpstream",
+          "when": "view == 'agentproto.authProfiles' && viewItem == local-router-upstream",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.testLlmEndpointUpstream",
+          "when": "view == 'agentproto.authProfiles' && viewItem == local-router-upstream",
           "group": "9_actions@1"
         },
         {

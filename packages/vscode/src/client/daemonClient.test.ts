@@ -799,6 +799,84 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
   })
 })
 
+describe("DaemonClient — llmEndpointTestUpstream", () => {
+  it("reads the status baseUrl, POSTs /v1/upstreams/:p/test directly, and returns the verdict", async () => {
+    let base = ""
+    const daemon = await mockDaemon(req => {
+      if (req.url === "/mcp" && req.method === "POST") {
+        const rpc = req.body as { params?: { name?: string } }
+        if (rpc.params?.name === "llm_endpoint_status") {
+          return {
+            status: 200,
+            body: {
+              jsonrpc: "2.0",
+              id: 1,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      running: true,
+                      pid: 1,
+                      port: 18090,
+                      baseUrl: base,
+                      healthy: true,
+                      startedAt: "t",
+                      status: "running",
+                    }),
+                  },
+                ],
+              },
+            },
+          }
+        }
+        return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "{}" }] } } }
+      }
+      if (req.url === "/v1/upstreams/anthropic/test" && req.method === "POST") {
+        return { status: 200, body: { provider: "anthropic", ok: true, status: 200, detail: "authenticated ok" } }
+      }
+      return { status: 404 }
+    })
+    base = daemon.url
+    try {
+      const client = new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+      const result = await client.llmEndpointTestUpstream("anthropic")
+      expect(result).toEqual({ provider: "anthropic", ok: true, status: 200, detail: "authenticated ok" })
+      // It resolved the status via MCP, then reached the proxy route directly.
+      expect(daemon.requests.some(r => r.url === "/v1/upstreams/anthropic/test" && r.method === "POST")).toBe(true)
+    } finally {
+      daemon.server.close()
+    }
+  })
+
+  it("throws when the router is not running (no base URL)", async () => {
+    const daemon = await mockDaemon(req => {
+      if (req.url === "/mcp" && req.method === "POST") {
+        return {
+          status: 200,
+          body: {
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              content: [
+                { type: "text", text: JSON.stringify({ running: false, pid: null, port: null, baseUrl: null, healthy: false, startedAt: null, status: "never-started" }) },
+              ],
+            },
+          },
+        }
+      }
+      return { status: 404 }
+    })
+    try {
+      const client = new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+      await expect(client.llmEndpointTestUpstream("anthropic")).rejects.toThrow(/not running/)
+      expect(daemon.requests.every(r => !r.url.startsWith("/v1/upstreams/"))).toBe(true)
+    } finally {
+      daemon.server.close()
+    }
+  })
+})
+
 // Inline mkdtemp to avoid a top-level import the linter would reorder.
 async function mkdtemp(prefix: string): Promise<string> {
   const { mkdtemp } = await import("node:fs/promises")

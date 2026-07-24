@@ -432,6 +432,17 @@ export interface LlmEndpointReloadPacksResult {
   count: number
 }
 
+/**
+ * Result of the proxy's `POST /v1/upstreams/:provider/test` route — the
+ * cheapest authenticated call to an upstream, reached directly over loopback
+ * (mirroring the reload transport). Never carries a secret. A verdict is
+ * `{ok, status, detail}`; an upstream with no cheap safe probe is
+ * `{ok:null, reason:"no-probe"}`.
+ */
+export type LlmEndpointUpstreamTestResult =
+  | { provider: string; ok: boolean; status: number; detail: string }
+  | { provider: string; ok: null; reason: string }
+
 /** Descriptor returned by `llm_endpoint_start` — the freshly spawned (or
  *  reused) proxy child. `wasAlreadyRunning` is true on an idempotent no-op. */
 export interface LlmEndpointDescriptorResult {

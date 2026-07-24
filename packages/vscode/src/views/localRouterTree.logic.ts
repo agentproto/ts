@@ -35,10 +35,27 @@ export interface RouterPack {
   modelCount: number
 }
 
+/**
+ * One upstream's credential status, parsed from the proxy's `GET /v1/upstreams`
+ * — non-secret metadata only (the proxy never returns the value). `present` is
+ * a pure boolean for the env/none sources and `null` for a profile source that
+ * wasn't probed (`?probe=1`).
+ */
+export interface RouterUpstream {
+  provider: string
+  /** The mapped `LLM_ENDPOINT_PROFILE_<P>` profile id, or null. */
+  linkedProfile: string | null
+  source: "profile" | "env" | "none"
+  method: "api-key" | "oauth-bearer" | null
+  present: boolean | null
+}
+
 export type LocalRouterNode =
   | { kind: "router" }
   | { kind: "router-packs" }
   | { kind: "router-pack"; pack: RouterPack }
+  | { kind: "router-upstreams" }
+  | { kind: "router-upstream"; upstream: RouterUpstream }
   | { kind: "router-model"; model: DiscoveredModel }
   | { kind: "router-message"; message: string }
 
@@ -49,6 +66,8 @@ export function isLocalRouterNode(node: { kind: string }): node is LocalRouterNo
     node.kind === "router" ||
     node.kind === "router-packs" ||
     node.kind === "router-pack" ||
+    node.kind === "router-upstreams" ||
+    node.kind === "router-upstream" ||
     node.kind === "router-model" ||
     node.kind === "router-message"
   )
@@ -433,5 +452,133 @@ export async function resolveRouterPackChildren(
     return buildRouterPackChildren(packs)
   } catch {
     return [{ kind: "router-message", message: "Packs unavailable" }]
+  }
+}
+
+// ── Upstreams subtree ─────────────────────────────────────────────────────────
+
+/**
+ * Parse the proxy's `GET /v1/upstreams` body into router upstreams. Tolerates
+ * the `{data:[{provider, linkedProfile, source, method, present}]}` shape,
+ * ignores rows without a string provider, and defensively coerces each field.
+ * Mirrors parseRouterPacks' style — a proxy carrying no `value`/secret field
+ * means none can ever reach the tree.
+ */
+export function parseRouterUpstreams(body: unknown): RouterUpstream[] {
+  const data = (body as { data?: unknown })?.data
+  if (!Array.isArray(data)) return []
+  const upstreams: RouterUpstream[] = []
+  for (const row of data) {
+    if (!row || typeof row !== "object") continue
+    const rec = row as Record<string, unknown>
+    const provider = rec.provider
+    if (typeof provider !== "string" || !provider) continue
+    const linkedProfile =
+      typeof rec.linkedProfile === "string" && rec.linkedProfile ? rec.linkedProfile : null
+    const source =
+      rec.source === "profile" || rec.source === "env" || rec.source === "none"
+        ? rec.source
+        : "none"
+    const method =
+      rec.method === "api-key" || rec.method === "oauth-bearer" ? rec.method : null
+    const present = typeof rec.present === "boolean" ? rec.present : null
+    upstreams.push({ provider, linkedProfile, source, method, present })
+  }
+  return upstreams
+}
+
+/**
+ * A compact one-line status for an upstream row: the source (`→ <profile>` when
+ * linked, else `env` / `unlinked`), the auth method, and the credential
+ * presence word (`present` / `absent` / `unprobed`). Joined with ` · `, omitting
+ * the parts the proxy left null.
+ */
+export function routerUpstreamDescription(upstream: RouterUpstream): string {
+  const parts: string[] = []
+  if (upstream.source === "profile") {
+    parts.push(upstream.linkedProfile ? `→ ${upstream.linkedProfile}` : "profile")
+  } else if (upstream.source === "env") {
+    parts.push("env")
+  } else {
+    parts.push("unlinked")
+  }
+  if (upstream.method) parts.push(upstream.method)
+  parts.push(presentWord(upstream.present))
+  return parts.join(" · ")
+}
+
+/** The presence word for an upstream: probed boolean → present/absent, an
+ *  unprobed profile source → unprobed. */
+export function presentWord(present: boolean | null): string {
+  if (present === true) return "present"
+  if (present === false) return "absent"
+  return "unprobed"
+}
+
+/**
+ * Codicon id for an upstream row: a resolved credential (`present: true`) →
+ * `pass`; an unprobed profile source (`present: null`) → `question`; nothing
+ * resolvable (`present: false`) → `circle-slash`.
+ */
+export function routerUpstreamIcon(upstream: RouterUpstream): string {
+  if (upstream.present === true) return "pass"
+  if (upstream.present === null) return "question"
+  return "circle-slash"
+}
+
+/** The upstream row's rich tooltip: provider, linked profile, source, method,
+ *  and credential presence. Never carries a secret. */
+export function routerUpstreamTooltip(upstream: RouterUpstream): string {
+  return [
+    `**${upstream.provider}**`,
+    ``,
+    `- Source: ${upstream.source}`,
+    ...(upstream.linkedProfile ? [`- Linked profile: ${upstream.linkedProfile}`] : []),
+    `- Method: ${upstream.method ?? "—"}`,
+    `- Credential: ${presentWord(upstream.present)}`,
+  ].join("\n")
+}
+
+/**
+ * Build the Upstreams subtree's child rows from a `GET /v1/upstreams` fetch. A
+ * fetch with upstreams → one `router-upstream` per provider; an empty list → a
+ * single "No upstreams" message. Pure: the async fetch happens in the view.
+ */
+export function buildRouterUpstreamChildren(upstreams: RouterUpstream[]): LocalRouterNode[] {
+  if (upstreams.length === 0) {
+    return [{ kind: "router-message", message: "No upstreams" }]
+  }
+  return upstreams.map(upstream => ({ kind: "router-upstream", upstream }))
+}
+
+/** Fetches the proxy's live `/v1/upstreams` — the injectable seam so tests never
+ *  hit a real socket. Throws on a non-2xx / network failure so the subtree can
+ *  render an "unavailable" child instead of a silently-empty node. */
+export type UpstreamsFetcher = (baseUrl: string) => Promise<RouterUpstream[]>
+
+/**
+ * The Upstreams subtree's children, resolved through the injected
+ * `fetchUpstreams` seam. Pure orchestration (no vscode), testable without a live
+ * socket. Mirrors resolveRouterPackChildren:
+ * - not serving → `[]` (the node isn't expandable, so unreachable in the view).
+ * - serving but no resolvable base URL → a "Router address unavailable" message.
+ * - fetch throws / times out → an "Upstreams unavailable" message.
+ * - fetch succeeds → one `router-upstream` per provider (or the "No upstreams"
+ *   message).
+ */
+export async function resolveRouterUpstreamChildren(
+  status: LlmEndpointStatusResult | null,
+  fetchUpstreams: UpstreamsFetcher,
+): Promise<LocalRouterNode[]> {
+  if (!routerServing(status)) return []
+  const baseUrl = routerBaseUrl(status)
+  if (!baseUrl) {
+    return [{ kind: "router-message", message: "Router address unavailable" }]
+  }
+  try {
+    const upstreams = await fetchUpstreams(baseUrl)
+    return buildRouterUpstreamChildren(upstreams)
+  } catch {
+    return [{ kind: "router-message", message: "Upstreams unavailable" }]
   }
 }

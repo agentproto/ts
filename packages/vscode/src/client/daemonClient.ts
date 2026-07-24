@@ -45,6 +45,7 @@ import type {
   LlmEndpointReloadPacksResult,
   LlmEndpointStartOptions,
   LlmEndpointStatusResult,
+  LlmEndpointUpstreamTestResult,
   PendingPermission,
   ProviderPresetEntry,
   RouteSpec,
@@ -610,6 +611,33 @@ export class DaemonClient {
       throw new Error(`Pack reload failed: HTTP ${res.status}${detail ? ` — ${detail}` : ""}`)
     }
     return (await res.json()) as LlmEndpointReloadPacksResult
+  }
+
+  /**
+   * Run the proxy's per-upstream live test via its `POST
+   * /v1/upstreams/:provider/test` route. Reaches the child DIRECTLY over
+   * loopback using the baseUrl from `llm_endpoint_status` (the HTTP surface
+   * isn't exposed through the daemon MCP verbs) — exactly the transport
+   * `llmEndpointReloadPacks` uses. Throws when the router isn't running.
+   * Returns the {ok, status, detail} verdict (or {ok:null, reason:"no-probe"}),
+   * never a secret.
+   */
+  async llmEndpointTestUpstream(provider: string): Promise<LlmEndpointUpstreamTestResult> {
+    const status = await this.llmEndpointStatus()
+    const baseUrl =
+      status.baseUrl ?? (status.port != null ? `http://localhost:${status.port}` : null)
+    if (!baseUrl) {
+      throw new Error("Local Router is not running — start it before testing an upstream.")
+    }
+    const res = await this.fetchImpl(
+      `${baseUrl.replace(/\/+$/, "")}/v1/upstreams/${encodeURIComponent(provider)}/test`,
+      { method: "POST", signal: AbortSignal.timeout(10_000) },
+    )
+    if (!res.ok) {
+      const detail = await reloadErrorDetail(res)
+      throw new Error(`Upstream test failed: HTTP ${res.status}${detail ? ` — ${detail}` : ""}`)
+    }
+    return (await res.json()) as LlmEndpointUpstreamTestResult
   }
 
   /**
