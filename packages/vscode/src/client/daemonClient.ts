@@ -42,6 +42,7 @@ import type {
   DiscoveredCredential,
   ImportCredentialRequest,
   LlmEndpointDescriptorResult,
+  LlmEndpointReloadPacksResult,
   LlmEndpointStartOptions,
   LlmEndpointStatusResult,
   PendingPermission,
@@ -583,6 +584,35 @@ export class DaemonClient {
   }
 
   /**
+   * Hot-reload the proxy's local packs via its `POST /v1/packs/reload` route.
+   * The proxy's HTTP surface is NOT exposed through the daemon MCP verbs, so —
+   * exactly like the panel's `/v1/models` discovery — this reaches the child
+   * DIRECTLY over loopback using the baseUrl the daemon reports in
+   * `llm_endpoint_status` (not `mcpCall`). Throws when the router isn't running
+   * (no base URL) or the reload is rejected (a 400 with the validation errors
+   * from an invalid packs.local.json). Returns the reloaded pack ids + count.
+   */
+  async llmEndpointReloadPacks(): Promise<LlmEndpointReloadPacksResult> {
+    const status = await this.llmEndpointStatus()
+    const baseUrl =
+      status.baseUrl ?? (status.port != null ? `http://localhost:${status.port}` : null)
+    if (!baseUrl) {
+      throw new Error("Local Router is not running — start it before reloading packs.")
+    }
+    const res = await this.fetchImpl(`${baseUrl.replace(/\/+$/, "")}/v1/packs/reload`, {
+      method: "POST",
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!res.ok) {
+      // The proxy returns `{ error: { message, errors } }` on a 400; surface the
+      // field-scoped errors so a bad packs.local.json edit is legible.
+      const detail = await reloadErrorDetail(res)
+      throw new Error(`Pack reload failed: HTTP ${res.status}${detail ? ` — ${detail}` : ""}`)
+    }
+    return (await res.json()) as LlmEndpointReloadPacksResult
+  }
+
+  /**
    * `list_provider_presets` is an MCP-only tool — fetch the daemon's gateway
    * provider presets and their key-env availability status.
    */
@@ -1097,6 +1127,26 @@ async function describeError(res: Response): Promise<string> {
     return JSON.stringify(body)
   } catch {
     return `HTTP ${res.status}`
+  }
+}
+
+/**
+ * Extract a human-readable detail from the proxy's `POST /v1/packs/reload`
+ * error body — shape `{ error: { message, errors: string[] } }`. Joins the
+ * field-scoped validation errors when present so a bad packs.local.json edit
+ * reads legibly in the toast; falls back to the message, then the status.
+ */
+async function reloadErrorDetail(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: { message?: unknown; errors?: unknown } }
+    const err = body.error
+    if (err && Array.isArray(err.errors) && err.errors.length > 0) {
+      return err.errors.filter((e): e is string => typeof e === "string").join("; ")
+    }
+    if (err && typeof err.message === "string") return err.message
+    return ""
+  } catch {
+    return ""
   }
 }
 

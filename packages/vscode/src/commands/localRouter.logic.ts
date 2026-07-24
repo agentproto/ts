@@ -5,7 +5,10 @@
  * the strings to `showInformationMessage` / `showErrorMessage`.
  */
 
-import type { LlmEndpointDescriptorResult } from "../client/types.js"
+import type {
+  LlmEndpointDescriptorResult,
+  LlmEndpointReloadPacksResult,
+} from "../client/types.js"
 
 /** Info-toast text after a successful `llm_endpoint_start` — names the port and
  *  distinguishes a fresh spawn from an idempotent already-running no-op. */
@@ -20,8 +23,17 @@ export function stopLlmEndpointMessage(): string {
   return "Stopped the Local Router."
 }
 
-/** Error-toast text for a failed start/stop — `action` is the verb folded into
- *  "Could not <action> the Local Router: <reason>". */
-export function localRouterErrorMessage(action: "start" | "stop", err: unknown): string {
-  return `Could not ${action} the Local Router: ${err instanceof Error ? err.message : String(err)}`
+/** Info-toast text after a successful `POST /v1/packs/reload` — names the
+ *  reloaded pack count and how many of them came from packs.local.json. */
+export function reloadLlmEndpointPacksMessage(result: LlmEndpointReloadPacksResult): string {
+  const local = result.local_pack_ids.length
+  return `Reloaded packs — ${result.count} available (${local} local).`
+}
+
+/** Error-toast text for a failed start/stop/reload — `action` is the verb
+ *  folded into "Could not <action> the Local Router['s packs]: <reason>". */
+export function localRouterErrorMessage(action: "start" | "stop" | "reload", err: unknown): string {
+  const reason = err instanceof Error ? err.message : String(err)
+  if (action === "reload") return `Could not reload the Local Router's packs: ${reason}`
+  return `Could not ${action} the Local Router: ${reason}`
 }

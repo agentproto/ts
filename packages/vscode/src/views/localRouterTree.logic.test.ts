@@ -9,7 +9,11 @@ import {
   modelRowDescription,
   normalizeOwnedByVendor,
   parseDiscoveredModels,
+  parseRouterPacks,
+  buildRouterPackChildren,
   resolveRouterModelChildren,
+  resolveRouterPackChildren,
+  routerPackDescription,
   routerBaseUrl,
   routerContextValue,
   routerDescription,
@@ -440,6 +444,101 @@ describe("resolveRouterModelChildren", () => {
   it("returns no children (never fetches) when the router isn't serving", async () => {
     let fetched = false
     const children = await resolveRouterModelChildren(STOPPED, async () => {
+      fetched = true
+      return []
+    })
+    expect(children).toEqual([])
+    expect(fetched).toBe(false)
+  })
+})
+
+// ── Packs subtree ───────────────────────────────────────────────────────────
+
+describe("parseRouterPacks", () => {
+  it("parses the /v1/packs shape with model_count", () => {
+    const packs = parseRouterPacks({
+      object: "list",
+      data: [
+        { id: "default", label: "Default", model_count: 8, models: [] },
+        { id: "xai", label: "xAI (Grok)", model_count: 4 },
+      ],
+    })
+    expect(packs).toEqual([
+      { id: "default", label: "Default", modelCount: 8 },
+      { id: "xai", label: "xAI (Grok)", modelCount: 4 },
+    ])
+  })
+
+  it("falls back to models.length when model_count is absent", () => {
+    const packs = parseRouterPacks({ data: [{ id: "p", models: [{ code: "a" }, { code: "b" }] }] })
+    expect(packs).toEqual([{ id: "p", modelCount: 2 }])
+  })
+
+  it("ignores rows without a string id and non-array data", () => {
+    expect(parseRouterPacks({ data: [{ label: "no id" }, { id: 7 }, { id: "ok", model_count: 0 }] })).toEqual([
+      { id: "ok", modelCount: 0 },
+    ])
+    expect(parseRouterPacks({ data: "nope" })).toEqual([])
+    expect(parseRouterPacks(null)).toEqual([])
+  })
+})
+
+describe("routerPackDescription", () => {
+  it("renders label · N models, singularising a lone model", () => {
+    expect(routerPackDescription({ id: "p", label: "P", modelCount: 3 })).toBe("P · 3 models")
+    expect(routerPackDescription({ id: "p", label: "P", modelCount: 1 })).toBe("P · 1 model")
+  })
+
+  it("omits the label when the proxy reported none", () => {
+    expect(routerPackDescription({ id: "p", modelCount: 0 })).toBe("0 models")
+  })
+})
+
+describe("buildRouterPackChildren", () => {
+  it("maps each pack to a router-pack node", () => {
+    expect(buildRouterPackChildren([{ id: "default", modelCount: 8 }])).toEqual([
+      { kind: "router-pack", pack: { id: "default", modelCount: 8 } },
+    ])
+  })
+
+  it("renders a 'No packs' message for an empty list", () => {
+    expect(buildRouterPackChildren([])).toEqual([{ kind: "router-message", message: "No packs" }])
+  })
+})
+
+describe("resolveRouterPackChildren", () => {
+  const serving = (): LlmEndpointStatusResult => status({ status: "running", healthy: true })
+
+  it("fetches and builds pack rows when serving", async () => {
+    const children = await resolveRouterPackChildren(serving(), async () => [
+      { id: "default", label: "Default", modelCount: 8 },
+    ])
+    expect(children).toEqual([{ kind: "router-pack", pack: { id: "default", label: "Default", modelCount: 8 } }])
+  })
+
+  it("renders 'Packs unavailable' when the fetch throws", async () => {
+    const children = await resolveRouterPackChildren(serving(), async () => {
+      throw new Error("boom")
+    })
+    expect(children).toEqual([{ kind: "router-message", message: "Packs unavailable" }])
+  })
+
+  it("renders 'Router address unavailable' when serving with no base URL", async () => {
+    let fetched = false
+    const children = await resolveRouterPackChildren(
+      status({ status: "running", healthy: true, baseUrl: null, port: null }),
+      async () => {
+        fetched = true
+        return []
+      },
+    )
+    expect(children).toEqual([{ kind: "router-message", message: "Router address unavailable" }])
+    expect(fetched).toBe(false)
+  })
+
+  it("returns no children (never fetches) when the router isn't serving", async () => {
+    let fetched = false
+    const children = await resolveRouterPackChildren(STOPPED, async () => {
       fetched = true
       return []
     })

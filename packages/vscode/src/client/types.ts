@@ -416,6 +416,22 @@ export interface LlmEndpointStatusResult {
   injectedProviders?: string[]
 }
 
+/**
+ * Result of the proxy's `POST /v1/packs/reload` route — the hot-reload of
+ * packs.local.json. Reached directly over loopback (the proxy's HTTP surface
+ * isn't exposed through the daemon MCP verbs), mirroring the `/v1/models`
+ * discovery transport. `pack_ids` is the merged built-in + local id list;
+ * `local_pack_ids` is just the reloaded local packs.
+ */
+export interface LlmEndpointReloadPacksResult {
+  object: "packs.reload"
+  reloaded: boolean
+  source: string | null
+  local_pack_ids: string[]
+  pack_ids: string[]
+  count: number
+}
+
 /** Descriptor returned by `llm_endpoint_start` — the freshly spawned (or
  *  reused) proxy child. `wasAlreadyRunning` is true on an idempotent no-op. */
 export interface LlmEndpointDescriptorResult {

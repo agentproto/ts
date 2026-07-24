@@ -15,6 +15,8 @@ import {
   toAnthropicStyle,
   shaNumericId,
   TIER_TO_FAMILY,
+  validateModelPack,
+  validateLocalPacks,
   type ModelPack,
 } from '../packs.js';
 
@@ -404,5 +406,94 @@ describe('toAnthropicStyle', () => {
     expect(styled.id).toBe('coding-anthropic');
     expect(styled.label).toBe('Coding (Anthropic)');
     expect(styled.description).toBe(codingPack.description);
+  });
+});
+
+// ── validateModelPack ───────────────────────────────────────────────────────
+
+describe('validateModelPack', () => {
+  it('accepts every built-in pack', () => {
+    for (const pack of Object.values(PACK_REGISTRY)) {
+      const result = validateModelPack(pack, pack.id);
+      expect(result.ok, `${pack.id} should validate`).toBe(true);
+    }
+  });
+
+  it('rebuilds a valid pack, preserving optional route fields', () => {
+    const result = validateModelPack(codingPack, 'coding');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // A route carrying a tier keeps it through the rebuild.
+      expect(result.pack.models['openai/gpt-5.5']).toEqual({
+        provider: 'openrouter',
+        model: 'openai/gpt-5.5',
+        tier: 'extra-high',
+      });
+    }
+  });
+
+  it('rejects a non-object', () => {
+    const result = validateModelPack(null, 'p');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors[0]).toContain('expected an object');
+  });
+
+  it('rejects a missing id and names the field', () => {
+    const result = validateModelPack({ label: 'L', description: 'D', models: {} }, 'p');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain('p.id: required non-empty string');
+  });
+
+  it('rejects a route missing provider/model and names the pack + code + field', () => {
+    const result = validateModelPack(
+      { id: 'x', label: 'L', description: 'D', models: { foo: { model: 'm' } } },
+      'packs.x',
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain('packs.x.models.foo.provider: required non-empty string');
+  });
+
+  it('rejects an invalid tier', () => {
+    const result = validateModelPack(
+      { id: 'x', label: 'L', description: 'D', models: { foo: { provider: 'p', model: 'm', tier: 'huge' } } },
+      'x',
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.some(e => e.includes('.tier:'))).toBe(true);
+  });
+});
+
+// ── validateLocalPacks ──────────────────────────────────────────────────────
+
+describe('validateLocalPacks', () => {
+  it('accepts a well-formed { packs: {...} } envelope', () => {
+    const result = validateLocalPacks({
+      packs: { mine: { id: 'mine', label: 'Mine', description: 'local', models: { a: { provider: 'openai', model: 'gpt-4o' } } } },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(Object.keys(result.packs)).toEqual(['mine']);
+  });
+
+  it('rejects a non-object root', () => {
+    const result = validateLocalPacks(42);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors[0]).toContain('root:');
+  });
+
+  it('rejects a missing packs key', () => {
+    const result = validateLocalPacks({ notPacks: {} });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors[0]).toContain('packs:');
+  });
+
+  it('collects errors from every invalid pack, scoped by pack id', () => {
+    const result = validateLocalPacks({
+      packs: {
+        good: { id: 'good', label: 'G', description: 'ok', models: { a: { provider: 'openai', model: 'gpt-4o' } } },
+        bad: { id: 'bad', label: 'B', description: 'x', models: { z: { provider: 'openai' } } },
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors).toContain('packs.bad.models.z.model: required non-empty string');
   });
 });

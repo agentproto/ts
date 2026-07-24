@@ -34,17 +34,22 @@ import {
   lookupModelPricing,
   modelRowDescription,
   parseDiscoveredModels,
+  parseRouterPacks,
   resolveRouterModelChildren,
+  resolveRouterPackChildren,
   routerContextValue,
   routerDescription,
   routerIcon,
   routerLabel,
+  routerPackDescription,
   routerServing,
   routerTooltip,
   type CatalogPricingIndex,
   type DiscoveredModel,
   type LlmEndpointStatusResult,
   type ModelsFetcher,
+  type PacksFetcher,
+  type RouterPack,
 } from "./localRouterTree.logic.js"
 
 const PRESETS_GROUP: AuthProfileGroup = { kind: "presets", label: "Provider Presets" }
@@ -58,11 +63,20 @@ async function defaultFetchModels(baseUrl: string): Promise<DiscoveredModel[]> {
   return parseDiscoveredModels(await res.json())
 }
 
+async function defaultFetchPacks(baseUrl: string): Promise<RouterPack[]> {
+  const res = await fetch(`${baseUrl}/v1/packs`, { signal: AbortSignal.timeout(5_000) })
+  if (!res.ok) {
+    throw new Error(`GET ${baseUrl}/v1/packs failed: HTTP ${res.status}`)
+  }
+  return parseRouterPacks(await res.json())
+}
+
 export class AuthProfilesTreeProvider
   implements vscode.TreeDataProvider<AuthProfileTreeNode>, vscode.Disposable
 {
   private readonly client: DaemonClient
   private readonly fetchModels: ModelsFetcher
+  private readonly fetchPacks: PacksFetcher
   private readonly _onDidChange = new vscode.EventEmitter<void>()
   readonly onDidChangeTreeData = this._onDidChange.event
 
@@ -81,9 +95,14 @@ export class AuthProfilesTreeProvider
   private pricingIndex: CatalogPricingIndex = emptyPricingIndex()
   private routerStatus: LlmEndpointStatusResult | null = null
 
-  constructor(client: DaemonClient, fetchModels: ModelsFetcher = defaultFetchModels) {
+  constructor(
+    client: DaemonClient,
+    fetchModels: ModelsFetcher = defaultFetchModels,
+    fetchPacks: PacksFetcher = defaultFetchPacks,
+  ) {
     this.client = client
     this.fetchModels = fetchModels
+    this.fetchPacks = fetchPacks
     void this.refresh()
   }
 
@@ -192,6 +211,36 @@ export class AuthProfilesTreeProvider
       return item
     }
 
+    // The "Packs" grouping under the Local Router — expands to the packs the
+    // proxy exposes (fetched from its /v1/packs). Carries the reload inline
+    // action (the menu binds on this context value).
+    if (element.kind === "router-packs") {
+      const item = new vscode.TreeItem("Packs", vscode.TreeItemCollapsibleState.Collapsed)
+      item.id = "local-router-packs"
+      item.iconPath = new vscode.ThemeIcon("layers")
+      item.contextValue = "local-router-packs"
+      return item
+    }
+
+    // A single pack the proxy exposes, with its model count.
+    if (element.kind === "router-pack") {
+      const pack = element.pack
+      const item = new vscode.TreeItem(pack.id)
+      item.id = `router-pack:${pack.id}`
+      item.description = routerPackDescription(pack)
+      item.tooltip = new vscode.MarkdownString(
+        [
+          `**${pack.id}**`,
+          ``,
+          ...(pack.label ? [`- Label: ${pack.label}`] : []),
+          `- Models: ${pack.modelCount}`,
+        ].join("\n"),
+      )
+      item.iconPath = new vscode.ThemeIcon("package")
+      item.contextValue = "local-router-pack"
+      return item
+    }
+
     // A discovered model the proxy currently serves, with catalog pricing
     // cross-referenced for display.
     if (element.kind === "router-model") {
@@ -261,6 +310,11 @@ export class AuthProfilesTreeProvider
       return this.loadRouterChildren()
     }
 
+    // Expanding the "Packs" grouping fetches the proxy's /v1/packs.
+    if (element.kind === "router-packs") {
+      return resolveRouterPackChildren(this.routerStatus, this.fetchPacks)
+    }
+
     if (isAuthProfileGroup(element)) {
       return element.kind === "presets" ? this.presets : this.profiles
     }
@@ -278,8 +332,11 @@ export class AuthProfilesTreeProvider
    *  when the node is expandable (running & healthy); the orchestration
    *  (resolveRouterModelChildren) surfaces a mid-poll failure or a missing
    *  address as a placeholder message rather than a silently-empty node. */
-  private loadRouterChildren(): Promise<AuthProfileTreeNode[]> {
-    return resolveRouterModelChildren(this.routerStatus, this.fetchModels)
+  private async loadRouterChildren(): Promise<AuthProfileTreeNode[]> {
+    // The "Packs" grouping leads (its own /v1/packs fetch is lazy, on expand),
+    // followed by the discovered-model rows.
+    const models = await resolveRouterModelChildren(this.routerStatus, this.fetchModels)
+    return [{ kind: "router-packs" }, ...models]
   }
 }
 
