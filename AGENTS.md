@@ -44,6 +44,20 @@ Each rung has exactly one owner — don't reach into the next one.
    pnpm test > /tmp/gate.log 2>&1; echo "EXIT=$?"   # then grep the log
    ```
 
+   **`pnpm test` is necessary but not sufficient — the CI gate is `pnpm test`
+   AND `pnpm check-types`.** `check-types` (`tsc --noEmit`) runs as its own CI
+   job; Vitest transpiles without type-checking, so a type error in a **test
+   file** sails through `pnpm test` and only fails in CI (this bit an executor:
+   a mistyped `vi.spyOn` mock passed the local gate, reddened CI). Run both,
+   each read by its own real exit code:
+
+   ```sh
+   pnpm check-types > /tmp/ct.log   2>&1; echo "CT_EXIT=$?"
+   pnpm test        > /tmp/gate.log 2>&1; echo "TEST_EXIT=$?"
+   ```
+
+   (Add `pnpm lint` too if the package defines it.)
+
    Same trap for a backgrounded gate: the harness reports the exit code of
    the whole compound command, so end it with the real status
    (`echo "EXIT=$?"`) rather than trusting the completion notification.
@@ -176,3 +190,19 @@ real surface, not a placeholder for something else.
   (`JudgeGateSpec`, `packages/runtime/src/supervisor.ts:127-148`); and
   `GET /policies/:id/wait` (`http-server.ts:2902-2951`) is a blocking
   long-poll if you'd rather not spin a gate loop yourself.
+\n
+- **Supervising other sessions without a self-timer.** If you spawn a child
+  session and must wait on it across your own turns, do NOT self-park with an
+  in-process timer (a harness `ScheduleWakeup` dies with the process, and the
+  idle-reaper will retire a session that merely *looks* idle). Background the
+  daemon-owned wait instead — `agentproto sessions wait <child> --until
+  turn-end --timeout 2h` as a detached process (it survives your turn and the
+  harness pings you on exit; a bare integer `<1000` is rejected, so write `2h`
+  not `2`). Two session flags back this up: set `keepAlive` at spawn (or the
+  `session_set_keepalive` verb) so a legitimately-parked supervisor is exempt
+  from the idle-reaper, and set `restartPolicy` so an agent-cli child that
+  *crashes* (now detected → `endedReason:"crashed"`, surfaced with a
+  `[crashed]` line + `session:exited`) is auto-restarted with backoff + a
+  crash-loop cap, resuming its context in place. A crashed child spawned with
+  `notifyParentOnCrash` also signals its (idle) parent. Prefer these over any
+  timer you hold yourself.
