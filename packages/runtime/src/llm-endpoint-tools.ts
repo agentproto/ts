@@ -14,7 +14,16 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { listAuthProfiles } from "@agentproto/auth"
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
+import {
+  CANONICAL_UPSTREAMS,
+  eligibleProfilesForUpstream,
+  isCanonicalUpstream,
+  listLlmEndpointLinks,
+  removeLlmEndpointLink,
+  setLlmEndpointLink,
+} from "./llm-endpoint-links-store.js"
 
 export interface RegisterLlmEndpointToolsOptions {
   registry: LlmEndpointRegistry
@@ -141,6 +150,101 @@ export function registerLlmEndpointTools(
         return text(s)
       } catch (err) {
         return errText("llm_endpoint_status", err)
+      }
+    },
+  )
+
+  // ── llm_endpoint_set_upstream_link ─────────────────────────────
+  server.tool(
+    "llm_endpoint_set_upstream_link",
+    "Link (or unlink) a proxy upstream to a named auth-profile. A link is " +
+      "persisted to `~/.agentproto/llm-endpoint-links.json`; the daemon injects " +
+      "it as `LLM_ENDPOINT_PROFILE_<UPSTREAM>=<profileId>` when it spawns the " +
+      "proxy, so the upstream authenticates from that profile instead of a bare " +
+      "per-provider env key. Pass `profileId: null` to clear the link (revert to " +
+      "the env-key path). The env is read only at proxy SPAWN, so a change to a " +
+      "RUNNING proxy takes effect on the next restart — this verb persists the " +
+      "link and reports `restartRequired`; it never restarts the proxy itself " +
+      "(that would silently drop the running child's port / access tokens). " +
+      "Does NOT validate that the profile exists — a dangling link resolves to a " +
+      "401 at request time, as an absent credential does today.",
+    {
+      provider: z
+        .string()
+        .describe(
+          `Upstream to link. One of: ${CANONICAL_UPSTREAMS.join(", ")}.`,
+        ),
+      profileId: z
+        .string()
+        .nullable()
+        .describe("Auth-profile id to link, or null to clear the link (unlink)."),
+    },
+    async ({ provider, profileId }) => {
+      try {
+        if (!isCanonicalUpstream(provider)) {
+          return errText(
+            "llm_endpoint_set_upstream_link",
+            new Error(
+              `Unknown upstream "${provider}". Known: ${CANONICAL_UPSTREAMS.join(", ")}.`,
+            ),
+          )
+        }
+        let cleared = false
+        if (profileId === null) {
+          cleared = await removeLlmEndpointLink(provider)
+        } else {
+          await setLlmEndpointLink(provider, profileId)
+        }
+        // The env is read at spawn — a running proxy must be restarted to apply
+        // this change. If it's stopped, the change applies on the next start.
+        const s = await registry.status()
+        const restartRequired = s.running
+        return text({
+          ok: true,
+          provider,
+          profileId,
+          cleared: profileId === null ? cleared : undefined,
+          // The persisted link is authoritative on the next spawn; it is never
+          // hot-applied to the running child.
+          applied: false,
+          restartRequired,
+        })
+      } catch (err) {
+        return errText("llm_endpoint_set_upstream_link", err)
+      }
+    },
+  )
+
+  // ── llm_endpoint_list_links ────────────────────────────────────
+  server.tool(
+    "llm_endpoint_list_links",
+    "List the persisted upstream→auth-profile links plus, per upstream, the " +
+      "auth-profiles ELIGIBLE to be linked. A profile is eligible for upstream " +
+      "P iff its billing endpoint equals P, its method is compatible (api-key " +
+      "for any upstream; oauth-bearer only for anthropic), and it is not " +
+      "disabled. Reports the desired (persisted) link — a running proxy may lag " +
+      "until restarted (see `llm_endpoint_set_upstream_link`). Never returns a " +
+      "secret: eligible profiles carry only {id, label, method, endpoint}.",
+    {},
+    async () => {
+      try {
+        const [links, profiles] = await Promise.all([
+          listLlmEndpointLinks(),
+          listAuthProfiles(),
+        ])
+        const upstreams = CANONICAL_UPSTREAMS.map(provider => ({
+          provider,
+          linkedProfile: links[provider] ?? null,
+          eligible: eligibleProfilesForUpstream(profiles, provider).map(p => ({
+            id: p.id,
+            ...(p.label != null ? { label: p.label } : {}),
+            method: p.method,
+            endpoint: p.endpoint,
+          })),
+        }))
+        return text({ links, upstreams })
+      } catch (err) {
+        return errText("llm_endpoint_list_links", err)
       }
     },
   )

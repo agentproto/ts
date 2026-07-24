@@ -42,7 +42,9 @@ import type {
   DiscoveredCredential,
   ImportCredentialRequest,
   LlmEndpointDescriptorResult,
+  LlmEndpointLinksResult,
   LlmEndpointReloadPacksResult,
+  LlmEndpointSetLinkResult,
   LlmEndpointStartOptions,
   LlmEndpointStatusResult,
   LlmEndpointUpstreamTestResult,
@@ -638,6 +640,32 @@ export class DaemonClient {
       throw new Error(`Upstream test failed: HTTP ${res.status}${detail ? ` — ${detail}` : ""}`)
     }
     return (await res.json()) as LlmEndpointUpstreamTestResult
+  }
+
+  /**
+   * `llm_endpoint_list_links` — the persisted upstream→auth-profile link map
+   * plus, per upstream, the profiles ELIGIBLE to be linked (matching endpoint,
+   * compatible method, not disabled). MCP verb (not loopback) — the links live
+   * under `~/.agentproto`, read by the daemon. Never carries a secret.
+   */
+  async llmEndpointListLinks(): Promise<LlmEndpointLinksResult> {
+    return this.mcpCall<LlmEndpointLinksResult>("llm_endpoint_list_links")
+  }
+
+  /**
+   * `llm_endpoint_set_upstream_link` — persist (or clear, with `profileId:
+   * null`) the link from an upstream to a named auth-profile. The daemon injects
+   * it at the proxy's next spawn; a RUNNING proxy must be restarted to apply it
+   * (`restartRequired` in the result). Never restarts the proxy itself.
+   */
+  async llmEndpointSetUpstreamLink(
+    provider: string,
+    profileId: string | null,
+  ): Promise<LlmEndpointSetLinkResult> {
+    return this.mcpCall<LlmEndpointSetLinkResult>("llm_endpoint_set_upstream_link", {
+      provider,
+      profileId,
+    })
   }
 
   /**

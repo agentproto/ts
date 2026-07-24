@@ -110,6 +110,11 @@ export class AuthProfilesTreeProvider
   // render prices without walking the catalog per item.
   private pricingIndex: CatalogPricingIndex = emptyPricingIndex()
   private routerStatus: LlmEndpointStatusResult | null = null
+  // The DESIRED (persisted) upstream→profile links, fetched alongside the
+  // router status. Compared against the running proxy's /v1/upstreams to flag a
+  // row "pending restart" when a link was set but not yet applied. Empty on any
+  // fetch failure (an older daemon lacks the verb) — no pending hints, no harm.
+  private desiredLinks: Record<string, string> = {}
 
   constructor(
     client: DaemonClient,
@@ -161,6 +166,13 @@ export class AuthProfilesTreeProvider
       this.routerStatus = await this.client.llmEndpointStatus()
     } catch {
       this.routerStatus = null
+    }
+    // Desired links ride on their own fetch (same tolerance as the status): an
+    // older daemon without `llm_endpoint_list_links` just yields no pending hints.
+    try {
+      this.desiredLinks = (await this.client.llmEndpointListLinks()).links
+    } catch {
+      this.desiredLinks = {}
     }
     this._onDidChange.fire()
   }
@@ -357,9 +369,15 @@ export class AuthProfilesTreeProvider
       return resolveRouterPackChildren(this.routerStatus, this.fetchPacks)
     }
 
-    // Expanding the "Upstreams" grouping fetches the proxy's /v1/upstreams.
+    // Expanding the "Upstreams" grouping fetches the proxy's /v1/upstreams and
+    // annotates each row with any pending link change (persisted link ≠ the
+    // running proxy's) using the desired-links map fetched in refresh().
     if (element.kind === "router-upstreams") {
-      return resolveRouterUpstreamChildren(this.routerStatus, this.fetchUpstreams)
+      return resolveRouterUpstreamChildren(
+        this.routerStatus,
+        this.fetchUpstreams,
+        this.desiredLinks,
+      )
     }
 
     if (isAuthProfileGroup(element)) {

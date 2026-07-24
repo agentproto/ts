@@ -5,11 +5,14 @@ import type {
   LlmEndpointReloadPacksResult,
 } from "../client/types.js"
 import {
+  buildLinkQuickPickItems,
   localRouterErrorMessage,
   reloadLlmEndpointPacksMessage,
+  setUpstreamLinkMessage,
   startLlmEndpointMessage,
   stopLlmEndpointMessage,
   testLlmEndpointUpstreamMessage,
+  UNLINK_QUICK_PICK_LABEL,
 } from "./localRouter.logic.js"
 
 function desc(over: Partial<LlmEndpointDescriptorResult> = {}): LlmEndpointDescriptorResult {
@@ -108,6 +111,82 @@ describe("testLlmEndpointUpstreamMessage", () => {
   it("reports a no-probe upstream", () => {
     expect(testLlmEndpointUpstreamMessage({ provider: "zai", ok: null, reason: "no-probe" })).toBe(
       "Upstream zai: no cheap probe available (no-probe).",
+    )
+  })
+})
+
+describe("buildLinkQuickPickItems", () => {
+  it("lists eligible profiles then an unlink escape, marking the current link", () => {
+    const items = buildLinkQuickPickItems({
+      provider: "anthropic",
+      linkedProfile: "an-key",
+      eligible: [
+        { id: "an-key", label: "Jeremy", method: "api-key", endpoint: "anthropic" },
+        { id: "an-oauth", method: "oauth-bearer", endpoint: "anthropic" },
+      ],
+    })
+    expect(items).toEqual([
+      { label: "Jeremy (an-key)", description: "api-key · anthropic", profileId: "an-key", picked: true },
+      { label: "an-oauth", description: "oauth-bearer · anthropic", profileId: "an-oauth", picked: false },
+      {
+        label: UNLINK_QUICK_PICK_LABEL,
+        description: "authenticate this upstream from its per-provider env key",
+        profileId: null,
+        picked: false,
+      },
+    ])
+  })
+
+  it("marks the unlink escape as picked when the upstream is unlinked", () => {
+    const items = buildLinkQuickPickItems({ provider: "groq", linkedProfile: null, eligible: [] })
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ profileId: null, picked: true })
+  })
+})
+
+describe("setUpstreamLinkMessage", () => {
+  it("names the link and asks for a restart when required", () => {
+    expect(
+      setUpstreamLinkMessage({
+        ok: true,
+        provider: "anthropic",
+        profileId: "claude-subs",
+        applied: false,
+        restartRequired: true,
+      }),
+    ).toBe("Linked anthropic → claude-subs — restart the Local Router to apply.")
+  })
+
+  it("says it applies on next start when no restart is required", () => {
+    expect(
+      setUpstreamLinkMessage({
+        ok: true,
+        provider: "openrouter",
+        profileId: "or",
+        applied: false,
+        restartRequired: false,
+      }),
+    ).toBe("Linked openrouter → or — applies on next start.")
+  })
+
+  it("phrases an unlink", () => {
+    expect(
+      setUpstreamLinkMessage({
+        ok: true,
+        provider: "anthropic",
+        profileId: null,
+        cleared: true,
+        applied: false,
+        restartRequired: true,
+      }),
+    ).toBe("Unlinked anthropic (env key) — restart the Local Router to apply.")
+  })
+})
+
+describe("localRouterErrorMessage — link", () => {
+  it("uses an upstream-specific phrasing for the link verb", () => {
+    expect(localRouterErrorMessage("link", new Error("nope"))).toBe(
+      "Could not link the Local Router upstream: nope",
     )
   })
 })
