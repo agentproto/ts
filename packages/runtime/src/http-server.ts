@@ -67,6 +67,8 @@ import {
   removeImport,
 } from "./mcp-imports.js"
 import { exportAgentSession } from "./transcript-export.js"
+import { parseWindow, rollupUsage } from "./usage-rollup.js"
+import { collectSessionSnapshots } from "./usage-rollup-service.js"
 import { readConversation } from "./conversation-read.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import { createReadStream } from "node:fs"
@@ -2981,6 +2983,30 @@ async function handleSessions(
       rows = rows.filter(s => s.kind !== "command")
     }
     json(200, { sessions: rows })
+    return true
+  }
+
+  // GET /usage/rollup?window=<w>&profileRef=<ref> — local-derived, provider-
+  // agnostic spend estimate over a rolling window, aggregated from the durable
+  // per-session usage_snapshot records. Full daemon view (REST has no
+  // callerScope / subtree scoping). Same collector + reducer the `usage_rollup`
+  // MCP tool uses, so the two surfaces can't drift.
+  if (path === "/usage/rollup" && req.method === "GET") {
+    const reqUrl = req.url ?? ""
+    const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
+    const params = new URLSearchParams(queryString)
+    const window = params.get("window") ?? ""
+    const profileRef = params.get("profileRef") ?? undefined
+    const parsed = parseWindow(window)
+    if ("error" in parsed) {
+      json(400, { error: "invalid_window", message: parsed.error })
+      return true
+    }
+    const sessions = await collectSessionSnapshots(
+      registry,
+      profileRef ? { profileRef } : {},
+    )
+    json(200, rollupUsage(sessions, { window, nowMs: Date.now() }))
     return true
   }
 

@@ -1,0 +1,32 @@
+{
+  "symbol": "ImporterRunner",
+  "source_id": null,
+  "scope": "all",
+  "count": 2,
+  "status": "ready",
+  "ready": true,
+  "callers": [
+    {
+      "id": 46440,
+      "from_chunk_id": 8672,
+      "to_chunk_id": null,
+      "from_symbol_qualified": "ImporterRunner",
+      "to_symbol_qualified": "ImporterRunner",
+      "edge_type": "references",
+      "edge_metadata": "{}",
+      "source_id": "ap-ts",
+      "resolved": false
+    },
+    {
+      "id": 214962,
+      "from_chunk_id": 41361,
+      "to_chunk_id": null,
+      "from_symbol_qualified": "fakeRunner",
+      "to_symbol_qualified": "ImporterRunner",
+      "edge_type": "references",
+      "edge_metadata": "{}",
+      "source_id": "pj-browser",
+      "resolved": false
+    }
+  ]
+}

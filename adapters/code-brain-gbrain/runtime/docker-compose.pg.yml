@@ -1,0 +1,43 @@
+# gbrain pilot on Postgres+pgvector — the code-brain experiment stack.
+# Postgres allows concurrent connections, so `sync` and `serve` coexist.
+#   docker compose -f docker-compose.pg.yml --env-file .env.pg up -d --build
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: gbrain-pg-db
+    environment:
+      POSTGRES_USER: gbrain
+      POSTGRES_PASSWORD: gbrain
+      POSTGRES_DB: gbrain
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "gbrain"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  gbrain:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gbrain-pilot:latest
+    container_name: gbrain-pg
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/usr/local/bin/entrypoint-pg.sh"]
+    environment:
+      GBRAIN_DATABASE_URL: "postgres://gbrain:gbrain@postgres:5432/gbrain"
+      GBRAIN_EMBEDDING_MODEL: "openai:text-embedding-3-large"
+      GBRAIN_ADMIN_BOOTSTRAP_TOKEN: "${GBRAIN_ADMIN_BOOTSTRAP_TOKEN:?set in .env.pg}"
+      GBRAIN_HTTP_CORS_ORIGIN: "${GBRAIN_HTTP_CORS_ORIGIN:-http://localhost}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:?set in .env.pg}"
+      HOME: /brain
+    ports:
+      - "3132:3131"
+    volumes:
+      - gbrain_pg_home:/brain
+    restart: unless-stopped
+volumes:
+  pgdata:
+  gbrain_pg_home:

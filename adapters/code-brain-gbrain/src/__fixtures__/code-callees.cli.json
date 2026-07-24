@@ -1,0 +1,21 @@
+{
+  "symbol": "ImporterRunner",
+  "source_id": null,
+  "scope": "all",
+  "count": 1,
+  "status": "ready",
+  "ready": true,
+  "callees": [
+    {
+      "id": 46440,
+      "from_chunk_id": 8672,
+      "to_chunk_id": null,
+      "from_symbol_qualified": "ImporterRunner",
+      "to_symbol_qualified": "ImporterRunner",
+      "edge_type": "references",
+      "edge_metadata": "{}",
+      "source_id": "ap-ts",
+      "resolved": false
+    }
+  ]
+}

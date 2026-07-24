@@ -43,6 +43,8 @@ import {
 } from "./mcp-imports.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import { projectSessionUsage } from "./usage.js"
+import { parseWindow, rollupUsage } from "./usage-rollup.js"
+import { collectSessionSnapshots } from "./usage-rollup-service.js"
 import { withToolSubset } from "./tool-subset.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
@@ -458,6 +460,92 @@ export function registerSessionTools(
         content: [
           { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }, null, 2) },
         ],
+      }
+    },
+  )
+
+  // ── usage_rollup ─────────────────────────────────────────────────
+  server.tool(
+    "usage_rollup",
+    "Local-derived, provider-agnostic spend ESTIMATE over a rolling window — " +
+      "\"how much did profile X / model Y / harness Z spend in the last 5h / " +
+      "7d?\". Aggregated from the durable per-session `usage_snapshot` records " +
+      "the daemon writes at every turn-end/exit, NOT the provider's actual " +
+      "bill: `basis` is always `\"local-estimate\"`. Cost comes straight from " +
+      "the pre-priced snapshots (adapter-reported or catalog-computed) and is " +
+      "never re-priced here; tokens for models with no catalog price are " +
+      "surfaced separately in `unpricedTokens` (never fabricated as $0). " +
+      "Broken down by profile, model, and harness. On the scoped orchestrator " +
+      "gateway it is subtree-scoped — a child orchestrator only sees sessions " +
+      "it (transitively) spawned.",
+    {
+      window: z
+        .string()
+        .min(1)
+        .describe(
+          "Rolling window: shorthand `<int><s|m|h|d|w>` (e.g. \"5h\", \"7d\", " +
+            "\"30m\", \"2w\") or an ISO-8601 duration (e.g. \"P7D\", \"PT5H\", " +
+            "\"P1DT12H\"). The window is `[now − duration, now]`.",
+        ),
+      groupBy: z
+        .array(z.enum(["profile", "model", "harness"]))
+        .optional()
+        .describe(
+          "Which breakdowns to return. Omit for all three (profile + model + " +
+            "harness). `total` and the window metadata are always returned.",
+        ),
+      profileRef: z
+        .string()
+        .optional()
+        .describe("Filter to a single auth profile by its `profileRef`."),
+    },
+    async input => {
+      const parsed = parseWindow(input.window)
+      if ("error" in parsed) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "invalid_window", message: parsed.error }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): a scoped orchestrator only rolls up sessions in
+      // its own subtree. Full list (includeArchived) so an archived ancestor
+      // doesn't sever the parent→child graph collectSubtree's BFS walks.
+      let onlyIds: Set<string> | undefined
+      if (callerScope) {
+        onlyIds = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+      }
+      const sessions = await collectSessionSnapshots(registry, {
+        ...(onlyIds ? { onlyIds } : {}),
+        ...(input.profileRef ? { profileRef: input.profileRef } : {}),
+      })
+      const rollup = rollupUsage(sessions, { window: input.window, nowMs: Date.now() })
+      // Prune the breakdowns not requested; always keep total + window metadata.
+      let result: unknown = rollup
+      if (input.groupBy) {
+        const want = new Set(input.groupBy)
+        const {
+          byProfile: _byProfile,
+          byModel: _byModel,
+          byHarness: _byHarness,
+          ...rest
+        } = rollup
+        result = {
+          ...rest,
+          ...(want.has("profile") ? { byProfile: rollup.byProfile } : {}),
+          ...(want.has("model") ? { byModel: rollup.byModel } : {}),
+          ...(want.has("harness") ? { byHarness: rollup.byHarness } : {}),
+        }
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       }
     },
   )
