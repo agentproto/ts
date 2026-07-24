@@ -83,7 +83,7 @@ import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
-import { createRoutineRunner } from "./routine-runner.js"
+import { createRoutineWorkflowShim } from "./routine-workflow-shim.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createFileStepCache } from "./workflow-step-cache.js"
@@ -138,14 +138,12 @@ export type {
   ActivityProjectorRegistry,
   ActivityProjectorSession,
   ActivityPolicyLister,
-  ActivityRoutineLister,
   ActivityWorkflowLister,
   PrStateResolver,
 } from "./activities.js"
 export {
   policyToActivities,
   turnToActivities,
-  routineToActivities,
   workflowToActivities,
   prToActivities,
   filterActivities,
@@ -576,15 +574,15 @@ export interface CreateGatewayOptions {
    *
    *  Tests pass `false`. Without it, a test gateway writes its fake rows
    *  into the *developer's real* `~/.agentproto/sessions.json` (and the
-   *  sibling `policies.json` / `routine-runs.json` / `cron-jobs.json` /
-   *  `workflow-runs.json`): those paths resolve off `homedir()`, and the
-   *  gateway opted each store into persistence unconditionally. Since
-   *  `loadHistorySnapshot` re-reads sessions.json at boot, the real daemon
-   *  then restores the fakes and shows them in the dashboard — and against
-   *  `HISTORY_CAP` (200) they evict genuine history.
+   *  sibling `policies.json` / `cron-jobs.json` / `workflow-runs.json`):
+   *  those paths resolve off `homedir()`, and the gateway opted each store
+   *  into persistence unconditionally. Since `loadHistorySnapshot` re-reads
+   *  sessions.json at boot, the real daemon then restores the fakes and
+   *  shows them in the dashboard — and against `HISTORY_CAP` (200) they
+   *  evict genuine history.
    *
    *  The sibling stores already default to persist-off when constructed
-   *  directly (see `createRoutineRunner`); this knob is what lets a
+   *  directly (see `createWorkflowRunner`); this knob is what lets a
    *  gateway stop overriding that on their behalf. */
   persist?: boolean
   /** Override the sessions-registry persistence path — tests pin a tmpdir
@@ -1029,22 +1027,6 @@ export async function createGateway(
       })
     : undefined
 
-  // Routine runner — singleton per daemon, shared across all MCP connections.
-  // Persists run state to ~/.agentproto/routine-runs.json so runs survive
-  // daemon restarts (interrupted runs are marked "failed" on load).
-  // Declared after `sessions` and `supervisor` so it shares the same
-  // registry + event bus. Only wired when `resolveAgentAdapter` is
-  // available (routine steps need to spawn agent sessions).
-  const routineRunner = opts.resolveAgentAdapter
-    ? createRoutineRunner({
-        registry: sessions,
-        sessionEvents,
-        resolveAgentAdapter: opts.resolveAgentAdapter,
-        webhookNotifier,
-        persist,
-      })
-    : undefined
-
   // In-process caller for ANY registered daemon MCP tool by name — the
   // universal escape hatch behind AIP-41 routine `target.tool` (+ the
   // `agent`/`workflow` sugar, which lower to it — see routine-registrar.ts)
@@ -1088,10 +1070,12 @@ export async function createGateway(
     dispatchTool,
   })
 
-  // Workflow runner — sibling primitive to routineRunner (stage-barrier
-  // parallel orchestration rather than a flat sequential list). Same
-  // singleton-per-daemon, same persistence pattern, own persist file
-  // (~/.agentproto/workflow-runs.json) so the two run stores never collide.
+  // Workflow runner — singleton per daemon, shared across all MCP
+  // connections. Persists run state to ~/.agentproto/workflow-runs.json so
+  // runs survive daemon restarts (interrupted runs are marked "failed" on
+  // load). Declared after `sessions` and `supervisor` so it shares the same
+  // registry + event bus. Only wired when `resolveAgentAdapter` is
+  // available (workflow steps need to spawn agent sessions).
   const workflowRunner = opts.resolveAgentAdapter
     ? createWorkflowRunner({
         registry: sessions,
@@ -1112,6 +1096,14 @@ export async function createGateway(
         compileWorkflow: handle => compileWorkflow(handle, { tools: {}, candidates: [] }),
       })
     : undefined
+
+  // Routine runner — DEPRECATED thin shim over `workflowRunner`. The
+  // imperative RoutineRunner engine is gone (see PLAN.md Phase B / PR B2):
+  // `routine_start`'s flat `steps[]` now lowers to a single-step-per-stage
+  // workflow run, driven by the SAME runner/store `workflow_*` uses — see
+  // routine-workflow-shim.ts. Wired whenever `workflowRunner` is (i.e. same
+  // `resolveAgentAdapter` gate).
+  const routineRunner = workflowRunner ? createRoutineWorkflowShim({ workflowRunner }) : undefined
 
   // Task ledger — the multi-party write-model over declared intent
   // (task-ledger.ts). Declared after `sessions` (board resolution walks
@@ -1135,18 +1127,22 @@ export async function createGateway(
   })
 
   // Activity projector — the unified active/pending read-model over
-  // completion policies, session turns, routine/workflow steps, and opened
-  // PRs (activities.ts). A projection, not a registry: `list()` recomputes
-  // from the owners above on every call; the projector's only state is a
-  // diff cache that powers the `activity:changed` bus event. Declared after
-  // the owners it projects over; disposed in stop(). The `taskLedger` lets it
+  // completion policies, session turns, workflow steps, and opened PRs
+  // (activities.ts). A projection, not a registry: `list()` recomputes from
+  // the owners above on every call; the projector's only state is a diff
+  // cache that powers the `activity:changed` bus event. Declared after the
+  // owners it projects over; disposed in stop(). The `taskLedger` lets it
   // derive `Activity.taskId` from the ledger's edges at read time.
+  //
+  // No separate `routineRunner` owner: a deprecated `routine_start` run is
+  // now literally a `workflowRunner` run (routine-workflow-shim.ts), so it
+  // already projects as a `workflow-step` activity here — wiring the shim in
+  // too would double-count the same run under both "routine" and "workflow".
   const activityProjector = createActivityProjector({
     registry: sessions,
     sessionEvents,
     supervisor,
     taskLedger,
-    ...(routineRunner ? { routineRunner } : {}),
     ...(workflowRunner ? { workflowRunner } : {}),
     // PR settlement port (CLI-wired, like `resolveOpenPr`) — lets a
     // pending-on-forge pr activity settle to done/cancelled once the forge

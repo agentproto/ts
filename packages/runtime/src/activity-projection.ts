@@ -3,7 +3,7 @@
  *
  * "Activity" is a unified read-model over the daemon's existing "what is
  * happening" silos: completion policies (supervisor), in-flight session
- * turns, routine/workflow steps, and opened PRs. It is a **projection, not a
+ * turns, workflow steps, and opened PRs. It is a **projection, not a
  * registry** — the owning subsystems keep their state machines untouched and
  * this module only MAPS their already-exposed state onto one shared record
  * shape. Nothing here is stored; re-running a mapper over the same owner
@@ -24,8 +24,8 @@
  * Pure by construction — no daemon imports, no I/O, no clock reads (callers
  * pass `now` where staleness is derived). Each mapper takes a STRUCTURAL
  * input slice (the `pr-provenance.ts` `FooterSession` pattern): the real
- * `PolicyRunState` / `SessionDescriptor` / `RoutineRun` / `WorkflowRun`
- * satisfy the slices structurally, and tests fake them without casts. The
+ * `PolicyRunState` / `SessionDescriptor` / `WorkflowRun` satisfy the slices
+ * structurally, and tests fake them without casts. The
  * side-effecting projector (bus subscription, diffing, `activity:changed`
  * emission) lives in `activities.ts`.
  */
@@ -46,7 +46,6 @@ export const ACTIVITY_KINDS = [
   "policy",
   "gate",
   "commit",
-  "routine-step",
   "workflow-step",
   "pr",
   "cron-run",
@@ -55,7 +54,6 @@ export type ActivityKind = (typeof ACTIVITY_KINDS)[number]
 
 export const ACTIVITY_SOURCES = [
   "supervisor",
-  "routine",
   "workflow",
   "session",
   "code-host",
@@ -491,9 +489,12 @@ export function turnToActivities(
   return []
 }
 
-// ── routine-step mapper (source: routine) ────────────────────────────
+// ── workflow-step mapper (source: workflow) ──────────────────────────
 
-/** Structural slice of `routine-runner.ts`'s `RoutineStepState`. */
+/** Structural slice of a run's step state — shared by `workflow-runner.ts`'s
+ *  `WorkflowStageState.steps` (and, historically, the retired
+ *  `routine-runner.ts`'s flat `RoutineStepState`, whose shape it kept for
+ *  the routine-workflow-shim's flattened `routine_status` view). */
 export interface ActivityRunStepSlice {
   index: number
   label: string
@@ -503,63 +504,6 @@ export interface ActivityRunStepSlice {
   endedAt?: string
   error?: string
 }
-
-/** Structural slice of a `RoutineRun` (`routine_list` rows). */
-export interface ActivityRoutineRunSlice {
-  runId: string
-  status: string
-  startedAt: string
-  endedAt?: string
-  steps: readonly ActivityRunStepSlice[]
-}
-
-/**
- * Project one routine run's steps. running → active; pending → pending on
- * the earlier steps' sessions (a routine is sequential, so an unstarted
- * step's next transition is an earlier session finishing); done/failed →
- * terminal; skipped → cancelled. A step still `pending` inside a terminal
- * run will never start — it settles as cancelled.
- */
-export function routineToActivities(run: ActivityRoutineRunSlice): ActivityRecord[] {
-  const runTerminal = run.status === "done" || run.status === "failed" || run.status === "cancelled"
-  return run.steps.map(step => {
-    const base: ActivityRecordBase = {
-      id: `routine-step:${run.runId}:${step.index}`,
-      kind: "routine-step",
-      ...(step.sessionId ? { sessionId: step.sessionId } : {}),
-      sourceRef: `${run.runId}#${step.index}`,
-      source: "routine",
-      title: `Routine step "${step.label}" (run ${run.runId})`,
-      startedAt: step.startedAt ?? run.startedAt,
-      ...(step.endedAt ? { endedAt: step.endedAt } : {}),
-      ...(step.error ? { error: step.error } : {}),
-    }
-    switch (step.status) {
-      case "running":
-        return record(base, "active")
-      case "done":
-        return record(base, "done")
-      case "failed":
-        return record(base, "failed")
-      case "skipped":
-        return record(base, "cancelled")
-      case "pending": {
-        if (runTerminal) return record(base, "cancelled")
-        // Sessions of earlier, not-yet-finished steps — the ids to poke.
-        const refs = run.steps
-          .filter(s => s.index < step.index && (s.status === "running" || s.status === "pending"))
-          .flatMap(s => (s.sessionId ? [s.sessionId] : []))
-        return pendingRecord(base, {
-          kind: "session-turn",
-          refs,
-          detail: "waiting for earlier routine steps to finish",
-        })
-      }
-    }
-  })
-}
-
-// ── workflow-step mapper (source: workflow) ──────────────────────────
 
 /** Structural slice of `workflow-runner.ts`'s `WorkflowStageState`. */
 export interface ActivityWorkflowStageSlice {

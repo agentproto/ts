@@ -164,6 +164,20 @@ attend » sans cowork ouvert.
 
 ## 7. RoutineRunner — la cible « babysit durable » (source, MVP)
 
+> **DEPRECATED (Phase B2) — utilise `workflow_*` à la place.** Le moteur
+> impératif `routine-runner.ts` décrit ci-dessous a été retiré : une séquence
+> `RoutineStep[]` est maintenant un workflow AIP-15 à étapes mono-step, piloté
+> par `workflowRunner` (`routine-workflow-shim.ts`). Les tools
+> `routine_start`/`routine_status`/`routine_cancel`/`routine_escalation_resolve`
+> restent vivants comme alias DEPRECATED le temps d'une fenêtre de dépréciation
+> (retrait prévu en B3) — préfère `workflow_start`/`workflow_status`/
+> `workflow_cancel`/`workflow_escalation_resolve` pour tout nouveau code.
+> `waitFor` (fan-in externe) a été supprimé sans remplacement (aucun
+> consommateur in-repo) ; exprime le fan-in via des stages workflow parallèles.
+> Le reste de cette section décrit le comportement de la policy d'attente
+> (`auto-allow`/`escalate`/`fail`) — TOUJOURS vrai, juste porté par
+> `workflow_*` désormais.
+
 `routine-runner.ts` est le superviseur durable complet : il exécute une séquence
 de `RoutineStep[]` **en réagissant aux events** (pas de polling), gère le
 **fan-in** (`waitFor: string[]` attend que TOUTES les sessions finissent), et
@@ -206,8 +220,9 @@ bloqué** » (cf. le babysit live de `nested-orchestration`, ici rendu durable).
   `session_events_poll`.
 - **Commit gouverné par un gate vert** → `policy_attach then:commit` +
   `requireHumanAck` + `policy_ack`.
-- **Plusieurs étapes enchaînées** → `next` (DAG de policies, pilotable) plutôt
-  que le RoutineRunner tant qu'il n'est pas exposé.
+- **Plusieurs étapes enchaînées** → `next` (DAG de policies, pilotable) ou
+  `workflow_start` (stages mono-step) — PAS `routine_start`/`routine_*`,
+  DEPRECATED depuis la Phase B2 (voir §7).
 - **Critère qualitatif** → gate `judge`.
 - **Prévenir un humain quand ça attend/bloque** → `notifyUrl` (per-session) ou
   global.
@@ -276,8 +291,9 @@ appel d'outil synchrone dans ton tour.
   session est re-promptée (`nudge`, `{code}` = exit code) jusqu'à `maxRetries`
   (défaut 2) puis `blocked` — la session doit être **encore running** pour
   recevoir le nudge.
-- **RoutineRunner volatile** : voir §7 — ne t'appuie pas dessus pour du
-  long-cours tant que la persistance + la surface MCP ne sont pas livrées.
+- **RoutineRunner DEPRECATED** : voir §7 — le moteur impératif est retiré
+  (Phase B2), `routine_*` reste vivant en alias le temps d'une fenêtre de
+  dépréciation ; utilise `workflow_*` pour tout nouveau code.
 
 ## Checklist supervision durable
 

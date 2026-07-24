@@ -16,7 +16,8 @@ import { createMcpServer } from "@agentproto/mcp-server"
 
 import { startHttpServer } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
-import { createRoutineRunner } from "../routine-runner.js"
+import { createRoutineWorkflowShim } from "../routine-workflow-shim.js"
+import { createWorkflowRunner } from "../workflow-runner.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
@@ -75,7 +76,9 @@ describe("/routines REST route", () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry(bus)
     const routineRunner = withRunner
-      ? createRoutineRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
+      ? createRoutineWorkflowShim({
+          workflowRunner: createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() }),
+        })
       : undefined
     const routineRegistrar = withRegistrar ? makeMockRegistrar(definitions) : undefined
 
@@ -138,7 +141,8 @@ describe("/routines REST route", () => {
       })
       expect(res.status).toBe(201)
       const run = (await res.json()) as { runId: string; status: string }
-      expect(run.runId).toMatch(/^run_/)
+      // Backed by a workflowRunner run now — id prefix reflects that.
+      expect(run.runId).toMatch(/^wfrun_/)
 
       const getRes = await fetch(`${base}/routines/${run.runId}`)
       expect(getRes.status).toBe(200)

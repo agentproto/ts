@@ -16,6 +16,7 @@ import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import { spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
 import { exportAgentSession } from "./transcript-export.js"
+import type { RoutinePolicy } from "./step-run-types.js"
 
 export class SessionsRegistryAgentHost implements AgentSessionHost {
   private readonly sessionsByLabel = new Map<string, string>()
@@ -34,6 +35,19 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
        *  step fails loudly (`sandbox_provider_not_found`), never silently
        *  spawns on the host. */
       resolveSandboxProvider?: SandboxProviderResolver
+      /**
+       * Durable-suspend handler for an `escalate` policy: awaited instead of
+       * throwing immediately, so the caller (WorkflowRunner) can pause the
+       * run (`status: "awaiting-input"`) and resume it once an external
+       * `resolve()` call supplies the response. Omitted ⇒ escalate fails the
+       * step fast, same as before this existed (`onAwaitingInput`'s stub
+       * behaviour).
+       */
+      onEscalate?: (
+        sessionId: string,
+        policy: Extract<RoutinePolicy, { awaiting: "escalate" }>,
+        stepId: string | undefined,
+      ) => Promise<string>
     },
   ) {}
 
@@ -117,6 +131,15 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     return this.sessionsByLabel.get(stepId)
   }
 
+  /** Reverse lookup: the step id that spawned `sessionId`, if any — used to
+   *  locate an escalated step's position for `onEscalate`. */
+  private labelForSession(sessionId: string): string | undefined {
+    for (const [label, sid] of this.sessionsByLabel) {
+      if (sid === sessionId) return label
+    }
+    return undefined
+  }
+
   async onAwaitingInput(
     sessionId: string,
     policy: NonNullable<AgentStep["policy"]>,
@@ -141,7 +164,15 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           signal: AbortSignal.timeout(10_000),
         }).catch(() => undefined)
       }
-      // Escalate: throw so the caller knows this step is awaiting external input.
+      if (this.opts?.onEscalate) {
+        // Durable suspend: wait for the injected handler's external answer,
+        // then send it and resume the step as usual.
+        const response = await this.opts.onEscalate(sessionId, policy, this.labelForSession(sessionId))
+        await this.sendPromptAndWait(sessionId, response)
+        return
+      }
+      // No suspend handler wired: throw so the caller knows this step is
+      // awaiting external input.
       throw new Error(`step escalated: session ${sessionId} awaiting input`)
     } else {
       throw new Error(`step failed: session ${sessionId} awaiting input`)

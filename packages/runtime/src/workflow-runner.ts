@@ -130,12 +130,10 @@ interface RunState {
   /** Original stages — retained so sessionRef lookups can resolve step labels. */
   stages: WorkflowStage[]
   /**
-   * Reserved for a future durable suspend/resume of an escalated step. NOT set
-   * by the current engine: an `escalate` policy fails the step fast
-   * (`SessionsRegistryAgentHost.onAwaitingInput` throws) instead of suspending
-   * on a resolver, so `resolve()` is a no-op today. Kept as a documented stub
-   * rather than removed, to avoid a breaking change for the `http-server` /
-   * `orchestration-tools` callers pending the durable-suspend follow-up.
+   * Set while a step's `escalate` policy is suspended (`run.status ===
+   * "awaiting-input"`), waiting for an external `resolve()` call —
+   * `onEscalate` (below) fills this in and awaits its promise;
+   * `WorkflowRunner.resolve()` fulfils it.
    */
   pendingResolve?: { stageIndex: number; stepIndex: number; resolver: (response: string) => void }
 }
@@ -305,6 +303,66 @@ function fireNotifyUrl(run: WorkflowRun): void {
     }),
     signal: AbortSignal.timeout(10_000),
   }).catch(() => undefined)
+}
+
+// ── Escalate suspend/resume ───────────────────────────────────────────
+
+/** Locate a step by label across a run's stages — `-1, -1` when not found
+ *  (e.g. `stepId` is undefined because the session wasn't spawned by a
+ *  labelled step). */
+function findStepPosition(
+  stages: readonly WorkflowStageState[],
+  label: string | undefined,
+): { stageIndex: number; stepIndex: number } {
+  if (label !== undefined) {
+    for (let si = 0; si < stages.length; si++) {
+      const stepIndex = stages[si]!.steps.findIndex(s => s.label === label)
+      if (stepIndex !== -1) return { stageIndex: si, stepIndex }
+    }
+  }
+  return { stageIndex: -1, stepIndex: -1 }
+}
+
+/**
+ * Build the `onEscalate` handler `SessionsRegistryAgentHost` calls instead of
+ * failing an `escalate`-policy step fast: marks the run `awaiting-input`,
+ * parks a resolver on `state.pendingResolve` for `WorkflowRunner.resolve()`
+ * to fulfil, and times out the same way the retired RoutineRunner engine did.
+ */
+function createOnEscalate(
+  state: RunState,
+  persist: () => void,
+): (
+  sessionId: string,
+  policy: Extract<RoutinePolicy, { awaiting: "escalate" }>,
+  stepId: string | undefined,
+) => Promise<string> {
+  return async (sessionId, policy, stepId) => {
+    const { stageIndex, stepIndex } = findStepPosition(state.run.stages, stepId)
+    state.run.status = "awaiting-input"
+    persist()
+    try {
+      return await new Promise<string>((resolve, reject) => {
+        const timeoutMs = policy.timeoutMs ?? 300_000
+        const timer = setTimeout(() => {
+          state.pendingResolve = undefined
+          reject(new Error(`step '${stepId ?? sessionId}' escalate timeout`))
+        }, timeoutMs)
+        state.pendingResolve = {
+          stageIndex,
+          stepIndex,
+          resolver: (response: string) => {
+            clearTimeout(timer)
+            state.pendingResolve = undefined
+            resolve(response)
+          },
+        }
+      })
+    } finally {
+      if (state.run.status === "awaiting-input") state.run.status = "running"
+      persist()
+    }
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -494,6 +552,7 @@ export function createWorkflowRunner(opts: {
           workspaceSlug: input.workspaceSlug,
           cwd: input.cwd,
           notifyUrl: input.notifyUrl,
+          onEscalate: createOnEscalate(state, persist),
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
@@ -554,6 +613,7 @@ export function createWorkflowRunner(opts: {
         {
           workspaceSlug: args.workspaceSlug,
           cwd: args.cwd,
+          onEscalate: createOnEscalate(state, persist),
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
@@ -581,9 +641,9 @@ export function createWorkflowRunner(opts: {
 
     list: () => Array.from(runs.values()).map(s => s.run),
 
-    // No-op today: `pendingResolve` is never set (escalate fails fast — see
-    // RunState.pendingResolve). Retained for the durable suspend/resume
-    // follow-up so the interface stays stable for existing callers.
+    // Fulfils the promise `onEscalate` (createOnEscalate) is awaiting for a
+    // suspended `escalate`-policy step — a no-op if no step at
+    // (stageIndex, stepIndex) is currently escalated.
     resolve: (runId, stageIndex, stepIndex, response) => {
       const state = runs.get(runId)
       if (!state) return

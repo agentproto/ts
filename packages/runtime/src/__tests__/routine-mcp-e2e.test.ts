@@ -1,14 +1,16 @@
 /**
- * End-to-end test for the routine orchestration over a REAL MCP transport.
+ * End-to-end test for the (deprecated) routine orchestration over a REAL
+ * MCP transport.
  *
- * Unlike routine-runner.test.ts (which drives the RoutineRunner directly),
- * this wires the actual MCP surface:
+ * The imperative RoutineRunner engine is gone — `routine_start` now lowers
+ * to a single-step-per-stage AIP-15 workflow, driven by `workflowRunner`
+ * (`routine-workflow-shim.ts`):
  *
  *   Client ──InMemoryTransport──▶ McpServer
  *     │                              │
  *     │  routine_start / status      │ registerOrchestrationTools
  *     ▼                              ▼
- *   tool call ───────────────▶ real RoutineRunner ──▶ real SessionEventBus
+ *   tool call ──▶ routine-workflow-shim ──▶ real WorkflowRunner ──▶ real SessionEventBus
  *
  * Only the agent SUBPROCESS is stubbed: the mock registry emits a
  * `session:turn-end` synchronously inside sendPrompt (the fast-session path),
@@ -23,7 +25,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerOrchestrationTools } from "../orchestration-tools.js"
-import { createRoutineRunner } from "../routine-runner.js"
+import { createRoutineWorkflowShim } from "../routine-workflow-shim.js"
+import { createWorkflowRunner } from "../workflow-runner.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createEventRing } from "../event-ring.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
@@ -88,17 +91,51 @@ function parseToolJson(result: unknown): any {
   return JSON.parse(text)
 }
 
+// ── Escalating mock registry: the first sendPrompt() puts the session into
+// awaitingInput (fires session:awaiting-input); a SECOND sendPrompt() (the
+// auto-allow/escalate-resolve response) clears it and fires turn-end. Lets
+// the escalate/auto-allow suspend tests drive a real awaiting-input cycle
+// without spawning a real session. ──
+function makeEscalatingRegistry(bus: SessionEventBus): SessionsRegistry {
+  const SESSION_ID = "sess_escalate"
+  let awaitingInput = false
+  let calls = 0
+  const desc = (): SessionDescriptor => ({
+    id: SESSION_ID,
+    kind: "agent-cli",
+    workspaceSlug: "test",
+    command: "mock",
+    pid: null,
+    status: "running",
+    startedAt: new Date().toISOString(),
+    awaitingInput,
+  })
+  return {
+    spawnAgent: () => desc(),
+    sendPrompt: async (sessionId: string) => {
+      calls++
+      if (calls === 1) {
+        awaitingInput = true
+        bus.emit({ type: "session:awaiting-input", sessionId, ts: "t" })
+      } else {
+        awaitingInput = false
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }
+    },
+    get: (id: string) => (id === SESSION_ID ? desc() : undefined),
+  } as unknown as SessionsRegistry
+}
+
 describe("routine orchestration — MCP transport e2e", () => {
-  async function setup(routineRegistrar?: RoutineRegistrar) {
-    const bus = createSessionEventBus()
+  async function setupWithRegistry(registry: SessionsRegistry, bus: SessionEventBus, routineRegistrar?: RoutineRegistrar) {
     const eventRing = createEventRing()
-    const registry = makeMockRegistry(bus)
-    const routineRunner = createRoutineRunner({
+    const workflowRunner = createWorkflowRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
       // no persist / persistPath → never touches ~/.agentproto
     })
+    const routineRunner = createRoutineWorkflowShim({ workflowRunner })
 
     const server = new McpServer({ name: "routine-e2e-server", version: "0.0.0" })
     registerOrchestrationTools(server, {
@@ -114,6 +151,11 @@ describe("routine orchestration — MCP transport e2e", () => {
     const client = new Client({ name: "routine-e2e-client", version: "0.0.0" })
     await client.connect(clientTransport)
     return { client, server }
+  }
+
+  function setup(routineRegistrar?: RoutineRegistrar) {
+    const bus = createSessionEventBus()
+    return setupWithRegistry(makeMockRegistry(bus), bus, routineRegistrar)
   }
 
   it("registers routine_start + routine_status + routine_cancel on the server (routine_list needs a registrar, not just a runner)", async () => {
@@ -153,7 +195,9 @@ describe("routine orchestration — MCP transport e2e", () => {
         },
       }),
     )
-    expect(started.runId).toMatch(/^run_/)
+    // Backed by a workflowRunner run now (routine-workflow-shim.ts) — id
+    // prefix reflects that, not the retired RoutineRunner's `run_`.
+    expect(started.runId).toMatch(/^wfrun_/)
     expect(started.status).toBe("running")
 
     // Poll routine_status over the wire until terminal.
@@ -195,5 +239,109 @@ describe("routine orchestration — MCP transport e2e", () => {
       await client.callTool({ name: "routine_status", arguments: { runId: "run_does_not_exist" } }),
     )
     expect(res.error).toBe("run not found")
+  })
+
+  it("policy=auto-allow: the session's awaiting-input is answered automatically and the run reaches done", async () => {
+    const bus = createSessionEventBus()
+    const { client } = await setupWithRegistry(makeEscalatingRegistry(bus), bus)
+
+    const started = parseToolJson(
+      await client.callTool({
+        name: "routine_start",
+        arguments: {
+          routineId: "auto-allow-test",
+          steps: [
+            {
+              label: "step1",
+              adapter: "mock",
+              prompt: "go",
+              policy: { awaiting: "auto-allow", prompt: "continue please" },
+            },
+          ],
+        },
+      }),
+    )
+
+    let final: any
+    for (let i = 0; i < 100; i++) {
+      final = parseToolJson(
+        await client.callTool({ name: "routine_status", arguments: { runId: started.runId } }),
+      )
+      if (["done", "failed", "cancelled"].includes(final.status)) break
+      await new Promise(res => setTimeout(res, 10))
+    }
+
+    expect(final.status).toBe("done")
+    expect(final.steps[0].status).toBe("done")
+  })
+
+  it("policy=escalate: the run suspends to awaiting-input, then routine_escalation_resolve resumes it to done", async () => {
+    const bus = createSessionEventBus()
+    const { client } = await setupWithRegistry(makeEscalatingRegistry(bus), bus)
+
+    const started = parseToolJson(
+      await client.callTool({
+        name: "routine_start",
+        arguments: {
+          routineId: "escalate-test",
+          steps: [
+            {
+              label: "step1",
+              adapter: "mock",
+              prompt: "go",
+              policy: { awaiting: "escalate", timeoutMs: 5_000 },
+            },
+          ],
+        },
+      }),
+    )
+
+    // Poll until the run suspends (workflow StepSuspend/StepApproval mapping
+    // — see sessions-registry-agent-host.ts's onEscalate).
+    let suspended: any
+    for (let i = 0; i < 100; i++) {
+      suspended = parseToolJson(
+        await client.callTool({ name: "routine_status", arguments: { runId: started.runId } }),
+      )
+      if (suspended.status === "awaiting-input") break
+      await new Promise(res => setTimeout(res, 10))
+    }
+    expect(suspended.status).toBe("awaiting-input")
+
+    const resolved = parseToolJson(
+      await client.callTool({
+        name: "routine_escalation_resolve",
+        arguments: { runId: started.runId, stepIndex: 0, response: "approved" },
+      }),
+    )
+    expect(resolved.ok).toBe(true)
+
+    let final: any
+    for (let i = 0; i < 100; i++) {
+      final = parseToolJson(
+        await client.callTool({ name: "routine_status", arguments: { runId: started.runId } }),
+      )
+      if (["done", "failed", "cancelled"].includes(final.status)) break
+      await new Promise(res => setTimeout(res, 10))
+    }
+    expect(final.status).toBe("done")
+    expect(final.steps[0].status).toBe("done")
+  })
+
+  it("routine_start rejects a non-empty waitFor with a clear error — dropped along with the RoutineRunner engine", async () => {
+    const { client } = await setup()
+
+    const result = await client.callTool({
+      name: "routine_start",
+      arguments: {
+        routineId: "wait-for-test",
+        steps: [{ label: "step1", adapter: "mock", waitFor: ["some-other-session"] }],
+      },
+    })
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const content = (result as { content?: Array<{ type: string; text?: string }> }).content
+    const text = content?.find(c => c.type === "text")?.text ?? ""
+    expect(text).toMatch(/waitFor/)
   })
 })

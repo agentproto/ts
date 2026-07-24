@@ -435,16 +435,18 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
 
 // ── routine_trigger MCP tool — proves it's registered and dispatches over a
 // real MCP transport, and that it does not collide with the unrelated
-// `routine_start`/`routine_list`/... (RoutineRunner) verbs when both are
-// wired on the same server (see routine-registrar.ts SPEC note). ──
+// `routine_start`/`routine_list`/... (deprecated routine-workflow-shim)
+// verbs when both are wired on the same server (see routine-registrar.ts
+// SPEC note). ──
 
 describe("routine_trigger MCP tool", () => {
-  it("registers alongside routine_start (RoutineRunner) without colliding, and dispatches over MCP", async () => {
+  it("registers alongside routine_start (deprecated shim) without colliding, and dispatches over MCP", async () => {
     const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js")
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js")
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js")
     const { registerOrchestrationTools } = await import("../orchestration-tools.js")
-    const { createRoutineRunner } = await import("../routine-runner.js")
+    const { createRoutineWorkflowShim } = await import("../routine-workflow-shim.js")
+    const { createWorkflowRunner } = await import("../workflow-runner.js")
     const { createEventRing } = await import("../event-ring.js")
 
     const workspace = mkdtempSync(join(tmpdir(), "routine-trigger-mcp-test-"))
@@ -466,8 +468,9 @@ describe("routine_trigger MCP tool", () => {
       const sessionEvents = createSessionEventBus()
       const eventRing = createEventRing()
       const registry = createSessionsRegistry({ sessionEvents, persistPath: join(workspace, "sessions.json") })
-      // Wire the unrelated RoutineRunner too, to prove no name collision.
-      const routineRunner = createRoutineRunner({ registry, sessionEvents, resolveAgentAdapter: (async () => undefined) as never })
+      // Wire the unrelated deprecated routine shim too, to prove no name collision.
+      const workflowRunner = createWorkflowRunner({ registry, sessionEvents, resolveAgentAdapter: (async () => undefined) as never })
+      const routineRunner = createRoutineWorkflowShim({ workflowRunner })
 
       const server = new McpServer({ name: "routine-trigger-test", version: "0.0.0" })
       registerOrchestrationTools(server, { registry, sessionEvents, eventRing, routineRunner, routineRegistrar })
