@@ -80,11 +80,16 @@ Paste into .mcp.json:
     "sandbox-box-bx_abc123": {
       "type": "http",
       "url": "https://frazil-pneuma-rallye-18790.on.ascii.dev/mcp",
-      "headers": { "Authorization": "Bearer ••••••••" }
+      "headers": { "Cookie": "_port_auth=••••••••" }
     }
   }
 }
 ```
+
+The exact auth header is provider-specific and comes straight from the
+descriptor's `authHeaders`. Box gates its private hostname on a
+`Cookie: _port_auth=<token>` (its port edge ignores `Authorization: Bearer`);
+a token-only provider falls back to `Authorization: Bearer <token>`.
 
 ## See also
 

@@ -25,13 +25,24 @@ export interface BootedSandbox {
   mcpUrl: string
   /** Provider-assigned sandbox id, for logging / lookup. */
   sandboxId: string
-  /** Bearer token gating `mcpUrl`, present when `opts.expose === "private"`
+  /** Opaque secret gating `mcpUrl`, present when `opts.expose === "private"`
    *  was honoured (see `SandboxBootOpts.expose`). Absent for the default
    *  public-exposure path (boot-and-drive) and for providers/paths that
    *  can't gate the port at all — a caller that needs a gated URL (e.g.
    *  `attachSandbox`) MUST treat a missing token as "not gated", not as
-   *  "no auth needed". */
+   *  "no auth needed". The token is the raw secret; how a client must
+   *  PRESENT it (bearer header, cookie, …) is provider-specific — see
+   *  `authHeaders`. */
   token?: string
+  /** Exact HTTP header(s) a client must send to authenticate against the
+   *  gated `mcpUrl` — the provider's own answer to "how do I present the
+   *  token". Box, for instance, gates its private hostname with a
+   *  `Cookie: _port_auth=<token>` (verified live: bearer/query are ignored,
+   *  the port edge only honours the cookie), so it returns that here rather
+   *  than leaving the caller to guess a scheme. Present iff `token` is; a
+   *  token-only provider that omits this is treated by `buildMcpConfigSnippet`
+   *  as `Authorization: Bearer <token>`. */
+  authHeaders?: Record<string, string>
   /** Tear down the sandbox. */
   stop(): Promise<void>
   /** Pause the sandbox instead of killing it — keeps it reconnectable via
