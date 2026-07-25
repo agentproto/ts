@@ -70,6 +70,42 @@ function catalog(overrides?: Partial<CatalogModelsResult>): CatalogModelsResult 
   )
 }
 
+/** A router catalog: one product reachable via openrouter or requesty. */
+function routerCatalog(): CatalogModelsResult {
+  return {
+    vendors: [
+      {
+        vendor: "z-ai",
+        products: [
+          {
+            product: "glm-5.2",
+            routes: [
+              {
+                route: "openrouter",
+                ref: "z-ai/glm-5.2@openrouter",
+                baseUrl: "https://openrouter.ai",
+                runnable: true,
+                eligibleProfiles: ["or-key"],
+                adapterModes: [],
+                curated: true,
+              },
+              {
+                route: "requesty",
+                ref: "z-ai/glm-5.2@requesty",
+                baseUrl: "https://requesty.ai",
+                runnable: true,
+                eligibleProfiles: ["requesty-key"],
+                adapterModes: [],
+                curated: false,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+}
+
 const baseInput = (overrides: Partial<CapabilityResolutionInput> = {}): CapabilityResolutionInput => ({
   adapter: adapter(),
   model: "claude-opus-4-8",
@@ -173,6 +209,22 @@ describe("resolveRouteRows / currentRouteOf — catalog-derived, non-runnable fl
     expect(current?.value).toBe("moonshot")
   })
 
+  it("prefers the model ref's own pinned @route over a stale route.gateway", () => {
+    const current = currentRouteOf(
+      { model: "z-ai/glm-5.2@openrouter", route: { gateway: "requesty" } },
+      routerCatalog(),
+    )
+    expect(current?.value).toBe("openrouter")
+  })
+
+  it("falls back to route.gateway when the model ref carries no @route suffix", () => {
+    const current = currentRouteOf(
+      { model: "z-ai/glm-5.2", route: { gateway: "requesty" } },
+      routerCatalog(),
+    )
+    expect(current?.value).toBe("requesty")
+  })
+
   it("returns empty for a model the catalog doesn't know (⇒ chip hidden)", () => {
     expect(resolveRouteRows(catalog(), "mystery-model")).toEqual([])
     expect(resolveRouteRows(undefined, "claude-opus-4-8")).toEqual([])
@@ -221,6 +273,24 @@ describe("resolveAccessRows — eligibility + ineligible-profile re-pick (SPEC R
       profiles,
       attachedProfileRef: "jeremy-max",
     })
+    expect(ineligibleAttached).toBeUndefined()
+  })
+
+  it("ignores a stale route.gateway when the model ref pins a different @route", () => {
+    const routerProfiles = [
+      { id: "or-key", endpoint: "openrouter", method: "api-key" as const, label: "OpenRouter" },
+      { id: "requesty-key", endpoint: "requesty", method: "api-key" as const, label: "Requesty" },
+    ]
+    const current = currentRouteOf(
+      { model: "z-ai/glm-5.2@openrouter", route: { gateway: "requesty" } },
+      routerCatalog(),
+    )
+    const { rows, ineligibleAttached } = resolveAccessRows({
+      currentRoute: current,
+      profiles: routerProfiles,
+      attachedProfileRef: "or-key",
+    })
+    expect(rows.filter(r => !r.addProfile).map(r => r.value)).toEqual(["or-key"])
     expect(ineligibleAttached).toBeUndefined()
   })
 })
@@ -398,6 +468,28 @@ describe("access chip — surfaces the ineligible-attached-profile re-pick", () 
     )
     const access = chips.find(c => c.axis === "access")!
     expect(access.ineligibleAttachedProfile).toBe("jeremy-max")
+  })
+
+  it("does NOT flag an attached profile when the model's pinned @route makes it eligible", () => {
+    const chips = buildSessionConfigChips(
+      descriptor({
+        model: "z-ai/glm-5.2@openrouter",
+        route: { gateway: "requesty" },
+        accessProfile: {
+          profileRef: "or-key",
+          vendor: "openrouter",
+          method: "api-key",
+          label: "OpenRouter",
+        },
+      }),
+      baseInput({
+        catalog: routerCatalog(),
+        profiles: [{ id: "or-key", endpoint: "openrouter", method: "api-key" as const }],
+      }),
+    )
+    const access = chips.find(c => c.axis === "access")!
+    expect(access.ineligibleAttachedProfile).toBeUndefined()
+    expect(access.rows.filter(r => r.value).map(r => r.value)).toEqual(["or-key"])
   })
 })
 
