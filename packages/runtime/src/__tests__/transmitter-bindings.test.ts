@@ -35,6 +35,22 @@ describe("TransmitterBindingStore", () => {
     expect(store.get("agentpush", "+33612345678", "unknown")).toBeUndefined()
   })
 
+  it("upsert with provider round trip", () => {
+    const store = createTransmitterBindingStore({ filePath, debounceMs: 100 })
+
+    const binding = store.upsert({
+      alias: "default",
+      source: "+33612345678",
+      contactRef: "contact-1",
+      sessionId: "sess-1",
+      mode: "route",
+      provider: "telegram",
+    })
+
+    expect(binding.provider).toBe("telegram")
+    expect(store.get("default", "+33612345678", "contact-1")?.provider).toBe("telegram")
+  })
+
   it("remove deletes a binding and returns false for unknown keys", () => {
     const store = createTransmitterBindingStore({ filePath, debounceMs: 100 })
     store.upsert({

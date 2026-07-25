@@ -20,6 +20,7 @@ export default createTsupConfig({
     "session-story-panel": "src/session-story-panel.ts",
     "user-presets": "src/user-presets.ts",
     "pr-provenance": "src/pr-provenance.ts",
+    "telegram-proxy": "src/telegram-proxy.ts",
   },
   format: ["esm"],
   splitting: false,

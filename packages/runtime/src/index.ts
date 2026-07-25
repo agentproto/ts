@@ -82,6 +82,7 @@ import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.j
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
+import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
@@ -1325,6 +1326,7 @@ export async function createGateway(
   const inboundEndpointStore = createInboundEndpointStore({
     persist: false,
   })
+  const telegramBotCreds = makeTelegramBotCredsStore()
 
   // Adapts SessionsRegistry to InboundRouterDeps' liveness/restart
   // shape (inbound-router.ts) — same primitives cron-scheduler.ts's
@@ -1592,7 +1594,9 @@ export async function createGateway(
       mcpProxy,
       bindingStore: transmitterBindings,
       endpointStore: inboundEndpointStore,
+      telegramCreds: telegramBotCreds,
     })
+    registerTelegramBotTools(server, { telegramCreds: telegramBotCreds })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
     const listSessionsFiltered = (filter?: "running" | "all") => {

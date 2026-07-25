@@ -11,11 +11,12 @@
 import { resolve, dirname } from "node:path"
 import { homedir } from "node:os"
 import { readFileSync, promises as fsp } from "node:fs"
+import type { OutboundProvider } from "./outbound-adapters.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
 export interface TransmitterBinding {
-  /** Imported agentpush MCP alias. */
+  /** Imported agentpush MCP alias (or bot alias for native providers). */
   alias: string
   /** Channel/phone the poll is scoped to. */
   source: string
@@ -24,6 +25,8 @@ export interface TransmitterBinding {
   /** agentproto session to route inbound INTO. */
   sessionId: string
   mode: "route" | "route-or-spawn"
+  /** Outbound provider this binding was created through. Default "agentpush". */
+  provider?: OutboundProvider
   /** ms epoch of last activity. */
   lastSeenTs: number
 }
@@ -135,6 +138,7 @@ export function createTransmitterBindingStore(opts?: {
         contactRef: b.contactRef,
         sessionId: b.sessionId,
         mode: b.mode,
+        provider: b.provider,
         lastSeenTs: b.lastSeenTs ?? nowMs(),
       }
       bindings.set(keyOf(b.alias, b.source, b.contactRef), binding)
