@@ -16,7 +16,7 @@
  *
  * With `allowFetch` (the CLI turns it on; direct callers stay purely local),
  * a final step FETCHES the pack from the network when nothing local matches —
- * npm (`@agentproto/skill-pack-<name>@<ver|latest>`) or a github ref — and
+ * npm (`@agentproto/skill-pack-<name>@<ver|latest>`) or a github release — and
  * materializes it into `~/.agentproto/packs/<name>@<ver>/`, returning that
  * dir (see ./fetch-pack.ts). So `agentproto onboard` / `install skill/<name>`
  * resolve the published pack out of the box with no `--pack`.
@@ -251,12 +251,16 @@ export async function resolveSkillPackDir(
     return expanded
   }
 
-  // A PINNED npm version or a github ref names a SPECIFIC source — don't let
-  // an unrelated bare-name copy in node_modules/.skills satisfy it. Check
-  // only that source's own cache dir, then fetch.
+  // A PINNED npm version or a pinned github release names a SPECIFIC source —
+  // don't let an unrelated bare-name copy in node_modules/.skills satisfy it.
+  // Check only that source's own cache dir, then fetch. A github `latest` has
+  // no precomputable cache dir (its version is only known post-resolve), so it
+  // always re-resolves via fetch.
   if (spec.kind === "github") {
-    const cached = join(packsDir, `${spec.name}@${spec.ref.replace(/[/\\]/g, "-")}`)
-    if (!refresh && (await pathExists(cached))) return cached
+    if (spec.version !== "latest") {
+      const cached = join(packsDir, `${spec.name}@${spec.version}`)
+      if (!refresh && (await pathExists(cached))) return cached
+    }
     return allowFetch ? fetchPack(spec, { refresh }) : null
   }
   if (spec.version !== "latest") {
