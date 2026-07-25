@@ -153,6 +153,14 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       { id: "google/gemini-2.5-flash@openrouter", provider: "openrouter" },
       { id: "google/gemini-2.5-pro@openrouter", provider: "openrouter" },
       { id: "moonshotai/kimi-k2.7-code@openrouter", provider: "openrouter" },
+      // OpenAI gpt-5.6 series via OpenRouter — reachable via ANTHROPIC_BASE_URL
+      // + ANTHROPIC_AUTH_TOKEN (the gatewayAuth setEnv above) like the other
+      // gateway rows. The `@openrouter` suffix pins the catalog join to the
+      // OpenRouter gateway (the bare id would resolve to the direct-OpenAI
+      // route, which this Anthropic client can't speak). These are real,
+      // already-priced OpenRouter chat models, not invented specialist ids.
+      { id: "openai/gpt-5.6-luna@openrouter", provider: "openrouter" },
+      { id: "openai/gpt-5.6-sol@openrouter", provider: "openrouter" },
       // Requesty — route resolved from the catalog `@route`
       { id: "sference/thinkingcap-qwen3.6-27b@requesty", provider: "requesty" },
       { id: "sference/glm-5.2@requesty", provider: "requesty" },

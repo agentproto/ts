@@ -48,4 +48,18 @@ describe("claude-sdk model routing", () => {
       provider: "llm-endpoint",
     })
   })
+
+  it("curates the OpenAI gpt-5.6 series under the `@openrouter` route", () => {
+    const allowed = claudeSdk.models?.allowed ?? []
+    const entries = allowed.filter((m): m is AgentCliModelEntry => typeof m !== "string")
+    const byId = (id: string) => entries.find((e) => e.id === id)
+    expect(byId("openai/gpt-5.6-luna@openrouter")).toEqual({
+      id: "openai/gpt-5.6-luna@openrouter",
+      provider: "openrouter",
+    })
+    expect(byId("openai/gpt-5.6-sol@openrouter")).toEqual({
+      id: "openai/gpt-5.6-sol@openrouter",
+      provider: "openrouter",
+    })
+  })
 })
