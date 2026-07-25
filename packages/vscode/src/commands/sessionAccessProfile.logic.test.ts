@@ -36,6 +36,43 @@ const catalog: CatalogModelsResponse = {
   ],
 }
 
+const routerCatalog: CatalogModelsResponse = {
+  vendors: [
+    {
+      vendor: "z-ai",
+      products: [
+        {
+          product: "glm-5.2",
+          routes: [
+            {
+              route: "openrouter",
+              ref: "z-ai/glm-5.2@openrouter",
+              baseUrl: "https://openrouter.ai",
+              pricing: null,
+              runnable: true,
+              eligibleProfiles: ["or-key"],
+              adapterModes: [],
+              adapters: ["claude-code"],
+              curated: true,
+            },
+            {
+              route: "requesty",
+              ref: "z-ai/glm-5.2@requesty",
+              baseUrl: "https://requesty.ai",
+              pricing: null,
+              runnable: true,
+              eligibleProfiles: ["requesty-key"],
+              adapterModes: [],
+              adapters: ["claude-code"],
+              curated: false,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+}
+
 const profiles: AuthProfileSummary[] = [
   { id: "max-agentik", endpoint: "anthropic", method: "oauth-bearer", credentialRef: "r1", label: "Max agentik" },
   { id: "max-fabrikapp", endpoint: "anthropic", method: "oauth-bearer", credentialRef: "r2", label: "Max fabrikapp" },
@@ -79,6 +116,20 @@ describe("accessRowsForSession", () => {
       profiles,
     })
     expect(stale.ineligibleAttached).toBe("or-key")
+  })
+
+  it("ignores a stale route.gateway when the model ref pins a different @route", () => {
+    const rows = accessRowsForSession({
+      descriptor: descriptor({
+        model: "z-ai/glm-5.2@openrouter",
+        route: { gateway: "requesty" },
+        accessProfile: { profileRef: "or-key", label: "OpenRouter", vendor: "openrouter", method: "api-key" },
+      }),
+      catalog: routerCatalog,
+      profiles,
+    })
+    expect(rows.rows.filter(r => r.value).map(r => r.value)).toEqual(["or-key"])
+    expect(rows.ineligibleAttached).toBeUndefined()
   })
 
   it("still offers add-profile when the catalog knows no route for the model", () => {

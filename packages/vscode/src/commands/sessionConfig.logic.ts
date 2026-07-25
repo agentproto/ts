@@ -281,6 +281,16 @@ function productOf(model: string): string {
   return afterVendor.split("@")[0]!.split(":")[0]!
 }
 
+/**
+ * The explicit `@route` suffix of a model ref, if any. A pinned route names the
+ * real billing endpoint and overrides a possibly-stale `route.gateway` field.
+ */
+function routeOf(model: string): string | undefined {
+  const at = model.lastIndexOf("@")
+  if (at === -1) return undefined
+  return model.slice(at + 1).split(":")[0]
+}
+
 /** The catalog product entry for `model`, searched across every vendor. */
 function findCatalogProduct(
   catalog: CatalogModelsResult | undefined,
@@ -329,10 +339,12 @@ function routeDescription(vendor: string, route: CatalogRouteRow): string {
 }
 
 /**
- * The route the session is currently on: the descriptor's explicit `route.gateway`
- * matched against the catalog product's routes (by route id OR `adapterModes`),
- * else the DIRECT route (the model's own vendor, `baseUrl === null`), else the
- * first known route. Undefined when the catalog knows no routes for the model.
+ * The route the session is currently on. The model ref's own pinned `@route`
+ * suffix takes precedence over `route.gateway` because it names the actual
+ * billing endpoint the model was curated for; a stale gateway field must not
+ * hide eligible profiles. Falls back to the explicit gateway, then the DIRECT
+ * route, then the first known route. Undefined when the catalog knows no
+ * routes for the model.
  */
 export function currentRouteOf(
   descriptor: Pick<SessionDescriptor, "route" | "model">,
@@ -340,6 +352,11 @@ export function currentRouteOf(
 ): RouteRow | undefined {
   const rows = resolveRouteRows(catalog, descriptor.model)
   if (rows.length === 0) return undefined
+  const pinnedRoute = descriptor.model ? routeOf(descriptor.model) : undefined
+  if (pinnedRoute) {
+    const pinned = rows.find(r => r.value === pinnedRoute)
+    if (pinned) return pinned
+  }
   const gateway = descriptor.route?.gateway
   if (gateway) {
     const explicit = rows.find(r => r.value === gateway)
