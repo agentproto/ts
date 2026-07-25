@@ -37,10 +37,17 @@ const CAPABILITIES_TODAY: SandboxProviderCapabilities = {
   readOnly: false,
 }
 
-/** e2b alone can pause/reconnect (`Sandbox.pause()` + `Sandbox.connect()`) —
+/** e2b and Box can both pause/reconnect (e2b: `Sandbox.pause()` +
+ *  `Sandbox.connect()`; Box: `box stop` snapshots, `box resume` restores) —
  *  the `local` passthrough tears down its temp workspace on `stop()`, and
  *  `modal`/`daytona` are unpublished catalog placeholders. */
 const E2B_CAPABILITIES: SandboxProviderCapabilities = {
+  ...CAPABILITIES_TODAY,
+  lifecyclePause: true,
+}
+
+/** Box's `box stop` snapshots the box for later `box resume`/`box fork`. */
+const BOX_CAPABILITIES: SandboxProviderCapabilities = {
   ...CAPABILITIES_TODAY,
   lifecyclePause: true,
 }
@@ -87,6 +94,22 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
       {
         name: "apiKey",
         description: "e2b API key (from e2b.dev/dashboard).",
+        required: true,
+        sensitive: true,
+      },
+    ],
+  },
+  box: {
+    packageName: "@agentproto/sandbox-box",
+    exportName: "boxSandboxProvider",
+    name: "Box",
+    description:
+      "Runs the agentproto daemon on an ascii.dev Box cloud computer, behind an always-on systemd unit.",
+    capabilities: BOX_CAPABILITIES,
+    setupFields: [
+      {
+        name: "apiKey",
+        description: "Box API key (BOX_API_KEY, from ascii.dev).",
         required: true,
         sensitive: true,
       },
@@ -169,7 +192,7 @@ export interface ResolveSandboxProviderOpts {
 
 /**
  * Resolve a slug to a concrete sandbox provider handle. Built-ins first (no
- * import), then the fixed third-party catalog (`e2b`/`modal`/`daytona`).
+ * import), then the fixed third-party catalog (`e2b`/`box`/`modal`/`daytona`).
  * Returns null when the slug is unknown, or a catalog third-party package
  * isn't installed — the kit's "supported but unavailable" signal.
  */

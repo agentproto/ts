@@ -2922,6 +2922,31 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
 
+  packages/sandbox-box:
+    dependencies:
+      '@agentproto/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+      '@asciidev/box-sdk':
+        specifier: ^0.0.24
+        version: 0.0.24
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
+
   packages/sandbox-e2b:
     dependencies:
       '@agentproto/sandbox':
@@ -3859,6 +3884,9 @@ packages:
 
   '@asamuzakjp/nwsapi@2.3.9':
     resolution: {integrity: sha512-n8GuYSrI9bF7FFZ/SjhwevlHc8xaVlb/7HmHelnc/PZXBD2ZR49NnN9sMMuDdEGPeeRQ5d0hqlSlEpgCX3Wl0Q==}
+
+  '@asciidev/box-sdk@0.0.24':
+    resolution: {integrity: sha512-w77vTWA+yrJ5O+FmchCkurjux1UZkQ5yeurnzX/FJTlQulEtj1xp0g/2cSh/GZWLXrgCV0exU99E+NyiilBeHA==}
 
   '@ast-grep/napi-darwin-arm64@0.42.3':
     resolution: {integrity: sha512-pcTBI8UiNQ9xVOYfu3Ww5KXcrrHV/jJqECQ6efpJpzTGwW+mOpzgihfrq5GKjbMONhr0OaRARCMwEsvKgBXCpA==}
@@ -9702,6 +9730,8 @@ snapshots:
   '@asamuzakjp/generational-cache@1.0.1': {}
 
   '@asamuzakjp/nwsapi@2.3.9': {}
+
+  '@asciidev/box-sdk@0.0.24': {}
 
   '@ast-grep/napi-darwin-arm64@0.42.3':
     optional: true

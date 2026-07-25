@@ -1,0 +1,63 @@
+{
+  "name": "@agentproto/sandbox-box",
+  "version": "0.1.0",
+  "description": "@agentproto/sandbox-box — ascii.dev Box `SandboxProvider` for @agentproto/sandbox. Boots a Box cloud computer, installs an always-on systemd unit for the agentproto daemon, and exposes its MCP endpoint as a URL so any AgentSessionHost consumer (worktreeAgentWorkflow, worktree-agent CLI) can run a coding-agent step inside the sandbox.",
+  "keywords": [
+    "agentproto",
+    "aip-36",
+    "sandbox",
+    "box",
+    "ascii.dev",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-36",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/sandbox-box"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/sandbox": "workspace:*",
+    "@asciidev/box-sdk": "^0.0.24"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

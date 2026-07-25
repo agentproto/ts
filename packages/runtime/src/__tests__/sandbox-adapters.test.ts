@@ -74,10 +74,11 @@ afterEach(() => {
 // ── catalog ──────────────────────────────────────────────────────────────
 
 describe("sandbox catalog", () => {
-  it("exposes local, e2b, modal, daytona in order", () => {
+  it("exposes local, e2b, box, modal, daytona in order", () => {
     expect(SANDBOX_CATALOG.map((c) => c.slug)).toEqual([
       "local",
       "e2b",
+      "box",
       "modal",
       "daytona",
     ])
@@ -127,7 +128,7 @@ describe("resolveSandboxProvider", () => {
 // ── lister: status classification ───────────────────────────────────────
 
 describe("sandbox lister", () => {
-  it("classifies local as ready, e2b/modal/daytona as supported when e2b isn't importable", async () => {
+  it("classifies local as ready, e2b/box/modal/daytona as supported when none are importable", async () => {
     const credsStore = makeSandboxCredsStore(home)
     const ledger = makeSetupLedger({ home })
     const resolver = makeSandboxResolver(credsStore, {
@@ -141,6 +142,7 @@ describe("sandbox lister", () => {
     expect(entries.map((e) => e.slug)).toEqual([
       "local",
       "e2b",
+      "box",
       "modal",
       "daytona",
     ])
@@ -149,7 +151,7 @@ describe("sandbox lister", () => {
     expect(local.status).toBe("ready")
     expect(local.info?.capabilities.networkEgress).toBe(true)
 
-    for (const slug of ["e2b", "modal", "daytona"]) {
+    for (const slug of ["e2b", "box", "modal", "daytona"]) {
       const entry = entries.find((e) => e.slug === slug)!
       expect(entry.status).toBe("supported")
       expect(entry.version).toBe("not installed")
@@ -227,8 +229,9 @@ describe("list_sandbox_providers tool", () => {
     const entries = JSON.parse(
       res.content[0]!.text,
     ) as AdapterEntry<SandboxAdapterInfo>[]
-    expect(entries).toHaveLength(4)
+    expect(entries).toHaveLength(5)
     expect(entries.map((e) => e.slug).sort()).toEqual([
+      "box",
       "daytona",
       "e2b",
       "local",
