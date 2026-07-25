@@ -81,6 +81,7 @@ Pick whichever matches what you're trying to do:
 ### Guides
 
 - [Use agentproto as an MCP server inside coding CLIs](./guides/mcp-in-coding-cli.md) — register the daemon in Claude Code, Codex, and Hermes
+- [Sandboxes and rendezvous: boot-and-drive vs. attach](./guides/sandbox-rendezvous.md) — connection models, keeping a box reachable, and the cost tradeoffs
 
 ### File reference
 
