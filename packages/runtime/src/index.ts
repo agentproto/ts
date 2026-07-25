@@ -1821,6 +1821,12 @@ export async function createGateway(
     // unauthenticated webhook payload carries no adapter/prompt template
     // to spawn with, so an unbound contact is "skipped" rather than
     // spawning an arbitrary agent from push input.
+    // provider-specific `POST /inbound/:slug` push ingress reads endpoint
+    // config (secret, provider, mode) from the SAME store the
+    // inbound_endpoint_create/list/delete MCP tools write to — without
+    // this, every slug 404s as "unknown_inbound_endpoint" regardless of
+    // what's registered, since the http layer never saw the store at all.
+    endpointStore: inboundEndpointStore,
     routeInboundMessage: (msg: InboundMessage, mode: InboundRouteMode) =>
       routeInboundMessage(
         {
