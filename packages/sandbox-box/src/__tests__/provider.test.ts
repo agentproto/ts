@@ -357,4 +357,27 @@ describe("boxSandboxProvider.boot", () => {
     expect(boxApiMock.stop).toHaveBeenCalledWith({ boxId: "bx_abc" })
     expect(boxApiMock.remove).not.toHaveBeenCalled()
   })
+
+  it("stop() retries through a transient control-plane timeout instead of leaving the box running", async () => {
+    vi.useFakeTimers()
+    try {
+      fetchMock.mockResolvedValue({ ok: true })
+      const { boxSandboxProvider } = await import("../provider.js")
+      const booted = await boxSandboxProvider.boot(spec, { env: {} })
+
+      boxApiMock.remove
+        .mockRejectedValueOnce(
+          new Error("could not reach the Box API at https://ascii.dev: operation timed out"),
+        )
+        .mockResolvedValueOnce({})
+
+      const stopped = booted.stop()
+      await vi.runAllTimersAsync()
+      await stopped
+
+      expect(boxApiMock.remove).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
