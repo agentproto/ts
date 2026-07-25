@@ -3476,6 +3476,33 @@ export function createSessionsRegistry(opts?: {
         const interrupted =
           rt.desc.killedMidTurn === true &&
           rt.desc.endedReason === "daemon-restart"
+        // Symmetric honesty banner (resume-honesty fix): this adapter declared
+        // `capabilities.resumable: false` (hermes, mastra-agent, …) — the
+        // in-place revival got a live process back, but it CANNOT rehydrate
+        // the prior conversation from `adapterSessionId`, so what just came
+        // back is a blank session wearing the old id, not a continuation.
+        // Announced exactly as loudly as the interrupted-turn banner below so
+        // a lazily-revived unresumable session never looks like a silent,
+        // empty continuation. `resumable !== false` (true/unknown — every
+        // adapter this fix doesn't touch, including claude-code) stays silent.
+        const contextNotRestored = rt.desc.resumable === false
+        // Fix D: this is an in-place revival — same session id, same
+        // `events.jsonl` — so that file's own pre-death content IS the prior
+        // conversation to summarize. Read here, BEFORE either banner below is
+        // written into that same file — `transcriptWriter.recordEvent`'s
+        // write and this read are two independent stream handles on one
+        // path, so building the digest AFTER a banner write raced that
+        // write's buffered, asynchronous flush: read late and the banner's
+        // own "notice" text could be read back as if it were prior
+        // conversation, injecting a bogus digest into a session with no real
+        // transcript at all — the source of the CI flake reddening PR
+        // #721/#724. Best-effort: stashed for `runAgentTurn` to inject once;
+        // absent when there's nothing to summarize (see
+        // `buildResumeContextDigest`).
+        const digest = contextNotRestored
+          ? await buildResumeContextDigest(rt.desc.id)
+          : undefined
+        if (digest) rt.desc.pendingResumeContext = digest
         if (interrupted) {
           const banner =
             "── resumed after daemon restart; previous turn was interrupted " +
@@ -3483,16 +3510,6 @@ export function createSessionsRegistry(opts?: {
           appendLine(rt, banner, "stdout")
           transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
         }
-        // Symmetric honesty banner (resume-honesty fix): this adapter declared
-        // `capabilities.resumable: false` (hermes, mastra-agent, …) — the
-        // in-place revival got a live process back, but it CANNOT rehydrate
-        // the prior conversation from `adapterSessionId`, so what just came
-        // back is a blank session wearing the old id, not a continuation.
-        // Announced exactly as loudly as the interrupted-turn banner above so
-        // a lazily-revived unresumable session never looks like a silent,
-        // empty continuation. `resumable !== false` (true/unknown — every
-        // adapter this fix doesn't touch, including claude-code) stays silent.
-        const contextNotRestored = rt.desc.resumable === false
         if (contextNotRestored) {
           const banner =
             `── resumed WITHOUT prior context — adapter '${adapterSlug}' ` +
@@ -3500,14 +3517,6 @@ export function createSessionsRegistry(opts?: {
             "continuation ──"
           appendLine(rt, banner, "stdout")
           transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
-          // Fix D: this is an in-place revival — same session id, same
-          // `events.jsonl` — so that file's own pre-death content IS the
-          // prior conversation to summarize. Read here, BEFORE the fresh
-          // turn appends anything new to it. Best-effort: stashed for
-          // `runAgentTurn` to inject once; absent when there's nothing to
-          // summarize (see `buildResumeContextDigest`).
-          const digest = await buildResumeContextDigest(rt.desc.id)
-          if (digest) rt.desc.pendingResumeContext = digest
         }
         sessionEvents?.emit({
           type: "session:resumed",
