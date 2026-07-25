@@ -17,19 +17,20 @@
  * (and re-drifting) `localhost:18090` here.
  *
  * Called once at daemon boot (`createGateway`, `index.ts`) BEFORE any catalog
- * or route consumer runs. Idempotent (`registerCustomRoute` is a map set), so
- * tests that exercise the route register it directly in their own setup, same
- * as the `agentik-proxy` route-identity tests do.
+ * or route consumer runs. Additive — direct and generated router routes are
+ * untouched. Operator-declared routes from `~/.agentproto/routes.json` are
+ * loaded after the built-in so they can deliberately override a shipped default.
  */
 
 import { registerCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { getAnthropicGatewayPreset } from "@agentproto/provider-presets"
+import { loadOperatorRoutes } from "./routes-config.js"
 
 /**
  * Register every built-in custom route. Additive — direct and the generated
  * router routes (openrouter/requesty/huggingface) are untouched.
  */
-export function registerBuiltinRoutes(): void {
+export async function registerBuiltinRoutes(): Promise<void> {
   // The local llm-endpoint Anthropic-compatible proxy. Its baseUrl/flavor/
   // key-env are owned by the gateway preset (the single source of truth for
   // these facts across adapters) — mirror them so a preset change here can't
@@ -41,4 +42,27 @@ export function registerBuiltinRoutes(): void {
     baseUrl: preset.baseUrl,
     authEnv: preset.keyEnv,
   })
+
+  // Then load operator-declared routes from ~/.agentproto/routes.json. These
+  // intentionally override built-ins, so an operator can retarget a shipped
+  // default (e.g. llm-endpoint) locally without patching code.
+  const loaded = await loadOperatorRoutes()
+  for (const error of loaded.errors) {
+    console.error("[runtime] custom routes config error:", error)
+  }
+  for (const [id, config] of Object.entries(loaded.routes)) {
+    try {
+      registerCustomRoute(id, config)
+    } catch (err) {
+      console.error(
+        `[runtime] failed to register custom route "${id}":`,
+        err,
+      )
+    }
+  }
+  const loadedIds = Object.keys(loaded.routes)
+  if (loadedIds.length > 0) {
+    // eslint-disable-next-line no-console
+    console.log(`[runtime] loaded custom routes: ${loadedIds.join(", ")}`)
+  }
 }
