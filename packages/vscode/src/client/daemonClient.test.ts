@@ -394,6 +394,42 @@ describe("DaemonClient — URL + auth header mapping", () => {
     }
   })
 
+  it("authHeaders override: sends the configured headers instead of Bearer", async () => {
+    const c = new DaemonClient({
+      daemonUrl: daemon.url,
+      tokenPath: "",
+      pollIntervalMs: 5000,
+      authHeaders: { Cookie: "_port_auth=box-token" },
+    })
+    await c.health()
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.headers.authorization).toBeUndefined()
+    expect(last.headers.cookie).toBe("_port_auth=box-token")
+  })
+
+  it("authHeaders take precedence over a resolved bearer token", async () => {
+    const { writeFile, mkdir, rm } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const dir = await mkdtemp(join(tmpdir(), "agentproto-vscode-test-"))
+    const tokenFile = join(dir, "runtime.json")
+    await writeFile(tokenFile, JSON.stringify({ token: "secret-token-123" }), "utf8")
+    try {
+      const c = new DaemonClient({
+        daemonUrl: daemon.url,
+        tokenPath: tokenFile,
+        pollIntervalMs: 5000,
+        authHeaders: { Cookie: "_port_auth=box-token" },
+      })
+      await c.health()
+      const last = daemon.requests[daemon.requests.length - 1]!
+      expect(last.headers.authorization).toBeUndefined()
+      expect(last.headers.cookie).toBe("_port_auth=box-token")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it("mcpCall throws on an MCP-level error envelope", async () => {
     daemon.server.removeAllListeners("request")
     daemon.server.on("request", (_req, res) => {

@@ -9,10 +9,15 @@
 
 import * as vscode from "vscode"
 
+import { buildAuthHeaders } from "./auth.js"
+
+export { buildAuthHeaders }
+
 export interface DaemonConfig {
   daemonUrl: string
   tokenPath: string
   pollIntervalMs: number
+  authHeaders?: Record<string, string>
 }
 
 const SECTION = "agentproto"
@@ -26,7 +31,7 @@ const DEFAULT_DAEMON_URL = "http://127.0.0.1:18790"
  *  "reload the window" banner for those would be actively wrong — most
  *  visibly for groupByWorkspace, whose own toolbar toggle is supposed to
  *  update the tree instantly, not prompt for a reload. */
-const RELOAD_REQUIRED_KEYS = ["daemonUrl", "tokenPath", "pollIntervalMs"] as const
+const RELOAD_REQUIRED_KEYS = ["daemonUrl", "tokenPath", "pollIntervalMs", "authHeaders"] as const
 
 export function getConfig(): DaemonConfig {
   const cfg = vscode.workspace.getConfiguration(SECTION)
@@ -38,6 +43,7 @@ export function getConfig(): DaemonConfig {
       typeof pollIntervalMs === "number" && pollIntervalMs >= 1000
         ? pollIntervalMs
         : 5000,
+    authHeaders: cfg.get<Record<string, string>>("authHeaders") ?? undefined,
   }
 }
 
