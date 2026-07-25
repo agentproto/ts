@@ -230,6 +230,14 @@ export type {
   SandboxProviderHandle,
   SandboxProviderCapabilities,
 } from "./sandbox-providers/types.js"
+export {
+  attachSandbox,
+  buildMcpConfigSnippet,
+  registerSandboxAttachTool,
+  type AttachSandboxOpts,
+  type AttachSandboxResult,
+  type SandboxConnectionDescriptor,
+} from "./sandbox-attach.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,
@@ -332,6 +340,7 @@ import {
   type SandboxProviderResolver,
   type SandboxProviderLister,
 } from "./sandbox-adapters.js"
+import { registerSandboxAttachTool } from "./sandbox-attach.js"
 import type { WorktreeProvisioner } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
@@ -1608,6 +1617,12 @@ export async function createGateway(
       ...(opts.listSandboxProviders
         ? { listSandboxProviders: opts.listSandboxProviders }
         : {}),
+    })
+    // Phase 1 `sandbox attach` — connect to an ALREADY-EXISTING sandbox
+    // without tearing it down. Same shared resolver as above so it sees
+    // the exact same provider set `list_sandbox_providers` reports ready.
+    registerSandboxAttachTool(server, {
+      resolveSandboxProvider: resolveSandboxProviderResolved,
     })
     // Eval-reporter introspection/setup, riding on @agentproto/eval-reporters
     // (list_eval_reporters + setup_eval_reporter). Credentials live 0600 under

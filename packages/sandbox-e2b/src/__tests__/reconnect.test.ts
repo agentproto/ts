@@ -103,4 +103,36 @@ describe("e2bSandboxProvider.connect", () => {
     expect(sandbox.pause).toHaveBeenCalledWith({ keepMemory: true })
     expect(sandbox.kill).not.toHaveBeenCalled()
   })
+
+  describe("expose: \"private\" (attachSandbox's token-gated path)", () => {
+    it("omits the token when expose is not requested, even if the sandbox has one", async () => {
+      const sandbox = fakeSandbox({ trafficAccessToken: "e2b_secret" })
+      sandboxConnectMock.mockResolvedValue(sandbox)
+      fetchMock.mockResolvedValue({ ok: true })
+
+      const { e2bSandboxProvider } = await import("../provider.js")
+      const booted = await e2bSandboxProvider.connect!("sbx_abc", spec, { env: {} })
+      expect(booted.token).toBeUndefined()
+    })
+
+    it("surfaces the sandbox's trafficAccessToken when expose is private", async () => {
+      const sandbox = fakeSandbox({ trafficAccessToken: "e2b_secret" })
+      sandboxConnectMock.mockResolvedValue(sandbox)
+      fetchMock.mockResolvedValue({ ok: true })
+
+      const { e2bSandboxProvider } = await import("../provider.js")
+      const booted = await e2bSandboxProvider.connect!("sbx_abc", spec, { env: {}, expose: "private" })
+      expect(booted.token).toBe("e2b_secret")
+    })
+
+    it("omits the token when expose is private but the sandbox has none (no traffic restriction enabled)", async () => {
+      const sandbox = fakeSandbox()
+      sandboxConnectMock.mockResolvedValue(sandbox)
+      fetchMock.mockResolvedValue({ ok: true })
+
+      const { e2bSandboxProvider } = await import("../provider.js")
+      const booted = await e2bSandboxProvider.connect!("sbx_abc", spec, { env: {}, expose: "private" })
+      expect(booted.token).toBeUndefined()
+    })
+  })
 })
