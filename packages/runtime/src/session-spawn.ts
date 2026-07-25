@@ -40,7 +40,10 @@ import {
 } from "./claude-code-oauth-source.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
-import { stripRouteSuffix } from "@agentproto/model-catalog/route-identity"
+import {
+  stripAnthropicNativeVendor,
+  stripRouteSuffix,
+} from "@agentproto/model-catalog/route-identity"
 import {
   checkModelWalletEligibility,
   modelWalletIneligibleMessage,
@@ -1495,7 +1498,26 @@ export async function spawnAgentSession(
   // unchanged. `input.model` itself stays suffixed for the session record /
   // echo (the catalog id) and for the box-forward path below, where the box's
   // own `agent_start` re-resolves the route from scratch.
-  const wireModel = input.model ? stripRouteSuffix(input.model) : undefined
+  //
+  // For an Anthropic-NATIVE adapter (claude-code / claude-sdk, manifest
+  // `provider: "anthropic"`), the wire also needs the vendor prefix gone: the
+  // `claude` ACP wrapper's model selector and claude-sdk's `env.ANTHROPIC_MODEL`
+  // resolve only the BARE Anthropic id (`claude-sonnet-4-5`), never the
+  // catalog's canonical `anthropic/claude-sonnet-4-5` route form —
+  // `stripRouteSuffix` alone keeps `vendor/product` and the wrapper
+  // mis-resolves it. `stripAnthropicNativeVendor` collapses ONLY a
+  // direct-anthropic ref; the same adapters route gateway models
+  // (`z-ai/glm-5.2@openrouter`, `moonshot/…@llm-endpoint`) through `base_url`,
+  // where the gateway needs the `vendor/product` id kept, so those still go
+  // through the plain suffix strip. `derived-from-model` adapters (hermes,
+  // opencode, …) derive their route FROM the prefix and must keep it — the
+  // gate on `provider === "anthropic"` excludes them (they carry their own
+  // gateway provider).
+  const wireModel = input.model
+    ? resolved?.authDescriptor?.provider === "anthropic"
+      ? stripAnthropicNativeVendor(input.model)
+      : stripRouteSuffix(input.model)
+    : undefined
   // Compose the role's disposition (+ optional promptAppend, layered on
   // top, never replacing it) into the initial prompt — the only text
   // channel this codebase has into a freshly-spawned child (there's no

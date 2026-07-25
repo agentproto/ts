@@ -19,6 +19,7 @@ import {
   tryParseModelRef,
   formatModelRef,
   stripRouteSuffix,
+  stripAnthropicNativeVendor,
   isModelRefString,
   InvalidModelRefError,
   resolveLlmModelRoute,
@@ -270,6 +271,45 @@ describe("stripRouteSuffix", () => {
   it("is idempotent — a stripped id re-strips to itself", () => {
     const bare = stripRouteSuffix("z-ai/glm-5.2@openrouter")
     expect(stripRouteSuffix(bare)).toBe(bare)
+  })
+})
+
+describe("stripAnthropicNativeVendor", () => {
+  it("collapses a direct-anthropic ref to the bare product (the bug fix)", () => {
+    expect(stripAnthropicNativeVendor("anthropic/claude-sonnet-4-5")).toBe(
+      "claude-sonnet-4-5",
+    )
+  })
+
+  it("keeps the vendor/product for a GATEWAY-routed anthropic ref", () => {
+    // Served through the adapter's base_url → the gateway needs vendor/product;
+    // only the @route annotation is peeled.
+    expect(stripAnthropicNativeVendor("anthropic/claude-sonnet-4-5@openrouter")).toBe(
+      "anthropic/claude-sonnet-4-5",
+    )
+  })
+
+  it("leaves a non-anthropic gateway ref as bare vendor/product", () => {
+    expect(stripAnthropicNativeVendor("z-ai/glm-5.2@openrouter")).toBe("z-ai/glm-5.2")
+  })
+
+  it("leaves a non-anthropic llm-endpoint alias as vendor/product", () => {
+    expect(stripAnthropicNativeVendor("moonshot/kimi-k2.7-code@llm-endpoint")).toBe(
+      "moonshot/kimi-k2.7-code",
+    )
+  })
+
+  it("leaves an already-bare native id unchanged", () => {
+    expect(stripAnthropicNativeVendor("claude-sonnet-5")).toBe("claude-sonnet-5")
+  })
+
+  it("leaves a direct non-anthropic vendor/product unchanged", () => {
+    expect(stripAnthropicNativeVendor("openai/gpt-4o")).toBe("openai/gpt-4o")
+  })
+
+  it("is idempotent on the bared product", () => {
+    const bare = stripAnthropicNativeVendor("anthropic/claude-sonnet-4-5")
+    expect(stripAnthropicNativeVendor(bare)).toBe(bare)
   })
 })
 

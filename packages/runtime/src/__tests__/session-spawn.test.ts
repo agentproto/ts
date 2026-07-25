@@ -311,6 +311,79 @@ describe("spawnAgentSession", () => {
     )
   })
 
+  it("bares the vendor prefix off a direct-anthropic id for an anthropic-native adapter, keeping the catalog id on the record", async () => {
+    // The `claude` ACP wrapper / claude-sdk's ANTHROPIC_MODEL resolve only the
+    // BARE Anthropic id — a leaked `anthropic/` prefix mis-resolves the model.
+    // Gated on the adapter's manifest `provider: "anthropic"`.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: { provider: "anthropic" },
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      model: "anthropic/claude-sonnet-4-5",
+      // A caller-supplied base_url skips billing-auth resolution (the wire-model
+      // logic under test is independent of it) — keeps this a focused unit test.
+      route: { gateway: "anthropic", baseUrl: "http://127.0.0.1:65535" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // Wire: bare product, prefix gone.
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-sonnet-4-5" }),
+    )
+    // Record keeps the catalog id.
+    expect(result.descriptor).toMatchObject({ model: "anthropic/claude-sonnet-4-5" })
+  })
+
+  it("keeps a gateway-routed (non-anthropic) vendor/product for an anthropic-native adapter", async () => {
+    // claude-code/claude-sdk also route gateway models through base_url, where
+    // the gateway needs the `vendor/product` id — only the `@route` is peeled.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: { provider: "anthropic" },
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter", baseUrl: "http://127.0.0.1:65535" },
+    })
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "z-ai/glm-5.2" }),
+    )
+  })
+
+  it("keeps the anthropic vendor prefix for a NON-anthropic (derived-from-model) adapter", async () => {
+    // hermes & friends derive their route FROM the prefix — stripping it would
+    // break routing. The gate on `provider === "anthropic"` excludes them.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: { provider: "openrouter" },
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      model: "anthropic/claude-sonnet-4-5",
+      route: { gateway: "anthropic", baseUrl: "http://127.0.0.1:65535" },
+    })
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "anthropic/claude-sonnet-4-5" }),
+    )
+  })
+
   it("stamps `boardId` onto the spawned descriptor's meta — and omits meta without it", async () => {
     const { deps } = baseDeps()
     const pinned = await spawnAgentSession(deps, {
