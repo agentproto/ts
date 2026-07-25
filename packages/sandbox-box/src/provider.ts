@@ -448,6 +448,14 @@ export const boxSandboxProvider: SandboxProvider = {
     // here — `ResumeRequest` has no ttl field to re-arm even if it didn't.
     await withBoxRetry(() => api.resume({ boxId, resumeRequest: {} }))
 
+    if (opts.keepAlive) {
+      // `attachSandbox`'s always-on rendezvous model: defensively (re-)pin
+      // this EXISTING box to no-auto-stop, in case it was created before
+      // DEFAULT_TTL_SECONDS or with an explicit numeric ttlSeconds that
+      // would otherwise still let the provider reap it.
+      await withBoxRetry(() => api.update({ boxId, updateBoxRequest: { ttlSeconds: null } }))
+    }
+
     const box = await waitUntilBoxReady(api, boxId, config)
     if (!box.subdomain) {
       throw new Error(`@agentproto/sandbox-box: box ${boxId} has no assigned subdomain.`)
