@@ -76,6 +76,7 @@ type MockClient = DaemonClient & {
 function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {}): MockClient {
   return {
     url: "http://127.0.0.1:18790",
+    authHeaders: undefined,
     prompt: vi.fn().mockResolvedValue(undefined),
     writeTerminalInput: vi.fn().mockResolvedValue({ ok: true }),
     kill: vi.fn().mockResolvedValue(undefined),

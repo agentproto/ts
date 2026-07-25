@@ -29,7 +29,7 @@ import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-import type { DaemonConfig } from "../config.js"
+import { type DaemonConfig, buildAuthHeaders } from "../config.js"
 import type {
   AdapterInfo,
   AdapterInstallResult,
@@ -170,6 +170,11 @@ export class DaemonClient {
     this.config = config
     this.fetchImpl = fetchImpl
     this.homeDir = homeDir
+  }
+
+  /** Explicit auth headers from configuration, if any. */
+  get authHeaders(): Record<string, string> | undefined {
+    return this.config.authHeaders
   }
 
   /** Base daemon URL, trailing slash stripped. */
@@ -486,7 +491,7 @@ export class DaemonClient {
         "content-type": "application/json",
         // Streamable-HTTP MCP servers 406 unless the client accepts BOTH.
         accept: "application/json, text/event-stream",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...buildAuthHeaders(this.config.authHeaders, token),
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -1013,7 +1018,7 @@ export class DaemonClient {
         method: init.method,
         headers: {
           ...init.headers,
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...buildAuthHeaders(this.config.authHeaders, token),
         },
         body: init.body,
         signal: AbortSignal.timeout(init.timeoutMs),

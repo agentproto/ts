@@ -36,6 +36,7 @@ import type {
   SessionStreamLine,
 } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
+import { buildAuthHeaders } from "../auth.js"
 
 import {
   isJsonToolValue,
@@ -188,7 +189,7 @@ class SseRecordFeed implements RecordFeed {
           if (this.disposed || this.fallback) return
           this.sub = subscribeSse(
             `${this.client.url}${path}`,
-            token ? { authorization: `Bearer ${token}` } : {},
+            buildAuthHeaders(this.client.authHeaders, token),
             {
               onOpen: () => {
                 this.opened = true

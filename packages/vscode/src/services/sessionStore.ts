@@ -24,6 +24,7 @@ import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import { subscribeSse } from "../client/sse.js"
+import { buildAuthHeaders } from "../config.js"
 import { makePendingSession, type PendingSessionDraft } from "./pending.logic.js"
 import type {
   PendingPermission,
@@ -413,7 +414,7 @@ export class SessionStore {
       if (this.stopped || sub.cancelled) return
       sub.sse = subscribeSse(
         url,
-        token ? { authorization: `Bearer ${token}` } : {},
+        buildAuthHeaders(this.client.authHeaders, token),
         {
           onEvent: (data) => {
             if (sub.cancelled) return

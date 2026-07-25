@@ -739,6 +739,11 @@
           "minimum": 1000,
           "description": "Fallback poll interval (ms) when the session_events_poll loop is unhealthy."
         },
+        "agentproto.authHeaders": {
+          "type": "object",
+          "default": {},
+          "description": "Explicit HTTP headers to authenticate against a remote daemon (e.g. an attached sandbox's gated URL) — e.g. `{\"Cookie\": \"_port_auth=<token>\"}`. Takes precedence over the bearer token from `agentproto.tokenPath` when set."
+        },
         "agentproto.holdPermissions": {
           "type": "boolean",
           "default": false,

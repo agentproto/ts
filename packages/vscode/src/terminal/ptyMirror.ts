@@ -17,6 +17,7 @@ import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor } from "../client/types.js"
+import { buildAuthHeaders } from "../auth.js"
 import {
   PTY_RECONNECT_DELAYS_MS,
   decodePtyData,
@@ -59,7 +60,7 @@ export function createPtyMirrorPty(
         `${client.url.replace(/^http/, "ws")}/sessions/${encodeURIComponent(session.id)}/pty` +
         `?cols=${cols}&rows=${rows}`
       const ws = new WebSocket(wsUrl, {
-        headers: token ? { authorization: `Bearer ${token}` } : {},
+        headers: buildAuthHeaders(client.authHeaders, token),
       })
       socket = ws
 
