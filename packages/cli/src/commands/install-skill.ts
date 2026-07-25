@@ -9,8 +9,8 @@
  *                                dual naming convention, then a NETWORK fetch
  *                                of `@agentproto/skill-pack-<name>@<ver|latest>`
  *   --pack npm:<pkg>[@<ver>]   → pinned npm fetch, name derived from <pkg>
- *   --pack github:<o>/<r>[#ref]→ github codeload tarball fetch (test an
- *                                unreleased ref)
+ *   --pack github:<o>/<r>[@ver] → fetch the built pack `.zip` from that repo's
+ *                                GitHub Release (pinned version, or latest)
  *   (omitted)                  → legacy `.skills/agentproto-plugin-v*` →
  *                                node_modules → fetch npm latest
  *   --refresh                  → bypass the pack cache and re-fetch

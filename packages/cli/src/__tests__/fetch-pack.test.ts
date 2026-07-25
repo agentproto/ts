@@ -3,9 +3,11 @@
  *
  * The pure parts run everywhere, offline:
  *   - `parsePackSpec` — the `--pack` grammar parser (no I/O).
- *   - `pickPackSubdir` + `runTarExtract` — tarball → pack-dir selection,
- *     exercised against fixture `.tgz`s BUILT IN THE TEST with the system
- *     `tar` (the same tool the code shells out to). No network.
+ *   - `pickPackSubdir` + `runTarExtract`/`runUnzip` — archive → pack-dir
+ *     selection, exercised against fixture `.tgz`/`.zip`s BUILT IN THE TEST
+ *     with the same system `tar`/`zip` tools the code shells out to. The npm
+ *     path is a `.tgz` rooted at `package/`; the github path is the GitHub
+ *     Release `.zip` (a single `<name>-v<version>/` bundle). No network.
  *
  * The live-network fetch (npm / github) is gated behind `AGENTPROTO_FETCH_LIVE`
  * and SKIPPED by default so `pnpm test` stays green offline (CI has no network
@@ -23,7 +25,9 @@ import {
   parsePackSpec,
   pickPackSubdir,
   runTarExtract,
+  runUnzip,
   fetchNpmPack,
+  fetchGithubPack,
 } from "../commands/skill-install/fetch-pack.js"
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
 
@@ -79,25 +83,25 @@ describe("parsePackSpec (unit)", () => {
     })
   })
 
-  it("github:owner/repo#ref → github spec, subdir fixed", () => {
-    expect(parsePackSpec("github:agentproto/ts#some-branch")).toEqual({
+  it("github:owner/repo@version → github release spec, pinned version", () => {
+    expect(parsePackSpec("github:agentproto/ts@0.5.2")).toEqual({
       kind: "github",
       name: "agentproto",
       owner: "agentproto",
       repo: "ts",
-      ref: "some-branch",
-      subdir: "packages/skill-pack-agentproto",
+      pkg: "@agentproto/skill-pack-agentproto",
+      version: "0.5.2",
     })
   })
 
-  it("github:owner/repo (no ref) → defaults ref to HEAD", () => {
-    expect(parsePackSpec("github:agentproto/ts")).toMatchObject({ kind: "github", ref: "HEAD" })
-  })
-
-  it("github with a slashed ref keeps the ref verbatim", () => {
-    expect(parsePackSpec("github:agentproto/ts#feat/x")).toMatchObject({
+  it("github:owner/repo (no version) → defaults version to latest", () => {
+    expect(parsePackSpec("github:agentproto/ts")).toEqual({
       kind: "github",
-      ref: "feat/x",
+      name: "agentproto",
+      owner: "agentproto",
+      repo: "ts",
+      pkg: "@agentproto/skill-pack-agentproto",
+      version: "latest",
     })
   })
 
@@ -120,6 +124,13 @@ function tarUp(baseDir: string, topEntry: string, tgzPath: string): void {
   if (r.status !== 0) throw new Error(`fixture tar failed: ${r.stderr}`)
 }
 
+/** Build a .zip of `topEntry` (a top-level dir under `baseDir`), entries
+ *  rooted at `topEntry/...` — the shape `zipPackDir` produces at release time. */
+function zipUp(baseDir: string, topEntry: string, zipPath: string): void {
+  const r = spawnSync("zip", ["-q", "-r", zipPath, topEntry], { cwd: baseDir, encoding: "utf8" })
+  if (r.status !== 0) throw new Error(`fixture zip failed: ${r.stderr}`)
+}
+
 async function writeFileAt(p: string, content = "x\n"): Promise<void> {
   await mkdir(join(p, ".."), { recursive: true })
   await writeFile(p, content)
@@ -127,7 +138,7 @@ async function writeFileAt(p: string, content = "x\n"): Promise<void> {
 
 // ── extraction + pickPackSubdir (real tar, fixture tarballs) ──────────────
 
-describe("runTarExtract + pickPackSubdir (fixture .tgz, offline)", () => {
+describe("runTarExtract/runUnzip + pickPackSubdir (fixture archives, offline)", () => {
   it("npm tarball (rooted at package/) → picks the package/ dir with skills+plugin", async () => {
     const base = await mkdtemp(join(tmpdir(), "fetch-npm-fixture-"))
     try {
@@ -150,57 +161,28 @@ describe("runTarExtract + pickPackSubdir (fixture .tgz, offline)", () => {
     }
   })
 
-  it("github tarball with a BUILT pack → picks the subdir (skills present)", async () => {
-    const base = await mkdtemp(join(tmpdir(), "fetch-gh-built-"))
+  it("github release zip (single <name>-v<ver>/ bundle) → picks that dir, skills present", async () => {
+    // The GitHub Release asset is exactly what `zipPackDir` produces: a single
+    // top-level `<manifest-name>-v<version>/` dir holding the BUILT pack —
+    // `skills/` + `.claude-plugin/` directly under it, no repo subdir.
+    const base = await mkdtemp(join(tmpdir(), "fetch-gh-release-"))
     try {
-      const top = "ts-main"
-      const sub = join(base, "src", top, "packages", "skill-pack-agentproto")
-      await writeFileAt(join(sub, "skills", "supervisor-session", "SKILL.md"))
-      await writeFileAt(join(sub, ".claude-plugin", "plugin.json"), "{}\n")
-      const tgz = join(base, "repo.tgz")
-      tarUp(join(base, "src"), top, tgz)
+      const top = "agentproto-plugin-v0.0.0"
+      const bundle = join(base, "src", top)
+      await writeFileAt(join(bundle, "skills", "supervisor-session", "SKILL.md"))
+      await writeFileAt(join(bundle, ".claude-plugin", "plugin.json"), "{}\n")
+      const zip = join(base, "agentproto-plugin-v0.0.0.zip")
+      zipUp(join(base, "src"), top, zip)
 
       const out = join(base, "out")
       await mkdir(out, { recursive: true })
-      expect(await runTarExtract(tgz, out)).toBe(0)
+      expect(await runUnzip(zip, out)).toBe(0)
 
-      const packDir = await pickPackSubdir(out, {
-        kind: "github",
-        subdir: "packages/skill-pack-agentproto",
-      })
-      expect(packDir).toBe(join(out, top, "packages", "skill-pack-agentproto"))
-      // the built shape the install flow needs
-      expect(existsSync(join(packDir!, "skills", "supervisor-session"))).toBe(true)
-    } finally {
-      await rm(base, { recursive: true, force: true })
-    }
-  })
-
-  it("github tarball with ONLY src/skills (this repo's real layout) → subdir picked but has no built skills/", async () => {
-    // Documents the monorepo-subdir fork: agentproto/ts commits only
-    // src/skills; skills/ + .claude-plugin/ are gitignored build output, so a
-    // raw ref carries nothing installable. fetchGithubPack validates this and
-    // fails loudly rather than caching an empty pack.
-    const base = await mkdtemp(join(tmpdir(), "fetch-gh-src-only-"))
-    try {
-      const top = "ts-main"
-      const sub = join(base, "src", top, "packages", "skill-pack-agentproto")
-      await writeFileAt(join(sub, "src", "skills", "supervisor-session", "SKILL.md"))
-      await writeFileAt(join(sub, "manifest.json"), "{}\n")
-      const tgz = join(base, "repo.tgz")
-      tarUp(join(base, "src"), top, tgz)
-
-      const out = join(base, "out")
-      await mkdir(out, { recursive: true })
-      expect(await runTarExtract(tgz, out)).toBe(0)
-
-      const packDir = await pickPackSubdir(out, {
-        kind: "github",
-        subdir: "packages/skill-pack-agentproto",
-      })
-      expect(packDir).not.toBeNull()
-      expect(existsSync(join(packDir!, "skills"))).toBe(false) // <- the fork
-      expect(existsSync(join(packDir!, "src", "skills"))).toBe(true)
+      const packDir = await pickPackSubdir(out, { kind: "github-zip" })
+      expect(packDir).toBe(join(out, top))
+      // the built shape the install flow needs, sitting directly at the root
+      expect(existsSync(join(packDir!, "skills", "supervisor-session", "SKILL.md"))).toBe(true)
+      expect(existsSync(join(packDir!, ".claude-plugin", "plugin.json"))).toBe(true)
     } finally {
       await rm(base, { recursive: true, force: true })
     }
@@ -212,9 +194,8 @@ describe("runTarExtract + pickPackSubdir (fixture .tgz, offline)", () => {
       const out = join(base, "out")
       await mkdir(out, { recursive: true })
       expect(await pickPackSubdir(out, { kind: "npm" })).toBeNull()
-      expect(
-        await pickPackSubdir(out, { kind: "github", subdir: "packages/skill-pack-agentproto" }),
-      ).toBeNull()
+      // no single top-level bundle dir → github-zip yields null
+      expect(await pickPackSubdir(out, { kind: "github-zip" })).toBeNull()
     } finally {
       await rm(base, { recursive: true, force: true })
     }
@@ -245,7 +226,7 @@ describe("resolveSkillPackDir fetch branches (offline)", () => {
     const prev = process.env.HOME
     process.env.HOME = home
     try {
-      expect(await resolveSkillPackDir("github:agentproto/ts#main")).toBeNull()
+      expect(await resolveSkillPackDir("github:agentproto/ts@0.5.2")).toBeNull()
     } finally {
       if (prev === undefined) delete process.env.HOME
       else process.env.HOME = prev
@@ -253,14 +234,14 @@ describe("resolveSkillPackDir fetch branches (offline)", () => {
     }
   })
 
-  it("github spec → an existing packs/<name>@<ref> cache is a hit (no fetch)", async () => {
+  it("pinned github release → an existing packs/<name>@<version> cache is a hit (no fetch)", async () => {
     const home = await mkdtemp(join(tmpdir(), "resolve-gh-cache-"))
     const prev = process.env.HOME
     process.env.HOME = home
     try {
-      const cache = join(home, ".agentproto", "packs", "agentproto@main")
+      const cache = join(home, ".agentproto", "packs", "agentproto@0.5.2")
       await mkdir(join(cache, "skills", "foo"), { recursive: true })
-      expect(await resolveSkillPackDir("github:agentproto/ts#main")).toBe(cache)
+      expect(await resolveSkillPackDir("github:agentproto/ts@0.5.2")).toBe(cache)
     } finally {
       if (prev === undefined) delete process.env.HOME
       else process.env.HOME = prev
@@ -284,6 +265,31 @@ describe.skipIf(!LIVE)("live npm fetch (opt-in: AGENTPROTO_FETCH_LIVE=1)", () =>
         { refresh: true },
       )
       expect(dir).not.toBeNull()
+      expect(existsSync(join(dir!, "skills"))).toBe(true)
+      expect(existsSync(join(dir!, ".claude-plugin", "plugin.json"))).toBe(true)
+      // pointer maintained
+      expect(existsSync(join(home, ".agentproto", "packs", "agentproto", "skills"))).toBe(true)
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      await rm(home, { recursive: true, force: true }).catch(() => {})
+    }
+  })
+})
+
+describe.skipIf(!LIVE)("live github release fetch (opt-in: AGENTPROTO_FETCH_LIVE=1)", () => {
+  it("downloads the pinned release's built .zip into the central store", async () => {
+    const home = await mkdtemp(join(tmpdir(), "fetch-live-gh-home-"))
+    const prevHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      const dir = await fetchGithubPack(
+        { kind: "github", name: "agentproto", owner: "agentproto", repo: "ts", pkg: "@agentproto/skill-pack-agentproto", version: "0.5.2" },
+        { refresh: true },
+      )
+      expect(dir).not.toBeNull()
+      // cached under the concrete version, not the literal "latest"
+      expect(dir).toBe(join(home, ".agentproto", "packs", "agentproto@0.5.2"))
       expect(existsSync(join(dir!, "skills"))).toBe(true)
       expect(existsSync(join(dir!, ".claude-plugin", "plugin.json"))).toBe(true)
       // pointer maintained
