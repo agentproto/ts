@@ -196,10 +196,26 @@ export function createAgentCliRuntime(
       // engagement in both directions.
       const hasGatewayAuthToken = "ANTHROPIC_AUTH_TOKEN" in composed.env
       const hasGatewayBaseUrl = "ANTHROPIC_BASE_URL" in composed.env
+      // A gateway route resolved BY THE RUNTIME couples its base_url with the
+      // matching api-key credential in ONE spec — `authSpec.baseUrl` is set
+      // ONLY on that path (resolveAuthSpec fills it exclusively in the gateway-
+      // route branch, which forces api-key; a native/subscription spec never
+      // carries a baseUrl). In that case the ANTHROPIC_BASE_URL now in
+      // composed.env came from THIS very resolution — routed into the base_url
+      // option alongside the credential — so engaging billing-auth is exactly
+      // right: it injects the gateway bearer (ANTHROPIC_AUTH_TOKEN) that pairs
+      // with it and scrubs the raw provider var. WITHOUT this the credential is
+      // silently dropped (the `hasGatewayBaseUrl` skip below swallows it) and
+      // the outbound request reaches the gateway UNAUTHENTICATED → the real
+      // upstream 401s → "Authentication required" (the P0 bug). The skip guard
+      // still fires for the DIFFERENT case it exists for: a base_url set
+      // MANUALLY via option paired with a NATIVE spec (no `authSpec.baseUrl`),
+      // where engaging would leak a native credential to a foreign host.
+      const resolverCoupledGateway = authSpec?.baseUrl !== undefined
       const engageAuth =
         !!authSpec &&
         !hasGatewayAuthToken &&
-        !hasGatewayBaseUrl &&
+        (resolverCoupledGateway || !hasGatewayBaseUrl) &&
         (authSpec.enforce === "always" || authSpec.explicit === true)
       if (authSpec && engageAuth) {
         // Scrub the conflicting credential(s)/toggles BEFORE setting this

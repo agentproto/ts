@@ -113,6 +113,24 @@ function apiKeySpec(opts: SpecOpts): ResolvedAuthSpec {
   }
 }
 
+// claude-code's resolved spec for a NON-native gateway route (openrouter/
+// llm-endpoint/…): the runtime redirects the credential to ANTHROPIC_AUTH_TOKEN
+// (the var the `claude` binary reads for a Bearer gateway) and carries the
+// resolved `baseUrl` so the driver knows the credential is COUPLED to the
+// gateway base_url routed into the base_url option. Api-key only (gateway
+// routes force it). The unsetEnv scrubs the raw provider var + native key.
+function gatewaySpec(opts: SpecOpts & { setEnv?: string; unsetEnv?: string[]; baseUrl?: string }): ResolvedAuthSpec {
+  return {
+    mode: "api-key",
+    ...(opts.credential !== undefined ? { credential: opts.credential } : {}),
+    setEnv: opts.setEnv ?? "ANTHROPIC_AUTH_TOKEN",
+    unsetEnv: opts.unsetEnv ?? ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"],
+    explicit: opts.explicit ?? true,
+    enforce: "always",
+    baseUrl: opts.baseUrl ?? "https://openrouter.ai/api",
+  }
+}
+
 const claudeCodeLike = (): AgentCliDefinition => ({
   name: "claude-code",
   id: "claude-code",
@@ -382,5 +400,35 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
       "https://api.moonshot.ai/anthropic",
     )
     expect(spawnCalls[0]!.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+  })
+
+  it("P0: a runtime-resolved gateway spec (baseUrl present) DOES engage — injects ANTHROPIC_AUTH_TOKEN alongside the routed base_url and scrubs the raw provider var", async () => {
+    const handle = defineAgentCli(claudeCodeLike())
+    const runtime = createAgentCliRuntime(handle)
+    // Ambient leftover the resolved spec must scrub — the daemon's own
+    // OPENROUTER_API_KEY would otherwise be inherited by the child.
+    const prev = process.env.OPENROUTER_API_KEY
+    process.env.OPENROUTER_API_KEY = "sk-or-ambient-leftover"
+    try {
+      // Exactly what the runtime produces for claude-code +
+      // route.gateway=openrouter + an api-key profile: the base_url is routed
+      // into the base_url OPTION (so ANTHROPIC_BASE_URL is in the spawn env),
+      // and the credential rides the auth spec keyed to ANTHROPIC_AUTH_TOKEN.
+      await runtime.start({
+        cwd: "/scratch",
+        config: { options: { base_url: "https://openrouter.ai/api" } },
+        auth: gatewaySpec({ credential: "sk-or-v1-real-key" }),
+      })
+    } finally {
+      if (prev === undefined) delete process.env.OPENROUTER_API_KEY
+      else process.env.OPENROUTER_API_KEY = prev
+    }
+    // The credential the `claude` binary actually reads (Bearer) is set…
+    expect(spawnCalls[0]!.env.ANTHROPIC_AUTH_TOKEN).toBe("sk-or-v1-real-key")
+    // …the gateway base_url survives (routed via the option)…
+    expect(spawnCalls[0]!.env.ANTHROPIC_BASE_URL).toBe("https://openrouter.ai/api")
+    // …and the raw provider var is scrubbed so it can't shadow the Bearer.
+    expect(spawnCalls[0]!.env.OPENROUTER_API_KEY).toBeUndefined()
+    expect(spawnCalls[0]!.env.ANTHROPIC_API_KEY).toBeUndefined()
   })
 })

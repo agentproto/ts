@@ -1183,6 +1183,17 @@ export interface ResolvedAuthSpec {
    *  `defaults.adapters.<slug>.auth` block. Never used to authenticate —
    *  only read by the fail-fast message. */
   ignoredApiKeyInStore?: boolean
+  /** Present ONLY when the runtime resolved an explicit gateway route (a
+   *  preset/custom route) — the `base_url` it also routes into the adapter's
+   *  base_url option. Its PRESENCE is the driver's signal that this api-key
+   *  credential is COUPLED to that gateway base_url (they were resolved
+   *  together), so billing-auth must engage even though ANTHROPIC_BASE_URL is
+   *  already in the spawn env — distinguishing it from a base_url set MANUALLY
+   *  via option with a native credential (no baseUrl), where engaging would
+   *  leak a native credential to a foreign host. Never set for native/
+   *  subscription specs. The driver reads only its presence, not its value
+   *  (the value reaches the child via the base_url option). */
+  baseUrl?: string
 }
 
 /**
