@@ -71,7 +71,7 @@ const SEEN_GLOBAL_CAP = 5_000
 
 // ── Factory ───────────────────────────────────────────────────────────
 
-export function createInboundEndpointStore(opts?: {
+export interface InboundEndpointStoreOptions {
   /** Override persist path. Default ~/.agentproto/inbound-endpoints.json. */
   filePath?: string
   /** Injectable clock for tests. */
@@ -80,7 +80,11 @@ export function createInboundEndpointStore(opts?: {
   debounceMs?: number
   /** Disable disk persistence (unit tests). Default false. */
   persist?: boolean
-}): InboundEndpointStore {
+}
+
+export function createInboundEndpointStore(
+  opts?: InboundEndpointStoreOptions,
+): InboundEndpointStore {
   const filePath = opts?.filePath ?? ENDPOINTS_FILE_PATH()
   const nowMs = opts?.nowMs ?? Date.now
   const debounceMs = opts?.debounceMs ?? PERSIST_DEBOUNCE_MS
