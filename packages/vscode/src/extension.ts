@@ -51,6 +51,7 @@ import { registerStatusBar } from "./views/statusBar.js"
 import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
+import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
@@ -121,6 +122,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   void maybeAutoAdoptLocalLogin(ctx, client, authProfilesProvider)
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
+  // Opt-in alternative to the Sessions tree (agentproto.sessionsView === "webview",
+  // package.json's `when` clauses make the two mutually exclusive in the
+  // sidebar). Shares the same store + filter's workspace join as the tree and
+  // opens transcripts through the same transcriptPanels.open().
+  registerSessionsWebview(ctx, store, filter, transcriptPanels)
   const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())
