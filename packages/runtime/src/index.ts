@@ -224,6 +224,9 @@ export {
   type CatalogRouteSummary,
   type CatalogPricing,
 } from "./catalog-models.js"
+// NOTE: as of this export, `registerBuiltinRoutes` is `async` (it now also
+// loads operator routes from `~/.agentproto/routes.json`). Callers MUST
+// `await` it — an un-awaited call will silently skip operator-route loading.
 export { registerBuiltinRoutes } from "./builtin-routes.js"
 export {
   buildCatalogProviderModels,

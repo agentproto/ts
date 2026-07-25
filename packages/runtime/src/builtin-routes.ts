@@ -29,6 +29,12 @@ import { loadOperatorRoutes } from "./routes-config.js"
 /**
  * Register every built-in custom route. Additive — direct and the generated
  * router routes (openrouter/requesty/huggingface) are untouched.
+ *
+ * BREAKING (major): this function is `async` — it now also loads and applies
+ * operator-declared routes from `~/.agentproto/routes.json` before resolving.
+ * It was previously synchronous (`() => void`); every caller, internal or
+ * external, must `await` the returned promise or operator-route overrides
+ * will silently not apply.
  */
 export async function registerBuiltinRoutes(): Promise<void> {
   // The local llm-endpoint Anthropic-compatible proxy. Its baseUrl/flavor/
