@@ -225,6 +225,46 @@ describe("resolveRouteRows / currentRouteOf — catalog-derived, non-runnable fl
     expect(current?.value).toBe("requesty")
   })
 
+  it("lets route.gateway override the vendor-implied route for a parseable model without @route", () => {
+    const anthropicCatalog: CatalogModelsResult = {
+      vendors: [
+        {
+          vendor: "anthropic",
+          products: [
+            {
+              product: "claude-sonnet-5",
+              routes: [
+                {
+                  route: "anthropic",
+                  ref: "anthropic/claude-sonnet-5",
+                  baseUrl: null,
+                  runnable: true,
+                  eligibleProfiles: ["jeremy-max"],
+                  adapterModes: [],
+                  curated: true,
+                },
+                {
+                  route: "moonshot",
+                  ref: "anthropic/claude-sonnet-5@moonshot",
+                  baseUrl: "https://api.moonshot.ai/anthropic",
+                  runnable: true,
+                  eligibleProfiles: ["moonshot-key"],
+                  adapterModes: ["moonshot"],
+                  curated: false,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const current = currentRouteOf(
+      { model: "anthropic/claude-sonnet-5", route: { gateway: "moonshot" } },
+      anthropicCatalog,
+    )
+    expect(current?.value).toBe("moonshot")
+  })
+
   it("returns empty for a model the catalog doesn't know (⇒ chip hidden)", () => {
     expect(resolveRouteRows(catalog(), "mystery-model")).toEqual([])
     expect(resolveRouteRows(undefined, "claude-opus-4-8")).toEqual([])

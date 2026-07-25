@@ -121,7 +121,7 @@ async function configureSessionCommand(
   )
   if (!rowPick) return
 
-  const plan = planChipDispatch(chip, rowPick.row)
+  const plan = planChipDispatch(chip, rowPick.row, session.model)
   switch (plan.kind) {
     case "noop":
       return

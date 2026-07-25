@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest"
 import type { AuthProfile } from "@agentproto/auth"
-import { buildCatalogModels, type CatalogAdapterInput } from "../catalog-models.js"
+import { buildCatalogModels, modelWithRoute, reconcileModelRoute, resolveEffectiveRoute, type CatalogAdapterInput } from "../catalog-models.js"
 import { registerBuiltinRoutes } from "../builtin-routes.js"
 
 const CLAUDE_CODE: CatalogAdapterInput = {
@@ -884,5 +884,168 @@ describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", asyn
     const openrouter = findRoute(response, "z-ai", "glm-5.2", "openrouter")
     expect(openrouter?.runnable).toBe(true)
     expect(openrouter?.eligibleProfiles).toEqual(["personal-openrouter"])
+  })
+})
+
+describe("resolveEffectiveRoute", () => {
+  it("returns the model's explicit @route over a stale route.gateway", () => {
+    expect(resolveEffectiveRoute("z-ai/glm-5.2@openrouter", "requesty")).toBe("openrouter")
+  })
+
+  it("returns route.gateway for a parseable model with no explicit @route", () => {
+    expect(resolveEffectiveRoute("anthropic/claude-sonnet-5", "openrouter")).toBe("openrouter")
+  })
+
+  it("returns the vendor-implied route when no route.gateway is set", () => {
+    expect(resolveEffectiveRoute("anthropic/claude-sonnet-5", undefined)).toBe("anthropic")
+  })
+
+  it("returns route.gateway for a bare/unparseable model", () => {
+    expect(resolveEffectiveRoute("claude-opus-4-8", "anthropic")).toBe("anthropic")
+  })
+
+  it("returns undefined when neither model nor route.gateway is known", () => {
+    expect(resolveEffectiveRoute(undefined, undefined)).toBeUndefined()
+  })
+})
+
+describe("modelWithRoute", () => {
+  it("rewrites the @route suffix on a parseable model", () => {
+    expect(modelWithRoute("z-ai/glm-5.2@openrouter", "requesty")).toBe("z-ai/glm-5.2@requesty")
+  })
+
+  it("adds an @route suffix when the model had none", () => {
+    expect(modelWithRoute("anthropic/claude-sonnet-5", "openrouter")).toBe(
+      "anthropic/claude-sonnet-5@openrouter",
+    )
+  })
+
+  it("omits the suffix when the new route equals the vendor (direct route)", () => {
+    expect(modelWithRoute("anthropic/claude-sonnet-5@openrouter", "anthropic")).toBe(
+      "anthropic/claude-sonnet-5",
+    )
+  })
+
+  it("preserves a :pin when rewriting the route", () => {
+    expect(modelWithRoute("anthropic/claude-sonnet-5:pin@openrouter", "requesty")).toBe(
+      "anthropic/claude-sonnet-5:pin@requesty",
+    )
+  })
+
+  it("returns bare ids unchanged", () => {
+    expect(modelWithRoute("claude-opus-4-8", "anthropic")).toBe("claude-opus-4-8")
+  })
+})
+
+describe("reconcileModelRoute", () => {
+  it("route-only override rewrites a parseable model to match", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "z-ai/glm-5.2@openrouter",
+        prevRoute: { gateway: "openrouter" },
+        route: { gateway: "requesty" },
+      }),
+    ).toEqual({
+      model: "z-ai/glm-5.2@requesty",
+      route: { gateway: "requesty" },
+    })
+  })
+
+  it("model-only override synthesizes a route when it conflicts", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "anthropic/claude-sonnet-5",
+        prevRoute: { gateway: "openrouter" },
+        model: "anthropic/claude-sonnet-5",
+      }),
+    ).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      route: { gateway: "anthropic" },
+    })
+  })
+
+  it("model-only override with explicit @route synthesizes the matching route", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "z-ai/glm-5.2@requesty",
+        prevRoute: { gateway: "requesty" },
+        model: "z-ai/glm-5.2@openrouter",
+      }),
+    ).toEqual({
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+  })
+
+  it("model-only override with explicit @route synthesizes route even without a prevRoute", () => {
+    expect(
+      reconcileModelRoute({
+        model: "z-ai/glm-5.2@openrouter",
+      }),
+    ).toEqual({
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+  })
+
+  it("model-only override with a vendor-implied route does NOT invent a route when there is no prevRoute", () => {
+    expect(
+      reconcileModelRoute({
+        model: "anthropic/claude-sonnet-5",
+      }),
+    ).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      route: undefined,
+    })
+  })
+
+  it("throws when both overrides contradict each other", () => {
+    expect(() =>
+      reconcileModelRoute({
+        prevModel: "z-ai/glm-5.2@openrouter",
+        prevRoute: { gateway: "openrouter" },
+        model: "z-ai/glm-5.2@openrouter",
+        route: { gateway: "requesty" },
+      }),
+    ).toThrow(/pins route "openrouter" but route override is "requesty"/)
+  })
+
+  it("allows non-contradicting both overrides", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "z-ai/glm-5.2@openrouter",
+        prevRoute: { gateway: "openrouter" },
+        model: "z-ai/glm-5.2@openrouter",
+        route: { gateway: "openrouter" },
+      }),
+    ).toEqual({
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+  })
+
+  it("returns prev values when no overrides are given", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "anthropic/claude-sonnet-5",
+        prevRoute: { gateway: "anthropic" },
+      }),
+    ).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      route: { gateway: "anthropic" },
+    })
+  })
+
+  it("carries prevRoute forward when model has no explicit route and does not conflict", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "anthropic/claude-sonnet-5",
+        prevRoute: { gateway: "anthropic" },
+        model: "anthropic/claude-sonnet-5",
+      }),
+    ).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      route: { gateway: "anthropic" },
+    })
   })
 })

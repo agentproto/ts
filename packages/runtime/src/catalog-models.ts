@@ -46,6 +46,9 @@ import {
   MODEL_ALIASES,
 } from "@agentproto/model-catalog/llm"
 import type { AdapterAuthDescriptor } from "./spawn-defaults.js"
+import type { RouteSpec } from "./session-config.js"
+
+export type { RouteSpec } from "./session-config.js"
 
 /** Routers the catalog probes to widen beyond any adapter's declared model
  *  list (SPEC §5.1) — same three route-identity widens, `route-identity/
@@ -600,6 +603,87 @@ export function buildCatalogModels(
     }))
 
   return { vendors: result, routes }
+}
+
+/**
+ * Resolve the effective billing route for a session: a parseable model ref's
+ * own route is authoritative, `routeGateway` is only consulted when the model
+ * carries no explicit `@route` or is unparseable (bare/legacy ids).
+ */
+export function resolveEffectiveRoute(
+  model: string | undefined,
+  routeGateway: string | undefined,
+): string | undefined {
+  if (!model) return routeGateway
+  const parsed = tryParseModelRef(model)
+  if (!parsed) return routeGateway
+  if (parsed.route !== parsed.vendor) return parsed.route
+  return routeGateway ?? parsed.route
+}
+
+/** Rewrite `model`'s `@route` suffix to `route`. Bare/unparseable ids are
+ *  returned unchanged because they have no suffix to rewrite. */
+export function modelWithRoute(model: string, route: string): string {
+  const parsed = tryParseModelRef(model)
+  if (!parsed) return model
+  return formatModelRef({ ...parsed, route })
+}
+
+/**
+ * Reconcile independent `model` and `route` overrides so they never describe
+ * two different billing endpoints. Returns the effective values; mutating
+ * callers replace their effective model/route with these results.
+ *
+ * Rules:
+ *  - explicit `@route` on the model wins over a stale/conflicting route.gateway;
+ *  - a route-only override rewrites a parseable model string to match;
+ *  - a model-only override synthesizes a route field whenever the model's
+ *    resolved route differs from the previous route.gateway;
+ *  - passing BOTH overrides that contradict each other is a caller bug → throw.
+ */
+export function reconcileModelRoute(input: {
+  prevModel?: string
+  prevRoute?: RouteSpec
+  model?: string
+  route?: RouteSpec
+}): { model?: string; route?: RouteSpec } {
+  const { prevModel, prevRoute, model: overrideModel, route: overrideRoute } = input
+
+  if (overrideModel !== undefined && overrideRoute !== undefined) {
+    const parsed = tryParseModelRef(overrideModel)
+    if (parsed && parsed.route !== parsed.vendor && parsed.route !== overrideRoute.gateway) {
+      throw new Error(
+        `reconcileModelRoute: model "${overrideModel}" pins route "${parsed.route}" ` +
+          `but route override is "${overrideRoute.gateway}"`,
+      )
+    }
+    return { model: overrideModel, route: overrideRoute }
+  }
+
+  if (overrideModel !== undefined) {
+    const parsed = tryParseModelRef(overrideModel)
+    if (parsed) {
+      const hasExplicitRoute = parsed.route !== parsed.vendor
+      // An explicit @route always deserves a matching route field; a vendor-
+      // implied route only rewrites a stale/conflicting prevRoute.
+      if (hasExplicitRoute && prevRoute?.gateway !== parsed.route) {
+        return { model: overrideModel, route: { gateway: parsed.route } }
+      }
+      if (!hasExplicitRoute && prevRoute && prevRoute.gateway !== parsed.route) {
+        return { model: overrideModel, route: { gateway: parsed.route } }
+      }
+    }
+    return { model: overrideModel, route: prevRoute }
+  }
+
+  if (overrideRoute !== undefined) {
+    if (prevModel !== undefined) {
+      return { model: modelWithRoute(prevModel, overrideRoute.gateway), route: overrideRoute }
+    }
+    return { route: overrideRoute }
+  }
+
+  return { model: prevModel, route: prevRoute }
 }
 
 /**

@@ -47,6 +47,7 @@ import {
 import {
   checkModelWalletEligibility,
   modelWalletIneligibleMessage,
+  reconcileModelRoute,
   serviceableModelRoutes,
   suggestModelSlugs,
 } from "./catalog-models.js"
@@ -572,6 +573,20 @@ export async function spawnAgentSession(
       cwd: explicit.cwd ?? preset.cwd,
       skills: explicit.skills ?? preset.skills,
     }
+  }
+
+  // Reconcile `model` and `route` so callers cannot describe two different
+  // billing endpoints (e.g. `@openrouter` model + `requesty` route). A model
+  // with an explicit `@route` wins; a model-only override synthesizes the
+  // route field; contradicting overrides throw before any side effects.
+  const reconciled = reconcileModelRoute({
+    model: input.model,
+    route: input.route,
+  })
+  input = {
+    ...input,
+    ...(reconciled.model !== undefined ? { model: reconciled.model } : {}),
+    ...(reconciled.route !== undefined ? { route: reconciled.route } : {}),
   }
   const {
     registry,

@@ -397,4 +397,92 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     expect(seen.filter(ev => ev.type === "session:config-changed")).toHaveLength(0)
   })
+
+  it("route-only override rewrites a pinned model to match the new route", async () => {
+    const { resolver, captured } = makeResolver(undefined)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      overrides: { route: { gateway: "requesty" } },
+    })
+
+    expect(restarted.desc.model).toBe("z-ai/glm-5.2@requesty")
+    expect(restarted.desc.route).toEqual({ gateway: "requesty" })
+    expect(captured[0]?.model).toBe("z-ai/glm-5.2@requesty")
+  })
+
+  it("model-only override synthesizes a route when it conflicts with the prior route", async () => {
+    const { resolver, captured } = makeResolver(undefined)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      model: "anthropic/claude-sonnet-5",
+      route: { gateway: "openrouter" },
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      // Same model, but the prior route is stale — reconciliation clears it.
+      overrides: { model: "anthropic/claude-sonnet-5" },
+    })
+
+    expect(restarted.desc.model).toBe("anthropic/claude-sonnet-5")
+    expect(restarted.desc.route).toEqual({ gateway: "anthropic" })
+    expect(captured[0]?.model).toBe("anthropic/claude-sonnet-5")
+  })
+
+  it("throws when both overrides contradict each other", async () => {
+    const { resolver } = makeResolver(undefined)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+
+    const err = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      overrides: { model: "z-ai/glm-5.2@openrouter", route: { gateway: "requesty" } },
+    }).catch(e => e)
+
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toMatch(/pins route "openrouter" but route override is "requesty"/)
+  })
+
+  it("leaves model and route untouched when neither is overridden", async () => {
+    const { resolver, captured } = makeResolver(undefined)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      overrides: { effort: "high" },
+    })
+
+    expect(restarted.desc.model).toBe("z-ai/glm-5.2@openrouter")
+    expect(restarted.desc.route).toEqual({ gateway: "openrouter" })
+    expect(captured[0]?.model).toBe("z-ai/glm-5.2@openrouter")
+  })
 })
