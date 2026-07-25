@@ -62,7 +62,14 @@
       "agentproto": [
         {
           "id": "agentproto.sessions",
-          "name": "Sessions"
+          "name": "Sessions",
+          "when": "config.agentproto.sessionsView == 'tree'"
+        },
+        {
+          "id": "agentproto.sessionsWebview",
+          "name": "Sessions",
+          "type": "webview",
+          "when": "config.agentproto.sessionsView == 'webview'"
         },
         {
           "id": "agentproto.permissions",
@@ -745,6 +752,16 @@
           "default": true,
           "deprecationMessage": "Superseded by agentproto.sessionGrouping. Still honoured for migration when sessionGrouping is unset (false → \"none\", otherwise \"workspace\").",
           "description": "Deprecated — use agentproto.sessionGrouping. Group the Sessions panel by registered agentproto workspace. Off restores the flat session list."
+        },
+        "agentproto.sessionsView": {
+          "type": "string",
+          "enum": ["tree", "webview"],
+          "enumDescriptions": [
+            "The classic TreeView sessions panel.",
+            "The newer Sessions webview panel — pinned filter, two-line rows, model/harness glyphs, subagent nesting, and an open-in-tab indicator."
+          ],
+          "default": "tree",
+          "description": "Which Sessions panel to show in the sidebar."
         },
         "agentproto.autoAdoptLocalLogin": {
           "type": "string",
