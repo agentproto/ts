@@ -62,6 +62,10 @@ const BOX_READY_TIMEOUT_MS = 120_000
 const READY_STATES = new Set(["ready", "idle", "running"])
 const TERMINAL_BAD_STATES = new Set(["archived", "archiving", "error"])
 
+/** Default retry policy for `withBoxRetry` — 5 attempts, 1s/2s/4s/8s backoff. */
+const BOX_RETRY_ATTEMPTS = 5
+const BOX_RETRY_BASE_DELAY_MS = 1_000
+
 const ENV_FILE_DIR = "/etc/agentproto"
 const ENV_FILE_PATH = `${ENV_FILE_DIR}/agentproto.env`
 const SYSTEMD_UNIT_PATH = "/etc/systemd/system/agentproto.service"
@@ -143,6 +147,59 @@ function makeBoxApi(): BoxApi {
   )
 }
 
+/** Matches ascii.dev control-plane failures known to be transient: network-level
+ *  errors (DNS/connect/timeout), the box-sdk's `FetchError` wrapper (thrown
+ *  when the underlying `fetch` itself rejects), and HTTP 429/5xx
+ *  `ResponseError`s. Everything else — 404 not-found, other 4xx, archived/
+ *  terminal-state errors — is terminal and must fail fast. */
+function isTransientBoxError(err: unknown): boolean {
+  if (err && typeof err === "object") {
+    const name = (err as { name?: unknown }).name
+    if (name === "FetchError") return true
+    if (name === "ResponseError") {
+      const status = (err as { response?: { status?: unknown } }).response?.status
+      return typeof status === "number" && (status === 429 || status >= 500)
+    }
+  }
+  const message = err instanceof Error ? err.message : String(err)
+  return /could not reach the box api|operation timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|fetch failed/i.test(
+    message,
+  )
+}
+
+interface BoxRetryOpts {
+  /** Max attempts (first try + retries). Default `BOX_RETRY_ATTEMPTS` (5). */
+  attempts?: number
+  /** Base delay in ms before the first retry, doubling each subsequent
+   *  attempt (1s/2s/4s/8s at the default). Default `BOX_RETRY_BASE_DELAY_MS`. */
+  baseDelayMs?: number
+}
+
+/**
+ * Retries an ascii.dev control-plane call on transient failures, with
+ * jittered exponential backoff. ascii.dev's control plane is observably
+ * flaky (`could not reach the Box API at https://ascii.dev: ... operation
+ * timed out`) — a first-attempt timeout on `stop`/`remove` otherwise leaves
+ * a box running (billable) with nothing to retry it. `stop`/`remove`/`resume`
+ * are idempotent on ascii.dev (stopping an already-stopping box, etc.), so
+ * retrying them is safe; terminal errors (404, other 4xx) are NOT retried —
+ * see `isTransientBoxError`.
+ */
+export async function withBoxRetry<T>(fn: () => Promise<T>, opts: BoxRetryOpts = {}): Promise<T> {
+  const attempts = opts.attempts ?? BOX_RETRY_ATTEMPTS
+  const baseDelayMs = opts.baseDelayMs ?? BOX_RETRY_BASE_DELAY_MS
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (attempt >= attempts || !isTransientBoxError(err)) throw err
+      const maxDelay = baseDelayMs * 2 ** (attempt - 1)
+      const jitteredDelay = maxDelay === 0 ? 0 : maxDelay / 2 + Math.random() * (maxDelay / 2)
+      await new Promise(resolve => setTimeout(resolve, jitteredDelay))
+    }
+  }
+}
+
 /** Poll `api.get` until the box reaches a ready state AND has its subdomain
  *  assigned (needed to compute its public host), or throw on a terminal bad
  *  state / timeout. */
@@ -151,7 +208,7 @@ async function waitUntilBoxReady(api: BoxApi, boxId: string, config: BoxSandboxC
   const pollIntervalMs = config.pollIntervalMs ?? POLL_INTERVAL_MS
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    const { box } = await api.get({ boxId })
+    const { box } = await withBoxRetry(() => api.get({ boxId }))
     if (READY_STATES.has(box.state) && box.subdomain) return box
     if (TERMINAL_BAD_STATES.has(box.state)) {
       throw new Error(
@@ -286,7 +343,7 @@ async function ensureDaemonHealthy(
 
   const ready = await probeHealth(healthUrl, daemonReadyTimeoutMs, pollIntervalMs)
   if (!ready) {
-    await api.remove({ boxId })
+    await withBoxRetry(() => api.remove({ boxId }))
     throw new Error(
       `@agentproto/sandbox-box: agentproto daemon did not become healthy at ${healthUrl} ` +
         `within ${daemonReadyTimeoutMs}ms (box ${boxId}).`,
@@ -303,10 +360,10 @@ function toBootedSandbox(api: BoxApi, boxId: string, host: string): BootedSandbo
     mcpUrl: `https://${host}/mcp`,
     sandboxId: boxId,
     async stop(): Promise<void> {
-      await api.remove({ boxId })
+      await withBoxRetry(() => api.remove({ boxId }))
     },
     async pause(): Promise<void> {
-      await api.stop({ boxId })
+      await withBoxRetry(() => api.stop({ boxId }))
     },
   }
 }
@@ -345,7 +402,7 @@ export const boxSandboxProvider: SandboxProvider = {
     // Box's no-auto-stop (the default, DEFAULT_TTL_SECONDS above) is sticky
     // across resumes, unlike e2b's timeout which resets and must be re-armed
     // here — `ResumeRequest` has no ttl field to re-arm even if it didn't.
-    await api.resume({ boxId, resumeRequest: {} })
+    await withBoxRetry(() => api.resume({ boxId, resumeRequest: {} }))
 
     const box = await waitUntilBoxReady(api, boxId, config)
     if (!box.subdomain) {
