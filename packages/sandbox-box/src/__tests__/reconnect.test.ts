@@ -76,7 +76,7 @@ describe("boxSandboxProvider.connect", () => {
 
     expect(boxApiMock.command).toHaveBeenCalledWith({
       boxId: "bx_abc",
-      commandRequest: expect.objectContaining({ command: "sudo npm i -g @agentproto/cli@latest" }),
+      commandRequest: expect.objectContaining({ command: 'sudo npm i -g "@agentproto/cli@latest"' }),
     })
     expect(boxApiMock.command).toHaveBeenCalledWith({
       boxId: "bx_abc",

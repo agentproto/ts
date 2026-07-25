@@ -79,7 +79,7 @@ describe("boxSandboxProvider.boot", () => {
     // updates the CLI before installing the systemd unit
     expect(boxApiMock.command).toHaveBeenCalledWith({
       boxId: "bx_abc",
-      commandRequest: expect.objectContaining({ command: "sudo npm i -g @agentproto/cli@latest" }),
+      commandRequest: expect.objectContaining({ command: 'sudo npm i -g "@agentproto/cli@latest"' }),
     })
     // exposes the daemon's port on Box's edge
     expect(boxApiMock.command).toHaveBeenCalledWith({
@@ -91,7 +91,7 @@ describe("boxSandboxProvider.boot", () => {
       boxId: "bx_abc",
       commandRequest: expect.objectContaining({
         command: expect.stringContaining(
-          "ExecStart=agentproto serve --port 18790 --bind 0.0.0.0 --workspace /home/user --allow-origin https://frazil-pneuma-rallye-18790.on.ascii.dev",
+          'ExecStart=agentproto serve --port 18790 --bind 0.0.0.0 --workspace "/home/user" --allow-origin https://frazil-pneuma-rallye-18790.on.ascii.dev',
         ),
       }),
     })
@@ -150,7 +150,7 @@ describe("boxSandboxProvider.boot", () => {
       boxId: "bx_abc",
       commandRequest: expect.objectContaining({
         command:
-          "sudo npm i -g @agentproto/cli@latest '@agentproto/adapter-claude-sdk@latest' '@anthropic-ai/claude-code@latest'",
+          "sudo npm i -g \"@agentproto/cli@latest\" '@agentproto/adapter-claude-sdk@latest' '@anthropic-ai/claude-code@latest'",
       }),
     })
   })
@@ -165,7 +165,7 @@ describe("boxSandboxProvider.boot", () => {
 
     expect(boxApiMock.command).toHaveBeenCalledWith({
       boxId: "bx_abc",
-      commandRequest: expect.objectContaining({ command: "sudo npm i -g @agentproto/cli@0.8.0" }),
+      commandRequest: expect.objectContaining({ command: 'sudo npm i -g "@agentproto/cli@0.8.0"' }),
     })
   })
 
