@@ -116,6 +116,36 @@ describe("routeInboundMessage", () => {
     })
   })
 
+  it('refreshes a binding while preserving the existing provider field', async () => {
+    const { store, upsert } = makeBindingStore({
+      alias: "default",
+      source: "123456789",
+      contactRef: "123456789",
+      sessionId: "sess_tg",
+      mode: "route-or-spawn",
+      provider: "telegram",
+      lastSeenTs: 100,
+    })
+    const enqueuePrompt = vi.fn()
+    const isSessionAlive = vi.fn(() => true)
+    const deps = makeDeps({ bindings: store, enqueuePrompt, isSessionAlive })
+
+    const msg = makeMsg({ alias: "default", source: "123456789", contactRef: "123456789" })
+    const result = await routeInboundMessage(deps, msg, "route")
+
+    expect(result).toEqual({ action: "routed", sessionId: "sess_tg" })
+    expect(upsert).toHaveBeenCalledWith({
+      alias: "default",
+      source: "123456789",
+      contactRef: "123456789",
+      sessionId: "sess_tg",
+      mode: "route-or-spawn",
+      provider: "telegram",
+    })
+    const refreshed = store.get("default", "123456789", "123456789")
+    expect(refreshed?.provider).toBe("telegram")
+  })
+
   it('mode "route" with a bound, dead session restarts then routes', async () => {
     const { store, upsert } = makeBindingStore({
       alias: "agentpush",
@@ -190,5 +220,38 @@ describe("routeInboundMessage", () => {
 
     expect(result).toEqual({ action: "routed", sessionId: "sess_1" })
     expect(spawnForContact).not.toHaveBeenCalled()
+  })
+
+  it("preserves the binding's provider when refreshing lastSeenTs", async () => {
+    const { store, upsert } = makeBindingStore({
+      alias: "telegram",
+      source: "123456789",
+      contactRef: "123456789",
+      sessionId: "sess_1",
+      mode: "route-or-spawn",
+      provider: "telegram",
+      lastSeenTs: 100,
+    })
+    const enqueuePrompt = vi.fn()
+    const deps = makeDeps({
+      bindings: store,
+      enqueuePrompt,
+      isSessionAlive: vi.fn(() => true),
+    })
+
+    const msg = makeMsg({ alias: "telegram", source: "123456789", contactRef: "123456789" })
+    const result = await routeInboundMessage(deps, msg, "route")
+
+    expect(result).toEqual({ action: "routed", sessionId: "sess_1" })
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alias: "telegram",
+        source: "123456789",
+        contactRef: "123456789",
+        sessionId: "sess_1",
+        mode: "route-or-spawn",
+        provider: "telegram",
+      }),
+    )
   })
 })

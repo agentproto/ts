@@ -112,7 +112,8 @@
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "sim:inbound": "vite-node scripts/simulate-inbound.mjs"
+    "sim:inbound": "vite-node scripts/simulate-inbound.mjs",
+    "telegram:proxy": "vite-node scripts/telegram-proxy.mjs"
   },
   "dependencies": {
     "@agentproto/acp": "workspace:*",

@@ -96,6 +96,7 @@ export async function routeInboundMessage(
       contactRef: binding.contactRef,
       sessionId,
       mode: binding.mode,
+      provider: binding.provider,
     })
     return { action: sessionId === binding.sessionId ? "routed" : "restarted-routed", sessionId }
   }

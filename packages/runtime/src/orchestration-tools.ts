@@ -29,6 +29,12 @@ import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { TransmitterBindingStore } from "./transmitter-bindings.js"
 import type { InboundEndpointStore } from "./inbound-endpoints.js"
 import { type InboundProvider, INBOUND_PROVIDERS } from "./inbound-adapters.js"
+import {
+  type OutboundProvider,
+  OUTBOUND_PROVIDERS,
+  sendOutbound,
+  type TelegramBotCredsStore,
+} from "./outbound-adapters.js"
 import { randomBytes } from "node:crypto"
 import type { CronScheduler } from "./cron-scheduler.js"
 import type { RoutineRegistrar } from "./routine-registrar.js"
@@ -434,6 +440,8 @@ export interface RegisterOrchestrationToolsOptions {
   mcpProxy?: McpProxyRegistry
   /** Paired with `mcpProxy` above — see `transmit_message`. */
   bindingStore?: TransmitterBindingStore
+  /** Paired with `mcpProxy` + `bindingStore` above — telegram bot token store for native Telegram sends. */
+  telegramCreds?: TelegramBotCredsStore
   /**
    * When wired alongside `bindingStore`, exposes the `inbound_endpoint_create`
    * / `list` / `delete` tools. Each endpoint maps `POST /inbound/<slug>` to a
@@ -452,7 +460,7 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore } = opts
+  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds } = opts
 
   /**
    * WP6: check whether ALL watched sessions of a policy fall within the
@@ -1556,17 +1564,32 @@ export function registerOrchestrationTools(
   // Only registered when BOTH mcpProxy and bindingStore are wired (mirrors
   // the inboundWatcher guard above).
   if (mcpProxy && bindingStore) {
+    const outboundProviderSchema = z.enum([
+      "agentpush",
+      "telegram",
+      "whatsapp",
+      "slack",
+      "generic",
+      "native",
+    ] as [OutboundProvider, ...OutboundProvider[]])
+
     server.tool(
       "transmit_message",
-      "Send a message out through an imported agentpush MCP alias (via its " +
-        "dispatch_request tool) and, by default, bind the contact to a session " +
-        "so future inbound replies from them route into it (mode " +
-        "\"route-or-spawn\") instead of spawning a fresh agent.",
+      "Send a message out through a provider-specific outbound channel and, " +
+        "by default, bind the contact to a session so future inbound replies " +
+        "from them route into it (mode \"route-or-spawn\") instead of spawning " +
+        "a fresh agent.",
       {
+        provider: outboundProviderSchema
+          .optional()
+          .describe('Outbound provider; default "agentpush".'),
         alias: z
           .string()
-          .min(1)
-          .describe("Imported MCP alias for the agentpush server (e.g. 'agentpush')."),
+          .optional()
+          .describe(
+            "Imported MCP alias (agentpush) or bot token alias (telegram). " +
+              'Required for agentpush; defaults to "default" for telegram.',
+          ),
         source: z
           .string()
           .min(1)
@@ -1574,7 +1597,7 @@ export function registerOrchestrationTools(
         contact_ref: z
           .string()
           .min(1)
-          .describe("Recipient contact_ref (agentpush sender id)."),
+          .describe("Recipient contact_ref (agentpush sender id) or chat id (telegram)."),
         text: z.string().min(1).describe("Message text to send."),
         sessionId: z
           .string()
@@ -1589,11 +1612,27 @@ export function registerOrchestrationTools(
           ),
       },
       async input => {
-        const out = await mcpProxy.callTool(input.alias, "dispatch_request", {
-          source: input.source,
-          contact_ref: input.contact_ref,
-          text: input.text,
-        })
+        const provider = (input.provider ?? "agentpush") as OutboundProvider
+
+        if (provider === "agentpush" && !input.alias) {
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ sent: false, bound: false, error: "alias required for agentpush provider" }) },
+            ],
+            isError: true,
+          }
+        }
+
+        const out = await sendOutbound(
+          provider,
+          {
+            alias: input.alias,
+            source: input.source,
+            contactRef: input.contact_ref,
+            text: input.text,
+          },
+          { mcpProxy, telegramCreds },
+        )
 
         if (!out.ok) {
           return {
@@ -1607,11 +1646,12 @@ export function registerOrchestrationTools(
         const bound = input.bind !== false
         if (bound) {
           bindingStore.upsert({
-            alias: input.alias,
+            alias: input.alias ?? "default",
             source: input.source,
             contactRef: input.contact_ref,
             sessionId: input.sessionId,
             mode: "route-or-spawn",
+            provider,
           })
         }
 

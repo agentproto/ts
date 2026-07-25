@@ -11,18 +11,19 @@ spawning a brand-new agent every time.
 A single `TransmitterBindingStore` (`transmitter-bindings.ts`) maps
 
 ```
-(alias, source, contactRef) -> { sessionId, mode, lastSeenTs }
+(alias, source, contactRef) -> { sessionId, mode, provider?, lastSeenTs }
 ```
 
-- `alias` — the imported agentpush MCP alias (e.g. `"agentpush"`).
-- `source` — the channel/phone the message is scoped to (agentpush's
-  `source` field, e.g. a phone number or webhook channel name).
-- `contactRef` — the sender's id within that source (agentpush's
-  `contact_ref`).
+- `alias` — the imported MCP alias (agentpush) or bot token alias (telegram).
+- `source` — the channel/phone/chat id the message is scoped to.
+- `contactRef` — the sender's id within that source.
 - `sessionId` — the agentproto session future inbound replies from this
   contact should route into.
 - `mode` — the routing mode this binding was created under (`"route"` or
-  `"route-or-spawn"`; see below).
+  `"route-or-spawn"; see below).
+- `provider` — the outbound provider this binding was created through
+  (`"agentpush"`, `"telegram"`, etc.). Defaults to `"agentpush"` for
+  backward compatibility.
 
 One shared store instance is constructed in `index.ts` and injected into
 three places: the inbound poll watcher, the `transmit_message` tool, and
@@ -30,14 +31,22 @@ the `POST /inbound` push route. Bindings persist (debounced JSON write) to
 `~/.agentproto/transmitter-bindings.json`, load-on-construct, and start
 empty on a missing/corrupt file rather than throwing.
 
+## Outbound provider abstraction
+
+`sendOutbound` in `outbound-adapters.ts` is the provider-agnostic send primitive.
+It mirrors `inbound-adapters.ts` on the read side: a single dispatch function
+that branches by `OutboundProvider` ("agentpush", "telegram", "whatsapp",
+"slack", "generic", "native"). Adding a new outbound dialect means adding a case
+to the switch in `sendOutbound` — the MCP tool and HTTP routes stay unchanged.
+
 ## Outbound: `transmit_message`
 
-MCP tool that sends a message out through an imported agentpush alias's
-`dispatch_request` tool and, by default, binds the recipient to the
-calling session:
+MCP tool that sends a message out through a provider-specific outbound channel
+and, by default, binds the recipient to the calling session:
 
 ```json
 {
+  "provider": "agentpush",
   "alias": "agentpush",
   "source": "+33600000000",
   "contact_ref": "alice",
@@ -47,11 +56,67 @@ calling session:
 }
 ```
 
+- `provider` — optional, defaults to `"agentpush"`. Supported values:
+  `"agentpush"`, `"telegram"`, `"whatsapp"`, `"slack"`, `"generic"`, `"native"`.
+- `alias` — for `agentpush`, the imported MCP alias (required). For
+  `telegram`, the bot-token alias (defaults to `"default"`).
+- `source` — for `agentpush`, the channel/phone. For `telegram`, the chat id.
+- `contact_ref` — recipient id (`agentpush` contact_ref) or chat id (`telegram`).
 - `bind` defaults to `true` — on a successful send, upserts a binding
-  `(alias, source, contact_ref) -> sessionId` with `mode: "route-or-spawn"`.
-  Pass `bind: false` to send without binding.
+  `(alias, source, contact_ref) -> sessionId` with `mode: "route-or-spawn"` and
+  the chosen `provider`. Pass `bind: false` to send without binding.
 - Returns `{ sent: boolean, bound: boolean }`. A send failure (`sent:
   false`) never binds.
+
+### Provider-specific behaviour
+
+**agentpush** calls the real `send_message` MCP tool on the imported alias:
+```json
+{
+  "to": { "channel": "<source>", "address": "<contact_ref>" },
+  "content": { "text": "<text>" }
+}
+```
+
+**telegram** POSTs directly to the Telegram Bot API:
+```
+POST https://api.telegram.org/bot<token>/sendMessage
+{ "chat_id": "<source>", "text": "<text>" }
+```
+The bot token is resolved from a `TelegramBotCredsStore` (configured
+separately via `telegram_bot_token_set`).
+
+### Telegram bot wiring recipe
+
+1. Create the bot with @BotFather and copy the token.
+2. Store the token in the daemon's credential store:
+   ```json
+   { "tool": "telegram_bot_token_set", "arguments": { "token": "..." } }
+   ```
+3. Create a provider-agnostic inbound endpoint:
+   ```json
+   {
+     "tool": "inbound_endpoint_create",
+     "arguments": {
+       "slug": "telegram-agentproto",
+       "provider": "telegram",
+       "alias": "default",
+       "mode": "route-or-spawn"
+     }
+   }
+   ```
+   The response includes the endpoint `secret`.
+4. Start the narrow public ingress proxy (see below) and get its public URL.
+5. Point Telegram's webhook at the proxy:
+   ```json
+   {
+     "tool": "telegram_bot_set_webhook",
+     "arguments": {
+       "url": "https://<proxy-public-url>/inbound/telegram-agentproto",
+       "secret_token": "<endpoint-secret>"
+     }
+   }
+   ```
 
 ## Inbound routing modes
 
