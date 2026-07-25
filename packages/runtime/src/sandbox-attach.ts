@@ -48,6 +48,10 @@ export interface SandboxConnectionDescriptor {
    *  non-browser MCP client (no `Origin` header sent) doesn't need this at
    *  all; the daemon only gates requests that DO carry an Origin header. */
   allowOrigin: string
+  /** Whether `AttachSandboxOpts.keepAlive` was requested — informational,
+   *  echoing back that the sandbox was (re-)pinned no-auto-stop for the
+   *  always-on rendezvous model (provider support permitting). */
+  keepAlive: boolean
 }
 
 export interface AttachSandboxOpts {
@@ -59,10 +63,12 @@ export interface AttachSandboxOpts {
    *  workspace }`) — same shape `agent_start.sandbox`'s inline spec takes. */
   config?: Record<string, unknown>
   /**
-   * Reserved for a future keep-alive heartbeat against the attached
-   * sandbox so its provider-side idle/TTL reaper doesn't reclaim it out
-   * from under a long-lived external client. Accepted now (so this opts
-   * shape doesn't change when that lands) but unused today.
+   * Keep the attached sandbox awake indefinitely for the always-on
+   * rendezvous model, instead of leaving it subject to the provider's
+   * default idle/TTL auto-stop. Forwarded to `SandboxProvider.connect` as
+   * `SandboxBootOpts.keepAlive` — a provider that supports an explicit
+   * no-auto-stop assertion (e.g. Box's `ttlSeconds: null`) (re-)applies it
+   * defensively; providers with no such concept ignore it.
    */
   keepAlive?: boolean
   /** Injectable resolver — defaults to the same creds-backed resolver
@@ -113,7 +119,11 @@ export async function attachSandbox(opts: AttachSandboxOpts): Promise<AttachSand
 
   let booted
   try {
-    booted = await handle.provider.connect(opts.sandboxId, spec, { env: {}, expose: "private" })
+    booted = await handle.provider.connect(opts.sandboxId, spec, {
+      env: {},
+      expose: "private",
+      keepAlive: opts.keepAlive,
+    })
   } catch (err) {
     return {
       ok: false,
@@ -142,6 +152,7 @@ export async function attachSandbox(opts: AttachSandboxOpts): Promise<AttachSand
       mcpUrl: booted.mcpUrl,
       token: booted.token,
       allowOrigin: new URL(booted.mcpUrl).origin,
+      keepAlive: opts.keepAlive ?? false,
     },
   }
 }
@@ -190,12 +201,20 @@ export function registerSandboxAttachTool(
         .record(z.string(), z.unknown())
         .optional()
         .describe("Provider-specific SandboxSpec config overrides (e.g. box's { port, workspace })."),
+      keepAlive: z
+        .boolean()
+        .optional()
+        .describe(
+          "Keep the sandbox awake indefinitely for an always-on rendezvous, instead of leaving it " +
+            "subject to the provider's default idle/TTL auto-stop (e.g. pins Box's ttlSeconds to null).",
+        ),
     },
     async input => {
       const result = await attachSandbox({
         provider: input.provider,
         sandboxId: input.sandboxId,
         ...(input.config ? { config: input.config as Record<string, unknown> } : {}),
+        ...(input.keepAlive !== undefined ? { keepAlive: input.keepAlive } : {}),
         ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
       })
       if (!result.ok) {

@@ -55,6 +55,15 @@ export interface SandboxBootOpts {
    * a failure when it needed a gated URL.
    */
   expose?: "public" | "private"
+  /**
+   * Keep the sandbox awake indefinitely for the always-on rendezvous model
+   * — set by `attachSandbox` when its own `keepAlive` opt is true. A
+   * provider that supports an explicit no-auto-stop/no-expiry assertion
+   * (e.g. Box's `ttlSeconds: null`) should (re-)apply it as part of
+   * `connect()`, defensively, even if the sandbox already defaults to it.
+   * Providers with no such concept simply ignore this.
+   */
+  keepAlive?: boolean
 }
 
 /**

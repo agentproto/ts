@@ -9,6 +9,7 @@ const { boxApiMock, boxApiCtorMock, configCtorMock } = vi.hoisted(() => {
     command: vi.fn(async () => ({})),
     remove: vi.fn(async () => ({})),
     stop: vi.fn(async () => ({})),
+    update: vi.fn(async () => ({})),
   }
   return {
     boxApiMock,
@@ -44,6 +45,7 @@ describe("boxSandboxProvider.connect", () => {
     boxApiMock.command.mockReset().mockResolvedValue({})
     boxApiMock.remove.mockReset().mockResolvedValue({})
     boxApiMock.stop.mockReset().mockResolvedValue({})
+    boxApiMock.update.mockReset().mockResolvedValue({})
     fetchMock = vi.fn()
     vi.stubGlobal("fetch", fetchMock)
   })
@@ -174,6 +176,38 @@ describe("boxSandboxProvider.connect", () => {
       await expect(
         boxSandboxProvider.connect!("bx_abc", spec, { env: {}, expose: "private" }),
       ).rejects.toThrow(/produced no token/)
+    })
+  })
+
+  describe("keepAlive (attachSandbox's always-on rendezvous pin)", () => {
+    it("re-asserts no-auto-stop via BoxApi.update when keepAlive is true", async () => {
+      fetchMock.mockResolvedValue({ ok: true })
+
+      const { boxSandboxProvider } = await import("../provider.js")
+      await boxSandboxProvider.connect!("bx_abc", spec, { env: {}, keepAlive: true })
+
+      expect(boxApiMock.update).toHaveBeenCalledWith({
+        boxId: "bx_abc",
+        updateBoxRequest: { ttlSeconds: null },
+      })
+    })
+
+    it("does not call BoxApi.update when keepAlive is false", async () => {
+      fetchMock.mockResolvedValue({ ok: true })
+
+      const { boxSandboxProvider } = await import("../provider.js")
+      await boxSandboxProvider.connect!("bx_abc", spec, { env: {}, keepAlive: false })
+
+      expect(boxApiMock.update).not.toHaveBeenCalled()
+    })
+
+    it("does not call BoxApi.update when keepAlive is omitted", async () => {
+      fetchMock.mockResolvedValue({ ok: true })
+
+      const { boxSandboxProvider } = await import("../provider.js")
+      await boxSandboxProvider.connect!("bx_abc", spec, { env: {} })
+
+      expect(boxApiMock.update).not.toHaveBeenCalled()
     })
   })
 })

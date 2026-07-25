@@ -140,6 +140,54 @@ describe("agentproto sandbox attach", () => {
     )
   })
 
+  it("--keep-alive forwards keepAlive:true to attachSandbox and prints the pinned status", async () => {
+    attachSandboxMock.mockResolvedValue({
+      ok: true,
+      descriptor: {
+        provider: "box",
+        sandboxId: "bx_abc",
+        mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
+        token: "tok_secret",
+        allowOrigin: "https://frazil-18790.on.ascii.dev",
+        keepAlive: true,
+      },
+    })
+
+    const capture = captureOutput()
+    const code = await runSandbox(["attach", "box", "bx_abc", "--keep-alive"])
+    capture.restore()
+
+    expect(attachSandboxMock).toHaveBeenCalledWith({
+      provider: "box",
+      sandboxId: "bx_abc",
+      keepAlive: true,
+    })
+    expect(code).toBe(0)
+    expect(capture.stdout.join("")).toContain("keepAlive   yes (pinned no-auto-stop)")
+  })
+
+  it("omits keepAlive from attachSandbox's opts when --keep-alive is not passed", async () => {
+    attachSandboxMock.mockResolvedValue({
+      ok: true,
+      descriptor: {
+        provider: "box",
+        sandboxId: "bx_abc",
+        mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
+        token: "tok_secret",
+        allowOrigin: "https://frazil-18790.on.ascii.dev",
+        keepAlive: false,
+      },
+    })
+
+    const capture = captureOutput()
+    const code = await runSandbox(["attach", "box", "bx_abc"])
+    capture.restore()
+
+    expect(attachSandboxMock).toHaveBeenCalledWith({ provider: "box", sandboxId: "bx_abc" })
+    expect(code).toBe(0)
+    expect(capture.stdout.join("")).toContain("keepAlive   no")
+  })
+
   it("exits 1 and prints the failure message when attach fails", async () => {
     attachSandboxMock.mockResolvedValue({
       ok: false,

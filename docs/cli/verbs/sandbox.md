@@ -1,7 +1,7 @@
 # `agentproto sandbox`
 
 ```text
-agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--json]
+agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 ```
 
 Connect to an ALREADY-EXISTING sandbox (Box, e2b, …) without tearing it
@@ -32,13 +32,31 @@ insecure URL). Prints the connection descriptor and a paste-ready
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config-json <json>` | `{}` | Provider-specific `SandboxSpec.config` overrides, e.g. `'{"port":18790}'`. |
+| `--keep-alive` | `false` | Keep the sandbox awake indefinitely for an always-on rendezvous. |
 | `--json` | `false` | Print only `{"descriptor":…,"mcpConfig":…}` as JSON. |
+
+### The always-on model (`--keep-alive`)
+
+`--keep-alive` is for a sandbox meant to stay reachable indefinitely rather
+than get reclaimed by the provider's own idle/TTL auto-stop. The documented
+Box mechanism for "runs until you stop it" is **no-auto-stop**
+(`box extend <id> --no-auto-stop` / `ttlSeconds: null`), and it's **sticky
+across resume** — so `--keep-alive` (re-)asserts it on `connect()`,
+defensively, even for a box that already defaults to it (e.g. one created
+before that default, or with an explicit numeric `ttlSeconds`). It does
+**not** start a background heartbeat process — a one-shot CLI invocation
+can't cleanly host one, and no-auto-stop has no deadline to begin with, so
+none is needed. `--keep-alive` is a no-op for providers with no equivalent
+concept (e.g. e2b).
 
 ## Examples
 
 ```bash
 # Attach to a Box sandbox booted by an earlier agent_start sandbox spawn
 agentproto sandbox attach box bx_abc123
+
+# Pin it awake indefinitely for an always-on rendezvous
+agentproto sandbox attach box bx_abc123 --keep-alive
 
 # Same, machine-readable
 agentproto sandbox attach e2b sbx_abc123 --json
@@ -54,6 +72,7 @@ sandbox attached  provider=box  sandboxId=bx_abc123
   mcpUrl      https://frazil-pneuma-rallye-18790.on.ascii.dev/mcp
   token       •••••••• (gated)
   allowOrigin https://frazil-pneuma-rallye-18790.on.ascii.dev
+  keepAlive   no
 
 Paste into .mcp.json:
 {

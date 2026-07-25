@@ -179,8 +179,34 @@ describe("attachSandbox", () => {
         mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
         token: "tok_secret",
         allowOrigin: "https://frazil-18790.on.ascii.dev",
+        keepAlive: false,
       })
     }
+  })
+
+  it("forwards keepAlive to connect() and echoes it on the descriptor", async () => {
+    const connect = vi.fn(async (_id: string, _spec: SandboxSpec, _opts: SandboxBootOpts) => ({
+      mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
+      sandboxId: "bx_abc",
+      token: "tok_secret",
+      stop: async () => {},
+    }))
+    const handle = fakeHandle({ connect })
+
+    const result = await attachSandbox({
+      provider: "box",
+      sandboxId: "bx_abc",
+      keepAlive: true,
+      resolveSandboxProvider: resolverFor(handle),
+    })
+
+    expect(connect).toHaveBeenCalledWith(
+      "bx_abc",
+      { provider: "box", config: {} },
+      expect.objectContaining({ keepAlive: true }),
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.keepAlive).toBe(true)
   })
 
   it("defaults config to {} when omitted", async () => {
@@ -212,6 +238,7 @@ describe("buildMcpConfigSnippet", () => {
       mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
       token: "tok_secret",
       allowOrigin: "https://frazil-18790.on.ascii.dev",
+      keepAlive: false,
     })
     const entry = snippet.mcpServers["sandbox-box-bx_abc"]!
     expect(entry.type).toBe("http")
@@ -225,6 +252,7 @@ describe("buildMcpConfigSnippet", () => {
       sandboxId: "local-abc",
       mcpUrl: "http://127.0.0.1:18790/mcp",
       allowOrigin: "http://127.0.0.1:18790",
+      keepAlive: false,
     })
     const entry = snippet.mcpServers["sandbox-local-local-abc"]!
     expect(entry.headers).toBeUndefined()
@@ -260,5 +288,28 @@ describe("sandbox_attach tool", () => {
     expect(result.isError).toBe(true)
     const payload = JSON.parse(result.content[0]!.text)
     expect(payload.code).toBe("sandbox_provider_not_found")
+  })
+
+  it("forwards keepAlive:true to attachSandbox and reflects it in the returned descriptor", async () => {
+    const connect = vi.fn(async (_id: string, _spec: SandboxSpec, _opts: SandboxBootOpts) => ({
+      mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
+      sandboxId: "bx_abc",
+      token: "tok_secret",
+      stop: async () => {},
+    }))
+    const handle = fakeHandle({ connect })
+    const { server, tools } = fakeServer()
+    registerSandboxAttachTool(server, { resolveSandboxProvider: resolverFor(handle) })
+
+    const tool = tools.find(t => t.name === "sandbox_attach")!
+    const result = await tool.handler({ provider: "box", sandboxId: "bx_abc", keepAlive: true })
+
+    expect(connect).toHaveBeenCalledWith(
+      "bx_abc",
+      { provider: "box", config: {} },
+      expect.objectContaining({ keepAlive: true }),
+    )
+    const payload = JSON.parse(result.content[0]!.text)
+    expect(payload.descriptor.keepAlive).toBe(true)
   })
 })

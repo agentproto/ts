@@ -19,7 +19,7 @@ import { attachSandbox, buildMcpConfigSnippet } from "@agentproto/runtime"
 const USAGE = `agentproto sandbox — connect to sandbox providers
 
 Usage:
-  agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--json]
+  agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 
 Connects to an ALREADY-EXISTING sandbox (e.g. a Box or e2b sandbox booted by
 a prior \`agent_start\` sandbox spawn) without tearing it down: resumes it,
@@ -32,6 +32,11 @@ paste-ready .mcp.json snippet any MCP client can use to reach it directly.
 
   --config-json <json>  Provider-specific SandboxSpec config overrides as a
                          JSON object, e.g. '{"port":18790}'.
+  --keep-alive           Keep the sandbox awake indefinitely for an
+                          always-on rendezvous — pins Box's ttlSeconds to
+                          null (no-auto-stop) on this box, defensively, even
+                          if it already defaults to that. No-op for
+                          providers without an equivalent.
   --json                Print only the descriptor + mcpConfig, as JSON.
 
 Credentials: provider API keys (e.g. BOX_API_KEY, E2B_API_KEY) must be set
@@ -39,6 +44,7 @@ in this process's environment — same as \`agent_start.sandbox\` uses.
 
 Examples:
   agentproto sandbox attach box bx_abc123
+  agentproto sandbox attach box bx_abc123 --keep-alive
   agentproto sandbox attach e2b sbx_abc123 --json
 `
 
@@ -68,6 +74,7 @@ async function runAttach(args: readonly string[]): Promise<number> {
     strict: true,
     options: {
       "config-json": { type: "string" },
+      "keep-alive": { type: "boolean" },
       json: { type: "boolean" },
     },
   })
@@ -100,6 +107,7 @@ async function runAttach(args: readonly string[]): Promise<number> {
     provider,
     sandboxId,
     ...(config ? { config } : {}),
+    ...(values["keep-alive"] ? { keepAlive: true } : {}),
   })
 
   if (!result.ok) {
@@ -118,7 +126,8 @@ async function runAttach(args: readonly string[]): Promise<number> {
     `sandbox attached  provider=${result.descriptor.provider}  sandboxId=${result.descriptor.sandboxId}\n` +
       `  mcpUrl      ${result.descriptor.mcpUrl}\n` +
       `  token       ${result.descriptor.token ? "•".repeat(8) + " (gated)" : "—"}\n` +
-      `  allowOrigin ${result.descriptor.allowOrigin}\n\n` +
+      `  allowOrigin ${result.descriptor.allowOrigin}\n` +
+      `  keepAlive   ${result.descriptor.keepAlive ? "yes (pinned no-auto-stop)" : "no"}\n\n` +
       `Paste into .mcp.json:\n${JSON.stringify(mcpConfig, null, 2)}\n`,
   )
   return 0
