@@ -760,6 +760,16 @@ export interface SessionDescriptor {
    *  `/sessions/agent` to spin up a fresh ACP runtime. Undefined for
    *  pty/command kinds. */
   adapterSlug?: string
+  /** Manifest-declared `capabilities.resumable` for this session's adapter
+   *  (AIP-45), stamped from {@link AgentAdapterResolver}'s resolved
+   *  descriptor at spawn/restart time — see that field's doc for the full
+   *  contract. `false` means a captured `adapterSessionId` cannot actually
+   *  rehydrate this adapter's conversation, so the resume path
+   *  (`resume-strategies.ts`) must never present it as continuity. Omitted
+   *  for pty/command kinds and for any row persisted before this field
+   *  existed — treated the same as `true`/unknown everywhere it's read, so
+   *  a legacy row's behaviour is unchanged. */
+  resumable?: boolean
   /**
    * Canonical harness slug for agent-cli sessions — the same identity as
    *  `adapterSlug`, recorded under the canonical axis name. Falls back to
@@ -1994,6 +2004,9 @@ export interface SpawnAgentInput {
   agentSession: AgentSessionLike
   /** Adapter slug for the descriptor (display only). */
   adapterSlug: string
+  /** Manifest-declared resume capability, recorded verbatim onto
+   *  {@link SessionDescriptor.resumable} — see that field's doc. */
+  resumable?: boolean
   /** Canonical harness slug — recorded on the descriptor; defaults to adapterSlug. */
   harness?: string
   /** Optional initial prompt to dispatch immediately. The promise
@@ -3456,11 +3469,30 @@ export function createSessionsRegistry(opts?: {
           appendLine(rt, banner, "stdout")
           transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
         }
+        // Symmetric honesty banner (resume-honesty fix): this adapter declared
+        // `capabilities.resumable: false` (hermes, mastra-agent, …) — the
+        // in-place revival got a live process back, but it CANNOT rehydrate
+        // the prior conversation from `adapterSessionId`, so what just came
+        // back is a blank session wearing the old id, not a continuation.
+        // Announced exactly as loudly as the interrupted-turn banner above so
+        // a lazily-revived unresumable session never looks like a silent,
+        // empty continuation. `resumable !== false` (true/unknown — every
+        // adapter this fix doesn't touch, including claude-code) stays silent.
+        const contextNotRestored = rt.desc.resumable === false
+        if (contextNotRestored) {
+          const banner =
+            `── resumed WITHOUT prior context — adapter '${adapterSlug}' ` +
+            "does not support resume, this is a fresh session, not a " +
+            "continuation ──"
+          appendLine(rt, banner, "stdout")
+          transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+        }
         sessionEvents?.emit({
           type: "session:resumed",
           sessionId: rt.desc.id,
           interrupted,
           resumedFrom,
+          ...(contextNotRestored ? { contextRestored: false } : {}),
           ...(rt.desc.label ? { label: rt.desc.label } : {}),
           ts: new Date().toISOString(),
         })
@@ -4045,6 +4077,7 @@ export function createSessionsRegistry(opts?: {
         cwd: input.cwd,
         ...worktreeFields(input.cwd),
         adapterSlug: input.adapterSlug,
+        ...(input.resumable !== undefined ? { resumable: input.resumable } : {}),
         harness: input.harness ?? input.adapterSlug,
         // ACP-level session id — sticks across daemon restart so
         // `agentproto sessions restart <id>` can pass it as

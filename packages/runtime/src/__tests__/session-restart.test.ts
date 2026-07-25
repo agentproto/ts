@@ -52,6 +52,10 @@ function makeResolver(opts: {
    *  message (simulates the adapter rejecting an unknown/never-
    *  persisted resume id) — the tool should retry without it. */
   rejectResumeOnce?: boolean
+  /** Manifest-declared `capabilities.resumable`, surfaced on the resolved
+   *  adapter descriptor exactly like `AgentAdapterResolver.resumable` in
+   *  production — stamped onto the NEW descriptor by `restartAgentSession`. */
+  resumable?: boolean
 } = {}): {
   resolver: AgentAdapterResolver
   calls: Array<{
@@ -86,6 +90,7 @@ function makeResolver(opts: {
       return fakeAgentSession(slug)
     },
     commandPreview: `mock-${slug}`,
+    ...(opts.resumable !== undefined ? { resumable: opts.resumable } : {}),
   })
   return { resolver, calls }
 }
@@ -236,6 +241,49 @@ describe("session_restart", () => {
     expect(calls).toHaveLength(2)
     expect(calls[0]?.resumeSessionId).toBe(prev.adapterSessionId)
     expect(calls[1]?.resumeSessionId).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
+  // ── resume-honesty fix ──────────────────────────────────────────────
+  //
+  // An adapter that declares `resumable: false` (hermes, mastra-agent, …)
+  // cannot rehydrate a prior conversation from `adapterSessionId` at all.
+  // Before this fix, `session_restart` would still pass it as
+  // `resumeSessionId` and label the result "resumed via ACP" — a silent
+  // lie (the session comes back blank). The restart must now degrade to a
+  // CLEARLY-FLAGGED fresh spawn: no `resumeSessionId` ever attempted,
+  // `resumeFallback: true`, and an honest `resumeVia` — never "resumed via
+  // ACP".
+  it("agent/ACP: resumable:false degrades to a flagged fresh spawn — never a phantom resumeSessionId, never 'resumed via ACP'", async () => {
+    const { client, registry, calls, close } = await buildHarness({ resumable: false })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      resumable: false,
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.resumeFallback).toBe(true)
+    expect(desc.resumeVia).toBe("fresh — resume not supported by hermes")
+    expect(desc.resumeVia).not.toBe("resumed via ACP")
+    expect(desc.resumable).toBe(false)
+
+    // Never even attempted resumeSessionId — the capability gate ruled it
+    // out up front, no rejection round-trip needed.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.resumeSessionId).toBeUndefined()
 
     await close()
     registry.shutdown()

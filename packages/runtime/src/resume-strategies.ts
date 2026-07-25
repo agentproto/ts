@@ -148,6 +148,13 @@ export interface RestartCandidate {
   resumeMetadata?: Record<string, string>
   pty?: boolean
   adapterSessionId?: string
+  /** Manifest-declared `capabilities.resumable` for `adapterSlug` (see
+   *  `SessionDescriptor.resumable`'s doc) — the honesty gate for the whole
+   *  decision tree below. `false` means an `adapterSessionId` here is a
+   *  dead end: the adapter cannot rehydrate a prior conversation from it, no
+   *  matter how it's presented. Omitted/`true` preserves today's behaviour
+   *  (assumed resumable) for every adapter/row that doesn't set this. */
+  resumable?: boolean
 }
 
 export interface FsProbeCandidate extends RestartCandidate {
@@ -175,12 +182,16 @@ export interface FsProbeCandidate extends RestartCandidate {
 export type RestartStrategy =
   | { kind: "pty-native"; argv: string[] }
   | { kind: "pty-plain" }
-  | { kind: "agent"; resumeSessionId?: string }
+  | { kind: "agent"; resumeSessionId?: string; resumeFallback?: boolean }
   | { kind: "unsupported"; reason: string }
 
 export function decideRestartStrategy(prev: RestartCandidate): RestartStrategy {
   // Provider-native resume takes precedence over ACP-level resume —
-  // strictly more reliable when available.
+  // strictly more reliable when available. Unconditional on `resumable`:
+  // every adapter that declares a `spawnArgs` strategy today (claude-code)
+  // also declares `capabilities.resumable: true`, so this branch is
+  // unaffected by the capability gate below — see the module doc's
+  // "don't change claude-code's happy path" note.
   if (prev.adapterSlug) {
     const strategy = RESUME_STRATEGIES[prev.adapterSlug]
     const id = strategy?.storeAs
@@ -194,10 +205,22 @@ export function decideRestartStrategy(prev: RestartCandidate): RestartStrategy {
     return { kind: "pty-plain" }
   }
   if (prev.adapterSlug) {
+    // Honesty gate (resume-honesty fix): an adapter that declares
+    // `resumable: false` (hermes, mastra-agent, …) cannot rehydrate a prior
+    // conversation from `adapterSessionId` at all — passing it as
+    // `resumeSessionId` either silently comes back blank or gets rejected by
+    // the wrapper, and either way the caller must never present it as
+    // continuity. Route straight to a flagged fresh spawn instead of
+    // emitting a phantom id. `resumable === undefined` (unknown/legacy row,
+    // or an adapter this fix hasn't reached) keeps today's behaviour.
+    const canResumeAtAcpLevel = prev.resumable !== false
     return {
       kind: "agent",
-      ...(prev.adapterSessionId
+      ...(prev.adapterSessionId && canResumeAtAcpLevel
         ? { resumeSessionId: prev.adapterSessionId }
+        : {}),
+      ...(prev.adapterSessionId && !canResumeAtAcpLevel
+        ? { resumeFallback: true }
         : {}),
     }
   }
@@ -206,6 +229,24 @@ export function decideRestartStrategy(prev: RestartCandidate): RestartStrategy {
     reason: "generic command session — restart only supports pty + agent-cli",
   }
 }
+
+/**
+ * Matches an adapter's rejection of a `resumeSessionId` it can't honour —
+ * the trigger for the "retry as a fresh spawn" fallback in
+ * `session-restart-core.ts` and the CLI's `sessions restart`. Beyond a
+ * literal "not found" (an unknown/never-persisted id), this also covers the
+ * ACP wrapper-level rejection an adapter with `loadSession: false` throws
+ * when a generic `resumeSessionId` reaches it despite `capabilities.
+ * resumable: true` at the manifest level (e.g. claude-sdk — resumable via
+ * its own SDK session store, but no ACP `session/load` surface): the
+ * `@agentclientprotocol/sdk` server-side dispatcher throws a JSON-RPC
+ * "Method not found" for an unimplemented `session/load`, and an agent may
+ * instead reject with its own "does not support" / "not supported" wording.
+ * Shared by every fallback call site so they can't drift out of sync (see
+ * this module's own header comment on why that matters).
+ */
+export const RESUME_ID_REJECTED_RE =
+  /not found|does not support|not supported|unsupported/i
 
 /**
  * Generic filesystem-fallback: for each known adapter strategy that
@@ -254,6 +295,12 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
  * Describe which resume path a restart used, for CLI banners / MCP
  * responses. Returns a short phrase like "resumed via claude --resume",
  * or "resumed via ACP", or "" when no resume was attempted.
+ *
+ * Honesty gate (resume-honesty fix): "resumed via ACP" is a claim of actual
+ * conversation continuity, so it's only returned when the adapter's
+ * declared capability backs that claim (`resumable !== false`). An adapter
+ * that declared `resumable: false` but still carries an `adapterSessionId`
+ * gets an honest degraded label instead of the lie — never silently "".
  */
 export function describeResumePath(prev: RestartCandidate): string {
   if (prev.adapterSlug) {
@@ -264,6 +311,9 @@ export function describeResumePath(prev: RestartCandidate): string {
     }
   }
   if (prev.adapterSlug && prev.adapterSessionId) {
+    if (prev.resumable === false) {
+      return `fresh — resume not supported by ${prev.adapterSlug}`
+    }
     return "resumed via ACP"
   }
   return ""
