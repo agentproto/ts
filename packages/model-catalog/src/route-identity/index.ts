@@ -313,6 +313,42 @@ export function stripRouteSuffix(raw: string): string {
   return atIdx === -1 ? raw : raw.slice(0, atIdx)
 }
 
+/**
+ * Reduce a DIRECT-anthropic catalog ref to the BARE product id the native
+ * Anthropic wire expects (the `claude` ACP wrapper's `session/set_config_option`
+ * model selector, and claude-sdk's `env.ANTHROPIC_MODEL`) — both resolve only
+ * bare Anthropic ids (`claude-sonnet-4-5`), never the catalog's canonical
+ * `anthropic/claude-sonnet-4-5` route form. {@link stripRouteSuffix} only peels
+ * the `@route` SUFFIX and deliberately keeps `vendor/product`, so a
+ * direct-anthropic ref survives it prefixed and the wrapper mis-resolves it.
+ *
+ * ONLY a `anthropic/<product>` ref in DIRECT form (route === vendor, i.e. no
+ * gateway `@route`) collapses to `<product>`. Everything else falls through to
+ * {@link stripRouteSuffix} untouched:
+ *   - a GATEWAY-routed anthropic ref (`anthropic/claude-x@openrouter`) keeps its
+ *     `vendor/product` because the gateway needs it,
+ *   - other vendors (`z-ai/glm-5.2@openrouter`, `moonshot/kimi-k2.7-code@llm-endpoint`)
+ *     keep `vendor/product` — those same claude-code/claude-sdk adapters route
+ *     them through `base_url`, where the gateway rejects a bare product,
+ *   - already-bare ids (`claude-sonnet-5`) are unchanged.
+ *
+ * Callers MUST gate this on the adapter being Anthropic-NATIVE (claude-code /
+ * claude-sdk, `provider: "anthropic"`); a `derived-from-model` adapter (hermes,
+ * opencode, …) derives its route FROM the vendor prefix and needs it kept.
+ *
+ * - `anthropic/claude-sonnet-4-5`            → `claude-sonnet-4-5`
+ * - `anthropic/claude-sonnet-4-5@openrouter` → `anthropic/claude-sonnet-4-5`
+ * - `z-ai/glm-5.2@openrouter`                → `z-ai/glm-5.2`
+ * - `claude-sonnet-5`                        → `claude-sonnet-5`
+ */
+export function stripAnthropicNativeVendor(raw: string): string {
+  const ref = tryParseModelRef(raw)
+  if (ref && ref.vendor === "anthropic" && ref.route === ref.vendor) {
+    return ref.product
+  }
+  return stripRouteSuffix(raw)
+}
+
 /** True when `raw` matches the `vendor/product[@route]` shape. */
 export function isModelRefString(raw: string): boolean {
   try {

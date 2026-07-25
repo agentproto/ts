@@ -131,6 +131,49 @@ describe("buildCatalogModels — runnable is profile-aware (SPEC §5.3)", () => 
   })
 })
 
+describe("buildCatalogModels — first-party ids whose vendor/product COLLIDES with a router pricing key stay runnable on their own anthropic route (#688 regression)", () => {
+  // `anthropic/claude-sonnet-5` and `anthropic/claude-fable-5` are keyed in the
+  // OpenRouter pricing data with the SAME dash spelling Anthropic uses and
+  // `provider:"openrouter"`, so `getModelProvider` resolves them to the ROUTER
+  // and the direct `anthropic` route would drop out of `serviceableModelRoutes`
+  // — flipping the wallet-eligibility gate and rendering these models
+  // non-runnable even with an eligible anthropic subscription profile. The
+  // `resolvePricingExact` restore (catalog-models.ts) re-adds the vendor route.
+  // Their non-colliding siblings (`claude-opus-4-8`, `claude-haiku-4-5`) never
+  // hit the collision — assert them side-by-side so a future regression can't
+  // silently single out the collision ids again.
+  const CLAUDE_CODE_FULL: CatalogAdapterInput = {
+    slug: "claude-code",
+    models: [
+      { id: "claude-sonnet-5" },
+      { id: "claude-fable-5" },
+      { id: "claude-opus-4-8" },
+      { id: "claude-haiku-4-5" },
+    ],
+    authDescriptor: {
+      provider: "anthropic",
+      authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
+    },
+  }
+
+  for (const product of [
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-haiku-4-5",
+  ]) {
+    it(`${product} is runnable on its anthropic route via an oauth-bearer subscription profile`, () => {
+      const response = buildCatalogModels({
+        adapters: [CLAUDE_CODE_FULL],
+        profiles: [anthropicOauth],
+      })
+      const route = findRoute(response, "anthropic", product, "anthropic")
+      expect(route?.runnable).toBe(true)
+      expect(route?.eligibleProfiles).toEqual(["jeremy-max"])
+    })
+  }
+})
+
 describe("buildCatalogModels — whole-profile disable (WS2) + per-model curation (WS3)", () => {
   it("HARD INVARIANT: output is byte-identical when profiles carry no `models`/`disabled`", () => {
     // The same profiles, once as shipped today and once explicitly asserting
