@@ -330,6 +330,7 @@ function mapModel(raw: ReplicateModel): ImageModelEntry {
 export const REPLICATE_SOURCE: CatalogSource = {
   id: "image-replicate",
   url: "https://api.replicate.com/v1/models?query=image+generation",
+  headers: { Authorization: "Bearer env:REPLICATE_API_TOKEN" },
 }
 
 export const imageReplicate: CatalogGenerator = defineGenerator({
