@@ -29,6 +29,13 @@ import { mkdirSync, writeFileSync, readFileSync, promises as fsp } from "node:fs
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
+import {
+  routeInboundMessage,
+  type InboundRouteMode,
+  type InboundMessage,
+  type InboundRouterDeps,
+} from "./inbound-router.js"
+import type { TransmitterBindingStore } from "./transmitter-bindings.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -62,6 +69,15 @@ export interface WatcherStartInput {
     transport: "stdio" | "http" | "sse"
     ref?: string
   }>
+  /**
+   * Routing mode for new inbound messages — see `inbound-router.ts`.
+   * Default `"spawn"` (today's behavior: always spawn a fresh agent).
+   * Modes other than `"spawn"` require `bindings`/`enqueuePrompt`/
+   * `isSessionAlive`/`restartSession` to be wired on the factory opts;
+   * when they aren't, the watcher falls back to `"spawn"` and logs a
+   * warning rather than crashing.
+   */
+  mode?: InboundRouteMode
 }
 
 export interface WatcherDescriptor {
@@ -107,6 +123,7 @@ interface WatcherState {
     cwd: string
     label?: string
     mcpServersForChild?: WatcherStartInput["mcpServersForChild"]
+    mode: InboundRouteMode
   }
   status: "running" | "stopped"
   cursor: number
@@ -133,8 +150,30 @@ export function createInboundWatcher(opts: {
   persistPath?: string
   /** Disable disk persistence entirely (unit tests). Default false. */
   persist?: boolean
+  /**
+   * Routing deps for `mode: "route" | "route-or-spawn"` — see
+   * `inbound-router.ts`. All four must be present for non-"spawn" modes
+   * to actually route; when any is missing, `doPoll` falls back to
+   * `"spawn"` behavior for that watcher and logs a warning.
+   */
+  bindings?: TransmitterBindingStore
+  enqueuePrompt?: (
+    sessionId: string,
+    text: string,
+    opts?: { interrupt?: boolean },
+  ) => Promise<void> | void
+  isSessionAlive?: (sessionId: string) => boolean
+  restartSession?: (sessionId: string) => Promise<string>
 }): InboundWatcher {
-  const { mcpProxy, registry, resolveAgentAdapter } = opts
+  const { mcpProxy, registry, resolveAgentAdapter, bindings, enqueuePrompt, isSessionAlive, restartSession } = opts
+  // Narrowed once: non-"spawn" modes only route when all four are wired.
+  const routerBaseDeps: Pick<
+    InboundRouterDeps,
+    "bindings" | "enqueuePrompt" | "isSessionAlive" | "restartSession"
+  > | null =
+    bindings && enqueuePrompt && isSessionAlive && restartSession
+      ? { bindings, enqueuePrompt, isSessionAlive, restartSession }
+      : null
   const persistPath = opts.persistPath ?? CURSORS_FILE_PATH()
   const persist = opts.persist ?? opts.persistPath !== undefined
   const watchers = new Map<string, WatcherState>()
@@ -340,9 +379,42 @@ export function createInboundWatcher(opts: {
       }
 
       await Promise.all(
-        Array.from(byContact.entries()).map(([ref, evs]) =>
-          spawnForContact(state, ref, evs, resolved),
-        ),
+        Array.from(byContact.entries()).map(async ([ref, evs]) => {
+          const spawnAdapter = (): Promise<void> =>
+            spawnForContact(state, ref, evs, resolved)
+
+          if (state.input.mode === "spawn" || !routerBaseDeps) {
+            if (state.input.mode !== "spawn") {
+              console.warn(
+                `[inbound-watcher:${state.watcherId}] mode "${state.input.mode}" requested but ` +
+                  `routing deps are not wired — falling back to spawn`,
+              )
+            }
+            await spawnAdapter()
+            return
+          }
+
+          const msg: InboundMessage = {
+            alias: state.input.alias,
+            source: state.input.source,
+            contactRef: ref,
+            text: renderPrompt(state.input.promptTemplate, {
+              source: state.input.source,
+              contact_ref: ref,
+              messages_json: JSON.stringify(evs),
+              count: evs.length,
+            }),
+            messages: evs,
+          }
+
+          const routerDeps: InboundRouterDeps = {
+            ...routerBaseDeps,
+            spawnForContact: spawnAdapter,
+            log: m => console.warn(`[inbound-watcher:${state.watcherId}] ${m}`),
+          }
+
+          await routeInboundMessage(routerDeps, msg, state.input.mode)
+        }),
       )
 
       // Advance cursor AFTER spawn attempts complete.
@@ -381,6 +453,7 @@ export function createInboundWatcher(opts: {
           cwd,
           label: input.label,
           mcpServersForChild: input.mcpServersForChild,
+          mode: input.mode ?? "spawn",
         },
         status: "running",
         cursor: savedCursors[`${input.alias}:${input.source}`] ?? 0,

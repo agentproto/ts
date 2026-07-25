@@ -78,7 +78,10 @@ import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { loadConfig } from "./config.js"
-import { resolveResumeAuth } from "./session-restart-core.js"
+import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
+import { createTransmitterBindingStore } from "./transmitter-bindings.js"
+import { routeInboundMessage } from "./inbound-router.js"
+import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
@@ -105,6 +108,7 @@ export type {
   WatcherDescriptor,
   InboundWatcher,
 } from "./inbound-watcher.js"
+export type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
@@ -1281,9 +1285,52 @@ export async function createGateway(
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
 
+  // Transmitter binding store — single shared instance mapping an
+  // agentpush (alias, source, contactRef) triple to the agentproto
+  // session its replies should route into. Shared by the inbound
+  // watcher (poll ingress), the `transmit_message` tool (binds on
+  // send), and `POST /inbound` (push ingress) below. No `persist`
+  // knob (mirrors policies.json/cron-jobs.json, per gateway-persist.
+  // test.ts's documented precedent for gateway-owned stores with no
+  // path knob) — writes only happen on an explicit bind, which no
+  // test exercises incidentally the way session spawns do.
+  const transmitterBindings = createTransmitterBindingStore()
+
+  // Adapts SessionsRegistry to InboundRouterDeps' liveness/restart
+  // shape (inbound-router.ts) — same primitives cron-scheduler.ts's
+  // `prompt-session` action uses (`desc.processAlive`, forceAgentResume).
+  // `processAlive` is only stamped for a pid-bearing session (sessions.ts
+  // `stampProcessAlive`) — it's `undefined`, not `false`, for a pid-less
+  // ACP-native/remote session, and cron-scheduler.ts's own dead check
+  // (`desc.processAlive === false`) treats that as "still fine, don't
+  // restart". Mirror that exactly: only a MISSING session or an explicit
+  // `false` counts as not-alive.
+  const isSessionAlive = (id: string): boolean => {
+    const desc = sessions.get(id)
+    if (!desc) return false
+    return desc.processAlive !== false
+  }
+  const restartInboundSession = async (id: string): Promise<string> => {
+    const desc = sessions.get(id)
+    if (!desc) {
+      throw new Error(`restartInboundSession: no session "${id}"`)
+    }
+    if (!opts.resolveAgentAdapter) {
+      throw new Error(
+        `restartInboundSession: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
+      )
+    }
+    const restarted = await restartAgentSession(sessions, opts.resolveAgentAdapter, desc, {
+      forceAgentResume: true,
+    })
+    return restarted.desc.id
+  }
+
   // Inbound watcher — polls an agentpush source on a timer and spawns
-  // one agent per new contact_ref. Wired when an adapter resolver is
-  // available (otherwise the watcher would have nowhere to spawn).
+  // one agent per new contact_ref (mode "spawn", default), or routes
+  // into a bound session (mode "route"/"route-or-spawn") via the
+  // shared transmitterBindings store. Wired when an adapter resolver
+  // is available (otherwise the watcher would have nowhere to spawn).
   const inboundWatcher =
     opts.resolveAgentAdapter
       ? createInboundWatcher({
@@ -1291,6 +1338,10 @@ export async function createGateway(
           registry: sessions,
           resolveAgentAdapter: opts.resolveAgentAdapter,
           persist,
+          bindings: transmitterBindings,
+          enqueuePrompt: sessions.enqueuePrompt,
+          isSessionAlive,
+          restartSession: restartInboundSession,
         })
       : undefined
 
@@ -1508,6 +1559,8 @@ export async function createGateway(
       ...(inboundWatcher ? { inboundWatcher } : {}),
       cronScheduler,
       routineRegistrar,
+      mcpProxy,
+      bindingStore: transmitterBindings,
     })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
@@ -1727,6 +1780,23 @@ export async function createGateway(
     activityProjector,
     taskLedger,
     ...(workflowRunner ? { workflowRunner } : {}),
+    // POST /inbound push ingress — same shared transmitterBindings store
+    // and liveness/restart adapters the inbound watcher's "route"/
+    // "route-or-spawn" modes use above. No `spawnForContact`: an
+    // unauthenticated webhook payload carries no adapter/prompt template
+    // to spawn with, so an unbound contact is "skipped" rather than
+    // spawning an arbitrary agent from push input.
+    routeInboundMessage: (msg: InboundMessage, mode: InboundRouteMode) =>
+      routeInboundMessage(
+        {
+          bindings: transmitterBindings,
+          enqueuePrompt: sessions.enqueuePrompt,
+          isSessionAlive,
+          restartSession: restartInboundSession,
+        },
+        msg,
+        mode,
+      ),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),
     ...(opts.resolveAgentAdapter

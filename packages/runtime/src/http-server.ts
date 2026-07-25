@@ -50,6 +50,7 @@ import {
 } from "./workspaces-config.js"
 import { discoverMcps } from "./mcp-discovery.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
+import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import type {
   BrowserAdapterResolver,
   BrowserAdapterLister,
@@ -661,6 +662,19 @@ export interface RuntimeHttpServerOptions {
    *  Same service the MCP `workflow_start/status/cancel/
    *  escalation_resolve/list` tools call. Without it the routes 404. */
   workflowRunner?: WorkflowRunner
+  /** Optional — when wired, enables `POST /inbound`, the push-ingress
+   *  counterpart to `inbound-watcher.ts`'s poll loop. A human reply
+   *  (e.g. from agentpush's Telegram webhook) routes into the session
+   *  bound to its `contact_ref`, or spawns a fresh one — same helper
+   *  `inbound-watcher.ts` uses for polled messages. Without it the
+   *  route 501s. */
+  routeInboundMessage?: (
+    msg: InboundMessage,
+    mode: InboundRouteMode,
+  ) => Promise<{
+    action: "routed" | "spawned" | "restarted-routed" | "skipped"
+    sessionId?: string
+  }>
   /** Static fields surfaced via `/health`. */
   meta: {
     workspace: string
@@ -1431,6 +1445,89 @@ export async function startHttpServer(
             return
           }
           await handleFileUpload(req, res, url)
+          return
+        }
+
+        if (path === "/inbound" && req.method === "POST") {
+          // Push-ingress counterpart to inbound-watcher.ts's poll loop —
+          // same bearer gate as the other mutating routes since this lets
+          // a caller inject a user turn into a live session.
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const body = (await readJsonBody(req)) as {
+            alias?: unknown
+            source?: unknown
+            contact_ref?: unknown
+            text?: unknown
+            messages?: unknown
+            mode?: unknown
+          } | null
+          if (!body || typeof body.alias !== "string" || !body.alias) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "missing_alias" }))
+            return
+          }
+          if (typeof body.source !== "string" || !body.source) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "missing_source" }))
+            return
+          }
+          if (typeof body.contact_ref !== "string" || !body.contact_ref) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "missing_contact_ref" }))
+            return
+          }
+          if (typeof body.text !== "string" || !body.text) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "missing_text" }))
+            return
+          }
+          let mode: InboundRouteMode = "route-or-spawn"
+          if (body.mode !== undefined) {
+            if (
+              body.mode !== "spawn" &&
+              body.mode !== "route" &&
+              body.mode !== "route-or-spawn"
+            ) {
+              res.writeHead(400, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "invalid_mode",
+                  message: `mode must be one of "spawn", "route", "route-or-spawn", got ${JSON.stringify(body.mode)}.`,
+                })
+              )
+              return
+            }
+            mode = body.mode
+          }
+          if (!opts.routeInboundMessage) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "inbound_routing_not_configured",
+                message:
+                  "POST /inbound is not enabled — the daemon was started " +
+                  "without a routeInboundMessage handler. The host must " +
+                  "wire `routeInboundMessage` in createGateway.",
+              })
+            )
+            return
+          }
+          const msg: InboundMessage = {
+            alias: body.alias,
+            source: body.source,
+            contactRef: body.contact_ref,
+            text: body.text,
+            ...(Array.isArray(body.messages)
+              ? { messages: body.messages }
+              : {}),
+          }
+          const result = await opts.routeInboundMessage(msg, mode)
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify(result))
           return
         }
 

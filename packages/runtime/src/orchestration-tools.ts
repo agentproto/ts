@@ -25,6 +25,8 @@ import { collectSubtree } from "./session-tools.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
+import type { McpProxyRegistry } from "./mcp-proxy.js"
+import type { TransmitterBindingStore } from "./transmitter-bindings.js"
 import type { CronScheduler } from "./cron-scheduler.js"
 import type { RoutineRegistrar } from "./routine-registrar.js"
 import type { ActivityProjector } from "./activities.js"
@@ -421,6 +423,14 @@ export interface RegisterOrchestrationToolsOptions {
    * Absent → operator/root context, no additional restrictions.
    */
   callerScope?: { ownerSessionId?: string }
+  /**
+   * When wired alongside `bindingStore`, exposes the `transmit_message`
+   * tool — sends a message out via an imported agentpush alias and
+   * (optionally) binds the contact to a session for inbound routing.
+   */
+  mcpProxy?: McpProxyRegistry
+  /** Paired with `mcpProxy` above — see `transmit_message`. */
+  bindingStore?: TransmitterBindingStore
 }
 
 export function registerOrchestrationTools(
@@ -432,7 +442,7 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher } = opts
+  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore } = opts
 
   /**
    * WP6: check whether ALL watched sessions of a policy fall within the
@@ -1470,6 +1480,15 @@ export function registerOrchestrationTools(
               "here (e.g. [{name:'agentpush',transport:'http',ref:'http://localhost:8080/mcp'}]) " +
               "so the agent can call dispatch_request to reply.",
           ),
+        mode: z
+          .enum(["spawn", "route", "route-or-spawn"])
+          .optional()
+          .describe(
+            "Routing mode for new inbound messages. \"spawn\" (default) always " +
+              "spawns a fresh agent. \"route\" delivers into an already-bound " +
+              "session (resurrecting it if dead) and skips unbound contacts. " +
+              "\"route-or-spawn\" routes bound contacts and spawns unbound ones.",
+          ),
       },
       async input => {
         const desc = inboundWatcher.start(input)
@@ -1519,6 +1538,74 @@ export function registerOrchestrationTools(
       async () => {
         const watchers = inboundWatcher.list()
         return { content: [{ type: "text", text: JSON.stringify(watchers, null, 2) }] }
+      },
+    )
+  }
+
+  // ── transmit_message ────────────────────────────────────────────
+  // Only registered when BOTH mcpProxy and bindingStore are wired (mirrors
+  // the inboundWatcher guard above).
+  if (mcpProxy && bindingStore) {
+    server.tool(
+      "transmit_message",
+      "Send a message out through an imported agentpush MCP alias (via its " +
+        "dispatch_request tool) and, by default, bind the contact to a session " +
+        "so future inbound replies from them route into it (mode " +
+        "\"route-or-spawn\") instead of spawning a fresh agent.",
+      {
+        alias: z
+          .string()
+          .min(1)
+          .describe("Imported MCP alias for the agentpush server (e.g. 'agentpush')."),
+        source: z
+          .string()
+          .min(1)
+          .describe("Channel/phone the message is sent from — same `source` shape as poll_inbound."),
+        contact_ref: z
+          .string()
+          .min(1)
+          .describe("Recipient contact_ref (agentpush sender id)."),
+        text: z.string().min(1).describe("Message text to send."),
+        sessionId: z
+          .string()
+          .min(1)
+          .describe("Session to bind as the reply target for this contact. Required for bind."),
+        bind: z
+          .boolean()
+          .optional()
+          .describe(
+            "Upsert a contactRef→sessionId binding (mode \"route-or-spawn\") after a " +
+              "successful send. Default true.",
+          ),
+      },
+      async input => {
+        const out = await mcpProxy.callTool(input.alias, "dispatch_request", {
+          source: input.source,
+          contact_ref: input.contact_ref,
+          text: input.text,
+        })
+
+        if (!out.ok) {
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ sent: false, bound: false, error: out.error }) },
+            ],
+            isError: true,
+          }
+        }
+
+        const bound = input.bind !== false
+        if (bound) {
+          bindingStore.upsert({
+            alias: input.alias,
+            source: input.source,
+            contactRef: input.contact_ref,
+            sessionId: input.sessionId,
+            mode: "route-or-spawn",
+          })
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify({ sent: true, bound }) }] }
       },
     )
   }
