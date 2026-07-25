@@ -279,6 +279,11 @@
         "icon": "$(settings-gear)"
       },
       {
+        "command": "agentproto.configureSessionAxis",
+        "title": "agentproto: Configure Session Axis",
+        "category": "agentproto"
+      },
+      {
         "command": "agentproto.openTranscriptChannel",
         "title": "agentproto: Open Transcript (Raw Output Channel)",
         "category": "agentproto"

@@ -458,6 +458,26 @@ describe("model chip — the model↔route restart trap surfaces through the chi
     expect(modelChip.restart).toBe(false)
   })
 
+  it("carries the route suffix from the change-model rows onto the chip", () => {
+    const chips = buildSessionConfigChips(
+      descriptor({ model: "z-ai/glm-5.2@openrouter" }),
+      baseInput({
+        model: "z-ai/glm-5.2@openrouter",
+        adapter: adapter({
+          modelDetails: [
+            { id: "z-ai/glm-5.2@openrouter", provider: "z-ai" },
+            { id: "z-ai/glm-5.2@requesty", provider: "z-ai" },
+          ],
+        }),
+      }),
+    )
+    const modelChip = chips.find(c => c.axis === "model")!
+    const current = modelChip.rows.find(r => r.value === "z-ai/glm-5.2@openrouter")
+    const other = modelChip.rows.find(r => r.value === "z-ai/glm-5.2@requesty")
+    expect(current?.description).toBe("current · via openrouter")
+    expect(other?.description).toBe("restart required · via requesty")
+  })
+
   it("flags EVERY model row restart-required for an 'arg' adapter (e.g. codex)", () => {
     const chips = buildSessionConfigChips(
       descriptor({ model: "o4-mini" }),

@@ -25,8 +25,8 @@ import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
 import { runCreateAuthProfileFlow } from "./authProfiles.js"
 import { resolveSessionArg } from "./sessionActions.js"
 import { describeSession } from "./sessionActions.logic.js"
-import type { ConfigChip, ConfigChipRow } from "./sessionConfig.logic.js"
 import { RESTART_AFFIX, buildSessionConfigChips } from "./sessionConfig.logic.js"
+import type { ConfigAxis, ConfigChip, ConfigChipRow } from "./sessionConfig.logic.js"
 import {
   liveFallbackToRestart,
   planChipDispatch,
@@ -52,6 +52,9 @@ export function registerSessionConfig(
     vscode.commands.registerCommand("agentproto.configureSession", (arg: unknown) =>
       configureSessionCommand(client, store, authProfiles, arg ?? getActiveTranscriptSessionId()),
     ),
+    vscode.commands.registerCommand("agentproto.configureSessionAxis", (arg: unknown) =>
+      configureSessionAxisCommand(client, store, authProfiles, arg),
+    ),
   )
 }
 
@@ -63,6 +66,65 @@ async function configureSessionCommand(
 ): Promise<void> {
   const session = await resolveSessionArg(arg, store, "Select a session to configure", () => true, client)
   if (!session) return
+  await runSessionConfigFlow(client, store, authProfiles, session)
+}
+
+interface ConfigureAxisArg {
+  sessionId: string
+  axis: ConfigAxis
+}
+
+function isConfigureAxisArg(arg: unknown): arg is ConfigureAxisArg {
+  return (
+    typeof arg === "object" &&
+    arg !== null &&
+    typeof (arg as ConfigureAxisArg).sessionId === "string" &&
+    typeof (arg as ConfigureAxisArg).axis === "string" &&
+    CONFIG_AXES.has((arg as ConfigureAxisArg).axis)
+  )
+}
+
+const CONFIG_AXES: Set<ConfigAxis> = new Set([
+  "model",
+  "effort",
+  "route",
+  "access",
+  "posture",
+  "contextProfile",
+])
+
+async function configureSessionAxisCommand(
+  client: DaemonClient,
+  store: SessionStore,
+  authProfiles: AuthProfilesTreeProvider,
+  arg: unknown,
+): Promise<void> {
+  let sessionId: string | undefined
+  let axis: ConfigAxis | undefined
+  if (isConfigureAxisArg(arg)) {
+    sessionId = arg.sessionId
+    axis = arg.axis
+  } else if (typeof arg === "string") {
+    sessionId = arg
+  }
+  const session = await resolveSessionArg(
+    sessionId,
+    store,
+    "Select a session to configure",
+    () => true,
+    client,
+  )
+  if (!session) return
+  await runSessionConfigFlow(client, store, authProfiles, session, axis)
+}
+
+async function runSessionConfigFlow(
+  client: DaemonClient,
+  store: SessionStore,
+  authProfiles: AuthProfilesTreeProvider,
+  session: SessionDescriptor,
+  targetAxis?: ConfigAxis,
+): Promise<void> {
   if (!session.adapterSlug) {
     vscode.window.showWarningMessage(
       `agentproto: ${describeSession(session)} has no adapter recorded — nothing to configure.`,
@@ -96,19 +158,31 @@ async function configureSessionCommand(
     return
   }
 
-  const chipPick = await vscode.window.showQuickPick<ChipItem>(
-    chips.map(chip => ({
-      label: `${axisLabel(chip.axis)}${chip.current ? `: ${chip.current}` : ""}`,
-      ...(chip.restart ? { description: chip.restartAffix ?? RESTART_AFFIX } : {}),
-      ...(chip.ineligibleAttachedProfile
-        ? { detail: `⚠ attached profile \"${chip.ineligibleAttachedProfile}\" is no longer eligible — pick another` }
-        : {}),
-      chip,
-    })),
-    { title: `Configure ${describeSession(session)}`, placeHolder: "Which setting?" },
-  )
-  if (!chipPick) return
-  const chip = chipPick.chip
+  let chip: ConfigChip
+  if (targetAxis) {
+    const found = chips.find(c => c.axis === targetAxis)
+    if (!found) {
+      vscode.window.showInformationMessage(
+        `agentproto: ${describeSession(session)} has no "${axisLabel(targetAxis)}" axis to configure right now.`,
+      )
+      return
+    }
+    chip = found
+  } else {
+    const chipPick = await vscode.window.showQuickPick<ChipItem>(
+      chips.map(chip => ({
+        label: `${axisLabel(chip.axis)}${chip.current ? `: ${chip.current}` : ""}`,
+        ...(chip.restart ? { description: chip.restartAffix ?? RESTART_AFFIX } : {}),
+        ...(chip.ineligibleAttachedProfile
+          ? { detail: `⚠ attached profile \"${chip.ineligibleAttachedProfile}\" is no longer eligible — pick another` }
+          : {}),
+        chip,
+      })),
+      { title: `Configure ${describeSession(session)}`, placeHolder: "Which setting?" },
+    )
+    if (!chipPick) return
+    chip = chipPick.chip
+  }
 
   const rowPick = await vscode.window.showQuickPick<RowItem>(
     chip.rows.map(row => ({

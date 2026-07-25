@@ -3,18 +3,23 @@
  * `changeModel` webview message (see transcriptPanel.ts's
  * `handleWebviewMessage`). Fetches this session's own adapter listing,
  * builds the provider-grouped quick-pick (changeModel.logic.ts — current
- * model marked, cross-mode/arg-strategy rows flagged restart-required),
- * and — on a live-switchable pick — calls the daemon's mid-session
- * `setModel` through the controller. Never optimistic: on success the chip
- * refreshes from the next daemon-driven `sessionUpdate`, not a local write
- * here.
+ * model marked, cross-mode/arg-strategy/route-mismatch rows flagged
+ * restart-required), and — on a live-switchable pick — calls the daemon's
+ * mid-session `setModel` through the controller. A synthetic "Change route"
+ * top-row hands off to the route chip picker instead of picking a model.
+ * Never optimistic: on success the chip refreshes from the next daemon-driven
+ * `sessionUpdate`, not a local write here.
  */
 
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { TranscriptPanelController } from "../webview/transcriptPanelController.js"
-import { buildChangeModelPlaceHolder, mapChangeModelQuickPickItems } from "./changeModel.logic.js"
+import {
+  buildChangeModelPlaceHolder,
+  makeChangeRouteItem,
+  mapChangeModelQuickPickItems,
+} from "./changeModel.logic.js"
 
 export async function runChangeModelFlow(
   controller: TranscriptPanelController,
@@ -44,13 +49,7 @@ export async function runChangeModelFlow(
     return
   }
 
-  const items = mapChangeModelQuickPickItems(adapter, session)
-  if (items.length === 0) {
-    void vscode.window.showInformationMessage(
-      `agentproto: ${adapter.slug} declares no model menu to switch between.`,
-    )
-    return
-  }
+  const items = [makeChangeRouteItem(), ...mapChangeModelQuickPickItems(adapter, session)]
 
   const picked = await vscode.window.showQuickPick(items, {
     placeHolder: buildChangeModelPlaceHolder(session),
@@ -58,12 +57,22 @@ export async function runChangeModelFlow(
   // A separator row can't actually be returned by showQuickPick (vscode
   // never resolves a Separator-kind item as a selection), but the guard
   // costs nothing and keeps this branch honest about what "picked" means.
-  if (!picked || picked.kind !== undefined || picked.model === undefined) return
+  if (!picked || picked.kind !== undefined) return
+
+  if (picked.openRouteChip) {
+    await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+      sessionId: session.id,
+      axis: "route",
+    })
+    return
+  }
+
+  if (picked.model === undefined) return
 
   if (picked.restartRequired) {
     void vscode.window.showWarningMessage(
-      `agentproto: switching to "${picked.model}" needs a restart — this session's adapter can't ` +
-        "apply it live. Restarting with an overridden model isn't wired up yet.",
+      `agentproto: switching to "${picked.model}" needs a session restart — ` +
+        "pick it from agentproto: Configure Session instead.",
     )
     return
   }
