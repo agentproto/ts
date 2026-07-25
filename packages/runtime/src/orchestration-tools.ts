@@ -27,6 +27,9 @@ import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { TransmitterBindingStore } from "./transmitter-bindings.js"
+import type { InboundEndpointStore } from "./inbound-endpoints.js"
+import { type InboundProvider, INBOUND_PROVIDERS } from "./inbound-adapters.js"
+import { randomBytes } from "node:crypto"
 import type { CronScheduler } from "./cron-scheduler.js"
 import type { RoutineRegistrar } from "./routine-registrar.js"
 import type { ActivityProjector } from "./activities.js"
@@ -431,6 +434,13 @@ export interface RegisterOrchestrationToolsOptions {
   mcpProxy?: McpProxyRegistry
   /** Paired with `mcpProxy` above — see `transmit_message`. */
   bindingStore?: TransmitterBindingStore
+  /**
+   * When wired alongside `bindingStore`, exposes the `inbound_endpoint_create`
+   * / `list` / `delete` tools. Each endpoint maps `POST /inbound/<slug>` to a
+   * provider dialect (agentpush, telegram, whatsapp, slack, generic) plus a
+   * secret for webhook signature verification.
+   */
+  endpointStore?: InboundEndpointStore
 }
 
 export function registerOrchestrationTools(
@@ -442,7 +452,7 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore } = opts
+  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore } = opts
 
   /**
    * WP6: check whether ALL watched sessions of a policy fall within the
@@ -1606,6 +1616,99 @@ export function registerOrchestrationTools(
         }
 
         return { content: [{ type: "text", text: JSON.stringify({ sent: true, bound }) }] }
+      },
+    )
+  }
+
+  // ── inbound_endpoint_* ──────────────────────────────────────────
+  // Registered when endpointStore is wired (mirrors transmit_message guard).
+  if (endpointStore) {
+    const inboundProviderSchema = z.enum(["agentpush", "telegram", "whatsapp", "slack", "generic", "native"])
+    const inboundModeSchema = z.enum(["spawn", "route", "route-or-spawn"]).optional()
+
+    server.tool(
+      "inbound_endpoint_create",
+      "Create or update a provider-agnostic inbound push endpoint. POSTs to " +
+        "`/inbound/<slug>` are normalized from the provider's webhook dialect and " +
+        "signature-verified (when a secret is configured).",
+      {
+        slug: z.string().min(1).describe("URL path segment: POST /inbound/<slug>."),
+        provider: inboundProviderSchema.describe("Inbound webhook dialect/provider."),
+        alias: z.string().min(1).describe("Imported MCP alias — MUST match what transmit_message wrote."),
+        source: z.string().optional().describe("Force the binding source; default = provider channel."),
+        mode: inboundModeSchema.describe('Routing mode; default "route-or-spawn".'),
+        secret: z.string().optional().describe("Webhook signing secret. Omit to auto-generate one."),
+        enabled: z.boolean().optional().describe("Whether the endpoint is active; default true."),
+      },
+      async input => {
+        const existing = endpointStore.get(input.slug)
+        const generatedSecret =
+          input.secret === undefined && !existing?.secret
+            ? randomBytes(32).toString("hex")
+            : undefined
+
+        const endpoint = endpointStore.upsert({
+          slug: input.slug,
+          provider: input.provider,
+          alias: input.alias,
+          source: input.source,
+          secret: input.secret ?? generatedSecret ?? existing?.secret,
+          mode: input.mode,
+          enabled: input.enabled,
+          createdTs: existing?.createdTs,
+        })
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                slug: endpoint.slug,
+                provider: endpoint.provider,
+                alias: endpoint.alias,
+                source: endpoint.source,
+                mode: endpoint.mode,
+                enabled: endpoint.enabled,
+                has_secret: !!endpoint.secret,
+                ...(generatedSecret ? { secret: generatedSecret } : {}),
+              }),
+            },
+          ],
+        }
+      },
+    )
+
+    server.tool(
+      "inbound_endpoint_list",
+      "List all provider-agnostic inbound push endpoints. Secrets are never emitted.",
+      {},
+      async () => {
+        const list = endpointStore.list().map(e => ({
+          slug: e.slug,
+          provider: e.provider,
+          alias: e.alias,
+          source: e.source,
+          mode: e.mode,
+          enabled: e.enabled,
+          createdTs: e.createdTs,
+          lastSeenTs: e.lastSeenTs,
+          has_secret: !!e.secret,
+        }))
+        return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] }
+      },
+    )
+
+    server.tool(
+      "inbound_endpoint_delete",
+      "Delete a provider-agnostic inbound push endpoint by slug.",
+      {
+        slug: z.string().min(1).describe("URL path segment of the endpoint to delete."),
+      },
+      async input => {
+        const existed = endpointStore.remove(input.slug)
+        return {
+          content: [{ type: "text", text: JSON.stringify({ deleted: existed }) }],
+        }
       },
     )
   }

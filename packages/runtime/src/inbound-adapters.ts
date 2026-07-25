@@ -16,6 +16,15 @@ export type InboundProvider =
   | "generic"
   | "native"
 
+export const INBOUND_PROVIDERS: readonly InboundProvider[] = [
+  "agentpush",
+  "telegram",
+  "whatsapp",
+  "slack",
+  "generic",
+  "native",
+]
+
 export type NormalizeInboundResult =
   | { ok: true; msg: InboundMessage; providerMessageId?: string }
   | { ok: true; challenge: string }
