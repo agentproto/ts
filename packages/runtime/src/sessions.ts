@@ -4999,6 +4999,8 @@ export function createSessionsRegistry(opts?: {
       delete rt.desc.nextRestartAt
       appendLine(rt, message, "stderr")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: message })
+      return true
+    },
     stampPendingChildCrashNotice(id, notice) {
       const rt = sessions.get(id)
       if (!rt) return false
