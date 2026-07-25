@@ -57,6 +57,7 @@ import type {
   AgentAdapterLister,
   AgentAdapterInstaller,
   CatalogModelsLister,
+  AdapterCapabilitiesLister,
 } from "./http-server.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import {
@@ -197,6 +198,10 @@ export interface RegisterSessionToolsOptions {
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional harness capability-discovery lister — when wired, exposes
+   *  `harness_capabilities` MCP tool. Without it the tool returns a clear
+   *  "not configured" error pointing at the host wiring. */
+  listHarnessCapabilities?: AdapterCapabilitiesLister
   /** Optional adapter installer — when wired, exposes `adapter_install`
    *  MCP tool. Without it the tool returns a clear "not configured" error
    *  pointing at the host wiring. */

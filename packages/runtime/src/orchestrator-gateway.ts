@@ -36,6 +36,7 @@ import type { TaskLedger } from "./task-ledger.js"
 import type {
   AgentAdapterResolver,
   AgentAdapterLister,
+  AdapterCapabilitiesLister,
 } from "./http-server.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
@@ -241,6 +242,7 @@ export interface OrchestratorGatewayDeps {
   taskLedger?: TaskLedger
   resolveAgentAdapter?: AgentAdapterResolver
   listAgentAdapters?: AgentAdapterLister
+  listHarnessCapabilities?: AdapterCapabilitiesLister
   /** Orchestrator injector (WP3/WP4). When wired, a child orchestrator
    *  driving the scoped server can itself spawn sub-orchestrators
    *  (`orchestrator: true` on its `agent_start`) — the new
@@ -306,6 +308,9 @@ export function createOrchestratorMcpServerFactory(
         : {}),
       ...(deps.listAgentAdapters
         ? { listAgentAdapters: deps.listAgentAdapters }
+        : {}),
+      ...(deps.listHarnessCapabilities
+        ? { listHarnessCapabilities: deps.listHarnessCapabilities }
         : {}),
       ...(deps.webhookNotifier
         ? { webhookNotifier: deps.webhookNotifier }

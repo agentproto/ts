@@ -65,6 +65,7 @@ import {
   type AgentAdapterLister,
   type AgentAdapterInstaller,
   type CatalogModelsLister,
+  type AdapterCapabilitiesLister,
 } from "./http-server.js"
 import {
   createSessionsRegistry,
@@ -119,6 +120,7 @@ export type {
   AdapterInstallResult,
   AdapterListEntry,
   CatalogModelsLister,
+  AdapterCapabilitiesLister,
 } from "./http-server.js"
 export type {
   WorktreeStatusLister,
@@ -600,6 +602,12 @@ export interface CreateGatewayOptions {
    *  `GET /adapters` HTTP route + `adapter_list` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional harness capability-discovery lister — when provided, enables
+   *  the `harness_capabilities` MCP tool so callers can introspect what an
+   *  installed adapter can actually DO on this host (creds present,
+   *  reachable providers, model-discovery mechanism, endpoint compat,
+   *  application contract), not just its static manifest fields. */
+  listHarnessCapabilities?: AdapterCapabilitiesLister
   /** Optional adapter installer — when provided, enables
    *  `POST /adapters/:slug/install` HTTP route + `adapter_install` MCP
    *  tool so UIs can install a not-yet-installed harness. Hosts ship the
@@ -1349,6 +1357,9 @@ export async function createGateway(
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),
+    ...(opts.listHarnessCapabilities
+      ? { listHarnessCapabilities: opts.listHarnessCapabilities }
+      : {}),
   })
 
   const mcpServerFactory = async (
@@ -1444,6 +1455,9 @@ export async function createGateway(
         : {}),
       ...(opts.listAgentAdapters
         ? { listAgentAdapters: opts.listAgentAdapters }
+        : {}),
+      ...(opts.listHarnessCapabilities
+        ? { listHarnessCapabilities: opts.listHarnessCapabilities }
         : {}),
       ...(opts.installAgentAdapter
         ? { installAgentAdapter: opts.installAgentAdapter }
@@ -1712,6 +1726,9 @@ export async function createGateway(
     ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
+    ...(opts.listHarnessCapabilities
+      ? { listHarnessCapabilities: opts.listHarnessCapabilities }
       : {}),
     ...(opts.installAgentAdapter
       ? { installAgentAdapter: opts.installAgentAdapter }

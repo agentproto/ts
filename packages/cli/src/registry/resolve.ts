@@ -28,9 +28,12 @@ import {
   makeAdapterLister,
   makeSetupLedger,
   collectAgentprotoNamespaceRoots,
+  discoverCapabilities,
   type AdapterHandle,
   type AdapterCatalogEntry,
   type CapabilityStrategy,
+  type HarnessCapabilities,
+  type DiscoverCtx,
 } from "@agentproto/provider-kit"
 import { isAgentCliAuthConfigured, type AdapterAuthDescriptor } from "@agentproto/runtime"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
@@ -608,6 +611,67 @@ export async function listInstalledAdapters(opts?: {
   void notImportable
 
   return out.sort((a, b) => a.slug.localeCompare(b.slug))
+}
+
+/**
+ * Build a `DiscoverCtx` over this host's real filesystem/env for a
+ * `CapabilityStrategy` to read. `readFile` normalises "file doesn't exist"
+ * (ENOENT) to `null` — the contract every strategy in this repo already
+ * codes against — and re-throws any other error (permissions, I/O), which
+ * `discoverCapabilities`'s outer catch turns into a warning + manifest
+ * fallback rather than a hard failure.
+ */
+function makeHostDiscoverCtx(): DiscoverCtx {
+  return {
+    homeDir: homedir(),
+    env: process.env,
+    async readFile(path: string) {
+      try {
+        return await fs.readFile(path, "utf8")
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null
+        throw err
+      }
+    },
+    warn(msg: string) {
+      console.warn(`[agentproto/cli] harness capability discovery: ${msg}`)
+    },
+  }
+}
+
+/**
+ * Behind the `harness_capabilities` MCP tool / `@agentproto/runtime`'s
+ * `AdapterCapabilitiesLister`: for each installed adapter (or just
+ * `opts.adapter` when given), resolves it and runs `discoverCapabilities` —
+ * the adapter's own `capabilitiesStrategy` when `resolveAdapter` found one
+ * (an optional `<camelSlug>Capabilities` export), else the pure manifest
+ * projection. One shared `DiscoverCtx` per call (this host's real fs/env),
+ * built once so every adapter's strategy reads the same snapshot.
+ */
+export async function listHarnessCapabilities(opts?: {
+  adapter?: string
+  /** Override the search root — mirrors `listInstalledAdapters`. */
+  searchRoot?: string
+}): Promise<HarnessCapabilities[]> {
+  const ctx = makeHostDiscoverCtx()
+
+  if (opts?.adapter) {
+    const resolved = await resolveAdapter(opts.adapter)
+    return [await discoverCapabilities(resolved.handle, resolved.capabilitiesStrategy, ctx)]
+  }
+
+  const adapters = await listInstalledAdapters({ searchRoot: opts?.searchRoot })
+  const out: HarnessCapabilities[] = []
+  for (const info of adapters) {
+    try {
+      const resolved = await resolveAdapter(info.slug)
+      out.push(await discoverCapabilities(resolved.handle, resolved.capabilitiesStrategy, ctx))
+    } catch {
+      // Resolution can race with listInstalledAdapters' own snapshot (e.g.
+      // mid-rebuild) — skip rather than fail the whole listing for one adapter.
+    }
+  }
+  return out
 }
 
 // ── catalog-aware lister ─────────────────────────────────────────────────────
