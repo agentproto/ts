@@ -5,6 +5,9 @@
  * a coordinated change across all WPs.
  */
 
+import type { RouteSpec } from "@agentproto/runtime/catalog-models"
+export type { RouteSpec }
+
 /** Mirrors @agentproto/runtime AcpMcpServer (packages/acp/src/types.ts). */
 export interface AcpMcpServer {
   name: string
@@ -47,13 +50,6 @@ export type CanonicalPosture = "default" | "plan" | "accept-edits" | "bypass" | 
 /** Mirrors @agentproto/runtime Posture — a canonical posture OR a raw harness
  *  mode id from the ACP mode registry (SPEC §3.4a). */
 export type Posture = CanonicalPosture | { harnessModeId: string }
-
-/** Mirrors @agentproto/runtime RouteSpec — endpoint / gateway rail. `baseUrl`
- *  only for a custom gateway the catalog can't resolve. */
-export interface RouteSpec {
-  gateway: string
-  baseUrl?: string
-}
 
 /** Mirrors @agentproto/runtime ContextProfile — `"lean"` drops bundled skills. */
 export type ContextProfile = "full" | "lean" | (string & {})

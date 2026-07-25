@@ -73,6 +73,7 @@ import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
   checkModelWalletEligibility,
   modelWalletIneligibleMessage,
+  reconcileModelRoute,
 } from "./catalog-models.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { loadConfig } from "./config.js"
@@ -539,14 +540,20 @@ export async function restartAgentSession(
   // `effective = { ...prev axes, ...overrides }`: an axis present in the
   // override wins, an axis omitted is carried forward from `prev` so a
   // single-axis restart never silently drops the rest (SPEC §3.8 round-trip).
-  // Only `access` re-resolves billing end-to-end below (the R1 money bug);
-  // `route`/`posture`/`contextProfile` land on the fresh descriptor to
-  // round-trip, and `model`/`effort`/legacy `mode` forward to the driver's own
-  // spawn inputs.
+  // `model` and `route` are reconciled first so they can never describe two
+  // different billing endpoints: an explicit `@route` on the model wins, a
+  // route-only override rewrites a parseable model string, and a model-only
+  // override synthesizes the route field when it conflicts with the prior one.
   const overrides = opts.overrides ?? {}
-  const effModel = overrides.model ?? prev.model
+  const reconciled = reconcileModelRoute({
+    prevModel: prev.model,
+    prevRoute: prev.route,
+    model: overrides.model,
+    route: overrides.route,
+  })
+  const effModel = reconciled.model ?? prev.model
   const effEffort = overrides.effort ?? prev.effort
-  const effRoute = overrides.route ?? prev.route
+  const effRoute = reconciled.route ?? prev.route
   const effPosture = overrides.posture ?? prev.posture
   const effContextProfile = overrides.contextProfile ?? prev.contextProfile
   const effHarness = overrides.harness ?? prev.harness ?? prev.adapterSlug

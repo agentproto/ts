@@ -51,6 +51,7 @@ import type {
   SessionConfigChangedEvent,
 } from "./session-event-bus.js"
 import { resolvePosture } from "./canonical-posture.js"
+import { resolveEffectiveRoute } from "./catalog-models.js"
 import { tryParseModelRef } from "@agentproto/model-catalog/route-identity"
 import {
   composeSessionObservers,
@@ -1392,17 +1393,11 @@ function findPriorCommandSessionId(
 
 /**
  * The route-identity a session is currently pinned to, for the model↔route
- * guard (SPEC risk R2 / §4.4). Prefers the explicit `route` axis echo when the
- * session recorded one; otherwise derives it from the current model ref's
- * `@route` (which defaults to the vendor for a direct ref — `anthropic/claude…`
- * ⇒ route `anthropic`). `undefined` when neither is known (a bare/legacy model
- * id with no route axis), which the guard treats as "route unknown → don't
- * block" so it never refuses a same-endpoint switch on incomplete information.
+ * guard (SPEC risk R2 / §4.4). Delegates to the canonical resolver so the
+ * runtime and the vscode picker never disagree on precedence.
  */
 function currentRouteOf(desc: SessionDescriptor): string | undefined {
-  if (desc.route?.gateway) return desc.route.gateway
-  if (desc.model) return tryParseModelRef(desc.model)?.route
-  return undefined
+  return resolveEffectiveRoute(desc.model, desc.route?.gateway)
 }
 
 /** Spread-ready worktree identity for a spawn path's `cwd` — see

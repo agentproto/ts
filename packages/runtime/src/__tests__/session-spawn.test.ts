@@ -3113,3 +3113,79 @@ describe("spawnAgentSession — D2/D3: wire model form + adapter-declared provid
     expect(captured[0]?.auth?.setEnv).toBe("OPENROUTER_API_KEY")
   })
 })
+
+describe("spawnAgentSession — model/route reconciliation", () => {
+  function localResolver(descriptor?: AdapterAuthDescriptor): {
+    resolver: AgentAdapterResolver
+  } {
+    const resolver: AgentAdapterResolver = async () => ({
+      startSession: async () => fakeAgentSession(),
+      commandPreview: "mock-adapter",
+      ...(descriptor ? { authDescriptor: descriptor } : {}),
+    })
+    return { resolver }
+  }
+
+  it("synthesizes route.gateway from a model-only override with explicit @route", async () => {
+    const { resolver } = localResolver()
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "mock", cwd: "/tmp", model: "z-ai/glm-5.2@openrouter" },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.model).toBe("z-ai/glm-5.2@openrouter")
+      expect(result.descriptor.route).toEqual({ gateway: "openrouter" })
+    }
+  })
+
+  it("throws when model and route overrides contradict each other", async () => {
+    const { resolver } = localResolver()
+    const { registry } = baseDeps()
+    await expect(
+      spawnAgentSession(
+        { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+        {
+          adapter: "mock",
+          cwd: "/tmp",
+          model: "z-ai/glm-5.2@openrouter",
+          route: { gateway: "requesty" },
+        },
+      ),
+    ).rejects.toThrow(/pins route "openrouter" but route override is "requesty"/)
+  })
+
+  it("keeps a parseable model + route pair that agree", async () => {
+    const { resolver } = localResolver()
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "mock",
+        cwd: "/tmp",
+        model: "z-ai/glm-5.2@openrouter",
+        route: { gateway: "openrouter" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.model).toBe("z-ai/glm-5.2@openrouter")
+      expect(result.descriptor.route).toEqual({ gateway: "openrouter" })
+    }
+  })
+
+  it("leaves a bare model + route pair untouched", async () => {
+    const { resolver } = localResolver()
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "mock", cwd: "/tmp", model: "claude-opus-4-8", route: { gateway: "anthropic" } },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.model).toBe("claude-opus-4-8")
+      expect(result.descriptor.route).toEqual({ gateway: "anthropic" })
+    }
+  })
+})
