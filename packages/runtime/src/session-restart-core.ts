@@ -67,6 +67,7 @@ import {
   type AuthEcho,
   type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
+import { buildResumeContextDigest } from "./resume-context-digest.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
@@ -771,6 +772,21 @@ export async function restartAgentSession(
     } else {
       throw err
     }
+  }
+
+  // Fix D: `resumeFallback` covers BOTH blank-fallback cases — the
+  // capability-based downgrade above (adapter declared `resumable: false`)
+  // and this catch block's rejected-resume-id retry (the adapter's own
+  // conversation store is gone) — so `desc` just came back as a genuinely
+  // fresh spawn wearing the old session's continuity fields. Best-effort
+  // patch: reconstruct a bounded digest from the PRIOR session's own
+  // daemon transcript (survives both cases) and stash it for
+  // `runAgentTurn` to inject once. Gated strictly on `resumeFallback` — a
+  // successful resume (pty-native or a clean ACP resume) never reaches
+  // here, so it's never double-fed its own context.
+  if (resumeFallback) {
+    const digest = await buildResumeContextDigest(prev.id)
+    if (digest) desc.pendingResumeContext = digest
   }
 
   // ── Announce the changed axes (SPEC §4.3) ────────────────────────

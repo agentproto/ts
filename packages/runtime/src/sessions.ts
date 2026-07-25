@@ -59,6 +59,7 @@ import {
 } from "./session-observer.js"
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
+import { buildResumeContextDigest } from "./resume-context-digest.js"
 import {
   appendConversationRecord,
   resolveNativeLink,
@@ -956,6 +957,19 @@ export interface SessionDescriptor {
    *  message (`runAgentTurn`) — so delivery survives a busy parent without
    *  ever cancelling its in-flight work. Absent when nothing is queued. */
   pendingChildCrashNotices?: string[]
+  /** Best-effort context-handoff digest (Fix D), stashed on a descriptor
+   *  whose resume degraded to a BLANK spawn — the adapter's own
+   *  conversation store was missing, or the adapter declared `resumable:
+   *  false` — built by `buildResumeContextDigest` from the daemon's own
+   *  `events.jsonl` transcript, which survives both cases. Flushed and
+   *  cleared by prepending it onto the first dispatched turn's message
+   *  (`runAgentTurn`), exactly once, same shape as
+   *  `pendingChildCrashNotices` above. Gated strictly on the blank-fallback
+   *  flags at the two sites that set it (`session-restart-core.ts`,
+   *  `maybeResumeAgent` here) — never set for a resume that actually
+   *  restored context, so a real continuation is never double-fed its own
+   *  history. Absent when nothing is queued. */
+  pendingResumeContext?: string
   /** Source label — the channel/harness this session was spawned from
    *  ("codex", "cowork", "vscode", "cron", …). Descriptor-only; groups the
    *  session under a source node in the tree. */
@@ -3486,6 +3500,14 @@ export function createSessionsRegistry(opts?: {
             "continuation ──"
           appendLine(rt, banner, "stdout")
           transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+          // Fix D: this is an in-place revival — same session id, same
+          // `events.jsonl` — so that file's own pre-death content IS the
+          // prior conversation to summarize. Read here, BEFORE the fresh
+          // turn appends anything new to it. Best-effort: stashed for
+          // `runAgentTurn` to inject once; absent when there's nothing to
+          // summarize (see `buildResumeContextDigest`).
+          const digest = await buildResumeContextDigest(rt.desc.id)
+          if (digest) rt.desc.pendingResumeContext = digest
         }
         sessionEvents?.emit({
           type: "session:resumed",
@@ -3573,6 +3595,15 @@ export function createSessionsRegistry(opts?: {
     if (rt.desc.pendingChildCrashNotices?.length && typeof message === "string") {
       message = `${rt.desc.pendingChildCrashNotices.join("\n")}\n\n${message}`
       rt.desc.pendingChildCrashNotices = []
+    }
+    // Flush a queued best-effort resume-context digest (Fix D — see
+    // `SessionDescriptor.pendingResumeContext`'s doc), same string-turn-
+    // only, fire-once shape as the crash notices above. Ordered after them
+    // so a session that resumed blank AND has a queued crash notice reads
+    // its own context digest first, then the notice.
+    if (rt.desc.pendingResumeContext && typeof message === "string") {
+      message = `${rt.desc.pendingResumeContext}\n\n${message}`
+      rt.desc.pendingResumeContext = undefined
     }
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
