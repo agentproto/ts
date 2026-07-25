@@ -87,7 +87,7 @@ import {
   type PairingRegistry,
   type PairingChannelHandle,
 } from "@agentproto/runtime"
-import { CatalogProviderSchema } from "@agentproto/model-catalog"
+import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
 import { buildDaemonTunnelServerOptions } from "../util/tunnel-serve.js"
 import { homedir } from "node:os"
@@ -426,6 +426,20 @@ export async function runServe(args: readonly string[]): Promise<number> {
       const providerParse = adapter.handle.provider
         ? CatalogProviderSchema.safeParse(adapter.handle.provider)
         : undefined
+      // The adapter's OWN declared per-model billing provider
+      // (`models.allowed[].provider`) — authoritative for a model-derived-
+      // api-key adapter (no fixed `provider` above) whose declared model
+      // otherwise falls through to the GLOBAL catalog's (possibly
+      // different) routing for the same id (D3: pi bills
+      // `moonshotai/kimi-k2.7-code` via `moonshot`; the catalog routes that
+      // id to `openrouter`). Same catalog-enum validation as `provider`
+      // above — an unrecognized string is dropped, never guessed.
+      const modelProviders: Record<string, CatalogProvider> = {}
+      for (const entry of adapter.handle.models?.allowed ?? []) {
+        if (typeof entry === "string" || !entry.provider) continue
+        const parsed = CatalogProviderSchema.safeParse(entry.provider)
+        if (parsed.success) modelProviders[entry.id] = parsed.data
+      }
       const authDescriptor: AdapterAuthDescriptor = {
         ...(providerParse?.success ? { provider: providerParse.data } : {}),
         ...(adapter.handle.authEnforce ? { authEnforce: adapter.handle.authEnforce } : {}),
@@ -435,6 +449,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.modelDerivedApiKey
           ? { modelDerivedApiKey: adapter.handle.modelDerivedApiKey }
           : {}),
+        ...(adapter.handle.gatewayAuth ? { gatewayAuth: adapter.handle.gatewayAuth } : {}),
+        ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
       return {
         async startSession({ cwd, resumeSessionId, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox }) {
@@ -482,6 +498,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
           type: o.type,
         })),
         authDescriptor,
+        ...(adapter.handle.routeSelection
+          ? { routeSelection: adapter.handle.routeSelection }
+          : {}),
         ...(adapter.handle.models?.default
           ? { defaultModel: adapter.handle.models.default }
           : {}),

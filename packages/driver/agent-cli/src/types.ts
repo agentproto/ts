@@ -668,6 +668,24 @@ export interface AgentCliDefinition {
    */
   authSubscription?: AgentCliAuthSubscription
   /**
+   * Declares how THIS adapter receives a GATEWAY-routed bearer credential —
+   * distinct from a gateway preset's own `keyEnv`
+   * (`@agentproto/provider-presets` — the var the OPERATOR's `providers.json`
+   * store is keyed under) and from {@link authSubscription}'s `setEnv` (this
+   * adapter's OWN native/subscription bearer, unrelated to a third-party
+   * gateway). When a `route.gateway` preset/custom route resolves AND this is
+   * declared, the runtime's `resolveAuthSpec` injects the resolved gateway
+   * credential into `setEnv` here INSTEAD of the preset's `keyEnv` — e.g.
+   * claude-code/claude-sdk read a gateway bearer via `ANTHROPIC_AUTH_TOKEN`
+   * (the Anthropic SDK's `Authorization: Bearer` var), never a preset's own
+   * conventional key-env name (`OPENROUTER_API_KEY`, `MOONSHOT_API_KEY`, …).
+   * Omit when the adapter reads a gateway credential directly off the
+   * preset's own `keyEnv` (e.g. hermes, which genuinely reads
+   * `OPENROUTER_API_KEY`) — the fix is adapter-driven, never a blanket
+   * rename of every adapter's gateway var.
+   */
+  gatewayAuth?: { setEnv: string }
+  /**
    * True when the adapter's api-key auth is derived from the requested model
    * rather than a fixed `provider` (e.g. `pi`, `opencode`). When set, the
    * runtime resolver allows `"api-key"` mode on the model-derived direct

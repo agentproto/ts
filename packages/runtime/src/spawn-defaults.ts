@@ -267,6 +267,24 @@ export interface AdapterAuthDescriptor {
    *  the adapter supports `"api-key"` on the model-derived direct endpoint,
    *  and `spawnEligibilityManifest` includes it for direct routes. */
   modelDerivedApiKey?: boolean
+  /** How THIS adapter receives a GATEWAY-routed bearer credential — see
+   *  `AgentCliDefinition.gatewayAuth` (the manifest field this is projected
+   *  from). Distinct from a gateway preset's `keyEnv` (the providers-store
+   *  lookup key) and from `authSubscription.setEnv` (this adapter's own
+   *  native bearer). When a gateway route resolves, `resolveAuthSpec` injects
+   *  the credential into `gatewayAuth.setEnv` instead of the preset's
+   *  `keyEnv` — e.g. claude-code/claude-sdk read `ANTHROPIC_AUTH_TOKEN`.
+   *  Omit when the adapter reads the preset's own `keyEnv` directly (hermes). */
+  gatewayAuth?: { setEnv: string }
+  /** Model id → the BILLING provider THIS adapter itself declares for it
+   *  (`AgentCliModelEntry.provider`, projected from `models.allowed`) —
+   *  authoritative for a model-derived-api-key adapter (`pi`, `opencode`),
+   *  whose `provider` above is absent so the eligibility projection would
+   *  otherwise fall through to the GLOBAL catalog's own (possibly different)
+   *  routing for the same model id. Consulted by `spawnEligibilityManifest`
+   *  BEFORE the catalog fallback; absent/no-match ⇒ catalog derivation,
+   *  unchanged. */
+  modelProviders?: Readonly<Record<string, CatalogProvider>>
 }
 
 /** The fully-resolved spec the driver applies mechanically. Structurally
@@ -433,9 +451,21 @@ export function resolveAuthSpec(
       (provider ? providerEnvVar(provider) : "")
     gatewayScrub = gatewayPreset ? [...gatewayPreset.scrubEnv] : []
   } else {
+    // Same precedence as `spawnEligibilityManifest` (session-spawn.ts) —
+    // deliberately kept in lockstep. A model-derived-api-key adapter has no
+    // fixed `provider`, so without the `modelProviders` tier the catalog
+    // fallback is the only signal here, and the catalog's route for an id can
+    // legitimately differ from what THIS adapter bills it through (D3: pi
+    // bills `moonshotai/kimi-k2.7-code` via `moonshot`; the catalog routes
+    // that same id to `openrouter`). Consulting it in the eligibility
+    // projection but NOT here would let the two disagree: the access-profile
+    // check would clear a moonshot wallet while this resolver injected an
+    // OPENROUTER_API_KEY — billing the wrong wallet on a spawn that passed
+    // its own gate.
     provider =
       input.requestedProvider ??
       input.descriptor.provider ??
+      (input.model ? input.descriptor.modelProviders?.[input.model] : undefined) ??
       (input.model ? getModelProvider(input.model) : undefined)
     if (!provider) return undefined
     apiKeyEnv = providerEnvVar(provider)
@@ -518,7 +548,21 @@ export function resolveAuthSpec(
         ? (input.subscriptionCredentialSource ?? "explicit-config")
         : "none"
   } else {
-    setEnv = apiKeyEnv
+    // `apiKeyEnv` is the preset's/provider's conventional key-env — the
+    // OPERATOR's providers-store lookup key (unaffected below; the store
+    // read is keyed by PROVIDER id, never by this env name). The var
+    // actually INJECTED into the child is a separate fact: for a gateway
+    // route, an adapter that declares `gatewayAuth` (claude-code/claude-sdk
+    // → ANTHROPIC_AUTH_TOKEN) receives the credential there instead, because
+    // that's the var its OWN wire protocol reads a bearer from — injecting
+    // the preset's `keyEnv` would land the credential in a var nothing reads
+    // (the D4 bug: OPENROUTER_API_KEY set, but the Anthropic SDK only ever
+    // looks at ANTHROPIC_AUTH_TOKEN). An adapter with no `gatewayAuth`
+    // (hermes) keeps `apiKeyEnv` verbatim — it genuinely reads that var.
+    setEnv =
+      gatewayRoute && input.descriptor.gatewayAuth?.setEnv
+        ? input.descriptor.gatewayAuth.setEnv
+        : apiKeyEnv
     if (input.apiKeyConfigCredential !== undefined) {
       credential = input.apiKeyConfigCredential
       credentialSource = "explicit-config"

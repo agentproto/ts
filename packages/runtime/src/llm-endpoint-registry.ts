@@ -37,6 +37,33 @@ import { injectLlmEndpointLinksIntoEnv } from "./llm-endpoint-links-store.js"
 
 export type LlmEndpointStatus = "starting" | "running" | "stopped" | "error"
 
+/** The `llm_endpoint_status` MCP contract — see {@link LlmEndpointRegistry.status}. */
+export interface LlmEndpointStatusReport {
+  running: boolean
+  pid: number | null
+  port: number | null
+  baseUrl: string | null
+  healthy: boolean
+  startedAt: string | null
+  status: LlmEndpointStatus | "never-started"
+  /** Who is actually serving this endpoint. `"daemon"` — this registry's own
+   *  spawn (or nothing at all). `"external"` — a healthy process on the same
+   *  port that this registry did NOT spawn (e.g. a launchd KeepAlive
+   *  sidecar); `pid` is unknown (always `null`) and `injectedProviders`, if
+   *  present, was DERIVED by probing `/v1/models` rather than read off our
+   *  own key-injection bookkeeping. */
+  owner: "daemon" | "external"
+  /** Whether upstream links persisted via `llm_endpoint_set_upstream_link`
+   *  are actually applied to the process answering this port. Always
+   *  `false` for `owner:"external"` — this registry never spawned it, so it
+   *  never injected `LLM_ENDPOINT_PROFILE_<UPSTREAM>`; the operator must
+   *  configure the external service's own env directly. */
+  linksApplied: boolean
+  lastError?: string
+  injectedProviders?: string[]
+  linkedProviders?: string[]
+}
+
 /** Built-in default port — matches llm-endpoint's own `LLM_ENDPOINT_PORT` default. */
 export const DEFAULT_LLM_ENDPOINT_PORT = 18090
 
@@ -404,19 +431,21 @@ export class LlmEndpointRegistry {
   /**
    * Descriptor + a live health probe. Shape matches the MCP `llm_endpoint_status`
    * contract: {running, pid, port, baseUrl, healthy, startedAt}.
+   *
+   * D5: `running:false` together with `healthy:true` must never both be
+   * reported — that self-contradiction is exactly what happened when a
+   * launchd-owned (or otherwise externally-spawned) llm-endpoint already
+   * held the port: OUR spawn attempt lost the race (EADDRINUSE), recorded
+   * `status:"error"` (⇒ `running:false`), while the live health probe below
+   * runs regardless of `status` and answers `true` against the OTHER,
+   * perfectly healthy process. Rather than reporting our own failed spawn as
+   * the whole truth, ADOPT: when we're not running but the port answers
+   * healthy, report `running:true, owner:"external"` (pid unknown — it isn't
+   * ours), and derive the served provider list by probing `/v1/models`
+   * itself (our own `injectedProviders` bookkeeping is about keys WE
+   * injected, which is meaningless for a process we never spawned).
    */
-  async status(): Promise<{
-    running: boolean
-    pid: number | null
-    port: number | null
-    baseUrl: string | null
-    healthy: boolean
-    startedAt: string | null
-    status: LlmEndpointStatus | "never-started"
-    lastError?: string
-    injectedProviders?: string[]
-    linkedProviders?: string[]
-  }> {
+  async status(): Promise<LlmEndpointStatusReport> {
     if (!this.desc) {
       return {
         running: false,
@@ -426,20 +455,45 @@ export class LlmEndpointRegistry {
         healthy: false,
         startedAt: null,
         status: "never-started",
+        owner: "daemon",
+        linksApplied: false,
       }
     }
+    const running = this.desc.status === "running" || this.desc.status === "starting"
     const healthy =
       this.desc.status === "stopped"
         ? false
         : await this.probeHealth(this.desc.baseUrl)
+    if (!running && healthy) {
+      const servedProviders = await this.probeModels(this.desc.baseUrl)
+      return {
+        running: true,
+        pid: null,
+        port: this.desc.port,
+        baseUrl: this.desc.baseUrl,
+        healthy: true,
+        startedAt: null,
+        status: "running",
+        owner: "external",
+        // Persisted upstream links (`llm_endpoint_set_upstream_link`) are
+        // injected only into a env THIS registry assembles for ITS OWN
+        // spawn — an externally-owned process was never spawned by us, so
+        // they were never applied to it. The operator must configure the
+        // service's own env directly.
+        linksApplied: false,
+        ...(servedProviders.length > 0 ? { injectedProviders: servedProviders } : {}),
+      }
+    }
     return {
-      running: this.desc.status === "running" || this.desc.status === "starting",
+      running,
       pid: this.desc.pid,
       port: this.desc.port,
       baseUrl: this.desc.baseUrl,
       healthy,
       startedAt: this.desc.startedAt,
       status: this.desc.status,
+      owner: "daemon",
+      linksApplied: running,
       ...(this.desc.lastError ? { lastError: this.desc.lastError } : {}),
       ...(this.desc.injectedProviders
         ? { injectedProviders: this.desc.injectedProviders }
@@ -556,6 +610,35 @@ export class LlmEndpointRegistry {
       return r.ok
     } catch {
       return false
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
+   * Fetch `GET <baseUrl>/v1/models` and extract the distinct `owned_by`
+   * provider names from its OpenAI-style `{data:[{owned_by}]}` body — the
+   * provider list for a process this registry did NOT spawn (D5 adoption),
+   * so `injectedProviders` (the field the UI already reads) can still name
+   * what an externally-owned endpoint is actually serving. Best-effort:
+   * returns `[]` on any request/parse failure or shape mismatch rather than
+   * throwing — the caller already knows `probeHealth` succeeded; this is
+   * enrichment, not another readiness gate.
+   */
+  protected async probeModels(baseUrl: string): Promise<string[]> {
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), this.healthProbeTimeoutMs)
+    try {
+      const r = await fetch(`${baseUrl}/v1/models`, { signal: ac.signal })
+      if (!r.ok) return []
+      const body = (await r.json()) as { data?: Array<{ owned_by?: unknown }> }
+      const owners = new Set<string>()
+      for (const m of body.data ?? []) {
+        if (typeof m.owned_by === "string" && m.owned_by.length > 0) owners.add(m.owned_by)
+      }
+      return [...owners].sort()
+    } catch {
+      return []
     } finally {
       clearTimeout(timer)
     }

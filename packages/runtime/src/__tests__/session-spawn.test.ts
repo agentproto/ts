@@ -1457,41 +1457,67 @@ describe("cleanAgentLines", () => {
   })
 })
 
+/** The default declared-option set for these fixtures. Annotated (not
+ *  inferred) so the `type` field narrows to the manifest union rather than
+ *  widening to `string`, which `tsc` rejects against
+ *  `readonly DeclaredAdapterOption[]` even though vitest transpiles it fine. */
+const DECLARES_BASE_URL: ReadonlyArray<{ id: string; type: "string" }> = [
+  { id: "base_url", type: "string" },
+]
+
+// ── shared billing-auth test helper (module scope) ────────────────────
+// Hoisted out of the `billing-auth resolution wiring` describe so the D1,
+// D4 and D2/D3 blocks below can all reuse it. It previously lived INSIDE
+// that describe, which made every reference from a sibling describe a
+// runtime ReferenceError (`makeAuthResolver is not defined`) — invisible
+// to a `-t` filtered run that never reached those blocks.
+type CapturedAuth = {
+  mode: "subscription" | "api-key"
+  credential?: string
+  setEnv: string
+  unsetEnv: string[]
+  explicit: boolean
+  enforce: "always" | "when-configured"
+}
+
+type CapturedStartSession = {
+  auth?: CapturedAuth
+  options?: Record<string, boolean | number | string>
+}
+
+function makeAuthResolver(
+  descriptor: AdapterAuthDescriptor | undefined,
+  opts: {
+    defaultModel?: string
+    // Default: declares `base_url` — every pre-existing test in this
+    // block exercises gateway-preset billing wiring on a hypothetical
+    // adapter that DOES accept it. D1's declared-option gate (see
+    // session-spawn.ts) is exercised by tests that explicitly override
+    // this to `[]`/omit base_url.
+    declaredOptions?: Array<{ id: string; type: "string" | "boolean" | "integer" | "enum" }>
+    routeSelection?: "free" | "derived-from-model"
+  } = {},
+): { resolver: AgentAdapterResolver; captured: CapturedStartSession[] } {
+  const captured: CapturedStartSession[] = []
+  const resolver: AgentAdapterResolver = async () => ({
+    startSession: vi.fn(async (o: { auth?: CapturedAuth; options?: Record<string, boolean | number | string> }) => {
+      captured.push({ auth: o.auth, options: o.options })
+      return fakeAgentSession()
+    }),
+    commandPreview: "mock-adapter",
+    declaredOptions: opts.declaredOptions ?? [{ id: "base_url", type: "string" }],
+    ...(descriptor ? { authDescriptor: descriptor } : {}),
+    ...(opts.defaultModel ? { defaultModel: opts.defaultModel } : {}),
+    ...(opts.routeSelection ? { routeSelection: opts.routeSelection } : {}),
+  })
+  return { resolver, captured }
+}
+
 describe("spawnAgentSession — billing-auth resolution wiring", () => {
   beforeEach(() => {
     storeKeys.value = {}
   })
 
-  type CapturedAuth = {
-    mode: "subscription" | "api-key"
-    credential?: string
-    setEnv: string
-    unsetEnv: string[]
-    explicit: boolean
-    enforce: "always" | "when-configured"
-  }
-
-  type CapturedStartSession = {
-    auth?: CapturedAuth
-    options?: Record<string, boolean | number | string>
-  }
-
-  function makeAuthResolver(
-    descriptor: AdapterAuthDescriptor | undefined,
-    opts: { defaultModel?: string } = {},
-  ): { resolver: AgentAdapterResolver; captured: CapturedStartSession[] } {
-    const captured: CapturedStartSession[] = []
-    const resolver: AgentAdapterResolver = async () => ({
-      startSession: vi.fn(async (o: { auth?: CapturedAuth; options?: Record<string, boolean | number | string> }) => {
-        captured.push({ auth: o.auth, options: o.options })
-        return fakeAgentSession()
-      }),
-      commandPreview: "mock-adapter",
-      ...(descriptor ? { authDescriptor: descriptor } : {}),
-      ...(opts.defaultModel ? { defaultModel: opts.defaultModel } : {}),
-    })
-    return { resolver, captured }
-  }
 
   const CODEX_DESC = { provider: "openai" as const }
   const CLAUDE_CODE_DESC = {
@@ -1715,6 +1741,158 @@ describe("spawnAgentSession — billing-auth resolution wiring", () => {
     expect(result.ok).toBe(true)
     expect(captured[0]?.auth).toBeUndefined()
     expect(captured[0]?.options?.base_url).toBe("https://custom.example.com/anthropic")
+  })
+})
+
+// ── D1 — base_url must never be injected into an adapter that doesn't
+// declare it. Root cause: session-spawn.ts used to spread a gateway
+// preset's resolved base_url into `options` unconditionally, so an adapter
+// with no `base_url` option (hermes) crashed manifest validation
+// (`unknown_option`) on a spawn it would otherwise have served fine (hermes
+// reads OPENROUTER_API_KEY itself and derives its route from the model
+// prefix — the gateway baseUrl is unusable AND unnecessary for it). Fixed
+// behavior has two branches, both required: (a) a `derived-from-model`
+// adapter silently skips the injection (it carries its own gateway); (b) an
+// adapter that can neither accept base_url nor derive its route fails loud
+// instead of spawning mis-routed. ─────────────────────────────────────────
+describe("spawnAgentSession — D1: base_url only injected when the adapter declares it", () => {
+  beforeEach(() => {
+    storeKeys.value = { openrouter: "sk-or-v1-test0000" }
+  })
+
+  it("(a) hermes-like (derived-from-model, no base_url option): spawns fine, base_url is NOT injected", async () => {
+    const { resolver, captured } = makeAuthResolver(
+      { modelDerivedApiKey: true },
+      { declaredOptions: [{ id: "skills", type: "string" }], routeSelection: "derived-from-model" },
+    )
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "hermes",
+        cwd: "/tmp",
+        model: "z-ai/glm-5.2",
+        route: { gateway: "openrouter" },
+        auth: { mode: "api-key" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.options?.base_url).toBeUndefined()
+  })
+
+  it("(b) a hypothetical adapter that can neither accept base_url nor derive its route: fails loud, never spawns", async () => {
+    const { resolver, startSession } = (() => {
+      const { resolver, captured } = makeAuthResolver(
+        { modelDerivedApiKey: true },
+        { declaredOptions: [{ id: "skills", type: "string" }] }, // no base_url, routeSelection left "free"
+      )
+      return { resolver, startSession: captured }
+    })()
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "no-gateway-adapter",
+        cwd: "/tmp",
+        model: "z-ai/glm-5.2",
+        route: { gateway: "openrouter" },
+        auth: { mode: "api-key" },
+      },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("gateway_base_url_unsupported")
+    expect(result.message).toContain("no-gateway-adapter")
+    expect(result.message).toContain("openrouter")
+    expect(registry.list()).toHaveLength(0)
+    expect(startSession).toHaveLength(0) // never called (captured stays empty)
+  })
+
+  it("an adapter that DOES declare base_url still gets it injected (unchanged)", async () => {
+    const { resolver, captured } = makeAuthResolver({ modelDerivedApiKey: true }) // default: declares base_url
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "opencode",
+        cwd: "/tmp",
+        model: "z-ai/glm-5.2",
+        route: { gateway: "openrouter" },
+        auth: { mode: "api-key" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.options?.base_url).toBe("https://openrouter.ai/api")
+  })
+})
+
+// ── D4 — a gateway credential must land in the env var the ADAPTER actually
+// reads a bearer from, not the preset's conventional `keyEnv` (that's the
+// OPERATOR'S providers-store lookup key, a different fact). claude-sdk /
+// claude-code declare `gatewayAuth.setEnv: "ANTHROPIC_AUTH_TOKEN"`
+// (D4-declaration-mechanism); an adapter with no such declaration (hermes)
+// keeps the preset's own keyEnv — proving the fix is adapter-driven, not a
+// blanket rename. ───────────────────────────────────────────────────────
+describe("spawnAgentSession — D4: gateway credential lands in the adapter-declared env var", () => {
+  beforeEach(() => {
+    storeKeys.value = { openrouter: "sk-or-v1-test0000" }
+  })
+
+  const CLAUDE_SDK_DESC: AdapterAuthDescriptor = {
+    provider: "anthropic",
+    authSubscription: {
+      setEnv: "ANTHROPIC_AUTH_TOKEN",
+      conflictEnv: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    },
+    gatewayAuth: { setEnv: "ANTHROPIC_AUTH_TOKEN" },
+  }
+
+  it("claude-sdk + openrouter gateway resolves setEnv: ANTHROPIC_AUTH_TOKEN (not OPENROUTER_API_KEY), base_url set, ANTHROPIC_API_KEY still scrubbed", async () => {
+    const { resolver, captured } = makeAuthResolver(CLAUDE_SDK_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "claude-sdk",
+        cwd: "/tmp",
+        model: "x-ai/grok-4.5",
+        route: { gateway: "openrouter" },
+        auth: { mode: "api-key" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      setEnv: "ANTHROPIC_AUTH_TOKEN",
+      credential: "sk-or-v1-test0000",
+    })
+    expect(captured[0]?.auth?.setEnv).not.toBe("OPENROUTER_API_KEY")
+    expect(captured[0]?.auth?.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(captured[0]?.options?.base_url).toBe("https://openrouter.ai/api")
+  })
+
+  it("hermes + openrouter gateway KEEPS OPENROUTER_API_KEY (no gatewayAuth declared) — proves the fix is adapter-driven, not a blanket rename", async () => {
+    const { resolver, captured } = makeAuthResolver(
+      { provider: "openrouter" }, // hermes-like: fixed provider, NO gatewayAuth
+      { declaredOptions: [{ id: "skills", type: "string" }], routeSelection: "derived-from-model" },
+    )
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "hermes",
+        cwd: "/tmp",
+        model: "x-ai/grok-4.5",
+        route: { gateway: "openrouter" },
+        auth: { mode: "api-key" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      setEnv: "OPENROUTER_API_KEY",
+      credential: "sk-or-v1-test0000",
+    })
   })
 })
 
@@ -2830,5 +3008,108 @@ describe("spawnAgentSession — gemini file-based (external) subscription login"
     // used local login (gemini uses its own oauth_creds.json precedence).
     expect(verify).not.toHaveBeenCalled()
     expect(result.descriptor.auth?.credentialSource).not.toBe("cli-local-login")
+  })
+})
+
+// ── D2/D3 — two halves of the same class of bug: the model id handed to an
+// adapter must match the form THAT adapter's manifest declares, and a
+// model-derived-api-key adapter's OWN declared provider must win over the
+// GLOBAL catalog's routing for the same id. ─────────────────────────────
+describe("spawnAgentSession — D2/D3: wire model form + adapter-declared provider", () => {
+  beforeEach(() => {
+    storeKeys.value = {
+      openai: "sk-openai-test0000",
+      openrouter: "sk-or-v1-test0000",
+      moonshot: "sk-moonshot-test0000",
+    }
+  })
+
+  type CapturedSpawn = {
+    model?: string
+    auth?: { setEnv: string }
+  }
+
+  function makeResolver(
+    descriptor: AdapterAuthDescriptor,
+    opts: { routeSelection?: "free" | "derived-from-model" } = {},
+  ): { resolver: AgentAdapterResolver; captured: CapturedSpawn[] } {
+    const captured: CapturedSpawn[] = []
+    const resolver: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(async (o: { model?: string; auth?: { setEnv: string } }) => {
+        captured.push({ model: o.model, auth: o.auth })
+        return fakeAgentSession()
+      }),
+      commandPreview: "mock-adapter",
+      declaredOptions: DECLARES_BASE_URL,
+      authDescriptor: descriptor,
+      ...(opts.routeSelection ? { routeSelection: opts.routeSelection } : {}),
+    })
+    return { resolver, captured }
+  }
+
+  it("D2: a fixed-provider adapter (codex/openai) gets a BARE wire model — the catalog's vendor prefix is stripped", async () => {
+    const { resolver, captured } = makeResolver({ provider: "openai" })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "codex", cwd: "/tmp", model: "openai/gpt-5", auth: { mode: "api-key" } },
+    )
+    expect(result.ok).toBe(true)
+    // Was 'openai/gpt-5' before D2 — codex's manifest declares bare ids, so the
+    // canonical catalog form tripped option_enum_violation at the driver.
+    expect(captured[0]?.model).toBe("gpt-5")
+  })
+
+  it("D2: a derived-from-model adapter KEEPS its vendor prefix (the prefix IS its route)", async () => {
+    const { resolver, captured } = makeResolver(
+      { modelDerivedApiKey: true },
+      { routeSelection: "derived-from-model" },
+    )
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "hermes", cwd: "/tmp", model: "z-ai/glm-5.2@openrouter", auth: { mode: "api-key" } },
+    )
+    expect(result.ok).toBe(true)
+    // Only the @route suffix goes; the vendor prefix is load-bearing here.
+    expect(captured[0]?.model).toBe("z-ai/glm-5.2")
+  })
+
+  it("D3: the adapter's OWN declared provider wins over the catalog (pi bills kimi via moonshot, not openrouter)", async () => {
+    const { resolver, captured } = makeResolver(
+      {
+        modelDerivedApiKey: true,
+        modelProviders: { "moonshotai/kimi-k2.7-code": "moonshot" },
+      },
+      { routeSelection: "derived-from-model" },
+    )
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "pi", cwd: "/tmp", model: "moonshotai/kimi-k2.7-code", auth: { mode: "api-key" } },
+    )
+    expect(result.ok).toBe(true)
+    // The GLOBAL catalog routes this id to openrouter; pi bills it via
+    // moonshot. Before D3 the resolver took the catalog's answer and injected
+    // OPENROUTER_API_KEY — the wrong wallet — while the access-profile
+    // eligibility check (already modelProviders-aware) cleared moonshot.
+    expect(captured[0]?.auth?.setEnv).toBe("MOONSHOT_API_KEY")
+  })
+
+  it("D3: a model the adapter declares NO provider for still falls back to the catalog", async () => {
+    const { resolver, captured } = makeResolver(
+      {
+        modelDerivedApiKey: true,
+        modelProviders: { "moonshotai/kimi-k2.7-code": "moonshot" },
+      },
+      { routeSelection: "derived-from-model" },
+    )
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "pi", cwd: "/tmp", model: "z-ai/glm-5.2@openrouter", auth: { mode: "api-key" } },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth?.setEnv).toBe("OPENROUTER_API_KEY")
   })
 })

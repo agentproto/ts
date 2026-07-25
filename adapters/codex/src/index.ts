@@ -82,7 +82,30 @@ export const codex: AgentCliHandle = defineAgentCli({
   },
   models: {
     default: "gpt-5-codex",
-    allowed: ["gpt-5-codex", "gpt-5", "gpt-5-mini", "gpt-5-pro"],
+    // D2 (second half): the catalog serves ~50 OpenAI llm ids
+    // (packages/model-catalog/src/llm/catalog.ts) but this adapter only
+    // accepted 4 of them — every OTHER catalog id the picker offered
+    // (e.g. the host's `codex-local` auth profile) got rejected by
+    // `models.apply:"arg"`'s enum validation, showing 0 active / 0 models.
+    // Brought in line with the codex-servable entries actually present in
+    // the catalog: the original 4, PLUS every catalog id explicitly marked
+    // as a codex specialist ("── OpenAI GPT-5.1/5.2 codex (code specialist)
+    // ──" / "── OpenAI GPT-5 codex (coding specialist) ──" in catalog.ts).
+    // Deliberately does NOT add ids from the catalog's plain "GPT-5.6
+    // series" section (gpt-5.6-luna/sol/terra, …) — those are chat models,
+    // not codex ids, despite superficially resembling the auth profile's
+    // (mis-curated) model list; inventing codex support for them would be
+    // exactly the "invent ids" this fix is required not to do.
+    allowed: [
+      "gpt-5-codex",
+      "gpt-5.1-codex",
+      "gpt-5.1-codex-mini",
+      "gpt-5.1-codex-max",
+      "gpt-5.2-codex",
+      "gpt-5",
+      "gpt-5-mini",
+      "gpt-5-pro",
+    ],
     env: { openai: "OPENAI_API_KEY", codex: "CODEX_API_KEY" },
     // codex-acp takes its model as a CLI config override, not an ACP
     // session config — `codex-acp --help` documents `-c model="o3"`.
@@ -116,7 +139,16 @@ export const codex: AgentCliHandle = defineAgentCli({
     {
       id: "model",
       type: "enum",
-      enum: ["gpt-5-codex", "gpt-5", "gpt-5-mini", "gpt-5-pro"],
+      enum: [
+        "gpt-5-codex",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-codex-max",
+        "gpt-5.2-codex",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-pro",
+      ],
       description: "Override the default model for this operator binding.",
       // No bin_args_template here — codex-acp doesn't accept a bare
       // `--model` flag (`error: unexpected argument '--model' found`,

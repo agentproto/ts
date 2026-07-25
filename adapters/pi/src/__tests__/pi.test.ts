@@ -45,9 +45,23 @@ describe("@agentproto/adapter-pi — manifest", () => {
     expect(pi.options?.some(o => o.id === "model")).toBe(true)
   })
 
-  it("declares the Moonshot model entry", () => {
-    expect(pi.models?.allowed?.some(m => typeof m === "object" && m.id === "moonshotai/kimi-k2.7-code" && m.provider === "moonshotai")).toBe(true)
-    expect(pi.models?.env?.moonshotai).toBe("MOONSHOT_API_KEY")
+  // D3: the model-id PREFIX and the BILLING provider are two different facts
+  // and this entry is where they diverge. `moonshotai/` is pi's own wire
+  // spelling (its `--model` resolver expects it); `moonshot` is the canonical
+  // catalog provider the runtime bills against. This test previously asserted
+  // `provider: "moonshotai"` — it encoded the bug: that slug is not a member
+  // of CatalogProviderSchema, so serve.ts's projection silently DROPPED pi's
+  // per-model provider and the resolver fell through to the global catalog's
+  // routing for the id (openrouter), making a valid moonshot profile look
+  // ineligible.
+  it("declares the Moonshot model entry with the CANONICAL billing provider", () => {
+    expect(
+      pi.models?.allowed?.some(
+        m => typeof m === "object" && m.id === "moonshotai/kimi-k2.7-code" && m.provider === "moonshot",
+      ),
+    ).toBe(true)
+    // env is keyed by the canonical provider slug, matching `provider` above.
+    expect(pi.models?.env?.moonshot).toBe("MOONSHOT_API_KEY")
   })
 
   it("piRuntime returns a runtime bound to the pi handle", () => {

@@ -425,6 +425,13 @@ export const agentCliFrontmatterSchema = z
     // keep this generic doctype decoupled from @agentproto/model-catalog).
     provider: z.string().min(1).optional(),
     authSubscription: authSubscriptionSchema.optional(),
+    // How this adapter receives a GATEWAY-routed bearer credential — see the
+    // doc on AgentCliDefinition.gatewayAuth. Distinct from a gateway preset's
+    // `keyEnv` (the providers-store lookup key) and from
+    // authSubscription.setEnv (this adapter's own native bearer).
+    gatewayAuth: z.object({
+      setEnv: z.string().min(1),
+    }).strict().optional(),
     // UI-facing route-choice axis (AIP-45 launch-menu drill-down, WP1).
     // Absent ⇒ "free" (route is an independent choice); "derived-from-model"
     // means the endpoint falls out of the model id's vendor prefix. DISTINCT

@@ -342,8 +342,43 @@ export function stripRouteSuffix(raw: string): string {
  * - `claude-sonnet-5`                        → `claude-sonnet-5`
  */
 export function stripAnthropicNativeVendor(raw: string): string {
+  return stripFixedNativeVendor(raw, "anthropic")
+}
+
+/**
+ * Generalized form of {@link stripAnthropicNativeVendor} — reduce a
+ * DIRECT-`vendor` catalog ref to the BARE product id a fixed-single-provider
+ * adapter's own wire expects, for ANY vendor, not just Anthropic. Every
+ * adapter whose manifest declares a FIXED `provider` and takes bare model ids
+ * on its native route (claude-code/claude-sdk → anthropic, codex → openai,
+ * gemini → google, …) hits this same class of bug: the catalog's canonical
+ * `vendor/product` form survives onto the wire and the adapter's own
+ * `models.allowed` enum — which declares bare ids — rejects it
+ * (`option_enum_violation`).
+ *
+ * ONLY a `<vendor>/<product>` ref in DIRECT form (route === vendor, i.e. no
+ * gateway `@route`) AND matching the given `vendor` collapses to `<product>`.
+ * Everything else falls through to {@link stripRouteSuffix} untouched:
+ *   - a GATEWAY-routed ref (`openai/gpt-5@openrouter`) keeps its
+ *     `vendor/product` because the gateway needs it,
+ *   - a ref for a DIFFERENT vendor (`z-ai/glm-5.2` handed to an
+ *     `openai`-fixed adapter) keeps `vendor/product` — stripping would
+ *     invent a wrong bare id for a model this adapter doesn't natively serve,
+ *   - already-bare ids (`gpt-5`) are unchanged.
+ *
+ * Callers MUST gate this on the adapter being a FIXED-single-provider,
+ * non-derived-from-model adapter (`routeSelection !== "derived-from-model"`
+ * AND a fixed `provider`); a `derived-from-model` adapter (hermes, pi,
+ * opencode, …) derives its route FROM the vendor prefix and needs it kept.
+ *
+ * - `openai/gpt-5`               (vendor "openai") → `gpt-5`
+ * - `openai/gpt-5@openrouter`    (vendor "openai") → `openai/gpt-5`
+ * - `z-ai/glm-5.2`               (vendor "openai") → `z-ai/glm-5.2` (mismatch, unchanged)
+ * - `gpt-5`                      (vendor "openai") → `gpt-5` (already bare)
+ */
+export function stripFixedNativeVendor(raw: string, vendor: string): string {
   const ref = tryParseModelRef(raw)
-  if (ref && ref.vendor === "anthropic" && ref.route === ref.vendor) {
+  if (ref && ref.vendor === vendor && ref.route === ref.vendor) {
     return ref.product
   }
   return stripRouteSuffix(raw)
