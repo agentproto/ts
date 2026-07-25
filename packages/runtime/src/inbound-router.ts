@@ -24,18 +24,36 @@ export interface InboundMessage {
   messages?: unknown[]
 }
 
+/** Deliver `text` as a new user turn on a live session. Same shape as
+ *  `SessionsRegistry.enqueuePrompt` (sessions.ts) — the daemon wires that
+ *  method in directly. */
+export type InboundEnqueuePrompt = (
+  sessionId: string,
+  text: string,
+  opts?: { interrupt?: boolean },
+) => Promise<void> | void
+
+/** Whether `sessionId` is currently live enough to route into without a
+ *  restart first. */
+export type InboundIsSessionAlive = (sessionId: string) => boolean
+
+/** Resurrect a dead session in place. Returns the (possibly new) live
+ *  session id. */
+export type InboundRestartSession = (sessionId: string) => Promise<string>
+
+/** Spawn-fallback for an unbound contact — today's poll-loop behavior. */
+export type InboundSpawnForContact = (msg: InboundMessage) => Promise<void>
+
+/** Diagnostic sink for routing decisions (e.g. a missing spawn fallback). */
+export type InboundRouterLog = (msg: string) => void
+
 export interface InboundRouterDeps {
   bindings: TransmitterBindingStore
-  enqueuePrompt: (
-    sessionId: string,
-    text: string,
-    opts?: { interrupt?: boolean },
-  ) => Promise<void> | void
-  isSessionAlive: (sessionId: string) => boolean
-  /** Returns the (possibly new) live session id. */
-  restartSession: (sessionId: string) => Promise<string>
-  spawnForContact?: (msg: InboundMessage) => Promise<void>
-  log?: (msg: string) => void
+  enqueuePrompt: InboundEnqueuePrompt
+  isSessionAlive: InboundIsSessionAlive
+  restartSession: InboundRestartSession
+  spawnForContact?: InboundSpawnForContact
+  log?: InboundRouterLog
 }
 
 export type InboundRouteAction = "routed" | "spawned" | "restarted-routed" | "skipped"
