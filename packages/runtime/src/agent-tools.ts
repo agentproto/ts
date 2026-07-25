@@ -32,6 +32,7 @@ import type {
   AgentAdapterLister,
   AgentAdapterInstaller,
   CatalogModelsLister,
+  AdapterCapabilitiesLister,
 } from "./http-server.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -144,6 +145,10 @@ export interface RegisterAgentToolsOptions {
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional harness capability-discovery lister — when wired, exposes
+   *  `harness_capabilities` MCP tool. Without it the tool returns a clear
+   *  "not configured" error pointing at the host wiring. */
+  listHarnessCapabilities?: AdapterCapabilitiesLister
   /** Optional adapter installer — when wired, exposes `adapter_install`
    *  MCP tool (install a not-yet-installed harness by slug). Without it
    *  the tool returns a clear "not configured" error pointing at the host
@@ -249,6 +254,7 @@ export function registerAgentTools(
     registry,
     resolveAgentAdapter,
     listAgentAdapters,
+    listHarnessCapabilities,
     installAgentAdapter,
     listCatalogModels,
     buildOrchestratorMcp,
@@ -1447,6 +1453,58 @@ export function registerAgentTools(
             {
               type: "text",
               text: `adapter_list failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── harness_capabilities ────────────────────────────────────────
+  server.tool(
+    "harness_capabilities",
+    "Introspect what an installed agent CLI adapter can actually DO on this " +
+      "host — where its credentials live, which billing providers it can " +
+      "reach (and whether a credential is present for each, never the " +
+      "credential value), how it discovers/reports its model list, whether " +
+      "it can front an OpenAI/Anthropic-compatible endpoint, and how a " +
+      "model/posture choice gets applied at spawn time. Complements " +
+      "`adapter_list` (static manifest fields) with the live/parsed picture " +
+      "from each adapter's own native config/creds store, falling back to a " +
+      "manifest-only projection when no live discovery is available.",
+    {
+      adapter: z
+        .string()
+        .optional()
+        .describe("Keep only this adapter slug. Omit for every installed adapter."),
+    },
+    async ({ adapter }) => {
+      if (!listHarnessCapabilities) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "harness_capabilities is not enabled — the daemon was started without " +
+                "a capabilities lister. Wire `@agentproto/cli`'s harness-capabilities " +
+                "lister via `createGateway({ listHarnessCapabilities })`.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const capabilities = await listHarnessCapabilities(adapter ? { adapter } : undefined)
+        return {
+          content: [{ type: "text", text: JSON.stringify({ capabilities }, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `harness_capabilities failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

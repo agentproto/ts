@@ -49,7 +49,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*"
+    "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

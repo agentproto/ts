@@ -112,6 +112,7 @@ import {
   resolveAdapter,
   listAdaptersWithCatalog,
   listAdaptersWithAcp,
+  listHarnessCapabilities,
 } from "../registry/resolve.js"
 import { installAdapter } from "../registry/install-driver.js"
 import { listCatalogModelsFromInstalled } from "../registry/catalog-models.js"
@@ -688,6 +689,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // appends the generic ACP agents (curated ACP_CATALOG + a user's
         // config.acpAgents) so a zero-code ACP CLI is discoverable too.
         listAgentAdapters: () => listAdaptersWithAcp(CATALOG),
+        // Harness capability-discovery — the `harness_capabilities` MCP tool.
+        // What each installed adapter can actually DO on this host (creds
+        // present, reachable providers, model-discovery mechanism, endpoint
+        // compat, model/posture application), complementing the static
+        // manifest fields `listAgentAdapters` surfaces.
+        listHarnessCapabilities: (opts) => listHarnessCapabilities(opts),
         // Mutation companion to `listAgentAdapters` — `POST /adapters/:slug/
         // install` + the `adapter_install` MCP tool. Drives npm-global for
         // acp-catalog CLIs and the manifest install[] pipeline for first-party

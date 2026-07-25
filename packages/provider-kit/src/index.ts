@@ -49,6 +49,21 @@ export {
 } from "./discover.js"
 export type { DiscoveredAdapter } from "./discover.js"
 
+// harness capability discovery
+export { deriveDeclaredCapabilities, discoverCapabilities } from "./capability.js"
+export type {
+  HarnessCapabilities,
+  AuthStore,
+  CredSource,
+  ProviderCapability,
+  ModelDiscovery,
+  EndpointCompat,
+  ApplicationContract,
+  HarnessManifestView,
+  DiscoverCtx,
+  CapabilityStrategy,
+} from "./capability.js"
+
 // wizard
 export { makeAdapterWizard } from "./wizard.js"
 export type {

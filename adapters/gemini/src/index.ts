@@ -21,12 +21,14 @@
  * "use my existing Gemini login" is a verified, observable, money-safe opt-in.
  */
 
+import { join } from "node:path"
 import {
   createAgentCliRuntime,
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import type { AuthStore, CapabilityStrategy, CredSource } from "@agentproto/provider-kit"
 
 export const gemini: AgentCliHandle = defineAgentCli({
   name: "gemini",
@@ -163,6 +165,80 @@ export const gemini: AgentCliHandle = defineAgentCli({
 
 export function geminiRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(gemini)
+}
+
+interface GeminiSettingsFile {
+  security?: { auth?: { selectedType?: unknown } }
+}
+
+/**
+ * Best-effort capability discovery for gemini: parses the Gemini CLI's own
+ * `~/.gemini/settings.json` (`security.auth.selectedType`) plus the
+ * presence of `~/.gemini/oauth_creds.json` to report whether the "use my
+ * existing Gemini login" file-based subscription is actually live on this
+ * host, alongside the api-key fallback path. Never throws — a malformed
+ * settings.json just leaves `selectedType` undetermined rather than
+ * blanking the whole result.
+ */
+export const geminiCapabilities: CapabilityStrategy = async (def, ctx) => {
+  const settingsPath = join(ctx.homeDir, ".gemini", "settings.json")
+  const oauthPath = join(ctx.homeDir, ".gemini", "oauth_creds.json")
+
+  let selectedType: string | undefined
+  const settingsRaw = await ctx.readFile(settingsPath)
+  if (settingsRaw !== null) {
+    try {
+      const parsed = JSON.parse(settingsRaw) as GeminiSettingsFile
+      if (typeof parsed.security?.auth?.selectedType === "string") {
+        selectedType = parsed.security.auth.selectedType
+      }
+    } catch (err) {
+      ctx.warn(
+        `gemini capability discovery: could not parse ~/.gemini/settings.json: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  const oauthLoginPresent = (await ctx.readFile(oauthPath)) !== null
+  const oauthSelected = selectedType !== undefined && selectedType.toLowerCase().includes("oauth")
+
+  // Same var the manifest itself declares for google (models.env.google) —
+  // never a hardcoded/guessed name.
+  const apiKeyEnvVar = def.models?.env?.google ?? "GOOGLE_GENERATIVE_AI_API_KEY"
+  const apiKeyPresent = !!ctx.env[apiKeyEnvVar]
+
+  const oauthPresent = oauthSelected && oauthLoginPresent
+  const source: CredSource = oauthPresent
+    ? { kind: "oauth-file", path: "~/.gemini/oauth_creds.json" }
+    : { kind: "env", var: apiKeyEnvVar }
+
+  const authStores: AuthStore[] = [
+    { kind: "oauth-file", path: "~/.gemini/oauth_creds.json", format: "json", providerKeyed: false },
+    { kind: "env", providerKeyed: false },
+  ]
+
+  const modelApply = def.models?.apply
+  return {
+    adapter: def.id,
+    source: "discovered",
+    discoverable: "parse",
+    authStores,
+    providers: [
+      {
+        id: "google",
+        billingEndpoint: "google",
+        cred: { present: oauthPresent || apiKeyPresent, source },
+      },
+    ],
+    models: { mechanism: "catalog" },
+    endpointCompat: {},
+    application: {
+      modelApply: modelApply === "command" || modelApply === "arg" ? modelApply : "config",
+      postureApply: "none",
+      coupled: false,
+    },
+  }
 }
 
 export type { AgentCliHandle, AgentCliRuntime }

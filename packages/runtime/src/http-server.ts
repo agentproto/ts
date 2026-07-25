@@ -58,6 +58,7 @@ import type {
   OrchestratorScope,
   OrchestratorMcpServerFactory,
 } from "./orchestrator-gateway.js"
+import type { HarnessCapabilities } from "@agentproto/provider-kit"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -351,6 +352,21 @@ export interface AdapterListEntry {
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>
 
 /**
+ * Loads harness capability-discovery records (`@agentproto/provider-kit`'s
+ * `HarnessCapabilities`) for `harness_capabilities` — what each installed
+ * adapter can actually DO on this host (creds present, reachable billing
+ * providers, model-discovery mechanism, endpoint compat, model/posture
+ * application). `adapter` optionally narrows to one slug; omitted → every
+ * installed adapter. Mirrors `AgentAdapterLister`'s injection shape. Hosts
+ * ship the cli's lister (built over `resolveAdapter`'s optional
+ * `capabilitiesStrategy` + `discoverCapabilities`). Omitted ⇒ the tool
+ * reports "not enabled" (same convention as `listAgentAdapters`).
+ */
+export type AdapterCapabilitiesLister = (opts?: {
+  adapter?: string
+}) => Promise<HarnessCapabilities[]>
+
+/**
  * Outcome of an `adapter_install` / `POST /adapters/:slug/install` request.
  * Independent of the lister/resolver above — a host that can drive an
  * install path wires an `AgentAdapterInstaller`; a host that can't skips it
@@ -516,6 +532,13 @@ export interface RuntimeHttpServerOptions {
    *  without trial-and-error against the resolver. Hosts ship the
    *  cli's `listInstalledAdapters` via a thin shim. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional — when wired, enables the MCP `harness_capabilities` tool so
+   *  callers can introspect what each installed adapter can actually DO on
+   *  this host (creds present, reachable providers, model-discovery
+   *  mechanism, endpoint compat, application contract) instead of only its
+   *  static manifest fields. Hosts ship the cli's lister built over
+   *  `resolveAdapter` + `discoverCapabilities`. */
+  listHarnessCapabilities?: AdapterCapabilitiesLister
   /** Optional — when wired, enables `POST /adapters/:slug/install` + the
    *  MCP `adapter_install` tool so UIs can install a not-yet-installed
    *  harness (both acp-catalog `npm i -g` CLIs and first-party workspace
