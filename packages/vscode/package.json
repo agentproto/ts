@@ -77,11 +77,25 @@
         },
         {
           "id": "agentproto.harnesses",
-          "name": "Harnesses"
+          "name": "Harnesses",
+          "when": "config.agentproto.harnessesView == 'tree'"
+        },
+        {
+          "id": "agentproto.harnessesWebview",
+          "name": "Harnesses",
+          "type": "webview",
+          "when": "config.agentproto.harnessesView == 'webview'"
         },
         {
           "id": "agentproto.authProfiles",
-          "name": "Auth Profiles"
+          "name": "Auth Profiles",
+          "when": "config.agentproto.authProfilesView == 'tree'"
+        },
+        {
+          "id": "agentproto.authProfilesWebview",
+          "name": "Auth Profiles",
+          "type": "webview",
+          "when": "config.agentproto.authProfilesView == 'webview'"
         }
       ]
     },
@@ -762,6 +776,26 @@
           ],
           "default": "tree",
           "description": "Which Sessions panel to show in the sidebar."
+        },
+        "agentproto.harnessesView": {
+          "type": "string",
+          "enum": ["tree", "webview"],
+          "enumDescriptions": [
+            "The classic TreeView harnesses panel.",
+            "The newer Harnesses webview panel — real adapter logos, installable harness pills."
+          ],
+          "default": "tree",
+          "description": "Which Harnesses panel to show in the sidebar."
+        },
+        "agentproto.authProfilesView": {
+          "type": "string",
+          "enum": ["tree", "webview"],
+          "enumDescriptions": [
+            "The classic TreeView auth profiles panel.",
+            "The newer Auth Profiles webview panel — collapsible sections, provider logos, expandable model profiles."
+          ],
+          "default": "tree",
+          "description": "Which Auth Profiles panel to show in the sidebar."
         },
         "agentproto.autoAdoptLocalLogin": {
           "type": "string",

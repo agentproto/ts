@@ -48,6 +48,8 @@ import { registerHarnessesView } from "./views/harnessesTree.js"
 import { registerAuthProfilesView } from "./views/authProfilesTree.js"
 import { registerAuthSettingsPanel } from "./webview/authSettingsPanel.js"
 import { registerStatusBar } from "./views/statusBar.js"
+import { registerHarnessesWebview } from "./webview/harnessesWebviewPanel.js"
+import { registerAuthProfilesWebview } from "./webview/authProfilesWebviewPanel.js"
 import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
@@ -127,6 +129,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // sidebar). Shares the same store + filter's workspace join as the tree and
   // opens transcripts through the same transcriptPanels.open().
   registerSessionsWebview(ctx, store, filter, transcriptPanels)
+  // Opt-in webview alternatives for Harnesses and Auth Profiles, gated by
+  // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
+  registerHarnessesWebview(ctx, client, harnessesProvider)
+  registerAuthProfilesWebview(ctx, client, authProfilesProvider)
   const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())
