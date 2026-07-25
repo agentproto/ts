@@ -675,7 +675,7 @@ describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
   // string than the direct-SDK entries above by design.
   it.each([
     ["moonshotai/kimi-k3", 3.0, 15.0],
-    ["moonshotai/kimi-k2.7-code", 0.85, 3.79],
+    ["moonshotai/kimi-k2.7-code", 0.78, 3.5],
   ])("%s resolves to expected OpenRouter-routed pricing", (id, input, output) => {
     const pricing = resolvePricing(id)
     expect(pricing).toBeDefined()

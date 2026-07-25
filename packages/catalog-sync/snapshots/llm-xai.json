@@ -110,11 +110,11 @@
       "object": "model",
       "owned_by": "xai",
       "prompt_text_token_price": 20000,
-      "cached_prompt_text_token_price": 5000,
+      "cached_prompt_text_token_price": 3000,
       "prompt_image_token_price": 20000,
       "completion_text_token_price": 60000,
       "prompt_text_token_price_long_context": 40000,
-      "cached_prompt_text_token_price_long_context": 10000,
+      "cached_prompt_text_token_price_long_context": 6000,
       "completion_text_token_price_long_context": 120000,
       "long_context_threshold": 200000
     },
