@@ -95,6 +95,15 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     conflictEnv: ["ANTHROPIC_AUTH_TOKEN"],
     unsetEnvAdd: [...CLAUDE_CODE_CLOUD_TOGGLES, "ANTHROPIC_BASE_URL"],
   },
+  // How this adapter receives a GATEWAY-routed bearer credential (D4) —
+  // ANTHROPIC_AUTH_TOKEN, the SAME var as the `auth_token` option below
+  // (env: { ANTHROPIC_AUTH_TOKEN: "{value}" }) and the one the claude binary
+  // actually sends as `Authorization: Bearer`. Distinct from a gateway
+  // preset's own `keyEnv` (OPENROUTER_API_KEY, MOONSHOT_API_KEY, …) — that's
+  // merely where the operator's providers.json stores the key; the runtime's
+  // resolveAuthSpec now injects the resolved credential HERE for a gateway
+  // route instead, so it lands in a var the claude binary actually reads.
+  gatewayAuth: { setEnv: "ANTHROPIC_AUTH_TOKEN" },
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./claude-code-acp.ACP.md",

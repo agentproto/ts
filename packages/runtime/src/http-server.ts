@@ -299,6 +299,17 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  (keeping the catalog coupling in the runtime, the driver mechanical).
    *  Omitted ⇒ ambient (no credential injection). */
   authDescriptor?: AdapterAuthDescriptor
+  /** Manifest-declared `AgentCliDefinition.routeSelection` (AIP-45 launch-menu
+   *  drill-down, WP1) — `"derived-from-model"` when the adapter's billing
+   *  ROUTE falls out of the requested model id's own vendor prefix (hermes,
+   *  pi, opencode, …), `"free"`/omitted otherwise (the route is an
+   *  independent choice, e.g. claude-code/claude-sdk gateway modes). Read by
+   *  `session-spawn.ts` to decide whether an unusable resolved `base_url` can
+   *  be silently skipped (the adapter derives its own gateway) or must fail
+   *  loud (it can neither accept `base_url` nor derive its route) — and to
+   *  gate the wire-model vendor-prefix strip the same way `stripAnthropicNativeVendor`
+   *  always has, generalized to any fixed-provider adapter. */
+  routeSelection?: "free" | "derived-from-model"
   /** Adapter's default model id (`models.default`) — lets the resolver derive
    *  a provider for a by-model spawn that omitted `model`. */
   defaultModel?: string

@@ -96,13 +96,25 @@ export const pi: AgentCliHandle = defineAgentCli({
       { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
       { id: "openai/gpt-5.1", provider: "openai" },
       { id: "google/gemini-2.5-flash", provider: "google" },
-      { id: "moonshotai/kimi-k2.7-code", provider: "moonshotai" },
+      // Model-id PREFIX stays `moonshotai/` — that's what pi's own `--model`
+      // resolver expects (see the comment above). The `provider` field is a
+      // BILLING endpoint, not a wire-format echo, and must be the CANONICAL
+      // catalog slug `moonshot` (base.ts:48) — `moonshotai` is the upstream/
+      // wire slug, already documented to drift from ours (base.ts:113-121).
+      // Conflating the two is D3: it made the runtime's model→provider
+      // eligibility projection compute an unrecognized "moonshotai" endpoint,
+      // which doesn't match any real wallet, so a genuinely-eligible moonshot
+      // profile was rejected.
+      { id: "moonshotai/kimi-k2.7-code", provider: "moonshot" },
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",
       openai: "OPENAI_API_KEY",
       google: "GOOGLE_GENERATIVE_AI_API_KEY",
-      moonshotai: "MOONSHOT_API_KEY",
+      // Keyed by the canonical provider slug (matches `provider` above), not
+      // the wire-format `moonshotai` prefix — see the comment on the
+      // `allowed` entry.
+      moonshot: "MOONSHOT_API_KEY",
     },
   },
   capabilities: {

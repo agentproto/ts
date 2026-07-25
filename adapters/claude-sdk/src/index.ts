@@ -91,6 +91,15 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
     setEnv: "ANTHROPIC_AUTH_TOKEN",
     conflictEnv: ["CLAUDE_CODE_OAUTH_TOKEN"],
   },
+  // How this adapter receives a GATEWAY-routed bearer credential (D4) —
+  // ANTHROPIC_AUTH_TOKEN, the SAME var as the `auth_token` option below
+  // (env: { ANTHROPIC_AUTH_TOKEN: "{value}" }) and the one the Claude Agent
+  // SDK actually sends as `Authorization: Bearer`. Distinct from a gateway
+  // preset's own `keyEnv` (OPENROUTER_API_KEY, MOONSHOT_API_KEY, …) — that's
+  // merely where the operator's providers.json stores the key; the runtime's
+  // resolveAuthSpec now injects the resolved credential HERE for a gateway
+  // route instead, so it lands in a var the SDK actually reads.
+  gatewayAuth: { setEnv: "ANTHROPIC_AUTH_TOKEN" },
   sandbox:
     "In-process: the SDK harness runs inside the spawned node process, scoped " +
     "to the daemon's cwd. Tool-permission handling defaults to " +

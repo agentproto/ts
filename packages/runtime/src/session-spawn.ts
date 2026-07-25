@@ -41,7 +41,7 @@ import {
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
-  stripAnthropicNativeVendor,
+  stripFixedNativeVendor,
   stripRouteSuffix,
 } from "@agentproto/model-catalog/route-identity"
 import {
@@ -178,7 +178,21 @@ function spawnEligibilityManifest(
   route: RouteSpec | undefined,
   model: string | undefined,
 ): { manifest: AdapterAuthManifest; routeId: string } | undefined {
-  const directEndpoint = descriptor?.provider ?? (model ? getModelProvider(model) : undefined)
+  // Endpoint precedence: adapter's FIXED provider (single-provider adapters)
+  // > the adapter's OWN declared per-model provider (`modelProviders`, a
+  // model-derived-api-key adapter's `models.allowed[].provider` — the
+  // authoritative statement of who bills THIS adapter for THIS model) > the
+  // GLOBAL catalog's model→provider derivation. The middle tier exists
+  // because a model-derived adapter has no fixed `provider` at all, so
+  // without it the catalog fallback is the ONLY signal — and the catalog's
+  // route for a given model id is a global fact that can legitimately differ
+  // from what one specific adapter actually bills it through (D3: pi bills
+  // `moonshotai/kimi-k2.7-code` via `moonshot`, but the catalog routes that
+  // id to `openrouter`).
+  const directEndpoint =
+    descriptor?.provider ??
+    (model ? descriptor?.modelProviders?.[model] : undefined) ??
+    (model ? getModelProvider(model) : undefined)
   const routeId = route?.gateway ?? directEndpoint
   if (!routeId) return undefined
   const direct = directEndpoint !== undefined && routeId === directEndpoint
@@ -521,6 +535,7 @@ export type SpawnAgentSessionResult =
         | "access_profile_not_found"
         | "access_profile_ineligible"
         | "model_wallet_ineligible"
+        | "gateway_base_url_unsupported"
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
@@ -1474,13 +1489,70 @@ export async function spawnAgentSession(
       }
     }
   }
-  const resolvedBaseUrl = authSpec?.baseUrl ?? input.route?.baseUrl
-  const routedOptions =
+  // A gateway PRESET's resolved base_url (`authSpec.baseUrl`) is distinct
+  // from an operator-supplied CUSTOM route base_url (`input.route.baseUrl`,
+  // already skipped through `shouldSkipAuthResolution` above): the latter is
+  // as deliberate as an explicit `options.base_url` and is always honored
+  // below, same as today. The former is where D1 lived — `routedOptions`
+  // used to spread it into options UNCONDITIONALLY, even into an adapter
+  // that never declared a `base_url` option at all (hermes: "Option
+  // 'base_url' is not declared by manifest 'hermes'"), crashing manifest
+  // validation on a route the adapter didn't need in the first place (hermes
+  // reads OPENROUTER_API_KEY itself and derives its route from the model
+  // prefix — the gateway baseUrl is unusable AND unnecessary for it).
+  const gatewayResolvedBaseUrl = authSpec?.baseUrl
+  const resolvedBaseUrl = gatewayResolvedBaseUrl ?? input.route?.baseUrl
+  let routedOptions = spawnDefaults.options
+  if (
     !hasExplicitBaseUrlOption &&
     typeof resolvedBaseUrl === "string" &&
     resolvedBaseUrl.length > 0
-      ? { ...spawnDefaults.options, base_url: resolvedBaseUrl }
-      : spawnDefaults.options
+  ) {
+    const declaresBaseUrl =
+      resolved?.declaredOptions?.some(o => o.id === "base_url") ?? false
+    // An UNDEFINED `declaredOptions` means the resolver reported no option
+    // vocabulary at all — we have no evidence the adapter rejects `base_url`,
+    // which is not the same as evidence that it does. `serve.ts` always
+    // populates this from the manifest (`(handle.options ?? []).map(...)`), so
+    // a real adapter is always positively known here; undefined only arises
+    // from a resolver that doesn't report options. Gate on POSITIVE evidence
+    // and let the unknown case keep the pre-D1 behavior, rather than failing
+    // a spawn shut on an absence of information.
+    const declaredOptionsKnown = resolved?.declaredOptions !== undefined
+    if (declaresBaseUrl || !declaredOptionsKnown || gatewayResolvedBaseUrl === undefined) {
+      // The adapter accepts base_url, OR this base_url is the operator's own
+      // explicit custom-route URL (not a gateway-preset resolution) — honor
+      // it exactly as before.
+      routedOptions = { ...spawnDefaults.options, base_url: resolvedBaseUrl }
+    } else if (resolved?.routeSelection === "derived-from-model") {
+      // (a) The adapter's route falls out of the model id's own vendor
+      // prefix (hermes, pi, opencode, …) — it carries its own gateway
+      // resolution and reads its own provider env var directly. The
+      // resolved gateway base_url is simply unusable AND unnecessary for
+      // it; skip the injection silently rather than crash manifest
+      // validation on an option this adapter never declared.
+      routedOptions = spawnDefaults.options
+    } else {
+      // (b) The adapter can neither accept `base_url` NOR derive its route
+      // from the model — routing it through this gateway would either crash
+      // (manifest validation rejects the undeclared option, the D1 repro) or
+      // silently mis-route if we dropped the operator's billing choice
+      // instead. Fail loud and name the gap rather than doing either.
+      return {
+        ok: false,
+        code: "gateway_base_url_unsupported",
+        message:
+          `agent_start: adapter "${input.adapter}" cannot be routed through gateway ` +
+          `"${input.route?.gateway ?? "unknown"}" — it declares no \`base_url\` option ` +
+          `and does not derive its route from the model id (routeSelection ` +
+          `!== "derived-from-model"), so the resolved gateway endpoint has nowhere ` +
+          `to go. Declare a \`base_url\` option on the adapter manifest, or mark it ` +
+          `\`routeSelection: "derived-from-model"\` if it already resolves its own ` +
+          `gateway from the model prefix.`,
+        details: { adapter: input.adapter, gateway: input.route?.gateway },
+      }
+    }
+  }
   const effectiveOptions = normalizeSkillsOption(
     spawnDefaults.skills,
     routedOptions,
@@ -1499,23 +1571,29 @@ export async function spawnAgentSession(
   // echo (the catalog id) and for the box-forward path below, where the box's
   // own `agent_start` re-resolves the route from scratch.
   //
-  // For an Anthropic-NATIVE adapter (claude-code / claude-sdk, manifest
-  // `provider: "anthropic"`), the wire also needs the vendor prefix gone: the
-  // `claude` ACP wrapper's model selector and claude-sdk's `env.ANTHROPIC_MODEL`
-  // resolve only the BARE Anthropic id (`claude-sonnet-4-5`), never the
-  // catalog's canonical `anthropic/claude-sonnet-4-5` route form —
-  // `stripRouteSuffix` alone keeps `vendor/product` and the wrapper
-  // mis-resolves it. `stripAnthropicNativeVendor` collapses ONLY a
-  // direct-anthropic ref; the same adapters route gateway models
+  // For a FIXED-single-provider, non-derived-from-model adapter (claude-code
+  // / claude-sdk, manifest `provider: "anthropic"`; codex, `provider:
+  // "openai"`; …), the wire also needs the vendor prefix gone: each such
+  // adapter's own model selector resolves only the BARE id its manifest
+  // declares (`claude-sonnet-4-5`, `gpt-5`), never the catalog's canonical
+  // `vendor/product` route form — `stripRouteSuffix` alone keeps
+  // `vendor/product` and the adapter mis-resolves it (D2: codex's
+  // `option_enum_violation` on `openai/gpt-5`, its manifest enum only
+  // declares the bare `gpt-5`). `stripFixedNativeVendor` collapses ONLY a
+  // direct-same-vendor ref; the same adapters route gateway models
   // (`z-ai/glm-5.2@openrouter`, `moonshot/…@llm-endpoint`) through `base_url`,
   // where the gateway needs the `vendor/product` id kept, so those still go
   // through the plain suffix strip. `derived-from-model` adapters (hermes,
-  // opencode, …) derive their route FROM the prefix and must keep it — the
-  // gate on `provider === "anthropic"` excludes them (they carry their own
-  // gateway provider).
+  // pi, opencode, …) derive their route FROM the prefix and must keep it —
+  // gating on `routeSelection !== "derived-from-model"` excludes them (they
+  // carry their own gateway provider via the prefix itself).
+  const nativeVendor =
+    resolved?.routeSelection !== "derived-from-model"
+      ? resolved?.authDescriptor?.provider
+      : undefined
   const wireModel = input.model
-    ? resolved?.authDescriptor?.provider === "anthropic"
-      ? stripAnthropicNativeVendor(input.model)
+    ? nativeVendor
+      ? stripFixedNativeVendor(input.model, nativeVendor)
       : stripRouteSuffix(input.model)
     : undefined
   // Compose the role's disposition (+ optional promptAppend, layered on
