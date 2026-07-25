@@ -16,43 +16,50 @@ import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 import type { InboundMessage, InboundRouteMode } from "../inbound-router.js"
+import { createInboundEndpointStore } from "../inbound-endpoints.js"
+
+type ServerOpts = {
+  token?: string
+  endpointStore?: ReturnType<typeof createInboundEndpointStore>
+  routeInboundMessage?: (
+    msg: InboundMessage,
+    mode: InboundRouteMode,
+  ) => Promise<{
+    action: "routed" | "spawned" | "restarted-routed" | "skipped"
+    sessionId?: string
+  }>
+}
+
+async function withServer(
+  fn: (base: string) => Promise<void>,
+  opts?: ServerOpts,
+): Promise<void> {
+  const port = await freePort()
+  const http = await startHttpServer({
+    port,
+    auth: { mode: "none" },
+    ...(opts?.token ? { token: opts.token } : {}),
+    ...(opts?.routeInboundMessage
+      ? { routeInboundMessage: opts.routeInboundMessage }
+      : {}),
+    ...(opts?.endpointStore
+      ? { endpointStore: opts.endpointStore }
+      : {}),
+    mcpServerFactory: async () =>
+      (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
+    conversations: noopConversations(),
+    events: createRuntimeEvents(),
+    heartbeat: noopHeartbeat(),
+    meta: { workspace: process.cwd(), registered: [] },
+  })
+  try {
+    await fn(`http://127.0.0.1:${port}`)
+  } finally {
+    await http.stop()
+  }
+}
 
 describe("POST /inbound — push ingress", () => {
-  async function withServer(
-    fn: (base: string) => Promise<void>,
-    opts?: {
-      token?: string
-      routeInboundMessage?: (
-        msg: InboundMessage,
-        mode: InboundRouteMode,
-      ) => Promise<{
-        action: "routed" | "spawned" | "restarted-routed" | "skipped"
-        sessionId?: string
-      }>
-    },
-  ): Promise<void> {
-    const port = await freePort()
-    const http = await startHttpServer({
-      port,
-      auth: { mode: "none" },
-      ...(opts?.token ? { token: opts.token } : {}),
-      ...(opts?.routeInboundMessage
-        ? { routeInboundMessage: opts.routeInboundMessage }
-        : {}),
-      mcpServerFactory: async () =>
-        (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
-      conversations: noopConversations(),
-      events: createRuntimeEvents(),
-      heartbeat: noopHeartbeat(),
-      meta: { workspace: process.cwd(), registered: [] },
-    })
-    try {
-      await fn(`http://127.0.0.1:${port}`)
-    } finally {
-      await http.stop()
-    }
-  }
-
   it("requires a bearer token", async () => {
     const TOKEN = "test-secret-token"
     const routeInboundMessage = vi.fn()
@@ -163,6 +170,171 @@ describe("POST /inbound — push ingress", () => {
         })
       },
       { token: TOKEN },
+    )
+  })
+})
+
+describe("POST /inbound/:slug — provider-agnostic push ingress", () => {
+  it("404s when endpoint store is not wired", async () => {
+    const routeInboundMessage = vi.fn()
+    await withServer(
+      async base => {
+        const res = await fetch(`${base}/inbound/my-hook`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "hi" }),
+        })
+        expect(res.status).toBe(404)
+        expect(routeInboundMessage).not.toHaveBeenCalled()
+      },
+      { routeInboundMessage },
+    )
+  })
+
+  it("404s for unknown or disabled slug", async () => {
+    const store = createInboundEndpointStore({ persist: false })
+    store.upsert({
+      slug: "enabled",
+      provider: "generic",
+      alias: "g",
+      mode: "route-or-spawn",
+    })
+    store.upsert({
+      slug: "disabled",
+      provider: "generic",
+      alias: "g",
+      mode: "route-or-spawn",
+      enabled: false,
+    })
+    await withServer(
+      async base => {
+        const unknown = await fetch(`${base}/inbound/missing`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "hi" }),
+        })
+        expect(unknown.status).toBe(404)
+
+        const disabled = await fetch(`${base}/inbound/disabled`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "hi" }),
+        })
+        expect(disabled.status).toBe(404)
+      },
+      { endpointStore: store },
+    )
+  })
+
+  it("routes a generic message and deduplicates by id", async () => {
+    const store = createInboundEndpointStore({ persist: false })
+    store.upsert({
+      slug: "hook",
+      provider: "generic",
+      alias: "g",
+      mode: "route-or-spawn",
+    })
+    const routeInboundMessage = vi.fn(async () => ({
+      action: "spawned" as const,
+      sessionId: "s1",
+    }))
+    await withServer(
+      async base => {
+        const first = await fetch(`${base}/inbound/hook`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "src1",
+            contact_ref: "u1",
+            text: "hello",
+            provider_message_id: "m1",
+          }),
+        })
+        expect(first.status).toBe(200)
+        expect(await first.json()).toEqual({ action: "spawned", sessionId: "s1" })
+        expect(routeInboundMessage).toHaveBeenCalledWith(
+          {
+            alias: "g",
+            source: "src1",
+            contactRef: "u1",
+            text: "hello",
+          },
+          "route-or-spawn",
+        )
+
+        const dup = await fetch(`${base}/inbound/hook`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "src1",
+            contact_ref: "u1",
+            text: "hello",
+            provider_message_id: "m1",
+          }),
+        })
+        expect(dup.status).toBe(200)
+        expect(await dup.json()).toEqual({ action: "duplicate" })
+        expect(routeInboundMessage).toHaveBeenCalledTimes(1)
+      },
+      { endpointStore: store, routeInboundMessage },
+    )
+  })
+
+  it("returns an agentpush challenge without routing", async () => {
+    const store = createInboundEndpointStore({ persist: false })
+    store.upsert({
+      slug: "ap-hook",
+      provider: "agentpush",
+      alias: "ap",
+      mode: "route-or-spawn",
+    })
+    const routeInboundMessage = vi.fn()
+    await withServer(
+      async base => {
+        const res = await fetch(`${base}/inbound/ap-hook`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ challenge: "verify-me" }),
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ challenge: "verify-me" })
+        expect(routeInboundMessage).not.toHaveBeenCalled()
+      },
+      { endpointStore: store, routeInboundMessage },
+    )
+  })
+
+  it("routes a generic message when secret is not set", async () => {
+    const TOKEN = "test-secret-token"
+    const store = createInboundEndpointStore({ persist: false })
+    store.upsert({
+      slug: "hook",
+      provider: "generic",
+      alias: "g",
+      mode: "route-or-spawn",
+    })
+    const routeInboundMessage = vi.fn(async () => ({
+      action: "routed" as const,
+      sessionId: "s1",
+    }))
+    await withServer(
+      async base => {
+        const res = await fetch(`${base}/inbound/hook`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${TOKEN}`,
+          },
+          body: JSON.stringify({
+            source: "src1",
+            contact_ref: "u1",
+            text: "hello",
+          }),
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ action: "routed", sessionId: "s1" })
+      },
+      { token: TOKEN, endpointStore: store, routeInboundMessage },
     )
   })
 })

@@ -154,6 +154,12 @@ function normalizeAgentpush(
   }
 
   const envelope = body as Record<string, unknown>
+
+  // Webhook handshake — echo the challenge, do not route.
+  if (typeof envelope.challenge === "string") {
+    return { ok: true, challenge: envelope.challenge }
+  }
+
   const source =
     ctx.sourceOverride ??
     (typeof envelope.channel === "string" ? envelope.channel : undefined)
@@ -204,6 +210,20 @@ function normalizeTelegram(
     typeof message.chat === "object" && message.chat !== null
       ? (message.chat as Record<string, unknown>)
       : undefined
+
+  const from =
+    typeof message.from === "object" && message.from !== null
+      ? (message.from as Record<string, unknown>)
+      : undefined
+
+  // Ignore bot messages and messages sent by the bot to itself.
+  if (from?.is_bot === true || message.from === message.chat) {
+    return {
+      ok: false,
+      error: "bot_or_self_message",
+      message: "bot or self message",
+    }
+  }
 
   const source =
     ctx.sourceOverride ??
@@ -367,7 +387,7 @@ function normalizeGeneric(
     getStringField(body, ["channel", "source"])
   const contactRef = getStringField(body, ["from", "sender", "contact_ref"])
   const text = getStringField(body, ["text", "body", "message"])
-  const providerMessageId = getStringField(body, ["id"])
+  const providerMessageId = getStringField(body, ["provider_message_id", "message_id", "id"])
 
   return buildMsg(body, ctx, {
     source,
@@ -468,8 +488,12 @@ function verifyConstantTimeHeader(
 
   const secretBuf = Buffer.from(input.secret, "utf8")
   const headerBuf = Buffer.from(header, "utf8")
-  if (secretBuf.length !== headerBuf.length) return false as never
-  if (secretBuf.length === 0) return false as never
+  if (secretBuf.length !== headerBuf.length) {
+    return { ok: false, reason: `bad ${headerName}` }
+  }
+  if (secretBuf.length === 0) {
+    return { ok: false, reason: `bad ${headerName}` }
+  }
 
   return timingSafeEqual(secretBuf, headerBuf)
     ? { ok: true }
