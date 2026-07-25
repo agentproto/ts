@@ -25,6 +25,13 @@ export interface BootedSandbox {
   mcpUrl: string
   /** Provider-assigned sandbox id, for logging / lookup. */
   sandboxId: string
+  /** Bearer token gating `mcpUrl`, present when `opts.expose === "private"`
+   *  was honoured (see `SandboxBootOpts.expose`). Absent for the default
+   *  public-exposure path (boot-and-drive) and for providers/paths that
+   *  can't gate the port at all — a caller that needs a gated URL (e.g.
+   *  `attachSandbox`) MUST treat a missing token as "not gated", not as
+   *  "no auth needed". */
+  token?: string
   /** Tear down the sandbox. */
   stop(): Promise<void>
   /** Pause the sandbox instead of killing it — keeps it reconnectable via
@@ -37,6 +44,17 @@ export interface BootedSandbox {
 /** Env resolved from secrets, handed to `provider.boot`. */
 export interface SandboxBootOpts {
   env: Record<string, string>
+  /**
+   * How the provider should expose the daemon's port. `"public"` (the
+   * default when omitted) is boot-and-drive's ephemeral, provider-owned,
+   * ungated URL. `"private"` asks the provider for a PERSISTENT,
+   * token-gated URL instead — set by `attachSandbox`, which produces a
+   * durable connection descriptor and must never emit an ungated one.
+   * Providers that don't support gating simply ignore this and omit
+   * `BootedSandbox.token`; the caller is responsible for treating that as
+   * a failure when it needed a gated URL.
+   */
+  expose?: "public" | "private"
 }
 
 /**

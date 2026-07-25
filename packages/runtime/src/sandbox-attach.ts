@@ -1,0 +1,220 @@
+/**
+ * AIP-36 `sandbox attach` — Phase 1: CONNECT to an already-existing sandbox
+ * (Box/e2b/local) without tearing it down.
+ *
+ * Boot-and-drive (`session-spawn.ts`'s `bootSandboxAgentSession`) boots a
+ * box, spawns an adapter ON it, and owns its lifecycle end-to-end. Attach is
+ * a different primitive entirely: it's the "rendezvous with my sandbox"
+ * verb — resolve the provider, resume the box, ensure its daemon is healthy
+ * and reachably exposed, and hand back a durable connection descriptor any
+ * MCP client (local Claude, a GitHub Action, another ephemeral sandbox) can
+ * use to reach it. It never calls `stop()`/`pause()` — the sandbox it
+ * attaches to stays running and addressable exactly as it was.
+ *
+ * Boot-and-drive's URL is fine to leave ungated: it's ephemeral,
+ * provider-owned, and only this process ever learns it. Attach's URL is the
+ * opposite — a PERSISTENT address handed to a caller who may be a different
+ * process entirely — so it MUST be token-gated. `SandboxBootOpts.expose:
+ * "private"` (see `@agentproto/sandbox`) is how attach asks a provider's
+ * `connect()` for that; a provider that can't honour it (or a sandbox that
+ * wasn't set up to support it) simply doesn't return a token, and this
+ * module fails closed rather than emit an ungated URL.
+ */
+
+import { z } from "zod"
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { SandboxSpec } from "@agentproto/sandbox"
+import { makeSandboxResolver, makeSandboxCredsStore } from "./sandbox-adapters.js"
+import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+
+/**
+ * Durable connection descriptor for an attached sandbox — everything a
+ * client needs to reach its agentproto daemon directly, without going
+ * through this process again.
+ */
+export interface SandboxConnectionDescriptor {
+  /** Sandbox provider slug attached to (e.g. "box", "e2b"). */
+  provider: string
+  /** Provider-assigned sandbox id. */
+  sandboxId: string
+  /** The sandbox's `/mcp` endpoint. */
+  mcpUrl: string
+  /** Bearer token gating `mcpUrl` — see module docs on why attach always
+   *  requires one. */
+  token?: string
+  /** The Origin the daemon's own `--allow-origin` allowlist already trusts
+   *  (derived from `mcpUrl`'s own origin) — informational, for a caller
+   *  that wants to drive the sandbox from a browser-hosted tool. A
+   *  non-browser MCP client (no `Origin` header sent) doesn't need this at
+   *  all; the daemon only gates requests that DO carry an Origin header. */
+  allowOrigin: string
+}
+
+export interface AttachSandboxOpts {
+  /** Sandbox provider slug from `list_sandbox_providers` (e.g. "box", "e2b"). */
+  provider: string
+  /** Provider-assigned sandbox id to attach to. */
+  sandboxId: string
+  /** Provider-specific `SandboxSpec.config` overrides (e.g. box's `{ port,
+   *  workspace }`) — same shape `agent_start.sandbox`'s inline spec takes. */
+  config?: Record<string, unknown>
+  /**
+   * Reserved for a future keep-alive heartbeat against the attached
+   * sandbox so its provider-side idle/TTL reaper doesn't reclaim it out
+   * from under a long-lived external client. Accepted now (so this opts
+   * shape doesn't change when that lands) but unused today.
+   */
+  keepAlive?: boolean
+  /** Injectable resolver — defaults to the same creds-backed resolver
+   *  `list_sandbox_providers`/`setup_sandbox_provider` use, reading
+   *  `~/.agentproto/sandbox-creds/<slug>.json`. Override for tests. */
+  resolveSandboxProvider?: SandboxProviderResolver
+}
+
+export type AttachSandboxResult =
+  | { ok: true; descriptor: SandboxConnectionDescriptor }
+  | {
+      ok: false
+      code: "sandbox_provider_not_found" | "sandbox_no_connect" | "sandbox_attach_failed" | "sandbox_attach_ungated"
+      message: string
+    }
+
+/**
+ * Resolve `opts.provider`, connect (never boot) to `opts.sandboxId`
+ * requesting a private, token-gated exposure, and return a durable
+ * descriptor. Never tears down or pauses the sandbox — on any failure past
+ * the resolve step, the sandbox is left exactly as `connect()` left it (the
+ * providers' own `connect()` implementations are responsible for not
+ * leaking partial state; attach adds no teardown of its own).
+ */
+export async function attachSandbox(opts: AttachSandboxOpts): Promise<AttachSandboxResult> {
+  const resolver = opts.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore())
+  const handle = await resolver(opts.provider)
+  if (!handle) {
+    return {
+      ok: false,
+      code: "sandbox_provider_not_found",
+      message:
+        `sandbox_attach: sandbox provider "${opts.provider}" not found. Check ` +
+        "`list_sandbox_providers`, then `setup_sandbox_provider` if it needs credentials.",
+    }
+  }
+  if (!handle.provider.connect) {
+    return {
+      ok: false,
+      code: "sandbox_no_connect",
+      message:
+        `sandbox_attach: provider "${opts.provider}" has no connect() — it can only boot ` +
+        "fresh sandboxes, not attach to an existing one.",
+    }
+  }
+
+  const spec: SandboxSpec = { provider: opts.provider, config: opts.config ?? {} }
+
+  let booted
+  try {
+    booted = await handle.provider.connect(opts.sandboxId, spec, { env: {}, expose: "private" })
+  } catch (err) {
+    return {
+      ok: false,
+      code: "sandbox_attach_failed",
+      message:
+        `sandbox_attach: connect failed for provider "${opts.provider}" sandbox ` +
+        `"${opts.sandboxId}" — ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+
+  if (!booted.token) {
+    return {
+      ok: false,
+      code: "sandbox_attach_ungated",
+      message:
+        `sandbox_attach: provider "${opts.provider}" did not return a token-gated URL for ` +
+        `sandbox "${opts.sandboxId}" — refusing to emit an ungated persistent daemon URL.`,
+    }
+  }
+
+  return {
+    ok: true,
+    descriptor: {
+      provider: opts.provider,
+      sandboxId: booted.sandboxId,
+      mcpUrl: booted.mcpUrl,
+      token: booted.token,
+      allowOrigin: new URL(booted.mcpUrl).origin,
+    },
+  }
+}
+
+/** Paste-ready `.mcp.json` (Claude Code project-scope MCP config) entry for
+ *  a connection descriptor — http transport, bearer header when gated. */
+export function buildMcpConfigSnippet(
+  descriptor: SandboxConnectionDescriptor,
+): { mcpServers: Record<string, { type: "http"; url: string; headers?: Record<string, string> }> } {
+  const name = `sandbox-${descriptor.provider}-${descriptor.sandboxId}`
+  return {
+    mcpServers: {
+      [name]: {
+        type: "http",
+        url: descriptor.mcpUrl,
+        ...(descriptor.token ? { headers: { Authorization: `Bearer ${descriptor.token}` } } : {}),
+      },
+    },
+  }
+}
+
+export interface RegisterSandboxAttachToolOptions {
+  /** Same injection seam as `AttachSandboxOpts.resolveSandboxProvider` —
+   *  pass the daemon's shared resolver so this tool sees the same provider
+   *  set as `list_sandbox_providers`/`agent_start.sandbox`. */
+  resolveSandboxProvider?: SandboxProviderResolver
+}
+
+/** Register the `sandbox_attach` MCP tool. */
+export function registerSandboxAttachTool(
+  server: McpServer,
+  opts: RegisterSandboxAttachToolOptions = {},
+): void {
+  server.tool(
+    "sandbox_attach",
+    "Connect to an ALREADY-EXISTING sandbox (Box/e2b) without tearing it down — resumes it, " +
+      "ensures its agentproto daemon is healthy and reachably exposed, and returns a durable, " +
+      "token-gated connection descriptor (plus a paste-ready .mcp.json snippet) any MCP " +
+      "client can use to reach it directly. Never stops or pauses the sandbox. Use " +
+      "`list_sandbox_providers` to see available providers and `setup_sandbox_provider` to " +
+      "configure credentials first.",
+    {
+      provider: z.string().describe('Sandbox provider slug, e.g. "box" or "e2b".'),
+      sandboxId: z.string().describe("Provider-assigned sandbox id to attach to."),
+      config: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Provider-specific SandboxSpec config overrides (e.g. box's { port, workspace })."),
+    },
+    async input => {
+      const result = await attachSandbox({
+        provider: input.provider,
+        sandboxId: input.sandboxId,
+        ...(input.config ? { config: input.config as Record<string, unknown> } : {}),
+        ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+      })
+      if (!result.ok) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: result.message, code: result.code }) }],
+          isError: true,
+        }
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              descriptor: result.descriptor,
+              mcpConfig: buildMcpConfigSnippet(result.descriptor),
+            }),
+          },
+        ],
+      }
+    },
+  )
+}

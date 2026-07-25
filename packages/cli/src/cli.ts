@@ -47,6 +47,7 @@ import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
 import { runPair } from "./commands/pair.js"
 import { runRendezvous } from "./commands/rendezvous.js"
+import { runSandbox } from "./commands/sandbox.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -129,6 +130,7 @@ Usage:
   agentproto pair      revoke <fingerprint|name>
   agentproto pair      exec   <fingerprint|name> -- <verb> [args…]
   agentproto rendezvous serve [--port <n>] [--host <ip>]
+  agentproto sandbox   attach <provider> <sandboxId> [--config-json <json>] [--json]
   agentproto --help
   agentproto --version
 
@@ -185,6 +187,7 @@ const VERBS = new Set([
   "acp",
   "pair",
   "rendezvous",
+  "sandbox",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -282,6 +285,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runPair(rest)
     case "rendezvous":
       return runRendezvous(rest)
+    case "sandbox":
+      return runSandbox(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)

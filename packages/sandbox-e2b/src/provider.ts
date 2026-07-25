@@ -198,10 +198,15 @@ async function ensureDaemonHealthy(
  *  (`keepMemory: true`, the SDK default) — a filesystem-only pause would
  *  cold-boot the box on resume, dropping the running agentproto daemon and
  *  any open connections (PR3 risk "e2b pause loses in-memory state"). */
-function toBootedSandbox(sandbox: Awaited<ReturnType<typeof Sandbox.create>>, host: string): BootedSandbox {
+function toBootedSandbox(
+  sandbox: Awaited<ReturnType<typeof Sandbox.create>>,
+  host: string,
+  token?: string,
+): BootedSandbox {
   return {
     mcpUrl: `https://${host}/mcp`,
     sandboxId: sandbox.sandboxId,
+    ...(token ? { token } : {}),
     async stop(): Promise<void> {
       await sandbox.kill()
     },
@@ -243,7 +248,17 @@ export const e2bSandboxProvider: SandboxProvider = {
 
     const host = sandbox.getHost(port)
     await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env)
-    return toBootedSandbox(sandbox, host)
+    // `opts.expose === "private"` (only ever set by `attachSandbox`, see
+    // @agentproto/runtime) surfaces e2b's own "restricted public traffic"
+    // token, when the sandbox has one — it gates access to EVERY exposed
+    // port, this one included, at e2b's edge (distinct from `SandboxOpts.
+    // secure`, which only covers envd's own control-plane traffic — see
+    // module docs). Best-effort: e2b's SDK only exposes the token as a
+    // readonly property with no documented guarantee it's populated on a
+    // reconnect for a sandbox that wasn't created with traffic restriction
+    // enabled. Unverified against a live sandbox.
+    const token = opts.expose === "private" ? sandbox.trafficAccessToken : undefined
+    return toBootedSandbox(sandbox, host, token)
   },
 }
 

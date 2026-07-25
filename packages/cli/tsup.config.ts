@@ -50,11 +50,13 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@agentproto/rendezvous",
     "@agentproto/rendezvous/*",
     // Loaded via a runtime dynamic import by the bundled runtime's sandbox
-    // registry (`import("@agentproto/sandbox-e2b")` resolves from the CLI
-    // package's own node_modules because the runtime is bundled into
-    // cli.mjs) — MUST stay external AND declared under `dependencies`, or
-    // `agent_start sandbox:"e2b"` fails with "provider not found".
+    // registry (`import("@agentproto/sandbox-e2b")` / `import("@agentproto/
+    // sandbox-box")` resolves from the CLI package's own node_modules
+    // because the runtime is bundled into cli.mjs) — MUST stay external AND
+    // declared under `dependencies`, or `agent_start sandbox:"e2b"`/
+    // `agentproto sandbox attach box ...` fails with "provider not found".
     "@agentproto/sandbox-e2b",
+    "@agentproto/sandbox-box",
     // Third-party deps — externalised so the published cli installs
     // them via npm at runtime. `gray-matter` is CJS + does dynamic
     // require("fs"), which esbuild can't safely inline into an ESM

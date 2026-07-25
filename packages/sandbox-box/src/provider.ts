@@ -218,6 +218,13 @@ function writeSystemdUnitCommand(
  * `connect` (a resumed box's systemd-managed daemon SHOULD already be up,
  * but is re-verified rather than assumed). Throws (after deleting the box)
  * if the daemon never comes up.
+ *
+ * `expose` defaults to `"public"` — `boot`'s and the reuse path's existing
+ * behaviour, completely unchanged. `"private"` (only ever passed by
+ * `attachSandbox`, see `@agentproto/runtime`) additionally re-runs `box
+ * host ... --private` even when the daemon is ALREADY up — a prior
+ * boot/connect may have exposed the port publicly, and attach's whole
+ * point is a fresh, token-gated URL — and returns the captured token.
  */
 async function ensureDaemonHealthy(
   api: BoxApi,
@@ -227,13 +234,15 @@ async function ensureDaemonHealthy(
   workspace: string,
   config: BoxSandboxConfig,
   env: Record<string, string>,
-): Promise<void> {
+  expose: "public" | "private" = "public",
+): Promise<string | undefined> {
   const healthUrl = `https://${host}/health`
   const healthProbeTimeoutMs = config.healthProbeTimeoutMs ?? HEALTH_PROBE_TIMEOUT_MS
   const daemonReadyTimeoutMs = config.daemonReadyTimeoutMs ?? DAEMON_READY_TIMEOUT_MS
   const pollIntervalMs = config.pollIntervalMs ?? POLL_INTERVAL_MS
 
   const alreadyUp = await probeHealth(healthUrl, healthProbeTimeoutMs, pollIntervalMs)
+  let token: string | undefined
 
   if (!alreadyUp) {
     if (config.updateCliOnBoot ?? true) {
@@ -255,16 +264,28 @@ async function ensureDaemonHealthy(
     // `box host` requires its own <ID> argument even when run from inside
     // that same box — verified live (`box host <port> --public` alone fails
     // with "the following required arguments were not provided: <PORT>",
-    // since `<port>` alone is parsed as `<ID>`).
-    await api.command({
+    // since `<port>` alone is parsed as `<ID>`). `--private` is the same
+    // shape, token-gated: ascii.dev returns the bearer token in the
+    // command's stdout (see `parseBoxHostToken`).
+    const hostCommand = await api.command({
       boxId,
-      commandRequest: { command: `box host ${boxId} ${port} --public`, timeoutSeconds: 30 },
+      commandRequest: {
+        command: `box host ${boxId} ${port} ${expose === "private" ? "--private" : "--public"}`,
+        timeoutSeconds: 30,
+      },
     })
+    if (expose === "private") token = parseBoxHostToken(hostCommand.stdout)
 
     await api.command({
       boxId,
       commandRequest: { command: writeSystemdUnitCommand(host, port, workspace, env), timeoutSeconds: 30 },
     })
+  } else if (expose === "private") {
+    const hostCommand = await api.command({
+      boxId,
+      commandRequest: { command: `box host ${boxId} ${port} --private`, timeoutSeconds: 30 },
+    })
+    token = parseBoxHostToken(hostCommand.stdout)
   }
 
   // Caller-declared provision hooks. Runs regardless of `alreadyUp` — a
@@ -274,7 +295,7 @@ async function ensureDaemonHealthy(
     await api.command({ boxId, commandRequest: { command, timeoutSeconds: 60 } })
   }
 
-  if (alreadyUp) return
+  if (alreadyUp) return token
 
   await api.command({
     boxId,
@@ -292,16 +313,39 @@ async function ensureDaemonHealthy(
         `within ${daemonReadyTimeoutMs}ms (box ${boxId}).`,
     )
   }
+  return token
+}
+
+/**
+ * `box host ... --private` prints its bearer token to stdout. Unverified
+ * against a live box (no real Boxes were booted to write this) — this
+ * takes the last non-empty trimmed line, tolerating leading log/status
+ * output. If ascii.dev's actual format differs, this is the one place to
+ * fix it.
+ */
+function parseBoxHostToken(stdout: string): string {
+  const lines = stdout
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+  const token = lines[lines.length - 1]
+  if (!token) {
+    throw new Error(
+      "@agentproto/sandbox-box: `box host --private` produced no token in its output.",
+    )
+  }
+  return token
 }
 
 /** Wrap a ready box into the `BootedSandbox` shape common to `boot` and
  *  `connect`. `pause()` maps to Box's `stop` (snapshot/archive, resumable);
  *  `stop()` maps to Box's `remove` (actual deletion) — Box's own naming is
  *  the reverse of `BootedSandbox`'s. */
-function toBootedSandbox(api: BoxApi, boxId: string, host: string): BootedSandbox {
+function toBootedSandbox(api: BoxApi, boxId: string, host: string, token?: string): BootedSandbox {
   return {
     mcpUrl: `https://${host}/mcp`,
     sandboxId: boxId,
+    ...(token ? { token } : {}),
     async stop(): Promise<void> {
       await api.remove({ boxId })
     },
@@ -352,8 +396,8 @@ export const boxSandboxProvider: SandboxProvider = {
       throw new Error(`@agentproto/sandbox-box: box ${boxId} has no assigned subdomain.`)
     }
     const host = `${box.subdomain}-${port}.on.ascii.dev`
-    await ensureDaemonHealthy(api, boxId, host, port, workspace, config, opts.env)
-    return toBootedSandbox(api, boxId, host)
+    const token = await ensureDaemonHealthy(api, boxId, host, port, workspace, config, opts.env, opts.expose)
+    return toBootedSandbox(api, boxId, host, token)
   },
 }
 

@@ -116,4 +116,64 @@ describe("boxSandboxProvider.connect", () => {
     expect(boxApiMock.stop).toHaveBeenCalledWith({ boxId: "bx_abc" })
     expect(boxApiMock.remove).not.toHaveBeenCalled()
   })
+
+  describe("expose: \"private\" (attachSandbox's token-gated path)", () => {
+    it("defaults to --public and no token when expose is omitted (unchanged behaviour)", async () => {
+      fetchMock.mockResolvedValue({ ok: true })
+
+      const { boxSandboxProvider } = await import("../provider.js")
+      const booted = await boxSandboxProvider.connect!("bx_abc", spec, { env: {} })
+
+      expect(boxApiMock.command).not.toHaveBeenCalled()
+      expect(booted.token).toBeUndefined()
+    })
+
+    it("runs `box host --private` and captures the token even when the daemon is already healthy", async () => {
+      fetchMock.mockResolvedValue({ ok: true })
+      boxApiMock.command.mockResolvedValue({ stdout: "tok_secret_abc\n", stderr: "" })
+
+      const { boxSandboxProvider } = await import("../provider.js")
+      const booted = await boxSandboxProvider.connect!("bx_abc", spec, { env: {}, expose: "private" })
+
+      expect(boxApiMock.command).toHaveBeenCalledWith({
+        boxId: "bx_abc",
+        commandRequest: expect.objectContaining({ command: "box host bx_abc 18790 --private" }),
+      })
+      expect(booted.token).toBe("tok_secret_abc")
+    })
+
+    it("uses --private instead of --public during first-time provisioning when expose is private", async () => {
+      fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+      fetchMock.mockResolvedValue({ ok: true })
+      boxApiMock.command.mockResolvedValue({ stdout: "tok_fresh\n", stderr: "" })
+
+      const { boxSandboxProvider } = await import("../provider.js")
+      const reconnectSpec: SandboxSpec = { provider: "box", config: { healthProbeTimeoutMs: 0 } }
+      const booted = await boxSandboxProvider.connect!("bx_abc", reconnectSpec, {
+        env: {},
+        expose: "private",
+      })
+
+      expect(boxApiMock.command).toHaveBeenCalledWith({
+        boxId: "bx_abc",
+        commandRequest: expect.objectContaining({ command: "box host bx_abc 18790 --private" }),
+      })
+      expect(boxApiMock.command).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          commandRequest: expect.objectContaining({ command: expect.stringContaining("--public") }),
+        }),
+      )
+      expect(booted.token).toBe("tok_fresh")
+    })
+
+    it("throws when `box host --private` produces no token in its output", async () => {
+      fetchMock.mockResolvedValue({ ok: true })
+      boxApiMock.command.mockResolvedValue({ stdout: "", stderr: "" })
+
+      const { boxSandboxProvider } = await import("../provider.js")
+      await expect(
+        boxSandboxProvider.connect!("bx_abc", spec, { env: {}, expose: "private" }),
+      ).rejects.toThrow(/produced no token/)
+    })
+  })
 })

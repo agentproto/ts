@@ -58,6 +58,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto rendezvous`](./verbs/rendezvous.md) — self-host the untrusted pairing broker
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn
 - [`agentproto run-swarm`](./verbs/run-swarm.md) — kernel-routed multi-agent loop
+- [`agentproto sandbox`](./verbs/sandbox.md) — attach to an already-existing sandbox (Box/e2b) without tearing it down
 - [`agentproto serve`](./verbs/serve.md) — daemon mode (local-only or tunnelled)
 - [`agentproto sessions`](./verbs/sessions.md) — browse/start/attach/stop daemon sessions
 - [`agentproto setup`](./verbs/setup.md) — re-run an adapter's post-install pipeline
