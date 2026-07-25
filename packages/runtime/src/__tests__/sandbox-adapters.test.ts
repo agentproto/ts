@@ -115,6 +115,36 @@ describe("resolveSandboxProvider", () => {
     expect(typeof handle?.provider.boot).toBe("function")
   })
 
+  it("fills the provider's control-plane env var from the stored apiKey cred when unset (so setup actually authenticates boot)", async () => {
+    const saved = process.env.E2B_API_KEY
+    delete process.env.E2B_API_KEY
+    try {
+      await resolveSandboxProvider("e2b", {
+        creds: E2B_CREDS,
+        importPackage: async () => fakeE2bModule(),
+      })
+      expect(process.env.E2B_API_KEY).toBe(E2B_CREDS.apiKey)
+    } finally {
+      if (saved === undefined) delete process.env.E2B_API_KEY
+      else process.env.E2B_API_KEY = saved
+    }
+  })
+
+  it("never overwrites an explicit control-plane env var with the stored cred (env wins)", async () => {
+    const saved = process.env.E2B_API_KEY
+    process.env.E2B_API_KEY = "from_env_wins"
+    try {
+      await resolveSandboxProvider("e2b", {
+        creds: E2B_CREDS,
+        importPackage: async () => fakeE2bModule(),
+      })
+      expect(process.env.E2B_API_KEY).toBe("from_env_wins")
+    } finally {
+      if (saved === undefined) delete process.env.E2B_API_KEY
+      else process.env.E2B_API_KEY = saved
+    }
+  })
+
   it("returns null for modal/daytona (no package published yet)", async () => {
     expect(await resolveSandboxProvider("modal")).toBeNull()
     expect(await resolveSandboxProvider("daytona")).toBeNull()

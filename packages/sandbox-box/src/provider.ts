@@ -373,37 +373,71 @@ async function ensureDaemonHealthy(
   return token
 }
 
+/** Cookie name ascii.dev's private-hosting edge gates the port on — the
+ *  `_token` value is delivered to a client as `Cookie: <PORT_AUTH_COOKIE>=<token>`. */
+const PORT_AUTH_COOKIE = "_port_auth"
+
 /**
- * `box host ... --private` prints its bearer token to stdout. Unverified
- * against a live box (no real Boxes were booted to write this) — this
- * takes the last non-empty trimmed line, tolerating leading log/status
- * output. If ascii.dev's actual format differs, this is the one place to
- * fix it.
+ * Extract the access token from `box host ... --private`'s output.
+ *
+ * VERIFIED LIVE (this replaced a guess that took the last output line as a
+ * bearer token — it wasn't). `box host <id> <port> --private` prints a JSON
+ * object whose `url` carries the token as a `_token` query param, e.g.
+ * `{"access":"private", ..., "url":"https://<host>?_token=<64-hex>"}`. Hitting
+ * that URL 302-redirects and `Set-Cookie`s `_port_auth=<token>` (30-day TTL);
+ * the port edge then gates on THAT COOKIE — a bearer header or a `?_token=`
+ * query on a sub-path is ignored (403). So the token a client needs is the
+ * `_token` hex, presented as a cookie (see `PORT_AUTH_COOKIE` / `authHeaders`),
+ * NOT the whole JSON blob and NOT a bearer.
+ *
+ * Tolerates leading log/status lines by scanning for the last line that parses
+ * as JSON with a `url`; falls back to a raw `_token=` match if the shape drifts.
  */
 function parseBoxHostToken(stdout: string): string {
   const lines = stdout
     .split("\n")
     .map(line => line.trim())
     .filter(line => line.length > 0)
-  const token = lines[lines.length - 1]
-  if (!token) {
-    throw new Error(
-      "@agentproto/sandbox-box: `box host --private` produced no token in its output.",
-    )
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]!) as { url?: unknown }
+      if (typeof parsed.url === "string") {
+        const token = new URL(parsed.url).searchParams.get("_token")
+        if (token) return token
+      }
+    } catch {
+      // not JSON — fall through to the raw regex fallback below
+    }
   }
-  return token
+
+  const rawMatch = stdout.match(/[?&]_token=([A-Za-z0-9._-]+)/)
+  if (rawMatch?.[1]) return rawMatch[1]
+
+  throw new Error(
+    "@agentproto/sandbox-box: `box host --private` produced no `_token` in its output.",
+  )
 }
 
 /** Wrap a ready box into the `BootedSandbox` shape common to `boot` and
  *  `connect`. `pause()` maps to Box's `stop` (snapshot/archive, resumable);
- *  `stop()` maps to Box's `remove` (actual deletion) — Box's own naming is
- *  the reverse of `BootedSandbox`'s. */
+ *  `stop()` fully reaps the box. When gated (`token` present, attach path),
+ *  the caller authenticates with a `Cookie: _port_auth=<token>` — see
+ *  `parseBoxHostToken`. */
 function toBootedSandbox(api: BoxApi, boxId: string, host: string, token?: string): BootedSandbox {
   return {
     mcpUrl: `https://${host}/mcp`,
     sandboxId: boxId,
-    ...(token ? { token } : {}),
+    ...(token ? { token, authHeaders: { Cookie: `${PORT_AUTH_COOKIE}=${token}` } } : {}),
     async stop(): Promise<void> {
+      // VERIFIED LIVE: `api.remove` alone on a box that isn't actively
+      // running acks `{"status":"deleted"}` but leaves it in state `idle`,
+      // STILL counting against the account's `maxActiveBoxes` — a silent leak
+      // (a fresh boot then fails the cap). Reaping needs `stop` (snapshot)
+      // THEN `remove`; that pair archives it and frees the slot. `stop` is
+      // best-effort — an already-stopped box 4xxs and we still want the
+      // `remove` — so its failure must not abort the teardown.
+      await withBoxRetry(() => api.stop({ boxId })).catch(() => {})
       await withBoxRetry(() => api.remove({ boxId }))
     },
     async pause(): Promise<void> {

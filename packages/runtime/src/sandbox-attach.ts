@@ -39,9 +39,15 @@ export interface SandboxConnectionDescriptor {
   sandboxId: string
   /** The sandbox's `/mcp` endpoint. */
   mcpUrl: string
-  /** Bearer token gating `mcpUrl` — see module docs on why attach always
-   *  requires one. */
+  /** Opaque secret gating `mcpUrl` — see module docs on why attach always
+   *  requires one. How to PRESENT it is provider-specific (`authHeaders`):
+   *  Box gates on a `Cookie: _port_auth=<token>`, not a bearer. */
   token?: string
+  /** Exact HTTP header(s) a client must send to reach `mcpUrl` — carried
+   *  through from `BootedSandbox.authHeaders`. Absent for a token-only
+   *  provider, in which case clients (and `buildMcpConfigSnippet`) fall back
+   *  to `Authorization: Bearer <token>`. */
+  authHeaders?: Record<string, string>
   /** The Origin the daemon's own `--allow-origin` allowlist already trusts
    *  (derived from `mcpUrl`'s own origin) — informational, for a caller
    *  that wants to drive the sandbox from a browser-hosted tool. A
@@ -151,6 +157,7 @@ export async function attachSandbox(opts: AttachSandboxOpts): Promise<AttachSand
       sandboxId: booted.sandboxId,
       mcpUrl: booted.mcpUrl,
       token: booted.token,
+      ...(booted.authHeaders ? { authHeaders: booted.authHeaders } : {}),
       allowOrigin: new URL(booted.mcpUrl).origin,
       keepAlive: opts.keepAlive ?? false,
     },
@@ -158,17 +165,24 @@ export async function attachSandbox(opts: AttachSandboxOpts): Promise<AttachSand
 }
 
 /** Paste-ready `.mcp.json` (Claude Code project-scope MCP config) entry for
- *  a connection descriptor — http transport, bearer header when gated. */
+ *  a connection descriptor — http transport, with the provider's own auth
+ *  header(s) when gated (e.g. Box's `Cookie: _port_auth=…`), falling back to
+ *  `Authorization: Bearer <token>` for a token-only provider. */
 export function buildMcpConfigSnippet(
   descriptor: SandboxConnectionDescriptor,
 ): { mcpServers: Record<string, { type: "http"; url: string; headers?: Record<string, string> }> } {
   const name = `sandbox-${descriptor.provider}-${descriptor.sandboxId}`
+  const headers = descriptor.authHeaders
+    ? descriptor.authHeaders
+    : descriptor.token
+      ? { Authorization: `Bearer ${descriptor.token}` }
+      : undefined
   return {
     mcpServers: {
       [name]: {
         type: "http",
         url: descriptor.mcpUrl,
-        ...(descriptor.token ? { headers: { Authorization: `Bearer ${descriptor.token}` } } : {}),
+        ...(headers ? { headers } : {}),
       },
     },
   }

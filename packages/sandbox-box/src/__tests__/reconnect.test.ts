@@ -130,9 +130,21 @@ describe("boxSandboxProvider.connect", () => {
       expect(booted.token).toBeUndefined()
     })
 
-    it("runs `box host --private` and captures the token even when the daemon is already healthy", async () => {
+    // `box host --private` emits a JSON object whose `url` carries the token
+    // as a `_token` query param — see `parseBoxHostToken` (verified live).
+    const privateHostStdout = (token: string) =>
+      JSON.stringify({
+        access: "private",
+        boxId: "bx_abc",
+        isProtected: true,
+        port: 18790,
+        title: null,
+        url: `https://frazil-pneuma-rallye-18790.on.ascii.dev?_token=${token}`,
+      }) + "\n"
+
+    it("runs `box host --private`, parses the `_token`, and returns the Cookie auth header even when the daemon is already healthy", async () => {
       fetchMock.mockResolvedValue({ ok: true })
-      boxApiMock.command.mockResolvedValue({ stdout: "tok_secret_abc\n", stderr: "" })
+      boxApiMock.command.mockResolvedValue({ stdout: privateHostStdout("tok_secret_abc"), stderr: "" })
 
       const { boxSandboxProvider } = await import("../provider.js")
       const booted = await boxSandboxProvider.connect!("bx_abc", spec, { env: {}, expose: "private" })
@@ -142,12 +154,13 @@ describe("boxSandboxProvider.connect", () => {
         commandRequest: expect.objectContaining({ command: "box host bx_abc 18790 --private" }),
       })
       expect(booted.token).toBe("tok_secret_abc")
+      expect(booted.authHeaders).toEqual({ Cookie: "_port_auth=tok_secret_abc" })
     })
 
     it("uses --private instead of --public during first-time provisioning when expose is private", async () => {
       fetchMock.mockRejectedValueOnce(new Error("connect refused"))
       fetchMock.mockResolvedValue({ ok: true })
-      boxApiMock.command.mockResolvedValue({ stdout: "tok_fresh\n", stderr: "" })
+      boxApiMock.command.mockResolvedValue({ stdout: privateHostStdout("tok_fresh"), stderr: "" })
 
       const { boxSandboxProvider } = await import("../provider.js")
       const reconnectSpec: SandboxSpec = { provider: "box", config: { healthProbeTimeoutMs: 0 } }
@@ -168,14 +181,14 @@ describe("boxSandboxProvider.connect", () => {
       expect(booted.token).toBe("tok_fresh")
     })
 
-    it("throws when `box host --private` produces no token in its output", async () => {
+    it("throws when `box host --private` produces no `_token` in its output", async () => {
       fetchMock.mockResolvedValue({ ok: true })
       boxApiMock.command.mockResolvedValue({ stdout: "", stderr: "" })
 
       const { boxSandboxProvider } = await import("../provider.js")
       await expect(
         boxSandboxProvider.connect!("bx_abc", spec, { env: {}, expose: "private" }),
-      ).rejects.toThrow(/produced no token/)
+      ).rejects.toThrow(/produced no .?_token/)
     })
   })
 

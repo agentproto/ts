@@ -340,10 +340,20 @@ describe("boxSandboxProvider.boot", () => {
     expect(boxApiMock.remove).toHaveBeenCalledWith({ boxId: "bx_abc" })
   })
 
-  it("stop() removes (deletes) the box", async () => {
+  it("stop() stops THEN removes the box — remove alone leaks an idle box that still counts against the cap", async () => {
     fetchMock.mockResolvedValue({ ok: true })
     const { boxSandboxProvider } = await import("../provider.js")
     const booted = await boxSandboxProvider.boot(spec, { env: {} })
+    await booted.stop()
+    expect(boxApiMock.stop).toHaveBeenCalledWith({ boxId: "bx_abc" })
+    expect(boxApiMock.remove).toHaveBeenCalledWith({ boxId: "bx_abc" })
+  })
+
+  it("stop() still removes even when the stop (snapshot) step fails — teardown must not abort", async () => {
+    fetchMock.mockResolvedValue({ ok: true })
+    const { boxSandboxProvider } = await import("../provider.js")
+    const booted = await boxSandboxProvider.boot(spec, { env: {} })
+    boxApiMock.stop.mockRejectedValueOnce(new Error("box already stopped"))
     await booted.stop()
     expect(boxApiMock.remove).toHaveBeenCalledWith({ boxId: "bx_abc" })
   })

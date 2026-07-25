@@ -209,6 +209,26 @@ describe("attachSandbox", () => {
     if (result.ok) expect(result.descriptor.keepAlive).toBe(true)
   })
 
+  it("carries the provider's authHeaders (e.g. Box's Cookie gate) onto the descriptor", async () => {
+    const connect = vi.fn(async () => ({
+      mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
+      sandboxId: "bx_abc",
+      token: "tok_secret",
+      authHeaders: { Cookie: "_port_auth=tok_secret" },
+      stop: async () => {},
+    }))
+    const handle = fakeHandle({ connect })
+
+    const result = await attachSandbox({
+      provider: "box",
+      sandboxId: "bx_abc",
+      resolveSandboxProvider: resolverFor(handle),
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.authHeaders).toEqual({ Cookie: "_port_auth=tok_secret" })
+  })
+
   it("defaults config to {} when omitted", async () => {
     const connect = vi.fn(async () => ({
       mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
@@ -231,7 +251,24 @@ describe("attachSandbox", () => {
 // ── buildMcpConfigSnippet ────────────────────────────────────────────────
 
 describe("buildMcpConfigSnippet", () => {
-  it("includes an Authorization: Bearer header when the descriptor carries a token", () => {
+  it("emits the descriptor's own authHeaders verbatim (e.g. Box's Cookie gate) over the Bearer fallback", () => {
+    const snippet = buildMcpConfigSnippet({
+      provider: "box",
+      sandboxId: "bx_abc",
+      mcpUrl: "https://frazil-18790.on.ascii.dev/mcp",
+      token: "tok_secret",
+      authHeaders: { Cookie: "_port_auth=tok_secret" },
+      allowOrigin: "https://frazil-18790.on.ascii.dev",
+      keepAlive: false,
+    })
+    const entry = snippet.mcpServers["sandbox-box-bx_abc"]!
+    expect(entry.type).toBe("http")
+    expect(entry.url).toBe("https://frazil-18790.on.ascii.dev/mcp")
+    // Cookie, NOT Authorization: Bearer — ascii.dev's port edge ignores bearer.
+    expect(entry.headers).toEqual({ Cookie: "_port_auth=tok_secret" })
+  })
+
+  it("falls back to Authorization: Bearer when the descriptor carries a token but no authHeaders", () => {
     const snippet = buildMcpConfigSnippet({
       provider: "box",
       sandboxId: "bx_abc",
@@ -241,8 +278,6 @@ describe("buildMcpConfigSnippet", () => {
       keepAlive: false,
     })
     const entry = snippet.mcpServers["sandbox-box-bx_abc"]!
-    expect(entry.type).toBe("http")
-    expect(entry.url).toBe("https://frazil-18790.on.ascii.dev/mcp")
     expect(entry.headers).toEqual({ Authorization: "Bearer tok_secret" })
   })
 

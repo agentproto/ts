@@ -237,11 +237,16 @@ Paste into .mcp.json:
     "sandbox-box-bx_abc123": {
       "type": "http",
       "url": "https://frazil-pneuma-rallye-18790.on.ascii.dev/mcp",
-      "headers": { "Authorization": "Bearer ••••••••" }
+      "headers": { "Cookie": "_port_auth=••••••••" }
     }
   }
 }
 ```
+
+> The auth header is provider-specific (from the descriptor's `authHeaders`):
+> Box gates its private hostname on a `Cookie: _port_auth=<token>` — its port
+> edge ignores `Authorization: Bearer` — while a token-only provider falls back
+> to a bearer header.
 
 Paste that `.mcp.json` block into a local Claude Code project (or a GitHub
 Actions secret, or another sandbox's own `.mcp.json`) and it can reach the
