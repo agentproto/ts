@@ -108,7 +108,17 @@ export type {
   WatcherDescriptor,
   InboundWatcher,
 } from "./inbound-watcher.js"
-export type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
+export type {
+  InboundMessage,
+  InboundRouteMode,
+  InboundRouterDeps,
+  InboundEnqueuePrompt,
+  InboundIsSessionAlive,
+  InboundRestartSession,
+  InboundSpawnForContact,
+  InboundRouterLog,
+} from "./inbound-router.js"
+export type { TransmitterBinding, TransmitterBindingStore } from "./transmitter-bindings.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
