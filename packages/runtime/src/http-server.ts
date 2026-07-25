@@ -33,7 +33,7 @@ import { ZodError } from "zod"
 import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
-import type { SessionsRegistry, AgentSessionLike } from "./sessions.js"
+import type { SessionsRegistry, AgentSessionLike, RestartPolicy } from "./sessions.js"
 import { SessionNotAliveError } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { PairingRegistry } from "./pairing-registry.js"
@@ -656,6 +656,11 @@ export interface RuntimeHttpServerOptions {
      *  default applies even when unset), 0 only when explicitly disabled. Kept
      *  in sync with the `daemon_health` MCP tool's field of the same name. */
     crashDetectIntervalMs?: number
+    /** Effective `daemon.restartSweepIntervalMs` knob (restart-scheduler
+     *  PR-2) — the sweep cadence (ms) that executes an already-scheduled
+     *  restart, or 0 when off. Kept in sync with the `daemon_health` MCP
+     *  tool's field of the same name. */
+    restartSweepIntervalMs?: number
   }
 }
 
@@ -1060,6 +1065,7 @@ export async function startHttpServer(
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
+        restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
       }),
     )
   }
@@ -2907,6 +2913,47 @@ function parseAccessField(raw: unknown): { profileRef?: string } | undefined {
   return typeof profileRef === "string" && profileRef.length > 0 ? { profileRef } : {}
 }
 
+/** Parse the `restartPolicy` body field on `POST /sessions/agent` — the HTTP
+ *  twin of the MCP `agent_start` tool's `restartPolicy` field (restart-
+ *  scheduler PR-2). Tolerates a JSON-stringified object (see
+ *  `parseOrchestratorField`). All six required fields must parse to their
+ *  expected primitive type or the whole field is dropped (`undefined`) —
+ *  never a partial/malformed policy that would silently misbehave. */
+function parseRestartPolicyField(raw: unknown): RestartPolicy | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  const on = Array.isArray(obj.on)
+    ? obj.on.filter((v): v is "crashed" | "error" => v === "crashed" || v === "error")
+    : undefined
+  const maxRetries = typeof obj.maxRetries === "number" ? obj.maxRetries : undefined
+  const windowMs = typeof obj.windowMs === "number" ? obj.windowMs : undefined
+  const baseDelayMs = typeof obj.baseDelayMs === "number" ? obj.baseDelayMs : undefined
+  const factor = typeof obj.factor === "number" ? obj.factor : undefined
+  const maxDelayMs = typeof obj.maxDelayMs === "number" ? obj.maxDelayMs : undefined
+  if (
+    !on ||
+    on.length === 0 ||
+    maxRetries === undefined ||
+    windowMs === undefined ||
+    baseDelayMs === undefined ||
+    factor === undefined ||
+    maxDelayMs === undefined
+  ) {
+    return undefined
+  }
+  const resume = typeof obj.resume === "boolean" ? obj.resume : undefined
+  return {
+    on,
+    maxRetries,
+    windowMs,
+    baseDelayMs,
+    factor,
+    maxDelayMs,
+    ...(resume !== undefined ? { resume } : {}),
+  }
+}
+
 /**
  * Reverse-map a cwd onto a registered workspace slug — the same rule
  * spawnAgentSession applies (session-spawn.ts), hoisted here so the terminal
@@ -3165,6 +3212,22 @@ async function handleSessions(
               return h ? { permissionHold: true } : {}
             })()
           : {}),
+        // Opt into direct in-band crash notification — the HTTP twin of the
+        // MCP `agent_start` tool's `notifyParentOnCrash` field. Tolerate a
+        // stringified boolean like `permissionHold`/`trace`.
+        ...(b.notifyParentOnCrash !== undefined
+          ? (() => {
+              const n =
+                typeof b.notifyParentOnCrash === "boolean"
+                  ? b.notifyParentOnCrash
+                  : b.notifyParentOnCrash === "true"
+                    ? true
+                    : b.notifyParentOnCrash === "false"
+                      ? false
+                      : undefined
+              return n ? { notifyParentOnCrash: true } : {}
+            })()
+          : {}),
         // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
         // `worktree` field. Same `spawnAgentSession` core resolves the
         // `worktrees.isolation` policy, so `always` bites here too and there's
@@ -3173,6 +3236,14 @@ async function handleSessions(
           ? (() => {
               const parsed = parseWorktreeField(b.worktree)
               return parsed !== undefined ? { worktree: parsed } : {}
+            })()
+          : {}),
+        // Opt-in auto-restart policy — the HTTP twin of the MCP `agent_start`
+        // tool's `restartPolicy` field (restart-scheduler PR-2).
+        ...(b.restartPolicy !== undefined
+          ? (() => {
+              const parsed = parseRestartPolicyField(b.restartPolicy)
+              return parsed !== undefined ? { restartPolicy: parsed } : {}
             })()
           : {}),
         // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP

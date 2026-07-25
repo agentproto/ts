@@ -8,7 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import { mintSessionId, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor } from "./sessions.js"
+import { mintSessionId, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -387,6 +387,11 @@ export interface SpawnAgentSessionInput {
    *  auto-attached governance policy (`policy:failed` on windowed overage) — it
    *  never kills the session. Omit ⇒ no windowed budget. */
   costBudget?: CostBudget
+  /** Opt-in auto-restart policy (restart-scheduler, PR-2). When set, an
+   *  unexpected death (`crashed` and/or `error`, per `restartPolicy.on`) is
+   *  proactively revived in place — see `RestartPolicy`'s doc in
+   *  `sessions.ts`. Omitted ⇒ today's lazy-resume-only behaviour. */
+  restartPolicy?: RestartPolicy
   /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
    *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
    *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
@@ -436,6 +441,16 @@ export interface SpawnAgentSessionInput {
    *  for sandbox spawns (the box's own daemon owns permission handling).
    *  Default false — unchanged auto-answer behaviour. */
   permissionHold?: boolean
+  /** Opt this child into the direct in-band crash notification: when it
+   *  crashes (`markCrashed`), the supervisor-notify subscriber
+   *  (`supervisor-notify.ts`) delivers a `[child-crashed] …` notice into its
+   *  `parentSessionId`, if any — enqueued immediately when the parent is
+   *  alive and idle, queued for its next turn when busy (never
+   *  interrupted). Recorded verbatim onto {@link SessionDescriptor
+   *  .notifyParentOnCrash}; see that field's doc. Default false — the free
+   *  external webhook path (`notifyUrl`) already fires regardless of this
+   *  flag. */
+  notifyParentOnCrash?: boolean
   /** Exempt this session from the idle-reaper (`isReapable` in
    *  idle-reaper.ts) regardless of how long it sits idle. Stamped straight
    *  onto the descriptor — see `SessionDescriptor.keepAlive`. Default false
@@ -1698,6 +1713,7 @@ export async function spawnAgentSession(
       // the scope-derived depth for a scoped spawn, else the hint parent's
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
+      ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
@@ -1708,6 +1724,7 @@ export async function spawnAgentSession(
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
+      ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       // Verifiability: record the OBSERVABLE echo — resolved provider, mode,
