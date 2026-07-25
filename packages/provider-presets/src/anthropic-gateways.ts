@@ -85,6 +85,23 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     defaultModel: "deepseek-v4-pro",
     homepage: "https://api-docs.deepseek.com",
   },
+  "xai-anthropic": {
+    id: "xai-anthropic",
+    label: "xAI (Anthropic-compatible)",
+    description:
+      "xAI Grok models via xAI's live Anthropic-compatible Messages endpoint " +
+      "at https://api.x.ai/v1/messages. Base URL has NO /v1 suffix — the " +
+      "client appends /v1/messages itself. Set XAI_API_KEY in env. Note: " +
+      "xAI's own docs do not document this surface, but the endpoint is live " +
+      "and returns standard Anthropic message responses.",
+    schemaFlavor: "anthropic",
+    // NO /v1 suffix: the Anthropic client appends /v1/messages itself.
+    baseUrl: "https://api.x.ai",
+    keyEnv: "XAI_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "grok-4.5",
+    homepage: "https://docs.x.ai",
+  },
   "llm-endpoint": {
     id: "llm-endpoint",
     label: "LLM Endpoint",

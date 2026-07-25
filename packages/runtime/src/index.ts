@@ -238,6 +238,9 @@ export {
   type CatalogRouteSummary,
   type CatalogPricing,
 } from "./catalog-models.js"
+// NOTE: as of this export, `registerBuiltinRoutes` is `async` (it now also
+// loads operator routes from `~/.agentproto/routes.json`). Callers MUST
+// `await` it — an un-awaited call will silently skip operator-route loading.
 export { registerBuiltinRoutes } from "./builtin-routes.js"
 export {
   buildCatalogProviderModels,
@@ -878,7 +881,7 @@ export async function createGateway(
   // anything resolves a model ref or builds the catalog — `resolveLlmModelRoute`
   // reads the custom-route map at call time, so a curated `@llm-endpoint` row is
   // only priced + reachable once this has run (`builtin-routes.ts`). Idempotent.
-  registerBuiltinRoutes()
+  await registerBuiltinRoutes()
   // Effective idle-reap threshold (PR-6): a positive ms value enables the
   // periodic reaper, anything else (unset / 0 / negative) keeps it off. Kept as
   // a plain `0`-means-off number so `daemon_health` / `GET /health` can surface

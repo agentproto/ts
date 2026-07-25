@@ -8,7 +8,7 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot, openrouter, requesty, deepseek, llm-endpoint, xai, openai and openai-direct", () => {
+  it("exposes moonshot, openrouter, requesty, deepseek, xai-anthropic, llm-endpoint, xai, openai and openai-direct", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
       "deepseek",
       "llm-endpoint",
@@ -18,6 +18,7 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
       "openrouter",
       "requesty",
       "xai",
+      "xai-anthropic",
     ])
   })
 
@@ -108,6 +109,15 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
 
   it("openrouter ships no pinned default model (operator picks via model option)", () => {
     expect(getAnthropicGatewayPreset("openrouter").defaultModel).toBeUndefined()
+  })
+
+  it("xai-anthropic points directly at xAI with no /v1 suffix and Anthropic flavor", () => {
+    const xa = getAnthropicGatewayPreset("xai-anthropic")
+    expect(xa.baseUrl).toBe("https://api.x.ai")
+    expect(xa.schemaFlavor).toBe("anthropic")
+    expect(xa.keyEnv).toBe("XAI_API_KEY")
+    expect(xa.defaultModel).toBe("grok-4.5")
+    expect(xa.scrubEnv).toContain("ANTHROPIC_API_KEY")
   })
 
   it("xai uses the intentional local OpenAI-compatible proxy", () => {

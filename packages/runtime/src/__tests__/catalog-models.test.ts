@@ -783,12 +783,12 @@ describe("buildCatalogModels — first-party ↔ router-key collision (firstpart
   })
 })
 
-describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", () => {
+describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", async () => {
   // The built-in `llm-endpoint` custom route must be registered for a curated
   // `<vendor>/<product>@llm-endpoint` row to carry a baseUrl to spawn against.
   // `registerBuiltinRoutes` writes it into the (module-global, idempotent)
   // custom-route map — the same call `createGateway` makes at daemon boot.
-  registerBuiltinRoutes()
+  await registerBuiltinRoutes()
 
   // claude-code curates a native id, an @openrouter id, and an @llm-endpoint id
   // — mirroring the real adapter allowlist, so the same fixture proves the new
