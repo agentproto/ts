@@ -183,12 +183,22 @@ export interface SessionReapedEvent {
  * policy brought me back". Same bus distribution as every other lifecycle
  * event (`session_events_poll`, the webhook notifier, the routine engine,
  * `session_monitor`).
+ *
+ * `contextRestored` (resume-honesty fix): `false` when the resumed adapter
+ * declared `capabilities.resumable: false` (`SessionDescriptor.resumable`) —
+ * the in-place revival got a live process back, but the adapter could NOT
+ * rehydrate the prior conversation from `adapterSessionId`, so this is a
+ * blank session wearing the old one's id, not a continued one. Omitted
+ * (never `false`) when the adapter is resumable (`true`/unknown — the
+ * default, unchanged for claude-code and every other happy path), so an
+ * existing consumer that ignores this field sees no behaviour change.
  */
 export interface SessionResumedEvent {
   type: "session:resumed"
   sessionId: string
   interrupted: boolean
   resumedFrom: "daemon-restart" | "restarted"
+  contextRestored?: false
   label?: string
   ts: string
 }

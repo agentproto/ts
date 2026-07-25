@@ -50,6 +50,7 @@ import {
   augmentWithFsResume,
   describeResumePath,
   tokenizeCommand,
+  RESUME_ID_REJECTED_RE,
 } from "@agentproto/runtime/resume-strategies"
 import {
   buildStory,
@@ -2280,7 +2281,7 @@ async function executeRestartWithFallback(
     // without resume so the user at least gets the command back.
     if (
       built.body.resumeSessionId &&
-      /not found|Resource not found/i.test(msg)
+      RESUME_ID_REJECTED_RE.test(msg)
     ) {
       const { resumeSessionId, ...rest } = built.body
       void resumeSessionId
@@ -2687,7 +2688,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
       return 1
     }
     // Adapter doesn't know the resume id — retry without it.
-    if (body.resumeSessionId && /not found|Resource not found/i.test(msg)) {
+    if (body.resumeSessionId && RESUME_ID_REJECTED_RE.test(msg)) {
       try {
         const { resumeSessionId: _, ...rest } = body
         void _

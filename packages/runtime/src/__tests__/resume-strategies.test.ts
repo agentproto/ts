@@ -269,6 +269,60 @@ describe("decideRestartStrategy", () => {
     expect(strategy).toEqual({ kind: "agent" })
   })
 
+  // ── resume-honesty fix: capability-based downgrade ──────────────────
+  //
+  // An adapter that declares `resumable: false` (hermes, mastra-agent, …)
+  // cannot rehydrate a prior conversation from `adapterSessionId` at all —
+  // this was the silent-blank-session bug (`describeResumePath` used to
+  // report "resumed via ACP" regardless of capability). The decision tree
+  // must never hand back a phantom `resumeSessionId` for one of these, and
+  // must flag the downgrade so callers stamp `resumeFallback: true`.
+
+  it("resumable:false never emits resumeSessionId, even with a captured adapterSessionId — flags resumeFallback instead", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "hermes",
+      adapterSessionId: "chat_42",
+      resumable: false,
+    })
+    expect(strategy).toEqual({ kind: "agent", resumeFallback: true })
+  })
+
+  it("resumable:false with no captured id at all is just the ordinary empty case (nothing to downgrade)", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "hermes",
+      resumable: false,
+    })
+    expect(strategy).toEqual({ kind: "agent" })
+  })
+
+  it("resumable:true (or unknown) is unaffected — unchanged behaviour", () => {
+    expect(
+      decideRestartStrategy({
+        adapterSlug: "hermes",
+        adapterSessionId: "chat_42",
+        resumable: true,
+      }),
+    ).toEqual({ kind: "agent", resumeSessionId: "chat_42" })
+    expect(
+      decideRestartStrategy({
+        adapterSlug: "hermes",
+        adapterSessionId: "chat_42",
+      }),
+    ).toEqual({ kind: "agent", resumeSessionId: "chat_42" })
+  })
+
+  it("claude-code's pty-native happy path is unaffected by resumable:false (shouldn't apply in practice, but proves the gate is scoped to the agent branch)", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "claude-code",
+      resumeMetadata: { claudeResumeId: "abc-123" },
+      resumable: false,
+    })
+    expect(strategy).toEqual({
+      kind: "pty-native",
+      argv: ["claude", "--resume", "abc-123"],
+    })
+  })
+
   it("returns unsupported for a generic command session", () => {
     const strategy = decideRestartStrategy({})
     expect(strategy.kind).toBe("unsupported")
@@ -297,6 +351,39 @@ describe("describeResumePath", () => {
   it("returns empty string when nothing was resumed", () => {
     expect(describeResumePath({})).toBe("")
     expect(describeResumePath({ adapterSlug: "hermes" })).toBe("")
+  })
+
+  // ── resume-honesty fix ────────────────────────────────────────────
+  it("never claims 'resumed via ACP' for a resumable:false adapter — honest degraded label instead", () => {
+    expect(
+      describeResumePath({
+        adapterSlug: "hermes",
+        adapterSessionId: "chat_42",
+        resumable: false,
+      }),
+    ).toBe("fresh — resume not supported by hermes")
+  })
+
+  it("claude-code (resumable:true) keeps saying 'resumed via ACP' when it takes the ACP branch", () => {
+    // claude-code normally resolves pty-native (see the describe block
+    // above) — this pins the ACP branch specifically stays truthful when
+    // resumable is explicitly true, unaffected by the honesty gate.
+    expect(
+      describeResumePath({
+        adapterSlug: "claude-code",
+        adapterSessionId: "acp-abc",
+        resumable: true,
+      }),
+    ).toBe("resumed via ACP")
+  })
+
+  it("resumable:true or unknown for a no-native-strategy adapter is unaffected — still 'resumed via ACP'", () => {
+    expect(
+      describeResumePath({ adapterSlug: "hermes", adapterSessionId: "chat_42", resumable: true }),
+    ).toBe("resumed via ACP")
+    expect(
+      describeResumePath({ adapterSlug: "hermes", adapterSessionId: "chat_42" }),
+    ).toBe("resumed via ACP")
   })
 })
 

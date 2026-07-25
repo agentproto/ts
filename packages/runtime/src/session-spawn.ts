@@ -1687,6 +1687,7 @@ export async function spawnAgentSession(
       cwd,
       agentSession,
       adapterSlug: input.adapter,
+      ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       harness: input.harness ?? input.adapter,
       ...(input.model ? { model: input.model } : {}),
       ...(input.mode ? { mode: input.mode } : {}),

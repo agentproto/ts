@@ -485,6 +485,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.models?.default
           ? { defaultModel: adapter.handle.models.default }
           : {}),
+        ...(adapter.handle.capabilities?.resumable !== undefined
+          ? { resumable: adapter.handle.capabilities.resumable }
+          : {}),
       }
     } catch (err) {
       console.warn(

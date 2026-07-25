@@ -302,6 +302,17 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   /** Adapter's default model id (`models.default`) — lets the resolver derive
    *  a provider for a by-model spawn that omitted `model`. */
   defaultModel?: string
+  /** Manifest-declared `capabilities.resumable` (AIP-45) — whether THIS
+   *  adapter can actually rehydrate a prior conversation from a captured
+   *  session id, as opposed to merely having one recorded. Threaded onto
+   *  {@link SessionDescriptor.resumable} at spawn/restart time so the resume
+   *  path (`resume-strategies.ts`'s `describeResumePath`/`decideRestartStrategy`)
+   *  can gate its "resumed via ACP" label on real capability instead of
+   *  hardcoding a slug list. `false` ⇒ a captured `adapterSessionId` is a
+   *  dead end (e.g. hermes, mastra-agent) — never pass it as
+   *  `resumeSessionId`. Omitted/`true` ⇒ unchanged (assumed resumable),
+   *  preserving today's behaviour for every adapter that doesn't set this. */
+  resumable?: boolean
 } | null>
 
 /**

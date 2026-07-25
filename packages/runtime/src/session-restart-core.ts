@@ -55,6 +55,8 @@ import {
   decideRestartStrategy,
   augmentWithFsResume,
   describeResumePath,
+  RESUME_ID_REJECTED_RE,
+  type RestartStrategy,
 } from "./resume-strategies.js"
 import {
   resolveSpawnDefaults,
@@ -505,8 +507,8 @@ export async function restartAgentSession(
   // comment below) — skip the FS probe entirely rather than pay for I/O
   // whose result is discarded.
   const augmented = opts.forceAgentResume ? prev : await augmentWithFsResume(prev)
-  const strategy = opts.forceAgentResume
-    ? ({ kind: "agent", resumeSessionId: prev.adapterSessionId } as const)
+  const strategy: RestartStrategy = opts.forceAgentResume
+    ? { kind: "agent", resumeSessionId: prev.adapterSessionId }
     : decideRestartStrategy(augmented)
 
   if (strategy.kind !== "agent") {
@@ -697,8 +699,18 @@ export async function restartAgentSession(
     // fields land on the STORED descriptor rather than only being grafted
     // onto the caller's response object (the bug this module's persistence
     // fix addresses; see `SessionDescriptor.resumedFrom`'s doc).
+    //
+    // `strategy.resumeFallback` (agent-honesty fix) marks a DELIBERATE
+    // capability-based downgrade — `decideRestartStrategy` never even
+    // attempted `resumeSessionId` because the adapter declared
+    // `resumable: false` — so this attempt's honest label comes from
+    // `describeResumePath` even though `resumeSessionId` itself is
+    // undefined; a plain "" stays reserved for "nothing to resume" (no id)
+    // and for the not-found retry attempt below.
     const resumeVia = !resumeSessionId
-      ? ""
+      ? strategy.kind === "agent" && strategy.resumeFallback
+        ? describeResumePath(augmented)
+        : ""
       : opts.forceAgentResume
         ? "resumed via ACP"
         : describeResumePath(augmented)
@@ -707,6 +719,7 @@ export async function restartAgentSession(
       cwd,
       agentSession,
       adapterSlug,
+      ...(resolved.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       harness: effHarness,
       ...(prev.label ? { label: prev.label } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
@@ -744,12 +757,15 @@ export async function restartAgentSession(
   }
 
   let desc: SessionDescriptor
-  let resumeFallback = false
+  // A capability-based downgrade (Fix B) is already a flagged fallback even
+  // though nothing threw — `decideRestartStrategy` chose not to attempt
+  // `resumeSessionId` at all.
+  let resumeFallback = strategy.kind === "agent" && strategy.resumeFallback === true
   try {
     desc = await spawnWithResume(strategy.resumeSessionId)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (strategy.resumeSessionId && /not found|Resource not found/i.test(msg)) {
+    if (strategy.resumeSessionId && RESUME_ID_REJECTED_RE.test(msg)) {
       desc = await spawnWithResume(undefined)
       resumeFallback = true
     } else {
