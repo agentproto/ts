@@ -108,6 +108,7 @@ export type {
   WatcherDescriptor,
   InboundWatcher,
 } from "./inbound-watcher.js"
+export type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
