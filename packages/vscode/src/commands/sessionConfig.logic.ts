@@ -502,6 +502,7 @@ export function buildSessionConfigChips(
   const modelRows: ConfigChipRow[] = mapChangeModelQuickPickItems(input.adapter, {
     model: descriptor.model,
     mode: descriptor.mode,
+    route: descriptor.route,
   })
     .filter(item => item.model !== undefined)
     .map(item => ({

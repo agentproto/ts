@@ -2,16 +2,15 @@ import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor } from "../client/types.js"
 import type { SpawnAdapterInfo } from "./spawn.logic.js"
-import { buildChangeModelPlaceHolder, mapChangeModelQuickPickItems } from "./changeModel.logic.js"
+import { buildChangeModelPlaceHolder, makeChangeRouteItem, mapChangeModelQuickPickItems } from "./changeModel.logic.js"
 
 function adapter(overrides: Partial<SpawnAdapterInfo> = {}): SpawnAdapterInfo {
   return { slug: "claude-code", ...overrides }
 }
 
-function session(overrides: Partial<Pick<SessionDescriptor, "model" | "mode">> = {}): Pick<
-  SessionDescriptor,
-  "model" | "mode"
-> {
+function session(
+  overrides: Partial<Pick<SessionDescriptor, "model" | "mode" | "route">> = {},
+): Pick<SessionDescriptor, "model" | "mode" | "route"> {
   return { ...overrides }
 }
 
@@ -110,6 +109,59 @@ describe("mapChangeModelQuickPickItems", () => {
     const current = modelRows.find(r => r.model === "o4-mini")
     expect(current?.current).toBe(true)
     expect(current?.restartRequired).toBe(true)
+  })
+
+  it("shows no extra route suffix for a bare or direct-route model ref", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        modelDetails: [
+          { id: "claude-sonnet-5", provider: "anthropic" },
+          { id: "claude-opus-4-8" },
+        ],
+      }),
+      session({ model: "claude-sonnet-5" }),
+    )
+    expect(items.find(i => i.model === "claude-sonnet-5")?.description).toBe("current")
+    expect(items.find(i => i.model === "claude-opus-4-8")?.description).toBeUndefined()
+  })
+
+  it("appends the explicit route to a route-pinned model ref", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        modelDetails: [
+          { id: "z-ai/glm-5.2@openrouter", provider: "z-ai" },
+          { id: "z-ai/glm-5.2@requesty", provider: "z-ai" },
+        ],
+      }),
+      session({ model: "z-ai/glm-5.2@openrouter" }),
+    )
+    expect(items.find(i => i.model === "z-ai/glm-5.2@openrouter")?.description).toBe("current · via openrouter")
+    const requesty = items.find(i => i.model === "z-ai/glm-5.2@requesty")
+    expect(requesty?.restartRequired).toBe(true)
+    expect(requesty?.description).toBe("restart required · via requesty")
+  })
+
+  it("merges restart-required and route suffix on a cross-route row", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        modelDetails: [
+          { id: "claude-sonnet-5", provider: "anthropic" },
+          { id: "anthropic/claude-sonnet-5@openrouter", provider: "anthropic" },
+        ],
+      }),
+      session({ model: "claude-sonnet-5" }),
+    )
+    const widened = items.find(i => i.model === "anthropic/claude-sonnet-5@openrouter")
+    expect(widened?.restartRequired).toBe(true)
+    expect(widened?.description).toBe("restart required · via openrouter")
+  })
+
+  it("prepends a synthetic 'Change route' row that opens the route chip picker", () => {
+    const row = makeChangeRouteItem()
+    expect(row.openRouteChip).toBe(true)
+    expect(row.label).toMatch(/Change route/)
+    expect(row.model).toBeUndefined()
+    expect(row.description).toMatch(/gateway/)
   })
 
   it("returns an empty array when the adapter declares no models", () => {
