@@ -808,7 +808,7 @@ interface TranscriptRecord {
   cost?: { amount: number; currency: string }
 }
 
-async function exportDaemonEventsSession(
+export async function exportDaemonEventsSession(
   sessionId: string,
   desc?: SessionDescriptor,
 ): Promise<ExportedSession> {
