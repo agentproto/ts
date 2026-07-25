@@ -81,10 +81,10 @@ describe("boxSandboxProvider.boot", () => {
       boxId: "bx_abc",
       commandRequest: expect.objectContaining({ command: 'sudo npm i -g "@agentproto/cli@latest"' }),
     })
-    // exposes the daemon's port on Box's edge
+    // exposes the daemon's port on Box's edge — `box host` requires its own <ID>
     expect(boxApiMock.command).toHaveBeenCalledWith({
       boxId: "bx_abc",
-      commandRequest: expect.objectContaining({ command: "box host 18790 --public" }),
+      commandRequest: expect.objectContaining({ command: "box host bx_abc 18790 --public" }),
     })
     // installs the always-on systemd unit, bound to this box's computed public host
     expect(boxApiMock.command).toHaveBeenCalledWith({
@@ -130,6 +130,30 @@ describe("boxSandboxProvider.boot", () => {
         command: expect.stringContaining("EnvironmentFile=-/etc/agentproto/agentproto.env"),
       }),
     })
+  })
+
+  it("keeps every heredoc terminator alone on its own line (regression: `&&`-joining ate the systemd unit write)", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { boxSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = { provider: "box", config: { healthProbeTimeoutMs: 0 } }
+    await boxSandboxProvider.boot(bootSpec, { env: { OPENROUTER_API_KEY: "k" } })
+
+    const unitCall = boxApiMock.command.mock.calls.find(
+      ([{ commandRequest }]) =>
+        typeof commandRequest.command === "string" && commandRequest.command.includes("agentproto.service"),
+    )
+    expect(unitCall).toBeDefined()
+    const command = unitCall![0].commandRequest.command as string
+
+    // A heredoc terminator (AGENTPROTO_ENV / AGENTPROTO_UNIT) must be the
+    // ONLY thing on its line — a trailing `&&`-chained next step (what
+    // `.join(" && ")` used to produce) stops bash from recognizing it as
+    // the closing delimiter, so the rest of the script gets swallowed into
+    // that heredoc's body instead of running.
+    expect(command.split("\n")).toContain("AGENTPROTO_ENV")
+    expect(command.split("\n")).toContain("AGENTPROTO_UNIT")
   })
 
   it("installs config.installPackages alongside the CLI update in ONE npm invocation (adapter survives the update)", async () => {

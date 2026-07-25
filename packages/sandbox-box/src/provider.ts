@@ -5,7 +5,7 @@
  * so `createSandboxAgentSessionHost` (`@agentproto/sandbox`) can hand it
  * straight to `connectDaemonAgentSessionHost`.
  *
- * Box's `host <port>` CLI exposes a port at
+ * Box's `host <id> <port>` CLI exposes a port at
  * `https://<box-subdomain>-<port>.on.ascii.dev`, and re-running it for the
  * same box+port returns the same URL — so the hostname is computed directly
  * from `Box.subdomain` (assigned once, persists across stop/resume/fork)
@@ -192,12 +192,23 @@ function writeSystemdUnitCommand(
     "WantedBy=multi-user.target",
   ].join("\n")
 
+  // Heredoc terminators must be alone on their own line — joining these with
+  // " && " (as every other multi-step command in this provider does) would
+  // land the next command on the SAME line as the previous heredoc's closing
+  // delimiter. bash then never recognizes that delimiter and swallows
+  // everything after it (including the next heredoc) into the first
+  // heredoc's body until EOF — silently no-op'ing the systemd unit write
+  // while still reporting exitCode 0. Verified live: the daemon never
+  // started because `/etc/systemd/system/agentproto.service` was never
+  // written. Newlines keep each heredoc's terminator on its own line;
+  // `set -e` preserves fail-fast semantics across the sequence.
   return [
+    "set -e",
     `sudo mkdir -p ${ENV_FILE_DIR}`,
     `sudo tee ${ENV_FILE_PATH} > /dev/null <<'AGENTPROTO_ENV'\n${envLines}\nAGENTPROTO_ENV`,
     `sudo chmod 600 ${ENV_FILE_PATH}`,
     `sudo tee ${SYSTEMD_UNIT_PATH} > /dev/null <<'AGENTPROTO_UNIT'\n${unit}\nAGENTPROTO_UNIT`,
-  ].join(" && ")
+  ].join("\n")
 }
 
 /**
@@ -241,9 +252,13 @@ async function ensureDaemonHealthy(
 
     // Exposes the port at https://<subdomain>-<port>.on.ascii.dev. Re-running
     // for the same box+port returns the same URL — safe on every (re-)boot.
+    // `box host` requires its own <ID> argument even when run from inside
+    // that same box — verified live (`box host <port> --public` alone fails
+    // with "the following required arguments were not provided: <PORT>",
+    // since `<port>` alone is parsed as `<ID>`).
     await api.command({
       boxId,
-      commandRequest: { command: `box host ${port} --public`, timeoutSeconds: 30 },
+      commandRequest: { command: `box host ${boxId} ${port} --public`, timeoutSeconds: 30 },
     })
 
     await api.command({
