@@ -99,10 +99,10 @@ function buildMsg(
   body: unknown,
   ctx: { alias: string; sourceOverride?: string },
   fields: {
-    source: string | (() => string | undefined)
-    contactRef: string | (() => string | undefined)
-    text: string | (() => string | undefined)
-    providerMessageId?: string | (() => string | undefined)
+    source: string | undefined | (() => string | undefined)
+    contactRef: string | undefined | (() => string | undefined)
+    text: string | undefined | (() => string | undefined)
+    providerMessageId?: string | undefined | (() => string | undefined)
   },
 ): NormalizeInboundResult {
   const source =
