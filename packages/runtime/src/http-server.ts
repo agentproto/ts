@@ -51,6 +51,8 @@ import {
 import { discoverMcps } from "./mcp-discovery.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
+import { normalizeInbound, verifyInboundSignature, type InboundProvider } from "./inbound-adapters.js"
+import type { InboundEndpoint, InboundEndpointStore } from "./inbound-endpoints.js"
 import type {
   BrowserAdapterResolver,
   BrowserAdapterLister,
@@ -697,6 +699,10 @@ export interface RuntimeHttpServerOptions {
     action: "routed" | "spawned" | "restarted-routed" | "skipped"
     sessionId?: string
   }>
+  /** Optional — when wired alongside `routeInboundMessage`, enables provider-agnostic
+   *  `POST /inbound/:slug` endpoints with per-slug signature verification. Without it,
+   *  only the legacy `POST /inbound` bearer-gated native route is available. */
+  endpointStore?: InboundEndpointStore
   /** Static fields surfaced via `/health`. */
   meta: {
     workspace: string
@@ -1471,89 +1477,18 @@ export async function startHttpServer(
         }
 
         if (path === "/inbound" && req.method === "POST") {
-          // Push-ingress counterpart to inbound-watcher.ts's poll loop —
-          // same bearer gate as the other mutating routes since this lets
-          // a caller inject a user turn into a live session.
-          const gate = checkSessionsToken(req)
-          if (gate !== "ok") {
-            rejectUnauthorizedSession(req, res, gate)
-            return
-          }
-          const body = (await readJsonBody(req)) as {
-            alias?: unknown
-            source?: unknown
-            contact_ref?: unknown
-            text?: unknown
-            messages?: unknown
-            mode?: unknown
-          } | null
-          if (!body || typeof body.alias !== "string" || !body.alias) {
-            res.writeHead(400, { "content-type": "application/json" })
-            res.end(JSON.stringify({ error: "missing_alias" }))
-            return
-          }
-          if (typeof body.source !== "string" || !body.source) {
-            res.writeHead(400, { "content-type": "application/json" })
-            res.end(JSON.stringify({ error: "missing_source" }))
-            return
-          }
-          if (typeof body.contact_ref !== "string" || !body.contact_ref) {
-            res.writeHead(400, { "content-type": "application/json" })
-            res.end(JSON.stringify({ error: "missing_contact_ref" }))
-            return
-          }
-          if (typeof body.text !== "string" || !body.text) {
-            res.writeHead(400, { "content-type": "application/json" })
-            res.end(JSON.stringify({ error: "missing_text" }))
-            return
-          }
-          let mode: InboundRouteMode = "route-or-spawn"
-          if (body.mode !== undefined) {
-            if (
-              body.mode !== "spawn" &&
-              body.mode !== "route" &&
-              body.mode !== "route-or-spawn"
-            ) {
-              res.writeHead(400, { "content-type": "application/json" })
-              res.end(
-                JSON.stringify({
-                  error: "invalid_mode",
-                  message: `mode must be one of "spawn", "route", "route-or-spawn", got ${JSON.stringify(body.mode)}.`,
-                })
-              )
-              return
-            }
-            mode = body.mode
-          }
-          if (!opts.routeInboundMessage) {
-            res.writeHead(501, { "content-type": "application/json" })
-            res.end(
-              JSON.stringify({
-                error: "inbound_routing_not_configured",
-                message:
-                  "POST /inbound is not enabled — the daemon was started " +
-                  "without a routeInboundMessage handler. The host must " +
-                  "wire `routeInboundMessage` in createGateway.",
-              })
-            )
-            return
-          }
-          const msg: InboundMessage = {
-            alias: body.alias,
-            source: body.source,
-            contactRef: body.contact_ref,
-            text: body.text,
-            ...(Array.isArray(body.messages)
-              ? { messages: body.messages }
-              : {}),
-          }
-          const result = await opts.routeInboundMessage(msg, mode)
-          res.writeHead(200, { "content-type": "application/json" })
-          res.end(JSON.stringify(result))
+          // Legacy native path — bearer-gated, unchanged.
+          await handleNativeInbound(req, res, { routeInboundMessage: opts.routeInboundMessage, endpointStore: opts.endpointStore, checkSessionsToken, rejectUnauthorizedSession })
           return
         }
 
-        // Sessions routes — only registered when the gateway was
+        const inboundSlugMatch = path.match(/^\/inbound\/([^/]+)$/)
+        if (inboundSlugMatch && req.method === "POST") {
+          await handleProviderInbound(req, res, decodeURIComponent(inboundSlugMatch[1] ?? ""), { routeInboundMessage: opts.routeInboundMessage, endpointStore: opts.endpointStore, checkSessionsToken, rejectUnauthorizedSession })
+          return
+        }
+
+// Sessions routes — only registered when the gateway was
         // built with a SessionsRegistry. /sessions, /sessions/:id,
         // /sessions/:id/stream (SSE), POST /sessions/:id/kill,
         // DELETE /sessions/:id (forget after exit).
@@ -5519,6 +5454,255 @@ async function handleRoutineDefs(
   }
 
   return false
+}
+
+
+interface InboundHandlerDeps {
+  routeInboundMessage?: RuntimeHttpServerOptions["routeInboundMessage"]
+  endpointStore?: InboundEndpointStore
+  checkSessionsToken: (req: IncomingMessage) => "ok" | "missing" | "bad"
+  rejectUnauthorizedSession: (req: IncomingMessage, res: ServerResponse, reason: "missing" | "bad") => void
+}
+
+// Provider-agnostic raw-body push ingress. Mirrors `readJsonBody` but preserves
+// bytes for HMAC verification. Cap: 1 MB (expand later if large media pre-signed URLs arrive).
+async function readRawBody(req: IncomingMessage): Promise<{ ok: true; raw: string } | { ok: false; status: number; error: string }> {
+  const MAX_RAW_BODY_BYTES = 1_024 * 1_024
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of req) {
+    const buf = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : (chunk as Buffer)
+    total += buf.length
+    if (total > MAX_RAW_BODY_BYTES) {
+      return { ok: false, status: 413, error: "payload_too_large" }
+    }
+    chunks.push(buf)
+  }
+  return { ok: true, raw: Buffer.concat(chunks).toString("utf8") }
+}
+
+function isInboundRouteMode(mode: string): mode is InboundRouteMode {
+  return mode === "spawn" || mode === "route" || mode === "route-or-spawn"
+}
+
+async function handleNativeInbound(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: InboundHandlerDeps,
+): Promise<void> {
+  // Push-ingress counterpart to inbound-watcher.ts's poll loop —
+  // same bearer gate as the other mutating routes since this lets
+  // a caller inject a user turn into a live session.
+  const gate = deps.checkSessionsToken(req)
+  if (gate !== "ok") {
+    deps.rejectUnauthorizedSession(req, res, gate)
+    return
+  }
+  const body = (await readJsonBody(req)) as {
+    alias?: unknown
+    source?: unknown
+    contact_ref?: unknown
+    text?: unknown
+    messages?: unknown
+    mode?: unknown
+  } | null
+  if (!body || typeof body.alias !== "string" || !body.alias) {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "missing_alias" }))
+    return
+  }
+  if (typeof body.source !== "string" || !body.source) {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "missing_source" }))
+    return
+  }
+  if (typeof body.contact_ref !== "string" || !body.contact_ref) {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "missing_contact_ref" }))
+    return
+  }
+  if (typeof body.text !== "string" || !body.text) {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "missing_text" }))
+    return
+  }
+  let mode: InboundRouteMode = "route-or-spawn"
+  if (body.mode !== undefined) {
+    if (!isInboundRouteMode(String(body.mode))) {
+      res.writeHead(400, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "invalid_mode",
+          message: `mode must be one of "spawn", "route", "route-or-spawn", got ${JSON.stringify(body.mode)}.`,
+        })
+      )
+      return
+    }
+    mode = body.mode as InboundRouteMode
+  }
+  if (!deps.routeInboundMessage) {
+    res.writeHead(501, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        error: "inbound_routing_not_configured",
+        message:
+          "POST /inbound is not enabled — the daemon was started " +
+          "without a routeInboundMessage handler. The host must " +
+          "wire `routeInboundMessage` in createGateway.",
+      })
+    )
+    return
+  }
+  const msg: InboundMessage = {
+    alias: body.alias,
+    source: body.source,
+    contactRef: body.contact_ref,
+    text: body.text,
+    ...(Array.isArray(body.messages)
+      ? { messages: body.messages }
+      : {}),
+  }
+  const result = await deps.routeInboundMessage(msg, mode)
+  res.writeHead(200, { "content-type": "application/json" })
+  res.end(JSON.stringify(result))
+}
+
+function inboundRequestHeaders(req: IncomingMessage): Record<string, string | string[] | undefined> {
+  const out: Record<string, string | string[] | undefined> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    out[k] = v
+  }
+  return out
+}
+
+async function handleProviderInbound(
+  req: IncomingMessage,
+  res: ServerResponse,
+  slug: string,
+  deps: InboundHandlerDeps,
+): Promise<void> {
+  if (!deps.endpointStore) {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "unknown_inbound_endpoint" }))
+    return
+  }
+
+  const endpoint = deps.endpointStore.get(slug)
+  if (!endpoint || !endpoint.enabled) {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "unknown_inbound_endpoint" }))
+    return
+  }
+
+  const rawResult = await readRawBody(req)
+  if (!rawResult.ok) {
+    res.writeHead(rawResult.status, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: rawResult.error }))
+    return
+  }
+  const rawBody = rawResult.raw
+
+  if (endpoint.secret) {
+    const verified = verifyInboundSignature(endpoint.provider, {
+      rawBody,
+      headers: inboundRequestHeaders(req),
+      secret: endpoint.secret,
+      nowMs: Date.now(),
+    })
+    if (!verified.ok) {
+      res.writeHead(401, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: "bad_signature", reason: verified.reason }))
+      return
+    }
+  } else {
+    const gate = deps.checkSessionsToken(req)
+    if (gate !== "ok") {
+      deps.rejectUnauthorizedSession(req, res, gate)
+      return
+    }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawBody)
+  } catch {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "invalid_json" }))
+    return
+  }
+
+  const normalized = normalizeInbound(endpoint.provider, parsed, {
+    alias: endpoint.alias,
+    sourceOverride: endpoint.source,
+  })
+
+  if (!normalized.ok) {
+    switch (normalized.error) {
+      case "no_text":
+      case "bot_or_self_message":
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end(JSON.stringify({ action: "ignored", reason: normalized.error, message: normalized.message }))
+        return
+      default:
+        res.writeHead(400, { "content-type": "application/json" })
+        res.end(JSON.stringify({ error: normalized.error }))
+        return
+    }
+  }
+
+  if ("challenge" in normalized) {
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify({ challenge: normalized.challenge }))
+    return
+  }
+
+  let mode: InboundRouteMode = endpoint.mode
+  const urlStr = req.url ?? ""
+  const queryStart = urlStr.indexOf("?")
+  const modeParam = queryStart >= 0 ? new URLSearchParams(urlStr.slice(queryStart + 1)).get("mode") : null
+  if (modeParam) {
+    if (!isInboundRouteMode(modeParam)) {
+      res.writeHead(400, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "invalid_mode",
+          message: `mode must be one of "spawn", "route", "route-or-spawn", got ${JSON.stringify(modeParam)}.`,
+        })
+      )
+      return
+    }
+    mode = modeParam
+  }
+
+  if (normalized.providerMessageId) {
+    if (!deps.endpointStore.markSeen(slug, normalized.providerMessageId)) {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ action: "duplicate" }))
+      return
+    }
+  }
+
+  if (!deps.routeInboundMessage) {
+    res.writeHead(501, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        error: "inbound_routing_not_configured",
+        message:
+          "POST /inbound is not enabled — the daemon was started " +
+          "without a routeInboundMessage handler. The host must " +
+          "wire `routeInboundMessage` in createGateway.",
+      })
+    )
+    return
+  }
+
+  const result = await deps.routeInboundMessage(normalized.msg, mode)
+  deps.endpointStore.upsert({
+    ...endpoint,
+    lastSeenTs: Date.now(),
+  })
+  res.writeHead(200, { "content-type": "application/json" })
+  res.end(JSON.stringify(result))
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

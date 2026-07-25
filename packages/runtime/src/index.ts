@@ -80,6 +80,7 @@ import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler
 import { loadConfig } from "./config.js"
 import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
+import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -119,6 +120,19 @@ export type {
   InboundRouterLog,
 } from "./inbound-router.js"
 export type { TransmitterBinding, TransmitterBindingStore } from "./transmitter-bindings.js"
+export {
+  createInboundEndpointStore,
+  type InboundEndpoint,
+  type InboundEndpointStore,
+  type InboundEndpointStoreOptions,
+} from "./inbound-endpoints.js"
+export {
+  normalizeInbound,
+  verifyInboundSignature,
+  type InboundProvider,
+  INBOUND_PROVIDERS,
+  type NormalizeInboundResult,
+} from "./inbound-adapters.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
@@ -1305,6 +1319,9 @@ export async function createGateway(
   // path knob) — writes only happen on an explicit bind, which no
   // test exercises incidentally the way session spawns do.
   const transmitterBindings = createTransmitterBindingStore()
+  const inboundEndpointStore = createInboundEndpointStore({
+    persist: false,
+  })
 
   // Adapts SessionsRegistry to InboundRouterDeps' liveness/restart
   // shape (inbound-router.ts) — same primitives cron-scheduler.ts's
@@ -1571,6 +1588,7 @@ export async function createGateway(
       routineRegistrar,
       mcpProxy,
       bindingStore: transmitterBindings,
+      endpointStore: inboundEndpointStore,
     })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view

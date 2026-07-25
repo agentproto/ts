@@ -158,6 +158,87 @@ A `200` with `{"action":"routed","sessionId":"..."}` means the reply
 landed as a user turn in that session — check it with `agent_output` /
 `GET /sessions/:id/stream`.
 
+## Provider-agnostic inbound endpoints (`POST /inbound/:slug`)
+
+As an alternative to the single shared bearer-gated `POST /inbound`, the
+daemon now supports per-provider webhook endpoints:
+
+```
+POST /inbound/<slug>
+```
+
+Each endpoint is configured with dialect (`agentpush`, `telegram`,
+`whatsapp`, `slack`, `generic`, `native`), an imported MCP alias, an
+optional forced source, an optional webhook signing secret, and a routing
+mode. The MCP tools `inbound_endpoint_create`, `inbound_endpoint_list`,
+and `inbound_endpoint_delete` manage them. All endpoints are created via
+`createInboundEndpointStore()` in `createGateway()` and share the same
+`routeInboundMessage` router as the poll watcher and the legacy push route.
+
+### Signature verification
+
+When a secret is configured, the secret is REQUIRED and the bearer gate
+is bypassed, so a publicly exposed webhook endpoint is not accidentally
+opened by the loopback Origin allowlist.
+
+| provider | header | algorithm/format |
+|---|---|---|
+| `agentpush` | `X-Agentpush-Signature` | `sha256=<hex-hmac-sha256>` |
+| `telegram` | `X-Telegram-Bot-Api-Secret-Token` | exact secret, constant-time compare |
+| `whatsapp` | `X-Hub-Signature-256` | `sha256=<hex-hmac-sha256>` |
+| `slack` | `X-Slack-Signature` | Slack request signature v0 with replay window |
+| `generic` | `X-Agentproto-Signature` | `sha256=<hex-hmac-sha256>` |
+| `native` | n/a | uses the sessions bearer gate |
+
+### Normalized envelope
+
+After verification, the webhook JSON is normalized by `normalizeInbound()"
+(`inbound-adapters.ts`) into the same `InboundMessage` shape the rest of
+the transmitter expects:
+
+```json
+{
+  "alias": "<configured alias>",
+  "source": "<channel/phone/chat id>",
+  "contactRef": "<sender id>",
+  "text": "<message text>",
+  "messages": [ /* optional: raw provider event */ ]
+}
+```
+
+Provider-specific behaviour:
+
+- `agentpush` and `slack` support a `challenge` handshake; the challenge is
+  echoed as `{ "challenge": "..." }` and no session is touched.
+- `telegram` and `slack` ignore bot/self messages.
+- Missing text returns `200 { "action": "ignored", "reason": "no_text" }` so
+  webhook providers do not retry forever.
+
+### Deduplication
+
+Each endpoint keeps an in-memory FIFO of the last ~500 seen provider
+message ids via `markSeen()`. A duplicate returns `200 { "action":
+"duplicate" }`.
+
+### MCP tools
+
+```json
+{
+  "tool": "inbound_endpoint_create",
+  "arguments": {
+    "slug": "telegram-bot",
+    "provider": "telegram",
+    "alias": "agentpush",
+    "source": "@mybot",
+    "mode": "route-or-spawn",
+    "secret": "<optional>"
+  }
+}
+```
+
+`inbound_endpoint_list` returns endpoints without exposing the secret.
+`inbound_endpoint_delete` removes by slug.
+
 ## Follow-up: agentpush-side wiring (not covered by this repo)
 
 This repo only adds the ingress endpoint. For the push path to actually
