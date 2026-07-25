@@ -29,6 +29,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { deriveDeclaredCapabilities, type CapabilityStrategy } from "@agentproto/provider-kit"
 
 export const mastracodeInprocess: AgentCliHandle = defineAgentCli({
   name: "Mastra Code (in-process)",
@@ -181,6 +182,23 @@ export const mastracodeInprocess: AgentCliHandle = defineAgentCli({
 
 export function mastracodeInprocessRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(mastracodeInprocess)
+}
+
+/**
+ * Same env-slot projection as `@agentproto/adapter-mastracode` (no native
+ * creds/model store of its own to discover) — the difference is entirely in
+ * `application`: model/effort travel straight into `client.ts`'s connect()
+ * as SDK call args (`modelApply:"config"`, no argv), and posture is
+ * switched via the composed `AGENTPROTO_MASTRACODE_MODE` env var
+ * (`postureApply:"env"`). `coupled:true` because this arm runs in-process —
+ * there is no subprocess boundary between the daemon and the agent.
+ */
+export const mastracodeInprocessCapabilities: CapabilityStrategy = async (def) => {
+  const base = deriveDeclaredCapabilities(def)
+  return {
+    ...base,
+    application: { modelApply: "config", postureApply: "env", coupled: true },
+  }
 }
 
 export { createAgentCliClient } from "./client.js"

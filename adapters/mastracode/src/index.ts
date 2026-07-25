@@ -20,6 +20,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { deriveDeclaredCapabilities, type CapabilityStrategy } from "@agentproto/provider-kit"
 
 export const mastracode: AgentCliHandle = defineAgentCli({
   name: "mastracode",
@@ -182,6 +183,24 @@ export const mastracode: AgentCliHandle = defineAgentCli({
 
 export function mastracodeRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(mastracode)
+}
+
+/**
+ * mastracode has no live/parseable native creds or model-listing store of
+ * its own to discover (it reads the same ambient provider env vars the
+ * manifest already declares) — so this stays on the manifest-derived
+ * env-slot projection for `providers`/`models`/`authStores`. The one thing
+ * the generic projection CAN'T know is how this print arm actually applies
+ * a model/posture choice: model is composed into argv at spawn time
+ * (`options[model].bin_args_template`, not `models.apply`), and posture
+ * likewise has no ACP-config surface — both are argv, so `"arg"`.
+ */
+export const mastracodeCapabilities: CapabilityStrategy = async (def) => {
+  const base = deriveDeclaredCapabilities(def)
+  return {
+    ...base,
+    application: { modelApply: "arg", postureApply: "arg", coupled: false },
+  }
 }
 
 export type { AgentCliHandle, AgentCliRuntime }

@@ -16,12 +16,19 @@
  * profile.
  */
 
+import { join } from "node:path"
 import {
   createAgentCliRuntime,
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import type {
+  AuthStore,
+  CapabilityStrategy,
+  CredSource,
+  ProviderCapability,
+} from "@agentproto/provider-kit"
 
 export const hermes: AgentCliHandle = defineAgentCli({
   name: "hermes",
@@ -194,8 +201,129 @@ export function hermesRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(hermes)
 }
 
+/** Shape of one `~/.hermes/auth.json` `credential_pool` entry this strategy
+ *  reads. Only non-secret fields — never the credential value itself. The
+ *  pool's own `key_env` (when present) is preserved verbatim: hermes' native
+ *  kimi/moonshot slot is `KIMI_API_KEY`, NOT `MOONSHOT_API_KEY`, so this must
+ *  never derive/normalize an env var name from the provider id. */
+interface HermesCredentialPoolEntry {
+  provider?: unknown
+  key_env?: unknown
+  fingerprint?: unknown
+  base_url?: unknown
+  baseUrl?: unknown
+}
+
+interface HermesAuthFile {
+  credential_pool?: unknown
+}
+
+interface HermesModelsCacheFile {
+  models?: unknown
+}
+
+/**
+ * Best-effort capability discovery for hermes: parses hermes' OWN native
+ * stores (`~/.hermes/auth.json`, `~/.hermes/provider_models_cache.json`)
+ * rather than the manifest's generic `models.env` slots, so it reflects
+ * what's ACTUALLY configured on this host, not just what the adapter
+ * declares it's capable of. Never throws — `discoverCapabilities` also
+ * catches, but every read here is independently defensive so a single
+ * malformed file doesn't blank out the providers a good file already
+ * yielded.
+ */
+export const hermesCapabilities: CapabilityStrategy = async (def, ctx) => {
+  const authPath = join(ctx.homeDir, ".hermes", "auth.json")
+  const modelsCachePath = join(ctx.homeDir, ".hermes", "provider_models_cache.json")
+
+  const authStores: AuthStore[] = [
+    { kind: "file", path: "~/.hermes/auth.json", format: "json", providerKeyed: true },
+  ]
+
+  const providers: ProviderCapability[] = []
+  const authRaw = await ctx.readFile(authPath)
+  if (authRaw !== null) {
+    try {
+      const parsed = JSON.parse(authRaw) as HermesAuthFile
+      const pool = Array.isArray(parsed.credential_pool) ? parsed.credential_pool : []
+      for (const entry of pool as HermesCredentialPoolEntry[]) {
+        if (typeof entry !== "object" || entry === null) continue
+        const id = typeof entry.provider === "string" ? entry.provider : undefined
+        if (!id) continue
+        const keyEnv = typeof entry.key_env === "string" ? entry.key_env : undefined
+        const fingerprint = typeof entry.fingerprint === "string" ? entry.fingerprint : undefined
+        const baseUrl =
+          typeof entry.base_url === "string"
+            ? entry.base_url
+            : typeof entry.baseUrl === "string"
+              ? entry.baseUrl
+              : undefined
+        // Never guess an env var from the provider id (that's exactly the
+        // KIMI_API_KEY vs MOONSHOT_API_KEY trap) — only trust an explicit
+        // key_env; otherwise the credential's origin is the pool file itself.
+        const source: CredSource = keyEnv
+          ? { kind: "env", var: keyEnv }
+          : { kind: "file", path: "~/.hermes/auth.json", pointer: `credential_pool[provider=${id}]` }
+        providers.push({
+          id,
+          billingEndpoint: id,
+          cred: {
+            present: true,
+            source,
+            ...(fingerprint ? { fingerprint } : {}),
+          },
+          ...(baseUrl ? { baseUrl } : {}),
+        })
+      }
+    } catch (err) {
+      ctx.warn(
+        `hermes capability discovery: could not parse ~/.hermes/auth.json: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  let ids: string[] | undefined
+  let stale = true
+  const cacheRaw = await ctx.readFile(modelsCachePath)
+  if (cacheRaw !== null) {
+    try {
+      const parsedCache = JSON.parse(cacheRaw) as HermesModelsCacheFile
+      ids = Array.isArray(parsedCache.models)
+        ? parsedCache.models.filter((m): m is string => typeof m === "string")
+        : undefined
+      stale = false
+    } catch (err) {
+      ctx.warn(
+        `hermes capability discovery: could not parse ` +
+          `~/.hermes/provider_models_cache.json: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  const modelApply = def.models?.apply
+  return {
+    adapter: def.id,
+    source: "discovered",
+    discoverable: "live",
+    authStores,
+    providers,
+    models: {
+      mechanism: "file-cache",
+      ref: "hermes model --refresh",
+      ...(ids ? { ids } : {}),
+      stale,
+    },
+    endpointCompat: {},
+    application: {
+      modelApply: modelApply === "command" || modelApply === "arg" ? modelApply : "config",
+      postureApply: "none",
+      coupled: false,
+    },
+  }
+}
+
 import { homedir } from "node:os"
-import { join } from "node:path"
 
 /** Best-effort read of a hermes session's cost/token usage from its state.db.
  *

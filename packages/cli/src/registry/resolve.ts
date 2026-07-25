@@ -30,6 +30,7 @@ import {
   collectAgentprotoNamespaceRoots,
   type AdapterHandle,
   type AdapterCatalogEntry,
+  type CapabilityStrategy,
 } from "@agentproto/provider-kit"
 import { isAgentCliAuthConfigured, type AdapterAuthDescriptor } from "@agentproto/runtime"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
@@ -57,6 +58,11 @@ export interface ResolvedAdapter {
    *  spawning don't need to check it, callers that surface status
    *  (`listAdaptersWithCatalog`) must not report it as plain "ready". */
   readonly stale?: true
+  /** The adapter's optional `<camelSlug>Capabilities` export (harness
+   *  capability-discovery layer) — present when the adapter's module
+   *  exports one, absent otherwise (falls back to
+   *  `deriveDeclaredCapabilities` at the call site). */
+  readonly capabilitiesStrategy?: CapabilityStrategy
 }
 
 /** Mode metadata surfaced in `adapter_list` — the UI-safe subset of an
@@ -404,11 +410,17 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
           typeof parentCandidate === "object" &&
           "name" in parentCandidate
         ) {
+          const parentCapabilitiesStrategy = parentMod[`${camel}Capabilities`] as
+            | CapabilityStrategy
+            | undefined
           const resolved: ResolvedAdapter = {
             slug,
             handle: withResolvedProprietaryAdapter(parentCandidate, parentPkg),
             source: "npm",
             packageName: parentPkg,
+            ...(typeof parentCapabilitiesStrategy === "function"
+              ? { capabilitiesStrategy: parentCapabilitiesStrategy }
+              : {}),
           }
           lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
           return resolved
@@ -479,11 +491,13 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     )
   }
 
+  const capabilitiesStrategy = mod[`${camel}Capabilities`] as CapabilityStrategy | undefined
   const resolved: ResolvedAdapter = {
     slug,
     handle: withResolvedProprietaryAdapter(candidate, resolvedPackageName),
     source: "npm",
     packageName: resolvedPackageName,
+    ...(typeof capabilitiesStrategy === "function" ? { capabilitiesStrategy } : {}),
   }
   lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
   return resolved
