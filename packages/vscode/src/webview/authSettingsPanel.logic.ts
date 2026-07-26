@@ -33,14 +33,21 @@ export interface PresetRow {
   keyEnv?: string
 }
 
+export interface UnavailableModel {
+  product: string
+  ref: string
+  reason: string
+}
+
 export interface WalletRow {
   id: string
   endpoint: string
   label?: string
-  activeCount: number
+  /** Models this profile is currently configured to bill (allowed by curation
+   *  and eligible by endpoint/method). These are the "active" pills. */
   models: ServicedModel[]
   /** Whole-profile enable/disable (WS2) — a REAL state, distinct from
-   *  `activeCount` (derived runnability). */
+   *  `runnableCount` (derived runnability). */
   enabled: boolean
   /** Read-only key identity (WS5): a `last4`+fingerprint tail, "self-refreshing",
    *  or "key unavailable". Undefined when the daemon reported no status. */
@@ -52,11 +59,93 @@ export interface WalletRow {
    *  when it was created by `auth_profile_import`. Absent for a hand-created
    *  profile. Drives the "imported from <origin>" badge. */
   origin?: string
+  /** How many catalog models this endpoint offers in total (e.g. the six xAI
+   *  models), independent of this profile's curation or eligibility. */
+  catalogCount: number
+  /** How many of those catalog models are admitted by this profile's curation
+   *  allowlist (`mode: "all"` counts everything). */
+  curatedCount: number
+  /** How many of those catalog models are runnable right now with this profile
+   *  (endpoint/method eligible, profile enabled, and allowed by curation). */
+  runnableCount: number
+  /** Catalog models that match this endpoint but are not currently billable,
+   *  with the data-supported reason (e.g. "curated out"). */
+  unavailable: UnavailableModel[]
 }
 
 export interface AuthSettingsModel {
   presets: PresetRow[]
   wallets: WalletRow[]
+}
+
+/**
+ * Per-model curation gate (WS3) — local mirror of the predicate in
+ * `packages/runtime/src/catalog-models.ts`. An absent/`all` curation admits
+ * everything; an `allow` curation admits the model when its id appears as the
+ * route-qualified `ref`, the route-independent `vendor/product`, or (on a
+ * direct route only) the bare product.
+ */
+function profileAllowsModel(
+  profile: AuthProfileSummary,
+  ref: string,
+  vendorProduct: string,
+): boolean {
+  const curation = profile.models
+  if (!curation || curation.mode === "all") return true
+  const slash = vendorProduct.indexOf("/")
+  const product = slash === -1 ? vendorProduct : vendorProduct.slice(slash + 1)
+  const isDirect = !ref.includes("@")
+  return (
+    curation.ids.includes(ref) ||
+    curation.ids.includes(vendorProduct) ||
+    (isDirect && curation.ids.includes(product))
+  )
+}
+
+interface ProfileCatalogCounts {
+  catalogCount: number
+  curatedCount: number
+  runnableCount: number
+  unavailable: UnavailableModel[]
+}
+
+/**
+ * Counts for a single wallet against the catalog join, scoped to the wallet's
+ * own billing endpoint (`route.route === profile.endpoint`). This keeps native
+ * `xai` and `xai-anthropic` profiles from cross-qualifying: each only sees the
+ * routes that bill its own endpoint.
+ */
+function catalogCountsForProfile(
+  profile: AuthProfileSummary,
+  catalog: CatalogModelsResponse,
+): ProfileCatalogCounts {
+  let catalogCount = 0
+  let curatedCount = 0
+  let runnableCount = 0
+  const unavailable: UnavailableModel[] = []
+
+  for (const vendor of catalog.vendors ?? []) {
+    for (const product of vendor.products ?? []) {
+      for (const route of product.routes ?? []) {
+        if (route.route !== profile.endpoint) continue
+        catalogCount++
+        const vendorProduct = `${vendor.vendor}/${product.product}`
+        const allowed = profileAllowsModel(profile, route.ref, vendorProduct)
+        const runnable = profileEnabled(profile) && route.runnable && route.eligibleProfiles.includes(profile.id)
+
+        if (allowed) curatedCount++
+        if (runnable) runnableCount++
+
+        if (profileEnabled(profile) && !runnable) {
+          let reason = "not eligible"
+          if (!allowed) reason = "curated out"
+          unavailable.push({ product: product.product, ref: route.ref, reason })
+        }
+      }
+    }
+  }
+
+  return { catalogCount, curatedCount, runnableCount, unavailable }
 }
 
 /**
@@ -85,18 +174,26 @@ export function buildAuthSettingsModel(
 
   const wallets: WalletRow[] = [...profiles]
     .map(p => {
-      const models = serviced.get(p.id) ?? []
       const keyLabel = profileKeyLabel(p)
+      const enabled = profileEnabled(p)
+      const counts = catalogCountsForProfile(p, catalog)
+      // A disabled profile bills nothing, so don't render active/unavailable
+      // pills even if the mock catalog still lists it in eligibleProfiles.
+      const models = enabled ? (serviced.get(p.id) ?? []) : []
+      const unavailable = enabled ? counts.unavailable : []
       return {
         id: p.id,
         endpoint: p.endpoint,
         ...(p.label ? { label: p.label } : {}),
-        activeCount: models.filter(m => m.runnable).length,
         models,
-        enabled: profileEnabled(p),
+        enabled,
         ...(keyLabel ? { keyLabel } : {}),
         curatedIds: profileCuratedIds(p),
         ...(p.origin ? { origin: p.origin } : {}),
+        catalogCount: counts.catalogCount,
+        curatedCount: counts.curatedCount,
+        runnableCount: counts.runnableCount,
+        unavailable,
       }
     })
     .sort((a, b) => {
@@ -140,11 +237,32 @@ function modelPill(m: ServicedModel): string {
   return `<span class="pill ${cls}" title="${esc(m.ref)} · ${esc(m.route)}">${dot} ${esc(m.product)} <em>${esc(m.route)}</em></span>`
 }
 
+function unavailablePill(m: UnavailableModel): string {
+  return `<span class="pill inactive" title="${esc(m.ref)} · ${esc(m.reason)}">○ ${esc(m.product)}</span>`
+}
+
+function catalogSummary(w: WalletRow): string {
+  if (!w.enabled) return `${w.runnableCount} active · ${w.catalogCount} catalog (profile disabled)`
+  if (w.catalogCount === 0) return "No catalog models for this endpoint"
+  if (w.curatedCount === w.catalogCount) return `${w.catalogCount} catalog models · ${w.runnableCount} active`
+  const excluded = w.catalogCount - w.curatedCount
+  return `${w.curatedCount} curated · ${w.catalogCount} catalog · ${w.runnableCount} active (${excluded} excluded by curation)`
+}
+
+function emptyMessage(w: WalletRow): string {
+  if (!w.enabled) return "Profile disabled — no models active."
+  if (w.catalogCount === 0) return "No catalog models for this endpoint."
+  if (w.curatedCount === 0) return `Curation excludes all ${w.catalogCount} catalog models.`
+  return "Bills no catalog model yet."
+}
+
 function walletCard(w: WalletRow): string {
-  const models =
-    w.models.length === 0
-      ? `<div class="empty">Bills no catalog model yet.</div>`
-      : `<div class="pills">${w.models.map(modelPill).join("")}</div>`
+  const allowedPills = w.models.map(modelPill).join("")
+  const unavailablePills = w.unavailable.map(unavailablePill).join("")
+  const modelsSection =
+    allowedPills || unavailablePills
+      ? `<div class="pills">${allowedPills}${unavailablePills}</div>`
+      : `<div class="empty">${emptyMessage(w)}</div>`
   const label = w.label ? ` · ${esc(w.label)}` : ""
   // A REAL enable/disable badge (WS2), distinct from the derived active count.
   const stateBadge = w.enabled
@@ -179,14 +297,14 @@ function walletCard(w: WalletRow): string {
       <span class="title">${esc(w.id)}</span>
       ${stateBadge}
       ${originBadge}
-      <span class="badge">${w.activeCount} active / ${w.models.length} models</span>
+      <span class="badge">${catalogSummary(w)}</span>
       ${toggle}
       <button class="act" data-action="pickModels" data-id="${esc(w.id)}">+ Models</button>
       <button class="act danger" data-action="delete" data-id="${esc(w.id)}">Delete</button>
     </div>
     <div class="sub">${esc(w.endpoint)}${label}</div>
     ${keyRow}
-    ${models}
+    ${modelsSection}
     ${curated}
   </div>`
 }
