@@ -40,6 +40,7 @@ import type {
   CreatedAuthProfileResult,
   DaemonHealth,
   DiscoveredCredential,
+  HarnessCapabilities,
   ImportCredentialRequest,
   LlmEndpointDescriptorResult,
   LlmEndpointLinksResult,
@@ -532,6 +533,20 @@ export class DaemonClient {
    */
   async installAdapter(slug: string): Promise<AdapterInstallResult> {
     return this.mcpCall<AdapterInstallResult>("adapter_install", { slug })
+  }
+
+  /**
+   * `harness_capabilities` — introspect what an installed adapter/harness can
+   * actually do on this host: auth stores, providers, model defaults, and
+   * application options. Non-secret; never carries credentials.
+   */
+  async harnessCapabilities(adapter?: string): Promise<HarnessCapabilities[]> {
+    const result = await this.mcpCall<{ capabilities?: HarnessCapabilities[] } | HarnessCapabilities[]>(
+      "harness_capabilities",
+      adapter ? { adapter } : {},
+    )
+    if (Array.isArray(result)) return result
+    return result.capabilities ?? []
   }
 
   /**

@@ -112,6 +112,12 @@ describe("DaemonClient — URL + auth header mapping", () => {
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code" }] }) }] } } }
         }
+        if (rpc.method === "tools/call" && rpc.params.name === "harness_capabilities") {
+          const args = rpc.params.arguments as { adapter?: string }
+          const caps = [{ adapter: "claude-code", source: "discovered", providers: [{ id: "anthropic", ready: true }], models: { defaultModel: "claude-sonnet-5" } }]
+          const filtered = args.adapter ? caps.filter(c => c.adapter === args.adapter) : caps
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ capabilities: filtered }) }] } } }
+        }
         if (rpc.method === "tools/call" && rpc.params.name === "catalog_models") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ vendors: [{ vendor: "anthropic", products: [{ product: "claude-opus-4-8", routes: [{ route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["personal"], adapterModes: [], adapters: ["claude-code"], curated: true }] }] }] }) }] } } }
         }
@@ -315,6 +321,21 @@ describe("DaemonClient — URL + auth header mapping", () => {
   it("listAdapters() routes through mcpCall adapter_list", async () => {
     const adapters = await client().listAdapters()
     expect(adapters[0]?.slug).toBe("claude-code")
+  })
+
+  it("harnessCapabilities() routes through mcpCall harness_capabilities", async () => {
+    const caps = await client().harnessCapabilities("claude-code")
+    expect(caps).toHaveLength(1)
+    expect(caps[0]?.adapter).toBe("claude-code")
+    expect(caps[0]?.models?.defaultModel).toBe("claude-sonnet-5")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect((last.body as { params: { arguments: unknown } }).params.arguments).toMatchObject({ adapter: "claude-code" })
+  })
+
+  it("harnessCapabilities() omits adapter filter when not provided", async () => {
+    await client().harnessCapabilities()
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect((last.body as { params: { arguments: unknown } }).params.arguments).toEqual({})
   })
 
   it("catalogModels() routes through mcpCall catalog_models", async () => {

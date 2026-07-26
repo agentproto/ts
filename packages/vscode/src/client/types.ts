@@ -846,3 +846,123 @@ export interface WorktreeGcOutcomeView {
 export type WorktreeGcResult =
   | { mode: "plan"; plan: WorktreeGcPlanEntryView[] }
   | { mode: "apply"; outcomes: WorktreeGcOutcomeView[] }
+
+// ── Configuration Lab read-only mirrors ─────────────────────────────────────
+//    Non-secret shapes surfaced by the Agentproto Configuration Lab panel.
+
+/** A provider capability advertised by a harness (mirror of provider-kit
+ *  ProviderCapability, trimmed to what the Lab displays). */
+export interface HarnessProviderCapability {
+  id: string
+  name?: string
+  ready?: boolean
+}
+
+/** Model discovery summary advertised by a harness (mirror of provider-kit
+ *  ModelDiscovery, trimmed). */
+export interface HarnessModelDiscovery {
+  defaultModel?: string
+  supported?: string[]
+}
+
+/** Application contract defaults/options advertised by a harness (mirror of
+ *  provider-kit ApplicationContract, trimmed). */
+export interface HarnessApplicationContract {
+  defaultOptions?: Record<string, unknown>
+  supportedOptions?: string[]
+}
+
+/** Non-secret harness capability snapshot, returned by MCP
+ *  `harness_capabilities`. */
+export interface HarnessCapabilities {
+  adapter: string
+  /** Whether capabilities came from live discovery or manifest fallback. */
+  source?: "discovered" | "manifest-fallback"
+  /** Auth store kinds this harness can read (e.g. "keychain", "env"). */
+  authStores?: string[]
+  /** Providers this harness can bill. */
+  providers?: HarnessProviderCapability[]
+  /** Model defaults / supported model ids. */
+  models?: HarnessModelDiscovery
+  /** Adapter-specific spawn options / defaults. */
+  application?: HarnessApplicationContract
+}
+
+/** Per-axis option list for the Configuration Lab UI. */
+export interface ConfigurationLabAxisOptions {
+  models: Array<{ id: string; provider?: string; mode?: string }>
+  routes: Array<{ value: string; label: string; runnable: boolean; curated: boolean; eligibleProfiles: string[] }>
+  profiles: Array<{ value?: string; label: string; description?: string; addProfile?: boolean }>
+  postures: Array<{ value: string; label: string; enforcement: "enforced" | "advisory"; restartRequired: boolean }>
+  efforts: string[]
+}
+
+/** One field in the readable effective-config summary. */
+export interface ConfigurationLabEffectiveField {
+  key: string
+  /** Human-readable display value; undefined means unset. */
+  value?: string
+  /** Whether this value came from an explicit user selection, an adapter
+   *  default, or is unset. */
+  source: "explicit" | "default" | "unset"
+  /** Optional extra context (e.g. the resolved gateway, advisory label). */
+  detail?: string
+}
+
+/** A validation issue surfaced by the Lab. */
+export interface ConfigurationLabIssue {
+  severity: "error" | "warning" | "info"
+  axis?: "harness" | "model" | "route" | "profile" | "posture" | "effort" | "option"
+  message: string
+}
+
+/** The serializable snapshot passed from extension host to the Lab webview. */
+export interface ConfigurationLabSnapshot {
+  /** Current user selections. */
+  selection: {
+    adapter?: string
+    model?: string
+    route?: string
+    profile?: string
+    posture?: string
+    effort?: string
+    options?: Record<string, unknown>
+  }
+  /** All installed adapters, so the webview can render the harness dropdown. */
+  adapters: AdapterInfo[]
+  /** Harness layer (A). */
+  harness: {
+    slug: string
+    name?: string
+    version?: string
+    protocol?: string
+    modes?: Array<{ id: string; status?: string; status_note?: string }>
+    capabilities?: HarnessCapabilities
+  } | null
+  /** Configuration layer (B) — per-axis options. */
+  axes: ConfigurationLabAxisOptions
+  /** Resolved/effective launch configuration summary. */
+  effective: ConfigurationLabEffectiveField[]
+  /** Validation issues, if any. */
+  issues: ConfigurationLabIssue[]
+}
+
+/** Input the Lab sends when it wants a fresh snapshot for a new selection. */
+export interface ConfigurationLabSelectionInput {
+  adapter?: string
+  model?: string
+  route?: string
+  profile?: string
+  posture?: string
+  effort?: string
+  options?: Record<string, unknown>
+}
+
+/** Aggregate fetched from the daemon to produce a ConfigurationLabSnapshot. */
+export interface ConfigurationLabRawData {
+  adapters: AdapterInfo[]
+  capabilities: HarnessCapabilities[]
+  catalog: CatalogModelsResponse
+  profiles: AuthProfileSummary[]
+  presets: ProviderPresetEntry[]
+}

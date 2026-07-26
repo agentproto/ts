@@ -55,6 +55,11 @@
           "id": "agentproto",
           "title": "agentproto",
           "icon": "media/activitybar.svg"
+        },
+        {
+          "id": "agentprotoConfig",
+          "title": "Agentproto Lab",
+          "icon": "media/activitybar.svg"
         }
       ]
     },
@@ -97,6 +102,13 @@
           "type": "webview",
           "when": "config.agentproto.authProfilesView == 'webview'"
         }
+      ],
+      "agentprotoConfig": [
+        {
+          "id": "agentproto.configurationLab",
+          "name": "Configuration Lab",
+          "type": "webview"
+        }
       ]
     },
     "commands": [
@@ -117,6 +129,12 @@
         "title": "agentproto: Spawn Agent",
         "category": "agentproto",
         "icon": "$(add)"
+      },
+      {
+        "command": "agentproto.openConfigurationLab",
+        "title": "agentproto: Open Configuration Lab",
+        "category": "agentproto",
+        "icon": "$(gear)"
       },
       {
         "command": "agentproto.promptSession",
