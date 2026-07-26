@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { sendOutbound } from "../outbound-adapters.js"
+import { sendOutbound, toFetchBody } from "../outbound-adapters.js"
 import type { McpProxyRegistry, ProxyCallOutcome } from "../mcp-proxy.js"
 import type { TelegramBotCredsStore } from "../telegram-bot-creds.js"
 import { readFile } from "node:fs/promises"
@@ -258,10 +258,12 @@ describe("sendOutbound", () => {
     )
     const init = globalFetch.mock.calls[0]![1] as {
       headers: Record<string, string>
-      body: Buffer
+      body: Uint8Array
     }
-    expect(init.body.toString()).toContain("Content-Disposition: form-data")
-    expect(init.body.toString()).toContain("fake-image-bytes")
+    expect(init.body).toBeInstanceOf(Uint8Array)
+    const bodyText = Buffer.from(init.body).toString()
+    expect(bodyText).toContain("Content-Disposition: form-data")
+    expect(bodyText).toContain("fake-image-bytes")
     expect(result).toEqual({ ok: true, providerMessageId: "77" })
 
     vi.unstubAllGlobals()
@@ -304,6 +306,17 @@ describe("sendOutbound", () => {
         }),
       }),
     )
+    const groupInit = globalFetch.mock.calls[0]![1] as {
+      headers: Record<string, string>
+      body: Uint8Array
+    }
+    expect(groupInit.body).toBeInstanceOf(Uint8Array)
+    const groupBodyText = Buffer.from(groupInit.body).toString()
+    expect(groupBodyText).toContain("Content-Disposition: form-data")
+    expect(groupBodyText).toContain("img1")
+    expect(groupBodyText).toContain("img2")
+    expect(groupBodyText).toContain('"media":"attach://file0"')
+    expect(groupBodyText).toContain('"media":"attach://file1"')
     expect(result).toEqual({ ok: true, providerMessageId: "10" })
 
     vi.unstubAllGlobals()
@@ -323,4 +336,24 @@ describe("sendOutbound", () => {
       expect(result).toEqual({ ok: false, error: "unsupported_provider" })
     },
   )
+
+  describe("toFetchBody", () => {
+    it("returns a Uint8Array backed by an ArrayBuffer with identical bytes", () => {
+      const bytes = Buffer.from([0x00, 0x01, 0xff, 0x80])
+      const body = toFetchBody(bytes)
+
+      expect(body).toBeInstanceOf(Uint8Array)
+      expect(body.buffer).toBeInstanceOf(ArrayBuffer)
+      expect(Buffer.from(body).equals(bytes)).toBe(true)
+      expect(Array.from(body)).toEqual([0, 1, 255, 128])
+    })
+
+    it("preserves non-ASCII bytes including UTF-8 sequences", () => {
+      const text = "héllo 🌍"
+      const bytes = Buffer.from(text, "utf8")
+      const body = toFetchBody(bytes)
+
+      expect(Buffer.from(body).toString("utf8")).toBe(text)
+    })
+  })
 })
