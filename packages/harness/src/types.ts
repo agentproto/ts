@@ -61,6 +61,13 @@ export interface StartAgentArgs {
   prompt?: string
   label?: string
   model?: string
+  /** Canonical provider route for a routed model.  This must travel with a
+   * sandbox handoff: a fresh daemon cannot infer that (for example) a Kimi
+   * model is meant to bill Moonshot rather than the adapter's native rail. */
+  route?: {
+    gateway: string
+    baseUrl?: string
+  }
   effort?: string
   mcpServers?: McpServerMount[]
   orchestrator?: OrchestratorOption
