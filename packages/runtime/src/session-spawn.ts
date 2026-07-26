@@ -742,7 +742,14 @@ export async function spawnAgentSession(
   // skipped entirely for `input.sandbox`. See the sandbox branch below,
   // which short-circuits BEFORE `resolved.startSession(...)` is ever
   // reached.
-  const resolved = input.sandbox === undefined ? await resolveAgentAdapter(input.adapter) : null
+  // Sandboxed spawns normally resolve the adapter inside the sandbox, not on
+  // the host. A named host auth profile is the one exception: resolve the
+  // host descriptor just long enough to select the requested billing rail and
+  // turn the keychain-backed profile into the explicit credential a fresh box
+  // needs. Keep the normal sandbox path free of this host dependency.
+  const resolveHostAuth = input.sandbox !== undefined && input.access?.profileRef !== undefined
+  const resolved =
+    input.sandbox === undefined || resolveHostAuth ? await resolveAgentAdapter(input.adapter) : null
   if (input.sandbox === undefined && !resolved) {
     // `resolveAgentAdapter` collapses every failure reason to `null` by
     // contract (it's injected across a dozen call sites that all assume it
@@ -762,6 +769,15 @@ export async function spawnAgentSession(
         `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
         `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
         `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
+    }
+  }
+  if (resolveHostAuth && !resolved) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message:
+        `agent_start: adapter "${input.adapter}" must be available on the host to resolve ` +
+        `access profile "${input.access?.profileRef}" for a sandbox spawn.`,
     }
   }
   // ── Recursion guardrails (WP4) ──────────────────────────────
@@ -1201,7 +1217,7 @@ export async function spawnAgentSession(
   let accessProfileEcho:
     | { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
     | undefined
-  if (resolved && input.sandbox === undefined && input.access?.profileRef) {
+  if (resolved && input.access?.profileRef) {
     const profileRef = input.access.profileRef
     const profile = await getAuthProfile(profileRef)
     if (!profile) {
@@ -1671,13 +1687,11 @@ export async function spawnAgentSession(
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.label ? { label: input.label } : {}),
-        // Explicit billing-auth for the box's OWN agent_start. A fresh box
-        // has no ~/.agentproto/config.json and claude-code never inherits
-        // subscription auth from the shell env — the credential must ride the
-        // spawn call itself. Only the caller's EXPLICIT `auth` is forwarded
-        // (host config defaults stay host-scoped; the box resolves its own
-        // defaults otherwise).
-        ...(input.auth ? { auth: input.auth } : {}),
+        // A fresh box has neither the host's named profiles nor its keychain.
+        // Forward the already-resolved credential when the caller selected a
+        // profile; raw explicit auth remains supported for existing callers.
+        ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec) } : input.auth ? { auth: input.auth } : {}),
+        ...(input.route ? { route: input.route } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -1998,6 +2012,7 @@ async function bootSandboxAgentSession(opts: {
   cwd: string
   mcpServers?: AcpMcpServer[]
   model?: string
+  route?: RouteSpec
   effort?: string
   label?: string
   /** Explicit billing-auth forwarded to the BOX's own `agent_start` — see
@@ -2081,6 +2096,7 @@ async function bootSandboxAgentSession(opts: {
       cwd: opts.cwd,
       ...(opts.mcpServers ? { mcpServers: toMcpServerMounts(opts.mcpServers) } : {}),
       ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.route ? { route: opts.route } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.label ? { label: opts.label } : {}),
       ...(opts.auth ? { auth: opts.auth } : {}),
@@ -2103,6 +2119,24 @@ async function bootSandboxAgentSession(opts: {
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
     sandboxTeardown: lifecyclePolicy.teardown,
+  }
+}
+
+/**
+ * A resolved host profile is intentionally translated back to the narrow
+ * per-spawn auth shape accepted by the sandbox daemon.  The profile reference
+ * itself is host-local; only its selected credential can cross this boundary.
+ */
+function sandboxAuthFromResolved(auth: ResolvedAuthSpec): DefaultsAdapterAuthConfig {
+  return {
+    mode: auth.mode,
+    ...(auth.mode === "api-key"
+      ? auth.credential !== undefined
+        ? { apiKey: auth.credential }
+        : {}
+      : auth.credential !== undefined
+        ? { token: auth.credential }
+        : {}),
   }
 }
 
