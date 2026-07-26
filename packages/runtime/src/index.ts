@@ -2049,6 +2049,12 @@ export async function createGateway(
       restartScheduler.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
+      // Flush inbound-endpoint state synchronously -- persistence is a
+      // debounced async write, so an endpoint registered via
+      // inbound_endpoint_create just before a restart would otherwise be
+      // lost inside that window, the exact 404-after-bounce failure
+      // persisting the store exists to prevent.
+      inboundEndpointStore.flushSync()
       // Stop the cron scheduler tick loop before sessions shut down.
       cronScheduler.shutdown()
       // Flush completion-policy state before sessions shut down so

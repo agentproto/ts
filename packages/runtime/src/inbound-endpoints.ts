@@ -144,7 +144,11 @@ export function createInboundEndpointStore(
         try {
           const snap = snapshot()
           await fsp.mkdir(dirname(filePath), { recursive: true })
-          await fsp.writeFile(filePath, JSON.stringify(snap, null, 2) + "\n")
+          // mode 0600 -- each endpoint's webhook secret is stored in
+          // plaintext here (same tradeoff as transmitter-bindings.json),
+          // matching every other credential-bearing file in this runtime
+          // (telegram-bot-creds, pairing-registry, user-presets, ...).
+          await fsp.writeFile(filePath, JSON.stringify(snap, null, 2) + "\n", { mode: 0o600 })
         } catch (err) {
           console.warn(
             `[inbound-endpoints] persist failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -159,7 +163,7 @@ export function createInboundEndpointStore(
     try {
       const snap = snapshot()
       mkdirSync(dirname(filePath), { recursive: true })
-      writeFileSync(filePath, JSON.stringify(snap, null, 2) + "\n")
+      writeFileSync(filePath, JSON.stringify(snap, null, 2) + "\n", { mode: 0o600 })
     } catch {
       // best-effort — never throw in shutdown path
     }
