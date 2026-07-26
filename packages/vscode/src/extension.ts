@@ -128,9 +128,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
   // Opt-in alternative to the Sessions tree (agentproto.sessionsView === "webview",
   // package.json's `when` clauses make the two mutually exclusive in the
-  // sidebar). Shares the same store + filter's workspace join as the tree and
-  // opens transcripts through the same transcriptPanels.open().
-  registerSessionsWebview(ctx, store, filter, transcriptPanels, seen)
+  // sidebar). Uses its own lightweight summary endpoint for progressive loading
+  // while sharing the store's live-update signal and the transcriptPanels path.
+  registerSessionsWebview(ctx, client, store, filter, transcriptPanels, seen)
   // Opt-in webview alternatives for Harnesses and Auth Profiles, gated by
   // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
   registerHarnessesWebview(ctx, client, harnessesProvider)

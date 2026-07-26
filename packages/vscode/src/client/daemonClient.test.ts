@@ -55,6 +55,7 @@ describe("DaemonClient — URL + auth header mapping", () => {
       // Echo back the request so tests can assert auth + path mapping.
       if (req.url === "/health") return { status: 200, body: { status: "ok", workspace: "/ws", registered: [] } }
       if (req.url === "/sessions" && req.method === "GET") return { status: 200, body: { sessions: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }] } }
+      if (req.url?.startsWith("/sessions/summaries") && req.method === "GET") return { status: 200, body: { summaries: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }], total: 1 } }
       if (req.url === "/permissions" && req.method === "GET") return { status: 200, body: { permissions: [] } }
       if (req.url?.startsWith("/permissions?sessionId=") && req.method === "GET") return { status: 200, body: { permissions: [] } }
       if (req.url?.startsWith("/sessions/s1/events") && req.method === "GET") {
@@ -163,6 +164,15 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const sessions = await client().listSessions()
     expect(sessions).toHaveLength(1)
     expect(sessions[0]?.id).toBe("s1")
+  })
+
+  it("GET /sessions/summaries returns paginated summaries + total", async () => {
+    const result = await client().listSessionSummaries({ includeArchived: true, limit: 25, offset: 5 })
+    expect(result.summaries).toHaveLength(1)
+    expect(result.summaries[0]?.id).toBe("s1")
+    expect(result.total).toBe(1)
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/summaries?includeArchived=true&limit=25&offset=5")
   })
 
   it("GET /sessions/:id returns a single descriptor", async () => {

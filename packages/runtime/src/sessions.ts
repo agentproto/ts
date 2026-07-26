@@ -1089,6 +1089,144 @@ export interface SessionDescriptor {
   sandboxTeardown?: "kill" | "pause"
 }
 
+/**
+ * Lightweight panel projection of SessionDescriptor for the VS Code Sessions
+ * webview (and similar read-only list consumers). Excludes large resume /
+ * transcript / policy context that the panel never renders:
+ *
+ *   - resume metadata and restart scheduling (resumeMetadata, resumeAttempts,
+ *     lastResumeAt, restartPolicy, restartAttempts, lastRestartAt,
+ *     nextRestartAt, recentRestartAts, resumedFrom, resumeVia)
+ *   - structured transcript / context continuity (contextContinuity,
+ *     contextContinuityHardStopped, checkpointId, pendingResumeContext)
+ *   - MCP server list and provider resume hints (mcpServers, adapterSessionId)
+ *   - per-session config axes not shown in the row (effort, posture, route,
+ *     contextProfile, accessProfile, auth)
+ *   - orchestrator internals (notifyParentOnCrash, pendingChildCrashNotices,
+ *     callerSessionId, meta)
+ *   - crash detail / ended reason (endedReason, lastError, crashedAt,
+ *     interrupted)
+ *   - PR list (openedPrs)
+ *
+ * GET /sessions remains unchanged: it still returns the full SessionDescriptor.
+ */
+export interface SessionSummary {
+  id: string
+  kind: SessionKind
+  workspaceSlug: string
+  command: string
+  pid: number | null
+  status: SessionStatus
+  startedAt: string
+  endedAt?: string
+  exitCode?: number
+  killedMidTurn?: boolean
+  lastOutputAt?: string
+  lastActivityAt?: string
+  processAlive?: boolean
+  label?: string
+  title?: string
+  renamedByUser?: boolean
+  activitySummary?: SessionActivitySummary
+  archived?: boolean
+  keepAlive?: boolean
+  pty?: boolean
+  name?: string
+  argv?: readonly string[]
+  cwd?: string
+  worktreePath?: string
+  worktreeId?: string
+  adapterSlug?: string
+  mode?: string
+  model?: string
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  contextSize?: number
+  contextUsed?: number
+  usageSource?: import("./usage.js").UsageSource
+  awaitingInput?: boolean
+  awaitingQuestion?: SessionAwaitingQuestion
+  awaitingPermission?: boolean
+  turnsCompleted?: number
+  busy?: boolean
+  blockedOn?: "subagent" | "command"
+  origin?: string
+  parentSessionId?: string
+  depth?: number
+  priorCommandSessionId?: string
+  continuedFrom?: string
+  continuedTo?: string
+  permissionHold?: boolean
+  browserAdapterId?: string
+  browserPort?: number
+  browserBaseUrl?: string
+  browserLocation?: "local" | "cloud"
+  remote?: boolean
+  sandboxId?: string
+  sandboxTeardown?: "kill" | "pause"
+}
+
+/** Project a full SessionDescriptor down to the panel summary shape. */
+function toSessionSummary(desc: SessionDescriptor): SessionSummary {
+  return {
+    id: desc.id,
+    kind: desc.kind,
+    workspaceSlug: desc.workspaceSlug,
+    command: desc.command,
+    pid: desc.pid,
+    status: desc.status,
+    startedAt: desc.startedAt,
+    endedAt: desc.endedAt,
+    exitCode: desc.exitCode,
+    killedMidTurn: desc.killedMidTurn,
+    lastOutputAt: desc.lastOutputAt,
+    lastActivityAt: desc.lastActivityAt,
+    processAlive: desc.processAlive,
+    label: desc.label,
+    title: desc.title,
+    renamedByUser: desc.renamedByUser,
+    activitySummary: desc.activitySummary,
+    archived: desc.archived,
+    keepAlive: desc.keepAlive,
+    pty: desc.pty,
+    name: desc.name,
+    argv: desc.argv,
+    cwd: desc.cwd,
+    worktreePath: desc.worktreePath,
+    worktreeId: desc.worktreeId,
+    adapterSlug: desc.adapterSlug,
+    mode: desc.mode,
+    model: desc.model,
+    costUsd: desc.costUsd,
+    tokensIn: desc.tokensIn,
+    tokensOut: desc.tokensOut,
+    contextSize: desc.contextSize,
+    contextUsed: desc.contextUsed,
+    usageSource: desc.usageSource,
+    awaitingInput: desc.awaitingInput,
+    awaitingQuestion: desc.awaitingQuestion,
+    awaitingPermission: desc.awaitingPermission,
+    turnsCompleted: desc.turnsCompleted,
+    busy: desc.busy,
+    blockedOn: desc.blockedOn,
+    origin: desc.origin,
+    parentSessionId: desc.parentSessionId,
+    depth: desc.depth,
+    priorCommandSessionId: desc.priorCommandSessionId,
+    continuedFrom: desc.continuedFrom,
+    continuedTo: desc.continuedTo,
+    permissionHold: desc.permissionHold,
+    browserAdapterId: desc.browserAdapterId,
+    browserPort: desc.browserPort,
+    browserBaseUrl: desc.browserBaseUrl,
+    browserLocation: desc.browserLocation,
+    remote: desc.remote,
+    sandboxId: desc.sandboxId,
+    sandboxTeardown: desc.sandboxTeardown,
+  }
+}
+
 interface SessionRuntime {
   desc: SessionDescriptor
   /** Set when the session is a raw spawn (`kind: "command"|"terminal"`).
@@ -1781,6 +1919,19 @@ export interface SessionsRegistry {
    *  flag entirely — a transcript stays directly openable by id no matter
    *  how it's archived. */
   list(opts?: { includeArchived?: boolean }): SessionDescriptor[]
+  /**
+   * Lightweight panel projection of `list()` — returns paginated
+   * {@link SessionSummary} rows that exclude large resume/transcript/policy
+   * context. Same sort order (newest-first), same archived default, with
+   * `limit`/`offset` pagination on top. Used by the VS Code Sessions webview
+   * so its first paint is bounded even when the daemon holds hundreds of
+   * full descriptors.
+   */
+  listSummaries(opts?: {
+    includeArchived?: boolean
+    limit?: number
+    offset?: number
+  }): { summaries: SessionSummary[]; total: number }
   get(id: string): SessionDescriptor | undefined
   /** Archive a TERMINAL-status session (exited/killed/error) — sets
    *  `archived: true` and persists. Pure housekeeping: hides the row from
@@ -5000,6 +5151,22 @@ export function createSessionsRegistry(opts?: {
           stampInterrupted(desc)
           return desc
         })
+    },
+    listSummaries(opts) {
+      const includeArchived = opts?.includeArchived ?? false
+      const limit = Math.max(1, Math.min(200, opts?.limit ?? 50))
+      const offset = Math.max(0, opts?.offset ?? 0)
+      const all = Array.from(sessions.values())
+        .map(s => s.desc)
+        .filter(desc => includeArchived || !desc.archived)
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      const slice = all.slice(offset, offset + limit)
+      const summaries = slice.map(desc => {
+        stampProcessAlive(desc)
+        stampInterrupted(desc)
+        return toSessionSummary(desc)
+      })
+      return { summaries, total: all.length }
     },
     get(id) {
       const desc = sessions.get(id)?.desc

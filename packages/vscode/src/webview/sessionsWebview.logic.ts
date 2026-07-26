@@ -14,10 +14,19 @@
  * actions. That reuse is the point: the tree and the webview must never
  * disagree about which sessions exist, how they're grouped, or which are
  * nested under a parent — only how a row is PAINTED.
+ *
+ * ARCHITECTURE NOTE (progressive loading): the webview consumes
+ * {@link SessionSummary} rows from the new `GET /sessions/summaries` endpoint
+ * rather than the full `GET /sessions` SessionDescriptor snapshot. A summary
+ * carries every field this panel renders (name, status, activity, cost,
+ * context, workspace/isolation, parent/child nesting, resume chains) and
+ * deliberately excludes large resume/transcript/policy context that the panel
+ * never shows. This keeps first paint bounded and daemon serialization work
+ * low even when the daemon holds hundreds of sessions. The tree and transcript
+ * panels continue to use the full SessionDescriptor via SessionStore unchanged.
  */
 
-import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
-import { canArchive } from "../commands/sessionArchive.logic.js"
+import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
 import { isLiveSession } from "../commands/sessionActions.logic.js"
 import { findWorkspaceByPath } from "../services/workspaces.logic.js"
 import { isPendingSession } from "../services/pending.logic.js"
@@ -100,23 +109,27 @@ const ACTIVITY_TO_ROW_STATUS: Readonly<Record<SessionActivity, WebviewRowStatus>
   done: "done",
 }
 
-export function webviewRowStatus(session: SessionDescriptor, now?: number): WebviewRowStatus {
+export function webviewRowStatus(session: SessionSummary, now?: number): WebviewRowStatus {
   return ACTIVITY_TO_ROW_STATUS[activityFor(session, now)]
 }
 
 /** Per-row lifecycle action exposed by the webview. */
 export type RowAction = "stop" | "archive" | "unarchive"
 
+const TERMINAL_STATUSES = new Set<SessionSummary["status"]>(["exited", "killed", "error"])
+
 /**
  * Which lifecycle action a row should offer, if any. Mirrors the existing
- * command/menu gating (`isLiveSession`, `canArchive`) so the webview never
- * invents its own policy.
+ * command/menu gating (`isLiveSession`, terminal status) so the webview never
+ * invents its own policy. The summary projection omits `endedReason`, so a
+ * killed session is treated as a normal terminal row here; the tree's full
+ * descriptor path continues to distinguish resumable-in-place ghosts.
  */
-export function rowActionFor(session: SessionDescriptor): RowAction | undefined {
+export function rowActionFor(session: SessionSummary): RowAction | undefined {
   if (isPendingSession(session)) return undefined
   if (session.archived) return "unarchive"
   if (isLiveSession(session)) return "stop"
-  if (canArchive(session)) return "archive"
+  if (TERMINAL_STATUSES.has(session.status)) return "archive"
   return undefined
 }
 
@@ -157,7 +170,7 @@ export function workspaceColorFor(slug: string): { index: number; css: string } 
   return { index, css: WORKSPACE_PALETTE[index]! }
 }
 
-/** Workspace identity attached to a row for tag rendering and filtering. */
+/** Workspace identity attached to a row for tag rendering. */
 export interface WebviewWorkspace {
   slug: string
   label: string
@@ -167,7 +180,7 @@ export interface WebviewWorkspace {
 /** One rendered row — a root session or one of its flattened subagent descendants. */
 export interface WebviewRow {
   id: string
-  session: SessionDescriptor
+  session: SessionSummary
   /** True for a subagent nested under a root — indentation + dimming only (no connector line, no box), per the locked mock. */
   isSub: boolean
   status: WebviewRowStatus
@@ -215,7 +228,7 @@ const TAB_TO_ACTIVITIES: Readonly<
 }
 
 function toRow(
-  session: SessionDescriptor,
+  session: SessionSummary,
   isSub: boolean,
   now: number,
   workspaces: WorkspacesConfig,
@@ -281,17 +294,17 @@ function sectionFor(
  * tokens.
  */
 function retainSessionsByActivity(
-  sessions: readonly SessionDescriptor[],
+  sessions: readonly SessionSummary[],
   activities: readonly SessionActivity[],
   now: number,
-): SessionDescriptor[] {
+): SessionSummary[] {
   const matched = new Set<string>()
   for (const session of sessions) {
     if (activities.includes(activityFor(session, now))) matched.add(session.id)
   }
   if (matched.size === 0) return []
 
-  const childrenByParent = new Map<string, SessionDescriptor[]>()
+  const childrenByParent = new Map<string, SessionSummary[]>()
   for (const session of sessions) {
     const parentId = session.parentSessionId
     if (!parentId) continue
@@ -318,7 +331,7 @@ function retainSessionsByActivity(
 /** Resolve a session's workspace to a stable slug/label, or undefined when unassigned. */
 function workspaceFor(
   config: WorkspacesConfig,
-  session: Pick<SessionDescriptor, "cwd" | "workspaceSlug">,
+  session: Pick<SessionSummary, "cwd" | "workspaceSlug">,
 ): { slug: string; label: string } | undefined {
   if (session.cwd) {
     const byPath = findWorkspaceByPath(config, session.cwd)
@@ -331,60 +344,14 @@ function workspaceFor(
   return undefined
 }
 
-/**
- * Keep sessions whose resolved workspace matches `selectedSlug`, plus any
- * ancestors needed to preserve parentSessionId nesting. `__unassigned__`
- * keeps sessions with no resolvable workspace.
- */
-function retainSessionsByWorkspace(
-  sessions: readonly SessionDescriptor[],
-  config: WorkspacesConfig,
-  selectedSlug: string,
-): SessionDescriptor[] {
-  if (selectedSlug === "__all__") return [...sessions]
-
-  const matched = new Set<string>()
-  for (const session of sessions) {
-    const ws = workspaceFor(config, session)
-    const isUnassigned = ws === undefined
-    if (selectedSlug === "__unassigned__") {
-      if (isUnassigned) matched.add(session.id)
-    } else if (ws?.slug === selectedSlug) {
-      matched.add(session.id)
-    }
-  }
-  if (matched.size === 0) return []
-
-  const childrenByParent = new Map<string, SessionDescriptor[]>()
-  for (const session of sessions) {
-    const parentId = session.parentSessionId
-    if (!parentId) continue
-    const list = childrenByParent.get(parentId)
-    if (list) list.push(session)
-    else childrenByParent.set(parentId, [session])
-  }
-
-  const descendantMatch = new Map<string, boolean>()
-  const hasMatchingDescendant = (id: string): boolean => {
-    const cached = descendantMatch.get(id)
-    if (cached !== undefined) return cached
-    descendantMatch.set(id, false)
-    const result = (childrenByParent.get(id) ?? []).some(
-      child => matched.has(child.id) || hasMatchingDescendant(child.id),
-    )
-    descendantMatch.set(id, result)
-    return result
-  }
-
-  return sessions.filter(session => matched.has(session.id) || hasMatchingDescendant(session.id))
-}
-
 export interface SessionsWebviewModel {
   section: WebviewSection
   /** Rows actually rendered across recent + older (roots + nested children). */
   shownCount: number
-  /** All sessions the store currently holds, before filtering. */
-  totalCount: number
+  /** Summaries currently loaded into the webview (the available result set). */
+  loadedCount: number
+  /** Total sessions reported by the daemon for this archived/visible view. */
+  serverTotal: number
 }
 
 export interface BuildSessionsWebviewModelOptions {
@@ -392,20 +359,22 @@ export interface BuildSessionsWebviewModelOptions {
   /** The pinned filter input's live text — matched against name/command/cwd/id via the reused sessionFilter.logic.ts predicate. */
   search: string
   now: number
-  /** Selected workspace slug, or the global/unassigned sentinel. */
-  workspace?: string | "__all__" | "__unassigned__"
 }
 
 /**
  * The webview's single entry point — now a single continuous list ordered by
- * recency and parent-child nesting. Filtering (search, activity tab,
- * workspace, archived) is applied first; the survivors are then collapsed,
- * re-nested, sorted, and split into a global recent/older divider.
+ * recency and parent-child nesting. Filtering (search, activity tab, archived)
+ * is applied first; the survivors are then collapsed, re-nested, sorted, and
+ * split into a global recent/older divider.
+ *
+ * The input is a {@link SessionSummary} slice from `GET /sessions/summaries`,
+ * not the full SessionDescriptor snapshot. Search and status tabs operate
+ * honestly over the loaded (available) set; older sessions become available
+ * via the panel's load-more affordance.
  */
 export function buildSessionsWebviewModel(
-  sessions: readonly SessionDescriptor[],
+  sessions: readonly SessionSummary[],
   workspaces: WorkspacesConfig,
-  openFolderPaths: readonly string[],
   opts: BuildSessionsWebviewModelOptions,
 ): SessionsWebviewModel {
   // 1. Search filter (reused predicate with parent retention).
@@ -413,7 +382,7 @@ export function buildSessionsWebviewModel(
   const searchSurvivors = filterSessions(sessions, baseState, workspaces)
 
   // 2. Activity / archived tab filter.
-  let tabSurvivors: SessionDescriptor[]
+  let tabSurvivors: SessionSummary[]
   if (opts.tab === "archived") {
     tabSurvivors = searchSurvivors.filter(s => s.archived === true)
   } else if (opts.tab === "all") {
@@ -422,42 +391,20 @@ export function buildSessionsWebviewModel(
     tabSurvivors = retainSessionsByActivity(searchSurvivors, TAB_TO_ACTIVITIES[opts.tab], opts.now)
   }
 
-  // 3. Workspace filter (with parent retention to keep nesting intact).
-  const workspaceSurvivors = retainSessionsByWorkspace(
-    tabSurvivors,
-    workspaces,
-    opts.workspace ?? "__all__",
-  )
-
-  // 4. Collapse resume chains, build the nested tree, sort globally.
-  const collapsed = collapseResumeChains(workspaceSurvivors)
+  // 3. Collapse resume chains, build the nested tree, sort globally.
+  const collapsed = collapseResumeChains(tabSurvivors)
   const roots = buildSessionTree(collapsed)
   roots.sort((a, b) => compareSessions(a.session, b.session))
 
-  // 5. Flatten into a single recent/older section.
+  // 4. Flatten into a single recent/older section.
   const section = sectionFor(roots, opts.now, workspaces)
   const shownCount = section.recent.length + section.older.length
 
-  return { section, shownCount, totalCount: sessions.length }
+  return { section, shownCount, loadedCount: sessions.length, serverTotal: sessions.length }
 }
 
-/** The panel's "N of M shown" / "M loaded" subtitle line. */
+/** The panel's subtitle line: "50 of 283 loaded" when unfiltered, "3 of 50 shown" when filtered. */
 export function summaryTextFor(model: SessionsWebviewModel, filterActive: boolean): string {
-  if (filterActive) return `${model.shownCount} of ${model.totalCount} shown`
-  return `${model.totalCount} loaded`
-}
-
-/** Every workspace that currently owns at least one session, plus metadata for the selector. */
-export function workspaceOptionsFor(
-  sessions: readonly SessionDescriptor[],
-  workspaces: WorkspacesConfig,
-): WebviewWorkspace[] {
-  const seen = new Map<string, WebviewWorkspace>()
-  for (const session of sessions) {
-    const ws = workspaceFor(workspaces, session)
-    if (!ws) continue
-    if (seen.has(ws.slug)) continue
-    seen.set(ws.slug, { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug).index })
-  }
-  return [...seen.values()].sort((a, b) => a.label.localeCompare(b.label))
+  if (filterActive) return `${model.shownCount} of ${model.loadedCount} shown`
+  return `${model.loadedCount} of ${model.serverTotal} loaded`
 }
