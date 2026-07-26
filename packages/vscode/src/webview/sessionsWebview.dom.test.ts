@@ -120,10 +120,12 @@ function modelMessage(
     summary?: string
     workspaces?: unknown[]
     selectedWorkspace?: string
+    connection?: unknown
   } = {},
 ) {
   return {
     type: "model",
+    connection: overrides.connection,
     summary: overrides.summary ?? "2 loaded",
     section: {
       recent: overrides.recent ?? [ROW_A, ROW_CHILD],
@@ -138,6 +140,40 @@ describe("sessions webview — boot", () => {
   it("posts ready on load", () => {
     const panel = renderPanel()
     expect(panel.posted).toEqual([{ type: "ready" }])
+  })
+
+  it("ships a full-height connecting state before the daemon replies", () => {
+    const panel = renderPanel()
+    expect(el(panel, "daemon-state").dataset["state"]).toBe("connecting")
+    expect(el(panel, "daemon-title").textContent).toContain("Connecting to agentproto daemon")
+  })
+})
+
+describe("sessions webview — daemon connection state", () => {
+  it("replaces the list with an actionable setup screen when the daemon is unreachable", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ connection: "unreachable" }))
+
+    expect(el(panel, "daemon-title").textContent).toContain("is not running")
+    expect(el(panel, "daemon-description").textContent).toContain("keep trying")
+    expect(el(panel, "daemon-state").textContent).toContain("agentproto serve")
+
+    click(panel, el(panel, "daemon-state").querySelector("[data-refresh]")!)
+    click(panel, el(panel, "daemon-state").querySelector("[data-docs]")!)
+    click(panel, el(panel, "daemon-state").querySelector("[data-copy-claude]")!)
+    expect(panel.posted).toEqual([
+      { type: "ready" },
+      { type: "refresh" },
+      { type: "openDocs" },
+      { type: "copyClaudePrompt" },
+    ])
+  })
+
+  it("restores the normal session UI as soon as the daemon connects", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ connection: "connected" }))
+
+    expect([...el(panel, "list").querySelectorAll(".row")]).toHaveLength(2)
   })
 })
 
