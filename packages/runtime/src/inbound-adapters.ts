@@ -225,12 +225,14 @@ function normalizeTelegram(
     }
   }
 
-  const source =
-    ctx.sourceOverride ??
-    (chat && typeof chat.id === "number"
-      ? String(chat.id)
-      : undefined)
-  const contactRef = source
+  // source = the channel name (mirrors normalizeAgentpush's `envelope.channel`
+  // and every other dialect here) -- NOT the chat id. A binding is keyed on
+  // (alias, source, contactRef); collapsing source into the chat id means
+  // it collides with contactRef and nothing written via transmit_message
+  // (which always sends source:"telegram") can ever match on lookup.
+  const source = ctx.sourceOverride ?? "telegram"
+  const contactRef =
+    chat && typeof chat.id === "number" ? String(chat.id) : undefined
   const text = typeof message.text === "string" ? message.text : undefined
   const providerMessageId =
     typeof message.message_id === "number"

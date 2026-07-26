@@ -96,6 +96,14 @@ export function createInboundEndpointStore(
 
   const load = (): Map<string, InboundEndpoint> => {
     const out = new Map<string, InboundEndpoint>()
+    // Reading was previously unconditional -- a store constructed with
+    // persist:false (every test, plus any gateway built with opts.persist
+    // false) still read the developer's REAL ~/.agentproto/inbound-
+    // endpoints.json at construction, since no filePath override is passed
+    // here. Once a real endpoint exists on disk, that leaks into test
+    // state (confirmed live: "lists endpoints" started failing the moment
+    // a real telegram-agentproto endpoint existed on this box).
+    if (!persist) return out
     let raw: string
     try {
       raw = readFileSync(filePath, "utf8")
