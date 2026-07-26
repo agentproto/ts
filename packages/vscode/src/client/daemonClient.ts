@@ -1020,7 +1020,7 @@ export class DaemonClient {
           ...init.headers,
           ...buildAuthHeaders(this.config.authHeaders, token),
         },
-        body: init.body,
+        body: init.body as BodyInit | undefined,
         signal: AbortSignal.timeout(init.timeoutMs),
       })
     const res = await send(await this.resolveToken())

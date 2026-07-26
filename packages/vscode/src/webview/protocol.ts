@@ -63,9 +63,11 @@ export type ExtMessage =
       /**
        * Render mode. "structured" drives the semantic chat timeline from
        * per-session events.jsonl; "raw" is the fallback for terminal/command
-       * sessions with no structured capture (flattened /stream output).
+       * sessions with no structured capture (flattened /stream output);
+       * "pty" is a live xterm.js view for plain PTY sessions fed by the
+       * daemon's `/sessions/:id/pty` WebSocket.
        */
-      mode: "structured" | "raw"
+      mode: "structured" | "raw" | "pty"
       /**
        * Structured mode: the initial conversation timeline, ALREADY presented
        * to safe HTML on the extension host (all daemon text escaped via the
@@ -189,6 +191,29 @@ export type ExtMessage =
    * own arm rather than overloading one that means something else.
    */
   | { type: "stopError"; title: string; message: string }
+  /**
+   * PTY mode: base64-encoded raw bytes from the daemon's PTY WebSocket.
+   * The webview decodes to a Uint8Array and hands it to xterm.js — never to
+   * innerHTML — so raw daemon content stays off the DOM as parsed HTML.
+   */
+  | { type: "ptyData"; b64: string }
+  /**
+   * PTY mode: the session's process exited. The exit banner is rendered and
+   * further input is disabled.
+   */
+  | { type: "ptyExit"; exitCode: number; signal?: number }
+  /**
+   * PTY mode: connection state for the live PTY WebSocket. Drives reconnect
+   * banners so the user can tell a transient daemon restart from a dead link.
+   */
+  | {
+      type: "ptyStatus"
+      status: "open" | "reconnected" | "reconnecting" | "rejected" | "gave-up"
+      attempt?: number
+      max?: number
+      delayMs?: number
+      detail?: string
+    }
 
 /**
  * Messages sent from the webview to the extension host.
@@ -268,21 +293,25 @@ export type WebviewMessage =
    */
   | { type: "changeAccess" }
   /**
-   * The header's Terminal segment was clicked — open a REAL VS Code terminal
-   * for this session beside the conversation panel (WP1). Distinct from the
+   * The header's Terminal button was clicked — restart this agent-cli session
+   * as a real PTY-native terminal. The host confirms, calls `session_restart`,
+   * and opens the new session's terminal. Distinct from `openTerminal`, which
+   * merely opens a mirror for an existing session.
+   */
+  | { type: "restartAsTerminal" }
+  /**
+   * The header's Terminal button was clicked — open a REAL VS Code terminal
+   * tab for this session (`agentproto.openTerminal`). Distinct from the
    * raw-HTML view switch (`setView`), which remains available as an internal
-   * fallback. The host resolves the session from the controller and invokes
-   * `agentproto.openTerminal`.
+   * fallback, and from any harness restart operation.
    */
   | { type: "openTerminal" }
   /**
    * The header's Conversation⇄Terminal segmented toggle was clicked. A PURE
    * display switch for THIS session — the host re-renders the SAME session's
    * other representation (structured conversation ⇄ raw terminal) and re-arms
-   * the live feed, with NO restart and NO resume id. Distinct from the
-   * restart-based `switchHarness` command (see viewToggle.logic.ts). The host
-   * resolves the session from the controller; the message carries only which
-   * view to show.
+   * the live feed, with NO restart and NO resume id. The host resolves the
+   * session from the controller; the message carries only which view to show.
    */
   | { type: "setView"; view: "conversation" | "terminal" }
   /**
@@ -293,6 +322,16 @@ export type WebviewMessage =
    * the label, reverting to the derived title / friendly fallback.
    */
   | { type: "rename"; name: string }
+  /**
+   * PTY mode: keystrokes or paste from xterm.js to forward to the daemon's
+   * PTY WebSocket as an `{kind:"input",b64}` frame.
+   */
+  | { type: "ptyInput"; text: string }
+  /**
+   * PTY mode: terminal size changed — forwarded to the daemon as a
+   * `{kind:"resize",cols,rows}` frame.
+   */
+  | { type: "ptyResize"; cols: number; rows: number }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -303,6 +342,7 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "ready":
     case "stop":
     case "restart":
+    case "restartAsTerminal":
     case "changeModel":
     case "changePosture":
     case "changeAccess":
@@ -323,6 +363,10 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return m.view === "conversation" || m.view === "terminal"
     case "rename":
       return typeof m.name === "string"
+    case "ptyInput":
+      return typeof m.text === "string"
+    case "ptyResize":
+      return typeof m.cols === "number" && typeof m.rows === "number"
     default:
       return false
   }

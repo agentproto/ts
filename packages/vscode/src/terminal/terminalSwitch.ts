@@ -15,6 +15,8 @@
 import * as vscode from "vscode"
 
 import { resolveSessionArg } from "../commands/sessionActions.js"
+import { describeSession } from "../commands/sessionActions.logic.js"
+import { describeRestart, parseRestartResult } from "../commands/sessionRestart.logic.js"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
@@ -125,8 +127,63 @@ export function registerTerminalSwitch(
       )
       if (session) terminalSwitch.open(session)
     }),
+    vscode.commands.registerCommand("agentproto.restartAsTerminal", async (arg: unknown) => {
+      const session = await resolveSessionArg(
+        arg ?? getActiveTranscriptSessionId(),
+        store,
+        "Select a session to restart as terminal",
+        () => true,
+        client,
+      )
+      if (!session) return
+
+      if (session.kind !== "agent-cli") {
+        void vscode.window.showWarningMessage(
+          `agentproto: ${describeSession(session)} is not an agent conversation — only agent-cli sessions can be restarted as a terminal.`,
+        )
+        return
+      }
+
+      const choice = await vscode.window.showWarningMessage(
+        `Restart ${describeSession(session)} as a real terminal?`,
+        {
+          modal: true,
+          detail:
+            "This ends the current conversation and resumes it as a PTY-native terminal. The adapter's own resume id is reused where possible.",
+        },
+        "Restart as Terminal",
+      )
+      if (choice !== "Restart as Terminal") return
+
+      try {
+        const raw = await client.mcpCall("session_restart", { idOrName: session.id })
+        const result = parseRestartResult(raw)
+        if (!result) {
+          vscode.window.showErrorMessage(
+            `agentproto: restart of ${describeSession(session)} as terminal returned an unrecognised result.`,
+          )
+          return
+        }
+        await store.refreshAll()
+        vscode.window.showInformationMessage(describeRestart(session, result))
+        if (result.pty !== true && result.kind !== "terminal") {
+          vscode.window.showWarningMessage(
+            `agentproto: restart of ${describeSession(session)} did not become a terminal — the daemon fell back to ACP resume because the provider transcript could not be recovered.`,
+          )
+        }
+        await vscode.commands.executeCommand("agentproto.openTerminal", result.id)
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `agentproto: restart of ${describeSession(session)} as terminal failed — ${describeError(err)}`,
+        )
+      }
+    }),
     vscode.commands.registerCommand("agentproto.moveTerminalLocation", () => terminalSwitch.moveLocation()),
   )
 
   return terminalSwitch
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }

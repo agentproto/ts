@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 // stays hermetic (mentionSource.test.ts covers the real IO against a temp repo).
 vi.mock("./mentionSource.js", () => ({ listRepoFiles: vi.fn().mockResolvedValue([]) }))
 
-import { TranscriptPanelController } from "./transcriptPanelController.js"
+import { TranscriptPanelController, type TranscriptPanelControllerOptions } from "./transcriptPanelController.js"
 import { resolveAttachmentsCwd } from "./attachments.logic.js"
 import { listRepoFiles } from "./mentionSource.js"
 import { NoTranscriptError } from "../client/daemonClient.js"
@@ -133,7 +133,11 @@ function setupFakeHome(cwd: string): string {
 
 function make(
   client: MockClient,
-  opts: Partial<{ initialSession: SessionDescriptor; autoPoll: boolean }> = {},
+  opts: Partial<{
+    initialSession: SessionDescriptor
+    autoPoll: boolean
+    ptyBridgeFactory: TranscriptPanelControllerOptions["ptyBridgeFactory"]
+  }> = {},
 ): { controller: TranscriptPanelController; messenger: ReturnType<typeof createMockMessenger>; store: ReturnType<typeof createMockStore> } {
   const messenger = createMockMessenger()
   const store = createMockStore()
@@ -144,6 +148,7 @@ function make(
     store,
     messenger,
     autoPoll: opts.autoPoll ?? false,
+    ptyBridgeFactory: opts.ptyBridgeFactory,
   })
   return { controller, messenger, store }
 }
@@ -299,21 +304,27 @@ describe("TranscriptPanelController — native PTY bridge", () => {
     expect(textOf(init.conversation!).join(" ")).toContain("native reply")
   })
 
-  it("falls back to raw for a PTY terminal that is not a known native store", async () => {
-    // The gating boundary: a PTY terminal is only bridged when its binary maps
-    // to a conversation store. An unknown binary must degrade to raw, not sit
-    // empty in structured mode waiting for events that will never come.
+  it("falls back to pty mode for a PTY terminal that is not a known native store", async () => {
+    // Plain PTY sessions (no recognized native conversation bridge) get the
+    // live xterm view, skipping the wasted export+preview round trip.
+    const bridge = vi.fn().mockReturnValue({
+      sendInput: vi.fn(),
+      resize: vi.fn(),
+      dispose: vi.fn(),
+    })
     const client = createMockClient()
     const { controller, messenger } = make(client, {
       initialSession: session({ kind: "terminal", pty: true, argv: ["bash"] }),
+      ptyBridgeFactory: bridge,
     })
 
     await controller.onReady()
 
     const init = initMsg(messenger.messages)
-    expect(init.mode).toBe("raw")
+    expect(init.mode).toBe("pty")
     expect(client.getSessionEvents).not.toHaveBeenCalled()
-    expect(client.exportSession).toHaveBeenCalledWith("s1", "markdown")
+    expect(client.exportSession).not.toHaveBeenCalled()
+    expect(bridge).toHaveBeenCalledWith(client, controller.session, messenger, { cols: 80, rows: 24 })
   })
 })
 

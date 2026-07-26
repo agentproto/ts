@@ -47,6 +47,7 @@ import {
 } from "./conversation.js"
 import { isNativeConversationSession, loadNativeConversation } from "./nativeConversation.js"
 import { canToggleView } from "./viewToggle.logic.js"
+import { bridgePtyToWebview } from "./ptyWebviewBridge.js"
 import { buildAttachmentName, buildDroppedName, resolveAttachmentsCwd } from "./attachments.logic.js"
 import { filterMentionCandidates, type MentionCandidate } from "./mentions.logic.js"
 import { listRepoFiles } from "./mentionSource.js"
@@ -93,6 +94,14 @@ export interface TranscriptPanelControllerOptions {
    *  Defaults to the global `fetch`; tests override it to control the SSE
    *  connection without a real daemon. */
   fetchImpl?: typeof fetch
+  /** Factory for the PTY-mode WebSocket bridge. Defaults to the real
+   *  `bridgePtyToWebview`; tests inject a stub to avoid `ws`/daemon traffic. */
+  ptyBridgeFactory?: (
+    client: DaemonClient,
+    session: SessionDescriptor,
+    messenger: PanelMessenger,
+    initialDims: { cols: number; rows: number },
+  ) => { sendInput(text: string): void; resize(cols: number, rows: number): void; dispose(): void }
 }
 
 /**
@@ -239,10 +248,11 @@ export class TranscriptPanelController {
   private readonly pollIntervalMs: number
   private readonly autoPoll: boolean
   private readonly fetchImpl: typeof fetch
+  private readonly ptyBridgeFactory: NonNullable<TranscriptPanelControllerOptions["ptyBridgeFactory"]>
 
   private initSent = false
   private initPromise: Promise<void> | undefined
-  private mode: "structured" | "raw" | undefined
+  private mode: "structured" | "raw" | "pty" | undefined
   /**
    * User's explicit view choice from the header toggle (FIX 2). Overrides the
    * auto mode pick in {@link loadContent}: `"raw"` forces the terminal view,
@@ -272,6 +282,8 @@ export class TranscriptPanelController {
   private eventsCursor = 0
   private structuredSource: "daemon" | "native" | undefined
   private feed: RecordFeed | undefined
+  /** Live PTY WebSocket handle when mode === "pty". */
+  private ptyHandle: ReturnType<typeof bridgePtyToWebview> | undefined
   /** Last conversation posted to the webview — the diff base for the next patch. */
   private lastPresented: PresentedConversation | undefined
 
@@ -286,6 +298,7 @@ export class TranscriptPanelController {
     this.pollIntervalMs = opts.pollIntervalMs ?? 250
     this.autoPoll = opts.autoPoll ?? true
     this.fetchImpl = opts.fetchImpl ?? fetch
+    this.ptyBridgeFactory = opts.ptyBridgeFactory ?? bridgePtyToWebview
     this.exited = isExited(opts.initialSession.status)
     // Open the raw stream up front so pre-ready lines are buffered for the
     // raw fallback. In structured mode these are ignored (see onLine).
@@ -310,8 +323,9 @@ export class TranscriptPanelController {
   }
 
   private onLine(line: SessionStreamLine): void {
-    // Structured mode renders from events.jsonl, not the flattened stream.
-    if (this.mode === "structured") return
+    // Structured and PTY modes render from their own transports, not the
+    // flattened stream.
+    if (this.mode === "structured" || this.mode === "pty") return
     if (!this.initSent) {
       this.linesBuffer.push(line)
       return
@@ -383,6 +397,11 @@ export class TranscriptPanelController {
         })
         this.linesBuffer.length = 0
       }
+    } else if (this.mode === "pty") {
+      // PTY mode has its own WebSocket transport; the flattened stream is not
+      // used. Start the bridge after init so the webview is ready to receive.
+      this.linesBuffer.length = 0
+      this.ptyHandle = this.ptyBridgeFactory(this.client, session, this.messenger, { cols: 80, rows: 24 })
     } else {
       // Structured mode ignores the raw stream — drop any buffered lines.
       this.linesBuffer.length = 0
@@ -396,7 +415,7 @@ export class TranscriptPanelController {
    *  route/other daemon error degrades to raw, while a NoTranscriptError (no
    *  events written yet) stays structured so the poll loop can populate it. */
   private async loadContent(preSession: SessionDescriptor): Promise<{
-    mode: "structured" | "raw"
+    mode: "structured" | "raw" | "pty"
     initialHtml?: string
   }> {
     // The header toggle (FIX 2) forces the terminal view: skip the structured
@@ -427,6 +446,12 @@ export class TranscriptPanelController {
       this.appendRecords(records)
       this.eventsCursor = records.at(-1)?.seq ?? 0
       return { mode: "structured" }
+    }
+    // Plain PTY sessions (no native conversation bridge) get the live xterm
+    // view, skipping the wasted export+preview round trip.
+    if (preSession.kind === "terminal" && preSession.pty === true && !isNativeConversationSession(preSession)) {
+      this.structuredSource = undefined
+      return { mode: "pty" }
     }
     if (preSession.kind !== "terminal" && preSession.kind !== "command") {
       this.structuredSource = undefined
@@ -737,6 +762,8 @@ export class TranscriptPanelController {
     // starts from a clean cursor — the new mode rebuilds its own state.
     this.feed?.dispose()
     this.feed = undefined
+    this.ptyHandle?.dispose()
+    this.ptyHandle = undefined
     this.records.length = 0
     this.seenSeqs.clear()
     this.eventsCursor = 0
@@ -759,9 +786,13 @@ export class TranscriptPanelController {
       ...(canToggleView(this.currentSession) ? { canToggle: true } : {}),
     })
 
-    // Raw mode is fed by the always-open focus stream (onLine); only the
-    // structured path needs its record feed re-armed.
-    if (loaded.mode === "structured") this.startFeed()
+    // Raw mode is fed by the always-open focus stream (onLine); PTY mode by its
+    // own WebSocket bridge; only the structured path needs its record feed re-armed.
+    if (loaded.mode === "structured") {
+      this.startFeed()
+    } else if (loaded.mode === "pty") {
+      this.ptyHandle = this.ptyBridgeFactory(this.client, this.currentSession, this.messenger, { cols: 80, rows: 24 })
+    }
   }
 
   /**
@@ -874,7 +905,16 @@ export class TranscriptPanelController {
   dispose(): void {
     this.disposed = true
     this.feed?.dispose()
+    this.ptyHandle?.dispose()
     this.focusDisposable.dispose()
+  }
+
+  onPtyInput(text: string): void {
+    this.ptyHandle?.sendInput(text)
+  }
+
+  onPtyResize(cols: number, rows: number): void {
+    this.ptyHandle?.resize(cols, rows)
   }
 }
 

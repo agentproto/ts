@@ -59,6 +59,28 @@ export function postureLabel(posture: Posture | undefined): string {
 }
 
 /**
+ * A clear default posture label when the daemon reports none. Never "?" —
+ * the chip should show something meaningful for the harness/kind instead of
+ * an empty-looking placeholder. Pure and self-contained so it can be injected
+ * into the webview alongside postureLabel.
+ */
+export function defaultPostureLabel(
+  session: Pick<SessionDescriptor, "kind" | "adapterSlug" | "posture">,
+): string {
+  const explicit = postureLabel(session.posture)
+  if (explicit) return explicit
+  if (session.kind === "terminal") return "terminal"
+  const slug = (session.adapterSlug ?? "").toLowerCase()
+  if (slug.includes("claude")) return "default"
+  if (slug.includes("hermes")) return "default"
+  if (slug.includes("codex") || slug.includes("openai")) return "default"
+  if (slug.includes("gemini") || slug.includes("google")) return "default"
+  if (slug.includes("mastra")) return "default"
+  if (slug.includes("opencode")) return "default"
+  return "default"
+}
+
+/**
  * Context-window fill as a gauge model, or `null` when there's nothing to show
  * (missing/zero size). `ratio` is clamped to [0,1] — a runaway `used > size`
  * paints a full ring, not an overflowing one. `level` buckets the ring's color
