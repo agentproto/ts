@@ -12,7 +12,7 @@
 
 import { resolve, dirname } from "node:path"
 import { homedir } from "node:os"
-import { readFileSync, mkdirSync, writeFileSync, promises as fsp } from "node:fs"
+import { readFileSync, mkdirSync, writeFileSync, chmodSync, promises as fsp } from "node:fs"
 import type { InboundProvider } from "./inbound-adapters.js"
 import type { InboundRouteMode } from "./inbound-router.js"
 
@@ -144,7 +144,15 @@ export function createInboundEndpointStore(
         try {
           const snap = snapshot()
           await fsp.mkdir(dirname(filePath), { recursive: true })
-          await fsp.writeFile(filePath, JSON.stringify(snap, null, 2) + "\n")
+          // mode 0600 -- each endpoint's webhook secret is stored in
+          // plaintext here (same tradeoff as transmitter-bindings.json),
+          // matching every other credential-bearing file in this runtime
+          // (telegram-bot-creds, pairing-registry, user-presets, ...). The
+          // mode option only applies on file CREATION, so chmod explicitly
+          // too -- an already-existing file (e.g. from before this fix)
+          // would otherwise keep whatever permissions it already had.
+          await fsp.writeFile(filePath, JSON.stringify(snap, null, 2) + "\n", { mode: 0o600 })
+          await fsp.chmod(filePath, 0o600)
         } catch (err) {
           console.warn(
             `[inbound-endpoints] persist failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -156,10 +164,17 @@ export function createInboundEndpointStore(
 
   const flushSync = (): void => {
     if (!persist) return
+    // A pending debounced write would otherwise still fire up to
+    // debounceMs later, keeping the event loop alive past shutdown.
+    if (persistTimer) {
+      clearTimeout(persistTimer)
+      persistTimer = null
+    }
     try {
       const snap = snapshot()
       mkdirSync(dirname(filePath), { recursive: true })
-      writeFileSync(filePath, JSON.stringify(snap, null, 2) + "\n")
+      writeFileSync(filePath, JSON.stringify(snap, null, 2) + "\n", { mode: 0o600 })
+      chmodSync(filePath, 0o600)
     } catch {
       // best-effort — never throw in shutdown path
     }

@@ -1323,8 +1323,17 @@ export async function createGateway(
   // path knob) — writes only happen on an explicit bind, which no
   // test exercises incidentally the way session spawns do.
   const transmitterBindings = createTransmitterBindingStore()
+  // Keyed off the SAME `persist` switch every sibling store uses (see its
+  // definition above) -- an endpoint registered via inbound_endpoint_create
+  // must survive a daemon restart in production, or every provider webhook
+  // already pointed at it (e.g. a live Telegram bot's setWebhook) starts
+  // 404ing as unknown_inbound_endpoint with no signal to the remote caller.
+  // Hardcoding persist:true here (an earlier version of this fix) ignored
+  // opts.persist entirely -- a test gateway created with `persist: false`
+  // would still flushSync on stop() and overwrite the developer's real
+  // ~/.agentproto/inbound-endpoints.json with an empty store.
   const inboundEndpointStore = createInboundEndpointStore({
-    persist: false,
+    persist,
   })
   const telegramBotCreds = makeTelegramBotCredsStore()
 
@@ -1821,6 +1830,12 @@ export async function createGateway(
     // unauthenticated webhook payload carries no adapter/prompt template
     // to spawn with, so an unbound contact is "skipped" rather than
     // spawning an arbitrary agent from push input.
+    // provider-specific `POST /inbound/:slug` push ingress reads endpoint
+    // config (secret, provider, mode) from the SAME store the
+    // inbound_endpoint_create/list/delete MCP tools write to — without
+    // this, every slug 404s as "unknown_inbound_endpoint" regardless of
+    // what's registered, since the http layer never saw the store at all.
+    endpointStore: inboundEndpointStore,
     routeInboundMessage: (msg: InboundMessage, mode: InboundRouteMode) =>
       routeInboundMessage(
         {
@@ -2038,6 +2053,12 @@ export async function createGateway(
       restartScheduler.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
+      // Flush inbound-endpoint state synchronously -- persistence is a
+      // debounced async write, so an endpoint registered via
+      // inbound_endpoint_create just before a restart would otherwise be
+      // lost inside that window, the exact 404-after-bounce failure
+      // persisting the store exists to prevent.
+      inboundEndpointStore.flushSync()
       // Stop the cron scheduler tick loop before sessions shut down.
       cronScheduler.shutdown()
       // Flush completion-policy state before sessions shut down so
