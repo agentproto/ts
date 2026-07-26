@@ -1,7 +1,10 @@
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, beforeEach } from "vitest"
 import { sendOutbound } from "../outbound-adapters.js"
 import type { McpProxyRegistry, ProxyCallOutcome } from "../mcp-proxy.js"
 import type { TelegramBotCredsStore } from "../telegram-bot-creds.js"
+import { readFile } from "node:fs/promises"
+
+vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }))
 
 function makeMockTelegramCreds(
   readValue: { token: string } | null,
@@ -12,6 +15,10 @@ function makeMockTelegramCreds(
     exists: vi.fn().mockResolvedValue(readValue !== null),
   }
 }
+
+beforeEach(() => {
+  vi.mocked(readFile).mockReset()
+})
 
 describe("sendOutbound", () => {
   it("agentpush calls send_message and returns providerMessageId", async () => {
@@ -74,10 +81,40 @@ describe("sendOutbound", () => {
         // chat_id MUST come from contactRef (the real chat id), never from
         // source (just the channel name "telegram") — distinct values here
         // so a source/contactRef mix-up fails this assertion.
-        body: JSON.stringify({ chat_id: "987654321", text: "hi" }),
+        body: JSON.stringify({
+          chat_id: "987654321",
+          text: "hi",
+          parse_mode: "MarkdownV2",
+        }),
       },
     )
     expect(result).toEqual({ ok: true, providerMessageId: "42" })
+
+    vi.unstubAllGlobals()
+  })
+
+  it("telegram converts markdown to MarkdownV2 for sendMessage", async () => {
+    const globalFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { message_id: 7 } }),
+    } as unknown as Response)
+    vi.stubGlobal("fetch", globalFetch)
+
+    const telegramCreds = makeMockTelegramCreds({ token: "bot-token-123" })
+    const mcpProxy = { callTool: vi.fn() } as unknown as McpProxyRegistry
+
+    await sendOutbound(
+      "telegram",
+      { alias: "mybot", source: "telegram", contactRef: "987654321", text: "hello **world** and _agent_" },
+      { mcpProxy, telegramCreds },
+    )
+
+    const body = (globalFetch.mock.calls[0]![1] as { body: string }).body
+    expect(JSON.parse(body)).toEqual({
+      chat_id: "987654321",
+      text: "hello *world* and _agent_",
+      parse_mode: "MarkdownV2",
+    })
 
     vi.unstubAllGlobals()
   })
@@ -126,6 +163,148 @@ describe("sendOutbound", () => {
 
     expect(result.ok).toBe(false)
     expect((result as { ok: false; error: string }).error).toContain("telegram_http_403")
+
+    vi.unstubAllGlobals()
+  })
+
+  it("agentpush uploads local attachments and sends media", async () => {
+    const mockedReadFile = vi.mocked(readFile)
+    mockedReadFile.mockResolvedValue(Buffer.from("fake-image-bytes"))
+
+    const callTool = vi.fn(
+      async (_alias: string, tool: string): Promise<ProxyCallOutcome> => {
+        if (tool === "upload_media") {
+          return { ok: true, result: { media_id: "media-123", url: "https://example.com/media" } }
+        }
+        if (tool === "send_message") {
+          return { ok: true, result: { messageId: "msg-456" } }
+        }
+        return { ok: false, error: "unexpected tool" }
+      },
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+
+    const result = await sendOutbound(
+      "agentpush",
+      {
+        alias: "agentpush",
+        source: "telegram",
+        contactRef: "alice",
+        text: "see attached",
+        attachments: [{ type: "photo", path: "/tmp/photo.jpg", caption: "my photo" }],
+      },
+      { mcpProxy },
+    )
+
+    expect(result).toEqual({ ok: true, providerMessageId: "msg-456" })
+    expect(callTool).toHaveBeenCalledWith("agentpush", "upload_media", {
+      channel: "telegram",
+      type: "image",
+      data: Buffer.from("fake-image-bytes").toString("base64"),
+      filename: "photo.jpg",
+      mimeType: "image/jpeg",
+    })
+    expect(callTool).toHaveBeenCalledWith("agentpush", "send_message", {
+      to: { channel: "telegram", address: "alice" },
+      content: {
+        text: "see attached",
+        media: [
+          {
+            type: "image",
+            providerMediaId: "media-123",
+            filename: "photo.jpg",
+            mimeType: "image/jpeg",
+            caption: "my photo",
+          },
+        ],
+      },
+    })
+  })
+
+  it("telegram sends a local photo via sendPhoto multipart", async () => {
+    const mockedReadFile = vi.mocked(readFile)
+    mockedReadFile.mockResolvedValue(Buffer.from("fake-image-bytes"))
+
+    const globalFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { message_id: 77 } }),
+    } as unknown as Response)
+    vi.stubGlobal("fetch", globalFetch)
+
+    const telegramCreds = makeMockTelegramCreds({ token: "bot-token-123" })
+    const mcpProxy = { callTool: vi.fn() } as unknown as McpProxyRegistry
+
+    const result = await sendOutbound(
+      "telegram",
+      {
+        alias: "mybot",
+        source: "telegram",
+        contactRef: "987654321",
+        text: "hi",
+        attachments: [{ type: "photo", path: "/tmp/photo.png" }],
+      },
+      { mcpProxy, telegramCreds },
+    )
+
+    expect(telegramCreds.read).toHaveBeenCalledWith("mybot")
+    expect(globalFetch).toHaveBeenCalledWith(
+      "https://api.telegram.org/botbot-token-123/sendPhoto",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": expect.stringContaining("multipart/form-data"),
+        }),
+      }),
+    )
+    const init = globalFetch.mock.calls[0]![1] as {
+      headers: Record<string, string>
+      body: Buffer
+    }
+    expect(init.body.toString()).toContain("Content-Disposition: form-data")
+    expect(init.body.toString()).toContain("fake-image-bytes")
+    expect(result).toEqual({ ok: true, providerMessageId: "77" })
+
+    vi.unstubAllGlobals()
+  })
+
+  it("telegram sends multiple attachments via sendMediaGroup", async () => {
+    const mockedReadFile = vi.mocked(readFile)
+    mockedReadFile
+      .mockResolvedValueOnce(Buffer.from("img1"))
+      .mockResolvedValueOnce(Buffer.from("img2"))
+
+    const globalFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: [{ message_id: 10 }, { message_id: 11 }] }),
+    } as unknown as Response)
+    vi.stubGlobal("fetch", globalFetch)
+
+    const telegramCreds = makeMockTelegramCreds({ token: "token" })
+    const result = await sendOutbound(
+      "telegram",
+      {
+        alias: "default",
+        source: "telegram",
+        contactRef: "123",
+        text: "album",
+        attachments: [
+          { type: "photo", path: "/tmp/a.jpg" },
+          { type: "video", path: "/tmp/b.mp4", caption: "vid" },
+        ],
+      },
+      { mcpProxy: { callTool: vi.fn() } as unknown as McpProxyRegistry, telegramCreds },
+    )
+
+    expect(globalFetch).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottoken/sendMediaGroup",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": expect.stringContaining("multipart/form-data"),
+        }),
+      }),
+    )
+    expect(result).toEqual({ ok: true, providerMessageId: "10" })
 
     vi.unstubAllGlobals()
   })
