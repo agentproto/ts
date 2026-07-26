@@ -124,9 +124,8 @@ function modelMessage(
 ) {
   return {
     type: "model",
-    summary: overrides.summary ?? "2 of 10 loaded",
-    connection: overrides.connection,
     summary: overrides.summary ?? "2 loaded",
+    connection: overrides.connection,
     section: {
       recent: overrides.recent ?? [ROW_A, ROW_CHILD],
       older: overrides.older ?? [],
