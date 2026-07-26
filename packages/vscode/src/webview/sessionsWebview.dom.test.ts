@@ -3,14 +3,14 @@
  * DOM-level coverage for the Sessions webview panel's shipped script —
  * extracts and executes the REAL HTML/script via the exported `buildHtml`
  * (mirrors transcriptPanel.dom.test.ts's own pattern) so a regression in the
- * rendered markup or the click/filter/tab wiring fails this suite, not just
- * a hand-rolled model of it.
+ * rendered markup or the click/filter/tab/workspace wiring fails this suite,
+ * not just a hand-rolled model of it.
  */
+import type { DomDocument, DomElement, DomWindow } from "jsdom"
 import { JSDOM } from "jsdom"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { buildHtml } from "./sessionsWebviewPanel.js"
-import type { DomWindow, DomDocument, DomElement } from "jsdom"
 
 interface Panel {
   window: DomWindow
@@ -41,6 +41,10 @@ afterEach(() => {
   while (openWindows.length) openWindows.pop()!.close()
 })
 
+function htmlEl(element: DomElement | null): HTMLElement {
+  return element as unknown as HTMLElement
+}
+
 function el(panel: Panel, id: string): DomElement {
   const found = panel.document.getElementById(id)
   if (!found) throw new Error(`#${id} missing from buildHtml output`)
@@ -49,6 +53,10 @@ function el(panel: Panel, id: string): DomElement {
 
 function click(panel: Panel, element: DomElement): void {
   element.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+}
+
+function change(panel: Panel, element: DomElement): void {
+  element.dispatchEvent(new panel.window.Event("change", { bubbles: true }))
 }
 
 function send(panel: Panel, data: unknown): void {
@@ -68,6 +76,10 @@ const ROW_A = {
   ctxPercent: 71,
   cost: "$1.24",
   time: "now",
+  unread: false,
+  action: "stop",
+  workspace: { slug: "studio", label: "Agentik Studio", colorIndex: 0, css: "#c45c26" },
+  archived: false,
 }
 
 const ROW_CHILD = {
@@ -78,21 +90,47 @@ const ROW_CHILD = {
   harnessGlyph: "☿",
   model: "glm-5.2",
   cost: undefined,
+  ctxPercent: undefined,
+  action: undefined,
 }
 
-function modelMessage(overrides: { recent?: unknown[]; older?: unknown[]; summary?: string } = {}) {
+const ROW_DONE = {
+  id: "s2",
+  isSub: false,
+  open: false,
+  status: "done",
+  name: "sales-analysis",
+  message: undefined,
+  tag: "in-place",
+  harnessGlyph: "✳",
+  model: undefined,
+  ctxPercent: undefined,
+  cost: undefined,
+  time: "2h ago",
+  unread: false,
+  action: "archive",
+  workspace: undefined,
+  archived: false,
+}
+
+function modelMessage(
+  overrides: {
+    recent?: unknown[]
+    older?: unknown[]
+    summary?: string
+    workspaces?: unknown[]
+    selectedWorkspace?: string
+  } = {},
+) {
   return {
     type: "model",
     summary: overrides.summary ?? "2 loaded",
-    groups: [
-      {
-        id: "workspace-group:studio",
-        name: "Main monorepo",
-        count: 2,
-        recent: overrides.recent ?? [ROW_A, ROW_CHILD],
-        older: overrides.older ?? [],
-      },
-    ],
+    section: {
+      recent: overrides.recent ?? [ROW_A, ROW_CHILD],
+      older: overrides.older ?? [],
+    },
+    workspaces: overrides.workspaces ?? [{ slug: "studio", label: "Agentik Studio", colorIndex: 0, css: "#c45c26" }],
+    selectedWorkspace: overrides.selectedWorkspace ?? "__all__",
   }
 }
 
@@ -104,14 +142,13 @@ describe("sessions webview — boot", () => {
 })
 
 describe("sessions webview — render", () => {
-  it("renders a group header with its count badge, and recent rows", () => {
+  it("renders recent rows in a single continuous list", () => {
     const panel = renderPanel()
     send(panel, modelMessage())
     const list = el(panel, "list")
-    expect(list.innerHTML).toContain("Main monorepo")
-    expect(list.innerHTML).toContain("2")
     expect(list.innerHTML).toContain("openagentik-migration-lead")
-    expect(list.querySelectorAll(".row")).toBeTruthy()
+    expect(list.innerHTML).toContain("exec · canvakit-extract")
+    expect([...list.querySelectorAll(".row")].length).toBe(2)
   })
 
   it("marks a subagent row .sub (indentation/dimming) and a root row not", () => {
@@ -124,12 +161,14 @@ describe("sessions webview — render", () => {
     expect(child?.className).toContain(" sub")
   })
 
-  it("marks the row whose transcript tab is open with .open — an accent bar, not a click-selection", () => {
+  it("marks the row whose transcript tab is open with .open — a static accent bar, not a pulsing dot", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ recent: [{ ...ROW_A, open: true }, ROW_CHILD] }))
     const rows = [...el(panel, "list").querySelectorAll(".row")]
     const openRow = rows.find(r => r.dataset["id"] === "s1")
     expect(openRow?.className).toContain(" open")
+    // The open indicator is the left bar; the working dot is independent.
+    expect(openRow?.querySelector(".dot.working")).toBeTruthy()
   })
 
   it("renders the recency divider only when an older section is non-empty", () => {
@@ -138,13 +177,15 @@ describe("sessions webview — render", () => {
     expect(el(panel, "list").innerHTML).toContain("Older than 24 hours")
   })
 
-  it("shows the empty state when every group has zero rows, hides it otherwise", () => {
+  it("shows the empty state when the list is empty, hides it otherwise", () => {
     const panel = renderPanel()
     expect(el(panel, "empty").hidden).toBe(true) // initial markup ships hidden
     send(panel, {
       type: "model",
       summary: "0 loaded",
-      groups: [{ id: "g", name: "Main monorepo", count: 0, recent: [], older: [] }],
+      section: { recent: [], older: [] },
+      workspaces: [],
+      selectedWorkspace: "__all__",
     })
     expect(el(panel, "empty").hidden).toBe(false)
     send(panel, modelMessage())
@@ -155,6 +196,76 @@ describe("sessions webview — render", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ summary: "3 of 20 shown" }))
     expect(el(panel, "summary").textContent).toBe("3 of 20 shown")
+  })
+
+  it("renders a workspace tag with its accent color", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    const row = el(panel, "list").querySelector('[data-id="s1"]')!
+    const tag = row.querySelector(".tag.workspace")
+    expect(tag?.textContent).toBe("Agentik Studio")
+    expect(htmlEl(tag).getAttribute("style")).toContain("#c45c26")
+  })
+
+  it("renders an unassigned workspace tag when no workspace is attached", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ recent: [ROW_DONE] }))
+    const tag = el(panel, "list").querySelector('[data-id="s2"] .tag.workspace')
+    expect(tag?.textContent).toBe("unassigned")
+  })
+
+  it("styles archived rows with reduced opacity", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ recent: [{ ...ROW_DONE, archived: true, action: "unarchive" }] }))
+    const row = el(panel, "list").querySelector('[data-id="s2"]')!
+    expect(row.className).toContain(" archived")
+  })
+})
+
+describe("sessions webview — workspace selector", () => {
+  it("renders global, each workspace, and unassigned options", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    const select = el(panel, "workspace-select")
+    const options = [...select.querySelectorAll("option")].map(o => ({
+      value: htmlEl(o).getAttribute("value"),
+      label: o.textContent,
+    }))
+    expect(options).toEqual([
+      { value: "__all__", label: "Global / All workspaces" },
+      { value: "studio", label: "Agentik Studio" },
+      { value: "__unassigned__", label: "Unassigned" },
+    ])
+  })
+
+  it("marks the selected workspace option and applies its accent color to the select border", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ selectedWorkspace: "studio" }))
+    const select = el(panel, "workspace-select")
+    const selected = htmlEl(select.querySelector('option[value="studio"]'))
+    expect(selected.hasAttribute("selected")).toBe(true)
+    expect(select.className).not.toContain("neutral")
+    const style = htmlEl(select).getAttribute("style") ?? ""
+    expect(style).toMatch(/border-left-color:\s*rgb\(196,\s*92,\s*38\)/)
+  })
+
+  it("keeps the neutral border for global / unassigned selections", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ selectedWorkspace: "__unassigned__" }))
+    const select = el(panel, "workspace-select")
+    expect(select.className).toContain("neutral")
+    const style = htmlEl(select).getAttribute("style") ?? ""
+    expect(style).not.toContain("rgb")
+  })
+
+  it("posts a workspace message when the selector changes", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    panel.posted.length = 0
+    const select = htmlEl(el(panel, "workspace-select")) as HTMLSelectElement
+    select.value = "studio"
+    change(panel, select as unknown as DomElement)
+    expect(panel.posted).toEqual([{ type: "workspace", workspace: "studio" }])
   })
 })
 
@@ -168,13 +279,31 @@ describe("sessions webview — interactions", () => {
     expect(panel.posted).toEqual([{ type: "open", id: "s1" }])
   })
 
-  it("the hover ↗ affordance posts the same open message as a row click", () => {
+  it("clicking the stop action posts stop with the row's id", () => {
     const panel = renderPanel()
     send(panel, modelMessage())
     panel.posted.length = 0
-    const openBtn = el(panel, "list").querySelector('[data-open="s1-child"]')!
-    click(panel, openBtn)
-    expect(panel.posted).toEqual([{ type: "open", id: "s1-child" }])
+    const stopBtn = el(panel, "list").querySelector('[data-stop="s1"]')!
+    click(panel, stopBtn)
+    expect(panel.posted).toEqual([{ type: "stop", id: "s1" }])
+  })
+
+  it("clicking the archive action posts archive with the row's id", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ recent: [ROW_DONE] }))
+    panel.posted.length = 0
+    const archiveBtn = el(panel, "list").querySelector('[data-archive="s2"]')!
+    click(panel, archiveBtn)
+    expect(panel.posted).toEqual([{ type: "archive", id: "s2" }])
+  })
+
+  it("clicking the unarchive action posts unarchive with the row's id", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ recent: [{ ...ROW_DONE, archived: true, action: "unarchive" }] }))
+    panel.posted.length = 0
+    const unarchiveBtn = el(panel, "list").querySelector('[data-unarchive="s2"]')!
+    click(panel, unarchiveBtn)
+    expect(panel.posted).toEqual([{ type: "unarchive", id: "s2" }])
   })
 
   it("clicking a status tab marks it active and posts the tab id", () => {
