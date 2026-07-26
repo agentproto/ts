@@ -59,7 +59,7 @@ const ROW_A = {
   id: "s1",
   isSub: false,
   open: false,
-  status: "live",
+  status: "working",
   name: "openagentik-migration-lead",
   message: "Fanned out 3 executors.",
   tag: "in-place",
@@ -179,11 +179,11 @@ describe("sessions webview — interactions", () => {
 
   it("clicking a status tab marks it active and posts the tab id", () => {
     const panel = renderPanel()
-    const liveTab = el(panel, "tabs").querySelector('[data-tab="live"]')!
-    click(panel, liveTab)
-    expect(liveTab.className).toContain("on")
+    const workingTab = el(panel, "tabs").querySelector('[data-tab="working"]')!
+    click(panel, workingTab)
+    expect(workingTab.className).toContain("on")
     expect(el(panel, "tabs").querySelector('[data-tab="all"]')!.className).not.toContain("on")
-    expect(panel.posted.at(-1)).toEqual({ type: "tab", tab: "live" })
+    expect(panel.posted.at(-1)).toEqual({ type: "tab", tab: "working" })
   })
 
   it("typing in the pinned filter posts a filter message with the trimmed text", async () => {
