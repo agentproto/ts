@@ -4,7 +4,7 @@
  * commands call into these.
  */
 
-import type { SessionDescriptor, SessionSummary } from "../client/types.js"
+import type { SessionDescriptor } from "../client/types.js"
 
 export interface SessionQuickPickItem {
   label: string
@@ -32,7 +32,7 @@ function isSessionDescriptor(value: unknown): value is SessionDescriptor {
   return typeof v.id === "string" && typeof v.kind === "string" && typeof v.status === "string"
 }
 
-export function isLiveSession(session: SessionSummary): boolean {
+export function isLiveSession(session: SessionDescriptor): boolean {
   return session.status === "running" || session.status === "starting"
 }
 

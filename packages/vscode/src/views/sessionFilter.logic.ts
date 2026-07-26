@@ -10,7 +10,7 @@
  * SessionFilterState's shape is frozen (WP3 reads it) — do not reshape.
  */
 
-import type { SessionDescriptor, SessionSummary, WorkspacesConfig } from "../client/types.js"
+import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
 import { workspaceLabelFor } from "../services/workspaces.logic.js"
 import { activityFor, type SessionActivity } from "./sessionsTree.logic.js"
 
@@ -99,11 +99,11 @@ function matchesFilter(session: SessionDescriptor, state: SessionFilterState, co
  * and the matching child becomes unreachable. Applies uniformly to every
  * predicate, including search.
  */
-export function filterSessions<T extends SessionSummary>(
-  sessions: readonly T[],
+export function filterSessions(
+  sessions: readonly SessionDescriptor[],
   state: SessionFilterState,
   config: WorkspacesConfig,
-): T[] {
+): SessionDescriptor[] {
   if (!isFilterActive(state)) return [...sessions]
 
   const matched = new Set<string>()
@@ -112,7 +112,7 @@ export function filterSessions<T extends SessionSummary>(
   }
   if (matched.size === 0) return []
 
-  const childrenByParent = new Map<string, T[]>()
+  const childrenByParent = new Map<string, SessionDescriptor[]>()
   for (const session of sessions) {
     const parentId = session.parentSessionId
     if (!parentId) continue

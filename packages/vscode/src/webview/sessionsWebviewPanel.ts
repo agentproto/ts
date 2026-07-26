@@ -8,16 +8,13 @@
  * glyph + model, subagent nesting, workspace tags, lifecycle actions, and
  * an "open in tab" indicator — all theme-aware via `--vscode-*` tokens.
  *
- * PROGRESSIVE LOADING ARCHITECTURE: the webview uses a dedicated summary
- * endpoint (`GET /sessions/summaries`) rather than the full
- * `SessionDescriptor` snapshot the tree consumes. The daemon projects each
- * row down to the fields the panel actually renders and supports
- * limit/offset pagination. The webview loads the first page immediately for
- * a bounded first paint, then offers a "Load more" affordance for older
- * sessions. Live correctness is preserved by refreshing the currently loaded
- * summary slice whenever the shared SessionStore signals a change (lifecycle
- * events, descriptor refresh). Pending optimistic rows are merged from the
- * store so a spawn in flight appears instantly.
+ * Every grouping/filter/nesting DECISION is delegated to
+ * sessionsWebview.logic.ts (which itself delegates to the tree's own
+ * sessionsTree.logic.ts / sessionsGroups.logic.ts / sessionFilter.logic.ts)
+ * — this file only turns that model into HTML/postMessage traffic and wires
+ * VS Code's live-update sources. It reads the SAME SessionStore the tree
+ * does (no second poll loop) and opens transcripts through the SAME
+ * `TranscriptPanels.open()` the tree's click handler uses.
  *
  * CSP/nonce/`--vscode-*` pattern copied from transcriptPanel.ts.
  */
@@ -26,8 +23,7 @@ import { randomBytes } from "node:crypto"
 
 import * as vscode from "vscode"
 
-import type { DaemonClient } from "../client/daemonClient.js"
-import type { SessionDescriptor, SessionSummary } from "../client/types.js"
+import type { SessionDescriptor } from "../client/types.js"
 import type { SessionFilterController } from "../commands/sessionFilter.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import type { SeenTracker } from "../services/seen.js"
@@ -40,11 +36,11 @@ import {
   type WebviewRow,
   type WebviewWorkspace,
   workspaceColorFor,
+  workspaceOptionsFor,
 } from "./sessionsWebview.logic.js"
 import type { TranscriptPanels } from "./transcriptPanel.js"
 
 const VIEW_TYPE = "agentproto.sessionsWebview"
-const PAGE_SIZE = 50
 const GLOBAL_WORKSPACE = "__all__"
 const UNASSIGNED_WORKSPACE = "__unassigned__"
 const SETUP_DOCS_URL = "https://agentproto.sh/docs"
@@ -81,14 +77,20 @@ interface RenderSection {
   older: RenderRow[]
 }
 
+interface WorkspaceOption {
+  slug: string
+  label: string
+  colorIndex: number
+  css: string
+}
+
 interface ModelMessage {
   type: "model"
   connection: DaemonConnectionState
   section: RenderSection
   summary: string
-  loading: boolean
-  hasMore: boolean
-  loadError: string | undefined
+  workspaces: WorkspaceOption[]
+  selectedWorkspace: string
 }
 
 type HostMessage = ModelMessage
@@ -101,10 +103,10 @@ type WebviewToHostMessage =
   | { type: "open"; id: string }
   | { type: "filter"; search: string }
   | { type: "tab"; tab: SessionsWebviewTab }
+  | { type: "workspace"; workspace: string }
   | { type: "stop"; id: string }
   | { type: "archive"; id: string }
   | { type: "unarchive"; id: string }
-  | { type: "loadMore" }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   return (
@@ -140,14 +142,9 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
   private tab: SessionsWebviewTab = "all"
   private search = ""
-
-  private summaries: SessionSummary[] = []
-  private serverTotal = 0
-  private loading = false
-  private loadError: string | undefined
+  private workspace: string = GLOBAL_WORKSPACE
 
   constructor(
-    private readonly client: DaemonClient,
     private readonly store: SessionStore,
     private readonly filter: SessionFilterController,
     private readonly transcriptPanels: TranscriptPanels,
@@ -178,15 +175,11 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 
     // Align canonical archive visibility with the active tab when the view first appears.
     this.syncArchivedFlag()
-
-    // Initial bounded load: first page only. The list renders immediately
-    // without waiting for the full daemon snapshot.
-    void this.loadInitial()
   }
 
   /** Called by registerSessionsWebview's store/filter/tab subscriptions — any source of truth this view depends on changed. */
   refresh(): void {
-    void this.refreshSummaries()
+    this.post()
   }
 
   private handleMessage(msg: WebviewToHostMessage): void {
@@ -210,8 +203,13 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       case "tab":
         this.setTab(msg.tab)
         return
+      case "workspace":
+        this.workspace = msg.workspace
+        this.post()
+        return
       case "open": {
-        void this.openSession(msg.id)
+        const session = this.findSession(msg.id)
+        if (session && !isPendingSession(session)) this.transcriptPanels.open(session)
         return
       }
       case "stop":
@@ -222,9 +220,6 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         return
       case "unarchive":
         void this.runSessionAction(msg.id, "agentproto.unarchiveSession", "unarchive")
-        return
-      case "loadMore":
-        void this.loadMore()
         return
     }
   }
@@ -237,9 +232,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     } else if (previous === "archived" && this.store.showArchived) {
       this.store.setShowArchived(false)
     }
-    // Tab changes reset the loaded set: different archived visibility and a
-    // fresh first page keep the model coherent.
-    void this.loadInitial()
+    this.post()
   }
 
   private async refreshDaemon(): Promise<void> {
@@ -260,21 +253,8 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async openSession(id: string): Promise<void> {
-    if (isPendingSession({ id })) return
-    const session = await this.resolveSession(id)
-    if (session) this.transcriptPanels.open(session)
-  }
-
-  private async resolveSession(id: string): Promise<SessionDescriptor | undefined> {
-    const fromStore = this.store.sessions.find(s => s.id === id)
-    if (fromStore) return fromStore
-    try {
-      return await this.client.getSession(id)
-    } catch (err) {
-      vscode.window.showWarningMessage(`agentproto: session ${id} not found.`)
-      return undefined
-    }
+  private findSession(id: string): SessionDescriptor | undefined {
+    return this.store.sessions.find(s => s.id === id)
   }
 
   private async runSessionAction(
@@ -282,98 +262,28 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     command: "agentproto.killSession" | "agentproto.archiveSession" | "agentproto.unarchiveSession",
     label: string,
   ): Promise<void> {
-    if (isPendingSession({ id })) {
-      vscode.window.showWarningMessage(`agentproto: session ${id} is still starting.`)
-      return
-    }
-    const summary = this.summaries.find(s => s.id === id)
-    if (!summary) {
+    const session = this.findSession(id)
+    if (!session) {
       vscode.window.showWarningMessage(`agentproto: session ${id} no longer exists.`)
       return
     }
     try {
-      await vscode.commands.executeCommand(command, { session: summary })
+      await vscode.commands.executeCommand(command, { session })
     } catch (err) {
       vscode.window.showErrorMessage(`agentproto: ${label} failed — ${describeError(err)}`)
     }
   }
 
-  private async loadInitial(): Promise<void> {
-    this.summaries = []
-    this.serverTotal = 0
-    this.loadError = undefined
-    await this.fetchPage(0)
-  }
-
-  private async loadMore(): Promise<void> {
-    if (this.loading) return
-    await this.fetchPage(this.summaries.length)
-  }
-
-  private async fetchPage(offset: number): Promise<void> {
-    if (this.loading) return
-    this.loading = true
-    this.loadError = undefined
-    this.post()
-    try {
-      const result = await this.client.listSessionSummaries({
-        includeArchived: this.tab === "archived",
-        limit: PAGE_SIZE,
-        offset,
-      })
-      if (offset === 0) {
-        this.summaries = result.summaries
-      } else {
-        this.summaries = [...this.summaries, ...result.summaries]
-      }
-      this.serverTotal = result.total
-    } catch (err) {
-      this.loadError = err instanceof Error ? err.message : String(err)
-    } finally {
-      this.loading = false
-      this.post()
-    }
-  }
-
-  /**
-   * Live refresh of the currently loaded slice. Triggered by SessionStore
-   * lifecycle events, this re-fetches the first N summaries (where N is how
-   * many rows the user has already loaded) so active/recent status changes
-   * appear without a manual reload while keeping the request bounded.
-   */
-  private async refreshSummaries(): Promise<void> {
-    if (this.loading || this.summaries.length === 0) return
-    this.loading = true
-    try {
-      const result = await this.client.listSessionSummaries({
-        includeArchived: this.tab === "archived",
-        limit: this.summaries.length,
-        offset: 0,
-      })
-      this.summaries = result.summaries
-      this.serverTotal = result.total
-      this.loadError = undefined
-    } catch (err) {
-      // Keep the existing loaded data; surface the error only if we're not
-      // already showing something useful.
-      this.loadError = err instanceof Error ? err.message : String(err)
-    } finally {
-      this.loading = false
-      this.post()
-    }
-  }
-
   private post(): void {
     if (!this.view) return
-    const pendingRows = this.store.sessions.filter(isPendingSession)
-    const model = buildSessionsWebviewModel([...pendingRows, ...this.summaries], this.filter.workspaces, {
+    const model = buildSessionsWebviewModel(this.store.sessions, this.filter.workspaces, openFolderPaths(), {
       tab: this.tab,
       search: this.search,
       now: Date.now(),
+      workspace: this.workspace,
     })
     const activeSessionId = this.transcriptPanels.activeSessionId()
-    const filterActive = this.tab !== "all" || this.search.trim().length > 0
-    const hasMore = this.summaries.length < this.serverTotal
+    const filterActive = this.tab !== "all" || this.search.trim().length > 0 || this.workspace !== GLOBAL_WORKSPACE
     const message: ModelMessage = {
       type: "model",
       connection: this.store.connectionState,
@@ -382,9 +292,11 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         older: model.section.older.map(r => toRenderRow(r, activeSessionId, this.seen)),
       },
       summary: summaryTextFor(model, filterActive),
-      loading: this.loading,
-      hasMore,
-      loadError: this.loadError,
+      workspaces: workspaceOptionsFor(this.store.sessions, this.filter.workspaces).map(w => ({
+        ...w,
+        css: workspaceColorFor(w.slug).css,
+      })),
+      selectedWorkspace: this.workspace,
     }
     void this.view.webview.postMessage(message satisfies HostMessage)
   }
@@ -392,7 +304,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 
 /**
  * Registers the WebviewViewProvider and wires every live-update source: the
- * shared SessionStore (lifecycle events + pending rows), the filter
+ * shared SessionStore (same poll loop the tree uses), the filter
  * controller's workspace-label cache, and the "open in tab" indicator's
  * source of truth (`TranscriptPanels.activeSessionId()`) — kept current via
  * `vscode.window.tabGroups.onDidChangeTabs`, which fires on every tab
@@ -400,13 +312,12 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
  */
 export function registerSessionsWebview(
   ctx: vscode.ExtensionContext,
-  client: DaemonClient,
   store: SessionStore,
   filter: SessionFilterController,
   transcriptPanels: TranscriptPanels,
   seen: SeenTracker,
 ): void {
-  const provider = new SessionsWebviewProvider(client, store, filter, transcriptPanels, seen)
+  const provider = new SessionsWebviewProvider(store, filter, transcriptPanels, seen)
   ctx.subscriptions.push(
     vscode.window.registerWebviewViewProvider(VIEW_TYPE, provider),
     store.onDidChange(() => provider.refresh()),
@@ -492,6 +403,19 @@ export function buildHtml(nonce: string): string {
       color: var(--vscode-descriptionForeground); cursor: pointer; font-size: 11px; display: none;
     }
     #clear.show { display: block; }
+    /* ── Sticky workspace selector ─────────────────────────────────── */
+    #workspace { flex: 0 0 auto; position: sticky; top: 0; z-index: 2; padding: 8px 12px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); }
+    #workspace-select {
+      width: 100%; height: 24px; background: transparent; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+      border-left-width: 3px;
+      color: var(--vscode-foreground); font-size: 12px; outline: none;
+      font-family: var(--vscode-font-family); padding: 0 4px;
+    }
+    #workspace-select:focus { border-color: var(--vscode-focusBorder); }
+    #workspace-select.neutral { border-left-color: var(--vscode-descriptionForeground); }
+    /* workspace accent colors are applied via inline style on the select and row tags */
+    .ws-accent { display: inline-flex; align-items: center; gap: 4px; padding: 1px 5px; border-radius: 3px; border: 1px solid currentColor; font-size: 10px; color: var(--vscode-descriptionForeground); }
+    .ws-accent::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
     /* ── Status tabs — plain text, underline on active, NOT chips ────── */
     #tabs { flex: 0 0 auto; display: flex; gap: 16px; padding: 10px 12px 8px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); }
     .tab {
@@ -562,19 +486,6 @@ export function buildHtml(nonce: string): string {
     .acts span:hover { color: var(--vscode-foreground); }
     #empty { padding: 32px 16px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; }
     #empty[hidden] { display: none; }
-    /* ── Load more / progress footer ───────────────────────────────── */
-    #footer { flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); }
-    #load-more {
-      width: 100%; padding: 6px 0; background: transparent; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
-      color: var(--vscode-foreground); font-size: 12px; cursor: pointer; font-family: var(--vscode-font-family);
-    }
-    #load-more:hover { background: var(--vscode-list-hoverBackground); }
-    #load-more:disabled { opacity: 0.5; cursor: default; }
-    #load-more[hidden] { display: none; }
-    #footer-error { padding: 6px 0; font-size: 11px; color: var(--vscode-editorError-foreground); }
-    #footer-error[hidden] { display: none; }
-    #spinner { padding: 8px 0; text-align: center; font-size: 11px; color: var(--vscode-descriptionForeground); }
-    #spinner[hidden] { display: none; }
   </style>
 </head>
 <body class="daemon-state">
@@ -596,6 +507,11 @@ export function buildHtml(nonce: string): string {
     <input id="q" placeholder="Filter" autocomplete="off" />
     <span id="clear" title="Clear filter">✕</span>
   </div>
+  <div id="workspace">
+    <select id="workspace-select" class="neutral" aria-label="Filter by workspace">
+      <option value="__all__">Global / All workspaces</option>
+    </select>
+  </div>
   <div id="tabs">
     <div class="tab on" data-tab="all">All</div>
     <div class="tab" data-tab="working">Working</div>
@@ -608,23 +524,16 @@ export function buildHtml(nonce: string): string {
   <div id="summary"></div>
   <div id="list"></div>
   <div id="empty" hidden>Nothing matches.</div>
-  <div id="footer">
-    <button id="load-more" hidden>Load more</button>
-    <div id="spinner" hidden>Loading…</div>
-    <div id="footer-error" hidden></div>
-  </div>
   <script nonce="${nonce}">
     (function () {
       const vscode = acquireVsCodeApi();
       const qEl = document.getElementById('q');
       const clearEl = document.getElementById('clear');
+      const workspaceEl = document.getElementById('workspace-select');
       const tabsEl = document.getElementById('tabs');
       const listEl = document.getElementById('list');
       const emptyEl = document.getElementById('empty');
       const summaryEl = document.getElementById('summary');
-      const loadMoreEl = document.getElementById('load-more');
-      const spinnerEl = document.getElementById('spinner');
-      const footerErrorEl = document.getElementById('footer-error');
       const daemonStateEl = document.getElementById('daemon-state');
       const daemonTitleEl = document.getElementById('daemon-title');
       const daemonDescriptionEl = document.getElementById('daemon-description');
@@ -722,11 +631,6 @@ export function buildHtml(nonce: string): string {
         listEl.innerHTML = html;
         emptyEl.hidden = shown !== 0;
         summaryEl.textContent = payload.summary;
-        loadMoreEl.hidden = !payload.hasMore;
-        loadMoreEl.disabled = payload.loading;
-        spinnerEl.hidden = !payload.loading;
-        footerErrorEl.hidden = !payload.loadError;
-        footerErrorEl.textContent = payload.loadError || '';
       }
 
       listEl.addEventListener('click', function (e) {
@@ -750,10 +654,6 @@ export function buildHtml(nonce: string): string {
         if (!row) return;
         e.preventDefault();
         vscode.postMessage({ type: 'open', id: row.getAttribute('data-id') });
-      });
-
-      loadMoreEl.addEventListener('click', function () {
-        vscode.postMessage({ type: 'loadMore' });
       });
 
       var filterTimer = null;
