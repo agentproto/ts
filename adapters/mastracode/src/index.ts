@@ -20,7 +20,11 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
-import { deriveDeclaredCapabilities, type CapabilityStrategy } from "@agentproto/provider-kit"
+import {
+  deriveDeclaredCapabilities,
+  type CapabilityStrategy,
+  type ProviderCapability,
+} from "@agentproto/provider-kit"
 
 export const mastracode: AgentCliHandle = defineAgentCli({
   name: "mastracode",
@@ -53,6 +57,14 @@ export const mastracode: AgentCliHandle = defineAgentCli({
       ],
     },
   },
+  // Mastra Code's model router reads the provider straight off each id's own
+  // `<provider>/<id>` prefix and consults the matching provider env var
+  // (ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, …). There is no
+  // fixed provider and no Anthropic subscription bearer path — every direct
+  // route is api-key only. Declaring this lets the runtime's billing-auth
+  // resolver and catalog eligibility manifest include api-key profiles for the
+  // model-derived direct endpoint.
+  modelDerivedApiKey: true,
   sandbox: "./SANDBOX.md",
   protocol: "print",
   print: {
@@ -186,19 +198,35 @@ export function mastracodeRuntime(): AgentCliRuntime {
 }
 
 /**
- * mastracode has no live/parseable native creds or model-listing store of
- * its own to discover (it reads the same ambient provider env vars the
- * manifest already declares) — so this stays on the manifest-derived
- * env-slot projection for `providers`/`models`/`authStores`. The one thing
- * the generic projection CAN'T know is how this print arm actually applies
- * a model/posture choice: model is composed into argv at spawn time
- * (`options[model].bin_args_template`, not `models.apply`), and posture
- * likewise has no ACP-config surface — both are argv, so `"arg"`.
+ * Mastra Code reads provider API keys straight from the ambient env per
+ * `models.env` (ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, …).
+ * There is no native creds/model-listing store to discover, so this stays on
+ * the manifest-derived env-slot projection for `providers`/`models`/
+ * `authStores`. It does enhance the provider list with the wire protocol each
+ * direct route speaks, and it is honest that every route is api-key only —
+ * Mastra Code has no Anthropic subscription bearer path.
  */
-export const mastracodeCapabilities: CapabilityStrategy = async (def) => {
+function apiModeForProvider(id: string): ProviderCapability["apiMode"] {
+  if (id === "anthropic") return "anthropic"
+  if (id === "openai" || id === "openrouter") return "chat_completions"
+  return undefined
+}
+
+export const mastracodeCapabilities: CapabilityStrategy = async (def, ctx) => {
   const base = deriveDeclaredCapabilities(def)
+  const providers: ProviderCapability[] = base.providers.map((p) => ({
+    ...p,
+    apiMode: apiModeForProvider(p.id),
+    cred: {
+      ...p.cred,
+      // The manifest already names the env var; reflect whether it is present
+      // on this host without ever surfacing the value.
+      present: !!ctx.env[p.cred.source.kind === "env" ? p.cred.source.var : ""],
+    },
+  }))
   return {
     ...base,
+    providers,
     application: { modelApply: "arg", postureApply: "arg", coupled: false },
   }
 }

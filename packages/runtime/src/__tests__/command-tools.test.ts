@@ -274,9 +274,10 @@ describe("tool_calls_list — unified logger over the proxy + in-agent paths (PR
     registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("(sessionId) reads back the proxy path's ToolCallRecord", async () => {
@@ -486,9 +487,10 @@ describe("command_execute → argv-level allowlist matching (Gap 10)", () => {
     registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("a plain basename string entry stays unconstrained — any argv is allowed (backward compat)", async () => {
@@ -591,9 +593,10 @@ describe("command_execute → callerSessionId provenance (Gap 7)", () => {
     registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("records the mounting registration's callerSessionId onto every command session it mints", async () => {

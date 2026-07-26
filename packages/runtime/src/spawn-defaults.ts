@@ -446,16 +446,32 @@ export function resolveAuthSpec(
       : undefined
   const gatewayRoute = gatewayPreset ?? customRoute
 
+  // A gateway preset whose id is the adapter's own fixed native provider is a
+  // native match (e.g. codex with `provider: "openai"` and `route.gateway:
+  // "openai"`). The route still selects the auth profile / API-key env var, but
+  // the resolved base_url would point at a proxy/alternate endpoint the adapter
+  // never asked for — codex has no `base_url` option and already talks to the
+  // OpenAI endpoint natively. Skip the preset base_url so session-spawn routing
+  // does not try to inject it (and so restart/resume paths don't re-inject it),
+  // and keep subscription mode eligible because the route is direct, not a
+  // third-party gateway.
+  const isNativeGatewayPreset =
+    gatewayPreset !== undefined && input.routeGateway === input.descriptor.provider
+
   // 1. Provider: per-spawn pin → adapter-fixed → model-derived. None ⇒
   //    ambient (no injection); an unknown/free-form model id lands here too.
   //    A matched gateway route overrides all three — the route IS the provider.
+  //    The only exception is a native-provider gateway preset, which is treated
+  //    as a direct route (same provider the adapter already bills through).
   let provider: string | undefined
   let baseUrl: string | undefined
   let apiKeyEnv: string
   let gatewayScrub: string[] = []
   if (gatewayRoute) {
     provider = input.routeGateway
-    baseUrl = gatewayPreset?.baseUrl ?? customRoute?.baseUrl
+    baseUrl = isNativeGatewayPreset
+      ? undefined
+      : gatewayPreset?.baseUrl ?? customRoute?.baseUrl
     apiKeyEnv =
       gatewayPreset?.keyEnv ??
       customRoute?.authEnv ??
@@ -484,9 +500,11 @@ export function resolveAuthSpec(
   if (!provider) return undefined
 
   const sub = input.descriptor.authSubscription
-  // Gateway routes are API-key only; subscription mode is only supported on
-  // direct routes where the adapter declares authSubscription.
-  const supportsSub = sub !== undefined && gatewayRoute === undefined
+  // Gateway routes are normally API-key only; subscription mode is only
+  // supported on direct routes where the adapter declares authSubscription.
+  // A native fixed-provider gateway preset (e.g. codex + route.gateway "openai")
+  // is a direct route, so subscription stays eligible.
+  const supportsSub = sub !== undefined && (gatewayRoute === undefined || isNativeGatewayPreset)
   const enforce = input.descriptor.authEnforce ?? "when-configured"
 
   // File-based (external) subscription (codex/gemini): the CLI reads its OWN

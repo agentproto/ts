@@ -426,7 +426,7 @@ describe("buildCatalogModels — fixed/derived adapters do not get widened gatew
     const derived: CatalogAdapterInput = {
       slug: "mastracode",
       models: [{ id: "anthropic/claude-sonnet-4-5" }],
-      authDescriptor: { provider: "anthropic" },
+      authDescriptor: { modelDerivedApiKey: true },
       routeSelection: "derived-from-model",
     }
     const response = buildCatalogModels({ adapters: [derived], profiles: [] })
@@ -434,6 +434,92 @@ describe("buildCatalogModels — fixed/derived adapters do not get widened gatew
       .find(v => v.vendor === "anthropic")
       ?.products.find(p => p.product === "claude-sonnet-4-5")
     expect(product?.routes.some(r => r.route === "openrouter")).toBe(false)
+  })
+})
+
+describe("buildCatalogModels — mastracode model-derived api-key eligibility", () => {
+  const MASTRACODE: CatalogAdapterInput = {
+    slug: "mastracode",
+    models: [
+      { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+      { id: "openai/gpt-5.1", provider: "openai" },
+      { id: "openrouter/deepseek/deepseek-v4-pro", provider: "openrouter" },
+    ],
+    authDescriptor: {
+      modelDerivedApiKey: true,
+      modelProviders: {
+        "anthropic/claude-sonnet-4-5": "anthropic",
+        "openai/gpt-5.1": "openai",
+        "openrouter/deepseek/deepseek-v4-pro": "openrouter",
+      },
+    },
+    routeSelection: "derived-from-model",
+  }
+
+  const anthropicApiKey: AuthProfile = {
+    id: "work-anthropic-key",
+    endpoint: "anthropic",
+    method: "api-key",
+    credentialRef: "ref-anthropic-key",
+  }
+  const anthropicSubscription: AuthProfile = {
+    id: "jeremy-max",
+    endpoint: "anthropic",
+    method: "oauth-bearer",
+    credentialRef: "ref-oauth",
+  }
+  const openaiApiKey: AuthProfile = {
+    id: "personal-openai",
+    endpoint: "openai",
+    method: "api-key",
+    credentialRef: "ref-openai-key",
+  }
+  const openrouterApiKey: AuthProfile = {
+    id: "personal-openrouter",
+    endpoint: "openrouter",
+    method: "api-key",
+    credentialRef: "ref-openrouter-key",
+  }
+
+  it("makes an anthropic api-key profile eligible for the mastracode anthropic route", () => {
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE],
+      profiles: [anthropicApiKey],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["work-anthropic-key"])
+  })
+
+  it("does NOT make an anthropic subscription profile eligible for mastracode (no authSubscription)", () => {
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE],
+      profiles: [anthropicSubscription],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("keeps direct-route eligibility scoped by model-derived provider", () => {
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE],
+      profiles: [anthropicApiKey, openaiApiKey],
+    })
+    expect(findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")?.eligibleProfiles).toEqual([
+      "work-anthropic-key",
+    ])
+    expect(findRoute(response, "openai", "gpt-5.1", "openai")?.eligibleProfiles).toEqual(["personal-openai"])
+  })
+
+  it("makes an openrouter api-key profile eligible for an openrouter-routed mastracode model", () => {
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE],
+      profiles: [openrouterApiKey],
+    })
+    const route = findRoute(response, "deepseek", "deepseek-v4-pro", "openrouter")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-openrouter"])
   })
 })
 

@@ -311,7 +311,7 @@ function methodsForDirect(
 ): AuthMethod[] {
   const methods: AuthMethod[] = []
   if (descriptor?.authSubscription) methods.push("oauth-bearer")
-  if (descriptor?.provider) methods.push("api-key")
+  if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
 
