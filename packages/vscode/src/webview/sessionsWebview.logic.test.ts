@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
+import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
 import {
   buildSessionsWebviewModel,
   formatCost,
@@ -13,11 +13,10 @@ import {
   webviewRowStatus,
   WORKSPACE_PALETTE,
   workspaceColorFor,
-  workspaceOptionsFor,
   type WebviewRow,
 } from "./sessionsWebview.logic.js"
 
-function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
+function session(over: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: "s1",
     kind: "agent-cli",
@@ -153,11 +152,12 @@ describe("buildSessionsWebviewModel", () => {
       session({ id: "a", cwd: "/Code/studio", startedAt: "2026-01-01T23:00:00Z" }), // recent (1h before NOW)
       session({ id: "b", cwd: "/Code/studio", startedAt: "2025-12-01T00:00:00Z" }), // older
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "all", search: "", now: NOW })
+    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
     expect(model.section.recent.map(r => r.id)).toEqual(["a"])
     expect(model.section.older.map(r => r.id)).toEqual(["b"])
     expect(model.shownCount).toBe(2)
-    expect(model.totalCount).toBe(2)
+    expect(model.loadedCount).toBe(2)
+    expect(model.serverTotal).toBe(2)
   })
 
   it("flattens parentSessionId children under their root as isSub rows, in the root's own section", () => {
@@ -165,7 +165,7 @@ describe("buildSessionsWebviewModel", () => {
       session({ id: "root", cwd: "/Code/studio", startedAt: "2026-01-01T23:00:00Z" }),
       session({ id: "child", cwd: "/Code/studio", parentSessionId: "root", startedAt: "2025-01-01T00:00:00Z" }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "all", search: "", now: NOW })
+    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
     const rows = model.section.recent
     expect(rows.map(r => r.id)).toEqual(["root", "child"])
     expect(rows.find(r => r.id === "root")?.isSub).toBe(false)
@@ -187,7 +187,7 @@ describe("buildSessionsWebviewModel", () => {
         label: "exec · canvakit-extract",
       }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "all", search: "", now: NOW })
+    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
     const row = model.section.recent[0]! as WebviewRow
     expect(row.name).toBe("exec · canvakit-extract")
     expect(row.harnessGlyph).toBe("☿")
@@ -216,18 +216,18 @@ describe("buildSessionsWebviewModel", () => {
     ]
 
     expect(
-      buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "working", search: "", now: NOW }).shownCount,
+      buildSessionsWebviewModel(sessions, studioConfig, { tab: "working", search: "", now: NOW }).shownCount,
     ).toBe(1)
     expect(
-      buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "idle", search: "", now: NOW }).shownCount,
+      buildSessionsWebviewModel(sessions, studioConfig, { tab: "idle", search: "", now: NOW }).shownCount,
     ).toBe(1)
     expect(
-      buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "awaiting", search: "", now: NOW }).shownCount,
+      buildSessionsWebviewModel(sessions, studioConfig, { tab: "awaiting", search: "", now: NOW }).shownCount,
     ).toBe(1)
     expect(
-      buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "done", search: "", now: NOW }).shownCount,
+      buildSessionsWebviewModel(sessions, studioConfig, { tab: "done", search: "", now: NOW }).shownCount,
     ).toBe(1)
-    const stalledModel = buildSessionsWebviewModel(sessions, studioConfig, [], {
+    const stalledModel = buildSessionsWebviewModel(sessions, studioConfig, {
       tab: "stalled",
       search: "",
       now: NOW,
@@ -241,7 +241,7 @@ describe("buildSessionsWebviewModel", () => {
       session({ id: "parent", cwd: "/Code/studio", busy: false }),
       session({ id: "child", cwd: "/Code/studio", parentSessionId: "parent", busy: true }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "working", search: "", now: NOW })
+    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "working", search: "", now: NOW })
     expect(model.shownCount).toBe(2)
     const rows = model.section.recent
     expect(rows.map(r => ({ id: r.id, isSub: r.isSub, status: r.status }))).toEqual([
@@ -255,59 +255,20 @@ describe("buildSessionsWebviewModel", () => {
       session({ id: "a", cwd: "/Code/studio", label: "sales-analysis" }),
       session({ id: "b", cwd: "/Code/studio", label: "unrelated" }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "all", search: "sales", now: NOW })
+    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "sales", now: NOW })
     expect(model.shownCount).toBe(1)
     expect(model.section.recent[0]!.id).toBe("a")
   })
 
-  it("filters to a single workspace while preserving one continuous list", () => {
+  it("keeps workspace tags on rows as a single global list", () => {
     const sessions = [
-      session({ id: "studio-recent", cwd: "/Code/studio", startedAt: "2026-01-01T23:00:00Z" }),
-      session({ id: "other-recent", cwd: "/Code/other", startedAt: "2026-01-01T22:00:00Z" }),
-      session({ id: "studio-older", cwd: "/Code/studio", startedAt: "2025-12-01T00:00:00Z" }),
+      session({ id: "a", cwd: "/Code/studio", startedAt: "2026-01-01T23:00:00Z" }),
+      session({ id: "b", cwd: "/Code/other", startedAt: "2026-01-01T22:00:00Z" }),
     ]
-    const all = buildSessionsWebviewModel(sessions, multiConfig, [], { tab: "all", search: "", now: NOW })
-    expect(all.section.recent.map(r => r.id)).toEqual(["studio-recent", "other-recent"])
-
-    const filtered = buildSessionsWebviewModel(sessions, multiConfig, [], {
-      tab: "all",
-      search: "",
-      now: NOW,
-      workspace: "studio",
-    })
-    expect(filtered.section.recent.map(r => r.id)).toEqual(["studio-recent"])
-    expect(filtered.section.older.map(r => r.id)).toEqual(["studio-older"])
-  })
-
-  it("filters to unassigned sessions", () => {
-    const sessions = [
-      session({ id: "assigned", cwd: "/Code/studio" }),
-      session({ id: "unassigned", cwd: "/Code/nowhere" }),
-    ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, [], {
-      tab: "all",
-      search: "",
-      now: NOW,
-      workspace: "__unassigned__",
-    })
-    expect(model.section.recent.map(r => r.id)).toEqual(["unassigned"])
-  })
-
-  it("retains an ancestor when only its descendant matches the workspace filter", () => {
-    const sessions = [
-      session({ id: "parent", cwd: "/Code/other" }),
-      session({ id: "child", cwd: "/Code/studio", parentSessionId: "parent" }),
-    ]
-    const model = buildSessionsWebviewModel(sessions, multiConfig, [], {
-      tab: "all",
-      search: "",
-      now: NOW,
-      workspace: "studio",
-    })
-    expect(model.section.recent.map(r => ({ id: r.id, isSub: r.isSub }))).toEqual([
-      { id: "parent", isSub: false },
-      { id: "child", isSub: true },
-    ])
+    const model = buildSessionsWebviewModel(sessions, multiConfig, { tab: "all", search: "", now: NOW })
+    expect(model.section.recent.map(r => r.id)).toEqual(["a", "b"])
+    expect(model.section.recent.find(r => r.id === "a")?.workspace?.slug).toBe("studio")
+    expect(model.section.recent.find(r => r.id === "b")?.workspace?.slug).toBe("other")
   })
 
   it("shows only archived rows in the Archived tab", () => {
@@ -315,7 +276,7 @@ describe("buildSessionsWebviewModel", () => {
       session({ id: "live", cwd: "/Code/studio" }),
       session({ id: "archived", cwd: "/Code/studio", status: "exited", archived: true }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "archived", search: "", now: NOW })
+    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "archived", search: "", now: NOW })
     expect(model.section.recent.map(r => r.id)).toEqual(["archived"])
     expect(model.shownCount).toBe(1)
   })
@@ -325,48 +286,35 @@ describe("buildSessionsWebviewModel", () => {
       session({ id: "older-running", cwd: "/Code/studio", startedAt: "2026-01-01T22:00:00Z" }),
       session({ id: "recent-done", cwd: "/Code/studio", status: "exited", startedAt: "2026-01-01T23:00:00Z" }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, [], { tab: "all", search: "", now: NOW })
+    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
     // Running sorts before done within the recent section.
     expect(model.section.recent.map(r => r.id)).toEqual(["older-running", "recent-done"])
   })
 
-  it("attaches workspace metadata to rows from different workspaces", () => {
+  it("tracks loaded and server totals independently of shown rows", () => {
     const sessions = [
-      session({ id: "a", cwd: "/Code/studio" }),
-      session({ id: "b", cwd: "/Code/other" }),
+      session({ id: "a", label: "apple" }),
+      session({ id: "b", label: "banana" }),
+      session({ id: "c", label: "cherry" }),
     ]
-    const model = buildSessionsWebviewModel(sessions, multiConfig, [], { tab: "all", search: "", now: NOW })
-    const rows = model.section.recent
-    expect(rows.find(r => r.id === "a")?.workspace?.label).toBe("Agentik Studio")
-    expect(rows.find(r => r.id === "b")?.workspace?.label).toBe("Other Project")
-  })
-})
-
-describe("workspaceOptionsFor", () => {
-  it("returns one option per workspace that has sessions, sorted by label", () => {
-    const sessions = [session({ id: "a", cwd: "/Code/studio" }), session({ id: "b", cwd: "/Code/other" })]
-    const options = workspaceOptionsFor(sessions, multiConfig)
-    expect(options.map(o => o.label)).toEqual(["Agentik Studio", "Other Project"])
-  })
-
-  it("includes stable color indices for each workspace option", () => {
-    const sessions = [session({ id: "a", cwd: "/Code/studio" }), session({ id: "b", cwd: "/Code/other" })]
-    const options = workspaceOptionsFor(sessions, multiConfig)
-    const studio = options.find(o => o.slug === "studio")
-    expect(studio?.colorIndex).toBe(workspaceColorFor("studio").index)
-  })
-
-  it("excludes workspaces with no sessions", () => {
-    const sessions = [session({ id: "a", cwd: "/Code/studio" })]
-    const options = workspaceOptionsFor(sessions, multiConfig)
-    expect(options.map(o => o.slug)).toEqual(["studio"])
+    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
+    expect(model.loadedCount).toBe(3)
+    expect(model.serverTotal).toBe(3)
+    const filtered = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "apple", now: NOW })
+    expect(filtered.shownCount).toBe(1)
+    expect(filtered.loadedCount).toBe(3)
+    expect(filtered.serverTotal).toBe(3)
   })
 })
 
 describe("summaryTextFor", () => {
-  it("reports shown-of-total only while a filter is active", () => {
-    const model = { section: { recent: [], older: [] }, shownCount: 3, totalCount: 10 }
-    expect(summaryTextFor(model, true)).toBe("3 of 10 shown")
-    expect(summaryTextFor(model, false)).toBe("10 loaded")
+  it("reports loaded-of-server-total when unfiltered", () => {
+    const model = { section: { recent: [], older: [] }, shownCount: 0, loadedCount: 50, serverTotal: 283 }
+    expect(summaryTextFor(model, false)).toBe("50 of 283 loaded")
+  })
+
+  it("reports shown-of-loaded when a filter is active", () => {
+    const model = { section: { recent: [], older: [] }, shownCount: 3, loadedCount: 50, serverTotal: 283 }
+    expect(summaryTextFor(model, true)).toBe("3 of 50 shown")
   })
 })
