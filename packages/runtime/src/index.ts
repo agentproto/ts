@@ -1323,8 +1323,13 @@ export async function createGateway(
   // path knob) — writes only happen on an explicit bind, which no
   // test exercises incidentally the way session spawns do.
   const transmitterBindings = createTransmitterBindingStore()
+  // Persisted (default ~/.agentproto/inbound-endpoints.json) -- an endpoint
+  // registered via inbound_endpoint_create must survive a daemon restart,
+  // or every provider webhook already pointed at it (e.g. a live Telegram
+  // bot's setWebhook) starts 404ing as unknown_inbound_endpoint the moment
+  // the daemon bounces, with no way for the remote caller to know why.
   const inboundEndpointStore = createInboundEndpointStore({
-    persist: false,
+    persist: true,
   })
   const telegramBotCreds = makeTelegramBotCredsStore()
 
