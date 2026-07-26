@@ -35,7 +35,11 @@ const defaultExec = (cmd, root) => execSync(cmd, { cwd: root, encoding: 'utf8' }
  *  implementation. */
 export function gatherDiff(root, cap = DIFF_CAP, exec = defaultExec) {
   try {
-    exec('git fetch origin main --quiet', root)
+    // Explicit refspec, not just `git fetch origin main` -- a clone with a
+    // narrowed fetch refspec (--single-branch, or an actions/checkout PR
+    // checkout) would otherwise only update FETCH_HEAD and leave
+    // origin/main itself stale, silently no-op'ing this exact fix.
+    exec('git fetch origin +refs/heads/main:refs/remotes/origin/main --quiet', root)
   } catch {
     // Non-fatal: proceed with whatever local origin/main ref is already
     // present. A stale ref can widen the reviewed diff (see above), but
