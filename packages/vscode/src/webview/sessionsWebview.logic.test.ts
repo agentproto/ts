@@ -61,17 +61,23 @@ describe("formatCost", () => {
 })
 
 describe("webviewRowStatus", () => {
-  it("folds needs-you into awaiting", () => {
+  it("maps each tree activity to its own row status", () => {
     expect(webviewRowStatus(session({ awaitingInput: true }))).toBe("awaiting")
-  })
-  it("folds working/idle/stalled into live", () => {
-    expect(webviewRowStatus(session({ busy: true }))).toBe("live")
-    expect(webviewRowStatus(session({ busy: false }))).toBe("live")
-  })
-  it("folds done/stopped/failed into done", () => {
+    expect(webviewRowStatus(session({ status: "starting" }))).toBe("working")
+    expect(webviewRowStatus(session({ busy: true }))).toBe("working")
+    expect(webviewRowStatus(session({ busy: false }))).toBe("idle")
     expect(webviewRowStatus(session({ status: "exited" }))).toBe("done")
-    expect(webviewRowStatus(session({ status: "killed", killedMidTurn: true }))).toBe("done")
-    expect(webviewRowStatus(session({ status: "error" }))).toBe("done")
+    expect(webviewRowStatus(session({ status: "killed", killedMidTurn: true }))).toBe("stopped")
+    expect(webviewRowStatus(session({ status: "error" }))).toBe("failed")
+  })
+
+  it("marks a busy but silent session as stalled", () => {
+    // 1h of silence while busy => stalled
+    const stalled = session({
+      busy: true,
+      lastActivityAt: "2026-01-01T23:00:00Z",
+    })
+    expect(webviewRowStatus(stalled, NOW)).toBe("stalled")
   })
 })
 
@@ -129,17 +135,59 @@ describe("buildSessionsWebviewModel", () => {
     expect(row.tag).toBe("in-place")
   })
 
-  it("filters by tab, folding stopped/failed into done", () => {
+  it("filters by activity-based tabs, keeping terminal/stalled sessions out of Working/Idle/Done", () => {
     const sessions = [
-      session({ id: "live", cwd: "/Code/studio", busy: true }),
+      session({ id: "working", cwd: "/Code/studio", busy: true }),
+      session({ id: "idle", cwd: "/Code/studio", busy: false }),
       session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
       session({ id: "done", cwd: "/Code/studio", status: "exited" }),
+      session({ id: "stopped", cwd: "/Code/studio", status: "killed", killedMidTurn: true }),
       session({ id: "failed", cwd: "/Code/studio", status: "error" }),
+      session({
+        id: "stalled",
+        cwd: "/Code/studio",
+        busy: true,
+        lastActivityAt: "2026-01-01T23:00:00Z",
+      }),
     ]
-    const liveModel = buildSessionsWebviewModel(sessions, config, [], { tab: "live", search: "", now: NOW })
-    expect(liveModel.shownCount).toBe(1)
-    const doneModel = buildSessionsWebviewModel(sessions, config, [], { tab: "done", search: "", now: NOW })
-    expect(doneModel.shownCount).toBe(2)
+
+    expect(
+      buildSessionsWebviewModel(sessions, config, [], { tab: "working", search: "", now: NOW }).shownCount,
+    ).toBe(1)
+    expect(
+      buildSessionsWebviewModel(sessions, config, [], { tab: "idle", search: "", now: NOW }).shownCount,
+    ).toBe(1)
+    expect(
+      buildSessionsWebviewModel(sessions, config, [], { tab: "awaiting", search: "", now: NOW }).shownCount,
+    ).toBe(1)
+    expect(
+      buildSessionsWebviewModel(sessions, config, [], { tab: "done", search: "", now: NOW }).shownCount,
+    ).toBe(1)
+    const stalledModel = buildSessionsWebviewModel(sessions, config, [], {
+      tab: "stalled",
+      search: "",
+      now: NOW,
+    })
+    expect(stalledModel.shownCount).toBe(3)
+    expect(stalledModel.groups[0]!.section.recent.map(r => r.id).sort()).toEqual([
+      "failed",
+      "stalled",
+      "stopped",
+    ])
+  })
+
+  it("retains an idle parent when its child matches the Working tab", () => {
+    const sessions = [
+      session({ id: "parent", cwd: "/Code/studio", busy: false }),
+      session({ id: "child", cwd: "/Code/studio", parentSessionId: "parent", busy: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, config, [], { tab: "working", search: "", now: NOW })
+    expect(model.shownCount).toBe(2)
+    const rows = model.groups[0]!.section.recent
+    expect(rows.map(r => ({ id: r.id, isSub: r.isSub, status: r.status }))).toEqual([
+      { id: "parent", isSub: false, status: "idle" },
+      { id: "child", isSub: true, status: "working" },
+    ])
   })
 
   it("filters by the pinned search input via the reused predicate", () => {

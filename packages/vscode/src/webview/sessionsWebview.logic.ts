@@ -18,11 +18,11 @@ import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
 import {
   EMPTY_FILTER,
   filterSessions,
-  isFilterActive,
   type SessionFilterState,
 } from "../views/sessionFilter.logic.js"
 import { buildSessionsRoots, isCtaNode, isGroupNode } from "../views/sessionsGroups.logic.js"
 import {
+  activityFor,
   activityLineFor,
   collapseResumeChains,
   contextPercent,
@@ -30,7 +30,7 @@ import {
   isSeparatorNode,
   labelFor,
   relativeTime,
-  statusCategoryFor,
+  type SessionActivity,
   type SessionNode,
   type TreeNode,
 } from "../views/sessionsTree.logic.js"
@@ -70,20 +70,32 @@ export function formatCost(costUsd: number | undefined): string | undefined {
 }
 
 /**
- * The row's status dot — one of the three the mock actually paints (live
- * green dot / awaiting hollow amber ring / done grey), folded from the
- * tree's five-bucket `statusCategoryFor` (awaiting/live/failed/stopped/done).
- * `failed` and `stopped` both read as "done" here: the dot is a coarse
- * at-a-glance signal, and the row's tooltip/transcript still carries the
- * finer distinction on open.
+ * The row's status dot — driven directly by the tree's canonical
+ * `activityFor` classifier so the webview never disagrees with the tree
+ * about what a session IS. Each activity gets its own CSS class; only
+ * `working` rows pulse green, so an idle session never looks active.
  */
-export type WebviewRowStatus = "live" | "awaiting" | "done"
+export type WebviewRowStatus =
+  | "working"
+  | "awaiting"
+  | "idle"
+  | "stalled"
+  | "failed"
+  | "stopped"
+  | "done"
+
+const ACTIVITY_TO_ROW_STATUS: Readonly<Record<SessionActivity, WebviewRowStatus>> = {
+  "needs-you": "awaiting",
+  working: "working",
+  idle: "idle",
+  stalled: "stalled",
+  failed: "failed",
+  stopped: "stopped",
+  done: "done",
+}
 
 export function webviewRowStatus(session: SessionDescriptor, now?: number): WebviewRowStatus {
-  const category = statusCategoryFor(session, now)
-  if (category === "awaiting") return "awaiting"
-  if (category === "live") return "live"
-  return "done"
+  return ACTIVITY_TO_ROW_STATUS[activityFor(session, now)]
 }
 
 /** One rendered row — a root session or one of its flattened subagent descendants. */
@@ -119,18 +131,23 @@ export interface WebviewGroup {
   section: WebviewSection
 }
 
-export type SessionsWebviewTab = "all" | "live" | "awaiting" | "done"
+export type SessionsWebviewTab = "all" | "working" | "awaiting" | "idle" | "stalled" | "done"
 
 /**
- * Tab → SessionFilterState.status. The mock's three non-"all" tabs are
- * coarser than the filter's five categories (mirroring WebviewRowStatus's own
- * fold) — "Done" pulls in `stopped`/`failed` too, so a failed or
- * user-stopped session doesn't just vanish from every tab but "All".
+ * Tab → the set of {@link SessionActivity} values it should show. The tree's
+ * classifier is the single source of truth; these tabs are just presentation
+ * buckets. "Stalled / failed" gathers every incomplete non-live state
+ * (stalled, failed, or stopped mid-turn) so nothing terminal leaks into
+ * "Working"/"Idle" and nothing incomplete is filed under "Done".
  */
-const TAB_TO_STATUS: Readonly<Record<Exclude<SessionsWebviewTab, "all">, SessionFilterState["status"]>> = {
-  live: ["live"],
-  awaiting: ["awaiting"],
-  done: ["done", "stopped", "failed"],
+const TAB_TO_ACTIVITIES: Readonly<
+  Record<Exclude<SessionsWebviewTab, "all">, readonly SessionActivity[]>
+> = {
+  working: ["working"],
+  awaiting: ["needs-you"],
+  idle: ["idle"],
+  stalled: ["stalled", "failed", "stopped"],
+  done: ["done"],
 }
 
 function toRow(session: SessionDescriptor, isSub: boolean, now: number): WebviewRow {
@@ -179,6 +196,48 @@ function sectionFor(nodes: readonly TreeNode[], now: number): WebviewSection {
   return { recent: recentRows, older: olderRows }
 }
 
+/**
+ * Keep sessions whose activity is in `activities`, plus any ancestors needed
+ * to preserve the parentSessionId nesting rendered by `buildSessionTree`. This
+ * mirrors `filterSessions`'s parent-retention rule, but uses the fine-grained
+ * `activityFor` classifier instead of the coarser `SessionFilterState.status`
+ * tokens.
+ */
+function retainSessionsByActivity(
+  sessions: readonly SessionDescriptor[],
+  activities: readonly SessionActivity[],
+  now: number,
+): SessionDescriptor[] {
+  const matched = new Set<string>()
+  for (const session of sessions) {
+    if (activities.includes(activityFor(session, now))) matched.add(session.id)
+  }
+  if (matched.size === 0) return []
+
+  const childrenByParent = new Map<string, SessionDescriptor[]>()
+  for (const session of sessions) {
+    const parentId = session.parentSessionId
+    if (!parentId) continue
+    const list = childrenByParent.get(parentId)
+    if (list) list.push(session)
+    else childrenByParent.set(parentId, [session])
+  }
+
+  const descendantMatch = new Map<string, boolean>()
+  const hasMatchingDescendant = (id: string): boolean => {
+    const cached = descendantMatch.get(id)
+    if (cached !== undefined) return cached
+    descendantMatch.set(id, false)
+    const result = (childrenByParent.get(id) ?? []).some(
+      child => matched.has(child.id) || hasMatchingDescendant(child.id),
+    )
+    descendantMatch.set(id, result)
+    return result
+  }
+
+  return sessions.filter(session => matched.has(session.id) || hasMatchingDescendant(session.id))
+}
+
 export interface SessionsWebviewModel {
   groups: WebviewGroup[]
   /** Rows actually rendered across every group (roots + nested children). */
@@ -208,16 +267,19 @@ export function buildSessionsWebviewModel(
   openFolderPaths: readonly string[],
   opts: BuildSessionsWebviewModelOptions,
 ): SessionsWebviewModel {
-  const state: SessionFilterState = {
-    ...EMPTY_FILTER,
-    status: opts.tab === "all" ? [] : TAB_TO_STATUS[opts.tab],
-    search: opts.search,
-  }
-  const survivors = filterSessions(sessions, state, workspaces)
+  // Run search/workspace/adapter filtering first (with its own parent
+  // retention), then apply the tab's activity-based status filter. Keeping the
+  // two passes separate lets the webview use the tree's fine-grained
+  // `activityFor` classifier without widening the persisted `SessionFilterState`
+  // shape that other views/commands rely on.
+  const baseState: SessionFilterState = { ...EMPTY_FILTER, search: opts.search }
+  const baseSurvivors = filterSessions(sessions, baseState, workspaces)
+  const activities = opts.tab === "all" ? undefined : TAB_TO_ACTIVITIES[opts.tab]
+  const survivors = activities ? retainSessionsByActivity(baseSurvivors, activities, opts.now) : baseSurvivors
   const collapsed = collapseResumeChains(survivors)
   const roots = buildSessionsRoots(collapsed, workspaces, openFolderPaths, opts.now, {
     grouping: "workspace",
-    filterActive: isFilterActive(state),
+    filterActive: opts.tab !== "all" || opts.search.trim().length > 0,
   })
 
   const groups: WebviewGroup[] = []

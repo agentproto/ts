@@ -310,13 +310,18 @@ export function buildHtml(nonce: string): string {
     .row.sub + .row:not(.sub) { border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); }
     .row.sub .name { font-size: 12.5px; font-weight: 500; color: var(--vscode-descriptionForeground); }
     .row.sub .dot { width: 5px; height: 5px; opacity: 0.7; }
-    .dot { margin-top: 5px; width: 7px; height: 7px; }
-    .dot.live { background: var(--vscode-charts-green, #2ea043); border-radius: 50%; animation: agentproto-pulse-live 1.6s ease-in-out infinite; }
-    .dot.awaiting { border: 1.5px solid var(--vscode-editorWarning-foreground, #cca700); border-radius: 50%; }
-    .dot.done { background: transparent; border: 1.5px solid var(--vscode-descriptionForeground); border-radius: 50%; opacity: 0.5; }
+    .dot { margin-top: 5px; width: 7px; height: 7px; border-radius: 50%; }
+    /* Only genuinely working rows pulse green. Filter tabs are plain text, never animated dots. */
+    .dot.working { background: var(--vscode-charts-green, #2ea043); animation: agentproto-pulse-live 1.6s ease-in-out infinite; }
+    .dot.awaiting { border: 1.5px solid var(--vscode-editorWarning-foreground, #cca700); background: transparent; }
+    .dot.idle { border: 1.5px solid var(--vscode-descriptionForeground); background: transparent; opacity: 0.65; }
+    .dot.stalled { background: var(--vscode-editorWarning-foreground, #cca700); }
+    .dot.failed { background: var(--vscode-editorError-foreground, #f85149); }
+    .dot.stopped { border: 1.5px solid var(--vscode-descriptionForeground); background: transparent; opacity: 0.5; }
+    .dot.done { border: 1.5px solid var(--vscode-descriptionForeground); background: transparent; opacity: 0.5; }
     .dot.done.unread { background: var(--vscode-charts-green, #2ea043); border-color: var(--vscode-charts-green, #2ea043); opacity: 1; }
     @keyframes agentproto-pulse-live { 0%, 100% { opacity: 0.55; transform: scale(0.9); } 50% { opacity: 1; transform: scale(1); } }
-    @media (prefers-reduced-motion: reduce) { .dot.live { animation: none; } }
+    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } }
     .mid { min-width: 0; }
     .name {
       font-size: 13px; font-weight: 550; color: var(--vscode-foreground); letter-spacing: -0.01em;
@@ -352,8 +357,10 @@ export function buildHtml(nonce: string): string {
   </div>
   <div id="tabs">
     <div class="tab on" data-tab="all">All</div>
-    <div class="tab" data-tab="live"><span class="dot live"></span>Live</div>
-    <div class="tab" data-tab="awaiting"><span class="dot awaiting"></span>Awaiting</div>
+    <div class="tab" data-tab="working">Working</div>
+    <div class="tab" data-tab="awaiting">Awaiting</div>
+    <div class="tab" data-tab="idle">Idle</div>
+    <div class="tab" data-tab="stalled">Stalled / failed</div>
     <div class="tab" data-tab="done">Done</div>
   </div>
   <div id="summary"></div>
