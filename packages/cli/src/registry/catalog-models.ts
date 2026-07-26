@@ -39,9 +39,11 @@ export async function listCatalogModelsFromInstalled(
           slug: a.slug,
           models: a.modelDetails.map(m => ({
             id: m.id,
+            ...(m.provider ? { provider: m.provider } : {}),
             ...(m.mode ? { mode: m.mode } : {}),
           })),
           ...(authDescriptor ? { authDescriptor } : {}),
+          ...(a.routeSelection ? { routeSelection: a.routeSelection } : {}),
         }
       }),
   )
