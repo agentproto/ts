@@ -55,6 +55,57 @@ describe("normalizeInbound", () => {
     expect(result).toEqual({ ok: true, challenge: "abc123" })
   })
 
+  it("normalizes a telegram message with distinct source and contactRef", () => {
+    // source must be the channel name ("telegram"), NOT the chat id --
+    // a binding is keyed on (alias, source, contactRef); collapsing them
+    // means nothing written via transmit_message (which always sends
+    // source:"telegram") can ever match on lookup. Regression for a bug
+    // that shipped with zero coverage of the happy path's actual values.
+    const result = normalizeInbound(
+      "telegram",
+      {
+        message: {
+          from: { id: 1, is_bot: false },
+          chat: { id: 6371794295 },
+          text: "hello",
+          message_id: 42,
+        },
+      },
+      { alias: "tg" },
+    )
+    expect(result).toEqual({
+      ok: true,
+      msg: {
+        alias: "tg",
+        source: "telegram",
+        contactRef: "6371794295",
+        text: "hello",
+      },
+      providerMessageId: "42",
+    })
+  })
+
+  it("uses sourceOverride for telegram when provided, contactRef still the chat id", () => {
+    const result = normalizeInbound(
+      "telegram",
+      {
+        message: {
+          from: { id: 1, is_bot: false },
+          chat: { id: 6371794295 },
+          text: "hi",
+          message_id: 1,
+        },
+      },
+      { alias: "tg", sourceOverride: "telegram-agentproto" },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok || "challenge" in result) return
+    expect(result.msg).toMatchObject({
+      source: "telegram-agentproto",
+      contactRef: "6371794295",
+    })
+  })
+
   it("ignores bot messages for telegram", () => {
     const result = normalizeInbound(
       "telegram",
