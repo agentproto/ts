@@ -282,6 +282,25 @@ describe("SessionStore — showArchived", () => {
   })
 })
 
+describe("SessionStore — daemon connection state", () => {
+  it("starts connecting, reports an unreachable daemon, and recovers on the next snapshot", async () => {
+    const client = createFakeClient()
+    client.listSessions.mockRejectedValue(new Error("connection refused"))
+    client.listPermissions.mockRejectedValue(new Error("connection refused"))
+    const store = new SessionStore(client, 5000, new ManualScheduler())
+
+    expect(store.connectionState).toBe("connecting")
+    await store.refreshAll()
+    expect(store.connectionState).toBe("unreachable")
+
+    client.listSessions.mockResolvedValue([])
+    client.listPermissions.mockResolvedValue([])
+    await store.refreshAll()
+    expect(store.connectionState).toBe("connected")
+    store.dispose()
+  })
+})
+
 describe("SessionStore — debounced refresh", () => {
   beforeEach(() => {
     vi.useFakeTimers()

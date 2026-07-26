@@ -48,6 +48,11 @@ const MAX_IDLE_BACKOFF_MS = 2_000
 const SESSION_REFRESH_DEBOUNCE_MS = 150
 const SESSION_REFRESH_RETRY_MAX_MS = 5_000
 
+/** Connectivity as experienced by the Sessions surfaces. A successful
+ * list-sessions snapshot is the authoritative proof that the daemon is
+ * reachable; session-event polling alone is not enough to populate a view. */
+export type DaemonConnectionState = "connecting" | "connected" | "unreachable"
+
 const SESSION_DESCRIPTOR_EVENT_TYPES = new Set([
   "session:turn-end",
   "session:awaiting-input",
@@ -125,6 +130,7 @@ export class SessionStore {
 
   private msSinceSnapshot = 0
   private pendingSeq = 0
+  private _connectionState: DaemonConnectionState = "connecting"
 
   /** Off by default — archived sessions are hidden from every fetch this
    *  store makes until a caller opts in (the "show archived" tree toggle,
@@ -154,6 +160,12 @@ export class SessionStore {
   /** True when the session_events_poll loop is healthy. */
   get healthy(): boolean {
     return this.consecutiveFailures < HEALTH_THRESHOLD
+  }
+
+  /** The latest daemon reachability result, used by views to render a useful
+   * first-run/offline state instead of a misleading empty session list. */
+  get connectionState(): DaemonConnectionState {
+    return this._connectionState
   }
 
   get showArchived(): boolean {
@@ -235,7 +247,10 @@ export class SessionStore {
     } catch {
       // permissions endpoint optional/failed — non-fatal.
     }
-    if (changed) this._onDidChange.fire()
+    const nextConnectionState: DaemonConnectionState = reachable ? "connected" : "unreachable"
+    const connectionChanged = this._connectionState !== nextConnectionState
+    this._connectionState = nextConnectionState
+    if (changed || connectionChanged) this._onDidChange.fire()
     return { changed, reachable }
   }
 

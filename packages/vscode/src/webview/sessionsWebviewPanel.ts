@@ -31,7 +31,7 @@ import type { SessionDescriptor, SessionSummary } from "../client/types.js"
 import type { SessionFilterController } from "../commands/sessionFilter.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import type { SeenTracker } from "../services/seen.js"
-import type { SessionStore } from "../services/sessionStore.js"
+import type { DaemonConnectionState, SessionStore } from "../services/sessionStore.js"
 import {
   buildSessionsWebviewModel,
   summaryTextFor,
@@ -45,6 +45,11 @@ import type { TranscriptPanels } from "./transcriptPanel.js"
 
 const VIEW_TYPE = "agentproto.sessionsWebview"
 const PAGE_SIZE = 50
+const GLOBAL_WORKSPACE = "__all__"
+const UNASSIGNED_WORKSPACE = "__unassigned__"
+const SETUP_DOCS_URL = "https://agentproto.sh/docs"
+const CLAUDE_SETUP_PROMPT =
+  "Set up Agentproto for this VS Code workspace. Install the Agentproto CLI, start its local daemon, register this workspace, connect Claude Code through the Agentproto MCP bridge, and verify that the Agentproto Sessions panel is live. Explain each command before I run it."
 
 /** Reads live: the operator can add/close a folder mid-session, same reasoning as sessionsTree.ts's own openFolderPaths(). */
 function openFolderPaths(): string[] {
@@ -78,6 +83,7 @@ interface RenderSection {
 
 interface ModelMessage {
   type: "model"
+  connection: DaemonConnectionState
   section: RenderSection
   summary: string
   loading: boolean
@@ -89,6 +95,9 @@ type HostMessage = ModelMessage
 
 type WebviewToHostMessage =
   | { type: "ready" }
+  | { type: "refresh" }
+  | { type: "openDocs" }
+  | { type: "copyClaudePrompt" }
   | { type: "open"; id: string }
   | { type: "filter"; search: string }
   | { type: "tab"; tab: SessionsWebviewTab }
@@ -185,6 +194,15 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       case "ready":
         this.post()
         return
+      case "refresh":
+        void this.refreshDaemon()
+        return
+      case "openDocs":
+        void vscode.env.openExternal(vscode.Uri.parse(SETUP_DOCS_URL))
+        return
+      case "copyClaudePrompt":
+        void this.copyClaudeSetupPrompt()
+        return
       case "filter":
         this.search = msg.search
         this.post()
@@ -222,6 +240,16 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     // Tab changes reset the loaded set: different archived visibility and a
     // fresh first page keep the model coherent.
     void this.loadInitial()
+  }
+
+  private async refreshDaemon(): Promise<void> {
+    await this.store.refreshAll()
+    this.post()
+  }
+
+  private async copyClaudeSetupPrompt(): Promise<void> {
+    await vscode.env.clipboard.writeText(CLAUDE_SETUP_PROMPT)
+    void vscode.window.showInformationMessage("Agentproto setup prompt copied — paste it into Claude Code.")
   }
 
   private syncArchivedFlag(): void {
@@ -348,6 +376,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     const hasMore = this.summaries.length < this.serverTotal
     const message: ModelMessage = {
       type: "model",
+      connection: this.store.connectionState,
       section: {
         recent: model.section.recent.map(r => toRenderRow(r, activeSessionId, this.seen)),
         older: model.section.older.map(r => toRenderRow(r, activeSessionId, this.seen)),
@@ -420,6 +449,29 @@ export function buildHtml(nonce: string): string {
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
     body { display: flex; flex-direction: column; }
+    /* ── Daemon connection / first-run state ───────────────────────── */
+    #daemon-state { display: none; flex: 1 1 auto; min-height: 0; padding: 24px 18px; align-items: center; justify-content: center; }
+    body.daemon-state > #search,
+    body.daemon-state > #workspace,
+    body.daemon-state > #tabs,
+    body.daemon-state > #summary,
+    body.daemon-state > #list,
+    body.daemon-state > #empty { display: none !important; }
+    body.daemon-state > #daemon-state { display: flex; }
+    .daemon-card { width: min(100%, 360px); text-align: center; color: var(--vscode-foreground); }
+    .daemon-mark { width: 32px; height: 32px; margin: 0 auto 14px; border: 2px solid var(--vscode-descriptionForeground); border-top-color: var(--vscode-focusBorder); border-radius: 50%; }
+    #daemon-state[data-state="connecting"] .daemon-mark { animation: agentproto-daemon-spin 1s linear infinite; }
+    @keyframes agentproto-daemon-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { #daemon-state[data-state="connecting"] .daemon-mark { animation: none; } }
+    .daemon-card h2 { margin: 0; font-size: 15px; font-weight: 600; }
+    .daemon-card p { margin: 8px 0 0; color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.5; }
+    .daemon-command { margin: 16px 0 0; padding: 9px 10px; overflow-x: auto; text-align: left; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.08)); color: var(--vscode-textPreformat-foreground, var(--vscode-foreground)); font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+    .daemon-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+    .daemon-actions button { width: 100%; min-height: 28px; padding: 4px 10px; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.2)); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); cursor: pointer; font: inherit; font-size: 12px; }
+    .daemon-actions button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .daemon-actions button:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,0.3)); }
+    .daemon-actions button.primary:hover { background: var(--vscode-button-hoverBackground); }
+    #daemon-state[data-state="connecting"] .offline-only { display: none; }
     /* ── Pinned filter ─────────────────────────────────────────────── */
     #search { flex: 0 0 auto; position: relative; margin: 10px 12px 0; }
     #search .mag {
@@ -525,7 +577,20 @@ export function buildHtml(nonce: string): string {
     #spinner[hidden] { display: none; }
   </style>
 </head>
-<body>
+<body class="daemon-state">
+  <section id="daemon-state" data-state="connecting" aria-live="polite">
+    <div class="daemon-card">
+      <div class="daemon-mark" aria-hidden="true"></div>
+      <h2 id="daemon-title">Connecting to agentproto daemon…</h2>
+      <p id="daemon-description">Looking for your local daemon. Sessions will appear automatically once it is ready.</p>
+      <code class="daemon-command offline-only">agentproto serve</code>
+      <div class="daemon-actions">
+        <button class="primary" type="button" data-refresh>Try again</button>
+        <button class="offline-only" type="button" data-docs>Open setup guide ↗</button>
+        <button class="offline-only" type="button" data-copy-claude>Copy a setup prompt for Claude</button>
+      </div>
+    </div>
+  </section>
   <div id="search">
     <span class="mag" aria-hidden="true">⌕</span>
     <input id="q" placeholder="Filter" autocomplete="off" />
@@ -560,6 +625,9 @@ export function buildHtml(nonce: string): string {
       const loadMoreEl = document.getElementById('load-more');
       const spinnerEl = document.getElementById('spinner');
       const footerErrorEl = document.getElementById('footer-error');
+      const daemonStateEl = document.getElementById('daemon-state');
+      const daemonTitleEl = document.getElementById('daemon-title');
+      const daemonDescriptionEl = document.getElementById('daemon-description');
 
       function escapeHtml(text) {
         return String(text).replace(/[&<>"']/g, function (ch) {
@@ -604,7 +672,43 @@ export function buildHtml(nonce: string): string {
         '</div>';
       }
 
+      function renderWorkspaceOptions(payload) {
+        var selected = payload.selectedWorkspace;
+        var html = '<option value="__all__"' + (selected === '__all__' ? ' selected' : '') + '>Global / All workspaces</option>';
+        for (var i = 0; i < payload.workspaces.length; i++) {
+          var w = payload.workspaces[i];
+          html += '<option value="' + escapeHtml(w.slug) + '"' + (selected === w.slug ? ' selected' : '') + '>' + escapeHtml(w.label) + '</option>';
+        }
+        html += '<option value="__unassigned__"' + (selected === '__unassigned__' ? ' selected' : '') + '>Unassigned</option>';
+        workspaceEl.innerHTML = html;
+        workspaceEl.className = selected === '__all__' || selected === '__unassigned__' ? 'neutral' : '';
+        var selectedW = payload.workspaces.find(function (w) { return w.slug === selected; });
+        if (selectedW) {
+          workspaceEl.className = '';
+          workspaceEl.style.borderLeftColor = selectedW.css;
+        } else {
+          workspaceEl.style.borderLeftColor = '';
+        }
+      }
+
+      function renderConnection(payload) {
+        var state = payload.connection || 'connected';
+        var offline = state !== 'connected';
+        document.body.classList.toggle('daemon-state', offline);
+        daemonStateEl.dataset.state = state;
+        if (state === 'connecting') {
+          daemonTitleEl.textContent = 'Connecting to agentproto daemon…';
+          daemonDescriptionEl.textContent = 'Looking for your local daemon. Sessions will appear automatically once it is ready.';
+        } else if (state === 'unreachable') {
+          daemonTitleEl.textContent = 'Agentproto daemon is not running';
+          daemonDescriptionEl.textContent = 'The extension will keep trying. Start the daemon below, use the setup guide, or ask Claude to configure this workspace.';
+        }
+        return state;
+      }
+
       function render(payload) {
+        if (renderConnection(payload) !== 'connected') return;
+        renderWorkspaceOptions(payload);
         var html = '';
         var shown = 0;
         var recent = payload.section.recent;
@@ -674,6 +778,19 @@ export function buildHtml(nonce: string): string {
         for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('on');
         t.classList.add('on');
         vscode.postMessage({ type: 'tab', tab: t.getAttribute('data-tab') });
+      });
+
+      workspaceEl.addEventListener('change', function () {
+        var value = workspaceEl.value;
+        vscode.postMessage({ type: 'workspace', workspace: value });
+      });
+
+      daemonStateEl.addEventListener('click', function (e) {
+        var button = e.target.closest('button');
+        if (!button) return;
+        if (button.hasAttribute('data-refresh')) vscode.postMessage({ type: 'refresh' });
+        else if (button.hasAttribute('data-docs')) vscode.postMessage({ type: 'openDocs' });
+        else if (button.hasAttribute('data-copy-claude')) vscode.postMessage({ type: 'copyClaudePrompt' });
       });
 
       window.addEventListener('message', function (event) {

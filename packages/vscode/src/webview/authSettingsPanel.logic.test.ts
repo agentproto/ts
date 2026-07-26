@@ -38,6 +38,56 @@ const profiles: AuthProfileSummary[] = [
   { id: "anthropic-sub", endpoint: "anthropic", method: "oauth-bearer", label: "My sub" },
 ]
 
+const XAI_PRODUCTS = [
+  "grok-4.5",
+  "grok-4.20",
+  "grok-4.20-reasoning",
+  "grok-4.20-multi-agent",
+  "grok-4.3",
+  "grok-build-0.1",
+]
+
+function xaiCatalog(opts: { allowedIds?: string[] } = {}): CatalogModelsResponse {
+  return {
+    vendors: [
+      {
+        vendor: "xai",
+        products: XAI_PRODUCTS.map(product => {
+          const xaiRef = `xai/${product}`
+          const isAllowed = !opts.allowedIds || opts.allowedIds.includes(xaiRef)
+          return {
+            product,
+            routes: [
+              {
+                route: "xai",
+                ref: xaiRef,
+                baseUrl: null,
+                pricing: null,
+                runnable: isAllowed,
+                eligibleProfiles: isAllowed ? ["xai-api"] : [],
+                adapterModes: [],
+                adapters: [],
+                curated: false,
+              },
+              {
+                route: "xai-anthropic",
+                ref: `xai/${product}@xai-anthropic`,
+                baseUrl: null,
+                pricing: null,
+                runnable: true,
+                eligibleProfiles: ["xai-anthropic-api"],
+                adapterModes: [],
+                adapters: [],
+                curated: false,
+              },
+            ],
+          }
+        }),
+      },
+    ],
+  }
+}
+
 describe("buildAuthSettingsModel", () => {
   it("marks presets connected and sorts unconnected first", () => {
     const model = buildAuthSettingsModel(presets, catalog, profiles)
@@ -47,13 +97,15 @@ describe("buildAuthSettingsModel", () => {
     ])
   })
 
-  it("attaches serviced models + active count per wallet, busiest first", () => {
+  it("attaches serviced models + runnable count per wallet, busiest first", () => {
     const model = buildAuthSettingsModel(presets, catalog, profiles)
     const or = model.wallets.find(w => w.id === "openrouter-api")!
     expect(or.models.map(m => m.product)).toEqual(["claude-fable-5"])
-    expect(or.activeCount).toBe(1)
+    expect(or.runnableCount).toBe(1)
+    expect(or.catalogCount).toBe(1)
     const sub = model.wallets.find(w => w.id === "anthropic-sub")!
-    expect(sub.activeCount).toBe(0) // eligible but the route isn't runnable
+    expect(sub.runnableCount).toBe(0) // eligible but the route isn't runnable
+    expect(sub.catalogCount).toBe(1)
     expect(sub.label).toBe("My sub")
   })
 
@@ -84,6 +136,53 @@ describe("buildAuthSettingsModel", () => {
     expect(model.wallets.find(w => w.id === "env-openrouter")!.origin).toBe("env")
     // A hand-created profile has no origin.
     expect(model.wallets.find(w => w.id === "openrouter-api")!.origin).toBeUndefined()
+  })
+
+  it("counts every xAI catalog model for a native xai profile, not just curated ones", () => {
+    const allowed = [
+      "xai/grok-4.5",
+      "xai/grok-4.3",
+      "xai/grok-4.20",
+      "xai/grok-build-0.1",
+    ]
+    const model = buildAuthSettingsModel(
+      [],
+      xaiCatalog({ allowedIds: allowed }),
+      [{ id: "xai-api", endpoint: "xai", method: "api-key", models: { mode: "allow", ids: allowed } }],
+    )
+    const w = model.wallets.find(x => x.id === "xai-api")!
+    expect(w.catalogCount).toBe(6)
+    expect(w.curatedCount).toBe(4)
+    expect(w.runnableCount).toBe(4)
+    expect(w.models).toHaveLength(4)
+    expect(w.unavailable).toHaveLength(2)
+    expect(w.unavailable.every(u => u.reason === "curated out")).toBe(true)
+  })
+
+  it("keeps native xai and xai-anthropic profiles from cross-qualifying", () => {
+    const model = buildAuthSettingsModel(
+      [],
+      xaiCatalog(),
+      [{ id: "xai-anthropic-api", endpoint: "xai-anthropic", method: "api-key" }],
+    )
+    const w = model.wallets.find(x => x.id === "xai-anthropic-api")!
+    expect(w.catalogCount).toBe(6)
+    expect(w.curatedCount).toBe(6)
+    expect(w.runnableCount).toBe(6)
+    expect(w.models.map(m => m.route)).toEqual(Array(6).fill("xai-anthropic"))
+  })
+
+  it("reports a disabled xai profile as 0 runnable without blaming credentials", () => {
+    const model = buildAuthSettingsModel(
+      [],
+      xaiCatalog(),
+      [{ id: "xai-api", endpoint: "xai", method: "api-key", disabled: true }],
+    )
+    const w = model.wallets.find(x => x.id === "xai-api")!
+    expect(w.enabled).toBe(false)
+    expect(w.catalogCount).toBe(6)
+    expect(w.runnableCount).toBe(0)
+    expect(w.unavailable).toHaveLength(0)
   })
 })
 
@@ -160,6 +259,37 @@ describe("buildAuthSettingsHtml", () => {
     )
   })
 
+  it("renders a catalog summary instead of a misleading active/total badge", () => {
+    const allowed = ["xai/grok-4.5"]
+    const model = buildAuthSettingsModel(
+      [],
+      xaiCatalog({ allowedIds: allowed }),
+      [
+        {
+          id: "xai-api",
+          endpoint: "xai",
+          method: "api-key",
+          models: { mode: "allow", ids: allowed },
+        },
+      ],
+    )
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain("1 curated · 6 catalog · 1 active (5 excluded by curation)")
+    expect(html).not.toContain("active /")
+    // The five excluded models are surfaced as unavailable pills with a reason.
+    expect(html).toContain('title="xai/grok-4.3 · curated out"')
+  })
+
+  it("renders a disabled profile summary without implying a broken credential", () => {
+    const model = buildAuthSettingsModel(
+      [],
+      xaiCatalog(),
+      [{ id: "xai-api", endpoint: "xai", method: "api-key", disabled: true }],
+    )
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain("0 active · 6 catalog (profile disabled)")
+    expect(html).toContain("Profile disabled — no models active.")
+  })
   it("labels an uncurated wallet 'Allows all eligible models' with no remove chips", () => {
     const model = buildAuthSettingsModel(presets, catalog, [
       { id: "openrouter-api", endpoint: "openrouter", method: "api-key" },

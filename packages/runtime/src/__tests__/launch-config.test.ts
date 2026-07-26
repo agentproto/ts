@@ -55,7 +55,54 @@ describe("buildRouteAwareLaunchConfig", () => {
     ).toThrow(/cannot be routed through gateway/)
   })
 
-  it("honors an explicit custom route base_url even for derived-from-model adapters", () => {
+  it("codex + native openai gateway preset skips base_url injection", () => {
+    // resolveAuthSpec drops the base_url for a native fixed-provider gateway
+    // preset, so authSpec.baseUrl is undefined here.
+    const result = buildRouteAwareLaunchConfig({
+      adapter: "codex",
+      model: "openai/gpt-5-codex",
+      route: { gateway: "openai" },
+      authSpec: {
+        mode: "api-key",
+        setEnv: "OPENAI_API_KEY",
+        unsetEnv: [],
+        explicit: true,
+        enforce: "when-configured",
+      } as ResolvedAuthSpec,
+      declaredOptions: [{ id: "model", type: "enum" }],
+      adapterProvider: "openai",
+    })
+    expect(result.options?.base_url).toBeUndefined()
+    expect("base_url" in (result.options ?? {})).toBe(false)
+    expect(result.wireModel).toBe("gpt-5-codex")
+  })
+
+  it("codex + non-native gateway preset rejects", () => {
+    expect(() =>
+      buildRouteAwareLaunchConfig({
+        adapter: "codex",
+        model: "gpt-5-codex",
+        route: { gateway: "openai-direct" },
+        authSpec: baseAuthSpec("https://api.openai.com/v1"),
+        declaredOptions: [{ id: "model", type: "enum" }],
+        adapterProvider: "openai",
+      }),
+    ).toThrow(/cannot be routed through gateway/)
+  })
+
+  it("codex + custom route base_url rejects", () => {
+    expect(() =>
+      buildRouteAwareLaunchConfig({
+        adapter: "codex",
+        model: "gpt-5-codex",
+        route: { gateway: "custom-openai", baseUrl: "https://api.openai.com/v1" },
+        declaredOptions: [{ id: "model", type: "enum" }],
+        adapterProvider: "openai",
+      }),
+    ).toThrow(/cannot be routed through gateway/)
+  })
+
+  it("skips a custom route base_url for a derived-from-model adapter that does not declare base_url", () => {
     const result = buildRouteAwareLaunchConfig({
       adapter: "hermes",
       route: { gateway: "custom", baseUrl: "https://custom.example.com/v1" },
@@ -67,8 +114,11 @@ describe("buildRouteAwareLaunchConfig", () => {
       routeSelection: "derived-from-model",
       adapterProvider: "openrouter",
     })
-    // Custom operator-supplied base_url is deliberate and is honored.
-    expect(result.options?.base_url).toBe("https://custom.example.com/v1")
+    // Derived-from-model adapters derive their endpoint from the model prefix;
+    // an undeclared base_url option would crash manifest validation, so the
+    // custom route base_url is dropped rather than injected.
+    expect(result.options?.base_url).toBeUndefined()
+    expect("base_url" in (result.options ?? {})).toBe(false)
   })
 
   it("strips the native vendor prefix from the wire model for fixed-provider adapters", () => {

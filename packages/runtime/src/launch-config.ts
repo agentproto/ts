@@ -69,12 +69,15 @@ export interface RouteAwareLaunchConfig {
  *
  * Mirrors the logic historically inline in `session-spawn.ts` (the D1 fix):
  * a gateway-resolved `base_url` is only injected when the adapter manifest
- * actually declares a `base_url` option, OR when the adapter derives its route
- * from the model id (in which case the resolved base_url is unnecessary and is
- * skipped silently), OR when the caller supplied a custom-route/base_url option
- * explicitly (always honored). Otherwise the spawn fails loud rather than
- * silently dropping the operator's billing choice or crashing manifest validation
- * on an undeclared option.
+ * actually declares a `base_url` option, OR when the resolver reported no
+ * declared option vocabulary at all (pre-D1 fallback). For derived-from-model
+ * adapters the resolved gateway `base_url` is skipped silently because the
+ * adapter derives its endpoint from the model prefix. Native fixed-provider
+ * gateway presets (e.g. codex + `route.gateway: "openai"`) have their base_url
+ * dropped upstream in `resolveAuthSpec`, so they pass through this layer
+ * without injection. Any other route base_url for an adapter that cannot accept
+ * it fails loud rather than silently dropping the operator's billing choice or
+ * crashing manifest validation on an undeclared option.
  *
  * Returns `options` only when there is at least one option to set, so callers
  * can omit the `config.options` field entirely when empty.
@@ -87,14 +90,17 @@ export function buildRouteAwareLaunchConfig(
 
   const hasExplicitBaseUrlOption =
     typeof baseOptions.base_url === "string" && baseOptions.base_url.length > 0
-  const hasCustomRouteBaseUrl =
-    typeof input.route?.baseUrl === "string" && input.route.baseUrl.length > 0
 
   // A gateway PRESET's resolved base_url (`authSpec.baseUrl`) is distinct from
-  // an operator-supplied CUSTOM route base_url (`route.baseUrl`): the latter is
-  // as deliberate as an explicit `options.base_url` and is always honored. The
-  // former is where D1 lived — it used to spread into options UNCONDITIONALLY,
-  // even into an adapter that never declared a `base_url` option at all.
+  // an operator-supplied CUSTOM route base_url (`route.baseUrl`). Both are
+  // treated the same way here: they are only injected when the adapter manifest
+  // declares a `base_url` option, or when we have no option vocabulary from the
+  // resolver (pre-D1 fallback). Derived-from-model adapters skip the injection
+  // entirely — they derive their endpoint from the model id's own vendor prefix,
+  // so a routed base_url would either be unusable or crash manifest validation.
+  // Native fixed-provider gateway presets have already had their base_url dropped
+  // by `resolveAuthSpec`, so `authSpec.baseUrl` is undefined and this block is
+  // skipped. Any other base_url for an adapter that cannot accept it fails loud.
   const gatewayResolvedBaseUrl = input.authSpec?.baseUrl
   const resolvedBaseUrl = gatewayResolvedBaseUrl ?? input.route?.baseUrl
 
@@ -110,14 +116,14 @@ export function buildRouteAwareLaunchConfig(
     // vocabulary at all — absence of information is not evidence of rejection,
     // so keep the pre-D1 behavior for that case.
     const declaredOptionsKnown = input.declaredOptions !== undefined
-    if (declaresBaseUrl || !declaredOptionsKnown || gatewayResolvedBaseUrl === undefined) {
-      // Adapter accepts base_url, OR this base_url is the caller's own custom
-      // route URL (not a gateway-preset resolution) — honor it.
+    if (declaresBaseUrl || !declaredOptionsKnown) {
+      // Adapter accepts base_url, OR we have no manifest option vocabulary
+      // to prove it doesn't — honor the resolved/custom URL.
       routedOptions = { ...baseOptions, base_url: resolvedBaseUrl }
     } else if (input.routeSelection === "derived-from-model") {
       // Adapter derives its route from the model id's own vendor prefix; the
-      // resolved gateway base_url is simply unusable AND unnecessary for it.
-      // Drop it silently rather than crash manifest validation.
+      // resolved gateway/custom base_url is simply unusable AND unnecessary for
+      // it. Drop it silently rather than crash manifest validation.
       routedOptions = baseOptions
     } else {
       // Cannot accept base_url and cannot derive route — fail loud and name the

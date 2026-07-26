@@ -439,6 +439,13 @@ export const agentCliFrontmatterSchema = z
     gatewayAuth: z.object({
       setEnv: z.string().min(1),
     }).strict().optional(),
+    // Auth-derivation axis (DECISION 3): true when the adapter's api-key auth
+    // is derived from the requested model rather than a fixed `provider`
+    // (e.g. `pi`, `opencode`, `mastracode`). When set, the runtime resolver
+    // allows `"api-key"` mode on the model-derived direct endpoint and
+    // includes it in eligibility manifests for by-model routers. DISTINCT
+    // from `routeSelection` (the UI-facing route-choice axis).
+    modelDerivedApiKey: z.boolean().optional(),
     // UI-facing route-choice axis (AIP-45 launch-menu drill-down, WP1).
     // Absent ⇒ "free" (route is an independent choice); "derived-from-model"
     // means the endpoint falls out of the model id's vendor prefix. DISTINCT
