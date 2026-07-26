@@ -339,6 +339,14 @@ export interface AdapterInfo {
    * `"config"`.
    */
   modelApply?: "config" | "command" | "arg"
+  /**
+   * How this adapter's spawn ROUTE relates to the chosen model (AIP-45
+   * launch-menu drill-down). `"free"` = the route is an independent choice
+   * and the adapter can route models through gateways. `"derived-from-model"`
+   * = the endpoint falls out of the model id's vendor prefix. Absent ⇒ a
+   * fixed single-provider adapter.
+   */
+  routeSelection?: "free" | "derived-from-model"
 }
 
 /** Mirrors @agentproto/runtime AdapterInstallResult — the outcome of an

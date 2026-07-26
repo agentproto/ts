@@ -16,11 +16,13 @@ const CLAUDE_CODE: CatalogAdapterInput = {
   // Direct-route billing-auth capability (spawn-defaults.ts's
   // AdapterAuthDescriptor shape): a fixed anthropic provider + subscription
   // support, mirroring the real claude-code manifest facts the auth
-  // package's eligibility fixtures already document.
+  // package's eligibility fixtures already document. claude-code declares
+  // routeSelection: "free" in its manifest, so it gets widened gateway routes.
   authDescriptor: {
     provider: "anthropic",
     authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
   },
+  routeSelection: "free",
 }
 
 const HERMES: CatalogAdapterInput = {
@@ -154,6 +156,7 @@ describe("buildCatalogModels — first-party ids whose vendor/product COLLIDES w
       provider: "anthropic",
       authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
     },
+    routeSelection: "free",
   }
 
   for (const product of [
@@ -343,7 +346,7 @@ describe("buildCatalogModels — curated vs catalog-known routes (SPEC §5.1/§5
     const requesty = product?.routes.find(r => r.route === "requesty")
     expect(requesty).toBeDefined()
     expect(requesty?.curated).toBe(false)
-    expect(requesty?.adapters).toEqual([])
+    expect(requesty?.adapters).toEqual(["claude-code"])
     expect(requesty?.adapterModes).toEqual([])
     // The curated direct route is still present alongside it.
     const direct = product?.routes.find(r => r.route === "anthropic")
@@ -358,6 +361,79 @@ describe("buildCatalogModels — curated vs catalog-known routes (SPEC §5.1/§5
     const requesty = findRoute(response, "anthropic", "claude-opus-4-8", "requesty")
     expect(requesty?.runnable).toBe(true)
     expect(requesty?.eligibleProfiles).toEqual(["requesty-key"])
+  })
+})
+
+describe("buildCatalogModels — per-model provider drives the billing route", () => {
+  const CLAUDE_SDK_MOONSHOT: CatalogAdapterInput = {
+    slug: "claude-sdk",
+    models: [{ id: "kimi-k2.7-code", provider: "moonshot" }],
+    authDescriptor: { provider: "anthropic", authSubscription: { setEnv: "ANTHROPIC_AUTH_TOKEN" } },
+    routeSelection: "free",
+  }
+
+  it("a curated entry with provider: moonshot produces a moonshot route", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_SDK_MOONSHOT],
+      profiles: [moonshotApiKey],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "moonshot")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("moonshot/kimi-k2.7-code")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-moonshot"])
+    expect(route?.adapters).toEqual(["claude-sdk"])
+  })
+
+  it("the anthropic subscription is not eligible for a moonshot-routed model", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_SDK_MOONSHOT],
+      profiles: [anthropicOauth, moonshotApiKey],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "moonshot")
+    expect(route?.eligibleProfiles).toEqual(["personal-moonshot"])
+  })
+
+  it("a free adapter's widened openrouter route carries the adapter slug", () => {
+    const freeDeepseek: CatalogAdapterInput = {
+      slug: "claude-sdk",
+      models: [{ id: "deepseek/deepseek-v4-pro", provider: "deepseek" }],
+      authDescriptor: { provider: "anthropic", authSubscription: { setEnv: "ANTHROPIC_AUTH_TOKEN" } },
+      routeSelection: "free",
+    }
+    const response = buildCatalogModels({ adapters: [freeDeepseek], profiles: [] })
+    const openrouter = findRoute(response, "deepseek", "deepseek-v4-pro", "openrouter")
+    expect(openrouter).toBeDefined()
+    expect(openrouter?.curated).toBe(false)
+    expect(openrouter?.adapters).toEqual(["claude-sdk"])
+  })
+})
+
+describe("buildCatalogModels — fixed/derived adapters do not get widened gateway routes", () => {
+  it("a fixed-provider adapter without routeSelection: free gets no widened routes", () => {
+    const fixed: CatalogAdapterInput = {
+      slug: "codex",
+      models: [{ id: "gpt-5-codex" }],
+      authDescriptor: { provider: "openai" },
+      // routeSelection intentionally omitted
+    }
+    const response = buildCatalogModels({ adapters: [fixed], profiles: [] })
+    const product = response.vendors.find(v => v.vendor === "openai")?.products.find(p => p.product === "gpt-5-codex")
+    expect(product?.routes.map(r => r.route)).toEqual(["openai"])
+  })
+
+  it("a derived-from-model adapter gets no widened routes", () => {
+    const derived: CatalogAdapterInput = {
+      slug: "mastracode",
+      models: [{ id: "anthropic/claude-sonnet-4-5" }],
+      authDescriptor: { provider: "anthropic" },
+      routeSelection: "derived-from-model",
+    }
+    const response = buildCatalogModels({ adapters: [derived], profiles: [] })
+    const product = response.vendors
+      .find(v => v.vendor === "anthropic")
+      ?.products.find(p => p.product === "claude-sonnet-4-5")
+    expect(product?.routes.some(r => r.route === "openrouter")).toBe(false)
   })
 })
 
@@ -641,6 +717,7 @@ describe("buildCatalogModels — catalog↔spawn wallet-eligibility parity (SPEC
       provider: "anthropic",
       authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
     },
+    routeSelection: "free",
   }
 
   it("a gateway-only model is NOT runnable on its adapter's direct (fixed-wallet) route — matches the spawn 500", () => {
@@ -711,6 +788,7 @@ describe("buildCatalogModels — first-party ↔ router-key collision (firstpart
       provider: "anthropic",
       authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
     },
+    routeSelection: "free",
   })
 
   for (const product of ["claude-sonnet-5", "claude-fable-5"]) {

@@ -192,7 +192,7 @@ async function runSpawnWizard(
     const harnessSlug = picked.adapter.slug
     const modelItems =
       catalog && catalog.vendors.length > 0
-        ? mapHarnessCatalogModelItems(catalog, harnessSlug)
+        ? mapHarnessCatalogModelItems(catalog, harnessSlug, picked.adapter.routeSelection)
         : mapHarnessManifestModelItems(picked.adapter)
     const modelPick = await vscode.window.showQuickPick(modelItems, {
       placeHolder: `${harnessSlug} — select a model`,

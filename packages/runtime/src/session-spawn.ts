@@ -1591,20 +1591,19 @@ export async function spawnAgentSession(
   // "openai"`; …), the wire also needs the vendor prefix gone: each such
   // adapter's own model selector resolves only the BARE id its manifest
   // declares (`claude-sonnet-4-5`, `gpt-5`), never the catalog's canonical
-  // `vendor/product` route form — `stripRouteSuffix` alone keeps
-  // `vendor/product` and the adapter mis-resolves it (D2: codex's
-  // `option_enum_violation` on `openai/gpt-5`, its manifest enum only
-  // declares the bare `gpt-5`). `stripFixedNativeVendor` collapses ONLY a
-  // direct-same-vendor ref; the same adapters route gateway models
-  // (`z-ai/glm-5.2@openrouter`, `moonshot/…@llm-endpoint`) through `base_url`,
-  // where the gateway needs the `vendor/product` id kept, so those still go
-  // through the plain suffix strip. `derived-from-model` adapters (hermes,
-  // pi, opencode, …) derive their route FROM the prefix and must keep it —
-  // gating on `routeSelection !== "derived-from-model"` excludes them (they
-  // carry their own gateway provider via the prefix itself).
+  // `vendor/product` route form. The vendor to strip is the route actually
+  // being billed (`input.route.gateway`) when one is set — that bares a
+  // direct Moonshot route (`moonshot/kimi-k2.7-code` → `kimi-k2.7-code`) as
+  // well as a direct Anthropic route — and falls back to the adapter's fixed
+  // provider only when no gateway was chosen. Gateway-routed models
+  // (`z-ai/glm-5.2@openrouter`) keep their `vendor/product` id because there
+  // the gateway vendor (`openrouter`) differs from the model vendor and
+  // `stripFixedNativeVendor` falls through to `stripRouteSuffix`.
+  // `derived-from-model` adapters (hermes, pi, opencode, …) derive their
+  // route FROM the prefix and must keep it.
   const nativeVendor =
     resolved?.routeSelection !== "derived-from-model"
-      ? resolved?.authDescriptor?.provider
+      ? input.route?.gateway ?? resolved?.authDescriptor?.provider
       : undefined
   const wireModel = input.model
     ? nativeVendor

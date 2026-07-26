@@ -370,6 +370,7 @@ describe("spawnAgentSession", () => {
       startSession,
       commandPreview: "mock-adapter",
       authDescriptor: { provider: "openrouter" },
+      routeSelection: "derived-from-model",
     })
     const { deps } = baseDeps({ resolveAgentAdapter })
     const result = await spawnAgentSession(deps, {
@@ -381,6 +382,74 @@ describe("spawnAgentSession", () => {
     expect(result.ok).toBe(true)
     expect(startSession).toHaveBeenCalledWith(
       expect.objectContaining({ model: "anthropic/claude-sonnet-4-5" }),
+    )
+  })
+
+  it("bares a direct Moonshot route for a free adapter, keeping the catalog ref on the record", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: { provider: "anthropic" },
+      routeSelection: "free",
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-sdk",
+      cwd: "/tmp",
+      model: "moonshot/kimi-k2.7-code",
+      route: { gateway: "moonshot", baseUrl: "http://127.0.0.1:65535" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "kimi-k2.7-code" }),
+    )
+    expect(result.descriptor).toMatchObject({
+      model: "moonshot/kimi-k2.7-code",
+      route: { gateway: "moonshot" },
+    })
+  })
+
+  it("strips only the @openrouter suffix for a free adapter on an OpenRouter route", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: { provider: "anthropic" },
+      routeSelection: "free",
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-sdk",
+      cwd: "/tmp",
+      model: "moonshotai/kimi-k2.7-code@openrouter",
+      route: { gateway: "openrouter", baseUrl: "http://127.0.0.1:65535" },
+    })
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "moonshotai/kimi-k2.7-code" }),
+    )
+  })
+
+  it("strips only the @openrouter suffix for hermes, leaving the vendor prefix intact", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: { provider: "openrouter" },
+      routeSelection: "derived-from-model",
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      model: "deepseek/deepseek-v4-pro@openrouter",
+      route: { gateway: "openrouter", baseUrl: "http://127.0.0.1:65535" },
+    })
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "deepseek/deepseek-v4-pro" }),
     )
   })
 

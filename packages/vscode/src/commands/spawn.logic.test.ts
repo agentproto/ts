@@ -788,6 +788,177 @@ describe("mapHarnessCatalogModelItems", () => {
   })
 })
 
+describe("mapHarnessCatalogModelItems — route selection by adapter capability", () => {
+  const freeCatalog: CatalogModelsResponse = {
+    vendors: [
+      {
+        vendor: "anthropic",
+        products: [
+          {
+            product: "claude-sonnet-5",
+            routes: [
+              {
+                route: "anthropic", ref: "claude-sonnet-5", baseUrl: null, pricing: null,
+                runnable: true, eligibleProfiles: ["anthropic-sub"], adapterModes: [], adapters: ["claude-sdk"], curated: true,
+              },
+              {
+                route: "openrouter", ref: "anthropic/claude-sonnet-5", baseUrl: null, pricing: null,
+                runnable: true, eligibleProfiles: ["openrouter-api"], adapterModes: [], adapters: ["claude-sdk"], curated: false,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        vendor: "moonshot",
+        products: [
+          {
+            product: "kimi-k2.7-code",
+            routes: [
+              {
+                route: "moonshot", ref: "moonshot/kimi-k2.7-code", baseUrl: null, pricing: null,
+                runnable: true, eligibleProfiles: ["moonshot-api"], adapterModes: [], adapters: ["claude-sdk"], curated: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("fans out every served route for a free adapter", () => {
+    const items = mapHarnessCatalogModelItems(freeCatalog, "claude-sdk", "free")
+    const modelRows = items.filter(i => i.kind === undefined && !i.custom)
+    expect(modelRows.map(r => r.label)).toEqual([
+      "claude-sonnet-5 · anthropic",
+      "claude-sonnet-5 · openrouter",
+      "kimi-k2.7-code · moonshot",
+    ])
+    const sonnetAnthropic = modelRows.find(r => r.route === "anthropic")
+    expect(sonnetAnthropic).toMatchObject({
+      model: "claude-sonnet-5",
+      eligibleProfiles: ["anthropic-sub"],
+      runnable: true,
+    })
+    const sonnetOpenRouter = modelRows.find(r => r.route === "openrouter")
+    expect(sonnetOpenRouter).toMatchObject({
+      model: "anthropic/claude-sonnet-5",
+      eligibleProfiles: ["openrouter-api"],
+      runnable: true,
+    })
+  })
+
+  it("collapses to the best route for a fixed / derived adapter", () => {
+    const items = mapHarnessCatalogModelItems(freeCatalog, "claude-sdk", "derived-from-model")
+    const modelRows = items.filter(i => i.kind === undefined && !i.custom)
+    expect(modelRows).toHaveLength(2)
+    // anthropic route wins because it is curated and runnable.
+    expect(modelRows[0]).toMatchObject({ label: "claude-sonnet-5", route: "anthropic" })
+    expect(modelRows[1]).toMatchObject({ label: "kimi-k2.7-code", route: "moonshot" })
+  })
+
+  it("does not offer a Claude model on a Moonshot route", () => {
+    const items = mapHarnessCatalogModelItems(freeCatalog, "claude-sdk", "free")
+    const claudeMoonshot = items.find(i => i.model?.startsWith("claude") && i.route === "moonshot")
+    expect(claudeMoonshot).toBeUndefined()
+  })
+
+  it("shows Codex constrained to its fixed OpenAI route", () => {
+    const codexCatalog: CatalogModelsResponse = {
+      vendors: [
+        {
+          vendor: "openai",
+          products: [
+            {
+              product: "gpt-5-codex",
+              routes: [
+                {
+                  route: "openai", ref: "openai/gpt-5-codex", baseUrl: null, pricing: null,
+                  runnable: true, eligibleProfiles: ["openai-api"], adapterModes: [], adapters: ["codex"], curated: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const items = mapHarnessCatalogModelItems(codexCatalog, "codex", undefined)
+    const row = items.find(i => i.model === "openai/gpt-5-codex")
+    expect(row).toMatchObject({ route: "openai", runnable: true, eligibleProfiles: ["openai-api"] })
+  })
+
+  it("shows Mastra Code routes derived from each model's own vendor prefix", () => {
+    const mastraCatalog: CatalogModelsResponse = {
+      vendors: [
+        {
+          vendor: "anthropic",
+          products: [
+            {
+              product: "claude-sonnet-4-5",
+              routes: [
+                {
+                  route: "anthropic", ref: "anthropic/claude-sonnet-4-5", baseUrl: null, pricing: null,
+                  runnable: true, eligibleProfiles: ["anthropic-api"], adapterModes: [], adapters: ["mastracode"], curated: true,
+                },
+              ],
+            },
+          ],
+        },
+        {
+          vendor: "openai",
+          products: [
+            {
+              product: "gpt-5.1",
+              routes: [
+                {
+                  route: "openai", ref: "openai/gpt-5.1", baseUrl: null, pricing: null,
+                  runnable: true, eligibleProfiles: ["openai-api"], adapterModes: [], adapters: ["mastracode"], curated: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const items = mapHarnessCatalogModelItems(mastraCatalog, "mastracode", "derived-from-model")
+    const modelRows = items.filter(i => i.kind === undefined && !i.custom)
+    expect(modelRows.map(r => ({ model: r.model, route: r.route }))).toEqual([
+      { model: "anthropic/claude-sonnet-4-5", route: "anthropic" },
+      { model: "openai/gpt-5.1", route: "openai" },
+    ])
+  })
+
+  it("assembles a spawn payload using the canonical route ref and matching access", () => {
+    const options = assembleSpawnOptions({
+      adapter: "claude-sdk",
+      model: "moonshot/kimi-k2.7-code",
+      route: { gateway: "moonshot" },
+      accessProfileRef: "moonshot-api",
+    })
+    expect(options).toEqual({
+      adapter: "claude-sdk",
+      model: "moonshot/kimi-k2.7-code",
+      route: { gateway: "moonshot" },
+      access: { profileRef: "moonshot-api" },
+    })
+  })
+
+  it("assembles a Hermes/OpenRouter payload with the canonical @openrouter ref", () => {
+    const options = assembleSpawnOptions({
+      adapter: "hermes",
+      model: "deepseek/deepseek-v4-pro@openrouter",
+      route: { gateway: "openrouter" },
+      accessProfileRef: "openrouter-api",
+    })
+    expect(options).toEqual({
+      adapter: "hermes",
+      model: "deepseek/deepseek-v4-pro@openrouter",
+      route: { gateway: "openrouter" },
+      access: { profileRef: "openrouter-api" },
+    })
+  })
+})
+
 describe("mapHarnessManifestModelItems", () => {
   it("groups the adapter's declared models by provider with a trailing custom row (old-daemon fallback)", () => {
     const items = mapHarnessManifestModelItems(

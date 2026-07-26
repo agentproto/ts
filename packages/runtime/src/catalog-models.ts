@@ -62,9 +62,13 @@ export interface CatalogAdapterModelInput {
   /** Model id exactly as declared — bare (`"claude-opus-4-8"`) or
    *  `vendor/product` form. */
   id: string
+  /** The billing provider/route this model entry reaches on (`
+   *  AdapterModelInfo.provider`) — e.g. `"moonshot"` or `"openrouter"`.
+   *  Takes precedence over the id's own implied vendor route. */
+  provider?: string
   /** The adapter mode id that must be applied to reach this model on a
    *  non-direct route (`AdapterModelInfo.mode`) — e.g. `"moonshot"`.
-   *  Undefined ⇒ direct route (the model's own vendor). */
+   *  Undefined ⇒ direct route (the model's own vendor, or `provider`). */
   mode?: string
 }
 
@@ -77,6 +81,13 @@ export interface CatalogAdapterInput {
    *  ⇒ the adapter presents no auth method, so rows it curates are
    *  discoverable but never runnable through it alone. */
   authDescriptor?: AdapterAuthDescriptor
+  /** How this adapter's spawn ROUTE relates to the chosen model (AIP-45
+   *  launch-menu drill-down). `"free"` = the adapter can route arbitrary
+   *  models through gateways (`base_url`). `"derived-from-model"` = the
+   *  endpoint falls out of the model id's vendor prefix. Absent/undefined
+   *  ⇒ fixed single-provider adapter; widened gateway routes are not
+   *  attached to it. */
+  routeSelection?: "free" | "derived-from-model"
 }
 
 export interface CatalogModelsQuery {
@@ -299,9 +310,11 @@ function methodsForDirect(
  *  claude-code's `moonshot` mode) — SPEC §1c's "moonshot profile, not the
  *  Claude sub" holds regardless of whose model is being served. An id
  *  that already carries its own `@route` suffix (`resolved.directRoute !==
- *  resolved.vendor`) is equally a router path even with no adapter mode. */
-function isDirectRoute(mode: string | undefined, resolved: ResolvedModel): boolean {
-  return mode === undefined && resolved.directRoute === resolved.vendor
+ *  resolved.vendor`) is equally a router path even with no adapter mode.
+ *  A `model.provider` that matches the model's own vendor is still a
+ *  direct route; only a provider/route that differs is a redirection. */
+function isDirectRoute(route: string, mode: string | undefined, resolved: ResolvedModel): boolean {
+  return mode === undefined && route === resolved.vendor && resolved.directRoute === resolved.vendor
 }
 
 interface RouteContribution {
@@ -325,8 +338,8 @@ function curatedContributions(
   for (const adapter of adapters) {
     for (const model of adapter.models) {
       const resolved = resolveModelId(model.id)
-      const route = model.mode ?? resolved.directRoute
-      const methods: AuthMethod[] = isDirectRoute(model.mode, resolved)
+      const route = model.mode ?? model.provider ?? resolved.directRoute
+      const methods: AuthMethod[] = isDirectRoute(route, model.mode, resolved)
         ? methodsForDirect(adapter.authDescriptor)
         : ["api-key"]
       out.push({
@@ -350,10 +363,22 @@ function curatedContributions(
  *  distinct (vendor, product) already known from a curated contribution,
  *  probe the router routes route-identity knows about and add a
  *  non-curated contribution for any that resolve and aren't already
- *  covered by a curated row. */
+ *  covered by a curated row.
+ *
+ *  Widened routes are only attached to adapters that explicitly declare
+ *  `routeSelection: "free"` — those are the adapters that can route an
+ *  arbitrary model through a gateway via `base_url`. Fixed-provider and
+ *  `derived-from-model` adapters must not be advertised on routes they
+ *  cannot truthfully choose. */
 function widenedContributions(
+  adapters: readonly CatalogAdapterInput[],
   curated: readonly RouteContribution[],
 ): RouteContribution[] {
+  const freeAdapters = adapters
+    .filter(a => a.routeSelection === "free")
+    .map(a => a.slug)
+  if (freeAdapters.length === 0) return []
+
   const seenProducts = new Map<string, Set<string>>() // "vendor/product" -> routes already present
   for (const c of curated) {
     const key = `${c.vendor}/${c.product}`
@@ -369,19 +394,22 @@ function widenedContributions(
       if (existingRoutes.has(router)) continue
       const resolved = resolveLlmModelRoute(`${vendor}/${product}@${router}`)
       if (!resolved) continue
-      out.push({
-        vendor,
-        product,
-        route: router,
-        ref: formatModelRef(resolved.ref),
-        baseUrl: resolved.transport.baseUrl ?? null,
-        pricing: {
-          inPer1M: resolved.pricing.inputPer1M,
-          outPer1M: resolved.pricing.outputPer1M,
-        },
-        curated: false,
-        methods: ["api-key"],
-      })
+      for (const adapterSlug of freeAdapters) {
+        out.push({
+          vendor,
+          product,
+          route: router,
+          ref: formatModelRef(resolved.ref),
+          baseUrl: resolved.transport.baseUrl ?? null,
+          pricing: {
+            inPer1M: resolved.pricing.inputPer1M,
+            outPer1M: resolved.pricing.outputPer1M,
+          },
+          curated: false,
+          adapterSlug,
+          methods: ["api-key"],
+        })
+      }
     }
   }
   return out
@@ -497,10 +525,8 @@ function profileAllowsModel(profile: AuthProfile, ref: string, vendorProduct: st
 export function buildCatalogModels(
   input: BuildCatalogModelsInput,
 ): CatalogModelsResponse {
-  const contributions = [
-    ...curatedContributions(input.adapters),
-    ...widenedContributions(curatedContributions(input.adapters)),
-  ]
+  const curated = curatedContributions(input.adapters)
+  const contributions = [...curated, ...widenedContributions(input.adapters, curated)]
   const merged = mergeContributions(contributions)
   const query = input.query ?? {}
 
