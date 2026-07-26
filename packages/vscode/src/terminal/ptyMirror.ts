@@ -12,21 +12,11 @@
  * place.
  */
 
-import WebSocket from "ws"
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor } from "../client/types.js"
-import { buildAuthHeaders } from "../auth.js"
-import {
-  PTY_RECONNECT_DELAYS_MS,
-  decodePtyData,
-  encodeInputFrame,
-  encodeResizeFrame,
-  parsePtyServerFrame,
-  reconnectDelayMs,
-  shouldReconnect,
-} from "./ptyMirror.logic.js"
+import { decodePtyData } from "./ptyMirror.logic.js"
 import {
   ptyExitBanner,
   ptyUpgradeRejectionBanner,
@@ -34,6 +24,7 @@ import {
   reconnectedBanner,
   reconnectingBanner,
 } from "./terminalSwitch.logic.js"
+import { connectPtySocket } from "./ptySocket.js"
 
 export function createPtyMirrorPty(
   client: DaemonClient,
@@ -41,102 +32,48 @@ export function createPtyMirrorPty(
 ): vscode.Pseudoterminal {
   const writeEmitter = new vscode.EventEmitter<string>()
 
-  let socket: WebSocket | undefined
-  let cols = 80
-  let rows = 24
-  let attempt = 0
-  // Set once we've seen an {kind:"exit"} frame or a non-reconnectable
-  // upgrade rejection — the WS "close" that follows shortly after must NOT
-  // trigger a reconnect in either case.
-  let settled = false
-  let disposed = false
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
-
-  function connect(): void {
-    if (disposed) return
-    void client.resolveToken().then(token => {
-      if (disposed) return
-      const wsUrl =
-        `${client.url.replace(/^http/, "ws")}/sessions/${encodeURIComponent(session.id)}/pty` +
-        `?cols=${cols}&rows=${rows}`
-      const ws = new WebSocket(wsUrl, {
-        headers: buildAuthHeaders(client.authHeaders, token),
-      })
-      socket = ws
-
-      ws.on("open", () => {
-        if (attempt > 0) writeEmitter.fire(`${reconnectedBanner()}\r\n`)
-        attempt = 0
-      })
-
-      ws.on("message", raw => {
-        const frame = parsePtyServerFrame(raw.toString("utf8"))
-        if (frame.kind === "data") {
-          writeEmitter.fire(decodePtyData(frame.b64))
-        } else if (frame.kind === "exit") {
-          settled = true
-          writeEmitter.fire(`\r\n${ptyExitBanner(frame.exitCode, frame.signal)}\r\n`)
-        }
-      })
-
-      // Pre-upgrade rejection (501/404/400/410 — see the WP5 brief's
-      // transport facts). The daemon never completes the WS handshake for
-      // these, so `ws` surfaces them here rather than as a normal message.
-      ws.on("unexpected-response", (_req, res) => {
-        settled = true
-        writeEmitter.fire(`${ptyUpgradeRejectionBanner(res.statusCode ?? 0, session)}\r\n`)
-        ws.terminate()
-      })
-
-      ws.on("close", code => {
-        if (disposed || settled) return
-        if (shouldReconnect(code, attempt)) {
-          const delay = reconnectDelayMs(attempt) ?? 4_000
-          attempt++
-          writeEmitter.fire(`${reconnectingBanner(attempt, PTY_RECONNECT_DELAYS_MS.length, delay)}\r\n`)
-          reconnectTimer = setTimeout(connect, delay)
-          return
-        }
-        settled = true
-        writeEmitter.fire(`${reconnectGaveUpBanner()}\r\n`)
-      })
-
-      // 'close' always follows 'error' for `ws` — reconnect/banner logic
-      // lives in the close handler so it isn't duplicated here.
-      ws.on("error", () => {})
-    })
-  }
+  let handle: ReturnType<typeof connectPtySocket> | undefined
 
   return {
     onDidWrite: writeEmitter.event,
     open(initialDimensions): void {
-      if (initialDimensions) {
-        cols = initialDimensions.columns
-        rows = initialDimensions.rows
-      }
-      connect()
+      const cols = initialDimensions?.columns ?? 80
+      const rows = initialDimensions?.rows ?? 24
+      handle = connectPtySocket(
+        client,
+        session,
+        { cols, rows },
+        {
+          onOpen: reconnected => {
+            if (reconnected) writeEmitter.fire(`${reconnectedBanner()}\r\n`)
+          },
+          onData: b64 => {
+            writeEmitter.fire(decodePtyData(b64))
+          },
+          onExit: (exitCode, signal) => {
+            writeEmitter.fire(`\r\n${ptyExitBanner(exitCode, signal)}\r\n`)
+          },
+          onRejected: status => {
+            writeEmitter.fire(`${ptyUpgradeRejectionBanner(status, session)}\r\n`)
+          },
+          onReconnecting: (attempt, max, delayMs) => {
+            writeEmitter.fire(`${reconnectingBanner(attempt, max, delayMs)}\r\n`)
+          },
+          onGaveUp: () => {
+            writeEmitter.fire(`${reconnectGaveUpBanner()}\r\n`)
+          },
+        },
+      )
     },
     close(): void {
-      disposed = true
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (socket) closeSocket(socket)
+      handle?.dispose()
+      handle = undefined
     },
     handleInput(data): void {
-      if (socket?.readyState === WebSocket.OPEN) socket.send(encodeInputFrame(data))
+      handle?.sendInput(data)
     },
     setDimensions(dims): void {
-      cols = dims.columns
-      rows = dims.rows
-      if (socket?.readyState === WebSocket.OPEN) socket.send(encodeResizeFrame(dims.columns, dims.rows))
+      handle?.resize(dims.columns, dims.rows)
     },
-  }
-}
-
-/** `.close()` on a still-CONNECTING `ws` socket logs a benign-but-noisy warning; terminate() is the clean way to abandon it. */
-function closeSocket(ws: WebSocket): void {
-  if (ws.readyState === WebSocket.CONNECTING) {
-    ws.terminate()
-  } else {
-    ws.close(1000, "terminal closed")
   }
 }

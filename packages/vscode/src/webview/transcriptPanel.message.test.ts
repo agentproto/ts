@@ -62,6 +62,17 @@ describe("handleWebviewMessage", () => {
     expect(executeCommand).toHaveBeenCalledWith("agentproto.openTerminal", "session-abc")
   })
 
+  it("restartAsTerminal invokes agentproto.restartAsTerminal with the controller's session id", async () => {
+    await handleWebviewMessage(
+      { type: "restartAsTerminal" },
+      panel,
+      controller,
+      outputDocs,
+      client,
+    )
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.restartAsTerminal", "session-abc")
+  })
+
   it("changePosture routes to the unified agentproto.configureSession picker", async () => {
     await handleWebviewMessage(
       { type: "changePosture" },

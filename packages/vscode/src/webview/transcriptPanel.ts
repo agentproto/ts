@@ -14,6 +14,8 @@
  */
 
 import { randomBytes } from "node:crypto"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 import * as vscode from "vscode"
 
@@ -24,6 +26,7 @@ import type { SessionStore } from "../services/sessionStore.js"
 import { registerOutputDocuments, type OutputDocuments } from "../services/outputDocument.js"
 import { activityFor, TREE_REPAINT_INTERVAL_MS, type SessionActivity } from "../views/sessionsTree.logic.js"
 import { TAB_ICON_DIR, tabIconFor } from "./tabIcon.logic.js"
+import { adapterLogoFor } from "./adapterIcon.logic.js"
 import {
   ATTACHMENT_COUNT_CAP,
   MAX_ATTACHMENT_BYTES,
@@ -32,7 +35,7 @@ import {
 } from "./attachments.logic.js"
 import { mentionQueryAt } from "./mentions.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
-import { accessIdentity, contextGauge, harnessGlyph, postureLabel } from "./panelChrome.logic.js"
+import { accessIdentity, contextGauge, defaultPostureLabel, harnessGlyph, postureLabel } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
@@ -216,7 +219,11 @@ export function registerTranscriptPanels(
       })
 
       // Set HTML only after the controller and message listener are wired up.
-      panel.webview.html = buildHtml(nonce)
+      panel.webview.html = buildHtml(nonce, {
+        xtermJs: readDistFile(ctx, ["dist", "webview", "xterm.iife.js"]),
+        xtermCss: readDistFile(ctx, ["dist", "webview", "xterm.css"]),
+        headerIconSvg: readAdapterIconSvg(ctx, session.adapterSlug),
+      })
     },
     activeSessionId(): string | undefined {
       return activeId
@@ -254,6 +261,9 @@ export async function handleWebviewMessage(
     case "restart":
       await controller.onRestart()
       return
+    case "restartAsTerminal":
+      await vscode.commands.executeCommand("agentproto.restartAsTerminal", controller.session.id)
+      return
     case "openTerminal":
       await vscode.commands.executeCommand("agentproto.openTerminal", controller.session.id)
       return
@@ -263,6 +273,12 @@ export async function handleWebviewMessage(
       return
     case "rename":
       await controller.onRename(msg.name)
+      return
+    case "ptyInput":
+      controller.onPtyInput(msg.text)
+      return
+    case "ptyResize":
+      controller.onPtyResize(msg.cols, msg.rows)
       return
     case "attachImage":
       await controller.onAttachImage(msg.bytes, msg.mime)
@@ -294,13 +310,39 @@ function randomNonce(): string {
   return randomBytes(16).toString("hex")
 }
 
+/** Read a file from the extension's dist/ directory. Returns empty string if
+ *  the file is missing (e.g. in a test environment without a build). */
+function readDistFile(ctx: vscode.ExtensionContext, segments: string[]): string {
+  try {
+    return readFileSync(join(ctx.extensionUri.fsPath, ...segments), "utf8")
+  } catch {
+    return ""
+  }
+}
+
+/** Read the SVG content for an adapter's header icon, if an icon asset exists.
+ *  Lettermarks are not inlined — the unicode glyph fallback is used instead. */
+function readAdapterIconSvg(ctx: vscode.ExtensionContext, adapterSlug: string | undefined): string {
+  if (!adapterSlug) return ""
+  const logo = adapterLogoFor(adapterSlug)
+  if (logo.kind !== "icon") return ""
+  try {
+    return readFileSync(join(ctx.extensionUri.fsPath, "media", "icons", "adapters", logo.file), "utf8")
+  } catch {
+    return ""
+  }
+}
+
 /**
  * Exported so transcriptPanel.dom.test.ts can build the EXACT HTML/script the
  * extension ships and execute it in jsdom — the reconciliation logic in the
  * inline script is the load-bearing part of this module and has no other
  * way to get automated coverage without a real webview host.
  */
-export function buildHtml(nonce: string): string {
+export function buildHtml(
+  nonce: string,
+  bundles: { xtermJs: string; xtermCss: string; headerIconSvg?: string } = { xtermJs: "", xtermCss: "", headerIconSvg: "" },
+): string {
   const csp = [
     "default-src 'none'",
     "style-src 'unsafe-inline'",
@@ -322,6 +364,7 @@ export function buildHtml(nonce: string): string {
     harnessGlyph,
     accessIdentity,
     postureLabel,
+    defaultPostureLabel,
     contextGauge,
   ]
     .map(fn => fn.toString())
@@ -367,6 +410,20 @@ export function buildHtml(nonce: string): string {
       border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-contrastBorder, rgba(128,128,128,0.3)));
       background-color: var(--vscode-sideBar-background);
     }
+    #header-left {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    #header-title-block {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
     #header-title {
       font-weight: 600;
       font-size: 1.1em;
@@ -378,6 +435,15 @@ export function buildHtml(nonce: string): string {
       /* Click-to-edit (FIX B): the title doubles as a rename affordance. */
       cursor: text;
     }
+    #header-subtitle {
+      font-size: 0.78em;
+      color: var(--vscode-descriptionForeground);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #header-subtitle:empty { display: none; }
     #header-title:hover { color: var(--vscode-foreground); }
     /* The inline rename box that replaces the title text while editing —
        sized to fill the same slot so the header doesn't reflow. */
@@ -406,9 +472,19 @@ export function buildHtml(nonce: string): string {
        reported yet) collapses to nothing. */
     #header-icon {
       flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
       font-size: 1.05em;
       line-height: 1;
       color: var(--vscode-descriptionForeground);
+    }
+    #header-icon svg {
+      width: 100%;
+      height: 100%;
+      fill: currentColor;
     }
     #header-icon:empty { display: none; }
     /* A single Terminal button that opens the terminal view (FIX 2) — replaces
@@ -1062,16 +1138,29 @@ export function buildHtml(nonce: string): string {
       font-style: italic;
       padding: 20px 0;
     }
+    /* PTY-mode xterm.js container. Hidden by default; shown when mode === "pty". */
+    #pty-view {
+      flex: 1 1 auto;
+      display: none;
+      overflow: hidden;
+      padding: 4px 0 0;
+    }
+    #pty-view.active { display: block; }
+    .xterm-viewport { background-color: transparent !important; }
+    .xterm-screen { background-color: transparent !important; }
   </style>
+  ${bundles.xtermCss ? `<style>${bundles.xtermCss}</style>` : ""}
 </head>
 <body>
   <div id="header">
-    <span id="header-icon" title="" aria-hidden="true"></span>
-    <div id="header-title" title="Click to rename this session"></div>
+    <div id="header-left">
+      <span id="header-icon" title="" aria-hidden="true"></span>
+      <div id="header-title-block">
+        <div id="header-title" title="Click to rename this session"></div>
+        <div id="header-subtitle" title=""></div>
+      </div>
+    </div>
     <div id="header-actions">
-      <button id="open-terminal-btn" class="header-action term-btn" type="button" title="Open the terminal view for this session" hidden>
-        <span class="term-glyph" aria-hidden="true">&gt;_</span>Terminal
-      </button>
       <div class="header-action">
         <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
         <div id="cost-popover" class="popover" hidden>
@@ -1095,9 +1184,13 @@ export function buildHtml(nonce: string): string {
           <div class="popover-row"><span class="popover-label">Size</span><span id="popover-context-size"></span></div>
         </div>
       </div>
+      <button id="open-terminal-btn" class="header-action term-btn" type="button" title="Open a real VS Code terminal for this session" hidden>
+        <span class="term-glyph" aria-hidden="true">&gt;_</span>Terminal
+      </button>
     </div>
   </div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
+  <div id="pty-view"></div>
   <div id="blocked-note" hidden></div>
   <div id="working" hidden>
     <span id="working-glyph">✳</span>
@@ -1136,6 +1229,7 @@ export function buildHtml(nonce: string): string {
       </div>
     </div>
   </div>
+  ${bundles.xtermJs ? `<script nonce="${nonce}">${bundles.xtermJs}</script>` : ""}
   <script nonce="${nonce}">
     (function() {
       const vscode = acquireVsCodeApi();
@@ -1149,10 +1243,12 @@ export function buildHtml(nonce: string): string {
       const MAX_ATTACHMENT_BYTES = ${MAX_ATTACHMENT_BYTES};
       const WARN_ATTACHMENT_BYTES = ${WARN_ATTACHMENT_BYTES};
       const ATTACHMENT_COUNT_CAP = ${ATTACHMENT_COUNT_CAP};
+      const INITIAL_ICON_SVG = ${JSON.stringify(bundles.headerIconSvg ?? "")};
       // Injected by value from the tested logic modules — see buildHtml.
       ${injectedHelpers}
-      const headerTitle = document.getElementById('header-title');
       const headerIcon = document.getElementById('header-icon');
+      const headerTitle = document.getElementById('header-title');
+      const headerSubtitle = document.getElementById('header-subtitle');
       const openTerminalBtn = document.getElementById('open-terminal-btn');
       const costBtn = document.getElementById('cost-btn');
       const costPopover = document.getElementById('cost-popover');
@@ -1191,6 +1287,7 @@ export function buildHtml(nonce: string): string {
       const queuedCancel = document.getElementById('queued-cancel');
       const attachmentsRow = document.getElementById('composer-attachments');
       const mentionPopup = document.getElementById('mention-popup');
+      const ptyView = document.getElementById('pty-view');
 
       // Mirrors STALL_AFTER_MS in views/sessionsTree.logic.ts — the tree and
       // this panel must not disagree about whether a session is stalled.
@@ -1221,6 +1318,12 @@ export function buildHtml(nonce: string): string {
        * ends — or immediately, if they choose to interrupt.
        */
       let queuedText = null;
+      // PTY-mode state (live xterm.js view fed by the host-side WS bridge).
+      let ptyTerm = null;
+      let ptyFitAddon = null;
+      let ptyExited = false;
+      let ptyResizeTimer = null;
+      let ptyStatusBanner = null;
       // Prompt history for Up/Down (history.logic.ts). Seeded from init's
       // history field (raw user-prompt texts, oldest to newest); extended
       // locally by send() from then on.
@@ -1476,24 +1579,41 @@ export function buildHtml(nonce: string): string {
         // Don't stomp the inline rename box mid-edit — a sessionUpdate landing
         // while the user is typing must not wipe what they've entered.
         if (!isEditingTitle) headerTitle.textContent = displayName(session);
+        // Subtitle: pid · command/argv for PTY sessions, otherwise hidden.
+        if (session.kind === 'terminal' && session.pty === true) {
+          const pid = typeof session.pid === 'number' ? session.pid : '—';
+          const cmd = session.argv && session.argv.length > 0 ? session.argv.join(' ') : session.command;
+          headerSubtitle.textContent = pid + ' · ' + (cmd || '');
+          headerSubtitle.title = session.cwd || '';
+        } else {
+          headerSubtitle.textContent = '';
+          headerSubtitle.title = '';
+        }
         // The harness mark, left of the name — which agent answers in this
-        // tab, at a glance. Its title= names the harness so the glyph is never
-        // a mystery. Empty (no adapter yet) collapses via CSS :empty.
-        const mark = harnessGlyph(session.adapterSlug);
-        headerIcon.textContent = session.adapterSlug ? mark.glyph : '';
-        headerIcon.title = session.adapterSlug ? mark.label : '';
-        // What will answer, shown where you type to it — the header no longer
-        // repeats any of it. The harness chip is omitted when the daemon
-        // doesn't report the field (CSS :empty), rather than rendering
-        // "undefined". Model/posture/auth are always-visible instead: each
-        // gets a visible "?" fallback so a missing field reads as a gap, not
-        // an absent chip (a collapsed chip looks like there's nothing to
-        // configure, which is worse than an honest "model?").
-        composerHarness.textContent = session.adapterSlug || '';
-        composerModel.textContent = session.model || 'model?';
-        composerPosture.textContent = postureLabel(session.posture) || 'posture?';
-        const auth = accessIdentity(session);
-        composerAuth.textContent = auth === '—' ? 'no wallet' : auth;
+        // tab, at a glance. Prefer the inline SVG icon shipped with the panel;
+        // fall back to the unicode glyph when no icon is available.
+        if (session.adapterSlug && INITIAL_ICON_SVG) {
+          headerIcon.innerHTML = INITIAL_ICON_SVG;
+          headerIcon.title = session.adapterSlug;
+        } else {
+          const mark = harnessGlyph(session.adapterSlug);
+          headerIcon.textContent = session.adapterSlug ? mark.glyph : '';
+          headerIcon.title = session.adapterSlug ? mark.label : '';
+        }
+        // Plain PTY sessions have no agent model/posture/wallet to configure —
+        // hide the composer chips entirely instead of showing "model?" placeholders.
+        const isPlainPty = session.kind === 'terminal' && session.pty === true;
+        composerHarness.hidden = isPlainPty;
+        composerModel.hidden = isPlainPty;
+        composerPosture.hidden = isPlainPty;
+        composerAuth.hidden = isPlainPty;
+        if (!isPlainPty) {
+          composerHarness.textContent = session.adapterSlug || '';
+          composerModel.textContent = session.model || 'model?';
+          composerPosture.textContent = defaultPostureLabel(session);
+          const auth = accessIdentity(session);
+          composerAuth.textContent = auth === '—' ? 'no wallet' : auth;
+        }
 
         // Cost only, on the button — the full in/out breakdown plus what
         // decides the rate (model/harness/auth) lives one click away, in the
@@ -2325,6 +2445,95 @@ export function buildHtml(nonce: string): string {
         autoGrow();
       }
 
+      // ── PTY-mode helpers (live xterm.js view) ─────────────────────────
+      function ensurePtyTerm() {
+        if (ptyTerm) return;
+        // Always activate the PTY container, even if the xterm bundle failed to
+        // load — the container must be visible so status banners can render.
+        ptyExited = false;
+        ptyView.innerHTML = '';
+        ptyView.classList.add('active');
+        if (!window.AgentprotoXterm) return;
+        ptyTerm = new window.AgentprotoXterm.Terminal({
+          fontFamily: 'var(--vscode-editor-font-family, monospace)',
+          fontSize: 14,
+          theme: {
+            background: 'transparent',
+            foreground: 'var(--vscode-editor-foreground)',
+            cursor: 'var(--vscode-editorCursor-foreground)',
+            selectionBackground: 'var(--vscode-editor-selectionBackground)',
+            black: 'var(--vscode-terminal-ansiBlack)',
+            red: 'var(--vscode-terminal-ansiRed)',
+            green: 'var(--vscode-terminal-ansiGreen)',
+            yellow: 'var(--vscode-terminal-ansiYellow)',
+            blue: 'var(--vscode-terminal-ansiBlue)',
+            magenta: 'var(--vscode-terminal-ansiMagenta)',
+            cyan: 'var(--vscode-terminal-ansiCyan)',
+            white: 'var(--vscode-terminal-ansiWhite)',
+            brightBlack: 'var(--vscode-terminal-ansiBrightBlack)',
+            brightRed: 'var(--vscode-terminal-ansiBrightRed)',
+            brightGreen: 'var(--vscode-terminal-ansiBrightGreen)',
+            brightYellow: 'var(--vscode-terminal-ansiBrightYellow)',
+            brightBlue: 'var(--vscode-terminal-ansiBrightBlue)',
+            brightMagenta: 'var(--vscode-terminal-ansiBrightMagenta)',
+            brightCyan: 'var(--vscode-terminal-ansiBrightCyan)',
+            brightWhite: 'var(--vscode-terminal-ansiBrightWhite)',
+          },
+          cursorBlink: true,
+        });
+        ptyFitAddon = new window.AgentprotoXterm.FitAddon();
+        ptyTerm.loadAddon(ptyFitAddon);
+        ptyTerm.open(ptyView);
+        ptyTerm.onData(function(data) {
+          if (!ptyExited) vscode.postMessage({ type: 'ptyInput', text: data });
+        });
+        ptyTerm.onResize(function(size) {
+          if (ptyResizeTimer) clearTimeout(ptyResizeTimer);
+          ptyResizeTimer = setTimeout(function() {
+            if (!ptyExited) vscode.postMessage({ type: 'ptyResize', cols: size.cols, rows: size.rows });
+          }, 150);
+        });
+        const dims = ptyFitAddon.proposeDimensions();
+        if (dims) {
+          ptyTerm.resize(dims.cols, dims.rows);
+          vscode.postMessage({ type: 'ptyResize', cols: dims.cols, rows: dims.rows });
+        }
+      }
+
+      function disposePtyTerm() {
+        if (ptyResizeTimer) { clearTimeout(ptyResizeTimer); ptyResizeTimer = null; }
+        if (ptyTerm) { ptyTerm.dispose(); ptyTerm = null; ptyFitAddon = null; }
+        if (ptyView) { ptyView.classList.remove('active'); ptyView.innerHTML = ''; }
+        ptyExited = false;
+        if (ptyStatusBanner) { ptyStatusBanner.remove(); ptyStatusBanner = null; }
+      }
+
+      function showPtyStatus(text, kind) {
+        if (!ptyView) return;
+        if (!ptyStatusBanner) {
+          ptyStatusBanner = document.createElement('div');
+          ptyStatusBanner.style.cssText = 'padding: 4px 14px; font-size: 0.85em; font-family: var(--vscode-editor-font-family); white-space: pre-wrap;';
+          ptyView.appendChild(ptyStatusBanner);
+        }
+        ptyStatusBanner.textContent = text;
+        ptyStatusBanner.style.color = kind === 'error' ? 'var(--vscode-errorForeground)' : 'var(--vscode-descriptionForeground)';
+      }
+
+      function decodeB64(b64) {
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes;
+      }
+
+      function fitPty() {
+        if (ptyFitAddon && ptyTerm) ptyFitAddon.fit();
+      }
+
+      window.addEventListener('resize', function() {
+        if (mode === 'pty') fitPty();
+      });
+
       // Click the model chip → the host fetches this session's adapter
       // listing and shows a native quick-pick (no picker vocabulary lives in
       // the webview — see runChangeModelFlow / changeModel.logic.ts).
@@ -2373,12 +2582,15 @@ export function buildHtml(nonce: string): string {
         closeAllPopovers();
         popover.hidden = wasOpen;
       }
-      // Terminal button (FIX 2). A single lightweight jump to the raw terminal
-      // view via the existing openTerminal command — no segmented control, no
-      // restart. Shown only when the session HAS a terminal representation
-      // (msg.canToggle), gated in the 'init' handler.
+      // Terminal button. For plain PTY mode it opens a real VS Code terminal
+      // tab alongside the embedded view; for agent-cli/native-conversation
+      // sessions it restarts the session as a PTY-native terminal.
       openTerminalBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'openTerminal' });
+        if (mode === 'pty') {
+          vscode.postMessage({ type: 'openTerminal' });
+        } else {
+          vscode.postMessage({ type: 'restartAsTerminal' });
+        }
       });
       // Click-to-edit rename (FIX B). Clicking the header title swaps its text
       // for an inline input prefilled with the CURRENT editable name (label,
@@ -2448,8 +2660,21 @@ export function buildHtml(nonce: string): string {
             // 'conversation'/'patch' — see protocol.ts's resumeChain doc.
             renderResumeChain(msg.resumeChain);
             if (mode === 'structured') {
+              transcript.hidden = false;
+              composer.hidden = false;
+              disposePtyTerm();
               renderFullConversation(msg.conversation);
+            } else if (mode === 'pty') {
+              transcript.hidden = true;
+              composer.hidden = true;
+              working.hidden = true;
+              blockedNote.hidden = true;
+              disposePtyTerm();
+              ensurePtyTerm();
             } else {
+              transcript.hidden = false;
+              composer.hidden = false;
+              disposePtyTerm();
               clearTranscript();
               // Suppress the dead "No transcript available" placeholder
               // when the stitched ancestor history above IS the transcript
@@ -2467,7 +2692,10 @@ export function buildHtml(nonce: string): string {
             // the accumulated ↑/↓ history survives the switch; the first init
             // always carries one (possibly []), which seeds it.
             historyState = { entries: msg.history || historyState.entries, index: null, draft: '' };
-            openTerminalBtn.hidden = !msg.canToggle;
+            // The Terminal button is shown for agent-cli sessions (restart as
+            // real PTY terminal) and for plain PTY sessions (open the embedded
+            // PTY in a real VS Code terminal tab).
+            openTerminalBtn.hidden = msg.session.kind !== 'agent-cli' && msg.mode !== 'pty';
             applySession(msg.session);
             break;
           case 'conversation':
@@ -2519,6 +2747,32 @@ export function buildHtml(nonce: string): string {
             isStopping = false;
             refreshComposer();
             showError(msg.title || 'Stop failed', msg.message || '');
+            break;
+          case 'ptyData':
+            if (ptyTerm) ptyTerm.write(decodeB64(msg.b64));
+            break;
+          case 'ptyExit':
+            ptyExited = true;
+            if (ptyTerm) ptyTerm.options.disableStdin = true;
+            showPtyStatus('Session exited (code ' + msg.exitCode + (msg.signal ? ' signal ' + msg.signal : '') + ')', 'info');
+            break;
+          case 'ptyStatus':
+            if (msg.status === 'open') {
+              if (ptyStatusBanner) { ptyStatusBanner.remove(); ptyStatusBanner = null; }
+            } else if (msg.status === 'reconnected') {
+              showPtyStatus('Reconnected', 'info');
+              setTimeout(function() { if (ptyStatusBanner) { ptyStatusBanner.remove(); ptyStatusBanner = null; } }, 2000);
+            } else if (msg.status === 'reconnecting') {
+              showPtyStatus('Disconnected · reconnecting in ' + Math.round(msg.delayMs / 1000) + 's (' + msg.attempt + '/' + msg.max + ')…', 'info');
+            } else if (msg.status === 'rejected') {
+              showPtyStatus('Connection rejected: HTTP ' + msg.detail, 'error');
+              ptyExited = true;
+              if (ptyTerm) ptyTerm.options.disableStdin = true;
+            } else if (msg.status === 'gave-up') {
+              showPtyStatus('Lost connection to the daemon · giving up after retries', 'error');
+              ptyExited = true;
+              if (ptyTerm) ptyTerm.options.disableStdin = true;
+            }
             break;
         }
       });

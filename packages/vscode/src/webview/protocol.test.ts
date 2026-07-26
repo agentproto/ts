@@ -84,7 +84,11 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "requestMentions", query: 5 })).toBe(false)
   })
 
-  it("accepts openTerminal (header Terminal segment) with no payload", () => {
+  it("accepts restartAsTerminal (header Restart as Terminal button) with no payload", () => {
+    expect(isWebviewMessage({ type: "restartAsTerminal" })).toBe(true)
+  })
+
+  it("accepts openTerminal (header Terminal button) with no payload", () => {
     expect(isWebviewMessage({ type: "openTerminal" })).toBe(true)
   })
 
@@ -92,5 +96,17 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "changeModel" })).toBe(true)
     expect(isWebviewMessage({ type: "changePosture" })).toBe(true)
     expect(isWebviewMessage({ type: "changeAccess" })).toBe(true)
+  })
+
+  it("accepts ptyInput with text", () => {
+    expect(isWebviewMessage({ type: "ptyInput", text: "hello" })).toBe(true)
+    expect(isWebviewMessage({ type: "ptyInput" })).toBe(false)
+    expect(isWebviewMessage({ type: "ptyInput", text: 123 })).toBe(false)
+  })
+
+  it("accepts ptyResize with numeric cols/rows", () => {
+    expect(isWebviewMessage({ type: "ptyResize", cols: 80, rows: 24 })).toBe(true)
+    expect(isWebviewMessage({ type: "ptyResize", cols: "80", rows: 24 })).toBe(false)
+    expect(isWebviewMessage({ type: "ptyResize", cols: 80 })).toBe(false)
   })
 })

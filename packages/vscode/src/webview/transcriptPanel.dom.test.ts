@@ -53,7 +53,7 @@ interface RenderOptions {
 }
 
 function renderPanel(opts: RenderOptions = {}): Panel {
-  const dom = new JSDOM(buildHtml("test-nonce"), {
+  const dom = new JSDOM(buildHtml("test-nonce", { xtermJs: "", xtermCss: "", headerIconSvg: "" }), {
     runScripts: "dangerously",
     url: "https://example.test/",
     beforeParse(window) {
@@ -405,8 +405,8 @@ describe("transcriptPanel webview — composer", () => {
     init(panel, { adapterSlug: "claude-code", model: "sonnet-5" })
     expect(btn(panel, "composer-harness").textContent).toBe("claude-code")
     expect(btn(panel, "composer-model").textContent).toBe("sonnet-5")
-    // ...and the header does not repeat them.
-    expect(panel.document.getElementById("header-subtitle")).toBeNull()
+    // ...and the header does not repeat them (subtitle is empty for non-PTY sessions).
+    expect(panel.document.getElementById("header-subtitle")?.textContent).toBe("")
   })
 
   it("clicking the model chip posts changeModel to the host", () => {
@@ -443,7 +443,7 @@ describe("transcriptPanel webview — composer", () => {
     const panel = renderPanel()
     init(panel, { adapterSlug: "claude-code" })
     expect(btn(panel, "composer-model").textContent).toBe("model?")
-    expect(btn(panel, "composer-posture").textContent).toBe("posture?")
+    expect(btn(panel, "composer-posture").textContent).toBe("default")
     expect(btn(panel, "composer-auth").textContent).toBe("no wallet")
   })
 
@@ -2046,12 +2046,12 @@ describe("header terminal button", () => {
     return found
   }
 
-  it("FIX 2: a single Terminal button opens the terminal view, shown only when the session has one", () => {
+  it("is shown for agent-cli sessions and posts restartAsTerminal on click", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: msg => posted.push(msg) })
     panel.send({
       type: "init",
-      session: session(),
+      session: session({ kind: "agent-cli" }),
       nonce: "n",
       mode: "structured",
       canToggle: true,
@@ -2065,18 +2065,106 @@ describe("header terminal button", () => {
     expect(btn.hidden).toBe(false)
 
     btn.dispatchEvent(new panel.window.Event("click"))
-    expect(posted).toEqual([{ type: "openTerminal" }])
+    expect(posted).toEqual([{ type: "restartAsTerminal" }])
   })
 
-  it("FIX 2: the Terminal button is hidden when the session has no terminal representation", () => {
+  it("is shown for plain PTY sessions and posts openTerminal on click", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: msg => posted.push(msg) })
+    panel.send({
+      type: "init",
+      session: session({ kind: "terminal", pty: true }),
+      nonce: "n",
+      mode: "pty",
+    })
+
+    posted.length = 0
+
+    const btn = el(panel, "open-terminal-btn")
+    expect(btn.hidden).toBe(false)
+
+    btn.dispatchEvent(new panel.window.Event("click"))
+    expect(posted).toEqual([{ type: "openTerminal" }])
+  })
+})
+
+describe("transcriptPanel webview — PTY mode", () => {
+  function el(panel: Panel, id: string): DomElement {
+    const found = panel.document.getElementById(id)
+    if (!found) throw new Error(`missing #${id}`)
+    return found
+  }
+
+  it("hides the transcript and composer and shows the PTY view", () => {
     const panel = renderPanel()
     panel.send({
       type: "init",
-      session: session(),
+      session: session({ kind: "terminal", pty: true, pid: 42, argv: ["bash"], cwd: "/home" }),
       nonce: "n",
-      mode: "structured",
-      canToggle: false,
+      mode: "pty",
     })
-    expect(el(panel, "open-terminal-btn").hidden).toBe(true)
+
+    expect(el(panel, "transcript").hidden).toBe(true)
+    expect(el(panel, "composer").hidden).toBe(true)
+    expect(el(panel, "pty-view").classList.contains("active")).toBe(true)
+  })
+
+  it("shows pid and argv as the header subtitle with cwd as tooltip", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ kind: "terminal", pty: true, pid: 42, argv: ["bash", "-l"], cwd: "/home" }),
+      nonce: "n",
+      mode: "pty",
+    })
+
+    const subtitle = el(panel, "header-subtitle")
+    expect(subtitle.textContent).toBe("42 · bash -l")
+    expect(subtitle.title).toBe("/home")
+  })
+
+  it("hides the model/posture/auth chips for a plain PTY session", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ kind: "terminal", pty: true, adapterSlug: "claude-code" }),
+      nonce: "n",
+      mode: "pty",
+    })
+
+    expect(el(panel, "composer-harness").hidden).toBe(true)
+    expect(el(panel, "composer-model").hidden).toBe(true)
+    expect(el(panel, "composer-posture").hidden).toBe(true)
+    expect(el(panel, "composer-auth").hidden).toBe(true)
+  })
+
+  it("renders a reconnect banner on ptyStatus reconnecting", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ kind: "terminal", pty: true }),
+      nonce: "n",
+      mode: "pty",
+    })
+
+    panel.send({ type: "ptyStatus", status: "reconnecting", attempt: 1, max: 5, delayMs: 1000 })
+
+    const ptyView = el(panel, "pty-view")
+    expect(ptyView.textContent).toContain("reconnecting")
+  })
+
+  it("renders an exit banner on ptyExit and disables further input", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ kind: "terminal", pty: true }),
+      nonce: "n",
+      mode: "pty",
+    })
+
+    panel.send({ type: "ptyExit", exitCode: 0, signal: 9 })
+
+    const ptyView = el(panel, "pty-view")
+    expect(ptyView.textContent).toContain("exited")
   })
 })
