@@ -48,6 +48,17 @@ const CLOUD_PROVIDER_REDIRECT_TOGGLES = [
  */
 export const DEFAULT_IDLE_TIMEOUT_MS = 90_000
 
+/**
+ * Default watchdog while one or more tool calls are pending (ms). Tool
+ * execution is legitimately silent between the SDK's `tool_use` and the
+ * matching `tool_result`, so the generation watchdog would otherwise abort a
+ * healthy turn. This budget is used only while at least one tool is in flight;
+ * once the last tool_result arrives the adapter falls back to
+ * {@link DEFAULT_IDLE_TIMEOUT_MS} for the model's next generation. `0`
+ * disables the tool-pending watchdog.
+ */
+export const DEFAULT_TOOL_IDLE_TIMEOUT_MS = 600_000
+
 /** Static config for the adapter, parsed from CLI args / env at boot. */
 export interface ClaudeSdkConfig {
   /** SDK `options.model`. Defaults to {@link DEFAULT_MODEL}. */
@@ -91,6 +102,17 @@ export interface ClaudeSdkConfig {
    * `CLAUDE_SDK_IDLE_TIMEOUT_MS`.
    */
   idleTimeoutMs?: number
+  /**
+   * Extended idle watchdog used while one or more tool calls are pending. Tool
+   * execution is silent between the SDK's `tool_use` and the matching
+   * `tool_result`, so the normal generation watchdog would abort a healthy
+   * turn. This budget is used only while at least one tool is in flight; once
+   * the last tool_result arrives the adapter falls back to
+   * {@link DEFAULT_IDLE_TIMEOUT_MS}. `0` disables. Defaults to
+   * {@link DEFAULT_TOOL_IDLE_TIMEOUT_MS}. Overridable via
+   * `CLAUDE_SDK_TOOL_IDLE_TIMEOUT_MS`.
+   */
+  toolIdleTimeoutMs?: number
   /**
    * How the harness handles tool-permission prompts. Defaults to
    * `bypassPermissions` (with the required danger flag) so the arm can act
