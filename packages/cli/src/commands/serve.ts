@@ -507,6 +507,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.resumable !== undefined
           ? { resumable: adapter.handle.capabilities.resumable }
           : {}),
+        ...(adapter.handle.capabilities?.nativeTerminalResume === true
+          ? { nativeTerminalResume: true }
+          : {}),
       }
     } catch (err) {
       console.warn(

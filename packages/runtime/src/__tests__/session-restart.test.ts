@@ -31,6 +31,7 @@ import type {
   SessionsRegistry,
 } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+import type { DeclaredAdapterOption } from "../spawn-defaults.js"
 
 let acpCounter = 0
 function fakeAgentSession(prefix: string): AgentSessionLike {
@@ -56,6 +57,14 @@ function makeResolver(opts: {
    *  adapter descriptor exactly like `AgentAdapterResolver.resumable` in
    *  production — stamped onto the NEW descriptor by `restartAgentSession`. */
   resumable?: boolean
+  /** Manifest-declared `capabilities.nativeTerminalResume`, surfaced on the
+   *  resolved adapter descriptor exactly like
+   *  `AgentAdapterResolver.nativeTerminalResume` in production. */
+  nativeTerminalResume?: boolean
+  /** Manifest-declared options, surfaced like `AgentAdapterResolver.declaredOptions`. */
+  declaredOptions?: readonly DeclaredAdapterOption[]
+  /** Manifest-declared `routeSelection`, surfaced like `AgentAdapterResolver.routeSelection`. */
+  routeSelection?: "free" | "derived-from-model"
 } = {}): {
   resolver: AgentAdapterResolver
   calls: Array<{
@@ -64,6 +73,8 @@ function makeResolver(opts: {
     resumeSessionId?: string
     posture?: string | { harnessModeId: string }
     contextProfile?: string
+    options?: Record<string, boolean | number | string>
+    model?: string
   }>
 } {
   const calls: Array<{
@@ -72,6 +83,8 @@ function makeResolver(opts: {
     resumeSessionId?: string
     posture?: string | { harnessModeId: string }
     contextProfile?: string
+    options?: Record<string, boolean | number | string>
+    model?: string
   }> = []
   let rejected = false
   const resolver: AgentAdapterResolver = async slug => ({
@@ -82,6 +95,8 @@ function makeResolver(opts: {
         ...(sessOpts.resumeSessionId ? { resumeSessionId: sessOpts.resumeSessionId } : {}),
         ...(sessOpts.posture !== undefined ? { posture: sessOpts.posture } : {}),
         ...(sessOpts.contextProfile ? { contextProfile: sessOpts.contextProfile } : {}),
+        ...(sessOpts.options ? { options: sessOpts.options } : {}),
+        ...(sessOpts.model ? { model: sessOpts.model } : {}),
       })
       if (opts.rejectResumeOnce && sessOpts.resumeSessionId && !rejected) {
         rejected = true
@@ -91,6 +106,11 @@ function makeResolver(opts: {
     },
     commandPreview: `mock-${slug}`,
     ...(opts.resumable !== undefined ? { resumable: opts.resumable } : {}),
+    ...(opts.nativeTerminalResume !== undefined
+      ? { nativeTerminalResume: opts.nativeTerminalResume }
+      : {}),
+    ...(opts.declaredOptions ? { declaredOptions: opts.declaredOptions } : {}),
+    ...(opts.routeSelection ? { routeSelection: opts.routeSelection } : {}),
   })
   return { resolver, calls }
 }
@@ -149,13 +169,14 @@ function toolJson(result: any): Record<string, unknown> {
 
 describe("session_restart", () => {
   it("pty-native: respawns via the provider's native resume command when a resume id was captured", async () => {
-    const { client, registry, close } = await buildHarness()
+    const { client, registry, close } = await buildHarness({ nativeTerminalResume: true })
 
     const prev = registry.spawnAgent({
       workspaceSlug: "default",
       cwd: process.cwd(),
       agentSession: fakeAgentSession("claude"),
       adapterSlug: "claude-code",
+      nativeTerminalResume: true,
     })
     // Simulate the output sniffer having captured `claude --resume <id>`
     // from the prior session's exit line.
@@ -434,13 +455,14 @@ describe("session_restart — resumedFrom/resumeVia persist on the stored descri
   it("pty-native restart: the stored descriptor carries resumedFrom/resumeVia too", async () => {
     tmp = mkdtempSync(join(tmpdir(), "session-restart-persist-pty-"))
     persistPath = join(tmp, "sessions.json")
-    const { client, registry, close } = await buildHarness({}, persistPath)
+    const { client, registry, close } = await buildHarness({ nativeTerminalResume: true }, persistPath)
 
     const prev = registry.spawnAgent({
       workspaceSlug: "default",
       cwd: process.cwd(),
       agentSession: fakeAgentSession("claude"),
       adapterSlug: "claude-code",
+      nativeTerminalResume: true,
     })
     prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
     registry.kill(prev.id)
@@ -539,7 +561,7 @@ describe("session_restart — cross-session resume safety (regression)", () => {
   }
 
   it("resumes the dead session's OWN transcript, not a newer sibling sharing the cwd", async () => {
-    const { client, registry, close } = await buildHarness()
+    const { client, registry, close } = await buildHarness({ nativeTerminalResume: true })
     const cwd = "/fake/shared-proj"
     const dir = setupClaudeStore(cwd)
 
@@ -548,6 +570,7 @@ describe("session_restart — cross-session resume safety (regression)", () => {
       cwd,
       agentSession: fakeAgentSession("claude"),
       adapterSlug: "claude-code",
+      nativeTerminalResume: true,
     })
     const ownId = prev.adapterSessionId
     expect(ownId).toBeTruthy()

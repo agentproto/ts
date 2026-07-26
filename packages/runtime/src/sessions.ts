@@ -773,6 +773,17 @@ export interface SessionDescriptor {
    *  a legacy row's behaviour is unchanged. */
   resumable?: boolean
   /**
+   * Manifest-declared `capabilities.nativeTerminalResume` for this session's
+   * adapter (AIP-45), stamped from {@link AgentAdapterResolver}'s resolved
+   * descriptor at spawn/restart time. Governs whether a restart may use the
+   * provider's native CLI resume argv as a PTY session (`pty-native`). Only
+   * adapters with a verified native TUI resume (e.g. claude-code, hermes)
+   * set this; ACP resumability (`resumable`) alone does NOT imply terminal
+   * compatibility. Omitted for pty/command kinds and legacy rows — treated
+   * as false.
+   */
+  nativeTerminalResume?: boolean
+  /**
    * Canonical harness slug for agent-cli sessions — the same identity as
    *  `adapterSlug`, recorded under the canonical axis name. Falls back to
    *  `adapterSlug` when not explicitly set. Undefined for pty/command kinds. */
@@ -2016,6 +2027,9 @@ export interface SpawnAgentInput {
   /** Manifest-declared resume capability, recorded verbatim onto
    *  {@link SessionDescriptor.resumable} — see that field's doc. */
   resumable?: boolean
+  /** Manifest-declared native-terminal resume capability, recorded verbatim
+   *  onto {@link SessionDescriptor.nativeTerminalResume} — see that field's doc. */
+  nativeTerminalResume?: boolean
   /** Canonical harness slug — recorded on the descriptor; defaults to adapterSlug. */
   harness?: string
   /** Optional initial prompt to dispatch immediately. The promise
@@ -4113,6 +4127,9 @@ export function createSessionsRegistry(opts?: {
         ...worktreeFields(input.cwd),
         adapterSlug: input.adapterSlug,
         ...(input.resumable !== undefined ? { resumable: input.resumable } : {}),
+        ...(input.nativeTerminalResume !== undefined
+          ? { nativeTerminalResume: input.nativeTerminalResume }
+          : {}),
         harness: input.harness ?? input.adapterSlug,
         // ACP-level session id — sticks across daemon restart so
         // `agentproto sessions restart <id>` can pass it as

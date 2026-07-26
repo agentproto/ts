@@ -35,6 +35,7 @@
  */
 
 import { CONVERSATION_STORES } from "./conversation-store.js"
+import type { ConversationStore } from "./conversation-store.js"
 
 /** Where on disk the resume id ends up on the session descriptor. */
 export type ResumeMetadataKey =
@@ -86,39 +87,35 @@ export interface ResumeStrategy {
   spawnArgs?(id: string): string[]
 }
 
-// claude-code's entry is PROJECTED from `CONVERSATION_STORES` (conversation-
-// store.ts) rather than declared standalone, so this table and the
-// conversation store can never drift apart again. `fsProbe` adapts the old
-// (cwd, prevStartedAt, expectedId) => id|null shape onto `store.discover`:
-// with an expectedId it's the single bound candidate (or none); without one
-// it's the newest candidate in `discover`'s mtime-desc order (or none) —
-// byte-for-byte the same answers the old mtime-latest probe gave.
-const claudeCodeStore = CONVERSATION_STORES["claude-code"]!
-
-export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = {
-  "claude-code": {
-    outputHint: claudeCodeStore.outputHint,
-    storeAs: claudeCodeStore.storeAs,
-    fsProbe: async (cwd, prevStartedAt, expectedId) => {
-      const candidates = await claudeCodeStore.discover({
-        cwd,
-        since: prevStartedAt,
-        expectedId,
-      })
-      return candidates[0]?.conversationId ?? null
-    },
-    spawnArgs: claudeCodeStore.attachArgv,
-  },
-
-  // Stubs for other shipped adapters — fill in as we learn each
-  // provider's resume mechanism. Today they fall back to ACP-level
-  // resume (whatever the agent-cli runtime supports) or fresh spawn.
-  //
-  //   hermes: { storeAs: "hermesResumeId", ... }
-  //   codex: { storeAs: "codexResumeId", ... }
-  //   openclaw: { storeAs: "openClawResumeId", ... }
-  //   opencode: { storeAs: "openCodeResumeId", ... }
-}
+// Project every conversation store that declares a native PTY attach argv
+// into the resume-strategy table, so the table and the store can never drift
+// apart again. Only stores with `attachArgv` offer a provider-native TUI
+// resume; the rest are read/export-only. The actual decision to USE a
+// `pty-native` restart is still gated on `RestartCandidate.nativeTerminalResume`
+// below — a store entry alone does not license terminal mode.
+export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = Object.fromEntries(
+  Object.entries(CONVERSATION_STORES)
+    .filter(([, store]) => typeof store.attachArgv === "function")
+    .map(([slug, store]) => {
+      const s = store as Required<Pick<ConversationStore, "attachArgv" | "discover">> & ConversationStore
+      return [
+        slug,
+        {
+          outputHint: store.outputHint,
+          storeAs: store.storeAs,
+          fsProbe: async (cwd, prevStartedAt, expectedId) => {
+            const candidates = await s.discover({
+              cwd,
+              since: prevStartedAt,
+              expectedId,
+            })
+            return candidates[0]?.conversationId ?? null
+          },
+          spawnArgs: s.attachArgv,
+        } satisfies ResumeStrategy,
+      ]
+    }),
+)
 
 /**
  * Helper: which adapters declare any resume capability? Used by
@@ -155,6 +152,13 @@ export interface RestartCandidate {
    *  matter how it's presented. Omitted/`true` preserves today's behaviour
    *  (assumed resumable) for every adapter/row that doesn't set this. */
   resumable?: boolean
+  /**
+   * Manifest-declared `capabilities.nativeTerminalResume` for `adapterSlug`.
+   * The `pty-native` restart strategy is only chosen when this flag is true
+   * AND a native resume id is available. ACP resumability (`resumable`)
+   * alone does NOT imply a native TUI resume is safe or available.
+   */
+  nativeTerminalResume?: boolean
 }
 
 export interface FsProbeCandidate extends RestartCandidate {
@@ -186,13 +190,12 @@ export type RestartStrategy =
   | { kind: "unsupported"; reason: string }
 
 export function decideRestartStrategy(prev: RestartCandidate): RestartStrategy {
-  // Provider-native resume takes precedence over ACP-level resume —
-  // strictly more reliable when available. Unconditional on `resumable`:
-  // every adapter that declares a `spawnArgs` strategy today (claude-code)
-  // also declares `capabilities.resumable: true`, so this branch is
-  // unaffected by the capability gate below — see the module doc's
-  // "don't change claude-code's happy path" note.
-  if (prev.adapterSlug) {
+  // Provider-native terminal resume takes precedence over ACP-level resume —
+  // but ONLY when the adapter manifest explicitly declares a verified native
+  // TUI resume capability (`nativeTerminalResume`). ACP resumability alone
+  // (`resumable`) does not imply it is safe or correct to reattach as a raw
+  // PTY; without the flag we fall back to ACP-level or fresh-spawn restart.
+  if (prev.adapterSlug && prev.nativeTerminalResume === true) {
     const strategy = RESUME_STRATEGIES[prev.adapterSlug]
     const id = strategy?.storeAs
       ? prev.resumeMetadata?.[strategy.storeAs]
