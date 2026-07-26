@@ -49,6 +49,18 @@ export async function registerBuiltinRoutes(): Promise<void> {
     authEnv: preset.keyEnv,
   })
 
+  // xAI's Anthropic-compatible Messages endpoint (https://api.x.ai/v1/messages).
+  // Registering it as a custom route lets route-identity resolve
+  // `xai/grok-<product>@xai-anthropic` and the catalog join surface it as a
+  // distinct billing route for `xai-anthropic` auth profiles.
+  const xaiAnthropic = getAnthropicGatewayPreset("xai-anthropic")
+  registerCustomRoute("xai-anthropic", {
+    label: xaiAnthropic.label,
+    flavor: xaiAnthropic.schemaFlavor,
+    baseUrl: xaiAnthropic.baseUrl,
+    authEnv: xaiAnthropic.keyEnv,
+  })
+
   // Then load operator-declared routes from ~/.agentproto/routes.json. These
   // intentionally override built-ins, so an operator can retarget a shipped
   // default (e.g. llm-endpoint) locally without patching code.

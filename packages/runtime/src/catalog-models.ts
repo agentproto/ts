@@ -45,6 +45,7 @@ import {
   LLM_PRICING_CATALOG,
   MODEL_ALIASES,
 } from "@agentproto/model-catalog/llm"
+import { getAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import type { AdapterAuthDescriptor } from "./spawn-defaults.js"
 import type { RouteSpec } from "./session-config.js"
 
@@ -54,6 +55,18 @@ export type { RouteSpec } from "./session-config.js"
  *  list (SPEC §5.1) — same three route-identity widens, `route-identity/
  *  index.ts:54-59`. */
 const WIDENING_ROUTES = ["openrouter", "requesty", "huggingface"] as const
+
+/**
+ * Vendor-specific compatibility routes: canonical protocol surfaces that can
+ * bill the same model family without duplicating catalog entries. A model whose
+ * pricing-catalog vendor is `xai` is legitimately reachable both on the native
+ * `xai` API route and on the Anthropic-compatible `xai-anthropic` route; the
+ * two routes are distinct billing endpoints so the right auth profile matches
+ * the right protocol.
+ */
+const VENDOR_COMPATIBILITY_ROUTES: Readonly<Record<string, readonly string[]>> = {
+  xai: ["xai", "xai-anthropic"],
+}
 
 /** One model entry as declared in an adapter's `models.allowed`
  *  (`AdapterModelInfo`, `packages/cli/src/registry/resolve.ts:134-142`) —
@@ -415,6 +428,71 @@ function widenedContributions(
   return out
 }
 
+/**
+ * Compatibility routes: canonical protocol surfaces that bill a model family
+ * without duplicating pricing entries. For xAI, the same Grok models are
+ * reachable on the native OpenAI-flavor `xai` route and on the Anthropic-
+ * compatible `xai-anthropic` route; the catalog joins both so the matching
+ * auth profile (`xai` vs `xai-anthropic`) can be endpoint-eligible for the
+ * right protocol.
+ *
+ * Rows are generated straight from the static pricing catalog (vendor `xai`),
+ * not from adapter curation, because the existing adapters only declare the
+ * OpenRouter xAI ids (`x-ai/grok-*@openrouter`). The `xai-anthropic` rows are
+ * attached to adapters that can route arbitrary models through an Anthropic-
+ * compatible gateway (`routeSelection: "free"`). The direct `xai` rows carry
+ * no adapter attachment because there is no agent adapter in the registry that
+ * speaks the native xAI OpenAI surface today; they are still listed so the
+ * `xai` profile can see the models it bills and whether they are runnable.
+ */
+function compatibilityContributions(
+  adapters: readonly CatalogAdapterInput[],
+): RouteContribution[] {
+  const freeAdapters = adapters
+    .filter(a => a.routeSelection === "free")
+    .map(a => a.slug)
+  const out: RouteContribution[] = []
+
+  for (const [product, pricing] of Object.entries(LLM_PRICING_CATALOG)) {
+    if (pricing.provider !== "xai") continue
+    const vendor = pricing.vendor ?? "xai"
+    const compatRoutes = VENDOR_COMPATIBILITY_ROUTES[vendor]
+    if (!compatRoutes) continue
+
+    const direct = resolveLlmModelRoute(`${vendor}/${product}`)
+    if (!direct) continue
+
+    for (const route of compatRoutes) {
+      const ref = route === vendor ? `${vendor}/${product}` : `${vendor}/${product}@${route}`
+      const baseUrl =
+        route === "xai-anthropic"
+          ? getAnthropicGatewayPreset("xai-anthropic").baseUrl
+          : null
+      const rowBase: RouteContribution = {
+        vendor,
+        product,
+        route,
+        ref,
+        baseUrl,
+        pricing: {
+          inPer1M: direct.pricing.inputPer1M,
+          outPer1M: direct.pricing.outputPer1M,
+        },
+        curated: false,
+        methods: ["api-key"],
+      }
+      if (route === "xai-anthropic" && freeAdapters.length > 0) {
+        for (const adapterSlug of freeAdapters) {
+          out.push({ ...rowBase, adapterSlug })
+        }
+      } else {
+        out.push(rowBase)
+      }
+    }
+  }
+  return out
+}
+
 interface MergedRow {
   vendor: string
   product: string
@@ -526,7 +604,11 @@ export function buildCatalogModels(
   input: BuildCatalogModelsInput,
 ): CatalogModelsResponse {
   const curated = curatedContributions(input.adapters)
-  const contributions = [...curated, ...widenedContributions(input.adapters, curated)]
+  const contributions = [
+    ...curated,
+    ...widenedContributions(input.adapters, curated),
+    ...compatibilityContributions(input.adapters),
+  ]
   const merged = mergeContributions(contributions)
   const query = input.query ?? {}
 

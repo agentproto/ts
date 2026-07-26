@@ -965,6 +965,101 @@ describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", asyn
   })
 })
 
+describe("buildCatalogModels — xAI native + Anthropic-compatible routes", async () => {
+  // xai-anthropic is a built-in custom route; ensure it is registered the same
+  // way createGateway does at daemon boot.
+  await registerBuiltinRoutes()
+
+  const xaiApiKey: AuthProfile = {
+    id: "personal-xai",
+    endpoint: "xai",
+    method: "api-key",
+    credentialRef: "ref-xai",
+  }
+  const xaiAnthropicApiKey: AuthProfile = {
+    id: "personal-xai-anthropic",
+    endpoint: "xai-anthropic",
+    method: "api-key",
+    credentialRef: "ref-xai-anthropic",
+  }
+
+  it("surfaces every xAI-priced model on the native `xai` direct route", () => {
+    const response = buildCatalogModels({ adapters: [], profiles: [] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("xai/grok-4.5")
+    expect(route?.curated).toBe(false)
+    expect(route?.pricing).toEqual({ inPer1M: 2.0, outPer1M: 6.0 })
+  })
+
+  it("surfaces every xAI-priced model on the `xai-anthropic` compatibility route", () => {
+    const response = buildCatalogModels({ adapters: [], profiles: [] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai-anthropic")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("xai/grok-4.5@xai-anthropic")
+    expect(route?.curated).toBe(false)
+    expect(route?.baseUrl).toBe("https://api.x.ai")
+    expect(route?.pricing).toEqual({ inPer1M: 2.0, outPer1M: 6.0 })
+  })
+
+  it("makes the native `xai` route runnable with an `xai` api-key profile", () => {
+    const response = buildCatalogModels({ adapters: [], profiles: [xaiApiKey] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-xai"])
+  })
+
+  it("makes the `xai-anthropic` route runnable with an `xai-anthropic` api-key profile", () => {
+    const response = buildCatalogModels({ adapters: [], profiles: [xaiAnthropicApiKey] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai-anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-xai-anthropic"])
+  })
+
+  it("does not cross-eligible `xai` and `xai-anthropic` profiles", () => {
+    const response = buildCatalogModels({
+      adapters: [],
+      profiles: [xaiApiKey, xaiAnthropicApiKey],
+    })
+    expect(findRoute(response, "xai", "grok-4.5", "xai")?.eligibleProfiles).toEqual([
+      "personal-xai",
+    ])
+    expect(findRoute(response, "xai", "grok-4.5", "xai-anthropic")?.eligibleProfiles).toEqual([
+      "personal-xai-anthropic",
+    ])
+  })
+
+  it("attaches `xai-anthropic` rows to free adapters", () => {
+    const free: CatalogAdapterInput = {
+      slug: "claude-code",
+      models: [{ id: "anthropic/claude-opus-4-8" }],
+      authDescriptor: { provider: "anthropic", authSubscription: { setEnv: "x" } },
+      routeSelection: "free",
+    }
+    const response = buildCatalogModels({ adapters: [free], profiles: [] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai-anthropic")
+    expect(route?.adapters).toEqual(["claude-code"])
+  })
+
+  it("does not attach `xai-anthropic` rows to fixed or derived-from-model adapters", () => {
+    const fixed: CatalogAdapterInput = {
+      slug: "codex",
+      models: [{ id: "gpt-5-codex" }],
+      authDescriptor: { provider: "openai" },
+    }
+    const derived: CatalogAdapterInput = {
+      slug: "hermes",
+      models: [{ id: "anthropic/claude-opus-4-8" }],
+      authDescriptor: { provider: "anthropic" },
+      routeSelection: "derived-from-model",
+    }
+    const response = buildCatalogModels({ adapters: [fixed, derived], profiles: [] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai-anthropic")
+    expect(route).toBeDefined()
+    expect(route?.adapters).toEqual([])
+  })
+})
+
 describe("resolveEffectiveRoute", () => {
   it("returns the model's explicit @route over a stale route.gateway", () => {
     expect(resolveEffectiveRoute("z-ai/glm-5.2@openrouter", "requesty")).toBe("openrouter")
