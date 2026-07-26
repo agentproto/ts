@@ -1070,6 +1070,7 @@ export async function createGateway(
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
+    ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
     ...(langfuseTracer ? { langfuseTracer } : {}),

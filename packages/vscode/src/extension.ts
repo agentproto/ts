@@ -35,6 +35,7 @@ import { registerImportConversationCommand } from "./commands/importConversation
 import { registerSelectWorkspaceCommand } from "./commands/selectWorkspace.js"
 import { registerSwitchHarness } from "./commands/switchHarness.js"
 import { registerSessionConfig } from "./commands/sessionConfig.js"
+import { registerSessionContinuityCommands } from "./commands/sessionContinuity.js"
 import { registerDaemonConfig } from "./commands/daemonConfig.js"
 import { registerSpawnCommand } from "./commands/spawn.js"
 import { registerTranscript } from "./commands/transcript.js"
@@ -139,6 +140,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSessionConfig(ctx, client, store, authProfilesProvider, () => transcriptPanels.activeSessionId()) // agentproto.configureSession
+  registerSessionContinuityCommands(ctx, client, store, () => transcriptPanels.activeSessionId()) // agentproto.compactSession / agentproto.continueSessionFresh
   registerDaemonConfig(ctx, client) // agentproto.showDaemonConfig
   ctx.subscriptions.push(
     vscode.commands.registerCommand("agentproto.showHealth", () =>

@@ -61,6 +61,11 @@ import {
   type CostBudget,
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
+import {
+  resolveContextContinuityPolicy,
+  type ContextContinuityPolicy,
+  type ResolvedContextContinuityPolicy,
+} from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
 import type { UserPreset } from "./user-presets.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
@@ -410,6 +415,10 @@ export interface SpawnAgentSessionInput {
    *  proactively revived in place — see `RestartPolicy`'s doc in
    *  `sessions.ts`. Omitted ⇒ today's lazy-resume-only behaviour. */
   restartPolicy?: RestartPolicy
+  /** Context-continuity policy for this session — controls warning,
+   *  opportunistic compaction, fresh-continuation, and hard-stop thresholds.
+   *  Resolved from global → per-adapter → per-model → explicit override. */
+  contextContinuity?: ContextContinuityPolicy
   /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
    *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
    *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
@@ -1146,7 +1155,15 @@ export async function spawnAgentSession(
     skills: input.skills,
     options: input.options,
     auth: input.auth,
+    contextContinuity: input.contextContinuity,
   })
+  const resolvedContextContinuity: ResolvedContextContinuityPolicy =
+    resolveContextContinuityPolicy(
+      undefined,
+      undefined,
+      undefined,
+      spawnDefaults.contextContinuity,
+    )
   // ── Billing-auth resolution (DECISIONS 4/9/10) ──────────────────
   // The runtime decides provider → ordered mode → setEnv/scrub → credential
   // source → fingerprint, and emits BOTH the mechanical `spec` the driver
@@ -1839,6 +1856,7 @@ export async function spawnAgentSession(
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
+      contextContinuity: resolvedContextContinuity,
       ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),

@@ -82,6 +82,46 @@ export interface RestartPolicy {
   resume?: boolean
 }
 
+export type ContextContinuityMode = "manual" | "ask" | "auto"
+
+export interface ContextContinuityPolicy {
+  mode?: ContextContinuityMode
+  warnAtPct?: number
+  compactAtPct?: number
+  continueFreshAtPct?: number
+  hardStopAtPct?: number
+  goal?: boolean
+  plan?: boolean
+  decisions?: boolean
+  changedFiles?: boolean
+  gitStatus?: boolean
+  tests?: boolean
+  errors?: boolean
+  risks?: boolean
+  nextStep?: boolean
+  config?: boolean
+  label?: string
+}
+
+export interface ResolvedContextContinuityPolicy extends ContextContinuityPolicy {
+  mode: ContextContinuityMode
+  warnAtPct: number
+  compactAtPct: number
+  continueFreshAtPct: number
+  hardStopAtPct: number
+  goal: boolean
+  plan: boolean
+  decisions: boolean
+  changedFiles: boolean
+  gitStatus: boolean
+  tests: boolean
+  errors: boolean
+  risks: boolean
+  nextStep: boolean
+  config: boolean
+  label: string
+}
+
 /**
  * SessionDescriptor — the daemon's canonical session row. Field-for-field
  * copy of the recon §Session descriptor contract (packages/runtime
@@ -262,6 +302,24 @@ export interface SessionDescriptor {
    *  --resume", "resumed via ACP", or "" when no continuity was established.
    *  Only meaningful alongside `resumedFrom`. */
   resumeVia?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.contextContinuity — the
+   *  resolved context-continuity policy driving warning/compact/continue-fresh
+   *  decisions. */
+  contextContinuity?: ResolvedContextContinuityPolicy
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.contextContinuityHardStopped. */
+  contextContinuityHardStopped?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.checkpointId — the most
+   *  recent context-continuity checkpoint. */
+  checkpointId?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.continuedFrom — source
+   *  session when this session is a fresh continuation. */
+  continuedFrom?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.continuedTo — target
+   *  session when this session was continued fresh. */
+  continuedTo?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.permissionHold — true when
+   *  the session was spawned in permission-hold mode. */
+  permissionHold?: boolean
   browserAdapterId?: string
   browserPort?: number
   browserBaseUrl?: string

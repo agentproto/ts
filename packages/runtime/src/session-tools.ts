@@ -45,6 +45,13 @@ import type { McpProxyRegistry } from "./mcp-proxy.js"
 import { projectSessionUsage } from "./usage.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import {
+  computeContextContinuityStatus,
+  computeContextPct,
+} from "./context-continuity.js"
+import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
+import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import type { SpawnAgentSessionDeps } from "./session-spawn.js"
+import {
   collectSessionSnapshots,
   enrichRollupWithAccountCredits,
   enrichRollupWithProviderQuota,
@@ -473,6 +480,341 @@ export function registerSessionTools(
         content: [
           { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }, null, 2) },
         ],
+      }
+    },
+  )
+
+  // ── session_context_status ───────────────────────────────────────
+  server.tool(
+    "session_context_status",
+    "Return the context-continuity status for one session — current context " +
+      "percentage, resolved policy thresholds, and the next automatic action " +
+      "(warn / compact / continue-fresh / hard-stop).",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.idOrName)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_context_status: session "${desc.id}" is not in your subtree.`,
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const policy = desc.contextContinuity ?? {
+        mode: "ask",
+        warnAtPct: 55,
+        compactAtPct: 65,
+        continueFreshAtPct: 75,
+        hardStopAtPct: 90,
+        goal: true,
+        plan: true,
+        decisions: true,
+        changedFiles: true,
+        gitStatus: true,
+        tests: true,
+        errors: true,
+        risks: true,
+        nextStep: true,
+        config: true,
+        label: "ask",
+      }
+      const status = computeContextContinuityStatus(
+        desc.id,
+        policy,
+        desc.contextSize,
+        desc.contextUsed,
+      )
+      return {
+        content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
+      }
+    },
+  )
+
+  // ── session_checkpoint ───────────────────────────────────────────
+  server.tool(
+    "session_checkpoint",
+    "Build and persist a structured context-continuity checkpoint for a " +
+      "session. The checkpoint is a bounded handoff document saved next to " +
+      "the session's events.jsonl; the original transcript is never discarded.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.idOrName)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (desc.kind !== "agent-cli") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `session "${desc.id}" is not an agent-cli session`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const policy = desc.contextContinuity
+      if (!policy) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `session "${desc.id}" has no resolved context continuity policy`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
+      const checkpoint = await buildContextCheckpoint(desc, { contextPct: pct })
+      await persistCheckpoint(checkpoint)
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                sessionId: desc.id,
+                checkpointId: checkpoint.checkpointId,
+                checkpointPath: checkpoint.checkpointPath,
+                contextPct: checkpoint.contextPct,
+                nextAction: checkpoint.nextAction,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      }
+    },
+  )
+
+  // ── session_continue_fresh ───────────────────────────────────────
+  server.tool(
+    "session_continue_fresh",
+    "Spawn a NEW agent session that continues the work of an existing " +
+      "session with a structured checkpoint as its initial prompt. The new " +
+      "session uses the same adapter, harness, model, route, access profile, " +
+      "posture, effort, and cwd. The original session is linked via " +
+      "`continuedFrom`/`continuedTo` and its transcript is preserved.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+    },
+    async input => {
+      if (!resolveAgentAdapter) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "session_continue_fresh requires an adapter resolver; none is configured.",
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const desc = registry.findByIdOrName(input.idOrName)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (desc.kind !== "agent-cli") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `session "${desc.id}" is not an agent-cli session`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const spawnDeps: SpawnAgentSessionDeps = {
+        registry,
+        resolveAgentAdapter,
+        ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+        ...(opts.buildOrchestratorMcp ? { buildOrchestratorMcp: opts.buildOrchestratorMcp } : {}),
+        ...(opts.webhookNotifier ? { webhookNotifier: opts.webhookNotifier } : {}),
+        ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+        ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+        ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
+        ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
+      }
+      try {
+        const result = await continueAgentSessionFresh(spawnDeps, desc)
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  continuedFrom: result.continuedFrom,
+                  continuedTo: result.descriptor.id,
+                  checkpointId: result.checkpoint.checkpointId,
+                  checkpointPath: result.checkpoint.checkpointPath,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `continue fresh failed: ${err instanceof Error ? err.message : String(err)}`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  // ── session_compact ──────────────────────────────────────────────
+  server.tool(
+    "session_compact",
+    "Best-effort request to the harness to compact the session's context. " +
+      "This sends a '/compact' prompt to the live session; adapters that do " +
+      "not support compaction will report an error or ignore it. Use this " +
+      "opportunistically before continuing fresh.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.idOrName)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (desc.kind !== "agent-cli") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `session "${desc.id}" is not an agent-cli session`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const isAlive = desc.status === "running" || desc.status === "starting"
+      if (!isAlive) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `session "${desc.id}" is not live`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        await registry.sendPrompt(desc.id, "/compact")
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                sessionId: desc.id,
+                compactRequested: true,
+                note: "Compaction is adapter-dependent; verify with session_context_status.",
+              }),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `compact failed: ${err instanceof Error ? err.message : String(err)}`,
+              }),
+            },
+          ],
+          isError: true,
+        }
       }
     },
   )
