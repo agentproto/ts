@@ -331,6 +331,57 @@ describe("resolveAuthSpec — gateway route injection", () => {
     expect(r?.echo.credentialSource).toBe("explicit-config")
   })
 
+  it("route.gateway = openai on a fixed-provider openai adapter (codex) keeps auth/env selection but drops base_url", () => {
+    const r = resolveAuthSpec({
+      descriptor: { provider: "openai" },
+      routeGateway: "openai",
+      explicit: true,
+      requestedMode: "api-key",
+      apiKeyConfigCredential: "sk-proj-codex1234",
+    })
+    expect(r?.echo.provider).toBe("openai")
+    expect(r?.spec.setEnv).toBe("OPENAI_API_KEY")
+    expect(r?.spec.credential).toBe("sk-proj-codex1234")
+    // The preset's base_url points at a proxy; a native-provider adapter like
+    // codex has no base_url option and already targets the OpenAI endpoint, so
+    // the resolved base_url must be dropped rather than injected.
+    expect(r?.spec.baseUrl).toBeUndefined()
+  })
+
+  it("route.gateway = openai on a fixed-provider openai adapter with authSubscription keeps subscription eligible", () => {
+    const r = resolveAuthSpec({
+      descriptor: {
+        provider: "openai",
+        authSubscription: { external: true, conflictEnv: ["CODEX_API_KEY"] },
+      },
+      routeGateway: "openai",
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.echo.provider).toBe("openai")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("")
+    expect(r?.spec.baseUrl).toBeUndefined()
+    expect(r?.spec.externalCredential).toBe(true)
+    expect(r?.spec.unsetEnv).toContain("OPENAI_API_KEY")
+    expect(r?.spec.unsetEnv).toContain("CODEX_API_KEY")
+  })
+
+  it("non-native gateway route on a subscription-supporting fixed-provider adapter still rejects subscription", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: {
+          provider: "openai",
+          authSubscription: { external: true, conflictEnv: ["CODEX_API_KEY"] },
+        },
+        routeGateway: "openai-direct",
+        explicit: true,
+        requestedMode: "subscription",
+      }),
+    ).toThrow(AuthResolutionError)
+  })
+
   it("gateway route forces api-key and rejects subscription mode", () => {
     expect(() =>
       resolveAuthSpec({

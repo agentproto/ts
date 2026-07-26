@@ -1877,6 +1877,78 @@ describe("spawnAgentSession — D1: base_url only injected when the adapter decl
     expect(startSession).toHaveLength(0) // never called (captured stays empty)
   })
 
+  it("codex + route.gateway = openai (native provider match) spawns without base_url injection", async () => {
+    const { resolver, captured } = makeAuthResolver(
+      { provider: "openai" },
+      { declaredOptions: [{ id: "model", type: "enum" }] },
+    )
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "codex",
+        cwd: "/tmp",
+        model: "gpt-5-codex",
+        route: { gateway: "openai" },
+        auth: { mode: "api-key", apiKey: "sk-proj-codex1234" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.options?.base_url).toBeUndefined()
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      setEnv: "OPENAI_API_KEY",
+      credential: "sk-proj-codex1234",
+    })
+    expect(registry.list()[0]?.auth).toMatchObject({ provider: "openai" })
+  })
+
+  it("codex + route.gateway = openai-direct (non-native preset) still rejects", async () => {
+    const { resolver, captured } = makeAuthResolver(
+      { provider: "openai" },
+      { declaredOptions: [{ id: "model", type: "enum" }] },
+    )
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "codex",
+        cwd: "/tmp",
+        model: "gpt-5-codex",
+        route: { gateway: "openai-direct" },
+        auth: { mode: "api-key", apiKey: "sk-proj-codex1234" },
+      },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("gateway_base_url_unsupported")
+    expect(result.message).toContain("codex")
+    expect(result.message).toContain("openai-direct")
+    expect(captured).toHaveLength(0)
+  })
+
+  it("codex + a custom route baseUrl still rejects", async () => {
+    const { resolver, captured } = makeAuthResolver(
+      { provider: "openai" },
+      { declaredOptions: [{ id: "model", type: "enum" }] },
+    )
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "codex",
+        cwd: "/tmp",
+        model: "gpt-5-codex",
+        route: { gateway: "custom-openai", baseUrl: "https://api.openai.com/v1" },
+      },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("gateway_base_url_unsupported")
+    expect(result.message).toContain("codex")
+    expect(captured).toHaveLength(0)
+  })
+
   it("an adapter that DOES declare base_url still gets it injected (unchanged)", async () => {
     const { resolver, captured } = makeAuthResolver({ modelDerivedApiKey: true }) // default: declares base_url
     const { registry } = baseDeps()
@@ -2932,6 +3004,34 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     })
   })
 
+  it("codex subscription profile + route.gateway openai (native match) spawns without base_url injection", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    authProfileState.profiles["codex-local"] = {
+      id: "codex-local",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      source: "codex",
+      label: "My Codex login",
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "codex",
+      cwd: "/tmp",
+      model: "gpt-5-codex",
+      route: { gateway: "openai" },
+      access: { profileRef: "codex-local" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // Native fixed-provider route is direct: subscription stays eligible and no
+    // gateway base_url is injected.
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(result.descriptor.auth?.provider).toBe("openai")
+    expect(result.descriptor.auth?.setEnv).toBe("")
+  })
+
   it("an unconfigured codex spawn stays ambient — no external login verified, no auth echo engaged", async () => {
     const verify = vi.fn(async () => {})
     oauthState.verifyImpl = verify
@@ -3127,6 +3227,26 @@ describe("spawnAgentSession — D2/D3: wire model form + adapter-declared provid
     // Was 'openai/gpt-5' before D2 — codex's manifest declares bare ids, so the
     // canonical catalog form tripped option_enum_violation at the driver.
     expect(captured[0]?.model).toBe("gpt-5")
+  })
+
+  it("D2: codex + native openai route strips the vendor prefix and does NOT inject base_url", async () => {
+    const { resolver, captured } = makeResolver({ provider: "openai" })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "codex",
+        cwd: "/tmp",
+        model: "openai/gpt-5-codex",
+        route: { gateway: "openai" },
+        auth: { mode: "api-key", apiKey: "sk-proj-codex1234" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.model).toBe("gpt-5-codex")
+    // The openai preset's base_url is intentionally dropped for this native-
+    // provider adapter; codex has no base_url option.
+    expect(captured[0]?.auth?.setEnv).toBe("OPENAI_API_KEY")
   })
 
   it("D2: a derived-from-model adapter KEEPS its vendor prefix (the prefix IS its route)", async () => {
