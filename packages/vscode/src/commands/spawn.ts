@@ -52,6 +52,7 @@ import {
   resolveDefaultCwd,
   resolveWorkspaceSlug,
   type SpawnAdapterInfo,
+  type SpawnQuickPickItem,
   type SpawnWizardAnswers,
 } from "./spawn.logic.js"
 
@@ -72,11 +73,18 @@ export function registerSpawnCommand(
   workspacePin: WorkspacePinStore,
 ): void {
   ctx.subscriptions.push(
-    vscode.commands.registerCommand("agentproto.spawnAgent", () => runSpawnWizard(client, store, workspacePin)),
+    vscode.commands.registerCommand("agentproto.spawnAgent", (opts?: { adapter?: string }) =>
+      runSpawnWizard(client, store, workspacePin, opts?.adapter),
+    ),
   )
 }
 
-async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspacePin: WorkspacePinStore): Promise<void> {
+async function runSpawnWizard(
+  client: DaemonClient,
+  store: SessionStore,
+  workspacePin: WorkspacePinStore,
+  initialHarnessSlug?: string,
+): Promise<void> {
   // ── Fetch both adapters (for fallback) and catalog (preferred) ────────────
   let adapters: SpawnAdapterInfo[]
   let catalog: Awaited<ReturnType<DaemonClient["catalogModels"]>> | undefined
@@ -135,30 +143,47 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
 
   const holdDefault = holdPermissionsSetting()
   let answers: SpawnWizardAnswers
-  // Entry picker: tall one-click rows for the combos you actually reach for —
-  // favorites, then latest-used (deriveRecentSpawns) — each carrying the whole
-  // harness·model·provider·wallet in its `detail` line, so a single Enter
-  // spawns. "Browse all models…" opens the harness drill-down for anything
-  // else; "Configure…" the full chain. A brand-new user (no favorites, no
-  // recent) has nothing to one-click, so fall straight through to the harness
-  // picker rather than show an entry list that's only the two trailing rows.
-  const recent = deriveRecentSpawns(store.sessions)
-  const hasQuickRows = userPresets.length > 0 || recent.length > 0
-  const pickerItems = hasQuickRows
-    ? mapQuickSpawnItems(userPresets, recent, Date.now())
-    : mapHarnessEntryItems(adapters)
-  let picked = await vscode.window.showQuickPick(pickerItems, {
-    placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd, holdDefault),
-  })
-  if (!picked) return
-  // "Browse all models…" reopens the harness drill-down; its result (a harness
-  // row, or Configure…) replaces `picked` and flows on through the same steps.
-  if (picked.browse) {
-    const harnessPick = await vscode.window.showQuickPick(mapHarnessEntryItems(adapters), {
-      placeHolder: "Select an agent harness",
+  // When the caller pre-selects a harness (e.g. the Harnesses webview's Start
+  // row), skip the entry picker and drill straight to that harness's models.
+  let picked: SpawnQuickPickItem | undefined
+  if (initialHarnessSlug) {
+    const adapter = adapters.find(a => a.slug === initialHarnessSlug)
+    if (!adapter) {
+      vscode.window.showWarningMessage(`agentproto: harness '${initialHarnessSlug}' is not installed.`)
+      return
+    }
+    picked = {
+      label: adapter.slug,
+      description: adapter.hint ?? adapter.status ?? adapter.name,
+      adapter,
+      harness: true,
+    }
+  } else {
+    // Entry picker: tall one-click rows for the combos you actually reach for —
+    // favorites, then latest-used (deriveRecentSpawns) — each carrying the whole
+    // harness·model·provider·wallet in its `detail` line, so a single Enter
+    // spawns. "Browse all models…" opens the harness drill-down for anything
+    // else; "Configure…" the full chain. A brand-new user (no favorites, no
+    // recent) has nothing to one-click, so fall straight through to the harness
+    // picker rather than show an entry list that's only the two trailing rows.
+    const recent = deriveRecentSpawns(store.sessions)
+    const hasQuickRows = userPresets.length > 0 || recent.length > 0
+    const pickerItems = hasQuickRows
+      ? mapQuickSpawnItems(userPresets, recent, Date.now())
+      : mapHarnessEntryItems(adapters)
+    picked = await vscode.window.showQuickPick(pickerItems, {
+      placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd, holdDefault),
     })
-    if (!harnessPick) return
-    picked = harnessPick
+    if (!picked) return
+    // "Browse all models…" reopens the harness drill-down; its result (a harness
+    // row, or Configure…) replaces `picked` and flows on through the same steps.
+    if (picked.browse) {
+      const harnessPick = await vscode.window.showQuickPick(mapHarnessEntryItems(adapters), {
+        placeHolder: "Select an agent harness",
+      })
+      if (!harnessPick) return
+      picked = harnessPick
+    }
   }
   // Stage two: a harness row narrows to that harness's models (catalog-scoped,
   // or the manifest list on an old daemon). The picked model row replaces
