@@ -35,6 +35,18 @@ function assistantMsg(text: string): SDKMessage {
     message: { content: [{ type: "text", text }] },
   } as unknown as SDKMessage
 }
+function toolUseMsg(toolUseId: string, name: string): SDKMessage {
+  return {
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id: toolUseId, name, input: {} }] },
+  } as unknown as SDKMessage
+}
+function toolResultMsg(toolUseId: string): SDKMessage {
+  return {
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "ok" }] },
+  } as unknown as SDKMessage
+}
 function resultMsg(): SDKMessage {
   return {
     type: "result",
@@ -201,4 +213,38 @@ describe("ClaudeSdkAcpAgent — smoke (faked SDK stream)", () => {
     expect(res.stopReason).toBe("refusal")
     expect((updates[0]!.content as { text: string }).text).toContain("claude-sdk error")
   })
+
+  it("keeps the turn alive during a long tool run: pending tool uses a longer watchdog", async () => {
+    const updates: Array<Record<string, unknown>> = []
+    const query: QueryFn = () =>
+      (async function* (): AsyncGenerator<SDKMessage> {
+        yield initMsg("sdk-tool-long")
+        yield toolUseMsg("tu_1", "some_tool")
+        // Tool execution takes longer than the generation watchdog but less than
+        // the tool-pending watchdog.
+        await new Promise((r) => setTimeout(r, 80))
+        yield toolResultMsg("tu_1")
+        yield assistantMsg("done")
+        yield resultMsg()
+      })()
+    const host = new ClaudeSdkAcpAgent(fakeConn(updates), { idleTimeoutMs: 40 }, query)
+
+    const { sessionId } = await host.newSession({ cwd: "/tmp", mcpServers: [] } as never)
+    const res = await host.prompt({ sessionId, prompt: [{ type: "text", text: "use tool" }] } as never)
+
+    expect(res.stopReason).toBe("end_turn")
+    expect(updates.map((u) => u.sessionUpdate)).toEqual([
+      "tool_call",
+      "tool_call_update",
+      "agent_message_chunk",
+      "usage_update",
+    ])
+    const stall = updates.find(
+      (u) =>
+        u.sessionUpdate === "agent_message_chunk" &&
+        typeof (u.content as { text?: string }).text === "string" &&
+        (u.content as { text: string }).text.includes("stalled"),
+    )
+    expect(stall).toBeUndefined()
+  }, 5_000)
 })

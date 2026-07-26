@@ -89,6 +89,11 @@ function main(): void {
     ...(idleTimeoutMsFromEnv(process.env.CLAUDE_SDK_IDLE_TIMEOUT_MS) !== undefined
       ? { idleTimeoutMs: idleTimeoutMsFromEnv(process.env.CLAUDE_SDK_IDLE_TIMEOUT_MS) }
       : {}),
+    // Extended watchdog while tool calls are pending. Prevents the generation
+    // watchdog from aborting a healthy turn during long tool execution.
+    ...(idleTimeoutMsFromEnv(process.env.CLAUDE_SDK_TOOL_IDLE_TIMEOUT_MS) !== undefined
+      ? { toolIdleTimeoutMs: idleTimeoutMsFromEnv(process.env.CLAUDE_SDK_TOOL_IDLE_TIMEOUT_MS) }
+      : {}),
   }
   // The connection keeps the process alive (it holds stdin open); no explicit
   // wait loop needed.
