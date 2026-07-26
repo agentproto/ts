@@ -297,6 +297,17 @@ function findCatalogProduct(
   for (const vendor of catalog.vendors) {
     const match = vendor.products.find(p => p.product === product || p.product === model)
     if (match) return { vendor: vendor.vendor, product: match }
+    // Router-prefixed ids (`openrouter/vendor/product`) yield `product =
+    // vendor/product`; try matching that split explicitly.
+    const slash = product.indexOf("/")
+    if (slash !== -1) {
+      const productVendor = product.slice(0, slash)
+      const productName = product.slice(slash + 1)
+      if (productVendor === vendor.vendor) {
+        const splitMatch = vendor.products.find(p => p.product === productName)
+        if (splitMatch) return { vendor: vendor.vendor, product: splitMatch }
+      }
+    }
   }
   return undefined
 }

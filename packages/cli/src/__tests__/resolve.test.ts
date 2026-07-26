@@ -5,6 +5,7 @@ import {
   resolveAdapter,
   listInstalledAdapters,
   listAdaptersWithCatalog,
+  toAuthDescriptor,
   _resetLastKnownGoodForTests,
   _setLastKnownGoodTtlMsForTests,
 } from "../registry/resolve.js"
@@ -158,6 +159,35 @@ describe("listInstalledAdapters — structured models.allowed (provider/mode)", 
 
     const entry = codex?.modelDetails.find((m) => m.id === "gpt-5-codex")
     expect(entry).toEqual({ id: "gpt-5-codex" })
+  })
+})
+
+// `toAuthDescriptor` projects the manifest billing-auth fields into the
+// runtime's `AdapterAuthDescriptor`. For model-derived-api-key adapters
+// (opencode), the flag must flow through so the catalog join and spawn
+// eligibility know api-key auth is presentable on the model-derived route.
+describe("toAuthDescriptor", () => {
+  it("projects modelDerivedApiKey and per-model providers", { timeout: 15_000 }, async () => {
+    const resolved = await resolveAdapter("opencode")
+    const descriptor = toAuthDescriptor(resolved.handle)
+    expect(descriptor.modelDerivedApiKey).toBe(true)
+    expect(descriptor.modelProviders).toBeDefined()
+    expect(descriptor.modelProviders?.["anthropic/claude-sonnet-4-5"]).toBe("anthropic")
+    expect(descriptor.modelProviders?.["openai/gpt-5"]).toBe("openai")
+    expect(descriptor.modelProviders?.["openrouter/anthropic/claude-fable-5"]).toBe("openrouter")
+  })
+
+  it("drops unrecognized provider strings instead of guessing", () => {
+    const descriptor = toAuthDescriptor({
+      provider: "not-a-real-provider",
+      models: {
+        allowed: [
+          { id: "foo/bar", provider: "also-not-real" },
+        ],
+      },
+    } as unknown as Awaited<ReturnType<typeof resolveAdapter>>["handle"])
+    expect(descriptor.provider).toBeUndefined()
+    expect(Object.keys(descriptor.modelProviders ?? {})).toHaveLength(0)
   })
 })
 

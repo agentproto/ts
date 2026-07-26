@@ -538,6 +538,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../../packages/driver/agent-cli
+      '@agentproto/model-catalog':
+        specifier: workspace:*
+        version: link:../../packages/model-catalog
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*

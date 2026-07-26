@@ -523,6 +523,55 @@ describe("buildCatalogModels — mastracode model-derived api-key eligibility", 
   })
 })
 
+describe("buildCatalogModels — model-derived api-key adapters (opencode)", () => {
+  const opencodeAdapter = (models: CatalogAdapterInput["models"]): CatalogAdapterInput => ({
+    slug: "opencode",
+    models,
+    authDescriptor: { modelDerivedApiKey: true },
+    routeSelection: "derived-from-model",
+  })
+
+  it("makes a direct Anthropic route runnable when an anthropic api-key profile exists", () => {
+    const response = buildCatalogModels({
+      adapters: [opencodeAdapter([{ id: "anthropic/claude-sonnet-4-5", provider: "anthropic" }])],
+      profiles: [anthropicApiKey],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toContain("work-anthropic-key")
+    expect(route?.curated).toBe(true)
+    expect(route?.adapters).toContain("opencode")
+  })
+
+  it("leaves a direct route unrunnable when no matching profile exists", () => {
+    const response = buildCatalogModels({
+      adapters: [opencodeAdapter([{ id: "anthropic/claude-sonnet-4-5", provider: "anthropic" }])],
+      profiles: [],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("treats an explicit OpenRouter model as a gateway route (api-key only)", () => {
+    const openrouterKey: AuthProfile = {
+      id: "personal-openrouter",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref-openrouter",
+    }
+    const response = buildCatalogModels({
+      adapters: [opencodeAdapter([{ id: "openrouter/anthropic/claude-sonnet-4-5", provider: "openrouter" }])],
+      profiles: [openrouterKey],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "openrouter")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toContain("personal-openrouter")
+  })
+})
+
 describe("buildCatalogModels — query filters", () => {
   it("?adapter= keeps only routes reachable via that adapter slug", () => {
     const response = buildCatalogModels({
@@ -1157,6 +1206,10 @@ describe("resolveEffectiveRoute", () => {
 
   it("returns the vendor-implied route when no route.gateway is set", () => {
     expect(resolveEffectiveRoute("anthropic/claude-sonnet-5", undefined)).toBe("anthropic")
+  })
+
+  it("normalizes a router-prefixed id (`openrouter/vendor/product`) to its explicit route", () => {
+    expect(resolveEffectiveRoute("openrouter/anthropic/claude-sonnet-5", undefined)).toBe("openrouter")
   })
 
   it("returns route.gateway for a bare/unparseable model", () => {
