@@ -18,7 +18,7 @@ import type {
   ProviderPresetEntry,
 } from "../client/types.js"
 import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
-import type { AuthProfileNode } from "../views/authProfilesTree.logic.js"
+import { profileCuratedIds, type AuthProfileNode } from "../views/authProfilesTree.logic.js"
 import {
   buildAuthProfilesWebviewModel,
   type AuthProfilesExpandedState,
@@ -28,6 +28,17 @@ import {
   type RouterWebviewRow,
 } from "./authProfilesWebview.logic.js"
 import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
+import {
+  buildCreateRequest,
+  suggestProfileId,
+  successMessage,
+  validateCredential,
+  validateProfileId,
+} from "../commands/authProfileFlow.logic.js"
+import {
+  buildModelPickItems,
+  resolveModelSelection,
+} from "../commands/authProfileModelPicker.logic.js"
 
 const VIEW_TYPE = "agentproto.authProfilesWebview"
 
@@ -37,18 +48,33 @@ interface ModelMessage {
   search: string
 }
 
-type HostMessage = ModelMessage
+interface SetModelsDialogMessage {
+  type: "setModelsDialog"
+  profileId: string
+  items: { id: string; label: string; description?: string; detail?: string; picked: boolean }[]
+}
+
+interface ConnectDialogMessage {
+  type: "connectDialog"
+  slug: string
+  suggestedId: string
+  name: string
+}
+
+type HostMessage = ModelMessage | SetModelsDialogMessage | ConnectDialogMessage
 
 type WebviewToHostMessage =
   | { type: "ready" }
   | { type: "filter"; search: string }
   | { type: "toggleSection"; section: "presets" | "profiles" | "router" }
   | { type: "toggleProfile"; profileId: string }
-  | { type: "connect"; slug: string }
+  | { type: "connect"; slug: string; id: string; label?: string }
+  | { type: "requestConnect"; slug: string }
   | { type: "enable"; profileId: string }
   | { type: "disable"; profileId: string }
   | { type: "delete"; profileId: string }
-  | { type: "setModels"; profileId: string }
+  | { type: "setModels"; profileId: string; ids: string[] }
+  | { type: "requestSetModels"; profileId: string }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   if (typeof value !== "object" || value === null) return false
@@ -111,7 +137,7 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [this.extensionUri],
     }
-    webviewView.webview.html = buildHtml(randomNonce(), this.extensionUri)
+    webviewView.webview.html = buildHtml(randomNonce(), webviewView.webview.cspSource)
 
     webviewView.webview.onDidReceiveMessage((raw: unknown) => {
       if (!isWebviewToHostMessage(raw)) return
@@ -166,12 +192,20 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
         this.post()
         return
       }
+      case "requestConnect": {
+        void this.openConnectDialog(msg.slug)
+        return
+      }
       case "connect": {
-        const preset = this.presets.find(p => p.slug === msg.slug)
-        if (preset) {
-          const node: AuthProfileNode = { kind: "preset", preset, connected: false }
-          void vscode.commands.executeCommand("agentproto.connectAuthProfile", node)
-        }
+        void this.runConnectPresetFlow(msg.slug, msg.id, msg.label)
+        return
+      }
+      case "requestSetModels": {
+        void this.openSetModelsDialog(msg.profileId)
+        return
+      }
+      case "setModels": {
+        void this.applySetModels(msg.profileId, msg.ids)
         return
       }
       case "enable": {
@@ -187,11 +221,6 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
       case "delete": {
         const node: AuthProfileNode = { kind: "profile", profileId: msg.profileId, routesCount: 0 }
         void vscode.commands.executeCommand("agentproto.deleteAuthProfile", node)
-        return
-      }
-      case "setModels": {
-        const node: AuthProfileNode = { kind: "profile", profileId: msg.profileId, routesCount: 0 }
-        void vscode.commands.executeCommand("agentproto.setAuthProfileModels", node)
         return
       }
     }
@@ -214,6 +243,92 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
       search: this.search,
     }
     void this.view.webview.postMessage(message satisfies HostMessage)
+  }
+
+  private async openConnectDialog(slug: string): Promise<void> {
+    if (!this.view) return
+    const preset = this.presets.find(p => p.slug === slug)
+    const name = preset?.name?.trim() || slug
+    const suggestedId = suggestProfileId("api-key", slug)
+    const message: ConnectDialogMessage = { type: "connectDialog", slug, suggestedId, name }
+    void this.view.webview.postMessage(message)
+  }
+
+  private async openSetModelsDialog(profileId: string): Promise<void> {
+    if (!this.view) return
+    const summary = this.profiles.find(p => p.id === profileId)
+    if (!summary) return
+    let models: Awaited<ReturnType<DaemonClient["getCatalogProviderModels"]>> = { provider: summary.endpoint, models: [] }
+    try {
+      models = await this.client.getCatalogProviderModels(summary.endpoint)
+    } catch {
+      // Fall through to empty list — the dialog will show nothing to pick.
+    }
+    const current = profileCuratedIds(summary)
+    const items = buildModelPickItems(models.models, current).map(i => ({
+      id: i.id,
+      label: i.label,
+      description: i.description,
+      detail: i.detail,
+      picked: i.picked,
+    }))
+    const message: SetModelsDialogMessage = { type: "setModelsDialog", profileId, items }
+    void this.view.webview.postMessage(message)
+  }
+
+  private async applySetModels(profileId: string, ids: string[]): Promise<void> {
+    const write = resolveModelSelection(ids)
+    try {
+      await this.client.setAuthProfileModels(profileId, write.mode, write.ids)
+      void vscode.window.showInformationMessage(
+        write.mode === "all"
+          ? `"${profileId}" now allows all eligible models.`
+          : `"${profileId}" now allows ${write.ids.length} model${write.ids.length === 1 ? "" : "s"}.`,
+      )
+      await this.treeProvider.refresh()
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `Could not set allowed models for "${profileId}": ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  private async runConnectPresetFlow(slug: string, id: string, label?: string): Promise<void> {
+    const trimmedId = id.trim()
+    if (!trimmedId) {
+      void vscode.window.showErrorMessage("Profile id is required.")
+      return
+    }
+    const existingIds = this.profiles.map(p => p.id)
+    const idError = validateProfileId(trimmedId, existingIds)
+    if (idError) {
+      void vscode.window.showErrorMessage(idError)
+      return
+    }
+    const credential = await vscode.window.showInputBox({
+      title: `Connect ${slug}: credential`,
+      prompt: `Paste the ${slug} API key`,
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: validateCredential,
+    })
+    if (!credential) return
+    const request = buildCreateRequest({
+      id: trimmedId,
+      endpoint: slug,
+      method: "api-key",
+      credential,
+      label: label?.trim(),
+    })
+    try {
+      const created = await this.client.createAuthProfile(request)
+      void vscode.window.showInformationMessage(successMessage(created))
+      await this.treeProvider.refresh()
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `Could not connect ${slug}: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
   }
 }
 
@@ -283,10 +398,12 @@ function escapeHtml(text: string): string {
   })
 }
 
-export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
+export function buildHtml(nonce: string, cspSource: string): string {
   const csp = [
     "default-src 'none'",
     "style-src 'unsafe-inline'",
+    `img-src ${cspSource}`,
+    `connect-src ${cspSource}`,
     `script-src 'nonce-${nonce}'`,
   ].join("; ")
 
@@ -384,7 +501,33 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
     .row:hover .profile-actions { display: flex; }
     .profile-actions span { cursor: pointer; color: var(--vscode-descriptionForeground); }
     .profile-actions span:hover { color: var(--vscode-foreground); }
-  </style>
+    .dialog-backdrop {
+      position: absolute; inset: 0; z-index: 20;
+      background: var(--vscode-editor-background, var(--vscode-sideBar-background));
+      display: none; flex-direction: column;
+    }
+    .dialog-backdrop.show { display: flex; }
+    .dialog { flex: 1 1 auto; display: flex; flex-direction: column; padding: 12px; }
+    .dialog-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--vscode-foreground); }
+    .dialog-body { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+    .dialog-input {
+      width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-panel-border); padding: 4px 6px; margin-bottom: 10px;
+      font-family: inherit; font-size: 12px;
+    }
+    .dialog-input:focus { outline: 1px solid var(--vscode-focusBorder); border-color: var(--vscode-focusBorder); }
+    .model-list { flex: 1 1 auto; overflow-y: auto; border: 1px solid var(--vscode-panel-border); padding: 4px 0; }
+    .model-item { display: flex; align-items: flex-start; gap: 8px; padding: 4px 8px; cursor: pointer; }
+    .model-item:hover { background: var(--vscode-list-hoverBackground); }
+    .model-item input { flex: 0 0 auto; margin-top: 2px; }
+    .model-item .label-col { min-width: 0; }
+    .model-item .label { font-size: 12px; color: var(--vscode-foreground); }
+    .model-item .detail { font-size: 10px; color: var(--vscode-descriptionForeground); }
+    .dialog-actions { flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 8px; padding-top: 10px; }
+    .dialog-actions button { padding: 3px 10px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; font-family: inherit; font-size: 12px; }
+    .dialog-actions button:hover { background: var(--vscode-button-hoverBackground); }
+    .dialog-actions button.secondary { background: transparent; color: var(--vscode-foreground); }
+    .dialog-actions button.secondary:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
 </head>
 <body>
   <div id="search">
@@ -395,6 +538,16 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
   <div id="summary"></div>
   <div id="list"></div>
   <div id="empty" hidden>Nothing matches.</div>
+  <div id="dialog-backdrop" class="dialog-backdrop">
+    <div class="dialog">
+      <div id="dialog-title" class="dialog-title"></div>
+      <div id="dialog-body" class="dialog-body"></div>
+      <div class="dialog-actions">
+        <button id="dialog-cancel" class="secondary">Cancel</button>
+        <button id="dialog-confirm">Confirm</button>
+      </div>
+    </div>
+  </div>
   <script nonce="${nonce}">
     (function () {
       const vscode = acquireVsCodeApi();
@@ -403,6 +556,11 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
       const listEl = document.getElementById('list');
       const emptyEl = document.getElementById('empty');
       const summaryEl = document.getElementById('summary');
+      const dialogBackdrop = document.getElementById('dialog-backdrop');
+      const dialogTitle = document.getElementById('dialog-title');
+      const dialogBody = document.getElementById('dialog-body');
+      const dialogConfirm = document.getElementById('dialog-confirm');
+      const dialogCancel = document.getElementById('dialog-cancel');
 
       function escapeHtml(text) {
         return String(text).replace(/[&<>"']/g, function (ch) {
@@ -525,6 +683,64 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
         for (var j = 0; j < svgs.length; j++) loadSvg(svgs[j]);
       }
 
+      var dialogState = { mode: 'none', profileId: null, slug: null };
+
+      function hideDialog() {
+        dialogState = { mode: 'none', profileId: null, slug: null };
+        dialogBackdrop.classList.remove('show');
+        dialogBody.innerHTML = '';
+      }
+
+      function showSetModelsDialog(payload) {
+        dialogState = { mode: 'setModels', profileId: payload.profileId, slug: null };
+        dialogTitle.textContent = 'Allowed models for ' + escapeHtml(payload.profileId);
+        dialogConfirm.textContent = 'Save';
+        var html = '<div class="model-list">';
+        for (var i = 0; i < payload.items.length; i++) {
+          var item = payload.items[i];
+          var detail = item.detail ? '<div class="detail">' + escapeHtml(item.detail) + '</div>' : '';
+          var desc = item.description ? '<div class="detail">' + escapeHtml(item.description) + '</div>' : '';
+          html += '<label class="model-item">' +
+            '<input type="checkbox" data-model-id="' + escapeHtml(item.id) + '"' + (item.picked ? ' checked' : '') + ' />' +
+            '<span class="label-col"><div class="label">' + escapeHtml(item.label) + '</div>' + desc + detail + '</span>' +
+            '</label>';
+        }
+        html += '</div>';
+        dialogBody.innerHTML = html;
+        dialogBackdrop.classList.add('show');
+      }
+
+      function showConnectDialog(payload) {
+        dialogState = { mode: 'connect', profileId: null, slug: payload.slug };
+        dialogTitle.textContent = 'Connect ' + escapeHtml(payload.name);
+        dialogConfirm.textContent = 'Connect';
+        dialogBody.innerHTML =
+          '<label>Profile id</label>' +
+          '<input id="connect-id" class="dialog-input" value="' + escapeHtml(payload.suggestedId) + '" />' +
+          '<label>Label (optional)</label>' +
+          '<input id="connect-label" class="dialog-input" placeholder="e.g. ' + escapeHtml(payload.name) + ' API Key" />';
+        dialogBackdrop.classList.add('show');
+        document.getElementById('connect-id').focus();
+      }
+
+      dialogCancel.addEventListener('click', hideDialog);
+      dialogConfirm.addEventListener('click', function () {
+        if (dialogState.mode === 'setModels') {
+          var checked = dialogBody.querySelectorAll('input[type="checkbox"]:checked');
+          var ids = [];
+          for (var i = 0; i < checked.length; i++) ids.push(checked[i].getAttribute('data-model-id'));
+          vscode.postMessage({ type: 'setModels', profileId: dialogState.profileId, ids: ids });
+          hideDialog();
+        } else if (dialogState.mode === 'connect') {
+          var idEl = document.getElementById('connect-id');
+          var labelEl = document.getElementById('connect-label');
+          var id = idEl ? idEl.value.trim() : '';
+          if (!id) return;
+          vscode.postMessage({ type: 'connect', slug: dialogState.slug, id: id, label: labelEl ? labelEl.value.trim() : undefined });
+          hideDialog();
+        }
+      });
+
       listEl.addEventListener('click', function (e) {
         var sectionHeader = e.target.closest('.section-header');
         if (sectionHeader) {
@@ -536,7 +752,7 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
         if (profileRow) {
           var setModelsBtn = e.target.closest('[data-set-models]');
           if (setModelsBtn) {
-            vscode.postMessage({ type: 'setModels', profileId: setModelsBtn.getAttribute('data-set-models') });
+            vscode.postMessage({ type: 'requestSetModels', profileId: setModelsBtn.getAttribute('data-set-models') });
             return;
           }
           var toggleBtn = e.target.closest('[data-toggle]');
@@ -556,7 +772,7 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
         }
         var presetRow = e.target.closest('[data-kind="preset"]');
         if (presetRow) {
-          vscode.postMessage({ type: 'connect', slug: presetRow.getAttribute('data-slug') });
+          vscode.postMessage({ type: 'requestConnect', slug: presetRow.getAttribute('data-slug') });
           return;
         }
       });
@@ -579,6 +795,8 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
       window.addEventListener('message', function (event) {
         var msg = event.data;
         if (msg && msg.type === 'model') render(msg);
+        else if (msg && msg.type === 'setModelsDialog') showSetModelsDialog(msg);
+        else if (msg && msg.type === 'connectDialog') showConnectDialog(msg);
       });
 
       vscode.postMessage({ type: 'ready' });

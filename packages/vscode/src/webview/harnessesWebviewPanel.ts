@@ -49,6 +49,7 @@ type WebviewToHostMessage =
   | { type: "ready" }
   | { type: "filter"; search: string }
   | { type: "install"; slug: string }
+  | { type: "spawn"; slug: string }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   if (typeof value !== "object" || value === null) return false
@@ -73,7 +74,7 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [this.extensionUri],
     }
-    webviewView.webview.html = buildHtml(randomNonce(), this.extensionUri)
+    webviewView.webview.html = buildHtml(randomNonce(), webviewView.webview.cspSource)
 
     webviewView.webview.onDidReceiveMessage((raw: unknown) => {
       if (!isWebviewToHostMessage(raw)) return
@@ -116,6 +117,14 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
         if (adapter) {
           const node: HarnessNode = { adapter }
           void vscode.commands.executeCommand("agentproto.installHarness", node)
+        }
+        return
+      }
+      case "spawn": {
+        const adapter = this.adapters.find(a => a.slug === msg.slug)
+        if (adapter) {
+          const node: HarnessNode = { adapter }
+          void vscode.commands.executeCommand("agentproto.spawnWithHarness", node)
         }
         return
       }
@@ -185,10 +194,12 @@ function toRenderRow(row: HarnessWebviewRow, webview: vscode.Webview, extensionU
   }
 }
 
-export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
+export function buildHtml(nonce: string, cspSource: string): string {
   const csp = [
     "default-src 'none'",
     "style-src 'unsafe-inline'",
+    `img-src ${cspSource}`,
+    `connect-src ${cspSource}`,
     `script-src 'nonce-${nonce}'`,
   ].join("; ")
 
@@ -256,6 +267,11 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
       padding: 1px 6px; border-radius: 3px; opacity: 0.9; cursor: pointer;
     }
     .row:not(:hover) .right.install { opacity: 0.55; }
+    .right.check { font-size: 10.5px; color: var(--vscode-descriptionForeground); }
+    .row:hover .right.check { display: none; }
+    .right.start { display: none; cursor: pointer; font-size: 11px; color: var(--vscode-descriptionForeground); }
+    .row:hover .right.start { display: inline-block; }
+    .right.start:hover { color: var(--vscode-foreground); }
     #empty { padding: 32px 16px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; }
     #empty[hidden] { display: none; }
   </style>
@@ -295,8 +311,12 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
       }
 
       function rowHTML(r) {
-        var installClass = r.installable ? 'right install' : 'right';
-        var right = r.installable ? '<span class="' + installClass + '" data-install="' + escapeHtml(r.slug) + '">Install</span>' : '<span class="right">✓</span>';
+        var right;
+        if (r.installable) {
+          right = '<span class="right install" data-install="' + escapeHtml(r.slug) + '">Install</span>';
+        } else {
+          right = '<span class="right check">✓</span><span class="right start" data-spawn="' + escapeHtml(r.slug) + '" title="Start session with this harness">▶</span>';
+        }
         return '<div class="row" data-slug="' + escapeHtml(r.slug) + '">' +
           '<span class="dot ' + r.status + '"></span>' +
           logoHtml(r.logo) +
@@ -346,6 +366,11 @@ export function buildHtml(nonce: string, extensionUri: vscode.Uri): string {
         var installBtn = e.target.closest('[data-install]');
         if (installBtn) {
           vscode.postMessage({ type: 'install', slug: installBtn.getAttribute('data-install') });
+          return;
+        }
+        var spawnBtn = e.target.closest('[data-spawn]');
+        if (spawnBtn) {
+          vscode.postMessage({ type: 'spawn', slug: spawnBtn.getAttribute('data-spawn') });
           return;
         }
       });

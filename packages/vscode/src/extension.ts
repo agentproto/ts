@@ -128,7 +128,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // package.json's `when` clauses make the two mutually exclusive in the
   // sidebar). Shares the same store + filter's workspace join as the tree and
   // opens transcripts through the same transcriptPanels.open().
-  registerSessionsWebview(ctx, store, filter, transcriptPanels)
+  registerSessionsWebview(ctx, store, filter, transcriptPanels, seen)
   // Opt-in webview alternatives for Harnesses and Auth Profiles, gated by
   // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
   registerHarnessesWebview(ctx, client, harnessesProvider)

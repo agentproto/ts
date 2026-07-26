@@ -27,6 +27,7 @@ import * as vscode from "vscode"
 import type { SessionDescriptor } from "../client/types.js"
 import type { SessionFilterController } from "../commands/sessionFilter.js"
 import { isPendingSession } from "../services/pending.logic.js"
+import type { SeenTracker } from "../services/seen.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import {
   buildSessionsWebviewModel,
@@ -58,6 +59,7 @@ interface RenderRow {
   ctxPercent: number | undefined
   cost: string | undefined
   time: string
+  unread: boolean
 }
 
 interface RenderGroup {
@@ -91,7 +93,7 @@ function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   )
 }
 
-function toRenderRow(row: WebviewRow, activeSessionId: string | undefined): RenderRow {
+function toRenderRow(row: WebviewRow, activeSessionId: string | undefined, seen: SeenTracker): RenderRow {
   return {
     id: row.id,
     isSub: row.isSub,
@@ -105,16 +107,17 @@ function toRenderRow(row: WebviewRow, activeSessionId: string | undefined): Rend
     ctxPercent: row.ctxPercent,
     cost: row.cost,
     time: row.time,
+    unread: seen.isUnread(row.session),
   }
 }
 
-function toRenderGroup(group: WebviewGroup, activeSessionId: string | undefined): RenderGroup {
+function toRenderGroup(group: WebviewGroup, activeSessionId: string | undefined, seen: SeenTracker): RenderGroup {
   return {
     id: group.id,
     name: group.name,
     count: group.count,
-    recent: group.section.recent.map(r => toRenderRow(r, activeSessionId)),
-    older: group.section.older.map(r => toRenderRow(r, activeSessionId)),
+    recent: group.section.recent.map(r => toRenderRow(r, activeSessionId, seen)),
+    older: group.section.older.map(r => toRenderRow(r, activeSessionId, seen)),
   }
 }
 
@@ -127,6 +130,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     private readonly store: SessionStore,
     private readonly filter: SessionFilterController,
     private readonly transcriptPanels: TranscriptPanels,
+    private readonly seen: SeenTracker,
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -193,7 +197,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     const filterActive = this.tab !== "all" || this.search.trim().length > 0
     const message: ModelMessage = {
       type: "model",
-      groups: model.groups.map(g => toRenderGroup(g, activeSessionId)),
+      groups: model.groups.map(g => toRenderGroup(g, activeSessionId, this.seen)),
       summary: summaryTextFor(model, filterActive),
     }
     void this.view.webview.postMessage(message satisfies HostMessage)
@@ -213,12 +217,14 @@ export function registerSessionsWebview(
   store: SessionStore,
   filter: SessionFilterController,
   transcriptPanels: TranscriptPanels,
+  seen: SeenTracker,
 ): void {
-  const provider = new SessionsWebviewProvider(store, filter, transcriptPanels)
+  const provider = new SessionsWebviewProvider(store, filter, transcriptPanels, seen)
   ctx.subscriptions.push(
     vscode.window.registerWebviewViewProvider(VIEW_TYPE, provider),
     store.onDidChange(() => provider.refresh()),
     filter.onDidChange(() => provider.refresh()),
+    seen.onDidChange(() => provider.refresh()),
     vscode.window.tabGroups.onDidChangeTabs(() => provider.refresh()),
   )
 }
@@ -305,9 +311,12 @@ export function buildHtml(nonce: string): string {
     .row.sub .name { font-size: 12.5px; font-weight: 500; color: var(--vscode-descriptionForeground); }
     .row.sub .dot { width: 5px; height: 5px; opacity: 0.7; }
     .dot { margin-top: 5px; width: 7px; height: 7px; }
-    .dot.live { background: var(--vscode-charts-green, #2ea043); border-radius: 50%; }
+    .dot.live { background: var(--vscode-charts-green, #2ea043); border-radius: 50%; animation: agentproto-pulse-live 1.6s ease-in-out infinite; }
     .dot.awaiting { border: 1.5px solid var(--vscode-editorWarning-foreground, #cca700); border-radius: 50%; }
-    .dot.done { background: var(--vscode-descriptionForeground); border-radius: 50%; opacity: 0.5; }
+    .dot.done { background: transparent; border: 1.5px solid var(--vscode-descriptionForeground); border-radius: 50%; opacity: 0.5; }
+    .dot.done.unread { background: var(--vscode-charts-green, #2ea043); border-color: var(--vscode-charts-green, #2ea043); opacity: 1; }
+    @keyframes agentproto-pulse-live { 0%, 100% { opacity: 0.55; transform: scale(0.9); } 50% { opacity: 1; transform: scale(1); } }
+    @media (prefers-reduced-motion: reduce) { .dot.live { animation: none; } }
     .mid { min-width: 0; }
     .name {
       font-size: 13px; font-weight: 550; color: var(--vscode-foreground); letter-spacing: -0.01em;
@@ -324,11 +333,12 @@ export function buildHtml(nonce: string): string {
     .ctxbar { display: inline-flex; align-items: center; gap: 5px; }
     .ctxbar .track { width: 22px; height: 2px; background: var(--vscode-panel-border, rgba(128,128,128,0.35)); position: relative; }
     .ctxbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--vscode-descriptionForeground); }
-    .right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; padding-top: 1px; min-height: 14px; }
-    .time { font-size: 10.5px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
-    .row:hover .time { display: none; }
-    .acts { display: none; } .row:hover .acts { display: block; }
-    .acts span { color: var(--vscode-descriptionForeground); font-size: 12px; }
+    .right { position: relative; display: grid; align-items: center; justify-items: end; padding-top: 1px; min-height: 14px; }
+    .time { grid-area: 1 / 1; font-size: 10.5px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; opacity: 1; }
+    .row:hover .time { opacity: 0; }
+    .acts { grid-area: 1 / 1; opacity: 0; }
+    .row:hover .acts { opacity: 1; }
+    .acts span { color: var(--vscode-descriptionForeground); font-size: 12px; cursor: pointer; }
     .acts span:hover { color: var(--vscode-foreground); }
     #empty { padding: 32px 16px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; }
     #empty[hidden] { display: none; }
@@ -367,6 +377,7 @@ export function buildHtml(nonce: string): string {
 
       function rowHTML(r) {
         var classes = 'row' + (r.isSub ? ' sub' : '') + (r.open ? ' open' : '');
+        var dotClasses = 'dot ' + r.status + (r.status === 'done' && r.unread ? ' unread' : '');
         var tags = '<span class="tag">' + escapeHtml(r.tag) + '</span>';
         tags += '<span class="tag harness"><span class="g">' + escapeHtml(r.harnessGlyph) + '</span>' +
           (r.model ? '<span class="model">' + escapeHtml(r.model) + '</span>' : '') + '</span>';
@@ -376,7 +387,7 @@ export function buildHtml(nonce: string): string {
         }
         if (r.cost) tags += '<span class="tag cost">' + escapeHtml(r.cost) + '</span>';
         return '<div class="' + classes + '" data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '">' +
-          '<span class="dot ' + r.status + '"></span>' +
+          '<span class="' + dotClasses + '"></span>' +
           '<div class="mid">' +
             '<div class="name"><span>' + escapeHtml(r.name) + '</span></div>' +
             (r.message ? '<div class="msg">' + escapeHtml(r.message) + '</div>' : '') +

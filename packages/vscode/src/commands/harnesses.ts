@@ -25,8 +25,8 @@ export function registerHarnessCommands(
     vscode.commands.registerCommand("agentproto.installHarness", (node?: HarnessNode) => {
       void installHarness(client, provider, node)
     }),
-    vscode.commands.registerCommand("agentproto.spawnWithHarness", (_node?: HarnessNode) => {
-      void vscode.commands.executeCommand("agentproto.spawnAgent")
+    vscode.commands.registerCommand("agentproto.spawnWithHarness", (node?: HarnessNode) => {
+      void vscode.commands.executeCommand("agentproto.spawnAgent", node?.adapter ? { adapter: node.adapter.slug } : undefined)
     }),
   )
 }

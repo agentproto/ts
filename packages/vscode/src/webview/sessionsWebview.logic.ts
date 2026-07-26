@@ -147,7 +147,7 @@ function toRow(session: SessionDescriptor, isSub: boolean, now: number): Webview
     model: session.model,
     ctxPercent: pctStr ? Number(pctStr.slice(0, -1)) : undefined,
     cost: formatCost(session.costUsd),
-    time: relativeTime(session.startedAt, now),
+    time: relativeTime(session.lastActivityAt ?? session.lastOutputAt ?? session.startedAt, now),
   }
 }
 
