@@ -522,6 +522,11 @@ export {
   type DeclaredAdapterOption,
 } from "./spawn-defaults.js"
 export {
+  buildRouteAwareLaunchConfig,
+  type RouteAwareLaunchConfig,
+  type RouteAwareLaunchConfigInput,
+} from "./launch-config.js"
+export {
   DEFAULT_ORCHESTRATOR_TOOLS,
   narrowOrchestratorTools,
   createScopeTokenRegistry,

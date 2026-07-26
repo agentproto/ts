@@ -311,6 +311,15 @@ export interface AgentCliCapabilities {
    * Paired with the daemon's POST /files/upload route.
    */
   file_attach?: boolean
+  /**
+   * The adapter has a verified native CLI resume path into a real
+   * terminal / TUI session (e.g. `claude --resume <id>` or
+   * `hermes --resume <id> --tui`). When true, the daemon MAY offer
+   * provider-native terminal restart for this adapter. ACP-level
+   * resumability (`resumable`) alone does NOT imply this — a JSON-RPC
+   * session id is not a native TUI resume. Default false.
+   */
+  nativeTerminalResume?: boolean
 }
 
 /**

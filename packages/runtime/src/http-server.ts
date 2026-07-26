@@ -326,6 +326,17 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  `resumeSessionId`. Omitted/`true` ⇒ unchanged (assumed resumable),
    *  preserving today's behaviour for every adapter that doesn't set this. */
   resumable?: boolean
+  /**
+   * Manifest-declared `capabilities.nativeTerminalResume` (AIP-45) — whether
+   * THIS adapter has a verified native CLI resume into a real terminal/TUI
+   * (e.g. `claude --resume <id>` or `hermes --resume <id> --tui`). Governs
+   * the `pty-native` restart strategy: only adapters with this flag set may
+   * be restarted via their native resume argv as a PTY session. ACP
+   * resumability (`resumable`) does NOT imply terminal compatibility.
+   * Omitted/`false` ⇒ the adapter falls back to ACP-level or fresh-spawn
+   * restart even when a native resume id is available.
+   */
+  nativeTerminalResume?: boolean
 } | null>
 
 /**

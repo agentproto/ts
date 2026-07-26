@@ -67,6 +67,10 @@ import {
   type AuthEcho,
   type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
+import {
+  buildRouteAwareLaunchConfig,
+  type RouteAwareLaunchConfig,
+} from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
@@ -682,21 +686,35 @@ export async function restartAgentSession(
     resumeSessionId?: string,
   ): Promise<SessionDescriptor> => {
     let liveSessionId: string | undefined
-    const resolvedBaseUrl = authSpec?.baseUrl ?? effRoute?.baseUrl
+    let launchConfig: RouteAwareLaunchConfig
+    try {
+      launchConfig = buildRouteAwareLaunchConfig({
+        adapter: adapterSlug,
+        model: effModel,
+        route: effRoute,
+        authSpec,
+        declaredOptions: resolved.declaredOptions,
+        routeSelection: resolved.routeSelection,
+        adapterProvider: resolved.authDescriptor?.provider,
+        prefix: "restart",
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      throw new Error(message)
+    }
     const agentSession = await resolved.startSession({
       cwd,
       ...(resumeSessionId ? { resumeSessionId } : {}),
-      ...(effModel ? { model: effModel } : {}),
+      ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
       ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
-      // Legacy AIP-45 mode remains a back-compat override only.
-      ...(overrides.mode ? { mode: overrides.mode } : {}),
+      // Legacy AIP-45 mode: prefer an explicit override; otherwise carry the
+      // prior descriptor's mode forward so a plain restart preserves it.
+      ...(effMode ? { mode: effMode } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
-      ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
-        ? { options: { base_url: resolvedBaseUrl } }
-        : {}),
+      ...(launchConfig.options ? { options: launchConfig.options } : {}),
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
@@ -728,6 +746,9 @@ export async function restartAgentSession(
       agentSession,
       adapterSlug,
       ...(resolved.resumable !== undefined ? { resumable: resolved.resumable } : {}),
+      ...(resolved.nativeTerminalResume !== undefined
+        ? { nativeTerminalResume: resolved.nativeTerminalResume }
+        : {}),
       harness: effHarness,
       ...(prev.label ? { label: prev.label } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),

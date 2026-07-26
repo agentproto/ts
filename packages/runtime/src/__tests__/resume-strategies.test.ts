@@ -54,9 +54,10 @@ describe("RESUME_STRATEGIES", () => {
 describe("hasResumeStrategy", () => {
   it("true for adapters with declared hooks", () => {
     expect(hasResumeStrategy("claude-code")).toBe(true)
+    expect(hasResumeStrategy("hermes")).toBe(true)
   })
   it("false for unknown / missing adapters", () => {
-    expect(hasResumeStrategy("hermes")).toBe(false)
+    expect(hasResumeStrategy("codex")).toBe(false)
     expect(hasResumeStrategy(undefined)).toBe(false)
     expect(hasResumeStrategy("")).toBe(false)
   })
@@ -218,10 +219,11 @@ describe("claude-code fsProbe", () => {
  * them (pty-native beats pty-plain beats agent beats unsupported).
  */
 describe("decideRestartStrategy", () => {
-  it("picks pty-native when the adapter has a captured resume id + spawnArgs", () => {
+  it("picks pty-native when the adapter has a captured resume id + spawnArgs + nativeTerminalResume", () => {
     const strategy = decideRestartStrategy({
       adapterSlug: "claude-code",
       resumeMetadata: { claudeResumeId: "abc-123" },
+      nativeTerminalResume: true,
     })
     expect(strategy).toEqual({
       kind: "pty-native",
@@ -241,6 +243,7 @@ describe("decideRestartStrategy", () => {
       adapterSlug: "claude-code",
       resumeMetadata: { claudeResumeId: "abc-123" },
       pty: true,
+      nativeTerminalResume: true,
     })
     expect(strategy.kind).toBe("pty-native")
   })
@@ -252,16 +255,31 @@ describe("decideRestartStrategy", () => {
     const strategy = decideRestartStrategy({
       adapterSlug: "claude-code",
       pty: true,
+      nativeTerminalResume: true,
     })
     expect(strategy).toEqual({ kind: "pty-plain" })
   })
 
-  it("picks agent (ACP resume) for an agent-cli session with no native strategy", () => {
+  it("picks agent (ACP resume) for an agent-cli session with no native terminal capability", () => {
+    // Hermes now has a store entry, but without nativeTerminalResume the
+    // daemon must not restart it as a raw PTY — ACP/agent is the only path.
     const strategy = decideRestartStrategy({
       adapterSlug: "hermes",
       adapterSessionId: "chat_42",
     })
     expect(strategy).toEqual({ kind: "agent", resumeSessionId: "chat_42" })
+  })
+
+  it("picks pty-native for hermes when nativeTerminalResume is set and a resume id is captured", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "hermes",
+      resumeMetadata: { hermesResumeId: "h-1" },
+      nativeTerminalResume: true,
+    })
+    expect(strategy).toEqual({
+      kind: "pty-native",
+      argv: ["hermes", "--resume", "h-1", "--tui"],
+    })
   })
 
   it("agent strategy omits resumeSessionId when the adapter never persisted one", () => {
@@ -311,11 +329,12 @@ describe("decideRestartStrategy", () => {
     ).toEqual({ kind: "agent", resumeSessionId: "chat_42" })
   })
 
-  it("claude-code's pty-native happy path is unaffected by resumable:false (shouldn't apply in practice, but proves the gate is scoped to the agent branch)", () => {
+  it("claude-code's pty-native happy path is unaffected by resumable:false (nativeTerminalResume governs pty-native, not resumable)", () => {
     const strategy = decideRestartStrategy({
       adapterSlug: "claude-code",
       resumeMetadata: { claudeResumeId: "abc-123" },
       resumable: false,
+      nativeTerminalResume: true,
     })
     expect(strategy).toEqual({
       kind: "pty-native",

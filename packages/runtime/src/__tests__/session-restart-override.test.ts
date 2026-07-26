@@ -417,7 +417,9 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     expect(restarted.desc.model).toBe("z-ai/glm-5.2@requesty")
     expect(restarted.desc.route).toEqual({ gateway: "requesty" })
-    expect(captured[0]?.model).toBe("z-ai/glm-5.2@requesty")
+    // The descriptor keeps the operator-facing model id; the wire model passed
+    // to startSession has the route suffix stripped (providers reject it).
+    expect(captured[0]?.model).toBe("z-ai/glm-5.2")
   })
 
   it("model-only override synthesizes a route when it conflicts with the prior route", async () => {
@@ -440,7 +442,9 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     expect(restarted.desc.model).toBe("anthropic/claude-sonnet-5")
     expect(restarted.desc.route).toEqual({ gateway: "anthropic" })
-    expect(captured[0]?.model).toBe("anthropic/claude-sonnet-5")
+    // Descriptor keeps the operator-facing native vendor prefix; the wire model
+    // passed to startSession is bare (fixed-provider adapters strip their own).
+    expect(captured[0]?.model).toBe("claude-sonnet-5")
   })
 
   it("throws when both overrides contradict each other", async () => {
@@ -483,6 +487,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     expect(restarted.desc.model).toBe("z-ai/glm-5.2@openrouter")
     expect(restarted.desc.route).toEqual({ gateway: "openrouter" })
-    expect(captured[0]?.model).toBe("z-ai/glm-5.2@openrouter")
+    // Wire model has the route suffix stripped before it reaches the adapter.
+    expect(captured[0]?.model).toBe("z-ai/glm-5.2")
   })
 })

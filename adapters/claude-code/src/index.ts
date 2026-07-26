@@ -204,6 +204,10 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // into the terminal → Claude reads it natively. No protocol-level
     // multimodal round-trip needed; pure file-path injection.
     file_attach: true,
+    // Claude Code has a verified native TUI resume path:
+    // `claude --resume <conversation-id>`. Governs provider-native
+    // terminal restart, distinct from ACP-level `resumable`.
+    nativeTerminalResume: true,
   },
   // Only the `lean` context mode remains a manifest `modes[]` entry (SPEC
   // §3.4a). Posture (plan / accept-edits / bypass-permissions) and the gateway

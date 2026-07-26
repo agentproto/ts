@@ -126,6 +126,11 @@ export const hermes: AgentCliHandle = defineAgentCli({
     multimodal: true,
     resumable: false,
     bidirectional: true,
+    // Hermes has a verified native TUI resume path:
+    // `hermes --resume <SESSION> --tui`. This lets the daemon offer
+    // provider-native terminal restart for Hermes sessions, distinct from
+    // its ACP-level `resumable: false` honesty.
+    nativeTerminalResume: true,
   },
   modes: [
     {

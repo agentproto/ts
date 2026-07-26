@@ -287,6 +287,13 @@ const capabilitiesSchema = z.object({
   resumable: z.boolean().optional(),
   bidirectional: z.boolean().optional(),
   /**
+   * Adapter has a verified native CLI resume into a real terminal/TUI
+   * session (e.g. `claude --resume <id>` or `hermes --resume <id> --tui`).
+   * When true, the host MAY restart this adapter via its native resume argv
+   * as a PTY session. Distinct from ACP-level `resumable`.
+   */
+  nativeTerminalResume: z.boolean().optional(),
+  /**
    * Adapter can ingest a filesystem path that the host UI just placed
    * on disk (host-side drag-drop into a terminal pastes the path
    * here). Implies the adapter has a Read-file tool wired so the
