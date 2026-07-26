@@ -22,6 +22,49 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { listModels } from "@agentproto/model-catalog"
+
+/**
+ * Build OpenCode's model menu from the shared provider catalog instead of a
+ * hand-maintained allowlist. OpenCode routes by the model id's own
+ * `<provider>/<id>` prefix, so every entry carries the billing provider the
+ * runtime's eligibility projection needs.
+ *
+ * Only providers OpenCode genuinely supports today are included:
+ *   - Anthropic and OpenAI (direct vendor prefixes)
+ *   - OpenRouter (`openrouter/<vendor>/<id>` router prefix)
+ *
+ * Groq and OpenCode-hosted are omitted from the generated menu because they
+ * are not represented in the shared catalog / profile system today. The
+ * `models.env` map still carries their key env vars, so free-form `model`
+ * overrides and manually-curated profiles continue to work.
+ */
+function buildOpencodeModelMenu(): Array<{ id: string; provider: string }> {
+  const supported = [
+    { provider: "anthropic", prefix: "anthropic" },
+    { provider: "openai", prefix: "openai" },
+    { provider: "openrouter", prefix: "openrouter" },
+  ] as const
+
+  const seen = new Set<string>()
+  const out: Array<{ id: string; provider: string }> = []
+
+  for (const { provider, prefix } of supported) {
+    for (const model of listModels({ kind: "llm", provider })) {
+      const bareId = model.id
+      const canonicalId = bareId.includes("/") ? bareId : `${prefix}/${bareId}`
+      const id = provider === "openrouter" ? `openrouter/${bareId}` : canonicalId
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push({ id, provider })
+    }
+  }
+
+  return out.sort((a, b) => {
+    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider)
+    return a.id.localeCompare(b.id)
+  })
+}
 
 export const opencode: AgentCliHandle = defineAgentCli({
   name: "opencode",
@@ -61,26 +104,25 @@ export const opencode: AgentCliHandle = defineAgentCli({
     idle_timeout_ms: 1_800_000,
     context_carryover: true,
   },
-  // opencode routes by the model id's own `<provider>/<id>` prefix itself (see
-  // models.allowed below), no adapter mode — unlike claude-sdk/claude-code,
-  // which need ANTHROPIC_BASE_URL pre-wired by a mode. So the route falls out
-  // of the chosen model → derived-from-model.
+  // opencode routes by the model id's own `<provider>/<id>` prefix itself, no
+  // adapter mode — unlike claude-sdk/claude-code, which need ANTHROPIC_BASE_URL
+  // pre-wired by a mode. So the route falls out of the chosen model →
+  // derived-from-model. The API key env var is also derived from the model's
+  // provider prefix, so the runtime must know to present api-key auth on the
+  // model-derived direct endpoint.
   routeSelection: "derived-from-model",
+  modelDerivedApiKey: true,
   models: {
-    default: "anthropic/claude-sonnet-4-6",
-    // Anthropic is no longer advertised as a pickable escalation — only the
-    // adapter's own default Claude model stays listed (repointing the default
-    // is out of scope). Premium Anthropic (Opus/Haiku) and the redundant
-    // gateway dupe are dropped from the menu so orchestrators don't select
-    // them here; the free-form `model` option still accepts any id.
-    // `provider` is read straight off each id's own prefix — opencode routes
-    // by that prefix itself, no adapter mode needed (unlike claude-sdk /
-    // claude-code, which need ANTHROPIC_BASE_URL pre-wired by a mode).
-    allowed: [
-      { id: "anthropic/claude-sonnet-4-6", provider: "anthropic" },
-      { id: "openai/gpt-5", provider: "openai" },
-      { id: "openai/gpt-5-mini", provider: "openai" },
-    ],
+    // Default to a canonical catalog model (claude-sonnet-4-5). The legacy
+    // alias `claude-sonnet-4-6` still resolves to the same model, but the
+    // generated menu uses canonical ids from the shared catalog.
+    default: "anthropic/claude-sonnet-4-5",
+    // Generated from the shared provider catalog so the Configuration Lab /
+    // harness picker shows genuinely runnable Anthropic / OpenAI / OpenRouter
+    // models instead of a hardcoded 3-item list. Groq and OpenCode-hosted are
+    // omitted because they are not represented in the catalog/profile system
+    // today; the free-form `model` option and `models.env` still support them.
+    allowed: buildOpencodeModelMenu(),
     env: {
       anthropic: "ANTHROPIC_API_KEY",
       openai: "OPENAI_API_KEY",
