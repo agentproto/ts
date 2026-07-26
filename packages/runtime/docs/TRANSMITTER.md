@@ -62,6 +62,18 @@ and, by default, binds the recipient to the calling session:
   `telegram`, the bot-token alias (defaults to `"default"`).
 - `source` — for `agentpush`, the channel/phone. For `telegram`, the chat id.
 - `contact_ref` — recipient id (`agentpush` contact_ref) or chat id (`telegram`).
+- `text` — message text. Optional when `attachments` is provided; at least one
+  of `text` or `attachments` is required.
+- `attachments` — optional array of local files to send as media:
+  ```json
+  {
+    "type": "photo",
+    "path": "/tmp/screenshot.png",
+    "caption": "optional caption"
+  }
+  ```
+  Supported types: `photo`, `document`, `video`, `audio`. Multiple attachments
+  are sent as an album/media group where the provider supports it.
 - `bind` defaults to `true` — on a successful send, upserts a binding
   `(alias, source, contact_ref) -> sessionId` with `mode: "route-or-spawn"` and
   the chosen `provider`. Pass `bind: false` to send without binding.
@@ -78,13 +90,33 @@ and, by default, binds the recipient to the calling session:
 }
 ```
 
-**telegram** POSTs directly to the Telegram Bot API:
+When `attachments` are provided, each file is first uploaded via
+`upload_media` (channel = `<source>`), then referenced by `providerMediaId`
+in `content.media`:
+```json
+{
+  "to": { "channel": "<source>", "address": "<contact_ref>" },
+  "content": {
+    "text": "<text>",
+    "media": [
+      { "type": "image", "providerMediaId": "<media_id>", "caption": "..." }
+    ]
+  }
+}
+```
+
+**telegram** POSTs directly to the Telegram Bot API. Text-only messages use
+`sendMessage`:
 ```
 POST https://api.telegram.org/bot<token>/sendMessage
 { "chat_id": "<source>", "text": "<text>" }
 ```
-The bot token is resolved from a `TelegramBotCredsStore` (configured
-separately via `telegram_bot_token_set`).
+
+With one attachment, the matching method is used (`sendPhoto`,
+`sendDocument`, `sendVideo`, or `sendAudio`) with a `multipart/form-data`
+body. With several attachments, `sendMediaGroup` is used. The bot token is
+resolved from a `TelegramBotCredsStore` (configured separately via
+`telegram_bot_token_set`).
 
 ### Telegram bot wiring recipe
 

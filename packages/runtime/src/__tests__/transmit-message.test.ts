@@ -19,6 +19,9 @@ import type { McpProxyRegistry } from "../mcp-proxy.js"
 import type { ProxyCallOutcome } from "../mcp-proxy.js"
 import type { TransmitterBinding, TransmitterBindingStore } from "../transmitter-bindings.js"
 import type { TelegramBotCredsStore } from "../telegram-bot-creds.js"
+import { readFile } from "node:fs/promises"
+
+vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }))
 
 function makeMockTelegramCreds(readValue: { token: string } | null): TelegramBotCredsStore {
   return {
@@ -118,6 +121,65 @@ describe("transmit_message", () => {
     })
   })
 
+  it("agentpush provider uploads attachments and sends media", async () => {
+    vi.mocked(readFile).mockResolvedValue(Buffer.from("fake-bytes"))
+
+    const callTool = vi.fn(
+      async (_alias: string, tool: string): Promise<ProxyCallOutcome> => {
+        if (tool === "upload_media") {
+          return { ok: true, result: { media_id: "media-789", url: "https://example.com/x" } }
+        }
+        if (tool === "send_message") {
+          return { ok: true, result: { messageId: "msg-789" } }
+        }
+        return { ok: false, error: "unexpected tool" }
+      },
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const bindingStore = makeBindingStore()
+    const registry = createSessionsRegistry({ persist: false })
+
+    const client = await connectTools(registry, mcpProxy, bindingStore)
+
+    const res = (await client.callTool({
+      name: "transmit_message",
+      arguments: {
+        provider: "agentpush",
+        alias: "agentpush",
+        source: "telegram",
+        contact_ref: "alice",
+        text: "photo attached",
+        attachments: [{ type: "photo", path: "/tmp/photo.jpg", caption: "my photo" }],
+        sessionId: "sess_media",
+      },
+    })) as ToolResult
+
+    expect(res.isError).toBeFalsy()
+    expect(callTool).toHaveBeenCalledWith("agentpush", "upload_media", {
+      channel: "telegram",
+      type: "image",
+      data: Buffer.from("fake-bytes").toString("base64"),
+      filename: "photo.jpg",
+      mimeType: "image/jpeg",
+    })
+    expect(callTool).toHaveBeenCalledWith("agentpush", "send_message", {
+      to: { channel: "telegram", address: "alice" },
+      content: {
+        text: "photo attached",
+        media: [
+          {
+            type: "image",
+            providerMediaId: "media-789",
+            filename: "photo.jpg",
+            mimeType: "image/jpeg",
+            caption: "my photo",
+          },
+        ],
+      },
+    })
+    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: true })
+  })
+
   it("agentpush provider defaults when provider omitted", async () => {
     const callTool = vi.fn(
       async (): Promise<ProxyCallOutcome> => ({ ok: true, result: { content: [] } }),
@@ -211,7 +273,11 @@ describe("transmit_message", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: "123456789", text: "hello from telegram" }),
+        body: JSON.stringify({
+          chat_id: "123456789",
+          text: "hello from telegram",
+          parse_mode: "MarkdownV2",
+        }),
       },
     )
     expect(callTool).not.toHaveBeenCalled()

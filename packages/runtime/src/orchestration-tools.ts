@@ -1598,7 +1598,20 @@ export function registerOrchestrationTools(
           .string()
           .min(1)
           .describe("Recipient contact_ref (agentpush sender id) or chat id (telegram)."),
-        text: z.string().min(1).describe("Message text to send."),
+        text: z
+          .string()
+          .optional()
+          .describe("Message text to send. Required unless attachments are provided."),
+        attachments: z
+          .array(
+            z.object({
+              type: z.enum(["photo", "document", "video", "audio"]),
+              path: z.string().min(1).describe("Absolute or relative path to the local file."),
+              caption: z.string().optional().describe("Caption for this attachment."),
+            }),
+          )
+          .optional()
+          .describe("Local file attachments to send as media."),
         sessionId: z
           .string()
           .min(1)
@@ -1623,13 +1636,24 @@ export function registerOrchestrationTools(
           }
         }
 
+        const text = input.text ?? ""
+        if (text.length === 0 && (!input.attachments || input.attachments.length === 0)) {
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ sent: false, bound: false, error: "text or attachments required" }) },
+            ],
+            isError: true,
+          }
+        }
+
         const out = await sendOutbound(
           provider,
           {
             alias: input.alias,
             source: input.source,
             contactRef: input.contact_ref,
-            text: input.text,
+            text,
+            attachments: input.attachments,
           },
           { mcpProxy, telegramCreds },
         )
