@@ -429,6 +429,63 @@ describe("buildConfigurationLabSnapshot", () => {
     expect(byKey["Route / gateway"]?.detail).not.toContain("unset")
     expect(byKey["Auth profile"]?.detail).not.toContain("unset")
   })
+
+  it("mastracode does not default to an Anthropic subscription profile", () => {
+    const data = rawData({
+      adapters: [
+        adapter({
+          slug: "mastracode",
+          name: "Mastra Code",
+          models: ["claude-sonnet-4-5"],
+          modelDetails: [{ id: "claude-sonnet-4-5", provider: "anthropic" }],
+          routeSelection: "derived-from-model",
+        }),
+      ],
+      capabilities: [
+        capabilities({
+          adapter: "mastracode",
+          models: { defaultModel: "claude-sonnet-4-5", supported: ["claude-sonnet-4-5"] },
+          providers: [{ id: "anthropic", ready: true }],
+        }),
+      ],
+      catalog: {
+        vendors: [
+          {
+            vendor: "anthropic",
+            products: [
+              {
+                product: "claude-sonnet-4-5",
+                routes: [
+                  {
+                    route: "anthropic",
+                    ref: "anthropic/claude-sonnet-4-5",
+                    baseUrl: null,
+                    pricing: null,
+                    // Only an oauth-bearer subscription profile exists for
+                    // anthropic; the harness must not present it as eligible.
+                    runnable: false,
+                    eligibleProfiles: [],
+                    adapterModes: ["default"],
+                    adapters: ["mastracode"],
+                    curated: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      profiles: [profile({ id: "anthropic-sub", endpoint: "anthropic", label: "Anthropic Subscription" })],
+    })
+    const snapshot = buildConfigurationLabSnapshot(data, { adapter: "mastracode" })
+    expect(snapshot.selection.route).toBe("anthropic")
+    expect(snapshot.selection.profile).toBeUndefined()
+    const route = snapshot.axes.routes.find((r) => r.value === "anthropic")
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+    const issue = snapshot.issues.find((i) => i.axis === "route")
+    expect(issue?.message).toContain("no eligible auth profile")
+  })
 })
 
 describe("fetchConfigurationLabData", () => {
