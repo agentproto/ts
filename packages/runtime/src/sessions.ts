@@ -45,6 +45,7 @@ import type {
   RouteSpec,
 } from "./session-config.js"
 import type { CostBudget } from "@agentproto/auth"
+import type { AgentAdapterResolver } from "./http-server.js"
 import type {
   SessionEventBus,
   SessionAwaitingQuestion,
@@ -81,6 +82,17 @@ import {
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
+import {
+  computeContextContinuityStatus,
+  computeContextPct,
+  contextContinuityNextAction,
+  contextContinuityStateForPct,
+  isContextContinuityHardStopped,
+  type ContextContinuityPolicy,
+  type ResolvedContextContinuityPolicy,
+} from "./context-continuity.js"
+import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
+import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -950,6 +962,8 @@ export interface SessionDescriptor {
    *  want. Threaded like `permissionHold` — set at spawn time, immutable
    *  thereafter. */
   notifyParentOnCrash?: boolean
+  /** True when the session was spawned in permission-hold mode. */
+  permissionHold?: boolean
   /** Queued `[child-crashed] …` notices from crashed children, stamped by
    *  the supervisor-notify subscriber when THIS session was busy at the
    *  time a child it should be told about crashed (mid-turn is never
@@ -971,6 +985,22 @@ export interface SessionDescriptor {
    *  restored context, so a real continuation is never double-fed its own
    *  history. Absent when nothing is queued. */
   pendingResumeContext?: string
+  /**
+   * Resolved context-continuity policy for this session. Stored on the
+   * descriptor so status queries and turn-boundary evaluation see the same
+   * effective policy.
+   */
+  contextContinuity?: ResolvedContextContinuityPolicy
+  /** True when the session has been hard-stopped by the context-continuity
+   *  policy — no new prompt may be admitted. */
+  contextContinuityHardStopped?: boolean
+  /** Id of the most recent checkpoint created for this session. */
+  checkpointId?: string
+  /** When this session was continued fresh, the source session id. */
+  continuedFrom?: string
+  /** When this session was continued fresh into a new session, the target
+   *  session id. */
+  continuedTo?: string
   /** Source label — the channel/harness this session was spawned from
    *  ("codex", "cowork", "vscode", "cron", …). Descriptor-only; groups the
    *  session under a source node in the tree. */
@@ -2092,6 +2122,9 @@ export interface SpawnAgentInput {
    *  onto {@link SessionDescriptor.restartPolicy}. Absent ⇒ today's
    *  lazy-resume-only behaviour. */
   restartPolicy?: RestartPolicy
+  /** Resolved context-continuity policy — recorded verbatim onto
+   *  {@link SessionDescriptor.contextContinuity}. */
+  contextContinuity?: ResolvedContextContinuityPolicy
   /** Best-effort usage reader, called on each turn-end to refresh the
    *  cost/token fields on the descriptor. Adapter-specific (e.g. hermes
    *  reads its state.db keyed by the adapter session id). Omit for adapters
@@ -2310,6 +2343,10 @@ export function createSessionsRegistry(opts?: {
   /** Default per-session tracing opt-in when `SpawnAgentInput.trace` is
    *  omitted. Defaults to false (tracing off). */
   langfuseTracingDefault?: boolean
+  /** Adapter resolver used for context-continuity "continue fresh" spawns.
+   *  When omitted, auto-continuation degrades to a hard-stop instead of
+   *  spawning a replacement session. */
+  resolveAgentAdapter?: AgentAdapterResolver
 }): SessionsRegistry {
   // `persistPath` names one exact file, so passing it means "don't
   // partition" (see its docblock). Absent it, state partitions per
@@ -2351,6 +2388,7 @@ export function createSessionsRegistry(opts?: {
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
   const sessionEvents = opts?.sessionEvents
+  const resolveAgentAdapter = opts?.resolveAgentAdapter
   const sessions = new Map<string, SessionRuntime>()
   // Cross-session pending-permissions inbox: every request parked by a
   // permission-hold session, keyed by the driver's stable request id.
@@ -3251,6 +3289,20 @@ export function createSessionsRegistry(opts?: {
         `${caller}: session "${id}" is mid-turn — wait for it to finish or cancel`
       )
     }
+    // Context-continuity hard stop: prevent a new oversized prompt.
+    if (rt.desc.contextContinuityHardStopped) {
+      throw new Error(
+        `${caller}: session "${id}" is hard-stopped by context-continuity policy — use continue fresh`
+      )
+    }
+    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    if (rt.desc.contextContinuity && isContextContinuityHardStopped(pct, rt.desc.contextContinuity)) {
+      rt.desc.contextContinuityHardStopped = true
+      schedulePersist()
+      throw new Error(
+        `${caller}: session "${id}" context at ${pct}% — hard-stopped by policy`
+      )
+    }
     return rt
   }
 
@@ -3569,6 +3621,142 @@ export function createSessionsRegistry(opts?: {
     transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
   }
 
+  function adapterSupportsCompact(agentSession: AgentSessionLike | undefined): boolean {
+    if (!agentSession?.availableModes) return false
+    return agentSession.availableModes.some(m => m.id.toLowerCase() === "compact")
+  }
+
+  async function attemptContextCompact(rt: SessionRuntime): Promise<void> {
+    if (!adapterSupportsCompact(rt.agentSession)) {
+      appendLine(
+        rt,
+        "[context] compact threshold reached but harness does not advertise compact support; waiting for continue-fresh threshold",
+        "stderr",
+      )
+      return
+    }
+    try {
+      await rt.agentSession?.setSessionMode?.("compact")
+      appendLine(rt, "[context] compact requested from harness", "stdout")
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context] compact failed: ${err instanceof Error ? err.message : String(err)}`,
+        "stderr",
+      )
+    }
+  }
+
+  async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
+    appendLine(
+      rt,
+      `[context-hard-stop] context at ${pct}% — no new prompts will be admitted. Use continue fresh.`,
+      "stderr",
+    )
+    rt.desc.contextContinuityHardStopped = true
+    rt.desc.status = "killed"
+    rt.desc.endedAt = new Date().toISOString()
+    void rt.agentSession?.close().catch(() => undefined)
+    void transcriptWriter.close(rt.desc.id)
+    tracedSessions.delete(rt.desc.id)
+    schedulePersist()
+    emitExited(rt)
+  }
+
+  async function performContextContinueFresh(rt: SessionRuntime): Promise<void> {
+    if (!resolveAgentAdapter) {
+      appendLine(
+        rt,
+        "[context] continue-fresh requested but no adapter resolver is configured; hard-stopping instead",
+        "stderr",
+      )
+      await performContextHardStop(
+        rt,
+        computeContextPct(rt.desc.contextSize, rt.desc.contextUsed) ?? 100,
+      )
+      return
+    }
+    try {
+      const result = await continueAgentSessionFresh(
+        { registry, resolveAgentAdapter },
+        rt.desc,
+      )
+      appendLine(
+        rt,
+        `[context] continued fresh to ${result.descriptor.id} (checkpoint ${result.checkpoint.checkpointId})`,
+        "stdout",
+      )
+      // Gracefully end the original session now that the handoff is done.
+      rt.desc.status = "killed"
+      rt.desc.endedAt = new Date().toISOString()
+      rt.desc.contextContinuityHardStopped = true
+      rt.desc.continuedTo = result.descriptor.id
+      void rt.agentSession?.close().catch(() => undefined)
+      void transcriptWriter.close(rt.desc.id)
+      tracedSessions.delete(rt.desc.id)
+      schedulePersist()
+      emitExited(rt)
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context] continue-fresh failed: ${err instanceof Error ? err.message : String(err)}`,
+        "stderr",
+      )
+    }
+  }
+
+  async function evaluateContextContinuity(rt: SessionRuntime): Promise<void> {
+    if (rt.desc.kind !== "agent-cli") return
+    const policy = rt.desc.contextContinuity
+    if (!policy) return
+    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    if (pct === null) return
+
+    const nextAction = contextContinuityNextAction(
+      contextContinuityStateForPct(pct, policy),
+      policy.mode,
+    )
+
+    switch (nextAction) {
+      case "none":
+        return
+      case "warn": {
+        const status = computeContextContinuityStatus(
+          rt.desc.id,
+          policy,
+          rt.desc.contextSize,
+          rt.desc.contextUsed,
+        )
+        appendLine(rt, `[context] ${status.summary}`, "stderr")
+        return
+      }
+      case "ask": {
+        rt.desc.awaitingInput = true
+        rt.desc.awaitingQuestion = {
+          source: "structured",
+          text: `Context is at ${pct}%. Continue fresh to avoid losing continuity?`,
+          options: ["continue-fresh", "keep-going"],
+        }
+        appendLine(
+          rt,
+          `[context] context at ${pct}% — waiting for user decision (continue fresh or keep going)`,
+          "stdout",
+        )
+        schedulePersist()
+        return
+      }
+      case "compact":
+        await attemptContextCompact(rt)
+        return
+      case "continue-fresh":
+        await performContextContinueFresh(rt)
+        return
+      case "hard-stop":
+        await performContextHardStop(rt, pct)
+        return
+    }
+  }
+
   const runAgentTurn = async (
     rt: SessionRuntime,
     message: unknown
@@ -3843,6 +4031,9 @@ export function createSessionsRegistry(opts?: {
         rt.desc.costUsd = usage.costUsd
         transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
 
+        // ── Context-continuity policy evaluation ─────────────────────
+        await evaluateContextContinuity(rt)
+
         // ── Cost cap (best-effort, turn-granular) ────────────────────
         const overBudget =
           rt.maxCostUsd !== undefined &&
@@ -3965,7 +4156,7 @@ export function createSessionsRegistry(opts?: {
     rt.child.stderr?.on("data", onChunk("stderr"))
   }
 
-  return {
+  const registry: SessionsRegistry = {
     spawn(input) {
       const id = input.id ?? `sess_${randomUUID().slice(0, 8)}`
       if (sessions.has(id)) {
@@ -4163,6 +4354,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
@@ -5218,6 +5410,8 @@ export function createSessionsRegistry(opts?: {
       shutdownImpl()
     },
   }
+
+  return registry
 
   /**
    * The actual shutdown logic, hoisted so both the explicit

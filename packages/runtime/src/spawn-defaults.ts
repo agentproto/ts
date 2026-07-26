@@ -27,6 +27,7 @@ import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { providerEnvVar } from "./providers-store.js"
+import type { ContextContinuityPolicy } from "./context-continuity.js"
 
 /**
  * Deterministic billing-auth config for one adapter slug (today, only
@@ -70,6 +71,7 @@ export interface DefaultsAdapterConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
   auth?: DefaultsAdapterAuthConfig
+  contextContinuity?: ContextContinuityPolicy
 }
 
 /** Shape of `config.json`'s top-level `defaults` block. */
@@ -77,6 +79,7 @@ export interface SpawnDefaultsConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
   adapters?: Record<string, DefaultsAdapterConfig>
+  contextContinuity?: ContextContinuityPolicy
   /** Depth cutoff for the role-derived default (see `resolveRole` in
    *  `role.ts`) applied when an `agent_start` call omits `role`:
    *  `depth < cutoff` → supervisor, `depth >= cutoff` → executor.
@@ -116,6 +119,9 @@ export interface ResolveSpawnDefaultsInput {
    *  RESOLVED mode wins over the matching config field. Undefined ⇒ falls
    *  through entirely to the per-adapter config default. */
   auth?: DefaultsAdapterAuthConfig
+  /** Explicit-call context-continuity policy — wins over global and
+   *  per-adapter config defaults. */
+  contextContinuity?: ContextContinuityPolicy
 }
 
 export interface ResolvedSpawnDefaults {
@@ -127,6 +133,7 @@ export interface ResolvedSpawnDefaults {
    *  are surfaced (NOT collapsed to one), since the ordered-mode selection
    *  needs to know which are available before it picks the mode. */
   auth: ResolvedSpawnAuthMaterial
+  contextContinuity?: ContextContinuityPolicy
 }
 
 export interface ResolvedSpawnAuthMaterial {
@@ -180,6 +187,9 @@ export function resolveSpawnDefaults(
   const apiKeyCredential = input.auth?.apiKey ?? adapterDefaults?.auth?.apiKey
   const authProvider = input.auth?.provider ?? adapterDefaults?.auth?.provider
 
+  const contextContinuity =
+    input.contextContinuity ?? adapterDefaults?.contextContinuity ?? defaults?.contextContinuity
+
   return {
     skills,
     options,
@@ -191,6 +201,7 @@ export function resolveSpawnDefaults(
       ...(apiKeyCredential !== undefined ? { apiKeyCredential } : {}),
       ...(authProvider ? { provider: authProvider } : {}),
     },
+    ...(contextContinuity !== undefined ? { contextContinuity } : {}),
   }
 }
 
