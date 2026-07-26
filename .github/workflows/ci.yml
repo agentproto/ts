@@ -140,6 +140,14 @@ jobs:
       - name: Run cli-docs coverage tests
         run: node --test scripts/agentflow/docs.test.mjs
 
+      # Guards gatherDiff's origin/main fetch (the local pre-push review's
+      # diff source) — a stale local ref made a real review pick up 13
+      # files (12 already-merged-elsewhere, unrelated) instead of the 1
+      # file actually changed. Reproduced live, fixed by fetching fresh
+      # before diffing.
+      - name: Run agentflow review-primitive tests
+        run: node --test scripts/agentflow/primitives/review.test.mjs
+
       # Guards check-changesets' name-resolution + --fix auto-heal (the reviewer
       # writes changesets by guessing the package name; --fix corrects an
       # unambiguous scope↔dash near-miss before it lands).
