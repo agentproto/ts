@@ -62,6 +62,7 @@ export interface CatalogRouteRow {
   runnable: boolean
   eligibleProfiles: string[]
   adapterModes: string[]
+  adapters: string[]
   curated: boolean
 }
 export interface CatalogProductRow {
@@ -164,6 +165,10 @@ export interface RouteRow {
   /** The `profileRef`s eligible for this route (§1c) — pre-computed by the
    *  catalog so the access chip can pre-select on a route switch. */
   eligibleProfiles: string[]
+  /** Canonical model ref for this route (e.g. `anthropic/claude-sonnet-5`). */
+  ref?: string
+  /** True for synthesized native routes that are not in the catalog. */
+  fixed?: boolean
 }
 
 /** One access row — an eligible profile, or the trailing "+ add profile" flow. */
@@ -315,6 +320,7 @@ export function resolveRouteRows(
     runnable: route.runnable,
     curated: route.curated,
     eligibleProfiles: [...route.eligibleProfiles],
+    ref: route.ref,
   }))
 }
 

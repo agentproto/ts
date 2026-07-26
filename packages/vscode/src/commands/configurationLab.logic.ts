@@ -10,6 +10,10 @@
  * This keeps the Lab aligned with the live pickers rather than forking the rules.
  */
 
+import {
+  resolveEffectiveRoute,
+  serviceableModelRoutes,
+} from "@agentproto/runtime/catalog-models"
 import type {
   AdapterInfo,
   AuthProfileSummary,
@@ -36,6 +40,8 @@ import {
   type AuthProfileRow,
   type CapabilityResolutionInput,
   type CatalogModelsResult,
+  type CatalogProductRow,
+  type CatalogRouteRow,
   type HarnessMode,
   type PostureRow,
   type RouteRow,
@@ -84,16 +90,6 @@ function buildHarnessLayer(
   }
 }
 
-/** Build the model option list from the adapter's declared models. */
-function buildModelOptions(adapter: AdapterInfo | undefined): ConfigurationLabAxisOptions["models"] {
-  if (!adapter) return []
-  return modelEntriesOf(asSpawnAdapter(adapter)).map(entry => ({
-    id: entry.id,
-    ...(entry.provider ? { provider: entry.provider } : {}),
-    ...(entry.mode ? { mode: entry.mode } : {}),
-  }))
-}
-
 /** Convert daemon auth profiles to the row shape sessionConfig.logic.ts expects. */
 function toAuthProfileRows(profiles: AuthProfileSummary[]): AuthProfileRow[] {
   return profiles.map(p => ({
@@ -104,12 +100,164 @@ function toAuthProfileRows(profiles: AuthProfileSummary[]): AuthProfileRow[] {
   }))
 }
 
-/** Build route rows via sessionConfig.logic.ts's canonical resolver. */
-function buildRouteRows(
-  catalog: CatalogModelsResponse,
+/** Strip a model id to its bare product (drop a `vendor/` prefix, a `:pin`, an
+ *  `@route`) so it can be matched against a catalog `product`. Mirror of the
+ *  helper in sessionConfig.logic.ts. */
+function productOf(model: string): string {
+  const afterVendor = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model
+  return afterVendor.split("@")[0]!.split(":")[0]!
+}
+
+/** The catalog product entry for `model`, searched across every vendor.
+ *  Mirror of the helper in sessionConfig.logic.ts. */
+function findCatalogProduct(
+  catalog: CatalogModelsResult | undefined,
+  model: string | undefined,
+): { vendor: string; product: CatalogProductRow } | undefined {
+  if (!catalog || !model) return undefined
+  const product = productOf(model)
+  for (const vendor of catalog.vendors) {
+    const match = vendor.products.find(p => p.product === product || p.product === model)
+    if (match) return { vendor: vendor.vendor, product: match }
+  }
+  return undefined
+}
+
+/** Look up the canonical catalog route row for a model + route id. */
+function catalogRouteFor(
+  catalog: CatalogModelsResult,
+  model: string | undefined,
+  route: string,
+): CatalogRouteRow | undefined {
+  return findCatalogProduct(catalog, model)?.product.routes.find(r => r.route === route)
+}
+
+/** The canonical billing route for a model id, falling back from a parseable
+ *  ref to the first serviceable route for bare/legacy ids. */
+function routeForModel(
+  model: string | undefined,
+  catalog: CatalogModelsResult,
+): string | undefined {
+  if (!model) return undefined
+  const effective = resolveEffectiveRoute(model, undefined)
+  if (effective) return effective
+  return serviceableModelRoutes(model)[0]
+}
+
+/** Build a canonical catalog-style ref for a model. Parseable refs are returned
+ *  as-is; bare ids are prefixed with their resolved route. */
+function canonicalModelRef(model: string | undefined, route: string | undefined): string | undefined {
+  if (!model) return undefined
+  if (model.includes("/")) return model
+  if (route) return `${route}/${model}`
+  return model
+}
+
+/** Pick the default route from a non-empty row list: prefer runnable, fall back
+ *  to the first row. */
+function defaultRouteFrom(rows: RouteRow[]): string {
+  return (rows.find(r => r.runnable) ?? rows[0]!).value
+}
+function prettyProvider(route: string): string {
+  if (route === "openai") return "OpenAI"
+  if (route === "anthropic") return "Anthropic"
+  return route.charAt(0).toUpperCase() + route.slice(1)
+}
+
+/** Build the model option list from the adapter's declared models, scoped by
+ *  selected route for multi-route (`derived-from-model`) adapters. */
+function buildModelOptions(
+  adapter: AdapterInfo | undefined,
+  catalog: CatalogModelsResult,
+  selectedRoute: string | undefined,
+): ConfigurationLabAxisOptions["models"] {
+  if (!adapter) return []
+  const entries = modelEntriesOf(asSpawnAdapter(adapter)).map(entry => ({
+    ...entry,
+    resolvedRoute: routeForModel(entry.id, catalog),
+  }))
+
+  const filtered =
+    adapter.routeSelection === "derived-from-model" && selectedRoute
+      ? entries.filter(e => e.resolvedRoute === selectedRoute)
+      : entries
+
+  const distinctProviders = new Set(
+    filtered.map(e => e.provider ?? e.resolvedRoute).filter(Boolean),
+  )
+  const showProvider = distinctProviders.size > 1
+
+  return filtered.map(entry => ({
+    id: entry.id,
+    ...(showProvider || entry.provider ? { provider: entry.provider ?? entry.resolvedRoute } : {}),
+    ...(entry.mode ? { mode: entry.mode } : {}),
+  }))
+}
+
+/** Filter catalog route rows by adapter route-selection semantics. */
+function adapterCompatibleRoutes(
+  rows: RouteRow[],
+  adapter: AdapterInfo,
+  catalog: CatalogModelsResult,
   model: string | undefined,
 ): RouteRow[] {
-  return resolveRouteRows(catalog as CatalogModelsResult, model)
+  if (adapter.routeSelection === "free") return rows
+  if (adapter.routeSelection === "derived-from-model") {
+    return rows.filter(r => catalogRouteFor(catalog, model, r.value)?.adapters.includes(adapter.slug))
+  }
+  // Fixed single-provider adapter: keep direct vendor routes or routes explicitly
+  // contributed by this adapter.
+  const modelRoute = routeForModel(model, catalog)
+  return rows.filter(r => r.value === modelRoute || catalogRouteFor(catalog, model, r.value)?.adapters.includes(adapter.slug))
+}
+
+/** Build route rows via sessionConfig.logic.ts's canonical resolver, then fall
+ *  back to a deterministic native route for fixed adapters when the catalog is
+ *  sparse. */
+function buildRouteRows(
+  adapter: AdapterInfo | undefined,
+  catalog: CatalogModelsResponse,
+  model: string | undefined,
+  profiles: AuthProfileSummary[],
+): RouteRow[] {
+  if (!adapter) return []
+
+  // For derived-from-model adapters with no model selected yet, union routes
+  // across all declared models so the user can pick a vendor first.
+  if (adapter.routeSelection === "derived-from-model" && !model) {
+    const seen = new Map<string, RouteRow>()
+    for (const entry of modelEntriesOf(asSpawnAdapter(adapter))) {
+      const rows = resolveRouteRows(catalog as CatalogModelsResult, entry.id)
+      for (const row of rows) {
+        if (!seen.has(row.value)) seen.set(row.value, row)
+      }
+    }
+    return [...seen.values()]
+  }
+
+  const rows = resolveRouteRows(catalog as CatalogModelsResult, model)
+  const filtered = adapterCompatibleRoutes(rows, adapter, catalog as CatalogModelsResult, model)
+  if (filtered.length > 0) return filtered
+
+  // Fixed-native adapter with no catalog match: synthesize a single native route.
+  if (!adapter.routeSelection && model) {
+    const route = routeForModel(model, catalog as CatalogModelsResult) ?? "unknown"
+    const eligibleProfiles = profiles
+      .filter(p => p.endpoint === route)
+      .map(p => p.id)
+    return [{
+      value: route,
+      label: `${prettyProvider(route)} (native route)`,
+      baseUrl: null,
+      runnable: eligibleProfiles.length > 0,
+      curated: true,
+      eligibleProfiles,
+      fixed: true,
+      ref: canonicalModelRef(model, route),
+    }]
+  }
+
+  return []
 }
 
 /** Build posture rows via sessionConfig.logic.ts's canonical resolver. */
@@ -181,6 +329,9 @@ function buildEffectiveConfig(
   capabilities: HarnessCapabilities | undefined,
   postureRows: PostureRow[],
   effortRows: string[],
+  routeIsDefault: boolean,
+  profileIsDefault: boolean,
+  currentRoute: RouteRow | undefined,
 ): ConfigurationLabEffectiveField[] {
   const selectedPosture = postureRows.find(r => r.value === selection.posture)
   const selectedEffort = effortRows.find(e => e === selection.effort)
@@ -200,14 +351,20 @@ function buildEffectiveConfig(
   )
   fields.push(
     effectiveField("Route / gateway", {
-      explicit: selection.route,
-      detail: selection.route ? undefined : "adapter default",
+      explicit: routeIsDefault ? undefined : selection.route,
+      defaultValue: routeIsDefault ? selection.route : undefined,
+      detail: currentRoute?.fixed
+        ? "native route"
+        : routeIsDefault
+          ? "adapter default"
+          : undefined,
     }),
   )
   fields.push(
     effectiveField("Auth profile", {
-      explicit: selection.profile,
-      detail: selection.profile ? undefined : "daemon resolves default wallet",
+      explicit: profileIsDefault ? undefined : selection.profile,
+      defaultValue: profileIsDefault ? selection.profile : undefined,
+      detail: profileIsDefault ? "default eligible profile" : selection.profile ? undefined : "daemon resolves default wallet",
     }),
   )
   fields.push(
@@ -265,11 +422,19 @@ function validateSelection(
   if (selection.model) {
     const declared = modelOptions.some(m => m.id === selection.model)
     if (!declared) {
-      issues.push({
-        severity: "warning",
-        axis: "model",
-        message: `${selection.model} is not in ${adapter.slug}'s declared model list; spawn may reject it.`,
-      })
+      if (adapter.routeSelection === "derived-from-model") {
+        issues.push({
+          severity: "error",
+          axis: "model",
+          message: `${selection.model} is not available on the selected route for ${adapter.slug}.`,
+        })
+      } else {
+        issues.push({
+          severity: "warning",
+          axis: "model",
+          message: `${selection.model} is not in ${adapter.slug}'s declared model list; spawn may reject it.`,
+        })
+      }
     }
   } else {
     issues.push({
@@ -284,7 +449,7 @@ function validateSelection(
     const routeRow = routeRows.find(r => r.value === selection.route)
     if (!routeRow) {
       issues.push({
-        severity: "warning",
+        severity: "error",
         axis: "route",
         message: `Route "${selection.route}" is not available for ${selection.model ?? "this model"}.`,
       })
@@ -301,6 +466,12 @@ function validateSelection(
         message: `Profile "${selection.profile}" is not eligible for route "${selection.route}".`,
       })
     }
+  } else if (selection.model) {
+    issues.push({
+      severity: "error",
+      axis: "route",
+      message: `No route resolved for ${selection.model} — the spawn handoff cannot determine the billing endpoint.`,
+    })
   }
 
   // Profile validation.
@@ -348,10 +519,9 @@ function defaultSelectionForAdapter(
   capabilities: HarnessCapabilities | undefined,
 ): Partial<ConfigurationLabSelectionInput> {
   if (!adapter) return {}
-  const modelOptions = buildModelOptions(adapter)
   return {
     adapter: adapter.slug,
-    model: capabilities?.models?.defaultModel ?? modelOptions[0]?.id,
+    model: capabilities?.models?.defaultModel,
   }
 }
 
@@ -364,20 +534,71 @@ export function buildConfigurationLabSnapshot(
   const adapter = findAdapter(data.adapters, input.adapter)
   const capabilities = findHarnessCapabilities(data.capabilities, input.adapter)
 
+  let selection: ConfigurationLabSelectionInput = { ...input }
+
   // When the user just picked a harness, seed the model default so the panel
   // isn't blank.
-  const seededDefaults = !input.model && !input.route && !input.profile
-    ? defaultSelectionForAdapter(adapter, capabilities)
-    : {}
-  const selection: ConfigurationLabSelectionInput = {
-    ...input,
-    ...seededDefaults,
+  if (!selection.model && !selection.route && !selection.profile) {
+    selection = { ...selection, ...defaultSelectionForAdapter(adapter, capabilities) }
   }
 
-  const modelOptions = buildModelOptions(adapter)
-  const routeRows = buildRouteRows(data.catalog, selection.model)
+  // First pass: build route rows from the current model (or union all models
+  // for derived-from-model adapters with no model yet).
+  let routeRows = buildRouteRows(adapter, data.catalog, selection.model, data.profiles)
+
+  // Resolve default route when none was explicitly selected.
+  let resolvedRoute = selection.route
+  let routeIsDefault = false
+  if (!resolvedRoute && routeRows.length > 0) {
+    resolvedRoute = defaultRouteFrom(routeRows)
+    routeIsDefault = true
+  }
+
+  // Build model options, scoped by resolved route for derived-from-model adapters.
+  const catalog = data.catalog as CatalogModelsResult
+  let modelOptions = buildModelOptions(adapter, catalog, resolvedRoute)
+
+  // For derived-from-model adapters, ensure the selected model is compatible
+  // with the resolved route; otherwise pick the first available model.
+  if (adapter?.routeSelection === "derived-from-model" && selection.model && !modelOptions.some(m => m.id === selection.model)) {
+    if (modelOptions.length > 0) {
+      selection = { ...selection, model: modelOptions[0]!.id }
+      routeRows = buildRouteRows(adapter, data.catalog, selection.model, data.profiles)
+      if (routeIsDefault && routeRows.length > 0) {
+        resolvedRoute = defaultRouteFrom(routeRows)
+      }
+      modelOptions = buildModelOptions(adapter, catalog, resolvedRoute)
+    }
+  }
+
+  // If model is still unset after route resolution, seed from scoped options.
+  if (!selection.model && modelOptions.length > 0) {
+    selection = { ...selection, model: modelOptions[0]!.id }
+    routeRows = buildRouteRows(adapter, data.catalog, selection.model, data.profiles)
+    if (routeIsDefault && routeRows.length > 0) {
+      resolvedRoute = defaultRouteFrom(routeRows)
+    }
+    modelOptions = buildModelOptions(adapter, catalog, resolvedRoute)
+  }
+
+  const currentRoute = routeRows.find(r => r.value === resolvedRoute)
+
+  // Resolve default profile when none was explicitly selected.
+  let resolvedProfile = selection.profile
+  let profileIsDefault = false
+  if (!resolvedProfile && currentRoute && currentRoute.eligibleProfiles.length > 0) {
+    resolvedProfile = currentRoute.eligibleProfiles[0]
+    profileIsDefault = true
+  }
+
+  const finalSelection: ConfigurationLabSelectionInput = {
+    ...selection,
+    route: resolvedRoute,
+    profile: resolvedProfile,
+  }
+
   const postureRows = buildPostureRows(adapter)
-  const effortRows = buildEffortRows(adapter, capabilities, selection.model)
+  const effortRows = buildEffortRows(adapter, capabilities, finalSelection.model)
 
   const axes: ConfigurationLabAxisOptions = {
     models: modelOptions,
@@ -387,8 +608,10 @@ export function buildConfigurationLabSnapshot(
       runnable: r.runnable,
       curated: r.curated,
       eligibleProfiles: r.eligibleProfiles,
+      fixed: r.fixed,
+      ref: r.ref,
     })),
-    profiles: buildProfileRows(routeRows, data.profiles, selection.route),
+    profiles: buildProfileRows(routeRows, data.profiles, resolvedRoute),
     postures: postureRows.map(r => ({
       value: r.value,
       label: r.label,
@@ -399,7 +622,7 @@ export function buildConfigurationLabSnapshot(
   }
 
   const issues = validateSelection(
-    selection,
+    finalSelection,
     adapter,
     capabilities,
     routeRows,
@@ -409,22 +632,25 @@ export function buildConfigurationLabSnapshot(
   )
 
   const effective = buildEffectiveConfig(
-    selection,
+    finalSelection,
     adapter,
     capabilities,
     postureRows,
     effortRows,
+    routeIsDefault,
+    profileIsDefault,
+    currentRoute,
   )
 
   return {
     selection: {
-      adapter: selection.adapter,
-      model: selection.model,
-      route: selection.route,
-      profile: selection.profile,
-      posture: selection.posture,
-      effort: selection.effort,
-      options: selection.options,
+      adapter: finalSelection.adapter,
+      model: finalSelection.model,
+      route: finalSelection.route,
+      profile: finalSelection.profile,
+      posture: finalSelection.posture,
+      effort: finalSelection.effort,
+      options: finalSelection.options,
     },
     adapters: data.adapters,
     harness: buildHarnessLayer(adapter, capabilities),
@@ -461,7 +687,7 @@ export async function fetchConfigurationLabData(
  *  existing `agentproto.spawnAgent` command accepts, so the panel can hand off
  *  to the wizard without duplicating spawn logic. */
 export function labSelectionToSpawnArgs(
-  selection: ConfigurationLabSelectionInput,
+  snapshot: ConfigurationLabSnapshot,
 ): {
   adapter: string
   model?: string
@@ -470,9 +696,13 @@ export function labSelectionToSpawnArgs(
   posture?: string
   effort?: string
 } {
+  const selection = snapshot.selection
+  const routeRow = snapshot.axes.routes.find(r => r.value === selection.route)
+  const ref = routeRow?.ref ?? canonicalModelRef(selection.model, selection.route)
+
   return {
     adapter: selection.adapter!,
-    ...(selection.model ? { model: selection.model } : {}),
+    ...(ref ? { model: ref } : {}),
     ...(selection.route ? { route: { gateway: selection.route } } : {}),
     ...(selection.profile ? { access: { profileRef: selection.profile } } : {}),
     ...(selection.posture ? { posture: selection.posture } : {}),

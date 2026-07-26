@@ -161,7 +161,10 @@ describe("buildConfigurationLabSnapshot", () => {
     expect(byKey["Model"]?.source).toBe("explicit")
     expect(byKey["Posture"]?.value).toBe("plan")
     expect(byKey["Posture"]?.source).toBe("explicit")
-    expect(byKey["Route / gateway"]?.source).toBe("unset")
+    expect(byKey["Route / gateway"]?.source).toBe("default")
+    expect(byKey["Route / gateway"]?.value).toBe("anthropic")
+    expect(byKey["Auth profile"]?.source).toBe("default")
+    expect(byKey["Auth profile"]?.value).toBe("anthropic-sub")
   })
 
   it("marks route rows runnable based on eligible profiles", () => {
@@ -251,6 +254,181 @@ describe("buildConfigurationLabSnapshot", () => {
     const warning = snapshot.issues.find((i) => i.severity === "warning" && i.axis === "posture")
     expect(warning?.message).toContain("advisory")
   })
+
+  it("surfaces Codex's fixed OpenAI route and eligible profiles", () => {
+    const data = rawData({
+      adapters: [
+        adapter({
+          slug: "codex",
+          name: "Codex",
+          models: ["gpt-5-codex"],
+          modelDetails: [{ id: "gpt-5-codex", provider: "openai" }],
+        }),
+      ],
+      capabilities: [
+        capabilities({
+          adapter: "codex",
+          models: { defaultModel: "gpt-5-codex", supported: ["gpt-5-codex"] },
+          providers: [{ id: "openai", ready: true }],
+        }),
+      ],
+      catalog: {
+        vendors: [
+          {
+            vendor: "openai",
+            products: [
+              {
+                product: "gpt-5-codex",
+                routes: [
+                  {
+                    route: "openai",
+                    ref: "openai/gpt-5-codex",
+                    baseUrl: null,
+                    pricing: null,
+                    runnable: true,
+                    eligibleProfiles: ["openai-api"],
+                    adapterModes: ["default"],
+                    adapters: ["codex"],
+                    curated: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      profiles: [profile({ id: "openai-api", endpoint: "openai", label: "OpenAI API Key" })],
+    })
+    const snapshot = buildConfigurationLabSnapshot(data, { adapter: "codex" })
+    const route = snapshot.axes.routes.find((r) => r.value === "openai")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toContain("openai-api")
+    expect(snapshot.selection.route).toBe("openai")
+    expect(snapshot.selection.profile).toBe("openai-api")
+    const byKey = Object.fromEntries(snapshot.effective.map((f) => [f.key, f]))
+    expect(byKey["Route / gateway"]?.source).toBe("default")
+    expect(byKey["Route / gateway"]?.value).toBe("openai")
+    expect(byKey["Auth profile"]?.source).toBe("default")
+    expect(byKey["Auth profile"]?.value).toBe("openai-api")
+  })
+
+  it("synthesizes a native OpenAI route for Codex when the catalog is sparse", () => {
+    const data = rawData({
+      adapters: [
+        adapter({
+          slug: "codex",
+          name: "Codex",
+          models: ["gpt-5-codex"],
+          modelDetails: [{ id: "gpt-5-codex", provider: "openai" }],
+        }),
+      ],
+      capabilities: [
+        capabilities({
+          adapter: "codex",
+          models: { defaultModel: "gpt-5-codex", supported: ["gpt-5-codex"] },
+          providers: [{ id: "openai", ready: true }],
+        }),
+      ],
+      catalog: { vendors: [] },
+      profiles: [profile({ id: "openai-api", endpoint: "openai", label: "OpenAI API Key" })],
+    })
+    const snapshot = buildConfigurationLabSnapshot(data, { adapter: "codex" })
+    const route = snapshot.axes.routes.find((r) => r.value === "openai")
+    expect(route).toBeDefined()
+    expect(route?.fixed).toBe(true)
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toContain("openai-api")
+    expect(route?.ref).toBe("openai/gpt-5-codex")
+    expect(snapshot.selection.route).toBe("openai")
+    expect(snapshot.selection.profile).toBe("openai-api")
+  })
+
+  it("does not show misleading unset axes for MastraCode derived-from-model", () => {
+    const data = rawData({
+      adapters: [
+        adapter({
+          slug: "mastracode",
+          name: "Mastra Code",
+          models: ["claude-sonnet-4-5", "gpt-5.1"],
+          modelDetails: [
+            { id: "claude-sonnet-4-5", provider: "anthropic" },
+            { id: "gpt-5.1", provider: "openai" },
+          ],
+          routeSelection: "derived-from-model",
+        }),
+      ],
+      capabilities: [
+        capabilities({
+          adapter: "mastracode",
+          models: { defaultModel: "claude-sonnet-4-5", supported: ["claude-sonnet-4-5", "gpt-5.1"] },
+          providers: [
+            { id: "anthropic", ready: true },
+            { id: "openai", ready: true },
+          ],
+        }),
+      ],
+      catalog: {
+        vendors: [
+          {
+            vendor: "anthropic",
+            products: [
+              {
+                product: "claude-sonnet-4-5",
+                routes: [
+                  {
+                    route: "anthropic",
+                    ref: "anthropic/claude-sonnet-4-5",
+                    baseUrl: null,
+                    pricing: null,
+                    runnable: true,
+                    eligibleProfiles: ["anthropic-api"],
+                    adapterModes: ["default"],
+                    adapters: ["mastracode"],
+                    curated: true,
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            vendor: "openai",
+            products: [
+              {
+                product: "gpt-5.1",
+                routes: [
+                  {
+                    route: "openai",
+                    ref: "openai/gpt-5.1",
+                    baseUrl: null,
+                    pricing: null,
+                    runnable: true,
+                    eligibleProfiles: ["openai-api"],
+                    adapterModes: ["default"],
+                    adapters: ["mastracode"],
+                    curated: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      profiles: [
+        profile({ id: "anthropic-api", endpoint: "anthropic", label: "Anthropic API Key" }),
+        profile({ id: "openai-api", endpoint: "openai", label: "OpenAI API Key" }),
+      ],
+    })
+    const snapshot = buildConfigurationLabSnapshot(data, { adapter: "mastracode" })
+    expect(snapshot.selection.model).toBe("claude-sonnet-4-5")
+    expect(snapshot.selection.route).toBe("anthropic")
+    expect(snapshot.selection.profile).toBe("anthropic-api")
+    const byKey = Object.fromEntries(snapshot.effective.map((f) => [f.key, f]))
+    expect(byKey["Route / gateway"]?.source).toBe("default")
+    expect(byKey["Auth profile"]?.source).toBe("default")
+    expect(byKey["Route / gateway"]?.detail).not.toContain("unset")
+    expect(byKey["Auth profile"]?.detail).not.toContain("unset")
+  })
 })
 
 describe("fetchConfigurationLabData", () => {
@@ -292,18 +470,18 @@ describe("fetchConfigurationLabData", () => {
 
 describe("labSelectionToSpawnArgs", () => {
   it("maps selections to spawn option shape", () => {
-    const selection: ConfigurationLabSelectionInput = {
+    const snapshot = buildConfigurationLabSnapshot(rawData(), {
       adapter: "claude-code",
       model: "claude-opus-4-8",
       route: "anthropic",
       profile: "anthropic-sub",
       posture: "plan",
       effort: "high",
-    }
-    const args = labSelectionToSpawnArgs(selection)
+    })
+    const args = labSelectionToSpawnArgs(snapshot)
     expect(args).toEqual({
       adapter: "claude-code",
-      model: "claude-opus-4-8",
+      model: "anthropic/claude-opus-4-8",
       route: { gateway: "anthropic" },
       access: { profileRef: "anthropic-sub" },
       posture: "plan",
@@ -312,7 +490,13 @@ describe("labSelectionToSpawnArgs", () => {
   })
 
   it("omits undefined fields", () => {
-    const args = labSelectionToSpawnArgs({ adapter: "claude-code" })
-    expect(args).toEqual({ adapter: "claude-code" })
+    const snapshot = buildConfigurationLabSnapshot(rawData(), { adapter: "claude-code" })
+    const args = labSelectionToSpawnArgs(snapshot)
+    expect(args).toEqual({
+      adapter: "claude-code",
+      model: "anthropic/claude-sonnet-5",
+      route: { gateway: "anthropic" },
+      access: { profileRef: "anthropic-sub" },
+    })
   })
 })

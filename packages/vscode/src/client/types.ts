@@ -899,7 +899,7 @@ export interface HarnessCapabilities {
 /** Per-axis option list for the Configuration Lab UI. */
 export interface ConfigurationLabAxisOptions {
   models: Array<{ id: string; provider?: string; mode?: string }>
-  routes: Array<{ value: string; label: string; runnable: boolean; curated: boolean; eligibleProfiles: string[] }>
+  routes: Array<{ value: string; label: string; runnable: boolean; curated: boolean; eligibleProfiles: string[]; fixed?: boolean; ref?: string }>
   profiles: Array<{ value?: string; label: string; description?: string; addProfile?: boolean }>
   postures: Array<{ value: string; label: string; enforcement: "enforced" | "advisory"; restartRequired: boolean }>
   efforts: string[]
