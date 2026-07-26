@@ -311,7 +311,7 @@ function methodsForDirect(
 ): AuthMethod[] {
   const methods: AuthMethod[] = []
   if (descriptor?.authSubscription) methods.push("oauth-bearer")
-  if (descriptor?.provider) methods.push("api-key")
+  if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
 
@@ -716,14 +716,17 @@ export function buildCatalogModels(
 /**
  * Resolve the effective billing route for a session: a parseable model ref's
  * own route is authoritative, `routeGateway` is only consulted when the model
- * carries no explicit `@route` or is unparseable (bare/legacy ids).
+ * carries no explicit `@route` or is unparseable (including router-prefixed ids
+ * like `openrouter/vendor/product`, which are normalized to the canonical
+ * suffix form first).
  */
 export function resolveEffectiveRoute(
   model: string | undefined,
   routeGateway: string | undefined,
 ): string | undefined {
   if (!model) return routeGateway
-  const parsed = tryParseModelRef(model)
+  const normalized = normalizeRouterPrefixedId(model)
+  const parsed = tryParseModelRef(normalized)
   if (!parsed) return routeGateway
   if (parsed.route !== parsed.vendor) return parsed.route
   return routeGateway ?? parsed.route

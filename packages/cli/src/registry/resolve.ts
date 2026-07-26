@@ -36,7 +36,7 @@ import {
   type DiscoverCtx,
 } from "@agentproto/provider-kit"
 import { isAgentCliAuthConfigured, type AdapterAuthDescriptor } from "@agentproto/runtime"
-import { CatalogProviderSchema } from "@agentproto/model-catalog"
+import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import {
   acpHandleFromSpec,
   resolveAcpSpec,
@@ -734,10 +734,23 @@ export function toAuthDescriptor(handle: AgentCliHandle): AdapterAuthDescriptor 
   const providerParse = handle.provider
     ? CatalogProviderSchema.safeParse(handle.provider)
     : undefined
+  // The adapter's OWN declared per-model billing provider
+  // (`models.allowed[].provider`) — authoritative for a model-derived-api-key
+  // adapter whose declared model otherwise falls through to the global catalog's
+  // (possibly different) routing for the same id.
+  const modelProviders: Record<string, CatalogProvider> = {}
+  for (const entry of handle.models?.allowed ?? []) {
+    if (typeof entry === "string" || !entry.provider) continue
+    const parsed = CatalogProviderSchema.safeParse(entry.provider)
+    if (parsed.success) modelProviders[entry.id] = parsed.data
+  }
   return {
     ...(providerParse?.success ? { provider: providerParse.data } : {}),
     ...(handle.authEnforce ? { authEnforce: handle.authEnforce } : {}),
     ...(handle.authSubscription ? { authSubscription: handle.authSubscription } : {}),
+    ...(handle.modelDerivedApiKey ? { modelDerivedApiKey: handle.modelDerivedApiKey } : {}),
+    ...(handle.gatewayAuth ? { gatewayAuth: handle.gatewayAuth } : {}),
+    ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
   }
 }
 

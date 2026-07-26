@@ -109,7 +109,9 @@ function productOf(model: string): string {
 }
 
 /** The catalog product entry for `model`, searched across every vendor.
- *  Mirror of the helper in sessionConfig.logic.ts. */
+ *  Mirror of the helper in sessionConfig.logic.ts. Handles router-prefixed ids
+ *  (`openrouter/vendor/product`) by matching the remaining `vendor/product`
+ *  against the catalog's vendor/product tree. */
 function findCatalogProduct(
   catalog: CatalogModelsResult | undefined,
   model: string | undefined,
@@ -119,6 +121,17 @@ function findCatalogProduct(
   for (const vendor of catalog.vendors) {
     const match = vendor.products.find(p => p.product === product || p.product === model)
     if (match) return { vendor: vendor.vendor, product: match }
+    // Router-prefixed ids (`openrouter/vendor/product`) yield `product =
+    // vendor/product`; try matching that split explicitly.
+    const slash = product.indexOf("/")
+    if (slash !== -1) {
+      const productVendor = product.slice(0, slash)
+      const productName = product.slice(slash + 1)
+      if (productVendor === vendor.vendor) {
+        const splitMatch = vendor.products.find(p => p.product === productName)
+        if (splitMatch) return { vendor: vendor.vendor, product: splitMatch }
+      }
+    }
   }
   return undefined
 }
@@ -546,16 +559,26 @@ export function buildConfigurationLabSnapshot(
   // for derived-from-model adapters with no model yet).
   let routeRows = buildRouteRows(adapter, data.catalog, selection.model, data.profiles)
 
-  // Resolve default route when none was explicitly selected.
+  // The catalog cast is needed by route/model resolution below.
+  const catalog = data.catalog as CatalogModelsResult
+
+  // Resolve default route when none was explicitly selected. For
+  // derived-from-model adapters, the model id's own prefix/pin is the
+  // authoritative route — picking the first runnable catalog row would
+  // override an explicit `openrouter/...` selection with the direct-vendor
+  // route.
   let resolvedRoute = selection.route
   let routeIsDefault = false
   if (!resolvedRoute && routeRows.length > 0) {
-    resolvedRoute = defaultRouteFrom(routeRows)
+    if (adapter?.routeSelection === "derived-from-model" && selection.model) {
+      resolvedRoute = routeForModel(selection.model, catalog) ?? defaultRouteFrom(routeRows)
+    } else {
+      resolvedRoute = defaultRouteFrom(routeRows)
+    }
     routeIsDefault = true
   }
 
   // Build model options, scoped by resolved route for derived-from-model adapters.
-  const catalog = data.catalog as CatalogModelsResult
   let modelOptions = buildModelOptions(adapter, catalog, resolvedRoute)
 
   // For derived-from-model adapters, ensure the selected model is compatible
@@ -685,7 +708,14 @@ export async function fetchConfigurationLabData(
 
 /** Convert the current Lab selection into the minimal spawn-options shape the
  *  existing `agentproto.spawnAgent` command accepts, so the panel can hand off
- *  to the wizard without duplicating spawn logic. */
+ *  to the wizard without duplicating spawn logic.
+ *
+ *  For `derived-from-model` adapters (opencode, hermes, …) the model id's own
+ *  prefix/pin is the route selector, so the original selected id is preserved
+ *  rather than replaced by the catalog's canonical `@route` ref. That keeps
+ *  `openrouter/vendor/product` ids intact on the wire, matching what the
+ *  adapter's CLI actually resolves. Fixed / free adapters still get the
+ *  canonical catalog ref so gateway/base_url routing stays consistent. */
 export function labSelectionToSpawnArgs(
   snapshot: ConfigurationLabSnapshot,
 ): {
@@ -698,7 +728,11 @@ export function labSelectionToSpawnArgs(
 } {
   const selection = snapshot.selection
   const routeRow = snapshot.axes.routes.find(r => r.value === selection.route)
-  const ref = routeRow?.ref ?? canonicalModelRef(selection.model, selection.route)
+  const adapterInfo = snapshot.adapters.find(a => a.slug === selection.adapter)
+  const preserveModelId = adapterInfo?.routeSelection === "derived-from-model"
+  const ref = preserveModelId
+    ? selection.model
+    : (routeRow?.ref ?? canonicalModelRef(selection.model, selection.route))
 
   return {
     adapter: selection.adapter!,
