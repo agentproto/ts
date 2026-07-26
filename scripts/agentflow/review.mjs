@@ -76,6 +76,32 @@ if (truncated) {
   console.warn(`[agentflow] review: diff truncated — reviewing the first ${DIFF_CAP} chars (partial).`)
 }
 
+// The local Claude Code CLI is memory-heavy to spawn inside a git hook. For
+// non-trivial branches, the child process can be OOM-killed and take the push
+// down with it (exit 137). Skip the local-CLI review from hooks when the diff
+// is large; the developer can still run `pnpm review:ai` manually or rely on
+// CI. Exits 0 so the push is not blocked.
+const HOOK_LOCAL_FILE_LIMIT = Math.max(
+  1,
+  Number.parseInt(process.env.AGENTFLOW_HOOK_LOCAL_FILE_LIMIT ?? '3', 10) || 3,
+)
+const HOOK_LOCAL_DIFF_LIMIT = Math.max(
+  1,
+  Number.parseInt(process.env.AGENTFLOW_HOOK_LOCAL_DIFF_LIMIT ?? '8000', 10) || 8000,
+)
+if (
+  FROM_HOOK &&
+  engine === 'local' &&
+  (fileCount > HOOK_LOCAL_FILE_LIMIT || rawDiff.length > HOOK_LOCAL_DIFF_LIMIT)
+) {
+  console.warn(
+    `[agentflow] review: branch is too large for a local pre-push review ` +
+      `(${fileCount} files, ${rawDiff.length} chars). ` +
+      `Run \`pnpm review:ai\` manually, or push to rely on CI.`,
+  )
+  process.exit(0)
+}
+
 console.log(`[agentflow] reviewing ${fileCount} file(s) vs origin/main (engine: ${engine})…`)
 
 let verdict
