@@ -232,7 +232,7 @@ async function sendTelegram(
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": contentType },
-      body,
+      body: toFetchBody(body),
     })
 
     if (!res.ok) {
@@ -276,7 +276,7 @@ async function sendTelegram(
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": contentType },
-    body,
+    body: toFetchBody(body),
   })
 
   if (!res.ok) {
@@ -426,6 +426,22 @@ function buildMultipartBody(
 
   parts.push(Buffer.from(`--${boundary}--\r\n`))
   return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
+/**
+ * Converts a Node `Buffer` into a standards-compatible `BodyInit` for `fetch()`.
+ *
+ * At runtime Node's `Buffer` is a `Uint8Array` subclass and is accepted by
+ * `fetch()`, but TypeScript's DOM `BodyInit` types `BufferSource` as
+ * `ArrayBufferView<ArrayBuffer>`. `Buffer` is currently typed as
+ * `Buffer<ArrayBufferLike>`, whose underlying `buffer` property may be a
+ * `SharedArrayBuffer` at the type level, so it is not assignable to
+ * `BodyInit` when the DOM lib is in scope. Copying into a plain
+ * `Uint8Array` preserves the exact byte sequence while satisfying the
+ * standard type.
+ */
+export function toFetchBody(buffer: Buffer): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(buffer)
 }
 
 /**
