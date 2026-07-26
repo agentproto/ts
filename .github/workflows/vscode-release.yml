@@ -93,6 +93,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # `agentproto-vscode` bundles @agentproto/runtime from its workspace
+      # export map. A fresh runner has no ignored `dist/` artifacts, so build
+      # the extension and its dependency closure through Turbo before esbuild
+      # resolves those package exports.
+      - name: Build extension dependency graph
+        run: pnpm exec turbo run build --filter=agentproto-vscode...
+
       # Tracks stable's major.minor, offsets the patch into the pre-release
       # lane. See the version note at the top of this file.
       - name: Compute pre-release version
@@ -115,7 +122,6 @@ jobs:
         run: |
           set -euo pipefail
           cd packages/vscode
-          pnpm run build
           mkdir -p output
           pnpm dlx @vscode/vsce package \
             --no-dependencies \
