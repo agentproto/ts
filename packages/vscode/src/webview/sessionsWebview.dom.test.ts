@@ -3,7 +3,7 @@
  * DOM-level coverage for the Sessions webview panel's shipped script —
  * extracts and executes the REAL HTML/script via the exported `buildHtml`
  * (mirrors transcriptPanel.dom.test.ts's own pattern) so a regression in the
- * rendered markup or the click/filter/tab/load-more wiring fails this suite,
+ * rendered markup or the click/filter/tab/workspace wiring fails this suite,
  * not just a hand-rolled model of it.
  */
 import type { DomDocument, DomElement, DomWindow } from "jsdom"
@@ -53,6 +53,10 @@ function el(panel: Panel, id: string): DomElement {
 
 function click(panel: Panel, element: DomElement): void {
   element.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+}
+
+function change(panel: Panel, element: DomElement): void {
+  element.dispatchEvent(new panel.window.Event("change", { bubbles: true }))
 }
 
 function send(panel: Panel, data: unknown): void {
@@ -114,9 +118,6 @@ function modelMessage(
     recent?: unknown[]
     older?: unknown[]
     summary?: string
-    loading?: boolean
-    hasMore?: boolean
-    loadError?: string
     workspaces?: unknown[]
     selectedWorkspace?: string
     connection?: unknown
@@ -124,16 +125,14 @@ function modelMessage(
 ) {
   return {
     type: "model",
-    summary: overrides.summary ?? "2 of 10 loaded",
     connection: overrides.connection,
     summary: overrides.summary ?? "2 loaded",
     section: {
       recent: overrides.recent ?? [ROW_A, ROW_CHILD],
       older: overrides.older ?? [],
     },
-    loading: overrides.loading ?? false,
-    hasMore: overrides.hasMore ?? false,
-    loadError: overrides.loadError ?? undefined,
+    workspaces: overrides.workspaces ?? [{ slug: "studio", label: "Agentik Studio", colorIndex: 0, css: "#c45c26" }],
+    selectedWorkspace: overrides.selectedWorkspace ?? "__all__",
   }
 }
 
@@ -219,11 +218,10 @@ describe("sessions webview — render", () => {
     expect(el(panel, "empty").hidden).toBe(true) // initial markup ships hidden
     send(panel, {
       type: "model",
-      summary: "0 of 0 loaded",
+      summary: "0 loaded",
       section: { recent: [], older: [] },
-      loading: false,
-      hasMore: false,
-      loadError: undefined,
+      workspaces: [],
+      selectedWorkspace: "__all__",
     })
     expect(el(panel, "empty").hidden).toBe(false)
     send(panel, modelMessage())
@@ -258,31 +256,52 @@ describe("sessions webview — render", () => {
     const row = el(panel, "list").querySelector('[data-id="s2"]')!
     expect(row.className).toContain(" archived")
   })
+})
 
-  it("shows the load-more button when hasMore is true", () => {
+describe("sessions webview — workspace selector", () => {
+  it("renders global, each workspace, and unassigned options", () => {
     const panel = renderPanel()
-    send(panel, modelMessage({ hasMore: true }))
-    expect(el(panel, "load-more").hidden).toBe(false)
+    send(panel, modelMessage())
+    const select = el(panel, "workspace-select")
+    const options = [...select.querySelectorAll("option")].map(o => ({
+      value: htmlEl(o).getAttribute("value"),
+      label: o.textContent,
+    }))
+    expect(options).toEqual([
+      { value: "__all__", label: "Global / All workspaces" },
+      { value: "studio", label: "Agentik Studio" },
+      { value: "__unassigned__", label: "Unassigned" },
+    ])
   })
 
-  it("hides the load-more button when hasMore is false", () => {
+  it("marks the selected workspace option and applies its accent color to the select border", () => {
     const panel = renderPanel()
-    send(panel, modelMessage({ hasMore: false }))
-    expect(el(panel, "load-more").hidden).toBe(true)
+    send(panel, modelMessage({ selectedWorkspace: "studio" }))
+    const select = el(panel, "workspace-select")
+    const selected = htmlEl(select.querySelector('option[value="studio"]'))
+    expect(selected.hasAttribute("selected")).toBe(true)
+    expect(select.className).not.toContain("neutral")
+    const style = htmlEl(select).getAttribute("style") ?? ""
+    expect(style).toMatch(/border-left-color:\s*rgb\(196,\s*92,\s*38\)/)
   })
 
-  it("shows a loading indicator and disables load-more while loading", () => {
+  it("keeps the neutral border for global / unassigned selections", () => {
     const panel = renderPanel()
-    send(panel, modelMessage({ loading: true, hasMore: true }))
-    expect(el(panel, "spinner").hidden).toBe(false)
-    expect((htmlEl(el(panel, "load-more")) as HTMLButtonElement).disabled).toBe(true)
+    send(panel, modelMessage({ selectedWorkspace: "__unassigned__" }))
+    const select = el(panel, "workspace-select")
+    expect(select.className).toContain("neutral")
+    const style = htmlEl(select).getAttribute("style") ?? ""
+    expect(style).not.toContain("rgb")
   })
 
-  it("shows a footer error when loadError is set", () => {
+  it("posts a workspace message when the selector changes", () => {
     const panel = renderPanel()
-    send(panel, modelMessage({ loadError: "daemon unreachable" }))
-    expect(el(panel, "footer-error").hidden).toBe(false)
-    expect(el(panel, "footer-error").textContent).toBe("daemon unreachable")
+    send(panel, modelMessage())
+    panel.posted.length = 0
+    const select = htmlEl(el(panel, "workspace-select")) as HTMLSelectElement
+    select.value = "studio"
+    change(panel, select as unknown as DomElement)
+    expect(panel.posted).toEqual([{ type: "workspace", workspace: "studio" }])
   })
 })
 
@@ -352,13 +371,5 @@ describe("sessions webview — interactions", () => {
     expect(q.value).toBe("")
     expect(panel.posted.at(-1)).toEqual({ type: "filter", search: "" })
     expect(el(panel, "clear").className).not.toContain("show")
-  })
-
-  it("clicking load-more posts a loadMore message", () => {
-    const panel = renderPanel()
-    send(panel, modelMessage({ hasMore: true }))
-    panel.posted.length = 0
-    click(panel, el(panel, "load-more"))
-    expect(panel.posted).toEqual([{ type: "loadMore" }])
   })
 })

@@ -2833,7 +2833,6 @@ export function deliverRecordsExactlyOnce(opts: {
  * the dispatcher knows to skip the 404 path.
  *
  *   GET    /sessions              → list of SessionDescriptor[]
- *   GET    /sessions/summaries    → paginated SessionSummary[] (lightweight panel projection)
  *   GET    /sessions/:id          → one SessionDescriptor
  *   GET    /sessions/:id/stream   → SSE stream {line,stream} events
  *   GET    /sessions/:id/export   → ExportAgentSessionResult (transcript as markdown or JSON)
@@ -3108,26 +3107,6 @@ async function handleSessions(
       rows = rows.filter(s => s.kind !== "command")
     }
     json(200, { sessions: rows })
-    return true
-  }
-
-  if (path === "/sessions/summaries" && req.method === "GET") {
-    // Lightweight, paginated panel projection of list(). Query params:
-    //   includeArchived=true  (default false)
-    //   limit=N               (default 50, clamped to [1,200])
-    //   offset=N              (default 0, min 0)
-    const reqUrl = req.url ?? ""
-    const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
-    const params = new URLSearchParams(queryString)
-    const includeArchived = params.get("includeArchived") === "true"
-    const limit = Number.parseInt(params.get("limit") ?? "", 10)
-    const offset = Number.parseInt(params.get("offset") ?? "", 10)
-    const result = registry.listSummaries({
-      includeArchived,
-      limit: Number.isNaN(limit) ? undefined : limit,
-      offset: Number.isNaN(offset) ? undefined : offset,
-    })
-    json(200, result)
     return true
   }
 

@@ -55,7 +55,6 @@ import type {
   SessionDescriptor,
   SessionEventsPage,
   SessionEventsPollResult,
-  SessionSummary,
   UserPreset,
   WorkspacesConfig,
   WorktreeGcResult,
@@ -199,25 +198,6 @@ export class DaemonClient {
     const query = opts?.includeArchived ? "?includeArchived=true" : ""
     const body = await this.getJson<{ sessions: SessionDescriptor[] }>(`/sessions${query}`)
     return body.sessions ?? []
-  }
-
-  /**
-   * GET /sessions/summaries — lightweight, paginated panel projection of
-   * `listSessions()`. Returns {@link SessionSummary} rows that exclude large
-   * resume/transcript/policy context, plus the total count for progressive
-   * loading UIs. `limit`/`offset` are passed through; the daemon clamps them.
-   */
-  async listSessionSummaries(opts?: {
-    includeArchived?: boolean
-    limit?: number
-    offset?: number
-  }): Promise<{ summaries: SessionSummary[]; total: number }> {
-    const params = new URLSearchParams()
-    if (opts?.includeArchived) params.set("includeArchived", "true")
-    if (typeof opts?.limit === "number") params.set("limit", String(opts.limit))
-    if (typeof opts?.offset === "number") params.set("offset", String(opts.offset))
-    const qs = params.toString()
-    return this.getJson<{ summaries: SessionSummary[]; total: number }>(`/sessions/summaries${qs ? `?${qs}` : ""}`)
   }
 
   async getSession(id: string): Promise<SessionDescriptor> {
