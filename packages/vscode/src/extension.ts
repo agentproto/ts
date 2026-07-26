@@ -55,6 +55,7 @@ import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
+import { registerConfigurationLabWebview } from "./webview/configurationLabPanel.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -133,6 +134,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
   registerHarnessesWebview(ctx, client, harnessesProvider)
   registerAuthProfilesWebview(ctx, client, authProfilesProvider)
+  registerConfigurationLabWebview(ctx, client)
   const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())
@@ -144,6 +146,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     ),
     vscode.commands.registerCommand("agentproto.refresh", () =>
       store.refreshAll(),
+    ),
+    vscode.commands.registerCommand("agentproto.openConfigurationLab", () =>
+      vscode.commands.executeCommand("agentproto.configurationLab.focus"),
     ),
     // Simple toggle, not full filter-infra integration (SessionFilterState's
     // shape is frozen — see sessionFilter.logic.ts) — flips the store's
