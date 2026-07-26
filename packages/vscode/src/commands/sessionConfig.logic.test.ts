@@ -50,6 +50,7 @@ function catalog(overrides?: Partial<CatalogModelsResult>): CatalogModelsResult 
                       runnable: true,
                       eligibleProfiles: ["jeremy-max", "work-anthropic-key"],
                       adapterModes: [],
+                      adapters: ["claude-code"],
                       curated: true,
                     },
                     {
@@ -59,6 +60,7 @@ function catalog(overrides?: Partial<CatalogModelsResult>): CatalogModelsResult 
                       runnable: false,
                       eligibleProfiles: [],
                       adapterModes: ["moonshot"],
+                      adapters: ["claude-sdk"],
                       curated: false,
                     },
                   ],
@@ -87,6 +89,7 @@ function routerCatalog(): CatalogModelsResult {
                 runnable: true,
                 eligibleProfiles: ["or-key"],
                 adapterModes: [],
+                adapters: [],
                 curated: true,
               },
               {
@@ -96,6 +99,7 @@ function routerCatalog(): CatalogModelsResult {
                 runnable: true,
                 eligibleProfiles: ["requesty-key"],
                 adapterModes: [],
+                adapters: [],
                 curated: false,
               },
             ],
@@ -241,6 +245,7 @@ describe("resolveRouteRows / currentRouteOf — catalog-derived, non-runnable fl
                   runnable: true,
                   eligibleProfiles: ["jeremy-max"],
                   adapterModes: [],
+                  adapters: ["claude-code"],
                   curated: true,
                 },
                 {
@@ -250,6 +255,7 @@ describe("resolveRouteRows / currentRouteOf — catalog-derived, non-runnable fl
                   runnable: true,
                   eligibleProfiles: ["moonshot-key"],
                   adapterModes: ["moonshot"],
+                  adapters: ["claude-sdk"],
                   curated: false,
                 },
               ],

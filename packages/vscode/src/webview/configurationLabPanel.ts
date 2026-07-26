@@ -148,16 +148,16 @@ class ConfigurationLabWebviewProvider implements vscode.WebviewViewProvider {
         void this.resolveAndPost()
         return
       case "copyJson": {
-        if (this.selection.adapter) {
-          const args = labSelectionToSpawnArgs(this.selection)
+        if (this.selection.adapter && this.latestSnapshot) {
+          const args = labSelectionToSpawnArgs(this.latestSnapshot)
           await vscode.env.clipboard.writeText(JSON.stringify(args, null, 2))
           void vscode.window.showInformationMessage("agentproto: spawn options copied to clipboard")
         }
         return
       }
       case "spawn": {
-        if (this.selection.adapter) {
-          const args = labSelectionToSpawnArgs(this.selection)
+        if (this.selection.adapter && this.latestSnapshot) {
+          const args = labSelectionToSpawnArgs(this.latestSnapshot)
           void vscode.commands.executeCommand("agentproto.spawnAgent", args)
         }
         return
