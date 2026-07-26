@@ -1323,13 +1323,17 @@ export async function createGateway(
   // path knob) — writes only happen on an explicit bind, which no
   // test exercises incidentally the way session spawns do.
   const transmitterBindings = createTransmitterBindingStore()
-  // Persisted (default ~/.agentproto/inbound-endpoints.json) -- an endpoint
-  // registered via inbound_endpoint_create must survive a daemon restart,
-  // or every provider webhook already pointed at it (e.g. a live Telegram
-  // bot's setWebhook) starts 404ing as unknown_inbound_endpoint the moment
-  // the daemon bounces, with no way for the remote caller to know why.
+  // Keyed off the SAME `persist` switch every sibling store uses (see its
+  // definition above) -- an endpoint registered via inbound_endpoint_create
+  // must survive a daemon restart in production, or every provider webhook
+  // already pointed at it (e.g. a live Telegram bot's setWebhook) starts
+  // 404ing as unknown_inbound_endpoint with no signal to the remote caller.
+  // Hardcoding persist:true here (an earlier version of this fix) ignored
+  // opts.persist entirely -- a test gateway created with `persist: false`
+  // would still flushSync on stop() and overwrite the developer's real
+  // ~/.agentproto/inbound-endpoints.json with an empty store.
   const inboundEndpointStore = createInboundEndpointStore({
-    persist: true,
+    persist,
   })
   const telegramBotCreds = makeTelegramBotCredsStore()
 
