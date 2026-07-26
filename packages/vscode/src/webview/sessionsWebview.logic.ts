@@ -6,33 +6,39 @@
  *
  * Deliberately thin: every grouping, recency-split, subagent-nesting, and
  * filter decision is DELEGATED to the tree's own logic modules
- * (sessionsTree.logic.ts, sessionsGroups.logic.ts, sessionFilter.logic.ts) —
- * this module only reshapes their output into the flat two-line-row shape
- * `sessions-webview-demo-models.html` (the locked design mock) expects. That
- * reuse is the point: the tree and the webview must never disagree about
- * which sessions exist, how they're grouped, or which are nested under a
- * parent — only how a row is PAINTED.
+ * (sessionsTree.logic.ts, sessionsGroups.logic.ts, sessionFilter.logic.ts) and
+ * the workspace metadata helpers (workspaces.logic.ts) — this module only
+ * reshapes their output into the flat two-line-row shape
+ * `sessions-webview-demo-models.html` (the locked design mock) expects, now
+ * as a single continuous list with per-row workspace tags and lifecycle
+ * actions. That reuse is the point: the tree and the webview must never
+ * disagree about which sessions exist, how they're grouped, or which are
+ * nested under a parent — only how a row is PAINTED.
  */
 
 import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
+import { canArchive } from "../commands/sessionArchive.logic.js"
+import { isLiveSession } from "../commands/sessionActions.logic.js"
+import { findWorkspaceByPath } from "../services/workspaces.logic.js"
+import { isPendingSession } from "../services/pending.logic.js"
 import {
   EMPTY_FILTER,
   filterSessions,
   type SessionFilterState,
 } from "../views/sessionFilter.logic.js"
-import { buildSessionsRoots, isCtaNode, isGroupNode } from "../views/sessionsGroups.logic.js"
 import {
   activityFor,
   activityLineFor,
+  buildSessionTree,
+  bucketFor,
   collapseResumeChains,
+  compareSessions,
   contextPercent,
   isolationLabelFor,
-  isSeparatorNode,
   labelFor,
   relativeTime,
   type SessionActivity,
   type SessionNode,
-  type TreeNode,
 } from "../views/sessionsTree.logic.js"
 
 /**
@@ -98,6 +104,66 @@ export function webviewRowStatus(session: SessionDescriptor, now?: number): Webv
   return ACTIVITY_TO_ROW_STATUS[activityFor(session, now)]
 }
 
+/** Per-row lifecycle action exposed by the webview. */
+export type RowAction = "stop" | "archive" | "unarchive"
+
+/**
+ * Which lifecycle action a row should offer, if any. Mirrors the existing
+ * command/menu gating (`isLiveSession`, `canArchive`) so the webview never
+ * invents its own policy.
+ */
+export function rowActionFor(session: SessionDescriptor): RowAction | undefined {
+  if (isPendingSession(session)) return undefined
+  if (session.archived) return "unarchive"
+  if (isLiveSession(session)) return "stop"
+  if (canArchive(session)) return "archive"
+  return undefined
+}
+
+/** Stable, theme-agnostic accent palette for workspace tags. Mid-luminance so the color reads as an accent in both light and dark themes. */
+export const WORKSPACE_PALETTE: readonly string[] = [
+  "#c45c26", // orange
+  "#2a8f5c", // green
+  "#3b82f6", // blue
+  "#8b5cf6", // purple
+  "#d946ef", // magenta
+  "#0ea5e9", // cyan
+  "#ca8a04", // gold
+  "#ef4444", // red
+]
+
+/** Dedicated index for rows with no resolvable workspace — a neutral gray outside the accent palette. */
+export const UNASSIGNED_COLOR_INDEX = WORKSPACE_PALETTE.length
+
+/** Relative luminance of an sRGB color (for accessibility sanity checks). */
+export function relativeLuminance(hex: string): number {
+  const rgb = [1, 3, 5].map(offset => {
+    const v = Number.parseInt(hex.slice(offset, offset + 2), 16) / 255
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!
+}
+
+/**
+ * Deterministic, stable workspace color. Hashing the workspace slug means
+ * adding or removing workspaces never shifts another workspace's color.
+ */
+export function workspaceColorFor(slug: string): { index: number; css: string } {
+  if (slug === "__unassigned__") {
+    return { index: UNASSIGNED_COLOR_INDEX, css: "#808080" }
+  }
+  const hash = [...slug].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 0)
+  const index = hash % WORKSPACE_PALETTE.length
+  return { index, css: WORKSPACE_PALETTE[index]! }
+}
+
+/** Workspace identity attached to a row for tag rendering and filtering. */
+export interface WebviewWorkspace {
+  slug: string
+  label: string
+  colorIndex: number
+}
+
 /** One rendered row — a root session or one of its flattened subagent descendants. */
 export interface WebviewRow {
   id: string
@@ -116,6 +182,12 @@ export interface WebviewRow {
   ctxPercent: number | undefined
   cost: string | undefined
   time: string
+  /** Lifecycle action for this row, if any. */
+  action: RowAction | undefined
+  /** Workspace tag metadata. */
+  workspace: WebviewWorkspace | undefined
+  /** Mirrors `session.archived` so the UI can style archived rows. */
+  archived: boolean
 }
 
 export interface WebviewSection {
@@ -123,15 +195,7 @@ export interface WebviewSection {
   older: WebviewRow[]
 }
 
-export interface WebviewGroup {
-  id: string
-  name: string
-  /** Total sessions (roots + nested children) landed in this group — the header's count badge. */
-  count: number
-  section: WebviewSection
-}
-
-export type SessionsWebviewTab = "all" | "working" | "awaiting" | "idle" | "stalled" | "done"
+export type SessionsWebviewTab = "all" | "working" | "awaiting" | "idle" | "stalled" | "done" | "archived"
 
 /**
  * Tab → the set of {@link SessionActivity} values it should show. The tree's
@@ -141,7 +205,7 @@ export type SessionsWebviewTab = "all" | "working" | "awaiting" | "idle" | "stal
  * "Working"/"Idle" and nothing incomplete is filed under "Done".
  */
 const TAB_TO_ACTIVITIES: Readonly<
-  Record<Exclude<SessionsWebviewTab, "all">, readonly SessionActivity[]>
+  Record<Exclude<SessionsWebviewTab, "all" | "archived">, readonly SessionActivity[]>
 > = {
   working: ["working"],
   awaiting: ["needs-you"],
@@ -150,8 +214,17 @@ const TAB_TO_ACTIVITIES: Readonly<
   done: ["done"],
 }
 
-function toRow(session: SessionDescriptor, isSub: boolean, now: number): WebviewRow {
+function toRow(
+  session: SessionDescriptor,
+  isSub: boolean,
+  now: number,
+  workspaces: WorkspacesConfig,
+): WebviewRow {
   const pctStr = contextPercent(session.contextUsed, session.contextSize)
+  const ws = workspaceFor(workspaces, session)
+  const workspace: WebviewWorkspace | undefined = ws
+    ? { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug).index }
+    : undefined
   return {
     id: session.id,
     session,
@@ -165,34 +238,38 @@ function toRow(session: SessionDescriptor, isSub: boolean, now: number): Webview
     ctxPercent: pctStr ? Number(pctStr.slice(0, -1)) : undefined,
     cost: formatCost(session.costUsd),
     time: relativeTime(session.lastActivityAt ?? session.lastOutputAt ?? session.startedAt, now),
+    action: rowActionFor(session),
+    workspace,
+    archived: session.archived === true,
   }
 }
 
 /** Depth-first flatten of a session and its (recursively nested) children — every descendant renders `isSub`, regardless of depth, matching the mock's single indentation level. */
-function flattenNode(node: SessionNode, isSub: boolean, now: number, out: WebviewRow[]): void {
-  out.push(toRow(node.session, isSub, now))
-  for (const child of node.children) flattenNode(child, true, now, out)
+function flattenNode(
+  node: SessionNode,
+  isSub: boolean,
+  now: number,
+  workspaces: WorkspacesConfig,
+  out: WebviewRow[],
+): void {
+  out.push(toRow(node.session, isSub, now, workspaces))
+  for (const child of node.children) flattenNode(child, true, now, workspaces, out)
 }
 
-/** Split a GroupNode's TreeNode children (buildSessionRows' own recent/[separator]/older shape) into two SessionNode arrays. */
-function splitByRecency(nodes: readonly TreeNode[]): {
-  recent: readonly SessionNode[]
-  older: readonly SessionNode[]
-} {
-  const idx = nodes.findIndex(isSeparatorNode)
-  if (idx === -1) return { recent: nodes as readonly SessionNode[], older: [] }
-  return {
-    recent: nodes.slice(0, idx) as readonly SessionNode[],
-    older: nodes.slice(idx + 1) as readonly SessionNode[],
-  }
-}
-
-function sectionFor(nodes: readonly TreeNode[], now: number): WebviewSection {
-  const { recent, older } = splitByRecency(nodes)
+function sectionFor(
+  roots: readonly SessionNode[],
+  now: number,
+  workspaces: WorkspacesConfig,
+): WebviewSection {
   const recentRows: WebviewRow[] = []
-  for (const root of recent) flattenNode(root, false, now, recentRows)
   const olderRows: WebviewRow[] = []
-  for (const root of older) flattenNode(root, false, now, olderRows)
+  for (const root of roots) {
+    if (bucketFor(root.session, now) === "recent") {
+      flattenNode(root, false, now, workspaces, recentRows)
+    } else {
+      flattenNode(root, false, now, workspaces, olderRows)
+    }
+  }
   return { recent: recentRows, older: olderRows }
 }
 
@@ -238,9 +315,73 @@ function retainSessionsByActivity(
   return sessions.filter(session => matched.has(session.id) || hasMatchingDescendant(session.id))
 }
 
+/** Resolve a session's workspace to a stable slug/label, or undefined when unassigned. */
+function workspaceFor(
+  config: WorkspacesConfig,
+  session: Pick<SessionDescriptor, "cwd" | "workspaceSlug">,
+): { slug: string; label: string } | undefined {
+  if (session.cwd) {
+    const byPath = findWorkspaceByPath(config, session.cwd)
+    if (byPath) return { slug: byPath.slug, label: byPath.label ?? byPath.slug }
+  }
+  if (session.workspaceSlug && session.workspaceSlug !== "default") {
+    const bySlug = config.workspaces.find(w => w.slug === session.workspaceSlug)
+    if (bySlug) return { slug: bySlug.slug, label: bySlug.label ?? bySlug.slug }
+  }
+  return undefined
+}
+
+/**
+ * Keep sessions whose resolved workspace matches `selectedSlug`, plus any
+ * ancestors needed to preserve parentSessionId nesting. `__unassigned__`
+ * keeps sessions with no resolvable workspace.
+ */
+function retainSessionsByWorkspace(
+  sessions: readonly SessionDescriptor[],
+  config: WorkspacesConfig,
+  selectedSlug: string,
+): SessionDescriptor[] {
+  if (selectedSlug === "__all__") return [...sessions]
+
+  const matched = new Set<string>()
+  for (const session of sessions) {
+    const ws = workspaceFor(config, session)
+    const isUnassigned = ws === undefined
+    if (selectedSlug === "__unassigned__") {
+      if (isUnassigned) matched.add(session.id)
+    } else if (ws?.slug === selectedSlug) {
+      matched.add(session.id)
+    }
+  }
+  if (matched.size === 0) return []
+
+  const childrenByParent = new Map<string, SessionDescriptor[]>()
+  for (const session of sessions) {
+    const parentId = session.parentSessionId
+    if (!parentId) continue
+    const list = childrenByParent.get(parentId)
+    if (list) list.push(session)
+    else childrenByParent.set(parentId, [session])
+  }
+
+  const descendantMatch = new Map<string, boolean>()
+  const hasMatchingDescendant = (id: string): boolean => {
+    const cached = descendantMatch.get(id)
+    if (cached !== undefined) return cached
+    descendantMatch.set(id, false)
+    const result = (childrenByParent.get(id) ?? []).some(
+      child => matched.has(child.id) || hasMatchingDescendant(child.id),
+    )
+    descendantMatch.set(id, result)
+    return result
+  }
+
+  return sessions.filter(session => matched.has(session.id) || hasMatchingDescendant(session.id))
+}
+
 export interface SessionsWebviewModel {
-  groups: WebviewGroup[]
-  /** Rows actually rendered across every group (roots + nested children). */
+  section: WebviewSection
+  /** Rows actually rendered across recent + older (roots + nested children). */
   shownCount: number
   /** All sessions the store currently holds, before filtering. */
   totalCount: number
@@ -251,15 +392,15 @@ export interface BuildSessionsWebviewModelOptions {
   /** The pinned filter input's live text — matched against name/command/cwd/id via the reused sessionFilter.logic.ts predicate. */
   search: string
   now: number
+  /** Selected workspace slug, or the global/unassigned sentinel. */
+  workspace?: string | "__all__" | "__unassigned__"
 }
 
 /**
- * The webview's single entry point — mirrors SessionsTreeProvider.rebuild's
- * own pipeline (filter → collapse resume chains → group), forced to
- * `grouping: "workspace"` (the mock groups "by workspace/repo with a count
- * badge" unconditionally; the tree's other groupings — origin/status/none —
- * aren't offered here). A "Create workspace here" CTA row (buildSessionsRoots'
- * `CtaNode`) has no equivalent in the webview's row shape, so it's dropped.
+ * The webview's single entry point — now a single continuous list ordered by
+ * recency and parent-child nesting. Filtering (search, activity tab,
+ * workspace, archived) is applied first; the survivors are then collapsed,
+ * re-nested, sorted, and split into a global recent/older divider.
  */
 export function buildSessionsWebviewModel(
   sessions: readonly SessionDescriptor[],
@@ -267,35 +408,56 @@ export function buildSessionsWebviewModel(
   openFolderPaths: readonly string[],
   opts: BuildSessionsWebviewModelOptions,
 ): SessionsWebviewModel {
-  // Run search/workspace/adapter filtering first (with its own parent
-  // retention), then apply the tab's activity-based status filter. Keeping the
-  // two passes separate lets the webview use the tree's fine-grained
-  // `activityFor` classifier without widening the persisted `SessionFilterState`
-  // shape that other views/commands rely on.
+  // 1. Search filter (reused predicate with parent retention).
   const baseState: SessionFilterState = { ...EMPTY_FILTER, search: opts.search }
-  const baseSurvivors = filterSessions(sessions, baseState, workspaces)
-  const activities = opts.tab === "all" ? undefined : TAB_TO_ACTIVITIES[opts.tab]
-  const survivors = activities ? retainSessionsByActivity(baseSurvivors, activities, opts.now) : baseSurvivors
-  const collapsed = collapseResumeChains(survivors)
-  const roots = buildSessionsRoots(collapsed, workspaces, openFolderPaths, opts.now, {
-    grouping: "workspace",
-    filterActive: opts.tab !== "all" || opts.search.trim().length > 0,
-  })
+  const searchSurvivors = filterSessions(sessions, baseState, workspaces)
 
-  const groups: WebviewGroup[] = []
-  let shownCount = 0
-  for (const root of roots) {
-    if (isCtaNode(root) || !isGroupNode(root)) continue
-    const section = sectionFor(root.children, opts.now)
-    shownCount += section.recent.length + section.older.length
-    groups.push({ id: root.id, name: root.label, count: root.count, section })
+  // 2. Activity / archived tab filter.
+  let tabSurvivors: SessionDescriptor[]
+  if (opts.tab === "archived") {
+    tabSurvivors = searchSurvivors.filter(s => s.archived === true)
+  } else if (opts.tab === "all") {
+    tabSurvivors = searchSurvivors
+  } else {
+    tabSurvivors = retainSessionsByActivity(searchSurvivors, TAB_TO_ACTIVITIES[opts.tab], opts.now)
   }
 
-  return { groups, shownCount, totalCount: sessions.length }
+  // 3. Workspace filter (with parent retention to keep nesting intact).
+  const workspaceSurvivors = retainSessionsByWorkspace(
+    tabSurvivors,
+    workspaces,
+    opts.workspace ?? "__all__",
+  )
+
+  // 4. Collapse resume chains, build the nested tree, sort globally.
+  const collapsed = collapseResumeChains(workspaceSurvivors)
+  const roots = buildSessionTree(collapsed)
+  roots.sort((a, b) => compareSessions(a.session, b.session))
+
+  // 5. Flatten into a single recent/older section.
+  const section = sectionFor(roots, opts.now, workspaces)
+  const shownCount = section.recent.length + section.older.length
+
+  return { section, shownCount, totalCount: sessions.length }
 }
 
 /** The panel's "N of M shown" / "M loaded" subtitle line. */
 export function summaryTextFor(model: SessionsWebviewModel, filterActive: boolean): string {
   if (filterActive) return `${model.shownCount} of ${model.totalCount} shown`
   return `${model.totalCount} loaded`
+}
+
+/** Every workspace that currently owns at least one session, plus metadata for the selector. */
+export function workspaceOptionsFor(
+  sessions: readonly SessionDescriptor[],
+  workspaces: WorkspacesConfig,
+): WebviewWorkspace[] {
+  const seen = new Map<string, WebviewWorkspace>()
+  for (const session of sessions) {
+    const ws = workspaceFor(workspaces, session)
+    if (!ws) continue
+    if (seen.has(ws.slug)) continue
+    seen.set(ws.slug, { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug).index })
+  }
+  return [...seen.values()].sort((a, b) => a.label.localeCompare(b.label))
 }

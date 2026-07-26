@@ -5,9 +5,8 @@
  * `agentproto.sessions` / `agentproto.sessionsWebview`). Reproduces
  * `sessions-webview-demo-models.html` (the locked design mock): a pinned
  * live-filter input, plain-text status tabs, two-line rows with a harness
- * glyph + model, subagent nesting, and an "open in tab" indicator — all
- * theme-aware via `--vscode-*` tokens (the mock hardcodes a dark palette;
- * this does not).
+ * glyph + model, subagent nesting, workspace tags, lifecycle actions, and
+ * an "open in tab" indicator — all theme-aware via `--vscode-*` tokens.
  *
  * Every grouping/filter/nesting DECISION is delegated to
  * sessionsWebview.logic.ts (which itself delegates to the tree's own
@@ -32,13 +31,18 @@ import type { SessionStore } from "../services/sessionStore.js"
 import {
   buildSessionsWebviewModel,
   summaryTextFor,
+  type RowAction,
   type SessionsWebviewTab,
-  type WebviewGroup,
   type WebviewRow,
+  type WebviewWorkspace,
+  workspaceColorFor,
+  workspaceOptionsFor,
 } from "./sessionsWebview.logic.js"
 import type { TranscriptPanels } from "./transcriptPanel.js"
 
 const VIEW_TYPE = "agentproto.sessionsWebview"
+const GLOBAL_WORKSPACE = "__all__"
+const UNASSIGNED_WORKSPACE = "__unassigned__"
 
 /** Reads live: the operator can add/close a folder mid-session, same reasoning as sessionsTree.ts's own openFolderPaths(). */
 function openFolderPaths(): string[] {
@@ -60,20 +64,29 @@ interface RenderRow {
   cost: string | undefined
   time: string
   unread: boolean
+  action: RowAction | undefined
+  workspace: (WebviewWorkspace & { css: string }) | undefined
+  archived: boolean
 }
 
-interface RenderGroup {
-  id: string
-  name: string
-  count: number
+interface RenderSection {
   recent: RenderRow[]
   older: RenderRow[]
 }
 
+interface WorkspaceOption {
+  slug: string
+  label: string
+  colorIndex: number
+  css: string
+}
+
 interface ModelMessage {
   type: "model"
-  groups: RenderGroup[]
+  section: RenderSection
   summary: string
+  workspaces: WorkspaceOption[]
+  selectedWorkspace: string
 }
 
 type HostMessage = ModelMessage
@@ -83,6 +96,10 @@ type WebviewToHostMessage =
   | { type: "open"; id: string }
   | { type: "filter"; search: string }
   | { type: "tab"; tab: SessionsWebviewTab }
+  | { type: "workspace"; workspace: string }
+  | { type: "stop"; id: string }
+  | { type: "archive"; id: string }
+  | { type: "unarchive"; id: string }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   return (
@@ -108,16 +125,9 @@ function toRenderRow(row: WebviewRow, activeSessionId: string | undefined, seen:
     cost: row.cost,
     time: row.time,
     unread: seen.isUnread(row.session),
-  }
-}
-
-function toRenderGroup(group: WebviewGroup, activeSessionId: string | undefined, seen: SeenTracker): RenderGroup {
-  return {
-    id: group.id,
-    name: group.name,
-    count: group.count,
-    recent: group.section.recent.map(r => toRenderRow(r, activeSessionId, seen)),
-    older: group.section.older.map(r => toRenderRow(r, activeSessionId, seen)),
+    action: row.action,
+    workspace: row.workspace ? { ...row.workspace, css: workspaceColorFor(row.workspace.slug).css } : undefined,
+    archived: row.archived,
   }
 }
 
@@ -125,6 +135,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
   private tab: SessionsWebviewTab = "all"
   private search = ""
+  private workspace: string = GLOBAL_WORKSPACE
 
   constructor(
     private readonly store: SessionStore,
@@ -154,6 +165,9 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) this.view = undefined
     })
+
+    // Align canonical archive visibility with the active tab when the view first appears.
+    this.syncArchivedFlag()
   }
 
   /** Called by registerSessionsWebview's store/filter/tab subscriptions — any source of truth this view depends on changed. */
@@ -171,7 +185,10 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         this.post()
         return
       case "tab":
-        this.tab = msg.tab
+        this.setTab(msg.tab)
+        return
+      case "workspace":
+        this.workspace = msg.workspace
         this.post()
         return
       case "open": {
@@ -179,11 +196,56 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         if (session && !isPendingSession(session)) this.transcriptPanels.open(session)
         return
       }
+      case "stop":
+        void this.runSessionAction(msg.id, "agentproto.killSession", "stop")
+        return
+      case "archive":
+        void this.runSessionAction(msg.id, "agentproto.archiveSession", "archive")
+        return
+      case "unarchive":
+        void this.runSessionAction(msg.id, "agentproto.unarchiveSession", "unarchive")
+        return
+    }
+  }
+
+  private setTab(next: SessionsWebviewTab): void {
+    const previous = this.tab
+    this.tab = next
+    if (next === "archived" && !this.store.showArchived) {
+      this.store.setShowArchived(true)
+    } else if (previous === "archived" && this.store.showArchived) {
+      this.store.setShowArchived(false)
+    }
+    this.post()
+  }
+
+  private syncArchivedFlag(): void {
+    if (this.tab === "archived" && !this.store.showArchived) {
+      this.store.setShowArchived(true)
+    } else if (this.tab !== "archived" && this.store.showArchived) {
+      this.store.setShowArchived(false)
     }
   }
 
   private findSession(id: string): SessionDescriptor | undefined {
     return this.store.sessions.find(s => s.id === id)
+  }
+
+  private async runSessionAction(
+    id: string,
+    command: "agentproto.killSession" | "agentproto.archiveSession" | "agentproto.unarchiveSession",
+    label: string,
+  ): Promise<void> {
+    const session = this.findSession(id)
+    if (!session) {
+      vscode.window.showWarningMessage(`agentproto: session ${id} no longer exists.`)
+      return
+    }
+    try {
+      await vscode.commands.executeCommand(command, { session })
+    } catch (err) {
+      vscode.window.showErrorMessage(`agentproto: ${label} failed — ${describeError(err)}`)
+    }
   }
 
   private post(): void {
@@ -192,13 +254,22 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       tab: this.tab,
       search: this.search,
       now: Date.now(),
+      workspace: this.workspace,
     })
     const activeSessionId = this.transcriptPanels.activeSessionId()
-    const filterActive = this.tab !== "all" || this.search.trim().length > 0
+    const filterActive = this.tab !== "all" || this.search.trim().length > 0 || this.workspace !== GLOBAL_WORKSPACE
     const message: ModelMessage = {
       type: "model",
-      groups: model.groups.map(g => toRenderGroup(g, activeSessionId, this.seen)),
+      section: {
+        recent: model.section.recent.map(r => toRenderRow(r, activeSessionId, this.seen)),
+        older: model.section.older.map(r => toRenderRow(r, activeSessionId, this.seen)),
+      },
       summary: summaryTextFor(model, filterActive),
+      workspaces: workspaceOptionsFor(this.store.sessions, this.filter.workspaces).map(w => ({
+        ...w,
+        css: workspaceColorFor(w.slug).css,
+      })),
+      selectedWorkspace: this.workspace,
     }
     void this.view.webview.postMessage(message satisfies HostMessage)
   }
@@ -231,6 +302,10 @@ export function registerSessionsWebview(
 
 function randomNonce(): string {
   return randomBytes(16).toString("hex")
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 /** Exported so sessionsWebview.dom.test.ts can execute the exact shipped HTML/script in jsdom. */
@@ -278,6 +353,19 @@ export function buildHtml(nonce: string): string {
       color: var(--vscode-descriptionForeground); cursor: pointer; font-size: 11px; display: none;
     }
     #clear.show { display: block; }
+    /* ── Sticky workspace selector ─────────────────────────────────── */
+    #workspace { flex: 0 0 auto; position: sticky; top: 0; z-index: 2; padding: 8px 12px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); }
+    #workspace-select {
+      width: 100%; height: 24px; background: transparent; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+      border-left-width: 3px;
+      color: var(--vscode-foreground); font-size: 12px; outline: none;
+      font-family: var(--vscode-font-family); padding: 0 4px;
+    }
+    #workspace-select:focus { border-color: var(--vscode-focusBorder); }
+    #workspace-select.neutral { border-left-color: var(--vscode-descriptionForeground); }
+    /* workspace accent colors are applied via inline style on the select and row tags */
+    .ws-accent { display: inline-flex; align-items: center; gap: 4px; padding: 1px 5px; border-radius: 3px; border: 1px solid currentColor; font-size: 10px; color: var(--vscode-descriptionForeground); }
+    .ws-accent::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
     /* ── Status tabs — plain text, underline on active, NOT chips ────── */
     #tabs { flex: 0 0 auto; display: flex; gap: 16px; padding: 10px 12px 8px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); }
     .tab {
@@ -305,6 +393,7 @@ export function buildHtml(nonce: string): string {
     .row:hover { background: var(--vscode-list-hoverBackground); }
     .row.open { background: rgba(127,127,127,0.08); box-shadow: inset 2px 0 0 var(--vscode-focusBorder); }
     .row.open .name { color: var(--vscode-foreground); font-weight: 600; }
+    .row.archived { opacity: 0.75; }
     /* Nested subagents: indentation + dimming only, no connector line, no box. */
     .row.sub { padding-left: 34px; border-bottom-color: transparent; }
     .row.sub + .row:not(.sub) { border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); }
@@ -341,7 +430,7 @@ export function buildHtml(nonce: string): string {
     .right { position: relative; display: grid; align-items: center; justify-items: end; padding-top: 1px; min-height: 14px; }
     .time { grid-area: 1 / 1; font-size: 10.5px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; opacity: 1; }
     .row:hover .time { opacity: 0; }
-    .acts { grid-area: 1 / 1; opacity: 0; }
+    .acts { grid-area: 1 / 1; opacity: 0; display: flex; gap: 8px; }
     .row:hover .acts { opacity: 1; }
     .acts span { color: var(--vscode-descriptionForeground); font-size: 12px; cursor: pointer; }
     .acts span:hover { color: var(--vscode-foreground); }
@@ -355,6 +444,11 @@ export function buildHtml(nonce: string): string {
     <input id="q" placeholder="Filter" autocomplete="off" />
     <span id="clear" title="Clear filter">✕</span>
   </div>
+  <div id="workspace">
+    <select id="workspace-select" class="neutral" aria-label="Filter by workspace">
+      <option value="__all__">Global / All workspaces</option>
+    </select>
+  </div>
   <div id="tabs">
     <div class="tab on" data-tab="all">All</div>
     <div class="tab" data-tab="working">Working</div>
@@ -362,6 +456,7 @@ export function buildHtml(nonce: string): string {
     <div class="tab" data-tab="idle">Idle</div>
     <div class="tab" data-tab="stalled">Stalled / failed</div>
     <div class="tab" data-tab="done">Done</div>
+    <div class="tab" data-tab="archived">Archived</div>
   </div>
   <div id="summary"></div>
   <div id="list"></div>
@@ -371,6 +466,7 @@ export function buildHtml(nonce: string): string {
       const vscode = acquireVsCodeApi();
       const qEl = document.getElementById('q');
       const clearEl = document.getElementById('clear');
+      const workspaceEl = document.getElementById('workspace-select');
       const tabsEl = document.getElementById('tabs');
       const listEl = document.getElementById('list');
       const emptyEl = document.getElementById('empty');
@@ -382,10 +478,23 @@ export function buildHtml(nonce: string): string {
         });
       }
 
+      function actionButton(r) {
+        if (r.action === 'stop') return '<span title="Stop" data-stop="' + escapeHtml(r.id) + '" data-action>■</span>';
+        if (r.action === 'archive') return '<span title="Archive" data-archive="' + escapeHtml(r.id) + '" data-action>🗄</span>';
+        if (r.action === 'unarchive') return '<span title="Unarchive" data-unarchive="' + escapeHtml(r.id) + '" data-action>↩</span>';
+        return '';
+      }
+
+      function workspaceTag(r) {
+        if (!r.workspace) return '<span class="tag workspace ws-accent">unassigned</span>';
+        return '<span class="tag workspace ws-accent" style="color:' + escapeHtml(r.workspace.css || '#808080') + '; border-color:' + escapeHtml(r.workspace.css || '#808080') + ';">' + escapeHtml(r.workspace.label) + '</span>';
+      }
+
       function rowHTML(r) {
-        var classes = 'row' + (r.isSub ? ' sub' : '') + (r.open ? ' open' : '');
+        var classes = 'row' + (r.isSub ? ' sub' : '') + (r.open ? ' open' : '') + (r.archived ? ' archived' : '');
         var dotClasses = 'dot ' + r.status + (r.status === 'done' && r.unread ? ' unread' : '');
         var tags = '<span class="tag">' + escapeHtml(r.tag) + '</span>';
+        tags += workspaceTag(r);
         tags += '<span class="tag harness"><span class="g">' + escapeHtml(r.harnessGlyph) + '</span>' +
           (r.model ? '<span class="model">' + escapeHtml(r.model) + '</span>' : '') + '</span>';
         if (typeof r.ctxPercent === 'number') {
@@ -393,7 +502,8 @@ export function buildHtml(nonce: string): string {
             '%"></span></span>' + r.ctxPercent + '%</span>';
         }
         if (r.cost) tags += '<span class="tag cost">' + escapeHtml(r.cost) + '</span>';
-        return '<div class="' + classes + '" data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '">' +
+        var acts = actionButton(r);
+        return '<div class="' + classes + '" data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '" role="listitem" tabindex="0">' +
           '<span class="' + dotClasses + '"></span>' +
           '<div class="mid">' +
             '<div class="name"><span>' + escapeHtml(r.name) + '</span></div>' +
@@ -401,23 +511,40 @@ export function buildHtml(nonce: string): string {
             '<div class="tags">' + tags + '</div>' +
           '</div>' +
           '<div class="right"><span class="time">' + escapeHtml(r.time) + '</span>' +
-            '<span class="acts"><span title="Open in tab" data-open="' + escapeHtml(r.id) + '">↗</span></span></div>' +
+            (acts ? '<span class="acts">' + acts + '</span>' : '') + '</div>' +
         '</div>';
       }
 
+      function renderWorkspaceOptions(payload) {
+        var selected = payload.selectedWorkspace;
+        var html = '<option value="__all__"' + (selected === '__all__' ? ' selected' : '') + '>Global / All workspaces</option>';
+        for (var i = 0; i < payload.workspaces.length; i++) {
+          var w = payload.workspaces[i];
+          html += '<option value="' + escapeHtml(w.slug) + '"' + (selected === w.slug ? ' selected' : '') + '>' + escapeHtml(w.label) + '</option>';
+        }
+        html += '<option value="__unassigned__"' + (selected === '__unassigned__' ? ' selected' : '') + '>Unassigned</option>';
+        workspaceEl.innerHTML = html;
+        workspaceEl.className = selected === '__all__' || selected === '__unassigned__' ? 'neutral' : '';
+        var selectedW = payload.workspaces.find(function (w) { return w.slug === selected; });
+        if (selectedW) {
+          workspaceEl.className = '';
+          workspaceEl.style.borderLeftColor = selectedW.css;
+        } else {
+          workspaceEl.style.borderLeftColor = '';
+        }
+      }
+
       function render(payload) {
+        renderWorkspaceOptions(payload);
         var html = '';
         var shown = 0;
-        for (var i = 0; i < payload.groups.length; i++) {
-          var g = payload.groups[i];
-          if (g.recent.length + g.older.length === 0) continue;
-          shown += g.recent.length + g.older.length;
-          html += '<div class="section">' + escapeHtml(g.name) + '<span class="c">' + g.count + '</span></div>';
-          for (var j = 0; j < g.recent.length; j++) html += rowHTML(g.recent[j]);
-          if (g.older.length > 0) {
-            html += '<div class="subhead">Older than 24 hours</div>';
-            for (var k = 0; k < g.older.length; k++) html += rowHTML(g.older[k]);
-          }
+        var recent = payload.section.recent;
+        var older = payload.section.older;
+        shown = recent.length + older.length;
+        for (var i = 0; i < recent.length; i++) html += rowHTML(recent[i]);
+        if (older.length > 0) {
+          html += '<div class="subhead">Older than 24 hours</div>';
+          for (var j = 0; j < older.length; j++) html += rowHTML(older[j]);
         }
         listEl.innerHTML = html;
         emptyEl.hidden = shown !== 0;
@@ -425,10 +552,26 @@ export function buildHtml(nonce: string): string {
       }
 
       listEl.addEventListener('click', function (e) {
+        var action = e.target.closest('[data-action]');
+        if (action) {
+          e.stopPropagation();
+          if (action.hasAttribute('data-stop')) vscode.postMessage({ type: 'stop', id: action.getAttribute('data-stop') });
+          else if (action.hasAttribute('data-archive')) vscode.postMessage({ type: 'archive', id: action.getAttribute('data-archive') });
+          else if (action.hasAttribute('data-unarchive')) vscode.postMessage({ type: 'unarchive', id: action.getAttribute('data-unarchive') });
+          return;
+        }
         var openBtn = e.target.closest('[data-open]');
         var row = e.target.closest('.row');
         var id = openBtn ? openBtn.getAttribute('data-open') : row ? row.getAttribute('data-id') : null;
         if (id) vscode.postMessage({ type: 'open', id: id });
+      });
+
+      listEl.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        var row = e.target.closest('.row');
+        if (!row) return;
+        e.preventDefault();
+        vscode.postMessage({ type: 'open', id: row.getAttribute('data-id') });
       });
 
       var filterTimer = null;
@@ -453,6 +596,11 @@ export function buildHtml(nonce: string): string {
         for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('on');
         t.classList.add('on');
         vscode.postMessage({ type: 'tab', tab: t.getAttribute('data-tab') });
+      });
+
+      workspaceEl.addEventListener('change', function () {
+        var value = workspaceEl.value;
+        vscode.postMessage({ type: 'workspace', workspace: value });
       });
 
       window.addEventListener('message', function (event) {
