@@ -232,7 +232,9 @@ describe("command_execute → session-based persistence", () => {
       result => result.entries.every(e => typeof e.stdout === "string"),
     )
     expect(entries).toHaveLength(2)
-    expect(entries.map(e => e.stdout!.trim())).toEqual(["2", "3"])
+    // Strip ANSI color codes — FORCE_COLOR=1 in env leaks them into stdout.
+    const stripAnsi = (s: string) => s.replace(/\u001b\[\d+m/g, "")
+    expect(entries.map(e => stripAnsi(e.stdout!).trim())).toEqual(["2", "3"])
 
     await close()
   })
