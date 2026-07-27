@@ -5,3 +5,4 @@ packages:
   - "packages/agencies/*"
   - "adapters/*"
   - "examples/*"
+  - "demos/*"

@@ -1,0 +1,22 @@
+{
+  "name": "@agentproto/rift-demo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Rift demo — deterministic local demo that turns a free-text market/competitor/idea input into a traceable Rift Card.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx src/run.ts",
+    "build": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
