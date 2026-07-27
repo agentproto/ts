@@ -1,18 +1,18 @@
 ---
 name: codex
 id: codex
-description: OpenAI's Codex coding agent wrapped as an ACP server by Zed's @zed-industries/codex-acp. Spawned via `npx -y @zed-industries/codex-acp` and driven over stdio JSON-RPC. The wrapper bundles its own Codex runtime — no separate @openai/codex install required.
+description: OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via `npx -y @agentclientprotocol/codex-acp` and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.
 version: 0.1.0
 bin: npx
-bin_args: ["-y", "@zed-industries/codex-acp"]
+bin_args: ["-y", "@agentclientprotocol/codex-acp"]
 install:
   - method: npm
-    package: "@zed-industries/codex-acp"
+    package: "@agentclientprotocol/codex-acp"
     global: true
 version_check:
-  cmd: npm view @zed-industries/codex-acp version
+  cmd: npm view @agentclientprotocol/codex-acp version
   parse: "(\\d+\\.\\d+\\.\\d+)"
-  range: ">=0.14.0"
+  range: ">=1.1.7"
   timeout_ms: 15000
 auth:
   ref: ./SECRETS.md
@@ -49,11 +49,10 @@ tags: ["codex", "openai", "acp", "agent-runtime", "coding"]
 # Codex adapter
 
 `@agentproto/adapter-codex` wraps OpenAI's Codex coding agent as an
-AIP-45 agent CLI by spawning **`@zed-industries/codex-acp`** — a
-Rust-based ACP wrapper published by Zed Industries that bundles its
-own Codex runtime.
+AIP-45 agent CLI by spawning **`@agentclientprotocol/codex-acp`** — the
+maintained ACP bridge, which bundles a compatible Codex runtime.
 
-## Why the Zed wrapper
+## Why this wrapper
 
 OpenAI's `@openai/codex` CLI does not expose an ACP mode. The Zed
 wrapper provides a stable stdio JSON-RPC bridge with full ACP session
@@ -65,10 +64,10 @@ full-access session modes.
 
 ```bash
 # npm (global) — recommended for fast spawn
-npm install -g @zed-industries/codex-acp
+npm install -g @agentclientprotocol/codex-acp
 
 # or rely on the npx form (no manual install)
-npx -y @zed-industries/codex-acp
+npx -y @agentclientprotocol/codex-acp
 ```
 
 The wrapper ships platform-specific native binaries via npm optional
