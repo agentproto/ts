@@ -83,6 +83,19 @@ export const codex: AgentCliHandle = defineAgentCli({
   models: {
     // Do not declare a fixed default: a ChatGPT subscription exposes valid
     // models dynamically, and forcing a historic ID can make a session fail.
+    // Keep this curated menu for catalog consumers and compatibility with the
+    // existing CLI discovery contract. It is not a default or an allow-list:
+    // explicit model IDs are still validated dynamically by Codex.
+    allowed: [
+      "gpt-5-codex",
+      "gpt-5.1-codex",
+      "gpt-5.1-codex-mini",
+      "gpt-5.1-codex-max",
+      "gpt-5.2-codex",
+      "gpt-5",
+      "gpt-5-mini",
+      "gpt-5-pro",
+    ],
     env: { openai: "OPENAI_API_KEY", codex: "CODEX_API_KEY" },
     // The maintained ACP bridge exposes `session/set_config_option`, so the
     // model is selected after session creation rather than through argv.
