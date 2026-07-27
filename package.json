@@ -40,8 +40,8 @@
     "release:dry": "scripts/release.sh --dry-run"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.200",
-    "@changesets/cli": "^2.31.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "@changesets/cli": "^2.31.1",
     "gray-matter": "^4.0.3",
     "husky": "^9.1.7",
     "json-schema-to-typescript": "^15.0.4",

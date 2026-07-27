@@ -35,14 +35,14 @@
     "@agentproto/runtime": "workspace:*",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "ws": "^8.20.0"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
     "@types/vscode": "^1.90.0",
     "@types/ws": "^8.18.1",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.25.12",
     "jsdom": "^29.1.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
@@ -827,7 +827,10 @@
         },
         "agentproto.sessionsView": {
           "type": "string",
-          "enum": ["tree", "webview"],
+          "enum": [
+            "tree",
+            "webview"
+          ],
           "enumDescriptions": [
             "The classic TreeView sessions panel.",
             "The newer Sessions webview panel — pinned filter, two-line rows, model/harness glyphs, subagent nesting, and an open-in-tab indicator."
@@ -837,7 +840,10 @@
         },
         "agentproto.harnessesView": {
           "type": "string",
-          "enum": ["tree", "webview"],
+          "enum": [
+            "tree",
+            "webview"
+          ],
           "enumDescriptions": [
             "The classic TreeView harnesses panel.",
             "The newer Harnesses webview panel — real adapter logos, installable harness pills."
@@ -847,7 +853,10 @@
         },
         "agentproto.authProfilesView": {
           "type": "string",
-          "enum": ["tree", "webview"],
+          "enum": [
+            "tree",
+            "webview"
+          ],
           "enumDescriptions": [
             "The classic TreeView auth profiles panel.",
             "The newer Auth Profiles webview panel — collapsible sections, provider logos, expandable model profiles."
