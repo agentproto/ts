@@ -1,5 +1,18 @@
 # @agentproto/workflow-runtime
 
+## 0.6.0
+
+### Minor Changes
+
+- 23fa73e: Wire daemon tool-step registry into compileWorkflow; dogfood worktree-gc→notify
+
+### Patch Changes
+
+- Updated dependencies [831d4f5]
+- Updated dependencies [23fa73e]
+  - @agentproto/driver@0.2.0
+  - @agentproto/workflow@0.1.1
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,5 +1,21 @@
 # @agentproto/sandbox-e2b
 
+## 0.3.0
+
+### Minor Changes
+
+- 6c35cb9: add config.setupCommands provision hook to e2b sandbox boot
+- e81ad25: Add `agentproto sandbox attach` — Phase 1 of AIP-36 sandbox reconnect. New CLI verb and runtime primitives (`attachSandbox`, `buildMcpConfigSnippet`, `registerSandboxAttachTool`) for connecting to already-existing sandboxes without tearing them down. Returns durable, token-gated connection descriptors for any MCP client to use directly. Extends `SandboxProvider` with optional `connect()` method for resume-after-pause workflows, and adds token capture from Box's `--private` and e2b's traffic restriction.
+
+### Patch Changes
+
+- 04aedad: Weekly dependency bump with semver-safe minor/patch updates across 18 packages. Includes Mastra ecosystem update (1.31-1.48.x → 1.52.1), Claude SDK patch (0.3.200 → 0.3.220), build tool updates (turbo, tsx), and general dependency maintenance (yaml, ws, react, etc.). All changes verified to pass build, test, and type checks.
+- 5615d80: Run setupCommands even when the e2b daemon is already autostarted
+- Updated dependencies [013e7b3]
+- Updated dependencies [e81ad25]
+- Updated dependencies [15abbee]
+  - @agentproto/sandbox@0.2.0
+
 ## 0.2.1
 
 ### Patch Changes

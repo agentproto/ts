@@ -1,5 +1,24 @@
 # @agentproto/sandbox
 
+## 0.2.0
+
+### Minor Changes
+
+- e81ad25: Add `agentproto sandbox attach` — Phase 1 of AIP-36 sandbox reconnect. New CLI verb and runtime primitives (`attachSandbox`, `buildMcpConfigSnippet`, `registerSandboxAttachTool`) for connecting to already-existing sandboxes without tearing them down. Returns durable, token-gated connection descriptors for any MCP client to use directly. Extends `SandboxProvider` with optional `connect()` method for resume-after-pause workflows, and adds token capture from Box's `--private` and e2b's traffic restriction.
+- 15abbee: Add `--keep-alive` flag to `agentproto sandbox attach` for always-on rendezvous model. Keeps sandboxes indefinitely awake using provider-specific mechanisms (e.g., Box's `ttlSeconds: null` no-auto-stop) instead of letting the provider's idle/TTL auto-stop reclaim them.
+
+### Patch Changes
+
+- 013e7b3: Carry provider auth headers through attach; fix Box boot auth
+- Updated dependencies [7192faf]
+- Updated dependencies [41cd652]
+- Updated dependencies [7465b6c]
+- Updated dependencies [4d200a9]
+- Updated dependencies [23fa73e]
+  - @agentproto/worktree@0.4.3
+  - @agentproto/workflow-runtime@0.6.0
+  - @agentproto/secrets@0.2.2
+
 ## 0.1.5
 
 ### Patch Changes

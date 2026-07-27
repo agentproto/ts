@@ -1,5 +1,29 @@
 # @agentproto/llm-endpoint
 
+## 0.5.0
+
+### Minor Changes
+
+- 852dfd4: Add Anthropic-style format feature and curated coding pack. Enables any pack to be relabeled on-the-fly with opaque `claude-<family>-<sha>` IDs for Anthropic-only clients without impersonating real Claude models. Introduces codingPack with production-grade models via OpenRouter (GPT-5.5, Claude Opus 4.8, Deepseek v4, Claude Sonnet 5, GLM 5.2, Minimax m3). Feature is opt-in via `X-Proxy-Format: anthropic` header or `?format=anthropic` query param.
+- 6c1c6e3: Add hot-reload functionality for local model packs (packs.local.json). The llm-endpoint proxy now validates pack configurations and exposes a POST /v1/packs/reload endpoint for live reloading without a restart. The VS Code extension gains a "Reload Local Router Packs" command with tree-view integration and field-scoped error feedback.
+- 924cbf6: Add upstream credential linking and live testing:
+  - **@agentproto/llm-endpoint**: New API for per-upstream credential status (describeUpstreamStatus, collectUpstreamStatuses, testUpstream) and HTTP routes (GET /v1/upstreams, POST /v1/upstreams/:provider/test).
+  - **@agentproto/runtime**: New llm-endpoint-links-store for persisting upstream→profile links to ~/.agentproto/llm-endpoint-links.json, and new MCP tools (llm_endpoint_set_upstream_link, llm_endpoint_list_links).
+  - **agentproto-vscode**: New "Upstreams" tree grouping with inline test and link actions, profile picker QuickPick, and pending-restart annotations when persisted links haven't been applied yet.
+
+  Users can now map LLM provider upstreams to named auth-profiles (instead of bare env keys), manage those links via MCP, and test them live to verify credentials resolve correctly.
+
+### Patch Changes
+
+- 04aedad: Weekly dependency bump with semver-safe minor/patch updates across 18 packages. Includes Mastra ecosystem update (1.31-1.48.x → 1.52.1), Claude SDK patch (0.3.200 → 0.3.220), build tool updates (turbo, tsx), and general dependency maintenance (yaml, ws, react, etc.). All changes verified to pass build, test, and type checks.
+- Updated dependencies [8367648]
+- Updated dependencies [6ff42b4]
+- Updated dependencies [645279d]
+- Updated dependencies [f3f5e82]
+- Updated dependencies [655b4b6]
+  - @agentproto/auth@1.0.0
+  - @agentproto/providers-store@0.3.2
+
 ## 0.4.0
 
 ### Minor Changes

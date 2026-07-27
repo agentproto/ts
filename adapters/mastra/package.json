@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-mastra",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Generic Mastra adapter for AIP-14 ToolHandles. Wraps any `@agentproto/tool` ToolHandle into a Mastra createTool() handle so apps drop in tools authored once and used by any framework.",
   "keywords": [
     "agentproto",

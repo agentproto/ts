@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/harness",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "@agentproto/harness — typed, one-call agent-session presets (coder, researcher, supervisor) over the agentproto daemon's start/prompt/output session tools. A client-side recipe layer; adds no new daemon surface.",
   "keywords": [
     "agentproto",

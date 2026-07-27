@@ -1,5 +1,11 @@
 # @agentproto/harness
 
+## 0.4.0
+
+### Minor Changes
+
+- bd79483: forward routed auth and provider route to sandbox daemon
+
 ## 0.3.0
 
 ### Minor Changes

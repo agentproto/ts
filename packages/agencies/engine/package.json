@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/agencies-engine",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "agentagencies/v1 reference engine — workspace walkers (computeAgencyOverview), index helpers, and FS-only orchestration. Routes I/O through @agentproto/governance-engine's IGovernanceFilesystem so it works against Node fs (dev) and Supabase / S3 (prod) via the same code path.",
   "keywords": [
     "agentagencies",

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/command-sandbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/command-sandbox — OS-level process confinement (macOS Seatbelt / Linux bubblewrap) for a spawned argv. Extracted so both @agentproto/runtime's command_execute tool and @agentproto/driver-agent-cli's adapter-spawn can wrap a child process through the same policy/backends without a circular package dependency.",
   "keywords": [
     "agentproto",

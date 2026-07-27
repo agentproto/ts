@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/driver",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "agentproto/provider-runtime — reference implementation of AIP-30 DRIVER.md `defineDriver` contract. Resolves multi-provider routing, applies schema-narrowing + mapping, and dispatches contract calls to provider bodies. Composes with @agentproto/tool (AIP-14 contracts) and the kind-specific runtime packages (provider-cli, provider-http, provider-mcp, provider-sdk). Framework adapters (Mastra, AI SDK, …) live in sibling `@agentproto/adapter-*` packages.",
   "keywords": [
     "agentproto",

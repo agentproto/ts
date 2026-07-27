@@ -2,7 +2,7 @@
   "name": "agentproto-vscode",
   "displayName": "agentproto",
   "description": "Live operational views for the agentproto daemon — sessions, permissions, cost — plus spawn/drive/stop from the editor.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "agentproto",
   "license": "Apache-2.0",
   "private": true,
@@ -827,7 +827,10 @@
         },
         "agentproto.sessionsView": {
           "type": "string",
-          "enum": ["tree", "webview"],
+          "enum": [
+            "tree",
+            "webview"
+          ],
           "enumDescriptions": [
             "The classic TreeView sessions panel.",
             "The newer Sessions webview panel — pinned filter, two-line rows, model/harness glyphs, subagent nesting, and an open-in-tab indicator."
@@ -837,7 +840,10 @@
         },
         "agentproto.harnessesView": {
           "type": "string",
-          "enum": ["tree", "webview"],
+          "enum": [
+            "tree",
+            "webview"
+          ],
           "enumDescriptions": [
             "The classic TreeView harnesses panel.",
             "The newer Harnesses webview panel — real adapter logos, installable harness pills."
@@ -847,7 +853,10 @@
         },
         "agentproto.authProfilesView": {
           "type": "string",
-          "enum": ["tree", "webview"],
+          "enum": [
+            "tree",
+            "webview"
+          ],
           "enumDescriptions": [
             "The classic TreeView auth profiles panel.",
             "The newer Auth Profiles webview panel — collapsible sections, provider logos, expandable model profiles."

@@ -1,5 +1,20 @@
 # @agentproto/corpus-cli
 
+## 0.6.0
+
+### Minor Changes
+
+- c4f2908: Adds `pr-review` corpus importer to transform GitHub pull requests into AIP-10 sources. Includes PrReviewImporter (pure, forge-agnostic), GhPrSourceAdapter (GitHub CLI backend), and import-prs CLI command. Sources marked as secondary authority (derived commentary). Supports --dry-run hermetic mode, per-PR error resilience, content-hash deduplication, and diff summaries.
+- 8a4fed0: Add CodeImporter — new corpus importer that transforms source code trees into knowledge sources. Maintains strict notes-only seam: no symbol graphs, call graphs, or cross-source ref edges (deferred per AIP-27). Supports file or module granularity, include globs, symbol extraction, and content-hash deduplication. Includes comprehensive test coverage and safe CLI dry-run mode.
+
+### Patch Changes
+
+- Updated dependencies [c4f2908]
+- Updated dependencies [8a4fed0]
+- Updated dependencies [04aedad]
+  - @agentproto/corpus@0.4.0
+  - @agentproto/corpus-presets@0.2.3
+
 ## 0.5.0
 
 ### Minor Changes

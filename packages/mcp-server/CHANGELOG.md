@@ -1,5 +1,17 @@
 # @agentproto/mcp-server
 
+## 0.2.4
+
+### Patch Changes
+
+- 5becedc: Add `routine_reconcile` verb and HTTP route for on-demand re-scan of routine definitions. Tighten `schedule` schema from `z.any()` to validated discriminatedUnion with cron/interval/calendar/manual/event kinds, improving type safety and validation coverage.
+- Updated dependencies [831d4f5]
+- Updated dependencies [4d200a9]
+- Updated dependencies [5becedc]
+- Updated dependencies [1cbb910]
+  - @agentproto/driver@0.2.0
+  - @agentproto/routine@0.2.0
+
 ## 0.2.3
 
 ### Patch Changes

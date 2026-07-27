@@ -1,5 +1,12 @@
 # @agentproto/agent-runtime
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [04aedad]
+  - @agentproto/telemetry@0.2.2
+
 ## 0.1.1
 
 ### Patch Changes

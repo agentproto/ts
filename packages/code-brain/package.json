@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/code-brain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pure, backend-agnostic code-intelligence contract (ICodeBrainProvider) + the AIP-14 `ask_codebase` tool, its AIP-30 builtin provider, and AIP-29/31/32 surface projections. Names no code-intelligence engine — a backend is injected via the tool context.",
   "keywords": [
     "agentproto",

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/telemetry-langfuse",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Langfuse ingestion REST API sink for @agentproto/telemetry. Dependency-free: maps EvalEvent batches to Langfuse trace-create and score-create objects over fetch.",
   "keywords": [
     "agentproto",

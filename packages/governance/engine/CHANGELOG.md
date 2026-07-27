@@ -1,5 +1,14 @@
 # @agentproto/governance-engine
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [831d4f5]
+- Updated dependencies [04aedad]
+  - @agentproto/driver@0.2.0
+  - @agentproto/governance@0.1.1
+
 ## 0.1.3
 
 ### Patch Changes

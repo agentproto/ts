@@ -1,5 +1,19 @@
 # @agentproto/catalog-sync
 
+## 0.5.2
+
+### Patch Changes
+
+- 3088e23: catalog-sync: skip the Replicate image source's live refresh when `REPLICATE_API_TOKEN` is absent. The source now declares the token as an `env:REPLICATE_API_TOKEN` header, routing it through the runner's existing missing-env gate so it reuses the committed snapshot (like the authed LLM sources) instead of fetching unauthenticated, hitting 401, and crashing the whole `catalog-sync generate --refresh`.
+- 1ea7682: Refresh provider-sourced model catalogs (OpenRouter, Requesty, HuggingFace, Moonshot, xAI) from live provider data: adds newly available models (e.g. claude-opus-5 and variants, gemini-3.5/3.6 entries) and updates pricing for existing entries. Data-only refresh via the existing catalog-sync generators; no adapter or routing logic changed.
+- Updated dependencies [358af0e]
+- Updated dependencies [f1484a4]
+- Updated dependencies [0f10338]
+- Updated dependencies [ec5f64f]
+- Updated dependencies [1ea7682]
+- Updated dependencies [42f1217]
+  - @agentproto/model-catalog@0.7.0
+
 ## 0.5.1
 
 ### Patch Changes
