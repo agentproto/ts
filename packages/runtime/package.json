@@ -141,7 +141,7 @@
     "@agentproto/telemetry-langfuse": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
-    "ws": "^8.18.0",
+    "ws": "^8.21.1",
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
