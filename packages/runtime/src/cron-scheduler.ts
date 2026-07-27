@@ -138,6 +138,13 @@ interface JobState {
   job: CronJob
   /** Live croner instance — kept for nextDate() queries and released when deleted. */
   cronInstance?: Cron
+  /**
+   * In-memory execution lease. A slow action must not be re-fired by the
+   * 20-second tick while its `nextRunAt` still points at the elapsed slot.
+   * Deliberately not persisted: after a daemon restart, the normal stale-slot
+   * rehydration advances `nextRunAt` to the next scheduled occurrence.
+   */
+  running?: boolean
 }
 
 // ── Factory ──────────────────────────────────────────────────────────
@@ -446,6 +453,13 @@ export function createCronScheduler(opts: {
   // ── Fire a job ────────────────────────────────────────────────────
 
   const fireJob = async (state: JobState): Promise<void> => {
+    // `tick()` intentionally does not await fireJob. Without this lease, a
+    // slow agent start leaves nextRunAt in the past and every subsequent tick
+    // starts another identical agent before the first one completes.
+    if (state.running) return
+    state.running = true
+
+    try {
     const { job } = state
     const now = new Date().toISOString()
     job.lastRunAt = now
@@ -499,6 +513,9 @@ export function createCronScheduler(opts: {
       job.nextRunAt = next?.toISOString()
     }
     persistNow()
+    } finally {
+      state.running = false
+    }
   }
 
   // ── Tick loop ─────────────────────────────────────────────────────
