@@ -91,7 +91,7 @@
     "@agentproto/sandbox-e2b": "workspace:*",
     "@agentproto/secrets": "workspace:*",
     "@agentproto/worktree": "workspace:*",
-    "@clack/prompts": "^1.5.0",
+    "@clack/prompts": "^1.7.0",
     "@earendil-works/pi-tui": "^0.80.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ajv": "^8.20.0",
