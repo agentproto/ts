@@ -81,7 +81,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     slug: "codex",
     name: "Codex",
     description:
-      "OpenAI Codex coding agent via Zed's @zed-industries/codex-acp ACP wrapper.",
+      "OpenAI Codex coding agent via the maintained @agentclientprotocol/codex-acp ACP wrapper.",
     packageName: "@agentproto/adapter-codex",
     hint: "openai · ACP · resumable",
   },

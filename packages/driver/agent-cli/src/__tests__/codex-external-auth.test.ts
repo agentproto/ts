@@ -77,8 +77,8 @@ const codexLike = (): AgentCliDefinition => ({
   description: "test double",
   version: "0.1.0",
   bin: "npx",
-  bin_args: ["-y", "@zed-industries/codex-acp"],
-  install: [{ method: "npm", package: "@zed-industries/codex-acp" }],
+  bin_args: ["-y", "@agentclientprotocol/codex-acp"],
+  install: [{ method: "npm", package: "@agentclientprotocol/codex-acp" }],
   version_check: { cmd: "npm view x", parse: "(\\d+)", range: ">=0.0.0" },
   auth: {
     ref: "./SECRETS.md",

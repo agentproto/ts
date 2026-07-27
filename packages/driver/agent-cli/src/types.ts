@@ -276,7 +276,7 @@ export interface AgentCliModels {
    *     turn after `newSession` and drain it. The agent's reply is checked
    *     for a "switched" acknowledgement; a failure is warned, not fatal.
    *   - "arg" — this CLI takes its model as a CLI argument, not an ACP
-   *     session config or control turn (e.g. codex-acp's `-c model="<id>"`).
+   *     session config or control turn.
    *     The requested model is composed into `bin_args` at spawn time via
    *     `bin_args_template` (below) — no post-`newSession` ACP call is
    *     made at all.
