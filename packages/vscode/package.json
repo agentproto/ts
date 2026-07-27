@@ -35,7 +35,7 @@
     "@agentproto/runtime": "workspace:*",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "ws": "^8.20.0"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
