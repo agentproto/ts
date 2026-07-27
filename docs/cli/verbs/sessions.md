@@ -27,6 +27,7 @@ agentproto sessions export   <id-or-name> [--json] [-o <file>]
                                           [--source auto|native|daemon]
                                           [--adapter <slug>] [--cwd <dir>]
 agentproto sessions stop     <id-or-name> [--json]
+agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
 ```
 
 Browse and control the daemon's live sessions — terminals, agent CLIs,
@@ -435,7 +436,20 @@ agentproto sessions stop claude-tui --json
 POSTs `/sessions/:id/kill` — sends SIGTERM to the child. Idempotent
 on already-dead sessions (reports "not running"; exit `1`).
 
-## Interrupting a live session (MCP/HTTP only)
+### `gc`
+
+```bash
+agentproto sessions gc                         # print plan, archive eligible
+agentproto sessions gc --apply                 # actually archive
+agentproto sessions gc --forget                # drop descriptors instead of archiving
+agentproto sessions gc --older-than-days 7 --apply
+```
+
+Bulk garbage-collects terminal-status sessions (`exited`/`killed`/`error`).
+By default it **archives** them (hidden from the default view, still
+readable/importable) via `POST /sessions/gc`. Pass `--forget` to drop the
+descriptors instead (the native conversation on disk survives). `--older-than-days`
+keeps anything more recent. Live sessions are never touched.
 
 There is no `agentproto sessions` subverb for this — it's exposed on
 the MCP `agent_prompt` tool and the HTTP prompt route only:

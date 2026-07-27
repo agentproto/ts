@@ -42,7 +42,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto config`](./verbs/config.md) — read/write `~/.agentproto/config.json`
 - [`agentproto conversation`](./verbs/conversation.md) — locate the native transcript behind a session, or the session behind a native transcript
 - [`agentproto cron`](./verbs/cron.md) — durable cron jobs on the daemon (command, fresh agent, or re-prompt a live session)
-- [`agentproto daemon`](./verbs/daemon.md) — install/start/stop the background service
+- [`agentproto daemon`](./verbs/daemon.md) — install/start/restart/stop the background service
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
 - [`agentproto install-mcp`](./verbs/install-mcp.md) — register the daemon's MCP server with installed coding CLIs
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint

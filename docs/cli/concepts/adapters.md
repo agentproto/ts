@@ -140,6 +140,19 @@ Newly shipped manifest fields (this release):
   pin the gateway when a user selects a model. (This manifest-level binding is
   what the runtime surfaces per-session as the **`route`** config axis — the
   endpoint/gateway rail; see [`verbs/sessions.md`](../verbs/sessions.md#config-axes-mcphttp).)
+- `routeSelection?: "free" | "derived-from-model"` tells the launch UI how the
+  route is chosen. `"free"` (default) means the user picks the route
+  independently; `"derived-from-model"` means the endpoint is implied by the
+  model id's vendor prefix (e.g. `pi`/`opencode`).
+- `modelDerivedApiKey?: boolean` marks adapters whose API-key auth is derived
+  from the requested model rather than a fixed `provider` (e.g. `pi`,
+  `opencode`, `mastracode`).
+- `authSubscription?: { setEnv?: string, external?: true, conflictEnv?: string[], unsetEnvAdd?: string[] }`
+  declares subscription (OAuth) billing support. `external: true` is the
+  file-based / "use my existing login" shape (Codex, Gemini): the CLI reads
+  its own login file, the runtime injects nothing, and only scrubs conflicting
+  api-key env vars. `setEnv` is the bearer-injection shape (Claude Code). The
+  two are mutually exclusive.
 
 The AgentProto spec for the adapter shape is AIP-45 — see
 <https://agentproto.sh/docs/aip-45>.

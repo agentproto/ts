@@ -13,8 +13,8 @@ This installs the `agentproto` executable on your `PATH`.
 ```text
 agentproto auth         <login|status|logout> [--host <url>]        authenticate against a remote host
 agentproto config       <show|path|get|set|unset|edit>              read/write ~/.agentproto/config.json
-agentproto daemon       <install|uninstall|start|stop|status|logs>  manage launchd/systemd service
-agentproto install      <slug> [--force] [--dry-run]                install an adapter's underlying CLI
+agentproto daemon       <install|uninstall|start|restart|stop|status|logs>  manage launchd/systemd service
+agentproto install      <slug> [--force] [--dry-run] [--allow-unverified]  install an adapter's underlying CLI
 agentproto plugins      <list|show|install|uninstall|enable|disable> manage runtime plugins
 agentproto setup        <slug> [--force] [--dry-run] [--only ...]   re-run an adapter's setup steps
 agentproto run          <slug> [--cwd <dir>] [--prompt <text>]      spawn the adapter, dispatch one turn, exit
@@ -85,12 +85,13 @@ For multi-turn or interactive use, see [`serve`](#serve--the-local-daemon) + [`s
 agentproto install claude-code              # idempotent — skips if version_check passes
 agentproto install claude-code --force      # reinstall regardless
 agentproto install claude-code --dry-run    # print steps, don't execute
+agentproto install claude-code --allow-unverified  # run curl/download installers with no SHA
 
 agentproto setup openclaw                   # re-run adapter setup (env keys, login, …)
 agentproto setup openclaw --only login      # only specific steps
 ```
 
-Install methods are tried in declaration order (`npm`, `curl`, `brew`, …). Use `--force` to reinstall, `--dry-run` to preview steps.
+Install methods are tried in declaration order (`npm`, `curl`, `brew`, …). Use `--force` to reinstall, `--dry-run` to preview steps, `--allow-unverified` to opt in to unverified curl/download installers in non-interactive contexts.
 
 ## `config` — defaults at `~/.agentproto/config.json`
 
@@ -166,7 +167,8 @@ agentproto daemon install                                  # write plist + boots
 agentproto daemon status                                   # plist? loaded? /health probe?
 agentproto daemon logs --lines 30                          # tail ~/.agentproto/daemon.log
 agentproto daemon stop                                     # SIGTERM
-agentproto daemon start                                    # kickstart again
+agentproto daemon start                                    # kickstart again (idempotent)
+agentproto daemon restart                                  # kill + relaunch
 agentproto daemon uninstall                                # bootout + delete plist
 ```
 

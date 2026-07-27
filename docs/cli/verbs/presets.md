@@ -59,6 +59,8 @@ openrouter    available   anthropic   OPENROUTER_API_KEY      —               
 requesty      available   anthropic   REQUESTY_API_KEY        —                   https://router.requesty.ai
 deepseek      available   anthropic   DEEPSEEK_API_KEY        deepseek-v4-pro     https://api.deepseek.com/anthropic
 xai           available   openai      XAI_API_KEY             grok-4.5            http://localhost:18090/v1
+xai-anthropic available   anthropic   XAI_API_KEY             grok-4.5            https://api.x.ai
+llm-endpoint  available   anthropic   LLM_ENDPOINT_ACCESS_TOKENS  kimi-k2.7-code  http://localhost:18090
 ```
 
 Exit codes: `2` when no daemon is found (or an unknown subcommand is passed),

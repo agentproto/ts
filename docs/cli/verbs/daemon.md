@@ -3,7 +3,8 @@
 ```text
 agentproto daemon install [--dry-run]   register service + start it (macOS launchd)
 agentproto daemon uninstall             stop + deregister service
-agentproto daemon start                 launchctl kickstart
+agentproto daemon start                 launchctl kickstart (idempotent; never kills healthy)
+agentproto daemon restart               launchctl kickstart -k (kill + relaunch)
 agentproto daemon stop                  launchctl kill SIGTERM
 agentproto daemon status                installed? loaded? /health reachable?
 agentproto daemon logs [--lines <N>]    tail daemon.log
@@ -23,12 +24,14 @@ Logs (stdout + stderr) go to `~/.agentproto/daemon.log`.
 ## Platform notes
 
 - **macOS:** plist at `~/Library/LaunchAgents/sh.agentproto.plist`.
-  `RunAtLoad=true`, `KeepAlive=true`, `ProcessType=Interactive` (so it
-  stays alive at user login and across login/logout). The plist's
-  `ProgramArguments` is `[node, cli.mjs, serve, …flags]`, computed
-  from `process.execPath` + `process.argv[1]` of the install
-  invocation — so the daemon runs on the same Node binary that ran
-  `daemon install` (works correctly with `nvm` / `fnm` / Homebrew).
+  `RunAtLoad=true`, `KeepAlive` is **crash-only** (`SuccessfulExit=false`),
+  `ProcessType=Interactive` (so it stays alive at user login and across
+  login/logout). Crash-only means a clean exit-0 stays settled, while a
+  crash respawns automatically. The plist's `ProgramArguments` is `[node,
+  cli.mjs, serve, …flags]`, computed from `process.execPath` +
+  `process.argv[1]` of the install invocation — so the daemon runs on the
+  same Node binary that ran `daemon install` (works correctly with `nvm` /
+  `fnm` / Homebrew).
 - **Linux:** not yet supported. Fall back to
   `agentproto serve &; disown` or your own `systemd --user` unit
   pointing at `agentproto serve`.
@@ -75,17 +78,21 @@ agentproto daemon uninstall
 `launchctl bootout` + delete plist. Idempotent — "already absent" is
 not an error.
 
-### `start` / `stop`
+### `start` / `restart` / `stop`
 
 ```bash
-agentproto daemon start   # launchctl kickstart -k
-agentproto daemon stop    # launchctl kill SIGTERM
+agentproto daemon start    # launchctl kickstart (idempotent; leaves a healthy daemon running)
+agentproto daemon restart  # launchctl kickstart -k (kill + relaunch)
+agentproto daemon stop     # launchctl kill SIGTERM
 ```
 
-One-shot kickstart and SIGTERM, respectively. `KeepAlive=true` means
-launchd will respawn the daemon if it dies; `daemon stop` sends a
-single SIGTERM and exits — the next `daemon start` (or a `RunAtLoad`
-trigger like login) brings it back.
+`start` is idempotent: it asks launchd to start the service if it isn't
+running and is a no-op if a healthy daemon already is. It never kills the
+incumbent. `restart` is the force-cycle: `kickstart -k` kills the running
+daemon (if any) and relaunches it — the clean replacement for manually
+killing the port. Crash-only `KeepAlive` means launchd only respawns the
+daemon when it exits non-zero; `daemon stop` sends a single SIGTERM and
+exits.
 
 ### `status`
 

@@ -2,6 +2,7 @@
 
 ```text
 agentproto install <adapter-slug>             [--force] [--dry-run] [--skip-setup]
+                                              [--allow-unverified]
 agentproto install runtime-profile/<name>     [--force] [--dry-run] [--skip-setup]
                                               [--cwd <dir>] [--package <pkg>]
 agentproto install skill/<slug>               [--pack <path|name>] [--target ...]
@@ -57,6 +58,18 @@ fallback fires automatically when npm isn't viable.
 
 `experimental: true` steps are skipped by default — they're listed in
 the output for visibility but not run.
+
+### `--allow-unverified`
+
+```bash
+agentproto install claude-code --allow-unverified
+```
+
+Opt-in to running `curl | bash` or `download` installers that declare no
+`verify_sha256`. In an interactive terminal the CLI warns and proceeds; in a
+non-interactive context (agent, daemon, CI) an unverified installer is
+refused by default as a supply-chain mitigation. Pass `--allow-unverified`
+to override the refusal.
 
 ### Idempotency
 
