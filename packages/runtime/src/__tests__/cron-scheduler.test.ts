@@ -404,6 +404,46 @@ describe("CronScheduler", () => {
     }
   })
 
+  it("tick() — does not overlap a slow agent action while its scheduled slot is elapsed", async () => {
+    vi.useFakeTimers()
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry } = makeMockRegistry({ processAlive: true })
+    const sessionEvents = createSessionEventBus()
+    let finishStart: (() => void) | undefined
+    const startSession = vi.fn(
+      () => new Promise<void>(resolve => { finishStart = resolve }),
+    )
+    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
+    const scheduler = createCronScheduler({ sessionEvents, registry, resolveAgentAdapter, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "mock", prompt: "slow maintenance" },
+      })
+      // Make the job due now. The first tick starts it; the second tick lands
+      // before startSession resolves and must observe the in-flight lease.
+      job.nextRunAt = new Date(Date.now() - 1).toISOString()
+
+      await vi.advanceTimersByTimeAsync(20_000)
+      await Promise.resolve()
+      expect(startSession).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(20_000)
+      await Promise.resolve()
+      expect(startSession).toHaveBeenCalledOnce()
+
+      finishStart?.()
+      // Let fireJob finish without draining the scheduler's recurring interval.
+      await Promise.resolve()
+      await Promise.resolve()
+    } finally {
+      scheduler.shutdown()
+      vi.useRealTimers()
+    }
+  })
+
   it("create() — accepts a prompt-session action shape", () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
