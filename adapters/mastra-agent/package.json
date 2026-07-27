@@ -61,7 +61,7 @@
     "@agentproto/mastra": "workspace:*",
     "@mastra/core": "^1.52.1",
     "@mastra/libsql": "~1.17.0",
-    "@mastra/memory": "^1.23.1",
+    "@mastra/memory": ">=1.15.0 <1.20.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

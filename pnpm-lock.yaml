@@ -433,8 +433,8 @@ importers:
         specifier: ~1.17.0
         version: 1.17.0(@mastra/core@1.52.1(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3))(bufferutil@4.1.0)
       '@mastra/memory':
-        specifier: ^1.23.1
-        version: 1.23.1(@mastra/core@1.52.1(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3))
+        specifier: '>=1.15.0 <1.20.0'
+        version: 1.19.0(@mastra/core@1.52.1(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3))(zod@4.4.3)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -5106,14 +5106,15 @@ packages:
     peerDependencies:
       '@mastra/core': '>=1.0.0-0 <2.0.0-0'
 
-  '@mastra/memory@1.22.0':
-    resolution: {integrity: sha512-F8fKeN+I3aQCllTqilqmZkA4iAZj3ZU0ozHFw7rR1Ln37q/0dP7V4GSSVtbQD1g2n98F5AhF3SWBUerU7J7RpQ==}
+  '@mastra/memory@1.19.0':
+    resolution: {integrity: sha512-vmW1zTX9/mnjTj/FeO3qaE1pP1y4dvaLzJwzIsm7zyZNMk9N/hsvk6dNA9WdvujkZfLDnrTBRafD2jNd12nt1Q==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@mastra/core': '>=1.4.1-0 <2.0.0-0'
+      zod: ^3.25.0 || ^4.0.0
 
-  '@mastra/memory@1.23.1':
-    resolution: {integrity: sha512-Xzgo4nsKPrn9cV4Bn07Wqkgyf3vrnZbgaTqLe7E6BPma2cPB81e/IthJOzrOy/CpMsam2asLShoYoxelISTXwg==}
+  '@mastra/memory@1.22.0':
+    resolution: {integrity: sha512-F8fKeN+I3aQCllTqilqmZkA4iAZj3ZU0ozHFw7rR1Ln37q/0dP7V4GSSVtbQD1g2n98F5AhF3SWBUerU7J7RpQ==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@mastra/core': '>=1.4.1-0 <2.0.0-0'
@@ -5144,6 +5145,12 @@ packages:
       '@mastra/core': '>=1.8.0-0 <2.0.0-0'
       react: '>=19.0.0'
       react-dom: '>=19.0.0'
+      zod: ^3.25.0 || ^4.0.0
+
+  '@mastra/schema-compat@1.2.10':
+    resolution: {integrity: sha512-8Fg8PeO7GsRPOrEZAzc5udZgsF9ZDxih5JSoxjgnR79d0ImjKffhcoysPW6wIYXPEZ5i6/QDNR7rCazZZSD5Tg==}
+    engines: {node: '>=22.13.0'}
+    peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
   '@mastra/schema-compat@1.2.9':
@@ -7475,6 +7482,11 @@ packages:
 
   image-size@1.2.1:
     resolution: {integrity: sha512-rH+46sQJ2dlwfjfhCyNx5thzrv+dtmBIhPHk0zgRUukHzZ/kRueTJXoYYsclBaKcSMBWuGbOFXtioLpzTb5euw==}
+    engines: {node: '>=16.x'}
+    hasBin: true
+
+  image-size@2.0.2:
+    resolution: {integrity: sha512-IRqXKlaXwgSMAMtpNzZa1ZAe8m+Sa1770Dhk8VkSsP9LS+iHD62Zd8FQKs8fbPiagBE7BzoFX23cxFnwshpV6w==}
     engines: {node: '>=16.x'}
     hasBin: true
 
@@ -11250,6 +11262,21 @@ snapshots:
       - supports-color
       - zod
 
+  '@mastra/memory@1.19.0(@mastra/core@1.52.1(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3))(zod@4.4.3)':
+    dependencies:
+      '@mastra/core': 1.52.1(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3)
+      '@mastra/schema-compat': 1.2.10(zod@4.4.3)
+      async-mutex: 0.5.0
+      image-size: 2.0.2
+      json-schema: 0.4.0
+      lru-cache: 11.5.2
+      probe-image-size: 7.3.0
+      tokenx: 1.4.0
+      xxhash-wasm: 1.1.0
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - supports-color
+
   '@mastra/memory@1.22.0(@mastra/core@1.48.0(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3))':
     dependencies:
       '@mastra/core': 1.48.0(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3)
@@ -11261,22 +11288,6 @@ snapshots:
       lru-cache: 11.3.5
       probe-image-size: 7.3.0
       tokenx: 1.3.0
-      xxhash-wasm: 1.1.0
-      zod: 4.4.3
-    transitivePeerDependencies:
-      - supports-color
-
-  '@mastra/memory@1.23.1(@mastra/core@1.52.1(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3))':
-    dependencies:
-      '@mastra/core': 1.52.1(@bufbuild/protobuf@2.13.0)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3)
-      '@mastra/schema-compat': 1.3.4(zod@4.4.3)
-      async-mutex: 0.5.0
-      diff: 8.0.4
-      image-size: 1.2.1
-      json-schema: 0.4.0
-      lru-cache: 11.5.2
-      probe-image-size: 7.3.0
-      tokenx: 1.4.0
       xxhash-wasm: 1.1.0
       zod: 4.4.3
     transitivePeerDependencies:
@@ -11327,6 +11338,14 @@ snapshots:
       - rxjs
       - supports-color
       - utf-8-validate
+
+  '@mastra/schema-compat@1.2.10(zod@4.4.3)':
+    dependencies:
+      json-schema-to-zod: 2.8.1
+      zod: 4.4.3
+      zod-from-json-schema: 0.5.6
+      zod-from-json-schema-v3: zod-from-json-schema@0.0.5
+      zod-to-json-schema: 3.25.2(zod@4.4.3)
 
   '@mastra/schema-compat@1.2.9(zod@4.4.3)':
     dependencies:
@@ -13702,6 +13721,8 @@ snapshots:
   image-size@1.2.1:
     dependencies:
       queue: 6.0.2
+
+  image-size@2.0.2: {}
 
   immediate@3.0.6: {}
 
