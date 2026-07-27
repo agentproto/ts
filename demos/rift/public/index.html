@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rift — Market Intelligence Demo</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>Rift</h1>
+      <p class="tagline">Turn market signals into traceable research cards</p>
+    </header>
+
+    <!-- Input Form -->
+    <section class="input-section" id="inputSection">
+      <h2>Submit a Market Signal</h2>
+      <form id="inputForm">
+        <div class="form-group">
+          <label for="titleInput">Title (optional)</label>
+          <input
+            type="text"
+            id="titleInput"
+            placeholder="e.g., AI Agent Orchestration Platform"
+            autocomplete="off"
+          >
+        </div>
+        <div class="form-group">
+          <label for="rawTextInput">Market Signal / Competitor / Idea</label>
+          <textarea
+            id="rawTextInput"
+            rows="6"
+            placeholder="Describe the market opportunity, competitor, or product idea..."
+            required
+          ></textarea>
+        </div>
+        <div class="form-group">
+          <label for="tagsInput">Tags (comma-separated, optional)</label>
+          <input
+            type="text"
+            id="tagsInput"
+            placeholder="e.g., ai, orchestration, saas"
+            autocomplete="off"
+          >
+        </div>
+        <button type="submit" class="btn btn-primary">Generate Rift Card</button>
+      </form>
+    </section>
+
+    <!-- Card Display -->
+    <section class="card-section" id="cardSection" style="display: none;">
+      <div class="card" id="riftCard">
+        <div class="card-header">
+          <h2 class="card-title" id="cardTitle">—</h2>
+          <div class="card-meta">
+            <span class="card-id" id="cardId">—</span>
+            <span class="card-date" id="cardDate">—</span>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <!-- Market Signal -->
+          <div class="card-section-block">
+            <h3>Market Signal</h3>
+            <div class="signal-badge" id="signalBadge">—</div>
+          </div>
+
+          <!-- Claims -->
+          <div class="card-section-block">
+            <h3>Claims (<span id="claimsCount">0</span>)</h3>
+            <div id="claimsList" class="claims-list"></div>
+          </div>
+
+          <!-- Sources -->
+          <div class="card-section-block">
+            <h3>Sources (<span id="sourcesCount">0</span>)</h3>
+            <div id="sourcesList" class="sources-list"></div>
+          </div>
+
+          <!-- Recommendation -->
+          <div class="card-section-block" id="recommendationSection">
+            <h3>Recommendation</h3>
+            <div class="recommendation" id="recommendationContent">
+              <div class="recommendation-badge" id="recommendationBadge">—</div>
+              <ul class="recommendation-reasons" id="recommendationReasons"></ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-actions">
+          <button class="btn btn-build" id="btnBuild">Build</button>
+          <button class="btn btn-wait" id="btnWait">Wait</button>
+          <button class="btn btn-reject" id="btnReject">Reject</button>
+        </div>
+
+        <div class="card-footer">
+          <button class="btn btn-secondary" id="btnNewCard">New Card</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Decision Confirmation -->
+    <section class="decision-section" id="decisionSection" style="display: none;">
+      <div class="decision-card">
+        <div class="decision-icon" id="decisionIcon">✓</div>
+        <h2 id="decisionTitle">Decision Recorded</h2>
+        <p id="decisionMessage">Your decision has been saved.</p>
+        <button class="btn btn-primary" id="btnBackToInput">Submit Another Signal</button>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
