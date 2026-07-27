@@ -578,15 +578,25 @@ export function isBlocked(session: SessionDescriptor): boolean {
   return Boolean(session.blockedOn) && !TERMINAL_STATUSES.has(session.status) && Boolean(session.busy)
 }
 
-/** running-first, then startedAt desc (newest first). */
+/** running-first, then most-recently-active desc (lastActivityAt → lastOutputAt → startedAt), with deterministic tie-breakers. */
 export function compareSessions(a: SessionDescriptor, b: SessionDescriptor): number {
   const ra = isRunning(a)
   const rb = isRunning(b)
   if (ra !== rb) return ra ? -1 : 1
-  const ta = Date.parse(a.startedAt)
-  const tb = Date.parse(b.startedAt)
-  if (Number.isNaN(ta) || Number.isNaN(tb)) return b.startedAt.localeCompare(a.startedAt)
-  return tb - ta
+  const ta = recencyTimestamp(a)
+  const tb = recencyTimestamp(b)
+  if (ta !== tb) return tb - ta
+  // Deterministic tie-breakers: startedAt desc, then id desc.
+  const sa = Date.parse(a.startedAt)
+  const sb = Date.parse(b.startedAt)
+  if (!Number.isNaN(sa) && !Number.isNaN(sb) && sa !== sb) return sb - sa
+  return b.id.localeCompare(a.id)
+}
+
+function recencyTimestamp(session: SessionDescriptor): number {
+  const iso = session.lastActivityAt ?? session.lastOutputAt ?? session.startedAt
+  const ms = Date.parse(iso)
+  return Number.isNaN(ms) ? 0 : ms
 }
 
 /**

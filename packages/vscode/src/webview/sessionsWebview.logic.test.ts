@@ -105,8 +105,9 @@ describe("rowActionFor", () => {
     expect(rowActionFor(session({ status: "error" }))).toBe("archive")
   })
 
-  it("offers unarchive for archived sessions", () => {
+  it("offers unarchive for archived sessions regardless of status", () => {
     expect(rowActionFor(session({ status: "exited", archived: true }))).toBe("unarchive")
+    expect(rowActionFor(session({ status: "running", archived: true }))).toBe("unarchive")
   })
 
   it("offers no action for pending sessions", () => {
@@ -281,13 +282,24 @@ describe("buildSessionsWebviewModel", () => {
     expect(model.shownCount).toBe(1)
   })
 
-  it("sorts the global list by recency with running sessions first", () => {
+  it("sorts the global list by most recent activity, falling back to startedAt", () => {
     const sessions = [
-      session({ id: "older-running", cwd: "/Code/studio", startedAt: "2026-01-01T22:00:00Z" }),
-      session({ id: "recent-done", cwd: "/Code/studio", status: "exited", startedAt: "2026-01-01T23:00:00Z" }),
+      session({
+        id: "older-running",
+        cwd: "/Code/studio",
+        startedAt: "2026-01-01T22:00:00Z",
+        lastActivityAt: "2026-01-01T22:05:00Z",
+      }),
+      session({
+        id: "recent-done",
+        cwd: "/Code/studio",
+        status: "exited",
+        startedAt: "2026-01-01T23:00:00Z",
+        lastActivityAt: "2026-01-01T22:30:00Z",
+      }),
     ]
     const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
-    // Running sorts before done within the recent section.
+    // Running sorts before done; within the same running-ness, lastActivityAt wins.
     expect(model.section.recent.map(r => r.id)).toEqual(["older-running", "recent-done"])
   })
 

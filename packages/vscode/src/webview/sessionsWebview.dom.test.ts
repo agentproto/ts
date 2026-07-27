@@ -295,6 +295,16 @@ describe("sessions webview — interactions", () => {
     expect(panel.posted).toEqual([{ type: "open", id: "s1" }])
   })
 
+  it("renders accessible codicon-style action buttons", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    const stopBtn = htmlEl(el(panel, "list").querySelector('[data-stop="s1"]'))
+    expect(stopBtn.getAttribute("role")).toBe("button")
+    expect(stopBtn.getAttribute("aria-label")).toBe("Stop session")
+    expect(stopBtn.className).toContain("act")
+    expect(stopBtn.className).toContain("stop")
+  })
+
   it("clicking the stop action posts stop with the row's id", () => {
     const panel = renderPanel()
     send(panel, modelMessage())

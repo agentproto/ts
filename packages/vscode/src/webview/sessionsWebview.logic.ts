@@ -28,6 +28,7 @@
 
 import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
 import { isLiveSession } from "../commands/sessionActions.logic.js"
+import { canArchive, canUnarchive } from "../commands/sessionArchive.logic.js"
 import { findWorkspaceByPath } from "../services/workspaces.logic.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import {
@@ -116,20 +117,11 @@ export function webviewRowStatus(session: SessionSummary, now?: number): Webview
 /** Per-row lifecycle action exposed by the webview. */
 export type RowAction = "stop" | "archive" | "unarchive"
 
-const TERMINAL_STATUSES = new Set<SessionSummary["status"]>(["exited", "killed", "error"])
-
-/**
- * Which lifecycle action a row should offer, if any. Mirrors the existing
- * command/menu gating (`isLiveSession`, terminal status) so the webview never
- * invents its own policy. The summary projection omits `endedReason`, so a
- * killed session is treated as a normal terminal row here; the tree's full
- * descriptor path continues to distinguish resumable-in-place ghosts.
- */
 export function rowActionFor(session: SessionSummary): RowAction | undefined {
   if (isPendingSession(session)) return undefined
-  if (session.archived) return "unarchive"
+  if (canUnarchive(session)) return "unarchive"
   if (isLiveSession(session)) return "stop"
-  if (TERMINAL_STATUSES.has(session.status)) return "archive"
+  if (canArchive(session)) return "archive"
   return undefined
 }
 

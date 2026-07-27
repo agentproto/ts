@@ -615,11 +615,23 @@ describe("compareSessions", () => {
     expect(compareSessions(running, done)).toBeLessThan(0)
     expect(compareSessions(done, running)).toBeGreaterThan(0)
   })
-  it("within the same running-ness, sorts startedAt desc (newest first)", () => {
+  it("within the same running-ness, sorts by most recent activity desc", () => {
+    const activeNow = session({ id: "a", startedAt: "2026-01-01T00:00:00Z", lastActivityAt: "2026-01-02T00:00:00Z" })
+    const stale = session({ id: "b", startedAt: "2026-01-02T00:00:00Z", lastActivityAt: "2026-01-01T00:00:00Z" })
+    expect(compareSessions(activeNow, stale)).toBeLessThan(0)
+    expect(compareSessions(stale, activeNow)).toBeGreaterThan(0)
+  })
+  it("falls back to startedAt when no activity timestamps are present", () => {
     const older = session({ id: "a", startedAt: "2026-01-01T00:00:00Z" })
     const newer = session({ id: "b", startedAt: "2026-01-02T00:00:00Z" })
     expect(compareSessions(newer, older)).toBeLessThan(0)
     expect(compareSessions(older, newer)).toBeGreaterThan(0)
+  })
+  it("falls back to id for a deterministic total order when timestamps tie", () => {
+    const a = session({ id: "a", startedAt: "2026-01-01T00:00:00Z", lastActivityAt: "2026-01-02T00:00:00Z" })
+    const b = session({ id: "b", startedAt: "2026-01-01T00:00:00Z", lastActivityAt: "2026-01-02T00:00:00Z" })
+    expect(compareSessions(a, b)).not.toBe(0)
+    expect(compareSessions(b, a)).toBe(-compareSessions(a, b))
   })
 })
 

@@ -29,6 +29,8 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor, SessionSummary } from "../client/types.js"
 import type { SessionFilterController } from "../commands/sessionFilter.js"
+import { describeSession, isLiveSession } from "../commands/sessionActions.logic.js"
+import { canArchive, canUnarchive } from "../commands/sessionArchive.logic.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import type { SeenTracker } from "../services/seen.js"
 import type { DaemonConnectionState, SessionStore } from "../services/sessionStore.js"
@@ -45,8 +47,6 @@ import type { TranscriptPanels } from "./transcriptPanel.js"
 
 const VIEW_TYPE = "agentproto.sessionsWebview"
 const PAGE_SIZE = 50
-const GLOBAL_WORKSPACE = "__all__"
-const UNASSIGNED_WORKSPACE = "__unassigned__"
 const SETUP_DOCS_URL = "https://agentproto.sh/docs"
 const CLAUDE_SETUP_PROMPT =
   "Set up Agentproto for this VS Code workspace. Install the Agentproto CLI, start its local daemon, register this workspace, connect Claude Code through the Agentproto MCP bridge, and verify that the Agentproto Sessions panel is live. Explain each command before I run it."
@@ -215,13 +215,13 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         return
       }
       case "stop":
-        void this.runSessionAction(msg.id, "agentproto.killSession", "stop")
+        void this.runSessionAction(msg.id, "stop")
         return
       case "archive":
-        void this.runSessionAction(msg.id, "agentproto.archiveSession", "archive")
+        void this.runSessionAction(msg.id, "archive")
         return
       case "unarchive":
-        void this.runSessionAction(msg.id, "agentproto.unarchiveSession", "unarchive")
+        void this.runSessionAction(msg.id, "unarchive")
         return
       case "loadMore":
         void this.loadMore()
@@ -279,8 +279,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 
   private async runSessionAction(
     id: string,
-    command: "agentproto.killSession" | "agentproto.archiveSession" | "agentproto.unarchiveSession",
-    label: string,
+    action: RowAction,
   ): Promise<void> {
     if (isPendingSession({ id })) {
       vscode.window.showWarningMessage(`agentproto: session ${id} is still starting.`)
@@ -291,10 +290,43 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       vscode.window.showWarningMessage(`agentproto: session ${id} no longer exists.`)
       return
     }
+    const label = describeSession(summary)
     try {
-      await vscode.commands.executeCommand(command, { session: summary })
+      if (action === "stop") {
+        if (!isLiveSession(summary)) {
+          vscode.window.showWarningMessage(`agentproto: ${label} is no longer running.`)
+          return
+        }
+        await this.client.kill(id)
+        await this.store.refreshAll()
+        const restart = await vscode.window.showInformationMessage(
+          `agentproto: stopped ${label}`,
+          "Restart",
+        )
+        if (restart === "Restart") {
+          await vscode.commands.executeCommand("agentproto.restartSession", id)
+        }
+      } else if (action === "archive") {
+        if (!canArchive(summary)) {
+          vscode.window.showWarningMessage(
+            `agentproto: ${label} can't be archived — only an exited/killed/error session may be archived.`,
+          )
+          return
+        }
+        await this.client.archiveSession(id)
+        await this.store.refreshAll()
+        vscode.window.showInformationMessage(`agentproto: archived ${label}`)
+      } else if (action === "unarchive") {
+        if (!canUnarchive(summary)) {
+          vscode.window.showWarningMessage(`agentproto: ${label} is not archived.`)
+          return
+        }
+        await this.client.unarchiveSession(id)
+        await this.store.refreshAll()
+        vscode.window.showInformationMessage(`agentproto: unarchived ${label}`)
+      }
     } catch (err) {
-      vscode.window.showErrorMessage(`agentproto: ${label} failed — ${describeError(err)}`)
+      vscode.window.showErrorMessage(`agentproto: ${action} failed — ${describeError(err)}`)
     }
   }
 
@@ -556,10 +588,18 @@ export function buildHtml(nonce: string): string {
     .right { position: relative; display: grid; align-items: center; justify-items: end; padding-top: 1px; min-height: 14px; }
     .time { grid-area: 1 / 1; font-size: 10.5px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; opacity: 1; }
     .row:hover .time { opacity: 0; }
-    .acts { grid-area: 1 / 1; opacity: 0; display: flex; gap: 8px; }
+    .acts { grid-area: 1 / 1; opacity: 0; display: flex; gap: 6px; }
     .row:hover .acts { opacity: 1; }
-    .acts span { color: var(--vscode-descriptionForeground); font-size: 12px; cursor: pointer; }
-    .acts span:hover { color: var(--vscode-foreground); }
+    .act {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; color: var(--vscode-descriptionForeground);
+      font-size: 11px; cursor: pointer; border-radius: 3px;
+    }
+    .act:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.2)); color: var(--vscode-foreground); }
+    .act.stop { color: var(--vscode-charts-red, #f85149); }
+    .act.stop:hover { color: var(--vscode-errorForeground, #f85149); }
+    .act.archive { color: var(--vscode-descriptionForeground); }
+    .act.unarchive { color: var(--vscode-descriptionForeground); }
     #empty { padding: 32px 16px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; }
     #empty[hidden] { display: none; }
     /* ── Load more / progress footer ───────────────────────────────── */
@@ -636,9 +676,15 @@ export function buildHtml(nonce: string): string {
       }
 
       function actionButton(r) {
-        if (r.action === 'stop') return '<span title="Stop" data-stop="' + escapeHtml(r.id) + '" data-action>■</span>';
-        if (r.action === 'archive') return '<span title="Archive" data-archive="' + escapeHtml(r.id) + '" data-action>🗄</span>';
-        if (r.action === 'unarchive') return '<span title="Unarchive" data-unarchive="' + escapeHtml(r.id) + '" data-action>↩</span>';
+        if (r.action === 'stop') {
+          return '<span class="act stop" title="Stop session" aria-label="Stop session" role="button" tabindex="0" data-stop="' + escapeHtml(r.id) + '" data-action>■</span>';
+        }
+        if (r.action === 'archive') {
+          return '<span class="act archive" title="Archive session" aria-label="Archive session" role="button" tabindex="0" data-archive="' + escapeHtml(r.id) + '" data-action>▣</span>';
+        }
+        if (r.action === 'unarchive') {
+          return '<span class="act unarchive" title="Unarchive session" aria-label="Unarchive session" role="button" tabindex="0" data-unarchive="' + escapeHtml(r.id) + '" data-action>↩</span>';
+        }
         return '';
       }
 
@@ -672,25 +718,6 @@ export function buildHtml(nonce: string): string {
         '</div>';
       }
 
-      function renderWorkspaceOptions(payload) {
-        var selected = payload.selectedWorkspace;
-        var html = '<option value="__all__"' + (selected === '__all__' ? ' selected' : '') + '>Global / All workspaces</option>';
-        for (var i = 0; i < payload.workspaces.length; i++) {
-          var w = payload.workspaces[i];
-          html += '<option value="' + escapeHtml(w.slug) + '"' + (selected === w.slug ? ' selected' : '') + '>' + escapeHtml(w.label) + '</option>';
-        }
-        html += '<option value="__unassigned__"' + (selected === '__unassigned__' ? ' selected' : '') + '>Unassigned</option>';
-        workspaceEl.innerHTML = html;
-        workspaceEl.className = selected === '__all__' || selected === '__unassigned__' ? 'neutral' : '';
-        var selectedW = payload.workspaces.find(function (w) { return w.slug === selected; });
-        if (selectedW) {
-          workspaceEl.className = '';
-          workspaceEl.style.borderLeftColor = selectedW.css;
-        } else {
-          workspaceEl.style.borderLeftColor = '';
-        }
-      }
-
       function renderConnection(payload) {
         var state = payload.connection || 'connected';
         var offline = state !== 'connected';
@@ -708,7 +735,6 @@ export function buildHtml(nonce: string): string {
 
       function render(payload) {
         if (renderConnection(payload) !== 'connected') return;
-        renderWorkspaceOptions(payload);
         var html = '';
         var shown = 0;
         var recent = payload.section.recent;
@@ -778,11 +804,6 @@ export function buildHtml(nonce: string): string {
         for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('on');
         t.classList.add('on');
         vscode.postMessage({ type: 'tab', tab: t.getAttribute('data-tab') });
-      });
-
-      workspaceEl.addEventListener('change', function () {
-        var value = workspaceEl.value;
-        vscode.postMessage({ type: 'workspace', workspace: value });
       });
 
       daemonStateEl.addEventListener('click', function (e) {
