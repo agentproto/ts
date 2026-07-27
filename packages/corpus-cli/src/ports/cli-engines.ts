@@ -144,7 +144,7 @@ const GEMINI: CliEngine = {
  *                          preamble whose brackets break the JSON-array grab)
  *   -m <model>             optional model id (e.g. "gpt-5-codex")
  *   -                      read the prompt from stdin
- * NOTE: this is Codex's own print mode, NOT the @zed-industries/codex-acp wrapper
+ * NOTE: this is Codex's own print mode, NOT the @agentclientprotocol/codex-acp bridge
  * the AIP-45 adapter uses for streaming sessions.
  */
 const CODEX: CliEngine = {

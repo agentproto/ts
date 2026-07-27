@@ -17,8 +17,8 @@
  *   3. Every declared `bin_args_append` / `bin_args_append_when_true`
  *      / `bin_args_template` (mode's, then each present option's in
  *      declaration order), then finally `models.bin_args_template`
- *      when `models.apply === "arg"` and a model was requested (e.g.
- *      codex-acp's `-c model="<id>"` — a CLI arg, not an ACP config).
+ *      when `models.apply === "arg"` and a model was requested — a CLI arg,
+ *      not an ACP session config.
  * Final argv is `[...prepend, ...bin_args, ...append]`.
  *
  * Mode is applied before options because modes are coarse profile
@@ -219,7 +219,7 @@ export function composeSpawn(
 
   // ── Model apply:"arg" — CLI-argument model selection ────────────
   // For adapters whose wrapper takes its model as a CLI arg rather than
-  // an ACP session config (e.g. codex-acp's `-c model="<id>"`), compose
+  // an ACP session config, compose
   // the manifest's `models.bin_args_template` here with `{model}`
   // interpolated. define-agent-cli.ts reads `models.apply` and only
   // forwards `model` into the ACP connect() call for "config" — "arg"

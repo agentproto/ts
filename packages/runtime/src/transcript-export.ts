@@ -992,7 +992,7 @@ async function readFirstJsonLine(path: string): Promise<string | undefined> {
 //
 // Native store: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
 // (CODEX_HOME defaults to ~/.codex). One append-only JSONL file per
-// conversation, written by the Codex core that @zed-industries/codex-acp
+// conversation, written by the Codex core that @agentclientprotocol/codex-acp
 // bundles. The first line is a `session_meta` record carrying the
 // conversation's `id` (== the trailing uuid in the filename == the ACP
 // session id agentproto records as `adapterSessionId` — verified
