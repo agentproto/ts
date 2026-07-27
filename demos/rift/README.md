@@ -37,4 +37,4 @@ pnpm check-types
 ### Notes
 
 - The root-level `pnpm test` and `pnpm check-types` scripts filter to `packages/**` and `adapters/**` only — they do **not** include `demos/**`. Always run the demo-specific commands above.
-- All mock data is deterministic and fixture-free. No fabricated research citations.
+- Mock data is deterministic. Claims/sources in `src/mock-data.ts` are cited fixtures grounded in real, independently-verified public records (GitHub repo metadata, a vendor pricing page) — no fabricated URLs, dates, excerpts, metrics, or citations. See `EVIDENCE.md` for the full research log, including categories that were checked and rejected as unusable.
