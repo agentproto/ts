@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/governance",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "agentgovernance/v1 — universal contractual approval framework. Doctypes (signature.json, audit-log.jsonl, POLICY.md) describe how to record signatures, append hash-chained audit events, and declare autonomy policies as workspace files. Vendor-neutral, filesystem-first, third-party verifiable.",
   "keywords": [
     "agentgovernance",

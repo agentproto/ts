@@ -1,5 +1,16 @@
 # @agentproto/secrets
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [8367648]
+- Updated dependencies [6ff42b4]
+- Updated dependencies [645279d]
+- Updated dependencies [f3f5e82]
+- Updated dependencies [655b4b6]
+  - @agentproto/auth@1.0.0
+
 ## 0.2.1
 
 ### Patch Changes

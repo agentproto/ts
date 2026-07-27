@@ -1,5 +1,35 @@
 # @agentproto/adapter-mastracode
 
+## 0.3.0
+
+### Minor Changes
+
+- 831d4f5: Implement route-selection axis for AIP-45 launch-menu drill-down (WP1): add declarative `routeSelection` field to adapter manifests (distinguishes "free" vs. "derived-from-model"), project it through resolve/runtime layers, enrich catalog with per-route `multiModel` flags and flat routes index for tier-pinning logic.
+- f3b54ad: Implement harness capability discovery — a new layer that answers "what can this adapter actually DO on this host right now" by discovering credentials, providers, model-discovery mechanisms, endpoint compatibility, and application contracts at runtime. Each adapter optionally exports a `<camelSlug>Capabilities` strategy that parses its native config/creds stores (e.g., `~/.gemini/settings.json`, `~/.hermes/auth.json`) to report live state. Falls back gracefully to a pure manifest projection when no strategy is available or it throws. Never surfaces raw credential values — only presence, fingerprints, and last-4 chars. Exposed via the new `harness_capabilities` MCP tool and `@agentproto/cli`'s `listHarnessCapabilities` function.
+
+### Patch Changes
+
+- 93e6309: Declare MastraCode's model-derived api-key auth contract and enforce it in catalog/session eligibility.
+  - `@agentproto/adapter-mastracode`: adds `modelDerivedApiKey: true` so the runtime knows its direct-route API keys derive from the chosen model; the capability strategy now reports each provider's wire protocol (`apiMode`) and never claims subscription support.
+  - `@agentproto/driver-agent-cli`: accepts `modelDerivedApiKey` in the AIP-45 manifest schema.
+  - `@agentproto/runtime`: `buildCatalogModels` now includes api-key profiles for adapters that declare `modelDerivedApiKey`, matching `spawnEligibilityManifest`.
+  - `agentproto-vscode`: Configuration Lab surfaces the corrected MastraCode eligibility (api-key profiles only; no Anthropic subscription defaults).
+
+- Updated dependencies [c736c02]
+- Updated dependencies [8367648]
+- Updated dependencies [93e6309]
+- Updated dependencies [c506d87]
+- Updated dependencies [392021a]
+- Updated dependencies [3865de6]
+- Updated dependencies [5643cb6]
+- Updated dependencies [f3b54ad]
+- Updated dependencies [42f1217]
+- Updated dependencies [4542ca3]
+- Updated dependencies [c064bc7]
+- Updated dependencies [4832ced]
+  - @agentproto/driver-agent-cli@2.1.0
+  - @agentproto/provider-kit@0.4.0
+
 ## 0.2.6
 
 ### Patch Changes

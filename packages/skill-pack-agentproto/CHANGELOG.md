@@ -1,5 +1,15 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.5.3
+
+### Patch Changes
+
+- ab0c2e5: Documentation: add Preflight section to supervisor-session skill (load target repo's agent-instructions, validate auth profile + adapter list before spawn); add Brief Contract section containing operational discipline block (gate = exit code not piped output, truth = disk not report, foreground waits, wedged-session recovery, auth-by-profile-method) meant to be copied verbatim into every executor/supervisor brief. Add cross-references to Brief Contract from nested-orchestration, light-coder-orchestration, agent-session-orchestration-agentproto, and durable-supervision skills.
+- ff9c348: Fold RoutineRunner into AIP-15 workflow; routine\_\* verbs become deprecated workflowRunner aliases
+- 1cbb910: Remove deprecated RoutineRunner aliases and workflow shim (Phase B3 cleanup).
+
+  The imperative RoutineRunner engine was removed in Phase B2; this PR eliminates the 4 deprecated MCP verbs (`routine_start`, `routine_status`, `routine_cancel`, `routine_escalation_resolve`), their HTTP run routes, and the thin `routine-workflow-shim.ts` that backed them. Preserves AIP-41 routine tools (`routine_list`, `routine_trigger`, `routine_reconcile`) and the `GET /routines` registrar listing route.
+
 ## 0.5.2
 
 ### Patch Changes

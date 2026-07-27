@@ -1,5 +1,33 @@
 # @agentproto/adapter-opencode
 
+## 1.1.0
+
+### Minor Changes
+
+- 831d4f5: Implement route-selection axis for AIP-45 launch-menu drill-down (WP1): add declarative `routeSelection` field to adapter manifests (distinguishes "free" vs. "derived-from-model"), project it through resolve/runtime layers, enrich catalog with per-route `multiModel` flags and flat routes index for tier-pinning logic.
+
+### Patch Changes
+
+- 29042ca: Generate OpenCode model menu from shared provider catalog; add model-derived API key auth support and router-prefixed model ID handling across runtime and VS Code configuration UI.
+- Updated dependencies [c736c02]
+- Updated dependencies [8367648]
+- Updated dependencies [93e6309]
+- Updated dependencies [c506d87]
+- Updated dependencies [392021a]
+- Updated dependencies [3865de6]
+- Updated dependencies [5643cb6]
+- Updated dependencies [358af0e]
+- Updated dependencies [f1484a4]
+- Updated dependencies [0f10338]
+- Updated dependencies [ec5f64f]
+- Updated dependencies [1ea7682]
+- Updated dependencies [42f1217]
+- Updated dependencies [4542ca3]
+- Updated dependencies [c064bc7]
+- Updated dependencies [4832ced]
+  - @agentproto/driver-agent-cli@2.1.0
+  - @agentproto/model-catalog@0.7.0
+
 ## 1.0.1
 
 ### Patch Changes

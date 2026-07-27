@@ -1,5 +1,44 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- c736c02: Dissociate auth profiles from routers/gateways and harness adapters. Session descriptors now carry explicit `harness`, `model`, `route`, and `accessProfile` identity. Runtime resolver derives api-key auth from the model and gateway route, injecting `base_url` + credential env without adapter hard-coding. Add native Moonshot support to `pi`, decouple `claude-sdk` from hard-coded gateway modes, and register a local `llm-endpoint` preset.
+- 831d4f5: Implement route-selection axis for AIP-45 launch-menu drill-down (WP1): add declarative `routeSelection` field to adapter manifests (distinguishes "free" vs. "derived-from-model"), project it through resolve/runtime layers, enrich catalog with per-route `multiModel` flags and flat routes index for tier-pinning logic.
+- f883915: Add extended idle timeout for tool execution in Claude SDK adapter. Prevents generation watchdog from aborting healthy long-running tool calls that legitimately go silent between `tool_use` and `tool_result` messages. Introduces `toolIdleTimeoutMs` config option (default 10 minutes) and `CLAUDE_SDK_TOOL_IDLE_TIMEOUT_MS` environment variable.
+
+### Patch Changes
+
+- a88a78b: Fix model routing for multi-vendor gateways (OpenRouter/Requesty) by introducing route-identity suffixes. Add bare-product curation tolerance for existing allowlists on direct routes. Export a new `@agentproto/runtime/catalog-models` subpath for the vscode picker's unroutable-model warning.
+- 0f10338: Add built-in custom route for local llm-endpoint Anthropic-compatible proxy. The runtime now registers the llm-endpoint route at daemon boot, allowing curated model references (e.g., moonshot/kimi-k2.7-code@llm-endpoint) to transparently route through the local proxy. Configuration is derived from the gateway preset to ensure single source of truth.
+- 42f1217: Fix routing and credential injection for gateway-routed adapters (D1-D5)
+  - D1: Base URL injection gate — skip gateway baseUrl for derived-from-model adapters (hermes); fail loud when adapter can neither accept baseUrl nor derive its route
+  - D2: Wire model form — generalized stripFixedNativeVendor for fixed-provider adapters (codex/openai, codex/gpt-5 not openai/gpt-5)
+  - D3: Model-derived provider precedence — adapter-declared modelProviders wins over global catalog routing (pi bills kimi via moonshot, not openrouter)
+  - D4: Gateway credential injection — resolveAuthSpec honors adapter-declared gatewayAuth.setEnv instead of preset keyEnv (claude-sdk reads ANTHROPIC_AUTH_TOKEN, not OPENROUTER_API_KEY)
+  - D5: LLM endpoint adoption — status report never contradicts (running:false, healthy:true); adopt external healthy endpoints as owner:external with probed model list
+
+  New exports: LlmEndpointStatusReport, stripFixedNativeVendor, routeSelection in AgentAdapterResolver.
+
+- 4542ca3: Curate OpenAI gpt-5.6 series (luna, sol) into claude-code and claude-sdk with `@openrouter` suffix, allowing Anthropic-native adapters to spawn these models via OpenRouter gateway. Refine auth-engagement logic to detect resolver-coupled gateway routes via `baseUrl` field in `ResolvedAuthSpec`, ensuring credentials are injected for runtime-resolved routes while protecting against native-credential leaks on manually-configured base_urls. Add comprehensive P0 test validating credential injection, base_url preservation, and scrubbing of conflicting provider vars.
+- 04aedad: Weekly dependency bump with semver-safe minor/patch updates across 18 packages. Includes Mastra ecosystem update (1.31-1.48.x → 1.52.1), Claude SDK patch (0.3.200 → 0.3.220), build tool updates (turbo, tsx), and general dependency maintenance (yaml, ws, react, etc.). All changes verified to pass build, test, and type checks.
+- Updated dependencies [c736c02]
+- Updated dependencies [8367648]
+- Updated dependencies [93e6309]
+- Updated dependencies [c506d87]
+- Updated dependencies [392021a]
+- Updated dependencies [3865de6]
+- Updated dependencies [5643cb6]
+- Updated dependencies [f1484a4]
+- Updated dependencies [42f1217]
+- Updated dependencies [4542ca3]
+- Updated dependencies [c064bc7]
+- Updated dependencies [68ef7fb]
+- Updated dependencies [4832ced]
+  - @agentproto/provider-presets@0.5.0
+  - @agentproto/driver-agent-cli@2.1.0
+
 ## 0.4.2
 
 ### Patch Changes

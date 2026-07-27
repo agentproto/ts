@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/eval",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Deterministic reference scorers as AIP-14 TOOL contracts + one builtin AIP-30 PROVIDER. A scorer IS a tool whose outputSchema is the shared `Score` shape — no new scorer port. Ships exact-match, regex-match, json-schema-valid, and latency-budget. No LLM/model calls.",
   "keywords": [
     "agentproto",

@@ -1,5 +1,12 @@
 # @agentproto/adapter-kit
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [f3b54ad]
+  - @agentproto/provider-kit@0.4.0
+
 ## 0.3.2
 
 ### Patch Changes

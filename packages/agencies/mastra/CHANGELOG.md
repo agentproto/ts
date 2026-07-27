@@ -1,5 +1,13 @@
 # @agentproto/agencies-mastra
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [04aedad]
+  - @agentproto/agencies@0.1.1
+  - @agentproto/governance@0.1.1
+
 ## 0.1.0
 
 ### Patch Changes
