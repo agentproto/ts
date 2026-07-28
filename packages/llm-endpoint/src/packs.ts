@@ -55,6 +55,7 @@ export const defaultPack: ModelPack = {
   label: 'Default transparent routes',
   description: 'Provider-transparent model IDs routed directly to each backend',
   models: {
+    'kimi-k3': { provider: 'moonshot', model: 'kimi-k3' },
     'kimi-k2.7-code': { provider: 'moonshot', model: 'kimi-k2.7-code' },
     'kimi-k2.6': { provider: 'moonshot', model: 'kimi-k2.6' },
     'llama-3.3-70b-versatile': { provider: 'groq', model: 'llama-3.3-70b-versatile' },
