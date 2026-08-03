@@ -58,10 +58,10 @@
   },
   "dependencies": {
     "@agentproto/code-brain": "workspace:*",
+    "@agentproto/driver": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "@agentproto/driver": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
