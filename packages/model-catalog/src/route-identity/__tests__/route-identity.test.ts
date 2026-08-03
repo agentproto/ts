@@ -545,8 +545,12 @@ describe("resolveLlmModelRoute", () => {
     })
 
     it("falls back to default pricing and no context limit for a pinned sparse provider", () => {
-      // cerebras is live but carries no pricing/context_length for this model.
-      const route = resolveLlmModelRoute("google/gemma-4-31B-it:cerebras@huggingface")
+      // featherless-ai is live but carries no pricing/context_length for this
+      // model. (Was cerebras until it started reporting both — repointed rather
+      // than relaxed, so the fallback path stays covered.)
+      const route = resolveLlmModelRoute(
+        "google/gemma-4-31B-it:featherless-ai@huggingface"
+      )
       expect(route).toBeDefined()
       expect(route!.pricing.provider).toBe("huggingface")
       expect(route!.limits.contextWindow).toBeUndefined()
