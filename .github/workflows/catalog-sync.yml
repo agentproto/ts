@@ -109,6 +109,17 @@ jobs:
             git diff --stat >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # changeset-check (ci.yml) fails a PR that touches a publishable package
+      # without a changeset, and this PR always touches @agentproto/model-catalog.
+      # Nothing was writing one: the reviewer that normally auto-generates
+      # changesets doesn't run on this bot-authored PR, so it could never go
+      # green on its own. Written deterministically here — the change is always
+      # the same shape (regenerated provider data, patch bump), so it needs no
+      # LLM the way scripts/auto-changeset.mjs does.
+      - name: Write changeset for the drifted packages
+        if: steps.drift.outputs.changed == 'true'
+        run: node scripts/write-catalog-changeset.mjs
+
       # `--check` must stay green on every normal PR/CI run (committed
       # snapshots ⇒ committed generated files). This job is the *producer* of
       # that truth: it opens a PR whenever the upstream sources have drifted.
