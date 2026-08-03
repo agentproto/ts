@@ -73,8 +73,13 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        # Invoke the built entrypoint directly rather than the `catalog-sync`
+        # bin: that bin points at `./dist/bin.mjs`, which does not exist when
+        # `pnpm install --frozen-lockfile` runs on a fresh checkout, so pnpm
+        # never links it into node_modules/.bin and `exec catalog-sync` fails
+        # with "Command not found". `exec` runs in the package directory.
         run: |
-          pnpm --filter @agentproto/catalog-sync exec catalog-sync generate \
+          pnpm --filter @agentproto/catalog-sync exec node dist/bin.mjs generate \
             ${{ (github.event_name == 'schedule' || inputs.refresh) && '--refresh' || '' }}
 
       - name: Detect drift
