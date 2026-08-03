@@ -16,7 +16,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest"
 import { mkdtemp, rm, writeFile, mkdir, realpath, readFile, utimes } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 
 const spawnSpy = vi.fn()
 vi.mock("node:child_process", async (importOriginal) => {
@@ -595,5 +595,237 @@ describe("gc plan — the main worktree is structurally excluded", () => {
     const memo = new InMemoryVerdictMemoStore()
     const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
     expect(plan.some((e) => e.path === repo)).toBe(false)
+  })
+})
+
+// ── dep-bump reclaim exemption: a clean, unpushed, mechanical dep bump ──────
+//
+// The 47-worktree gc incident this exists for: a weekly `chore(deps): weekly
+// minor/patch bump` re-run by a fresh session every time, never pushed,
+// piling up as permanent `hold`s. These tests drive the same real-git-repo
+// posture as the rest of this file — a bare `origin`, so branching straight
+// off `origin/main` gets git's own automatic upstream tracking (no `push`
+// involved), which is exactly the shape `unpushed` + `aheadBy` needs and
+// exactly how this repo's own worktrees are provisioned (`worktree add -b
+// <branch> <dir> origin/main`, verified against this very worktree's
+// `git for-each-ref` upstream).
+
+describe("gc — dep-bump reclaim exemption", () => {
+  /** A repo with a real bare `origin` and `origin/main` established locally, so branching off it auto-tracks. */
+  async function makeRepoWithOriginMain(): Promise<{ repo: string; origin: string }> {
+    const repo = await makeRepo()
+    const origin = await realpath(await mkdtemp(join(tmpdir(), "wt-gc-dep-bump-origin-")))
+    await execGit(origin, ["init", "--bare", "-b", "main"])
+    await execGit(repo, ["remote", "add", "origin", origin])
+    await execGit(repo, ["push", "origin", "main"])
+    return { repo, origin }
+  }
+
+  /** Creates `branch` straight off `origin/main` (auto-tracked, per `branch.autoSetupMerge`) and attaches a worktree to it — no checkout in the main repo, so nothing conflicts. */
+  async function addDepBumpWorktree(repo: string, branch: string): Promise<string> {
+    await execGit(repo, ["branch", branch, "origin/main"])
+    const wtPath = join(repo, "..", `dep-bump-${Math.random().toString(36).slice(2)}`)
+    await execGit(repo, ["worktree", "add", wtPath, branch])
+    return wtPath
+  }
+
+  /** Writes `files` (relative paths) and commits them with `message`, inside the worktree itself. */
+  async function commitInWorktree(
+    wtPath: string,
+    message: string,
+    files: Record<string, string>,
+  ): Promise<void> {
+    for (const [relPath, content] of Object.entries(files)) {
+      const abs = join(wtPath, relPath)
+      await mkdir(dirname(abs), { recursive: true })
+      await writeFile(abs, content)
+    }
+    await execGit(wtPath, ["add", "."])
+    await execGit(wtPath, ["commit", "-m", message])
+  }
+
+  async function planFor(repo: string, wtPath: string, forge: ForgeClient) {
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "origin/main",
+      now: FROZEN_NOW,
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    return { plan, entry, memo }
+  }
+
+  it("a single chore(deps) commit touching only the lockfile + package.json reclaims", async () => {
+    const { repo } = await makeRepoWithOriginMain()
+    cleanupPaths.push(repo)
+    const wtPath = await addDepBumpWorktree(repo, "wt/dep-bump-clean")
+    cleanupPaths.push(wtPath)
+    await commitInWorktree(wtPath, "chore(deps): weekly minor/patch bump", {
+      "pnpm-lock.yaml": "lockfile v2\n",
+      "package.json": '{"name":"root","version":"0.0.2"}\n',
+    })
+
+    const forge = new FakeForgeClient()
+    const { plan, entry } = await planFor(repo, wtPath, forge)
+    expect(entry?.integration).toMatchObject({ state: "unpushed", aheadBy: 1 })
+    expect(entry?.tree).toEqual({ state: "clean" })
+    expect(entry?.class).toBe("reclaim")
+    expect(entry?.reclaimReason).toBe("dep-bump")
+
+    spawnSpy.mockClear()
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo: new InMemoryVerdictMemoStore(),
+      defaultBranchRef: "origin/main",
+      now: FROZEN_NOW,
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath) as Extract<GcApplyOutcome, { result: "reclaimed" }>
+    expect(outcome?.result).toBe("reclaimed")
+    expect(outcome?.reclaimReason).toBe("dep-bump")
+    for (const call of worktreeRemoveCalls()) expect(call[1]).not.toContain("--force")
+
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).not.toContain(wtPath)
+  })
+
+  it("several chore(deps)/fix(deps) commits with a clean cumulative diff reclaim", async () => {
+    const { repo } = await makeRepoWithOriginMain()
+    cleanupPaths.push(repo)
+    const wtPath = await addDepBumpWorktree(repo, "wt/dep-bump-multi")
+    cleanupPaths.push(wtPath)
+    await commitInWorktree(wtPath, "chore(deps): weekly minor/patch bump", {
+      "pnpm-lock.yaml": "lockfile v2\n",
+    })
+    await commitInWorktree(wtPath, "fix(deps-dev): bump vitest range", {
+      "package.json": '{"name":"root","version":"0.0.2"}\n',
+      "pnpm-lock.yaml": "lockfile v3\n",
+    })
+
+    const forge = new FakeForgeClient()
+    const { entry } = await planFor(repo, wtPath, forge)
+    expect(entry?.integration).toMatchObject({ state: "unpushed", aheadBy: 2 })
+    expect(entry?.class).toBe("reclaim")
+    expect(entry?.reclaimReason).toBe("dep-bump")
+  })
+
+  it("THE important one: a chore(deps)-titled commit that ALSO touches a .ts file holds, never reclaims", async () => {
+    const { repo } = await makeRepoWithOriginMain()
+    cleanupPaths.push(repo)
+    const wtPath = await addDepBumpWorktree(repo, "wt/dep-bump-liar")
+    cleanupPaths.push(wtPath)
+    await commitInWorktree(wtPath, "chore(deps): weekly minor/patch bump", {
+      "pnpm-lock.yaml": "lockfile v2\n",
+      "package.json": '{"name":"root","version":"0.0.2"}\n',
+      "src/sneaky.ts": "export const sneaky = true\n",
+    })
+
+    const forge = new FakeForgeClient()
+    const { plan, entry } = await planFor(repo, wtPath, forge)
+    expect(entry?.integration).toMatchObject({ state: "unpushed", aheadBy: 1 })
+    expect(entry?.class).toBe("hold")
+    expect(entry?.reclaimReason).toBeUndefined()
+
+    spawnSpy.mockClear()
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo: new InMemoryVerdictMemoStore(),
+      defaultBranchRef: "origin/main",
+      now: FROZEN_NOW,
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath)
+    expect(outcome?.result).toBe("held")
+    expect(worktreeRemoveCalls()).toHaveLength(0)
+
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).toContain(wtPath)
+    expect(await readFile(join(wtPath, "src", "sneaky.ts"), "utf8")).toBe("export const sneaky = true\n")
+  })
+
+  it("one non-bump commit among several bump commits holds — every commit must clear the bar", async () => {
+    const { repo } = await makeRepoWithOriginMain()
+    cleanupPaths.push(repo)
+    const wtPath = await addDepBumpWorktree(repo, "wt/dep-bump-plus-feature")
+    cleanupPaths.push(wtPath)
+    await commitInWorktree(wtPath, "chore(deps): weekly minor/patch bump", {
+      "pnpm-lock.yaml": "lockfile v2\n",
+    })
+    await commitInWorktree(wtPath, "feat: sneak a feature in behind the bump", {
+      "package.json": '{"name":"root","version":"0.0.2"}\n',
+    })
+
+    const forge = new FakeForgeClient()
+    const { entry } = await planFor(repo, wtPath, forge)
+    expect(entry?.integration).toMatchObject({ state: "unpushed", aheadBy: 2 })
+    expect(entry?.class).toBe("hold")
+    expect(entry?.reclaimReason).toBeUndefined()
+  })
+
+  it("a dirty tree holds even when the sole unpushed commit is a clean dep bump", async () => {
+    const { repo } = await makeRepoWithOriginMain()
+    cleanupPaths.push(repo)
+    const wtPath = await addDepBumpWorktree(repo, "wt/dep-bump-dirty")
+    cleanupPaths.push(wtPath)
+    await commitInWorktree(wtPath, "chore(deps): weekly minor/patch bump", {
+      "pnpm-lock.yaml": "lockfile v2\n",
+    })
+    await writeFile(join(wtPath, "scratch.txt"), "still poking at it\n")
+
+    const forge = new FakeForgeClient()
+    const { entry } = await planFor(repo, wtPath, forge)
+    expect(entry?.tree.state).toBe("dirty")
+    expect(entry?.class).toBe("hold")
+    expect(entry?.reclaimReason).toBeUndefined()
+  })
+
+  it("an open PR holds even when every unpushed commit is a clean dep bump", async () => {
+    const { repo } = await makeRepoWithOriginMain()
+    cleanupPaths.push(repo)
+    const branch = "wt/dep-bump-open-pr"
+    const wtPath = await addDepBumpWorktree(repo, branch)
+    cleanupPaths.push(wtPath)
+    await commitInWorktree(wtPath, "chore(deps): weekly minor/patch bump", {
+      "pnpm-lock.yaml": "lockfile v2\n",
+    })
+    const tip = await headSha(wtPath)
+
+    const forge = new FakeForgeClient([pr({ number: 900, state: "open", merged: false, headRefOid: tip, headRefName: branch })])
+    const { entry } = await planFor(repo, wtPath, forge)
+    expect(entry?.integration).toMatchObject({ state: "open", pr: 900 })
+    expect(entry?.class).toBe("hold")
+    expect(entry?.reclaimReason).toBeUndefined()
+  })
+
+  it("non-regression: an ordinary unpushed feature commit still holds, exactly as before", async () => {
+    const { repo } = await makeRepoWithOriginMain()
+    cleanupPaths.push(repo)
+    const wtPath = await addDepBumpWorktree(repo, "wt/ordinary-feature")
+    cleanupPaths.push(wtPath)
+    await commitInWorktree(wtPath, "feat: add the thing", {
+      "src/thing.ts": "export const thing = 1\n",
+    })
+
+    const forge = new FakeForgeClient()
+    const { plan, entry } = await planFor(repo, wtPath, forge)
+    expect(entry?.integration).toMatchObject({ state: "unpushed", aheadBy: 1 })
+    expect(entry?.class).toBe("hold")
+    expect(entry?.reclaimReason).toBeUndefined()
+
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo: new InMemoryVerdictMemoStore(),
+      defaultBranchRef: "origin/main",
+      now: FROZEN_NOW,
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath)
+    expect(outcome?.result).toBe("held")
   })
 })

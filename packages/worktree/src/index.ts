@@ -138,10 +138,15 @@ export {
 } from "./agent-session-host.js"
 export {
   classifyForGc,
+  resolveGcClass,
+  isMechanicalDepBumpRange,
   planGc,
   applyGc,
   type GcClass,
+  type GcReclaimReason,
   type ClassifyForGcOptions,
+  type ResolveGcClassOptions,
+  type ResolvedGcClass,
   type GcPlanEntry,
   type PlanGcInput,
   type ApplyGcOptions,
