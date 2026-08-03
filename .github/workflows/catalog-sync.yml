@@ -49,8 +49,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # `...` suffix = the package AND its workspace dependencies. Required:
+      # generators import subpaths like `@agentproto/model-catalog/providers`,
+      # which resolve to that package's `dist/**/*.d.ts` — absent on a fresh
+      # checkout, so a catalog-sync-only build fails its dts pass (TS2307).
       - name: Build catalog-sync
-        run: pnpm --filter @agentproto/catalog-sync build
+        run: pnpm --filter "@agentproto/catalog-sync..." build
 
       # `--refresh` re-fetches the pinned provider sources and rewrites the
       # committed snapshots; without it, generation is deterministic from the
