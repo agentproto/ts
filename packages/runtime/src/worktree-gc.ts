@@ -18,6 +18,16 @@
 export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
 
 /**
+ * `gc`'s one reclaim reason, mirrored runtime-local (matches `GcReclaimReason`).
+ * Set only on a `reclaim`-class entry/outcome that was promoted out of `hold`
+ * by the dep-bump exemption (`resolveGcClass` in `@agentproto/worktree`) —
+ * absent for an ordinary merged/fresh reclaim, so its presence alone is the
+ * "why does this line have unpushed commits and still leave" signal a human
+ * reading the plan/outcome table needs.
+ */
+export type WorktreeGcReclaimReason = "dep-bump"
+
+/**
  * One entry of the dry-run plan — a runtime-local projection of a
  * `GcPlanEntry`. `tree` / `integration` / `liveness` are flattened to their
  * discriminant `state` (plus the PR number when the integration carries one)
@@ -28,6 +38,8 @@ export interface WorktreeGcPlanEntryView {
   branch: string | null
   head: string
   class: WorktreeGcClass
+  /** Set only when `class === "reclaim"` via the dep-bump exemption. */
+  reclaimReason?: WorktreeGcReclaimReason
   tree: string
   integration: { state: string; pr?: number }
   liveness: { state: string; sessionCount: number }
@@ -51,6 +63,8 @@ export interface WorktreeGcOutcomeView {
     | "aborted-reclassified"
     | "aborted-vanished"
     | "failed"
+  /** Set only for a `reclaimed` outcome via the dep-bump exemption. */
+  reclaimReason?: WorktreeGcReclaimReason
   /** Set only for `salvaged`. */
   salvageDir?: string
   /** Set only for `aborted-reclassified`. */

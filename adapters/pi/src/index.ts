@@ -105,6 +105,7 @@ export const pi: AgentCliHandle = defineAgentCli({
       // eligibility projection compute an unrecognized "moonshotai" endpoint,
       // which doesn't match any real wallet, so a genuinely-eligible moonshot
       // profile was rejected.
+      { id: "moonshotai/kimi-k3", provider: "moonshot" },
       { id: "moonshotai/kimi-k2.7-code", provider: "moonshot" },
     ],
     env: {

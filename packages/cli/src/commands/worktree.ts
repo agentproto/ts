@@ -427,6 +427,7 @@ function toGcPlanEntryView(entry: GcPlanEntry): WorktreeGcPlanEntryView {
     branch: entry.branch,
     head: entry.head,
     class: entry.class,
+    ...(entry.reclaimReason ? { reclaimReason: entry.reclaimReason } : {}),
     tree: entry.tree.state,
     integration,
     liveness: {
@@ -441,6 +442,8 @@ function toGcPlanEntryView(entry: GcPlanEntry): WorktreeGcPlanEntryView {
 function toGcOutcomeView(outcome: GcApplyOutcome): WorktreeGcOutcomeView {
   const base = { path: outcome.path, branch: outcome.branch }
   switch (outcome.result) {
+    case "reclaimed":
+      return { ...base, result: outcome.result, ...(outcome.reclaimReason ? { reclaimReason: outcome.reclaimReason } : {}) }
     case "salvaged":
       return { ...base, result: outcome.result, salvageDir: outcome.salvageDir }
     case "aborted-reclassified":
@@ -983,7 +986,11 @@ function printGcPlan(plan: readonly GcPlanEntry[], salvageDirty: boolean, json: 
 }
 
 function gcPlanAction(entry: GcPlanEntry, salvageDirty: boolean): string {
-  if (entry.class === "reclaim") return "reclaim (rm, delete branch)"
+  if (entry.class === "reclaim") {
+    return entry.reclaimReason === "dep-bump"
+      ? "reclaim (dep-bump exemption: rm, delete branch)"
+      : "reclaim (rm, delete branch)"
+  }
   if (entry.class === "salvage") return salvageDirty ? "salvage (archive)" : "salvage (skip: needs --salvage-dirty)"
   return "hold (never touched)"
 }
@@ -1005,7 +1012,7 @@ function formatGcOutcomeRow(outcome: GcApplyOutcome): string {
   let detail: string
   switch (outcome.result) {
     case "reclaimed":
-      detail = "reclaimed"
+      detail = outcome.reclaimReason === "dep-bump" ? "reclaimed (dep-bump exemption)" : "reclaimed"
       break
     case "salvaged":
       detail = `salvaged (${outcome.salvageDir})`

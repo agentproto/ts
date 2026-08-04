@@ -17,7 +17,21 @@ import { runLlm, parseJsonLoose } from '../llm.mjs'
 
 export const DIFF_CAP = 16_000
 
-const defaultExec = (cmd, root) => execSync(cmd, { cwd: root, encoding: 'utf8' })
+/**
+ * execSync defaults to a 1 MB maxBuffer and throws ENOBUFS past it — which
+ * means the reviewer used to die outright on exactly the PRs most worth
+ * reviewing. A catalog sync (+11k/-10k lines of generated data) blows through
+ * 1 MB in `git diff`, and the failure surfaces as a bare `spawnSync /bin/sh
+ * ENOBUFS`, nothing that points at the diff size.
+ *
+ * The diff is truncated to DIFF_CAP downstream anyway, so a generous buffer
+ * costs nothing but transient memory and turns a hard crash into the normal
+ * truncation path.
+ */
+const EXEC_MAX_BUFFER = 256 * 1024 * 1024
+
+const defaultExec = (cmd, root) =>
+  execSync(cmd, { cwd: root, encoding: 'utf8', maxBuffer: EXEC_MAX_BUFFER })
 
 /** Collect the branch diff vs origin/main (three-dot = merge-base: what the
  *  branch introduces, independent of how far main has moved).

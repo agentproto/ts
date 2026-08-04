@@ -42,8 +42,11 @@ describe("llm:context-windows generator", () => {
     expect(src).toContain("export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {")
 
     // Entry count matches the committed snapshots exactly (deterministic).
+    // NOTE: this number moves every time a provider adds or drops a model, so
+    // it has to be bumped on each catalog sync — see the count-drift note on
+    // the sync PR.
     const entryCount = (src.match(/contextWindow: \d+/g) ?? []).length
-    expect(entryCount).toBe(47)
+    expect(entryCount).toBe(48)
 
     // Spot-check one real entry per provider.
     expect(src).toContain('"claude-opus-4-8": { contextWindow: 1000000, maxOutput: 128000')

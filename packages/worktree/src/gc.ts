@@ -29,10 +29,19 @@
  * but this module doesn't lean on that as the only guard: the main worktree
  * is filtered out before classification even runs, so it can never appear
  * in a plan, let alone be attempted.
+ *
+ * One reclassification on top of `classify`'s three classes:
+ * `resolveGcClass` promotes a clean, `unpushed` worktree from `hold` to
+ * `reclaim` when every commit ahead of the default branch is a mechanical
+ * dependency bump (subject AND cumulative diff both checked — see that
+ * function's doc). It's applied identically at plan time and re-verified at
+ * apply time (layer 2), so a worktree that grew a real commit in between is
+ * still caught.
  */
 
 import { basename } from "node:path"
 import { runTool } from "@agentproto/driver"
+import { execArgv } from "./exec.js"
 import { cleanupWorktreeTool } from "./tools/index.js"
 import { worktreeProvider } from "./provider/index.js"
 import { salvageWorktree } from "./salvage.js"
@@ -87,6 +96,110 @@ export function classifyForGc(
   return classify(tree, integration, liveness, options.nowMs).class
 }
 
+// ── dep-bump reclaim exemption ──────────────────────────────────────────
+//
+// A worktree whose only unpushed commits are a mechanical dependency bump
+// (`chore(deps): weekly minor/patch bump`, re-run every week by every
+// session that happens to pick it up) is not "unpushed work to protect" —
+// it reproduces by re-running the routine, and 25 of these piling up as
+// permanent `hold`s is exactly what emptied a 102GB external SSD of gc
+// coverage. This is deliberately narrow and additive: it only ever promotes
+// a worktree that `classifyForGc` already put in `hold` for the single
+// reason `integration.state === "unpushed"` with a clean tree — every other
+// hold reason (partial, open, diverged, gone-unexplained, unknown(offline),
+// a dirty tree, `unpushed` while forge-unreachable — which can't happen, see
+// `reconcileIntegration`) is completely untouched by this and still holds.
+
+/** The only reclaim reason this module can attach today. */
+export type GcReclaimReason = "dep-bump"
+
+/**
+ * Mechanical dep-bump commit subjects: `chore(deps)` / `fix(deps)`, with or
+ * without a scope (`chore(deps-dev)`, `fix(deps-optional)`, …). A commit
+ * message is cheap to type and easy to lie in — this regex alone NEVER
+ * licenses anything; `isMechanicalDepBumpRange` below only trusts it in
+ * conjunction with the actual cumulative diff.
+ */
+const DEP_BUMP_SUBJECT_RE = /^(?:chore|fix)\(deps[\w-]*\):\s/
+
+function isDepBumpSubject(subject: string): boolean {
+  return DEP_BUMP_SUBJECT_RE.test(subject)
+}
+
+/** The only paths a mechanical dep bump is allowed to touch, matched by basename so a nested package's `package.json` counts too. */
+const DEP_BUMP_ALLOWED_BASENAMES = new Set(["pnpm-lock.yaml", "package-lock.json", "yarn.lock", "package.json"])
+
+function isDepBumpAllowedPath(path: string): boolean {
+  return DEP_BUMP_ALLOWED_BASENAMES.has(basename(path))
+}
+
+/**
+ * Layer 3+4 of the exemption: EVERY commit ahead of `baseRef` must have a
+ * dep-bump subject (`git log --format=%s`, two-dot range — exactly the
+ * commits `aheadBy` counts, PLAN-comment on `readUpstreamTrack`), AND the
+ * cumulative diff of that whole range (`git diff`, three-dot/merge-base
+ * range, so it isolates the branch's own changes from anything `baseRef`
+ * did independently in the meantime) must touch nothing but lockfiles and
+ * `package.json`. Both checks run unconditionally together — a subject that
+ * lies is cheap, a diff cannot lie, so the diff is the one that actually
+ * gates. Two extra git spawns, only ever paid for a worktree that would
+ * otherwise be `hold` for exactly `clean ∧ unpushed` — every other class
+ * pays nothing.
+ */
+export async function isMechanicalDepBumpRange(repoRoot: string, baseRef: string, tipSha: string): Promise<boolean> {
+  const [subjectsRes, diffRes] = await Promise.all([
+    execArgv("git", ["-C", repoRoot, "log", "--format=%s", `${baseRef}..${tipSha}`], repoRoot),
+    execArgv("git", ["-C", repoRoot, "diff", "--name-only", `${baseRef}...${tipSha}`], repoRoot),
+  ])
+  if (subjectsRes.exitCode !== 0 || diffRes.exitCode !== 0) return false
+
+  const subjects = subjectsRes.stdout.split("\n").filter((line) => line.length > 0)
+  if (subjects.length === 0) return false
+  if (!subjects.every(isDepBumpSubject)) return false
+
+  const files = diffRes.stdout.split("\n").filter((line) => line.length > 0)
+  if (files.length === 0) return false
+  return files.every(isDepBumpAllowedPath)
+}
+
+export interface ResolveGcClassOptions extends ClassifyForGcOptions {
+  repoRoot: string
+  /** The tip commit of the worktree being classified — `worktree.head`. */
+  tipSha: string
+  /** Default `"origin/main"` — matches `reconcileIntegration`'s own default. */
+  defaultBranchRef?: string
+}
+
+export interface ResolvedGcClass {
+  class: GcClass
+  /** Set only when `class === "reclaim"` via the dep-bump exemption rather than the ordinary merged/fresh path. */
+  reclaimReason?: GcReclaimReason
+}
+
+/**
+ * `classifyForGc` plus the one async, git-touching layer on top: a clean,
+ * `unpushed` worktree whose entire ahead range is a mechanical dep bump is
+ * promoted from `hold` to `reclaim`. Every other class classifyForGc
+ * returns is passed through untouched — this never widens any other hold
+ * reason, and never touches git for a worktree it wouldn't otherwise hold
+ * on `unpushed` alone.
+ */
+export async function resolveGcClass(
+  tree: TreeState,
+  integration: IntegrationState,
+  liveness: LivenessState,
+  options: ResolveGcClassOptions,
+): Promise<ResolvedGcClass> {
+  const baseClass = classifyForGc(tree, integration, liveness, options)
+  if (baseClass !== "hold") return { class: baseClass }
+  if (tree.state !== "clean" || integration.state !== "unpushed") return { class: "hold" }
+
+  const baseRef = options.defaultBranchRef ?? "origin/main"
+  const isDepBump = await isMechanicalDepBumpRange(options.repoRoot, baseRef, options.tipSha)
+  if (!isDepBump) return { class: "hold" }
+  return { class: "reclaim", reclaimReason: "dep-bump" }
+}
+
 // ── plan ─────────────────────────────────────────────────────────────
 
 export interface GcPlanEntry {
@@ -98,6 +211,8 @@ export interface GcPlanEntry {
   liveness: LivenessState
   /** Classification per PLAN.md §5.1, after `--include-detached` (if set). */
   class: GcClass
+  /** Set only when `class === "reclaim"` via the dep-bump exemption — see `resolveGcClass`. */
+  reclaimReason?: GcReclaimReason
 }
 
 export interface PlanGcInput {
@@ -119,12 +234,21 @@ async function linkedWorktreesOf(repoRoot: string): Promise<GitWorktreeRef[]> {
   return worktrees.filter((w) => w.path !== repoRoot)
 }
 
-function toPlanEntry(
+async function toPlanEntry(
+  repoRoot: string,
+  defaultBranchRef: string | undefined,
   worktree: GitWorktreeRef,
   status: { tree: TreeState; integration: IntegrationState; liveness: LivenessState },
   includeDetached: boolean,
   nowMs: number,
-): GcPlanEntry {
+): Promise<GcPlanEntry> {
+  const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
+    repoRoot,
+    tipSha: worktree.head,
+    defaultBranchRef,
+    includeDetached,
+    nowMs,
+  })
   return {
     path: worktree.path,
     branch: worktree.branch,
@@ -132,7 +256,8 @@ function toPlanEntry(
     tree: status.tree,
     integration: status.integration,
     liveness: status.liveness,
-    class: classifyForGc(status.tree, status.integration, status.liveness, { includeDetached, nowMs }),
+    class: resolved.class,
+    ...(resolved.reclaimReason ? { reclaimReason: resolved.reclaimReason } : {}),
   }
 }
 
@@ -158,7 +283,7 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
       sessionsPath: input.sessionsPath,
       now: input.now,
     })
-    entries.push(toPlanEntry(worktree, status, includeDetached, nowMs))
+    entries.push(await toPlanEntry(input.repoRoot, input.defaultBranchRef, worktree, status, includeDetached, nowMs))
   }
   return entries
 }
@@ -183,7 +308,7 @@ export interface ApplyGcOptions {
 }
 
 export type GcApplyOutcome =
-  | { path: string; branch: string | null; result: "reclaimed" }
+  | { path: string; branch: string | null; result: "reclaimed"; reclaimReason?: GcReclaimReason }
   | { path: string; branch: string | null; result: "salvaged"; salvageDir: string }
   | { path: string; branch: string | null; result: "held" }
   /** Salvage-class, but `--salvage-dirty` was not passed: left untouched by design. */
@@ -200,7 +325,11 @@ async function findWorktree(repoRoot: string, path: string): Promise<GitWorktree
   return worktrees.find((w) => w.path === path) ?? null
 }
 
-async function reclaimOne(options: ApplyGcOptions, worktree: GitWorktreeRef): Promise<GcApplyOutcome> {
+async function reclaimOne(
+  options: ApplyGcOptions,
+  worktree: GitWorktreeRef,
+  reclaimReason?: GcReclaimReason,
+): Promise<GcApplyOutcome> {
   try {
     await runTool({
       tool: cleanupWorktreeTool,
@@ -230,7 +359,12 @@ async function reclaimOne(options: ApplyGcOptions, worktree: GitWorktreeRef): Pr
       message: err instanceof Error ? err.message : String(err),
     }
   }
-  return { path: worktree.path, branch: worktree.branch, result: "reclaimed" }
+  return {
+    path: worktree.path,
+    branch: worktree.branch,
+    result: "reclaimed",
+    ...(reclaimReason ? { reclaimReason } : {}),
+  }
 }
 
 async function salvageOne(options: ApplyGcOptions, worktree: GitWorktreeRef): Promise<GcApplyOutcome> {
@@ -313,21 +447,28 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
     sessionsPath: options.sessionsPath,
     now: options.now,
   })
-  const freshClass = classifyForGc(status.tree, status.integration, status.liveness, {
+  // Re-resolved from scratch — including the dep-bump exemption, not just
+  // `entry`'s stale plan-time verdict, so a worktree that picked up a real
+  // (non-bump) commit between plan and apply is re-caught here, not just at
+  // plan time.
+  const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
+    repoRoot: options.repoRoot,
+    tipSha: fresh.head,
+    defaultBranchRef: options.defaultBranchRef,
     includeDetached: Boolean(options.includeDetached),
     nowMs: options.nowMs,
   })
-  if (freshClass !== entry.class) {
+  if (resolved.class !== entry.class) {
     return {
       path: entry.path,
       branch: fresh.branch,
       result: "aborted-reclassified",
       from: entry.class,
-      to: freshClass,
+      to: resolved.class,
     }
   }
 
-  if (freshClass === "reclaim") return reclaimOne(options, fresh)
+  if (resolved.class === "reclaim") return reclaimOne(options, fresh, resolved.reclaimReason)
   // The only other class that reaches this point is "salvage" with
   // `options.salvageDirty` true (both earlier guards above already returned
   // for "hold" and for "salvage" without the flag).
