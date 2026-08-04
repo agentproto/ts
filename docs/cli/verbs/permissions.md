@@ -64,7 +64,8 @@ perm_2      ses_def456      Bash                3s     Allow "Bash"?
 
 `--json` emits the full records (id, sessionId, toolCallId, toolName, text,
 options, requestedAt, plus the owning session's adapter/title and age).
-`--session <id>` filters to one session.
+The tool's raw input (e.g. the Bash command string) is included as `rawInput`
+and rendered as a truncated preview in the text table. `--session <id>` filters to one session.
 
 ### `approve <id>`
 

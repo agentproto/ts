@@ -17,8 +17,8 @@ All 29 verbs in the dispatcher's `VERBS` set (`packages/cli/src/cli.ts`).
 | **config** | show, path, get, set, unset, edit | --json | Manage `~/.agentproto/config.json` |
 | **conversation** | locate | --json | Locate the native transcript (claude jsonl / hermes row) behind a session, or the session behind a native transcript path — reads the persisted `conversations.jsonl` index |
 | **cron** | add, list, remove (delete/rm), run | --schedule, --command, --args, --adapter, --target-session, --prompt, --cwd, --model, --timeout-ms, --label, --once, --json | Durable cron jobs on the daemon (persist to `cron-jobs.json`) |
-| **daemon** | install, uninstall, start, stop, status, logs | --dry-run, --lines | Service lifecycle (launchd/systemd wrapper) |
-| **install** | — | --force, --dry-run, --skip-setup | Install adapter binary + run setup pipeline; also `skill/*` and `runtime-profile/*` slugs |
+| **daemon** | install, uninstall, start, **restart**, stop, status, logs | --dry-run, --lines | Service lifecycle (launchd/systemd wrapper) |
+| **install** | — | --force, --dry-run, --skip-setup, **--allow-unverified** | Install adapter binary + run setup pipeline; also `skill/*` and `runtime-profile/*` slugs |
 | **install-mcp** | — | --agent, --all, --yes, --skip-daemon, --update, --uninstall | Register the daemon's MCP server with detected coding CLIs |
 | **mcp-bridge** | — | (stdio, no flags) | Stdio MCP proxy to daemon `/mcp` endpoint |
 | **models** | — | `[adapter]`, --json | List runnable models + provider-key status |
@@ -33,7 +33,7 @@ All 29 verbs in the dispatcher's `VERBS` set (`packages/cli/src/cli.ts`).
 | **run** | — | --cwd, --prompt, --model, --effort, --resume, --json, --output-schema | One-shot: spawn adapter, dispatch turn, stream events, exit |
 | **run-swarm** | — | --manifest, --once, --interval, --verbose | Run swarms from manifest |
 | **serve** | — | --workspace, --port, --bind, --connect, --token, --allow-origin, --interactive | HTTP gateway + MCP server + session registry |
-| **sessions** | start, stop, terminal, export, story, mirror, restart | --watch, --attach, --cwd, --workspace, --model, --prompt, --label, --json | Session browser & control |
+| **sessions** | start, stop, terminal, export, story, mirror, restart, **gc** | --watch, --attach, --cwd, --workspace, --model, --prompt, --label, --json | Session browser & control |
 | **setup** | — | --force, --dry-run, --only | Run AIP-29 setup pipeline (post-install) |
 | **tunnel** | create, list, stop, status | --port, --provider, --name, --hostname, --json | Manage public tunnels (Cloudflare, Ngrok) |
 | **workspace** | add, list, remove, use | --slug, --label, --json | Manage workspaces registry |

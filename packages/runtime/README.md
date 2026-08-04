@@ -41,8 +41,8 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | Events (SSE)      | `GET /events`                            | RuntimeEvents stream                                   |
 | MCP               | `POST /mcp` (Streamable HTTP)            | Stateless mode; per-request transport                  |
 | Conversations     | `GET /conversations` / `GET /conversations/<id>` | Markdown bodies                                |
-| Adapter discovery | `GET /adapters`                          | When `listAgentAdapters` is wired                      |
-| Sessions list     | `GET /sessions` / `GET /sessions/:id`    | id-or-name in `:id`                                   |
+| Adapter discovery | `GET /adapters` / `POST /adapters/:slug/install` | When `listAgentAdapters` / `installAgentAdapter` is wired |
+| Sessions list     | `GET /sessions` / `GET /sessions/:id` / `GET /sessions/summaries` | id-or-name in `:id`; summaries are lightweight + paginated |
 | Agent spawn       | `POST /sessions/agent`                   | Long-lived ACP agent (needs `resolveAgentAdapter`)    |
 | Interrupt turn    | `POST /sessions/:id/interrupt`           | Cancel the in-flight turn; session stays alive        |
 | Terminal input    | `POST /sessions/:id/terminal/input`      | Write raw input into a live PTY session               |
@@ -50,7 +50,7 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | **PTY spawn**     | **`POST /sessions/terminal`**            | Needs `spawnPty` factory                              |
 | **PTY attach**    | **`WS /sessions/:id/pty`**               | JSON frames `{kind:data|input|resize|exit|ping|pong}`; multi-subscriber, min-size resize, ring-buffer replay |
 | SSE attach        | `GET /sessions/:id/stream`               | Line-by-line text events                              |
-| Kill / forget     | `POST /sessions/:id/kill`, `DELETE /sessions/:id` | SIGTERM, then drop from registry             |
+| Kill / forget / gc | `POST /sessions/:id/kill`, `DELETE /sessions/:id`, `POST /sessions/gc` | SIGTERM, drop from registry, bulk archive terminal sessions |
 
 ### Auth model
 

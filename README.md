@@ -8,7 +8,7 @@ one's work — with your tests or a reviewer model — before anything is
 committed. No more babysitting terminal windows.
 
 - **Run them all the same way.** Start, message, watch, and stop any agent
-  with the same commands. Nine adapters today.
+  with the same commands. Eleven adapters today.
 - **Work checked before it lands.** Attach a check — your tests, or a stronger
   model reviewing the change — and it runs each time the agent finishes.
   Commits wait for the check and your OK, even after you close your laptop.
@@ -48,9 +48,9 @@ for the honest split below.
 
 This repo ships two very different things under one name:
 
-- **Tier 1 — live, verified hands-on:** the daemon, the CLI, nine agent
-  adapters (Claude Code, Claude SDK, Codex, Hermes, opencode, Mastra Code +
-  in-process, Mastra Agent, OpenClaw, browser-as-agent), durable policy gates,
+- **Tier 1 — live, verified hands-on:** the daemon, the CLI, eleven agent
+  adapters (Claude Code, Claude SDK, Codex, Gemini, Hermes, opencode, Mastra Code +
+  in-process, Mastra Agent, OpenClaw, browser-as-agent, pi), durable policy gates,
   nested orchestration with role gating, fan-in monitoring, workflows/cron,
   and an MCP surface (~90 tools) on the daemon itself.
 - **Tier 2 — the wider AIP spec family:** ~52 numbered specs live in
@@ -127,12 +127,15 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `session_list` / `session_tree` / `session_usage` / `session_restart` | Canonical session list, hierarchy, usage, and resume |
 | `session_archive` / `session_unarchive` | Hide / restore sessions from the canonical list (VS Code "show archived" toggle) |
 | `session_rename` | Set or clear a session's user-facing `title` / `label` |
+| `worktree_gc` | Plan/apply garbage collection of linked git worktrees |
 | `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Drive raw PTY sessions |
 | `command_log_tail` | Read the JSONL audit log for `command_execute` |
 | `policy_attach` / `policy_cancel` / `policy_status` | Supervisor completion-policy lifecycle |
 | `workflow_run_file` / `workflow_start` / `workflow_status` / `workflow_cancel` | Run WORKFLOW.md and stage-barrier workflows |
 | `tunnel_create` / `tunnel_list` / `tunnel_stop` / `tunnel_status` | Public URL tunnels for local ports |
 | `list_provider_presets` | Gateway presets (Anthropic, Moonshot, OpenRouter, Requesty, DeepSeek, xAI) |
+| `adapter_install` | Install a not-yet-installed agent-CLI harness by slug |
+| `harness_capabilities` | Discover what an installed adapter can do on this host |
 | `catalog_models` | Read-only catalog of runnable models + routes (daemon `GET /catalog/models`) |
 | `list_sandbox_providers` / `setup_sandbox_provider` | Sandbox provider catalog and credentials |
 | `list_eval_reporters` / `setup_eval_reporter` | Eval-reporter backends (e.g. Langfuse) |
@@ -150,13 +153,14 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 
 ```
 packages/provider-kit/        @agentproto/provider-kit    Shared catalog, creds, setup-ledger, MCP tool primitives
-packages/provider-presets/    @agentproto/provider-presets   Shared gateway preset registry (Anthropic, Moonshot, OpenRouter, Requesty, DeepSeek, xAI)
+packages/provider-presets/    @agentproto/provider-presets   Shared gateway preset registry (Anthropic, Moonshot, OpenRouter, Requesty, DeepSeek, xAI, xAI-Anthropic, LLM Endpoint)
 
 adapters/claude-code/         @agentproto/adapter-claude-code   AIP-45 adapter for Claude Code
 adapters/claude-sdk/          @agentproto/adapter-claude-sdk    AIP-45 adapter for Claude SDK (Anthropic/Moonshot/OpenRouter gateway modes)
+adapters/codex/                @agentproto/adapter-codex          AIP-45 adapter for Codex
+adapters/gemini/              @agentproto/adapter-gemini        AIP-45 adapter for Gemini
 adapters/hermes/              @agentproto/adapter-hermes         AIP-45 adapter for Hermes
 adapters/opencode/            @agentproto/adapter-opencode       AIP-45 adapter for OpenCode
-adapters/codex/                @agentproto/adapter-codex          AIP-45 adapter for Codex
 adapters/openclaw/            @agentproto/adapter-openclaw       AIP-45 adapter for Openclaw
 adapters/mastra-agent/        @agentproto/adapter-mastra-agent   First-party agent — AIP-42 AGENT.md run as a live Mastra agent behind ACP
 adapters/browser/             @agentproto/adapter-browser        Browser / CDP session adapter
