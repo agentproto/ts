@@ -161,6 +161,7 @@ export type {
   WorktreeGcRunInput,
   WorktreeGcResult,
   WorktreeGcClass,
+  WorktreeGcReclaimReason,
   WorktreeGcPlanEntryView,
   WorktreeGcOutcomeView,
 } from "./worktree-gc.js"
