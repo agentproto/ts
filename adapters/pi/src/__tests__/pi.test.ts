@@ -57,6 +57,11 @@ describe("@agentproto/adapter-pi — manifest", () => {
   it("declares the Moonshot model entry with the CANONICAL billing provider", () => {
     expect(
       pi.models?.allowed?.some(
+        m => typeof m === "object" && m.id === "moonshotai/kimi-k3" && m.provider === "moonshot",
+      ),
+    ).toBe(true)
+    expect(
+      pi.models?.allowed?.some(
         m => typeof m === "object" && m.id === "moonshotai/kimi-k2.7-code" && m.provider === "moonshot",
       ),
     ).toBe(true)

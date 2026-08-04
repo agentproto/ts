@@ -198,6 +198,10 @@ describe('buildMappingFromPack', () => {
 
 describe('parseTransparentModel', () => {
   it('parses provider/model references', () => {
+    expect(parseTransparentModel('moonshot/kimi-k3')).toEqual({
+      provider: 'moonshot',
+      model: 'kimi-k3',
+    });
     expect(parseTransparentModel('moonshot/kimi-k2.7-code')).toEqual({
       provider: 'moonshot',
       model: 'kimi-k2.7-code',
