@@ -451,6 +451,8 @@ readable/importable) via `POST /sessions/gc`. Pass `--forget` to drop the
 descriptors instead (the native conversation on disk survives). `--older-than-days`
 keeps anything more recent. Live sessions are never touched.
 
+## Interrupting a live session (MCP/HTTP only)
+
 There is no `agentproto sessions` subverb for this — it's exposed on
 the MCP `agent_prompt` tool and the HTTP prompt route only:
 
