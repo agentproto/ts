@@ -39,16 +39,3 @@ export {
   MOCK_CARD,
   MOCK_CARDS,
 } from "./mock-data.js"
-
-export {
-  getSourcesForClaim,
-  getClaimsForSource,
-  resolveEvidence,
-  type ClaimWithEvidence,
-} from "./evidence.js"
-
-export {
-  checkSourceQuality,
-  type SourceQualityIssue,
-  type SourceQualityIssueCode,
-} from "./source-quality.js"
