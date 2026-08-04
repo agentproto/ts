@@ -33,6 +33,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Same App the rest of the repo's PR-writing jobs use (ci.yml,
+      # issue-triage, discussion, agent-command). It is what makes the sync PR
+      # run CI at all: GitHub deliberately does NOT trigger workflows on a PR
+      # opened with the default GITHUB_TOKEN, so before this the sync PR landed
+      # with zero checks and sat BLOCKED — 11k lines of generated pricing data
+      # that nothing verified. Falls back to GITHUB_TOKEN when no App is
+      # configured (the PR is then checkless again, but the job still works).
+      - name: Mint bot token (GitHub App — optional)
+        id: bot
+        if: ${{ vars.BOT_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -49,8 +64,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # `...` suffix = the package AND its workspace dependencies. Required:
+      # generators import subpaths like `@agentproto/model-catalog/providers`,
+      # which resolve to that package's `dist/**/*.d.ts` — absent on a fresh
+      # checkout, so a catalog-sync-only build fails its dts pass (TS2307).
       - name: Build catalog-sync
-        run: pnpm --filter @agentproto/catalog-sync build
+        run: pnpm --filter "@agentproto/catalog-sync..." build
 
       # `--refresh` re-fetches the pinned provider sources and rewrites the
       # committed snapshots; without it, generation is deterministic from the
@@ -69,8 +88,13 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        # Invoke the built entrypoint directly rather than the `catalog-sync`
+        # bin: that bin points at `./dist/bin.mjs`, which does not exist when
+        # `pnpm install --frozen-lockfile` runs on a fresh checkout, so pnpm
+        # never links it into node_modules/.bin and `exec catalog-sync` fails
+        # with "Command not found". `exec` runs in the package directory.
         run: |
-          pnpm --filter @agentproto/catalog-sync exec catalog-sync generate \
+          pnpm --filter @agentproto/catalog-sync exec node dist/bin.mjs generate \
             ${{ (github.event_name == 'schedule' || inputs.refresh) && '--refresh' || '' }}
 
       - name: Detect drift
@@ -85,6 +109,17 @@ jobs:
             git diff --stat >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # changeset-check (ci.yml) fails a PR that touches a publishable package
+      # without a changeset, and this PR always touches @agentproto/model-catalog.
+      # Nothing was writing one: the reviewer that normally auto-generates
+      # changesets doesn't run on this bot-authored PR, so it could never go
+      # green on its own. Written deterministically here — the change is always
+      # the same shape (regenerated provider data, patch bump), so it needs no
+      # LLM the way scripts/auto-changeset.mjs does.
+      - name: Write changeset for the drifted packages
+        if: steps.drift.outputs.changed == 'true'
+        run: node scripts/write-catalog-changeset.mjs
+
       # `--check` must stay green on every normal PR/CI run (committed
       # snapshots ⇒ committed generated files). This job is the *producer* of
       # that truth: it opens a PR whenever the upstream sources have drifted.
@@ -92,6 +127,7 @@ jobs:
         if: steps.drift.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
+          token: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
           branch: catalog-sync/auto
           base: main
           commit-message: "chore(catalog): sync generated data from pinned sources"
