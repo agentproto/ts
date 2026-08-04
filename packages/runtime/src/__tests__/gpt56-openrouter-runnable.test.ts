@@ -49,12 +49,16 @@ import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 // numbers proves the row is genuinely priced (a launchable wallet needs it),
 // not merely present.
 const GPT56 = [
-  { product: "gpt-5.6-luna", inPer1M: 1, outPer1M: 6 },
-  { product: "gpt-5.6-luna-pro", inPer1M: 1, outPer1M: 6 },
+  // OpenRouter repriced the two lower tiers (sol unchanged), moving the
+  // ladder from 1 / 2.5 / 5 to 0.1 / 1 / 5. Both tiers moved consistently
+  // across their base and -pro variants, so this is a real price cut, not a
+  // stray decimal on one row.
+  { product: "gpt-5.6-luna", inPer1M: 0.1, outPer1M: 0.6 },
+  { product: "gpt-5.6-luna-pro", inPer1M: 0.1, outPer1M: 0.6 },
   { product: "gpt-5.6-sol", inPer1M: 5, outPer1M: 30 },
   { product: "gpt-5.6-sol-pro", inPer1M: 5, outPer1M: 30 },
-  { product: "gpt-5.6-terra", inPer1M: 2.5, outPer1M: 15 },
-  { product: "gpt-5.6-terra-pro", inPer1M: 2.5, outPer1M: 15 },
+  { product: "gpt-5.6-terra", inPer1M: 1, outPer1M: 6 },
+  { product: "gpt-5.6-terra-pro", inPer1M: 1, outPer1M: 6 },
 ] as const
 
 const openrouterKey: AuthProfile = {
