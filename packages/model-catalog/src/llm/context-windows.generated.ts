@@ -23,6 +23,7 @@ export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {
   "claude-opus-4-6": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Opus 4.6", provider: "anthropic" },
   "claude-opus-4-7": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Opus 4.7", provider: "anthropic" },
   "claude-opus-4-8": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Opus 4.8", provider: "anthropic" },
+  "claude-opus-5": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Opus 5", provider: "anthropic" },
   "claude-sonnet-4-5-20250929": { contextWindow: 1000000, maxOutput: 64000, displayName: "Claude Sonnet 4.5", provider: "anthropic" },
   "claude-sonnet-4-6": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Sonnet 4.6", provider: "anthropic" },
   "claude-sonnet-5": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Sonnet 5", provider: "anthropic" },

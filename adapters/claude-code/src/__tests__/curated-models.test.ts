@@ -9,6 +9,17 @@ describe("claude-code curated models", () => {
   )
   const byId = (id: string) => entries.find((e) => e.id === id)
 
+  it("curates Kimi K3 through direct Moonshot and the local endpoint", () => {
+    expect(byId("kimi-k3")).toEqual({
+      id: "kimi-k3",
+      provider: "moonshot",
+    })
+    expect(byId("moonshot/kimi-k3@llm-endpoint")).toEqual({
+      id: "moonshot/kimi-k3@llm-endpoint",
+      provider: "llm-endpoint",
+    })
+  })
+
   it("curates the OpenAI gpt-5.6 series under the `@openrouter` route", () => {
     // The two gpt-5.6 base products the deliverable curates, in the same
     // `vendor/product@openrouter` + `provider: "openrouter"` shape as the other

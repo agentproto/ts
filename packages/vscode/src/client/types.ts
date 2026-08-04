@@ -950,11 +950,16 @@ export interface WorkspacesConfig {
 //    removed with salvageDirty; `hold` = kept (open PR or a live session). ──
 export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
 
+/** Set only on a `reclaim`-class entry/outcome promoted out of `hold` by the
+ *  dep-bump exemption — absent for an ordinary merged/fresh reclaim. */
+export type WorktreeGcReclaimReason = "dep-bump"
+
 export interface WorktreeGcPlanEntryView {
   path: string
   branch: string | null
   head: string
   class: WorktreeGcClass
+  reclaimReason?: WorktreeGcReclaimReason
   tree: string
   integration: { state: string; pr?: number }
   liveness: { state: string; sessionCount: number }
@@ -971,6 +976,7 @@ export interface WorktreeGcOutcomeView {
     | "aborted-reclassified"
     | "aborted-vanished"
     | "failed"
+  reclaimReason?: WorktreeGcReclaimReason
   salvageDir?: string
   from?: WorktreeGcClass
   to?: WorktreeGcClass

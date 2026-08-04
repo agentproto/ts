@@ -137,6 +137,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       { id: "claude-haiku-4-5", provider: "anthropic" },
       { id: "claude-fable-5", provider: "anthropic" },
       // Moonshot (Kimi) — route resolved from the catalog `@route`
+      { id: "kimi-k3", provider: "moonshot" },
       { id: "kimi-k2.7-code", provider: "moonshot" },
       // OpenRouter — route resolved from the catalog `@route` route-identity
       // suffix (a bare 2-segment id resolves to the direct vendor route, which
@@ -170,6 +171,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       // pack (packages/llm-endpoint/src/packs.ts) — vendor prefix is the proxy's
       // transparent-provider name so the boundary-stripped `vendor/product`
       // upstream id (e.g. `moonshot/kimi-k2.7-code`) transparently routes.
+      { id: "moonshot/kimi-k3@llm-endpoint", provider: "llm-endpoint" },
       { id: "moonshot/kimi-k2.7-code@llm-endpoint", provider: "llm-endpoint" },
       { id: "moonshot/kimi-k2.6@llm-endpoint", provider: "llm-endpoint" },
       { id: "zai/glm-5.2@llm-endpoint", provider: "llm-endpoint" },
