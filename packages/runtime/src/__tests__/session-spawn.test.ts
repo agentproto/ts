@@ -80,7 +80,12 @@ import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
-import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
+  type SessionsRegistry,
+} from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
@@ -124,6 +129,41 @@ function baseDeps(overrides: Partial<SpawnAgentSessionDeps> = {}): {
 }
 
 describe("spawnAgentSession", () => {
+  it("injects AGENTPROTO_SESSION_ID/AGENTPROTO_WORKSPACE_SLUG into startSession's env, matching the minted descriptor id — each spawn gets its OWN id, never a shared/prior one", async () => {
+    const startSession = vi.fn(async (_opts: { env?: Record<string, string> }) =>
+      fakeAgentSession(),
+    )
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "real-workspace",
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected spawn")
+
+    const firstEnv = startSession.mock.calls[0]?.[0]?.env
+    expect(firstEnv).toEqual({
+      [SESSION_ID_ENV]: first.descriptor.id,
+      [WORKSPACE_SLUG_ENV]: "real-workspace",
+    })
+
+    const second = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "real-workspace",
+    })
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected spawn")
+
+    const secondEnv = startSession.mock.calls[1]?.[0]?.env
+    // Own id, not the first spawn's — no accidental sharing/inheritance
+    // across two spawns from the same deps/resolver.
+    expect(secondEnv?.[SESSION_ID_ENV]).toBe(second.descriptor.id)
+    expect(secondEnv?.[SESSION_ID_ENV]).not.toBe(firstEnv?.[SESSION_ID_ENV])
+  })
+
   it("expands a user preset at the shared spawn boundary and records every axis", async () => {
     const { deps } = baseDeps()
     const result = await spawnAgentSession(deps, {

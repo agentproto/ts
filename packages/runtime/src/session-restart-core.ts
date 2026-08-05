@@ -44,11 +44,14 @@
  * announced via `session:config-changed` (#490).
  */
 
-import type {
-  SessionDescriptor,
-  SessionsRegistry,
-  SessionAuthEcho,
-  SessionAccessProfileEcho,
+import {
+  mintSessionId,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
+  type SessionDescriptor,
+  type SessionsRegistry,
+  type SessionAuthEcho,
+  type SessionAccessProfileEcho,
 } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
@@ -686,6 +689,13 @@ export async function restartAgentSession(
     resumeSessionId?: string,
   ): Promise<SessionDescriptor> => {
     let liveSessionId: string | undefined
+    // Minted BEFORE `startSession` — same reason as session-spawn.ts's
+    // `mintedSessionId`: a restart/resume gets a FRESH id (see
+    // `spawnAgent`'s `resumedFrom: prev.id` lineage below, not an in-place
+    // id reuse), and that fresh id has to be known before the adapter
+    // process ever exec's so it can be injected as AGENTPROTO_SESSION_ID —
+    // never the id being restarted FROM.
+    const restartedSessionId = mintSessionId()
     let launchConfig: RouteAwareLaunchConfig
     try {
       launchConfig = buildRouteAwareLaunchConfig({
@@ -715,6 +725,10 @@ export async function restartAgentSession(
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
+      env: {
+        [SESSION_ID_ENV]: restartedSessionId,
+        [WORKSPACE_SLUG_ENV]: prev.workspaceSlug,
+      },
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
@@ -741,6 +755,7 @@ export async function restartAgentSession(
         ? "resumed via ACP"
         : describeResumePath(augmented)
     const desc = registry.spawnAgent({
+      id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
       cwd,
       agentSession,

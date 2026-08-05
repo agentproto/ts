@@ -8,7 +8,7 @@
  * delegate to the workflow-runtime's step-walker.
  */
 
-import type { SessionsRegistry } from "./sessions.js"
+import { mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { AgentSandboxRef, AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
@@ -106,8 +106,18 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
 
     const resolved = await this.resolveAgentAdapter(adapter)
     if (!resolved) throw new Error(`adapter '${adapter}' not found`)
-    const agentSession = await resolved.startSession({ cwd })
+    // Minted BEFORE the spawn so it can be injected as AGENTPROTO_SESSION_ID
+    // into the child's own env, then reused (not re-minted) on `spawnAgent`.
+    const stepSessionId = mintSessionId()
+    const agentSession = await resolved.startSession({
+      cwd,
+      env: {
+        [SESSION_ID_ENV]: stepSessionId,
+        [WORKSPACE_SLUG_ENV]: workspaceSlug,
+      },
+    })
     const desc = this.registry.spawnAgent({
+      id: stepSessionId,
       workspaceSlug,
       cwd,
       agentSession,

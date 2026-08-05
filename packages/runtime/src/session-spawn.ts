@@ -8,7 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import { mintSessionId, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -1715,6 +1715,15 @@ export async function spawnAgentSession(
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        // Session identity (SESSION_ID_ENV's doc, sessions.ts) — minted
+        // above as `mintedSessionId` (not left to `spawnAgent`'s own
+        // default) specifically so it's known here, before the child ever
+        // exec's. `agent_start` has no caller-facing `env` passthrough to
+        // collide with, so this is the entire env for this spawn.
+        env: {
+          [SESSION_ID_ENV]: mintedSessionId,
+          [WORKSPACE_SLUG_ENV]: resolvedSlug,
+        },
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },

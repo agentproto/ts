@@ -69,6 +69,8 @@ import {
 } from "./http-server.js"
 import {
   createSessionsRegistry,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
   type SessionsRegistry,
   type SessionDescriptor,
   type PtyFactory,
@@ -1135,6 +1137,14 @@ export async function createGateway(
                   ? { options: { base_url: resolvedBaseUrl } }
                   : {}),
                 ...(onActivity ? { onActivity } : {}),
+                // Lazy in-place resume (daemon restart / crash): unlike
+                // `session_restart` this revives the SAME descriptor row, not
+                // a fresh one — `descriptor.id` never changes across this
+                // call, so the identity env carries forward unchanged.
+                env: {
+                  [SESSION_ID_ENV]: descriptor.id,
+                  [WORKSPACE_SLUG_ENV]: descriptor.workspaceSlug,
+                },
               })
             } catch (err) {
               console.warn(

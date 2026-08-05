@@ -100,7 +100,7 @@ import {
   readFileSync,
   promises as fsp,
 } from "node:fs"
-import { isResumable, type SessionsRegistry } from "./sessions.js"
+import { isResumable, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { CostBudget } from "@agentproto/auth"
@@ -967,11 +967,20 @@ export function createCompletionPolicySupervisor(opts: {
       // Spawn the judge agent.
       let judgeId: string
       try {
+        // Minted BEFORE the spawn so it can be injected as
+        // AGENTPROTO_SESSION_ID into the judge's own env, then reused (not
+        // re-minted) on `spawnAgent`.
+        const judgeSessionId = mintSessionId()
         const agentSession = await resolved.startSession({
           cwd,
           ...(spec.model ? { model: spec.model } : {}),
+          env: {
+            [SESSION_ID_ENV]: judgeSessionId,
+            [WORKSPACE_SLUG_ENV]: "default",
+          },
         })
         const desc = registry.spawnAgent({
+          id: judgeSessionId,
           workspaceSlug: "default",
           cwd,
           agentSession,

@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
-import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "../sessions.js"
 
 // ── helpers ────────────────────────────────────────────────────────
 
@@ -356,6 +356,10 @@ describe("CronScheduler", () => {
         mode: "bypass-permissions",
         permissionHold: true,
         options: { skills: "fast", verbose: true },
+        env: {
+          [SESSION_ID_ENV]: expect.any(String),
+          [WORKSPACE_SLUG_ENV]: "default",
+        },
       })
       expect(spawnAgent).toHaveBeenCalledOnce()
       expect(spawnAgent).toHaveBeenCalledWith(
@@ -795,7 +799,13 @@ describe("CronScheduler", () => {
 
       expect(startSession).toHaveBeenCalledOnce()
       const startSessionArg = startSession.mock.calls[0]![0]
-      expect(startSessionArg).toEqual({ cwd: workspace })
+      expect(startSessionArg).toEqual({
+        cwd: workspace,
+        env: {
+          [SESSION_ID_ENV]: expect.any(String),
+          [WORKSPACE_SLUG_ENV]: "default",
+        },
+      })
       expect(startSessionArg).not.toHaveProperty("mode")
       expect(startSessionArg).not.toHaveProperty("permissionHold")
       expect(startSessionArg).not.toHaveProperty("options")
