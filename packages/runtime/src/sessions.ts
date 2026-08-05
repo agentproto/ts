@@ -457,6 +457,33 @@ export function mintSessionId(): string {
   return `sess_${randomUUID().slice(0, 8)}`
 }
 
+/**
+ * Env vars the registry injects into every process it spawns on a session's
+ * behalf (agent-cli adapters, PTY/terminal, and generic `spawn()` — see
+ * `spawn()`/`spawnPty()` below; `spawnAgent()` doesn't own the child process,
+ * so `session-spawn.ts` injects these itself before calling the adapter
+ * resolver's `startSession()`). Two vars, deliberately: `SESSION_ID_ENV` is
+ * the opaque identity a hook/script needs to report back or nest a child
+ * session under (`parentSessionId`); `WORKSPACE_SLUG_ENV` costs nothing to
+ * add (always resolved before spawn) and turns "which session" into "which
+ * session in which workspace" without a round-trip. `label`/`name` are
+ * deliberately NOT carried — they're optional, mutable (renameable) and
+ * absent on most sessions, so a hook could not depend on them; a caller that
+ * needs one can look it up via `SESSION_ID_ENV` + `session_list`.
+ *
+ * THE RULE (identity forgery + inheritance, see spawn()/spawnPty()): these
+ * are assigned into the child's env LAST — after both `process.env` and any
+ * caller-supplied `input.env` have been merged — so a caller can never
+ * override or forge them, and a freshly minted id always wins over whatever
+ * (if anything) happened to be ambient. The daemon process itself is never a
+ * session, so `process.env` never carries a stale value to begin with; the
+ * assign-last rule is what makes that true by construction rather than by
+ * accident, and is what guarantees a child spawned from inside a session
+ * gets its OWN id rather than inheriting its parent's.
+ */
+export const SESSION_ID_ENV = "AGENTPROTO_SESSION_ID"
+export const WORKSPACE_SLUG_ENV = "AGENTPROTO_WORKSPACE_SLUG"
+
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =
   | "starting"
@@ -2379,6 +2406,13 @@ export interface SpawnPtyInput {
 }
 
 export interface RecordCommandInput {
+  /** Pre-minted id (`mintSessionId()`), when the caller minted one BEFORE
+   *  running the command so it could inject {@link SESSION_ID_ENV} into the
+   *  child's own env — see `command-tools.ts`'s `command_execute` and
+   *  `cron-scheduler.ts`'s command-action executor. Omitted ⇒ minted here,
+   *  same as before this field existed (a command run some other way, with
+   *  no env to inject into, e.g. tests). */
+  id?: string
   workspaceSlug: string
   /** Working directory the command actually ran in (post cwd-anchoring).
    *  Matched against a fresh session's cwd by `findPriorCommandSessionId`. */
@@ -4330,6 +4364,12 @@ export function createSessionsRegistry(opts?: {
       const env = { ...process.env, ...(input.env ?? {}) }
       // Filter out Node bookkeeping that confuses subprocesses.
       delete env.NODE_OPTIONS
+      // Session identity — assigned AFTER the caller-env merge above, per
+      // the rule at SESSION_ID_ENV's doc: `POST /sessions` forwards a
+      // caller-supplied `env`, so this must be last or a caller could spoof
+      // its own id (or hand a child its parent's).
+      env[SESSION_ID_ENV] = id
+      env[WORKSPACE_SLUG_ENV] = input.workspaceSlug
       const [bin, ...args] = input.argv
       if (!bin) throw new Error("sessions.spawn: argv must include a binary")
       // Close stdin by default — most agent CLIs spawn-and-prompt
@@ -4617,6 +4657,11 @@ export function createSessionsRegistry(opts?: {
       // also forces TERM=xterm-256color so alt-screen apps render.
       const env = { ...(process.env as Record<string, string>), ...(input.env ?? {}) }
       delete env.NODE_OPTIONS
+      // Session identity — same assign-last rule as spawn() above
+      // (SESSION_ID_ENV's doc): `POST /sessions/terminal` also forwards a
+      // caller-supplied `env`.
+      env[SESSION_ID_ENV] = id
+      env[WORKSPACE_SLUG_ENV] = input.workspaceSlug
       const pty: PtyProcess = ptyFactory({
         command: bin,
         args,
@@ -4698,7 +4743,7 @@ export function createSessionsRegistry(opts?: {
       return desc
     },
     recordCommand(input) {
-      const id = `sess_${randomUUID().slice(0, 8)}`
+      const id = input.id ?? `sess_${randomUUID().slice(0, 8)}`
       const now = new Date()
       // Backdate startedAt by durationMs — the command already ran to
       // completion by the time this is called, so this is the best

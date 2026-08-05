@@ -282,6 +282,15 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  command-sandbox`'s `loadAdapterSpawnSandboxConfig`), or stays
      *  unconfined if that's unset too. */
     commandSandbox?: SandboxMode
+    /** Extra env for the spawned adapter process — forwarded verbatim to the
+     *  driver's `runtime.start({ env })`, which the AIP-45 driver already
+     *  applies LAST (after manifest/mode/option env and billing-auth), so
+     *  these keys always win. `spawnAgentSession` (session-spawn.ts) uses
+     *  this to inject the daemon's own session-identity vars
+     *  (`SESSION_ID_ENV`/`WORKSPACE_SLUG_ENV`, see sessions.ts) — there is
+     *  no caller-facing `env` passthrough on `agent_start` today, so this is
+     *  daemon-authored only, not a general escape hatch. */
+    env?: Record<string, string>
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string

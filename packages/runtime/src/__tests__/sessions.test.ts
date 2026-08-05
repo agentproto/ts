@@ -4,7 +4,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   createSessionsRegistry,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
   type AgentSessionLike,
+  type PtyFactory,
   type PtyProcess,
 } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
@@ -1750,6 +1753,119 @@ describe("createSessionsRegistry", () => {
       expect(lines).toHaveLength(2)
       const first = JSON.parse(lines[0]!)
       expect(Buffer.from(first.bytes, "base64").toString("utf8")).toBe("hello pty\n")
+      reg.shutdown()
+    })
+  })
+
+  describe("session-identity env injection (AGENTPROTO_SESSION_ID / AGENTPROTO_WORKSPACE_SLUG)", () => {
+    it("spawn(): child gets its OWN minted id, surviving both an ambient-env leak and a forged caller env", async () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const outFile = join(tmp, "env-probe.txt")
+      // Simulate the one scenario that would make identity accidentally
+      // inheritable: the daemon's OWN process env already carries a session
+      // id (e.g. a misconfigured nested daemon). `spawn()` must still win
+      // with its own freshly minted id, not this ambient leftover.
+      const priorAmbient = process.env[SESSION_ID_ENV]
+      process.env[SESSION_ID_ENV] = "sess_ambient_leak"
+      try {
+        const script =
+          `require("fs").writeFileSync(process.argv[1], ` +
+          `[process.env.${SESSION_ID_ENV}, process.env.${WORKSPACE_SLUG_ENV}].join("|"))`
+        const desc = reg.spawn({
+          kind: "command",
+          workspaceSlug: "real-workspace",
+          cwd: process.cwd(),
+          argv: [process.execPath, "-e", script, outFile],
+          // A caller-supplied env (e.g. POST /sessions' `env` body field)
+          // trying to forge both vars — must lose to the registry's own
+          // assign-last injection.
+          env: {
+            [SESSION_ID_ENV]: "sess_forged_by_caller",
+            [WORKSPACE_SLUG_ENV]: "forged-workspace",
+          },
+        })
+        const output = await pollUntil(async () =>
+          existsSync(outFile) ? readFileSync(outFile, "utf8") : null,
+        )
+        const [gotId, gotSlug] = output.split("|")
+        expect(gotId).toBe(desc.id)
+        expect(gotId).not.toBe("sess_ambient_leak")
+        expect(gotId).not.toBe("sess_forged_by_caller")
+        expect(gotSlug).toBe("real-workspace")
+      } finally {
+        if (priorAmbient === undefined) delete process.env[SESSION_ID_ENV]
+        else process.env[SESSION_ID_ENV] = priorAmbient
+        reg.shutdown()
+      }
+    })
+
+    it("spawnPty(): injects the session's own id + slug into the PTY factory's env, overriding a forged caller env", () => {
+      let capturedEnv: Record<string, string> | undefined
+      const capturingPtyFactory: PtyFactory = opts => {
+        capturedEnv = opts.env
+        return {
+          pid: process.pid,
+          write() {},
+          resize() {},
+          kill() {},
+          onData() {},
+          onExit() {},
+        }
+      }
+      const reg = createSessionsRegistry({
+        persistPath,
+        persist: false,
+        spawnPty: capturingPtyFactory,
+      })
+      const desc = reg.spawnPty({
+        workspaceSlug: "real-workspace",
+        cwd: tmp,
+        argv: ["bash"],
+        cols: 80,
+        rows: 24,
+        env: {
+          [SESSION_ID_ENV]: "sess_forged_by_caller",
+          [WORKSPACE_SLUG_ENV]: "forged-workspace",
+        },
+      })
+      expect(capturedEnv?.[SESSION_ID_ENV]).toBe(desc.id)
+      expect(capturedEnv?.[WORKSPACE_SLUG_ENV]).toBe("real-workspace")
+      reg.shutdown()
+    })
+
+    it("two agent-cli sessions spawned back to back each get a distinct minted id via recordCommand's `id` passthrough", () => {
+      // Exercises the same "own id, not a shared/parent one" contract
+      // recordCommand-backed spawners (command_execute, cron) rely on:
+      // passing `id` pins the descriptor to a pre-minted value instead of
+      // recordCommand minting a second, different one.
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const first = reg.recordCommand({
+        id: "sess_preminted_one",
+        workspaceSlug: "default",
+        cwd: tmp,
+        command: "true",
+        args: [],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+      const second = reg.recordCommand({
+        id: "sess_preminted_two",
+        workspaceSlug: "default",
+        cwd: tmp,
+        command: "true",
+        args: [],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+      expect(first.id).toBe("sess_preminted_one")
+      expect(second.id).toBe("sess_preminted_two")
+      expect(first.id).not.toBe(second.id)
       reg.shutdown()
     })
   })

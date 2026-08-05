@@ -85,7 +85,7 @@ import {
 } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { SessionsRegistry } from "./sessions.js"
+import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
 import {
@@ -455,19 +455,30 @@ export function registerCommandTools(
             `({"mode":"workspace"}) or ${COMMAND_SANDBOX_MODE_ENV}=workspace.`,
         )
       }
+      // Minted BEFORE the spawn (not left to `recordCommand`'s own default)
+      // so it can be injected as AGENTPROTO_SESSION_ID into the command's
+      // own env — the same id `recordCommand` below then stamps onto the
+      // session it records, rather than a second, different one.
+      const commandSessionId = mintSessionId()
+      const commandWorkspaceSlug = opts.workspaceSlug ?? "default"
       const result = await runCommand({
         command: execCommand,
         args: execArgs,
         cwd: resolvedCwd,
         stdin,
         timeoutMs: limit,
+        env: {
+          [SESSION_ID_ENV]: commandSessionId,
+          [WORKSPACE_SLUG_ENV]: commandWorkspaceSlug,
+        },
       })
       // Mint a kind:"command" session for this completed run — synchronous,
       // so the id is available immediately. The JSONL body write is
       // fire-and-forget internally (recordCommand never delays or fails
       // the caller's actual result).
       const desc = opts.registry.recordCommand({
-        workspaceSlug: opts.workspaceSlug ?? "default",
+        id: commandSessionId,
+        workspaceSlug: commandWorkspaceSlug,
         cwd: resolvedCwd,
         command,
         args: args ?? [],
@@ -642,6 +653,11 @@ export interface RunCommandInput {
   cwd: string
   stdin?: string
   timeoutMs: number
+  /** Extra env for the spawned command — today only the daemon's own
+   *  session-identity vars (see {@link SESSION_ID_ENV}), merged on top of
+   *  `process.env`/`withSanePath`. Not caller-exposed by `command_execute`'s
+   *  tool schema, so there's no forgery surface here yet — merged plainly. */
+  env?: Record<string, string>
 }
 
 const STREAM_BUFFER_CAP = 1_048_576 // 1 MiB per stream
@@ -722,7 +738,7 @@ export async function runCommand(input: RunCommandInput): Promise<ExecuteResult>
       // inherited PATH can't ENOENT common tools like `git`. See
       // `DEFAULT_PATH_DIRS`'s doc for why the inherited PATH alone isn't
       // always enough.
-      env: withSanePath(process.env),
+      env: withSanePath({ ...process.env, ...(input.env ?? {}) }),
       stdio: ["pipe", "pipe", "pipe"],
       // Lead a new process group on POSIX so a timeout can reap the whole
       // subtree, not just the direct child — see `killProcessGroup`. Piped

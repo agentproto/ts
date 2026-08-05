@@ -27,7 +27,7 @@ import { resolve, dirname } from "node:path"
 import { homedir } from "node:os"
 import { mkdirSync, writeFileSync, readFileSync, promises as fsp } from "node:fs"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
-import type { SessionsRegistry } from "./sessions.js"
+import { mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   routeInboundMessage,
@@ -272,15 +272,24 @@ export function createInboundWatcher(opts: {
     const mcpServers = state.input.mcpServersForChild
 
     try {
+      // Minted BEFORE the spawn so it can be injected as
+      // AGENTPROTO_SESSION_ID into the child's own env before the adapter
+      // process ever exec's, then reused (not re-minted) on `spawnAgent`.
+      const contactSessionId = mintSessionId()
       const agentSession = await resolved.startSession({
         cwd: state.input.cwd,
         ...(mcpServers ? { mcpServers } : {}),
+        env: {
+          [SESSION_ID_ENV]: contactSessionId,
+          [WORKSPACE_SLUG_ENV]: "default",
+        },
       })
 
       const labelParts = ["inbound", state.watcherId, contactRef]
       if (state.input.label) labelParts.push(state.input.label)
 
       registry.spawnAgent({
+        id: contactSessionId,
         workspaceSlug: "default",
         cwd: state.input.cwd,
         agentSession,

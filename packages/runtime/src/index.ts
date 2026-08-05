@@ -69,6 +69,8 @@ import {
 } from "./http-server.js"
 import {
   createSessionsRegistry,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
   type SessionsRegistry,
   type SessionDescriptor,
   type PtyFactory,
@@ -289,6 +291,9 @@ export type {
 // Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
 // PR-4's eager pass) — not a type-only export like the block above.
 export { ResumeDisabledError } from "./sessions.js"
+// Session identity env var names injected into every spawned process
+// (assigned last, after caller-supplied env, so they cannot be forged).
+export { SESSION_ID_ENV, WORKSPACE_SLUG_ENV } from "./sessions.js"
 export type {
   EagerResumeOutcome,
   EagerResumeSkipReason,
@@ -1135,6 +1140,14 @@ export async function createGateway(
                   ? { options: { base_url: resolvedBaseUrl } }
                   : {}),
                 ...(onActivity ? { onActivity } : {}),
+                // Lazy in-place resume (daemon restart / crash): unlike
+                // `session_restart` this revives the SAME descriptor row, not
+                // a fresh one — `descriptor.id` never changes across this
+                // call, so the identity env carries forward unchanged.
+                env: {
+                  [SESSION_ID_ENV]: descriptor.id,
+                  [WORKSPACE_SLUG_ENV]: descriptor.workspaceSlug,
+                },
               })
             } catch (err) {
               console.warn(

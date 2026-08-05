@@ -168,6 +168,35 @@ to whom) is MCP/HTTP-only: the `agent_start` MCP tool's `role` /
 `promptAppend` fields, or the same fields on the `POST /sessions/agent`
 body. See [`concepts/roles.md`](../concepts/roles.md).
 
+#### Session identity env
+
+Every process the daemon spawns on a session's behalf — an agent-CLI adapter
+(this verb), a `terminal -- <argv...>` PTY, or a `command_execute` /
+cron `kind:"command"` shell command — gets two env vars set into its own
+process environment:
+
+| Var | Value |
+|---|---|
+| `AGENTPROTO_SESSION_ID` | The spawned session's own id (`sess_…`) — the same id `session_list`/`agent_sessions_list` show for it. |
+| `AGENTPROTO_WORKSPACE_SLUG` | The workspace slug the session resolved to (`"default"` when none). |
+
+A hook, script, or tool a session shells out to can read these to report
+back, tag telemetry, or spawn a further child with `parentSessionId` set to
+its own id — closing the loop for e.g. a `git push` hook that spawns a
+reviewer session and wants it nested under the session that triggered it.
+
+Both are set **last**, after any other env the spawn composes (manifest
+defaults, billing-auth, a caller-supplied `env` on `POST /sessions` or
+`POST /sessions/terminal`) — a caller can never override or forge them, and
+a session never inherits a value from the daemon's own process env. Every
+spawn — including a resumed/restarted one — gets its own freshly minted id;
+`session_restart` mints a new id (see `resumedFrom` on the descriptor for
+lineage back to the prior one), while the daemon's own crash/restart-time
+lazy resume revives the same descriptor row and so keeps the same id.
+`label`/`name` are deliberately not carried into env — they're optional,
+mutable, and absent on most sessions; look one up via
+`AGENTPROTO_SESSION_ID` + `session_list` instead.
+
 #### Orchestrator & `mcpServers`
 
 `--orchestrator` and `--mcp-servers-json` reach the same spawn capability as
