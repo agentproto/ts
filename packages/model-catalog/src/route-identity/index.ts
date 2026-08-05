@@ -615,6 +615,57 @@ export function resolveLlmModelRoute(
   )
 }
 
+/** The bare `vendor/product` keys a router's generated route table carries.
+ *  Unknown routers (or non-router providers) yield an empty list — the
+ *  three branches are otherwise identical, so a new router only needs a
+ *  case here plus a branch in `resolveLlmModelRoute`. */
+function routerRouteKeys(router: string): string[] {
+  switch (router) {
+    case "openrouter":
+      return Object.keys(OPENROUTER_ROUTES)
+    case "requesty":
+      return Object.keys(REQUESTY_ROUTES)
+    case "huggingface":
+      return Object.keys(HUGGINGFACE_ROUTES)
+    default:
+      return []
+  }
+}
+
+/**
+ * Every LLM route a router serves, resolved through the same
+ * `resolveLlmModelRoute` path used at spawn/billing time — enumeration and
+ * resolution can never disagree. Ids carry the explicit `@route` suffix
+ * (`vendor/product@router`), exactly what a caller passes to `agent_start`.
+ * A HuggingFace key with zero live providers resolves to `undefined` and is
+ * skipped, same as at resolution time. `[]` for a provider that isn't a
+ * known router.
+ *
+ * Some generated table keys don't round-trip through the canonical
+ * `vendor/product[@route]` grammar — Requesty's own key format packs a
+ * region into the product with a second `@` (`azure/gpt-4.1@eastus2`) or
+ * nests an upstream provider ahead of vendor/product
+ * (`deepinfra/meta-llama/Llama-3.3-70B-Instruct`), and both collide with
+ * `parseModelRef`'s single-`@`, single-`/`-per-segment rules. Those keys are
+ * unreachable from a plain model id today regardless of enumeration — a
+ * caller can't spawn what it can't spell — so `parseModelRef` throwing here
+ * is skipped rather than propagated, the same way `tryParseModelRef` treats
+ * any other unparseable ref.
+ */
+export function listRouterLlmRoutes(router: string): ResolvedLlmModelRoute[] {
+  const routes: ResolvedLlmModelRoute[] = []
+  for (const key of routerRouteKeys(router)) {
+    let resolved: ResolvedLlmModelRoute | undefined
+    try {
+      resolved = resolveLlmModelRoute(`${key}@${router}`)
+    } catch {
+      continue
+    }
+    if (resolved) routes.push(resolved)
+  }
+  return routes
+}
+
 /** Narrows a HuggingFace provider entry to one that carries both prices. */
 function isPricedHuggingFaceProvider(
   p: HuggingFaceRouteProvider

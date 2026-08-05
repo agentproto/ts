@@ -140,10 +140,38 @@ export type SandboxSpecInput = SandboxSpec & { reuse?: string }
  * a FAILED claim is dropped immediately so a genuine post-error retry tries
  * fresh instead of replaying the same failure forever. Scoped per registry
  * instance (WeakMap) so independent daemons/tests never share a cache.
+ *
+ * Sizing `SPAWN_CLAIM_WINDOW_MS`: it must outlive the retry it exists to
+ * absorb, not just "feel generous". The retry is provoked by the CALLER's
+ * own idle/request timeout giving up on a slow-but-succeeding spawn and
+ * trying again — measured in the incident this guards against at 300s (the
+ * `agent-cli` driver's own default per-completion timeout,
+ * `packages/driver/agent-cli/src/model.ts`'s `timeoutMs ?? 5 * 60 * 1000`,
+ * is the same order of magnitude and the best first-party corroboration of
+ * that figure). A resolved claim that's GC'd before that timeout even
+ * fires is a guard that's already gone by the time the retry it was built
+ * for shows up — exactly the gap the incident exposed at the old 30s
+ * value. 10 minutes (2x the 300s timeout) covers the retry arriving the
+ * instant the client's timer fires, plus slack for the retry's own network
+ * transit and clock skew between caller and daemon, without being so long
+ * that a stale claim starts looking like a memory leak.
+ *
+ * That alone would make the map's worst case "unboundedly many resolved
+ * claims sitting for up to 10 minutes" under high spawn-rate idempotent
+ * traffic — the same class of problem the original 30s GC existed to cap,
+ * just with a longer fuse. `MAX_RESOLVED_CLAIMS` bounds it independently of
+ * time: once resolved entries exceed the cap, the OLDEST-resolved are
+ * evicted first (a size/LRU backstop), so a burst of distinct idempotency
+ * keys can't grow the map without limit even inside the window.
  */
-const SPAWN_CLAIM_WINDOW_MS = 30_000
+const SPAWN_CLAIM_WINDOW_MS = 600_000
 
-interface SpawnClaim {
+/** Backstop on map growth, independent of `SPAWN_CLAIM_WINDOW_MS` — see the
+ *  docblock above. Only resolved claims count against this; an in-flight
+ *  claim is bounded by real concurrent spawn load, not by this cap. */
+const MAX_RESOLVED_CLAIMS = 1_000
+
+export interface SpawnClaim {
   result: Promise<SpawnAgentSessionResult>
   /** Wall-clock time the claim settled successfully — undefined while
    *  still in-flight. Only set for `ok: true` results; see the docblock
@@ -160,6 +188,31 @@ function claimsFor(registry: SessionsRegistry): Map<string, SpawnClaim> {
     spawnClaimsByRegistry.set(registry, claims)
   }
   return claims
+}
+
+/** Two independent eviction passes — see the sizing docblock above the two
+ *  constants. Time first (a claim past `SPAWN_CLAIM_WINDOW_MS` is simply
+ *  stale, regardless of map size), then a size/LRU pass over whatever
+ *  resolved claims survive it. In-flight claims (`resolvedAt` undefined)
+ *  are never touched by either pass — evicting one would let a retry that's
+ *  still genuinely in-flight fork a second process, the exact bug this
+ *  module exists to prevent. */
+// Exported (only) so the eviction policy can be unit-tested directly against
+// a synthetic map, instead of via a 1000+ real spawnAgentSession() calls.
+export function gcSpawnClaims(claims: Map<string, SpawnClaim>, now: number): void {
+  const resolved: [string, SpawnClaim][] = []
+  for (const [k, claim] of claims) {
+    if (claim.resolvedAt === undefined) continue
+    if (now - claim.resolvedAt > SPAWN_CLAIM_WINDOW_MS) {
+      claims.delete(k)
+    } else {
+      resolved.push([k, claim])
+    }
+  }
+  const excess = resolved.length - MAX_RESOLVED_CLAIMS
+  if (excess <= 0) return
+  resolved.sort((a, b) => a[1].resolvedAt! - b[1].resolvedAt!)
+  for (const [k] of resolved.slice(0, excess)) claims.delete(k)
 }
 
 function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key" {
@@ -208,6 +261,191 @@ function spawnEligibilityManifest(
       methodsByRoute: { [routeId]: direct ? directAuthMethods(descriptor) : ["api-key"] },
     },
     routeId,
+  }
+}
+
+/** A resolved access-profile pin — the mechanical `spec` a driver applies
+ *  plus the observable `echo` recorded on a session descriptor. */
+export interface AccessProfileAuthResult {
+  ok: true
+  authSpec?: ResolvedAuthSpec
+  authEcho?: AuthEcho
+  accessProfileEcho: { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
+}
+
+export interface AccessProfileAuthError {
+  ok: false
+  code:
+    | "access_profile_not_found"
+    | "access_profile_ineligible"
+    | "unsupported_auth_mode"
+    | "unsupported_auth_source"
+    | "auth_source_unresolved"
+  message: string
+  details?: Record<string, unknown>
+}
+
+/**
+ * Resolve a named `access.profileRef` into a `ResolvedAuthSpec` — profile
+ * lookup, route/model eligibility check, credential fetch (source-backed
+ * subscription resolved FRESH via Mode 3, or a static keychain read), then
+ * `resolveAuthSpec`. Extracted from `spawnAgentSession`'s inline branch so a
+ * SECOND spawn path — the completion-policy supervisor's judge gate
+ * (`supervisor.ts`'s `runJudge`, WP-D) — can pin an explicit billing profile
+ * for a judge agent without duplicating this ~130-line resolution chain.
+ * Deliberately narrow: a single named profile, no eligibility-ranked list, no
+ * automatic fail-over across profiles — that's a wallet LADDER, a bigger
+ * feature this function does not attempt (see `runJudge`'s doc).
+ *
+ * Messages are UNPREFIXED (no `"agent_start: "` etc.) so each caller can
+ * frame the error in its own vocabulary; `spawnAgentSession` re-adds its
+ * historical prefix at the call site, preserving its exact error strings.
+ */
+export async function resolveAccessProfileAuth(input: {
+  adapter: string
+  profileRef: string
+  authDescriptor: AdapterAuthDescriptor | undefined
+  route?: RouteSpec
+  /** Model used for eligibility (route/provider derivation) — falls back to
+   *  `defaultModel` when omitted. */
+  model?: string
+  /** Adapter's own default model (`resolved.defaultModel`) — used ONLY for
+   *  the eligibility check above, deliberately NOT as a fallback for the
+   *  `resolveAuthSpec({model})` call below (that call passes raw `model` as
+   *  a caller-explicit signal; a resolver-supplied default there would
+   *  misrepresent the request as having named a model it didn't). */
+  defaultModel?: string
+}): Promise<AccessProfileAuthResult | AccessProfileAuthError> {
+  const { adapter, profileRef, authDescriptor, route, model, defaultModel } = input
+  const profile = await getAuthProfile(profileRef)
+  if (!profile) {
+    return {
+      ok: false,
+      code: "access_profile_not_found",
+      message: `no auth profile "${profileRef}" found.`,
+    }
+  }
+  if (!authDescriptor) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message: `adapter "${adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
+    }
+  }
+  const projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
+  if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
+    const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message:
+        `profile "${profile.id}" (${profile.endpoint}/${profile.method}) is not eligible ` +
+        `for adapter "${adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
+    }
+  }
+  const authMode = profileMethodToAuthMode(profile.method)
+  // Subscription-credential resolution: a source-backed profile
+  // (`profile.source`) resolves the credential FRESH via Mode 3 on every
+  // spawn instead of a one-shot static keychain read — reusing
+  // `resolveSubscriptionCredential` rather than duplicating it. A
+  // credential-backed profile keeps a static read.
+  let subscriptionCredential: string | undefined
+  let subscriptionCredentialSource: CredentialSource | undefined
+  let apiKeyCredential: string | undefined
+  let externalSubscriptionVerified = false
+  // File-based (external) subscription — codex/gemini: the CLI reads its OWN
+  // login file, so a source-backed profile injects NOTHING. Verify the login
+  // is present (fail-loud) and let `resolveAuthSpec` produce a scrub-only
+  // external spec; never resolve/inject a bearer.
+  const externalSub = authDescriptor.authSubscription?.external === true
+  if (authMode === "subscription" && externalSub) {
+    try {
+      await verifyLocalLoginPresent(profile.source ?? adapter, adapter)
+      externalSubscriptionVerified = true
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) {
+        return {
+          ok: false,
+          code: err.code,
+          message: err.message,
+          details: { adapter, profile: profile.id },
+        }
+      }
+      throw err
+    }
+  } else if (authMode === "subscription" && profile.source !== undefined) {
+    try {
+      const subResolution = await resolveSubscriptionCredential(
+        { source: profile.source },
+        resolveClaudeCodeOauthToken,
+      )
+      subscriptionCredential = subResolution.credential
+      subscriptionCredentialSource = subResolution.source
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) {
+        return {
+          ok: false,
+          code: err.code,
+          message: err.message,
+          details: { adapter, profile: profile.id },
+        }
+      }
+      throw err
+    }
+  } else if (profile.credentialRef === undefined) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message: `profile "${profile.id}" has neither a credential nor a source configured.`,
+      details: { adapter },
+    }
+  } else {
+    const stored = await new KeychainStore().read({ path: profile.credentialRef })
+    if (authMode === "subscription") subscriptionCredential = stored?.value
+    else apiKeyCredential = stored?.value
+  }
+  let authSpec: ResolvedAuthSpec | undefined
+  let authEcho: AuthEcho | undefined
+  try {
+    const result = resolveAuthSpec({
+      descriptor: authDescriptor,
+      ...(model ? { model } : {}),
+      ...(route?.gateway ? { routeGateway: route.gateway } : {}),
+      ...(!route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
+      requestedMode: authMode,
+      // A profile reference is an explicit billing choice. Never consult the
+      // ambient environment or a different provider-store key as fallback.
+      explicit: true,
+      ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
+      ...(subscriptionCredentialSource !== undefined ? { subscriptionCredentialSource } : {}),
+      ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
+      ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
+    })
+    if (result) {
+      authSpec = result.spec
+      authEcho = result.echo
+    }
+  } catch (err) {
+    if (err instanceof AuthResolutionError) {
+      return {
+        ok: false,
+        code: "unsupported_auth_mode",
+        message: err.message,
+        details: { adapter, provider: profile.endpoint },
+      }
+    }
+    throw err
+  }
+  return {
+    ok: true,
+    authSpec,
+    authEcho,
+    accessProfileEcho: {
+      profileRef: profile.id,
+      ...(profile.label !== undefined ? { label: profile.label } : {}),
+      endpoint: profile.endpoint,
+      method: profile.method,
+    },
   }
 }
 
@@ -1218,137 +1456,25 @@ export async function spawnAgentSession(
     | { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
     | undefined
   if (resolved && input.access?.profileRef) {
-    const profileRef = input.access.profileRef
-    const profile = await getAuthProfile(profileRef)
-    if (!profile) {
+    const result = await resolveAccessProfileAuth({
+      adapter: input.adapter,
+      profileRef: input.access.profileRef,
+      authDescriptor: resolved.authDescriptor,
+      route: input.route,
+      model: input.model,
+      defaultModel: resolved.defaultModel,
+    })
+    if (!result.ok) {
       return {
         ok: false,
-        code: "access_profile_not_found",
-        message: `agent_start: no auth profile "${profileRef}" found.`,
+        code: result.code,
+        message: `agent_start: ${result.message}`,
+        ...(result.details ? { details: result.details } : {}),
       }
     }
-    if (!resolved.authDescriptor) {
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message: `agent_start: adapter "${input.adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
-      }
-    }
-    const projected = spawnEligibilityManifest(
-      input.adapter,
-      resolved.authDescriptor,
-      input.route,
-      input.model ?? resolved.defaultModel,
-    )
-    if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
-      const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message:
-          `agent_start: profile "${profile.id}" (${profile.endpoint}/${profile.method}) is not eligible ` +
-          `for adapter "${input.adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
-      }
-    }
-    const authMode = profileMethodToAuthMode(profile.method)
-    // Subscription-credential resolution (SPEC §2, same as the non-profile
-    // branch below): a source-backed profile (`profile.source`) resolves the
-    // credential FRESH via Mode 3 on every spawn instead of a one-shot static
-    // keychain read — reusing `resolveSubscriptionCredential` rather than
-    // duplicating it. A credential-backed profile keeps today's static read.
-    let subscriptionCredential: string | undefined
-    let subscriptionCredentialSource: CredentialSource | undefined
-    let apiKeyCredential: string | undefined
-    let externalSubscriptionVerified = false
-    // File-based (external) subscription — codex/gemini: the CLI reads its OWN
-    // login file, so a source-backed profile injects NOTHING. Verify the login
-    // is present (fail-loud) and let `resolveAuthSpec` produce a scrub-only
-    // external spec; never resolve/inject a bearer.
-    const externalSub = resolved.authDescriptor.authSubscription?.external === true
-    if (authMode === "subscription" && externalSub) {
-      try {
-        await verifyLocalLoginPresent(profile.source ?? input.adapter, input.adapter)
-        externalSubscriptionVerified = true
-      } catch (err) {
-        if (err instanceof SubscriptionSourceError) {
-          return {
-            ok: false,
-            code: err.code,
-            message: `agent_start: ${err.message}`,
-            details: { adapter: input.adapter, profile: profile.id },
-          }
-        }
-        throw err
-      }
-    } else if (authMode === "subscription" && profile.source !== undefined) {
-      try {
-        const subResolution = await resolveSubscriptionCredential(
-          { source: profile.source },
-          resolveClaudeCodeOauthToken,
-        )
-        subscriptionCredential = subResolution.credential
-        subscriptionCredentialSource = subResolution.source
-      } catch (err) {
-        if (err instanceof SubscriptionSourceError) {
-          return {
-            ok: false,
-            code: err.code,
-            message: `agent_start: ${err.message}`,
-            details: { adapter: input.adapter, profile: profile.id },
-          }
-        }
-        throw err
-      }
-    } else if (profile.credentialRef === undefined) {
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message: `agent_start: profile "${profile.id}" has neither a credential nor a source configured.`,
-        details: { adapter: input.adapter },
-      }
-    } else {
-      const stored = await new KeychainStore().read({ path: profile.credentialRef })
-      if (authMode === "subscription") subscriptionCredential = stored?.value
-      else apiKeyCredential = stored?.value
-    }
-    try {
-      const result = resolveAuthSpec({
-        descriptor: resolved.authDescriptor,
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.route?.gateway ? { routeGateway: input.route.gateway } : {}),
-        ...(!input.route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
-        requestedMode: authMode,
-        // A profile reference is an explicit billing choice. Never consult the
-        // ambient environment or a different provider-store key as fallback.
-        explicit: true,
-        ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
-        ...(subscriptionCredentialSource !== undefined
-          ? { subscriptionCredentialSource }
-          : {}),
-        ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
-        ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
-      })
-      if (result) {
-        authSpec = result.spec
-        authEcho = result.echo
-      }
-    } catch (err) {
-      if (err instanceof AuthResolutionError) {
-        return {
-          ok: false,
-          code: "unsupported_auth_mode",
-          message: `agent_start: ${err.message}`,
-          details: { adapter: input.adapter, provider: profile.endpoint },
-        }
-      }
-      throw err
-    }
-    accessProfileEcho = {
-      profileRef: profile.id,
-      ...(profile.label !== undefined ? { label: profile.label } : {}),
-      endpoint: profile.endpoint,
-      method: profile.method,
-    }
+    authSpec = result.authSpec
+    authEcho = result.authEcho
+    accessProfileEcho = result.accessProfileEcho
   } else if (
     resolved &&
     input.sandbox === undefined &&
@@ -1600,12 +1726,7 @@ export async function spawnAgentSession(
   if (input.idempotencyKey) {
     const claims = claimsFor(registry)
     const key = `${input.adapter}\x1f${cwd}\x1f${input.idempotencyKey}`
-    const now = Date.now()
-    for (const [k, claim] of claims) {
-      if (claim.resolvedAt !== undefined && now - claim.resolvedAt > SPAWN_CLAIM_WINDOW_MS) {
-        claims.delete(k)
-      }
-    }
+    gcSpawnClaims(claims, Date.now())
     const existing = claims.get(key)
     if (existing) {
       const result = await existing.result
@@ -1839,6 +1960,44 @@ export async function spawnAgentSession(
     // calls `sendPrompt` at all.
     if (initialTitle) desc.title = initialTitle
     liveSessionId = desc.id
+    // No-key backstop for the same incident `idempotencyKey` guards: every
+    // duplicate pair observed in production shared BOTH `label` AND `cwd`,
+    // and both members were still alive when found. This needs no caller
+    // opt-in (unlike the claim above) because it isn't trying to PREVENT the
+    // second spawn — deliberate parallel spawns into one cwd are a real,
+    // exercised pattern (see the `idempotencyKey` docblock) and refusing
+    // them would break that. It just tells the operator, at spawn time
+    // instead of twenty minutes later, that they now have two live sessions
+    // that look like the same intent in the same place.
+    //
+    // Requires a shared `label`, not `cwd` alone: an unlabelled fan-out
+    // (parallel workflow agents sharing one worktree, no label set) is
+    // routine here and would make a cwd-only warning fire on essentially
+    // every multi-agent worktree run, training operators to ignore it. A
+    // shared label is the actual signal — it means the SAME declared intent
+    // landed twice in the SAME place, which is what happened in the
+    // incident and what deliberate fan-out (distinct labels, or no label at
+    // all) doesn't look like.
+    if (desc.label && desc.cwd) {
+      const dupe = registry
+        .list()
+        .find(
+          s =>
+            s.id !== desc.id &&
+            s.label === desc.label &&
+            s.cwd === desc.cwd &&
+            (s.status === "running" || s.status === "starting"),
+        )
+      if (dupe) {
+        const warn =
+          `agent_start: another LIVE session ("${dupe.id}") already has the same ` +
+          `label ("${desc.label}") and cwd ("${desc.cwd}") as this one. If this is a ` +
+          `retried spawn rather than a deliberate parallel run, both are now editing ` +
+          `the same working directory concurrently — check before proceeding.`
+        spawnWarnings.push(warn)
+        console.warn(`[agent_start] ${warn}`)
+      }
+    }
     // Bind the scope-token's lifetime to the child session — once
     // it exits, the token is revoked so it can't outlive its child.
     bindOrchestratorLifecycle?.(desc.id)

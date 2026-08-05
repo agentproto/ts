@@ -825,6 +825,11 @@
           "deprecationMessage": "Superseded by agentproto.sessionGrouping. Still honoured for migration when sessionGrouping is unset (false → \"none\", otherwise \"workspace\").",
           "description": "Deprecated — use agentproto.sessionGrouping. Group the Sessions panel by registered agentproto workspace. Off restores the flat session list."
         },
+        "agentproto.hideMachineSessions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide machine-origin sessions (e.g. automated push-gate reviews, origin \"gate\") from the Sessions panel by default. The panel always reports how many it hid (view badge/description), and an explicit origin filter you set yourself (agentproto: Filter Sessions…) always wins over this setting."
+        },
         "agentproto.sessionsView": {
           "type": "string",
           "enum": [

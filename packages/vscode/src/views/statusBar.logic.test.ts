@@ -125,6 +125,55 @@ describe("buildStatusText", () => {
   })
 })
 
+describe("machine-origin sessions (gate reviews)", () => {
+  // The incident this covers: 77 live `gate-review` sessions piled up and
+  // inflated "working" as if the operator had 77 things mid-turn.
+  it("excludes a live machine-origin session from needsYou/stalled/working/idle", () => {
+    const summary = summarizeLive(
+      [working({ id: "human" }), working({ id: "bot", origin: "gate" })],
+      NOW,
+    )
+    expect(summary.working).toBe(1)
+    expect(summary.live).toHaveLength(1)
+    expect(summary.machineLive.map(s => s.id)).toEqual(["bot"])
+  })
+
+  it("still surfaces a wedged (stalled) gate session via machineLive, not the four counts", () => {
+    const stalledGate = working({
+      id: "bot",
+      origin: "gate",
+      lastActivityAt: new Date(NOW - STALL_AFTER_MS - 1_000).toISOString(),
+    })
+    const summary = summarizeLive([stalledGate], NOW)
+    expect(summary.stalled).toBe(0)
+    expect(summary.machineLive).toHaveLength(1)
+    expect(buildStatusCounts(summary)).toBe("no sessions · 1 gate")
+  })
+
+  it("sums costUsd across human AND machine sessions", () => {
+    const summary = summarizeLive(
+      [working({ id: "human", costUsd: 1 }), working({ id: "bot", origin: "gate", costUsd: 0.5 })],
+      NOW,
+    )
+    expect(summary.costUsd).toBeCloseTo(1.5)
+  })
+
+  it("appends a trailing '· N gate' segment to the counts, singular vs plural", () => {
+    const one = summarizeLive([working({ id: "bot", origin: "gate" })], NOW)
+    expect(buildStatusCounts(one)).toBe("no sessions · 1 gate")
+    const two = summarizeLive(
+      [working({ id: "bot1", origin: "gate" }), working({ id: "bot2", origin: "gate" })],
+      NOW,
+    )
+    expect(buildStatusCounts(two)).toBe("no sessions · 2 gate")
+  })
+
+  it("shows cost in buildStatusText even when only a gate session is live", () => {
+    const summary = summarizeLive([working({ id: "bot", origin: "gate", costUsd: 0.42 })], NOW)
+    expect(buildStatusText(summary)).toBe("agentproto: no sessions · 1 gate · $0.42")
+  })
+})
+
 describe("statusBarIcon", () => {
   it("shows the most demanding state, so the glyph is a claim and not decoration", () => {
     // The old `$(pulse)` throbbed identically whether nine agents were

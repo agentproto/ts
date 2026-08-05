@@ -152,6 +152,12 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
       // already-priced OpenRouter chat models, not invented specialist ids.
       { id: "openai/gpt-5.6-luna@openrouter", provider: "openrouter" },
       { id: "openai/gpt-5.6-sol@openrouter", provider: "openrouter" },
+      // Requesty — route resolved from the catalog `@route`. Verified
+      // runnable: a spawn on sference/thinkingcap-qwen3.6-27b@requesty is
+      // accepted and produces the same route/profile/key-fingerprint
+      // descriptor as the claude-code spawn on the same model.
+      { id: "sference/thinkingcap-qwen3.6-27b@requesty", provider: "requesty" },
+      { id: "sference/glm-5.2@requesty", provider: "requesty" },
       // Local llm-endpoint proxy — the `@llm-endpoint` suffix pins the catalog
       // join to the runtime-registered custom route (Anthropic surface at
       // localhost:18090). A SMALL curated set from the proxy's own `default`
