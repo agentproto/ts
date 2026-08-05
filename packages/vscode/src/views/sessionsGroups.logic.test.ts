@@ -12,6 +12,7 @@ import {
   groupNodeId,
   isCtaNode,
   isGroupNode,
+  isMachineOrigin,
   originGroupNodeId,
   originLabelFor,
   partitionSessionsByWorkspace,
@@ -333,6 +334,31 @@ describe("buildOriginGroups", () => {
 
   it("renders an unknown origin under its raw slug (no code change needed)", () => {
     expect(originLabelFor("some-new-host")).toBe("some-new-host")
+  })
+
+  it("labels gate as a first-class, readable origin", () => {
+    expect(originLabelFor("gate")).not.toBe("gate")
+  })
+
+  it("sorts machine-origin buckets after every human-origin bucket, before unknown", () => {
+    const sessions = [
+      session({ id: "z", origin: "vscode" }),
+      session({ id: "g", origin: "gate" }),
+      session({ id: "a", origin: "claude-code" }),
+      session({ id: "u" }), // no origin -> unknown
+    ]
+    const groups = buildOriginGroups(sessions, NOW)
+    expect(groups.map(g => g.slug)).toEqual(["claude-code", "vscode", "gate", UNKNOWN_ORIGIN_SLUG])
+  })
+})
+
+describe("isMachineOrigin", () => {
+  it("is true for gate, false for a human origin, undefined, or an unrecognized slug", () => {
+    expect(isMachineOrigin("gate")).toBe(true)
+    expect(isMachineOrigin("claude-code")).toBe(false)
+    expect(isMachineOrigin("vscode")).toBe(false)
+    expect(isMachineOrigin(undefined)).toBe(false)
+    expect(isMachineOrigin("some-new-host")).toBe(false)
   })
 })
 
