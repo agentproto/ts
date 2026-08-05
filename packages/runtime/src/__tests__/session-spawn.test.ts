@@ -2776,6 +2776,226 @@ describe("spawnAgentSession — worktree isolation", () => {
   })
 })
 
+// ── async worktree provisioning (WP-F) ──────────────────────────────────
+// `worktree.async` returns a real, registered session before `git worktree
+// add` + the setup hooks finish, provisioning in the background — the fix
+// for the actual root cause #803/#805 mitigated from the retry side (no
+// session id existed yet for a retry to dedupe against). These drive a
+// CONTROLLABLE (deferred) provisioner so the test can observe the window
+// between "session registered" and "provisioning settles".
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (err: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (err: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+function deferredProvisioner(): {
+  provisionWorktree: WorktreeProvisioner
+  calls: Parameters<WorktreeProvisioner>[0][]
+  resolve: (outcome: WorktreeProvisionOutcome) => void
+  reject: (err: unknown) => void
+} {
+  const calls: Parameters<WorktreeProvisioner>[0][] = []
+  const d = deferred<WorktreeProvisionOutcome>()
+  const provisionWorktree: WorktreeProvisioner = vi.fn(async req => {
+    calls.push(req)
+    return d.promise
+  })
+  return { provisionWorktree, calls, resolve: d.resolve, reject: d.reject }
+}
+
+describe("spawnAgentSession — async worktree provisioning (WP-F)", () => {
+  const ORIGINAL = "/repo/checkout"
+  const WORKTREE = "/root/repo/agent-abcd1234"
+  const isolated: WorktreeProvisionOutcome = {
+    isolated: true,
+    cwd: WORKTREE,
+    branch: "wt/agent-abcd1234",
+  }
+
+  it("returns a registered, starting session BEFORE the provisioner settles, then flips to running once it does", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls, resolve } = deferredProvisioner()
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true }, label: "fix login" },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    // The provisioner was invoked (the background task started)…
+    expect(calls).toHaveLength(1)
+    // …but `agent_start` did not wait for it.
+    expect(startSession).not.toHaveBeenCalled()
+    expect(result.descriptor.status).toBe("starting")
+    expect(registry.get(result.descriptor.id)?.status).toBe("starting")
+
+    resolve(isolated)
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("running")
+    })
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.get(result.descriptor.id)?.cwd).toBe(WORKTREE)
+  })
+
+  it("a provisioning failure ends the session in status \"error\" with a readable lastError — never stuck in \"starting\"", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, reject } = deferredProvisioner()
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true } },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(registry.get(result.descriptor.id)?.status).toBe("starting")
+
+    reject(new Error("git worktree add: branch already exists"))
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("error")
+    })
+    expect(registry.get(result.descriptor.id)?.lastError).toContain(
+      "branch already exists",
+    )
+    expect(startSession).not.toHaveBeenCalled()
+  })
+
+  it("a driver spawn failure AFTER provisioning succeeds also ends in status \"error\"", async () => {
+    const startSession = vi.fn().mockRejectedValueOnce(new Error("adapter boot failed"))
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree } = spyProvisioner(isolated)
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true } },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("error")
+    })
+    expect(registry.get(result.descriptor.id)?.lastError).toContain("adapter boot failed")
+  })
+
+  it("`worktree.async` + `wait` is rejected outright — no session created", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true }, wait: true, prompt: "hi" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_async_wait_conflict")
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("the initial prompt is held until the tree + driver session exist, never dispatched into an unbuilt tree", async () => {
+    let promptedAt: "before" | "after" | undefined
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, resolve } = deferredProvisioner()
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true }, prompt: "do the thing" },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    // No turn dispatched yet — the descriptor carries no adapterSessionId
+    // (only set once `startSession` has actually run) and is still busy-free.
+    expect(registry.get(result.descriptor.id)?.adapterSessionId).toBeUndefined()
+    promptedAt = "before"
+
+    resolve(isolated)
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("running")
+    })
+    expect(startSession).toHaveBeenCalledTimes(1)
+    promptedAt = "after"
+    expect(promptedAt).toBe("after")
+  })
+
+  // ── the regression this PR exists to prevent ──────────────────────────
+  // A retry arriving WHILE the background worktree provisioning is still in
+  // flight must dedupe against the already-registered session, not fork a
+  // second `git worktree add` (the exact incident #803/#805 mitigated from
+  // the retry side — this treats the wait that provokes it instead).
+  it("a retry arriving mid-provision dedupes against the SAME session instead of forking a second provision", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls, resolve } = deferredProvisioner()
+    const input = {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { async: true },
+      idempotencyKey: "req-async-retry",
+    }
+    const shared = { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") }
+
+    const first = await spawnAgentSession(shared, input)
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected success")
+    // Provisioning has started but not settled yet.
+    expect(calls).toHaveLength(1)
+    expect(registry.get(first.descriptor.id)?.status).toBe("starting")
+
+    // The retry: same idempotencyKey, arriving while provisioning is still
+    // in flight. Must dedupe immediately — NOT call the provisioner again,
+    // NOT block on the in-flight provisioning.
+    const second = await spawnAgentSession(shared, input)
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.deduped).toBe(true)
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(calls).toHaveLength(1) // still exactly one provision attempt
+    expect(registry.list()).toHaveLength(1) // still exactly one session
+
+    // Let provisioning + the driver spawn actually finish.
+    resolve(isolated)
+    await vi.waitFor(() => {
+      expect(registry.get(first.descriptor.id)?.status).toBe("running")
+    })
+    expect(startSession).toHaveBeenCalledTimes(1) // exactly one process, ever
+    expect(registry.list()).toHaveLength(1)
+  })
+
+  it("a plain (synchronous) worktree spawn is completely unaffected by the async branch", async () => {
+    // No `async: true` on the request ⇒ takes the pre-existing synchronous
+    // path verbatim: `spawnAgentSession` still blocks on provisioning and
+    // the descriptor is "running" (never "starting") by the time it returns.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.status).toBe("running")
+    expect(calls).toHaveLength(1)
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.get(result.descriptor.id)?.cwd).toBe(WORKTREE)
+  })
+})
+
 // ── nested implicit-in-place into a shared, DIRTY cwd (loud, not silent) ───
 // #622 closed the EXPLICIT-request-at-depth hole (reject). This closes the
 // remaining one: an implicit (no `worktree`) nested spawn silently ran in

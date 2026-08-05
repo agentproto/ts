@@ -2923,9 +2923,11 @@ function parseWorktreeField(raw: unknown): WorktreeField | undefined {
     const obj = value as Record<string, unknown>
     const slug = typeof obj.slug === "string" ? obj.slug : undefined
     const base = typeof obj.base === "string" ? obj.base : undefined
+    const async = typeof obj.async === "boolean" ? obj.async : undefined
     return {
       ...(slug !== undefined ? { slug } : {}),
       ...(base !== undefined ? { base } : {}),
+      ...(async !== undefined ? { async } : {}),
     }
   }
   return undefined

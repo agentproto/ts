@@ -36,16 +36,27 @@ export const DEFAULT_WORKTREE_ISOLATION: WorktreeIsolationMode = "on-request"
 
 /**
  * The `agent_start.worktree` field. `true` isolates with an auto-minted slug;
- * an object additionally pins the slug and/or base ref; `false` (or omitted)
- * is "no explicit request" — the policy mode decides.
+ * an object additionally pins the slug and/or base ref, and can opt into
+ * async provisioning (`async: true` — see `WorktreeRequest.async`); `false`
+ * (or omitted) is "no explicit request" — the policy mode decides.
  */
-export type WorktreeField = boolean | { slug?: string; base?: string }
+export type WorktreeField = boolean | { slug?: string; base?: string; async?: boolean }
 
 /** The caller's explicit request, normalized — `undefined` when the field is
  *  absent or `false`, otherwise the (possibly empty) slug/base overrides. */
 export interface WorktreeRequest {
   slug?: string
   base?: string
+  /** Opt-in: return a real, registered session as soon as it's minted,
+   *  provisioning the worktree in the BACKGROUND instead of blocking
+   *  `agent_start`'s response on `git worktree add` + the repo's setup
+   *  hooks (which can run minutes — see `session-spawn.ts`'s async-provision
+   *  branch). Deliberately opt-in, not the default: existing callers that
+   *  built on a synchronous ok/fail result (this package's own
+   *  `worktree_provision_failed` test coverage among them) keep exactly
+   *  today's behaviour unless they ask for the early return. Default
+   *  false. */
+  async?: boolean
 }
 
 /** What the runtime hands the provisioner. `cwd` is where the session would
@@ -102,6 +113,7 @@ export function normalizeWorktreeField(
   const request: WorktreeRequest = {}
   if (field.slug !== undefined) request.slug = field.slug
   if (field.base !== undefined) request.base = field.base
+  if (field.async !== undefined) request.async = field.async
   return request
 }
 

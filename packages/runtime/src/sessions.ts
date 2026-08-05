@@ -1733,6 +1733,42 @@ export interface SessionsRegistry {
    *  descriptor. The agent stays alive — call `sendPrompt(id, ...)`
    *  for follow-up turns until `kill(id)` closes it. */
   spawnAgent(input: SpawnAgentInput): SessionDescriptor
+  /** Register a STARTING placeholder for an agent-cli spawn whose worktree
+   *  provisioning (or other pre-flight work) hasn't finished yet — the
+   *  async-worktree-provisioning half of WP-F. Every field `spawnAgent`
+   *  would otherwise consume up front is known already (model/label/
+   *  parentage/etc. never depend on the tree existing); only the
+   *  agentSession-derived fields (pid, adapterSessionId, commandPreview,
+   *  resumable) are missing, because the driver hasn't started yet. `cwd`
+   *  is the caller's BEST KNOWN cwd at this point — the pre-worktree repo
+   *  path when the final worktree path isn't minted yet — and gets
+   *  overwritten by `settlePendingAgent`'s real `cwd` once known. Returns a
+   *  stable id + `status: "starting"` immediately; no initial prompt is
+   *  dispatched here (see `settlePendingAgent`'s `initialPrompt` — a
+   *  prompt must never be sent into a tree that isn't built yet). */
+  spawnAgentPending(input: SpawnAgentPendingInput): SessionDescriptor
+  /** Resolve a placeholder created by `spawnAgentPending`, once the deferred
+   *  work (worktree provisioning + the driver's `startSession`) finishes.
+   *
+   *  `ok: true` binds the now-live `agentSession`, refreshes `cwd`/
+   *  `worktreePath`/`worktreeId` from the FINAL cwd, flips `status` to
+   *  `"running"`, and — only now, with the tree and the driver session both
+   *  real — fires the deferred `initialPrompt` (fire-and-forget, same as
+   *  `spawnAgent`'s own initial-prompt dispatch).
+   *
+   *  `ok: false` flips `status` to `"error"` and stamps `lastError` with the
+   *  (readable) failure reason, so a spawn that can never run ends VISIBLY
+   *  instead of sitting in `"starting"` forever — mirrors `markCrashed`'s
+   *  terminal-failure shape. Emits `session:exited` either way nothing sits
+   *  silently; a webhook/policy gate watching this id learns the outcome
+   *  without polling.
+   *
+   *  Race guard: a no-op (and, on `ok: true`, a best-effort teardown of the
+   *  just-started `agentSession` — never leak a live, unsupervised process)
+   *  when the placeholder is no longer `"starting"` — e.g. an operator
+   *  killed it mid-provision. A terminal descriptor is never resurrected.
+   *  Also a no-op for an unknown id (the row was removed entirely). */
+  settlePendingAgent(id: string, outcome: PendingAgentOutcome): void
   /** Spawn a process under a real PTY (node-pty). Bytes flow through
    *  the registry's byte ring buffer + emitter; attach with
    *  `attachPty(id, ...)`. Throws when the registry was constructed
@@ -2347,6 +2383,37 @@ export interface SpawnAgentInput {
    *  onto `SessionDescriptor.keepAlive`. Default false. */
   keepAlive?: boolean
 }
+
+/** `SpawnAgentInput` minus the fields that only exist once the driver's
+ *  `startSession` has actually run — see `spawnAgentPending`'s doc for why
+ *  everything else is safe to record up front. */
+export type SpawnAgentPendingInput = Omit<
+  SpawnAgentInput,
+  "agentSession" | "commandPreview" | "resumable" | "nativeTerminalResume" | "initialPrompt"
+>
+
+/** The deferred outcome `settlePendingAgent` resolves a placeholder with —
+ *  see that method's doc. */
+export type PendingAgentOutcome =
+  | {
+      ok: true
+      agentSession: AgentSessionLike
+      /** The real cwd (the provisioned worktree, or unchanged when nothing
+       *  needed isolating) — replaces the placeholder's best-known cwd. */
+      cwd: string
+      commandPreview?: string
+      resumable?: boolean
+      nativeTerminalResume?: boolean
+      readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+      /** Dispatched now that the tree + driver session both exist — never
+       *  passed to `spawnAgentPending`, which would race the tree. */
+      initialPrompt?: string
+    }
+  | {
+      ok: false
+      /** Short, readable — stamped verbatim onto `SessionDescriptor.lastError`. */
+      message: string
+    }
 
 export interface SpawnSessionInput {
   kind: SessionKind
@@ -4621,6 +4688,143 @@ export function createSessionsRegistry(opts?: {
         })
       }
       return desc
+    },
+    spawnAgentPending(input) {
+      const id = input.id ?? mintSessionId()
+      const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
+      const desc: SessionDescriptor = {
+        id,
+        kind: "agent-cli",
+        workspaceSlug: input.workspaceSlug,
+        command: `${input.adapterSlug} (provisioning)`,
+        pid: null,
+        status: "starting",
+        startedAt: new Date().toISOString(),
+        cwd: input.cwd,
+        ...worktreeFields(input.cwd),
+        adapterSlug: input.adapterSlug,
+        harness: input.harness ?? input.adapterSlug,
+        ...(input.label ? { label: input.label } : {}),
+        ...(input.title ? { title: input.title } : {}),
+        ...(input.label ? { renamedByUser: false } : {}),
+        ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        ...(input.parentSessionId
+          ? { parentSessionId: input.parentSessionId }
+          : {}),
+        ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
+        depth: input.depth ?? 0,
+        ...(input.meta ? { meta: { ...input.meta } } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.mode ? { mode: input.mode } : {}),
+        ...(input.auth ? { auth: input.auth } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.route ? { route: input.route } : {}),
+        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+        ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
+        ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
+        ...(input.remote ? { remote: true } : {}),
+        ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
+        ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
+        ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
+        ...(input.keepAlive ? { keepAlive: true } : {}),
+      }
+      if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
+        tracedSessions.add(id)
+      }
+      const rt: SessionRuntime = {
+        desc,
+        adapterSlug: input.adapterSlug,
+        recentLines: [],
+        recentBytes: [],
+        recentBytesSize: 0,
+        emitter: new EventEmitter(),
+        busy: false,
+        textBuf: "",
+        thoughtBuf: "",
+        maxCostUsd: input.maxCostUsd,
+        costBudget: input.costBudget,
+        ...(input.permissionHold ? { permissionHold: true } : {}),
+      }
+      rt.emitter.setMaxListeners(50)
+      sessions.set(id, rt)
+      sessionEvents?.emit({
+        type: "session:spawned",
+        sessionId: id,
+        ...(desc.parentSessionId ? { parentSessionId: desc.parentSessionId } : {}),
+        ...(desc.label ? { label: desc.label } : {}),
+        depth: desc.depth ?? 0,
+        ts: new Date().toISOString(),
+      })
+      appendLine(
+        rt,
+        `── ${input.adapterSlug} agent session provisioning (cwd ${input.cwd}) ──`,
+        "stdout"
+      )
+      schedulePersist()
+      return desc
+    },
+    settlePendingAgent(id, outcome) {
+      const rt = sessions.get(id)
+      if (rt && rt.desc.status !== "starting") {
+        // Already resolved by something else (an operator killed it mid-
+        // provision, e.g.) — never resurrect a terminal descriptor.
+        if (outcome.ok) void outcome.agentSession.close().catch(() => undefined)
+        return
+      }
+      if (!rt) {
+        // Row removed entirely (shouldn't happen — "starting" is GC-exempt).
+        if (outcome.ok) void outcome.agentSession.close().catch(() => undefined)
+        return
+      }
+      if (!outcome.ok) {
+        rt.desc.status = "error"
+        rt.desc.lastError = outcome.message
+        rt.desc.endedAt = new Date().toISOString()
+        rt.emitter.emit("status", rt.desc.status)
+        appendLine(rt, `[error] ${outcome.message}`, "stderr")
+        schedulePersist()
+        emitExited(rt)
+        return
+      }
+      rt.agentSession = outcome.agentSession
+      rt.readUsage = outcome.readUsage
+      rt.desc.cwd = outcome.cwd
+      Object.assign(rt.desc, worktreeFields(outcome.cwd))
+      rt.desc.pid = outcome.agentSession.pid ?? null
+      rt.desc.adapterSessionId = outcome.agentSession.sessionId
+      rt.desc.command = outcome.commandPreview ?? `${rt.desc.adapterSlug} (agent)`
+      if (outcome.resumable !== undefined) rt.desc.resumable = outcome.resumable
+      if (outcome.nativeTerminalResume !== undefined) {
+        rt.desc.nativeTerminalResume = outcome.nativeTerminalResume
+      }
+      rt.desc.status = "running"
+      rt.emitter.emit("status", rt.desc.status)
+      appendLine(
+        rt,
+        `── ${rt.desc.adapterSlug} agent session ${outcome.agentSession.sessionId} (cwd ${outcome.cwd}) ──`,
+        "stdout"
+      )
+      schedulePersist()
+      // Write point 1/3 (deferred): cwd/adapterSlug/adapterSessionId only
+      // became known now — same reasoning as `spawnAgent`'s own call.
+      recordConversationLink(rt)
+      // Fire-and-forget the initial prompt (if any) — deferred here,
+      // specifically, so it never dispatches into a tree that wasn't built
+      // yet (see `settlePendingAgent`'s doc).
+      if (outcome.initialPrompt) {
+        void runAgentTurn(rt, outcome.initialPrompt).catch(err => {
+          appendLine(
+            rt,
+            `[turn error] ${err instanceof Error ? err.message : String(err)}`,
+            "stderr"
+          )
+        })
+      }
     },
     spawnPty(input) {
       if (!ptyFactory) {

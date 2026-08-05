@@ -38,6 +38,18 @@ describe("normalizeWorktreeField", () => {
     expect(normalizeWorktreeField({ slug: "x" })).toEqual({ slug: "x" })
     expect(Object.keys(normalizeWorktreeField({ slug: "x" }) ?? {})).toEqual(["slug"])
   })
+
+  it("carries `async` through like any other pin — absent unless explicitly requested", () => {
+    expect(normalizeWorktreeField({ async: true })).toEqual({ async: true })
+    expect(normalizeWorktreeField({ slug: "x", async: false })).toEqual({
+      slug: "x",
+      async: false,
+    })
+    // `true` (the boolean shorthand) carries no async opt-in — matches
+    // `agent_start`'s documented default (synchronous unless asked).
+    expect(normalizeWorktreeField(true)).toEqual({})
+    expect(Object.keys(normalizeWorktreeField({}) ?? {})).toEqual([])
+  })
 })
 
 describe("decideWorktreeIsolation — resolution matrix", () => {

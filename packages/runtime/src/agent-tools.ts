@@ -871,6 +871,22 @@ export function registerAgentTools(
                 .min(1)
                 .optional()
                 .describe("Git ref the worktree branch is cut from. Default 'origin/main'."),
+              async: z
+                .boolean()
+                .optional()
+                .describe(
+                  "Return a real, registered session as soon as it's minted " +
+                    "(status \"starting\") instead of blocking `agent_start`'s response " +
+                    "on `git worktree add` + the repo's setup hooks, which can run " +
+                    "minutes. Provisioning + the driver spawn continue in the " +
+                    "background; poll the session's `status` (flips to \"running\" on " +
+                    "success, \"error\" with a readable `lastError` on failure — it never " +
+                    "sits in \"starting\" forever). Any `prompt` is held and dispatched " +
+                    "only once the tree and the driver session both exist. Incompatible " +
+                    "with `wait` (there is no first-turn output to block on yet) — " +
+                    "combining the two is rejected. Default false (synchronous, today's " +
+                    "behaviour)."
+                ),
             })
             .strict(),
         ])
@@ -880,14 +896,15 @@ export function registerAgentTools(
           "Isolate this session in its OWN git worktree instead of spawning " +
             "directly in `cwd` — so a parallel agent can't collide on the working " +
             "tree. `true` provisions a worktree on a fresh branch `wt/<slug>` cut " +
-            "from origin/main (slug auto-minted from `label`); pass `{ slug, base }` " +
-            "to pin either. The daemon boots the worktree (git worktree add + the " +
-            "repo's agentproto.json setup hooks) and spawns `adapter` THERE; the " +
-            "session's cwd, and every path it edits, live inside the worktree. " +
-            "Honoured only for a ROOT spawn (a spawn made THROUGH an orchestrator " +
-            "inherits its parent's tree — no second worktree; an EXPLICIT `worktree` " +
-            "on such a nested spawn is REJECTED, not silently ignored — use " +
-            "`sandbox` to isolate a child) and only when `cwd` " +
+            "from origin/main (slug auto-minted from `label`); pass `{ slug, base, " +
+            "async }` to pin either, or opt into an early return (`async`, see that " +
+            "field's own description). The daemon boots the worktree (git worktree " +
+            "add + the repo's agentproto.json setup hooks) and spawns `adapter` " +
+            "THERE; the session's cwd, and every path it edits, live inside the " +
+            "worktree. Honoured only for a ROOT spawn (a spawn made THROUGH an " +
+            "orchestrator inherits its parent's tree — no second worktree; an " +
+            "EXPLICIT `worktree` on such a nested spawn is REJECTED, not silently " +
+            "ignored — use `sandbox` to isolate a child) and only when `cwd` " +
             "is inside a git repo (nothing to isolate otherwise ⇒ spawns plain, no " +
             "error). The daemon's `worktrees.isolation` policy may force this ON " +
             "for every root spawn (`always`) or OFF (`never`, which REJECTS an " +
