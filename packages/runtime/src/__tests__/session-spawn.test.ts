@@ -837,9 +837,19 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
     expect(second.descriptor.id).toBe(first.descriptor.id)
   })
 
-  it("omitting idempotencyKey is a no-op — repeated identical calls still spawn independently (today's behaviour)", async () => {
+  it("omitting idempotencyKey under an 'on-request' dedupe policy is a no-op — repeated identical calls still spawn independently", async () => {
+    // Under the DEFAULT `spawn.dedupe: 'always'` policy this exact input (a
+    // label present, no idempotencyKey) now derives an implicit key and
+    // dedupes — see the "implicit dedupe default" describe block below for
+    // that behaviour. Pinning the policy to 'on-request' here isolates the
+    // pre-WP-E baseline this test was written to document: no policy, no
+    // opt-in ⇒ no dedup, exactly like an explicit idempotencyKey never
+    // being passed.
     const startSession = vi.fn(async () => fakeAgentSession())
-    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: async () => "on-request",
+    })
     const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
 
     const first = await spawnAgentSession(deps, input)
@@ -954,6 +964,254 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
   })
 })
 
+describe("spawnAgentSession — implicit dedupe default (spawn.dedupe policy, WP-E)", () => {
+  // Every test here pins `resolveSpawnDedupe` explicitly (rather than
+  // relying on the real ~/.agentproto/config.json fallback, which the
+  // hardcoded default also resolves to "always") for the same reason the
+  // worktree-isolation suite pins `resolveWorktreeIsolation` everywhere:
+  // deterministic tests shouldn't depend on whatever happens to be in a
+  // config file on the machine running them.
+  const alwaysDedupe = async () => "always" as const
+  const onRequestDedupe = async () => "on-request" as const
+
+  it("under the default ('always') policy, a repeated labeled+prompted call derives an implicit key and dedupes to ONE process", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker", prompt: "do the thing" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(first.deduped).toBeUndefined()
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("implicit")
+  })
+
+  it("fan-out safety net: no label, identical adapter/cwd/prompt — still spawns two distinct sessions under the default policy", async () => {
+    // The false-dedup case the whole feature is built around: an
+    // unlabelled parallel fan-out into one cwd must never collapse, even
+    // under the default 'always' dedupe policy.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", prompt: "do the thing" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+  })
+
+  it("false-dedup guard: same label, a DIFFERENT prompt — spawns two distinct sessions (the reused-label-automation pattern)", async () => {
+    // Mirrors the inbound-watcher spawn pattern (orchestration-tools.ts),
+    // which reuses one label suffix across every relayed message but always
+    // sends a different prompt.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "watcher",
+      prompt: "message one",
+    })
+    const second = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "watcher",
+      prompt: "message two",
+    })
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+  })
+
+  it("an explicit idempotencyKey always wins over the derived implicit one, even when both would apply", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "worker",
+      prompt: "do the thing",
+      idempotencyKey: "req-1",
+    }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("explicit")
+  })
+
+  it("dedupe: false is the per-call escape hatch — spawns twice even under the default policy with a matching label+prompt", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "worker",
+      prompt: "do the thing",
+      dedupe: false as const,
+    }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+  })
+
+  it("dedupe: true is the per-call opt-in — derives and dedupes even under an 'on-request' policy", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: onRequestDedupe,
+    })
+    const input = {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "worker",
+      prompt: "do the thing",
+      dedupe: true as const,
+    }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("implicit")
+  })
+
+  it("an 'on-request' policy with no per-call opt-in derives nothing — repeated calls spawn independently (today's pre-WP-E behaviour, still available)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: onRequestDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker", prompt: "do the thing" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+  })
+
+  it("the implicit window (IMPLICIT_SPAWN_CLAIM_WINDOW_MS, 2min) is shorter than the explicit one — a repeat just past it spawns fresh", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker", prompt: "do the thing" }
+    const nowSpy = vi.spyOn(Date, "now")
+
+    nowSpy.mockReturnValue(1_000)
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(true)
+
+    // Just past the 120s implicit window, but nowhere near the explicit
+    // key's 600s window — proving the SHORTER window applies here.
+    nowSpy.mockReturnValue(1_000 + 120_001)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+
+    nowSpy.mockRestore()
+  })
+
+  it("a repeat WITHIN the implicit window is still deduped", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker", prompt: "do the thing" }
+    const nowSpy = vi.spyOn(Date, "now")
+
+    nowSpy.mockReturnValue(1_000)
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(true)
+
+    nowSpy.mockReturnValue(1_000 + 90_000)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+
+    nowSpy.mockRestore()
+  })
+
+  it("integration: the default policy supersedes the label+cwd warning backstop for its own incident shape — the second call is DEDUPED, not just warned", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("implicit")
+    // No "another LIVE session" warning fires — the second call never
+    // reached the registry.spawnAgent + warning check at all.
+    expect(second.warnings ?? []).toHaveLength(0)
+  })
+})
+
 describe("spawnAgentSession — resolved-claim eviction policy (gcSpawnClaims)", () => {
   // Pure-function coverage of the size/LRU backstop, without driving 1000+
   // real spawns through spawnAgentSession(). See the sizing docblock above
@@ -1003,16 +1261,41 @@ describe("spawnAgentSession — resolved-claim eviction policy (gcSpawnClaims)",
     expect(claims.has("pending")).toBe(true)
     expect(claims.size).toBe(1_001)
   })
+
+  it("a claim's own windowMs (an implicit key's shorter window) governs its eviction, independent of other claims in the same map", () => {
+    // Explicit and implicit claims share one map (see the `claimsFor`
+    // docblock) but carry different windows — an implicit claim (120s) must
+    // expire on its own schedule even while a same-map explicit claim
+    // (600s, the default when `windowMs` is omitted) is still fresh.
+    const claims = new Map<string, SpawnClaim>([
+      ["implicit", { result: Promise.resolve({ ok: true } as SpawnAgentSessionResult), resolvedAt: 0, windowMs: 120_000 }],
+      ["explicit", resolvedClaim(0)],
+    ])
+    gcSpawnClaims(claims, 150_000)
+    expect(claims.has("implicit")).toBe(false)
+    expect(claims.has("explicit")).toBe(true)
+  })
 })
 
 describe("spawnAgentSession — no-key duplicate-live-session warning (label+cwd backstop)", () => {
   // Distinct from the idempotencyKey guard above: this needs no caller
   // opt-in and never blocks a spawn, it only warns — see the docblock at
   // the `desc.label && desc.cwd` check in session-spawn.ts.
+  //
+  // The two tests below that repeat an identical labeled input pin
+  // `resolveSpawnDedupe` to 'on-request' so they keep exercising this
+  // backstop in isolation: under the DEFAULT 'always' policy, a repeated
+  // label+cwd+prompt call like theirs is now caught earlier by the implicit
+  // dedupe claim (see the "implicit dedupe default" describe block below)
+  // and never reaches this warning check at all — that interaction is
+  // covered separately there.
 
   it("warns when a second LIVE session shares label AND cwd with an existing one", async () => {
     const startSession = vi.fn(async () => fakeAgentSession())
-    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: async () => "on-request",
+    })
     const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
 
     const first = await spawnAgentSession(deps, input)
@@ -1053,7 +1336,10 @@ describe("spawnAgentSession — no-key duplicate-live-session warning (label+cwd
 
   it("does NOT warn against a session that already exited — only LIVE duplicates count", async () => {
     const startSession = vi.fn(async () => fakeAgentSession())
-    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: async () => "on-request",
+    })
     const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
 
     const first = await spawnAgentSession(deps, input)

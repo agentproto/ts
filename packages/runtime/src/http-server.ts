@@ -3270,6 +3270,22 @@ async function handleSessions(
         ...(typeof b.idempotencyKey === "string" && b.idempotencyKey.length > 0
           ? { idempotencyKey: b.idempotencyKey }
           : {}),
+        // Per-call escape hatch for the daemon's `spawn.dedupe` policy — the
+        // HTTP twin of the MCP `agent_start` tool's `dedupe` field. Tolerate
+        // a stringified boolean like `trace`/`permissionHold`.
+        ...(b.dedupe !== undefined
+          ? (() => {
+              const d =
+                typeof b.dedupe === "boolean"
+                  ? b.dedupe
+                  : b.dedupe === "true"
+                    ? true
+                    : b.dedupe === "false"
+                      ? false
+                      : undefined
+              return d !== undefined ? { dedupe: d } : {}
+            })()
+          : {}),
         // Parent-lineage hint (WP-R1) — the HTTP twin of the MCP `agent_start`
         // tool's `parentSessionId` field. This route carries no `callerScope`
         // (it's the anonymous root trust boundary), so the hint is honoured and
@@ -3425,6 +3441,7 @@ async function handleSessions(
       ...result.descriptor,
       ...(result.warnings ? { warnings: result.warnings } : {}),
       ...(result.deduped ? { deduped: true } : {}),
+      ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
     })
     return true
   }

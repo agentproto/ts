@@ -203,6 +203,36 @@ export interface WorktreesConfig {
  */
 export type SpawnAttachMode = "always" | "on-request"
 
+/**
+ * Policy for `agent_start`'s IMPLICIT dedupe — what happens when a caller
+ * spawns with NO `idempotencyKey` at all (see `spawn-dedupe.ts`):
+ *   - `"always"`      — the daemon DERIVES an implicit key from the spawn's
+ *                       `label` (required — see below) plus a hash of the
+ *                       initial `prompt`, and dedupes a same-adapter/cwd
+ *                       repeat against it exactly as an explicit key would.
+ *                       This is the default, mirroring `attach`'s own
+ *                       "opt-in-only guard is not a guard" precedent above.
+ *                       Deriving needs a `label` to produce anything at all
+ *                       — an unlabelled spawn is untouched, which is what
+ *                       keeps this safe for the fan-out pattern this repo
+ *                       exercises (several agents into one cwd with no
+ *                       shared label): see `spawn-dedupe.ts`'s docblock for
+ *                       the full false-dedup analysis, and PR #803's own
+ *                       no-opt-in label+cwd warning backstop in
+ *                       `session-spawn.ts`, which independently landed on
+ *                       the same label-is-the-signal boundary.
+ *   - `"on-request"`  — no implicit derivation; only an explicit
+ *                       `idempotencyKey` dedupes (today's behaviour,
+ *                       unchanged). A per-call `dedupe: true` still opts in
+ *                       under this policy, mirroring `attach: true`.
+ * Either way a per-call `dedupe: false` disables implicit derivation for
+ * that one spawn regardless of policy — the escape hatch, mirroring
+ * `attach: false` / `worktree: false`. An explicit `idempotencyKey` always
+ * wins over a derived one (derivation is only attempted when the caller
+ * supplied none).
+ */
+export type SpawnDedupeMode = "always" | "on-request"
+
 export interface SpawnConfig {
   /**
    * Attach policy for `agent_start`. Resolution order mirrors the module
@@ -214,6 +244,16 @@ export interface SpawnConfig {
    * that never relaxes a privilege gate.
    */
   attach?: SpawnAttachMode
+  /**
+   * Implicit-dedupe policy for `agent_start`. Resolution order mirrors
+   * `attach` above (no CLI flag — a daemon-side policy read at spawn):
+   * `AGENTPROTO_SPAWN_DEDUPE` env > this field > the hardcoded default
+   * `"always"`. See {@link SpawnDedupeMode} and `spawn-dedupe.ts` for the
+   * full reasoning: a retry-safety guard that only works when a caller
+   * remembers to ask for it (`idempotencyKey`) is not a guard — the same
+   * argument `attach` already settled for parent lineage.
+   */
+  dedupe?: SpawnDedupeMode
 }
 
 export interface PairingConfig {
