@@ -26,6 +26,7 @@ import {
   registerCustomRoute,
   clearCustomRoutes,
   diagnoseModelRef,
+  listRouterLlmRoutes,
   OPENROUTER_VARIANTS,
   type ModelRef,
   type CustomRouteConfig,
@@ -567,6 +568,47 @@ describe("resolveLlmModelRoute", () => {
       )
       expect(route).toBeUndefined()
     })
+  })
+})
+
+describe("listRouterLlmRoutes", () => {
+  it("resolves every OpenRouter route table entry that round-trips through the ref grammar", () => {
+    const routes = listRouterLlmRoutes("openrouter")
+    expect(routes.length).toBeGreaterThan(100)
+    expect(routes.every(r => r.route === "openrouter")).toBe(true)
+    // Every resolved id parses back cleanly to the same route.
+    for (const r of routes.slice(0, 20)) {
+      expect(formatModelRef(r.ref)).toContain("@openrouter")
+    }
+  })
+
+  it("resolves Requesty routes that round-trip, skipping keys the ref grammar can't express", () => {
+    const routes = listRouterLlmRoutes("requesty")
+    expect(routes.length).toBeGreaterThan(0)
+    expect(routes.every(r => r.route === "requesty")).toBe(true)
+    // A region-qualified azure key (`azure/gpt-4.1-mini@eastus2`) packs a
+    // second `@` into the product, which collides with the `@route` suffix
+    // and can't round-trip through parseModelRef's single-`@` grammar — it's
+    // skipped rather than crashing enumeration. The unqualified sibling
+    // (`azure/gpt-4.1`, no region) has no such collision and DOES resolve.
+    expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1-mini")).toBe(false)
+    expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1")).toBe(true)
+    // `deepinfra/<upstream>/<model>` nests an upstream provider ahead of
+    // vendor/product — every single one of Requesty's `deepinfra/…` keys is
+    // this triple-segment shape, so none round-trip and the vendor is
+    // entirely absent from the resolved set.
+    expect(routes.some(r => r.vendor === "deepinfra")).toBe(false)
+  })
+
+  it("resolves every HuggingFace route table entry", () => {
+    const routes = listRouterLlmRoutes("huggingface")
+    expect(routes.length).toBeGreaterThan(0)
+    expect(routes.every(r => r.route === "huggingface")).toBe(true)
+  })
+
+  it("returns an empty list for a non-router provider", () => {
+    expect(listRouterLlmRoutes("anthropic")).toEqual([])
+    expect(listRouterLlmRoutes("no-such-router")).toEqual([])
   })
 })
 

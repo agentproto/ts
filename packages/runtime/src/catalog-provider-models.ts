@@ -13,11 +13,17 @@
  *
  * Backed straight by the static catalog's `getModelsByProvider`
  * (`@agentproto/model-catalog`, `registry/index.ts`) — a pure query over the
- * kind-organized catalogs, so NO adapters, NO profiles, NO host wiring. The
- * generated OpenRouter route table is folded into the LLM result upstream
- * (`OPENROUTER_ROUTES` is spread into `LLM_PRICING_CATALOG`, `llm/catalog.ts`),
- * so an `openrouter` query returns the full, large list — the picker
- * paginates client-side. NEVER log the rows: OpenRouter alone is thousands.
+ * kind-organized catalogs, so NO adapters, NO profiles, NO host wiring.
+ * `getModelsByProvider` is itself router-aware: OpenRouter's route table is
+ * spread into `LLM_PRICING_CATALOG` upstream (`llm/catalog.ts`), so an
+ * `openrouter` query returns that full, large list with bare ids; Requesty
+ * and HuggingFace are NOT spread into that catalog — spreading a second
+ * router's bare-id pricing there would repoint direct-vendor ids at router
+ * pricing (`route-identity/index.ts`) — so `getModelsByProvider` instead
+ * folds their generated route tables in directly, emitting `vendor/
+ * product@route` ids. All three routers enumerate through the same path;
+ * the picker paginates client-side. NEVER log the rows: OpenRouter alone is
+ * thousands.
  */
 
 import {
