@@ -360,6 +360,12 @@ jobs:
       - name: Run merge-gate conformance tests
         run: node --test scripts/agentflow/merge-gate.test.mjs
 
+      # Guards the maintainer gatekeeper's pure helpers (glob guardrail, arg
+      # parsing, base-policy extraction, prompt build) — the standalone --pr /
+      # --all modes and the deterministic escalate path ship untested otherwise.
+      - name: Run maintainer tests
+        run: node --test scripts/maintainer.test.mjs
+
   # On PR open: fill an empty description from the diff (never clobbers a
   # human/agent-written body). Opt-in via describe.auto in agentic-review.json.
   describe:
