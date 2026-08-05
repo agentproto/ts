@@ -29,6 +29,7 @@ import {
 import { VOICE_CATALOG, type CatalogVoice } from "../voice/index.js"
 import { modelHasTag } from "../enrichment/index.js"
 import { getMergedOverlay, type MergedOverlay } from "../overlay/index.js"
+import { listRouterLlmRoutes, formatModelRef } from "../route-identity/index.js"
 
 /** Follow consumer-overlay alias hops to a concrete id (cycle-guarded).
  *  Ids with no overlay alias pass through unchanged. */
@@ -281,9 +282,34 @@ export function listModels(filter: ListModelsFilter = {}): ResolvedModel[] {
  * (llm / image / video / audio incl. tts/stt/s2s). This is the "provider
  * catalog" (openai, google, anthropic, replicate, openrouter, …): a
  * derived query over the kind-organized catalogs, NOT a parallel store.
+ *
+ * When `provider` names a router (openrouter, requesty, huggingface),
+ * this also folds in that router's generated route table
+ * (`listRouterLlmRoutes`), emitting `vendor/product@router` ids — the
+ * router's full surface, not just what happens to be curated into
+ * `LLM_PRICING_CATALOG`. OpenRouter's routes are already spread into that
+ * catalog (bare `vendor/product` ids, `llm/catalog.ts`), so its router-table
+ * entries are deduped against the bare ids `listModels` already returned;
+ * Requesty and HuggingFace have no such overlap today, so their route table
+ * entries are added in full. Deliberately NOT achieved by spreading
+ * `REQUESTY_ROUTES`/`HUGGINGFACE_ROUTES` into `LLM_PRICING_CATALOG` itself —
+ * that catalog is the legacy bare-id path, and a bare id must keep meaning
+ * direct-vendor pricing (`route-identity/index.ts`).
  */
 export function getModelsByProvider(provider: string): ResolvedModel[] {
-  return listModels({ provider })
+  const models = listModels({ provider })
+  const routerRoutes = listRouterLlmRoutes(provider)
+  if (routerRoutes.length === 0) return models
+
+  const existingIds = new Set(models.map(m => m.id))
+  const routed: ResolvedModel[] = []
+  for (const route of routerRoutes) {
+    const bareId = `${route.vendor}/${route.product}`
+    if (existingIds.has(bareId)) continue
+    const id = formatModelRef(route.ref)
+    routed.push({ kind: "llm", id, canonicalId: id, pricing: route.pricing })
+  }
+  return [...models, ...routed]
 }
 
 /**

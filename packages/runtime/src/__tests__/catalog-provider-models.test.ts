@@ -44,6 +44,30 @@ describe("buildCatalogProviderModels", () => {
     expect(both.provider).toBe("anthropic")
   })
 
+  it("enumerates Requesty's routed surface (REQUESTY_ROUTES, not LLM_PRICING_CATALOG)", () => {
+    const res = buildCatalogProviderModels({ endpoint: "requesty" })
+    expect(res.models.length).toBeGreaterThan(0)
+    expect(res.models.every(m => m.kind === "llm")).toBe(true)
+    expect(res.models.every(m => m.route === "requesty")).toBe(true)
+    expect(res.models.every(m => m.id.endsWith("@requesty"))).toBe(true)
+    const first = res.models[0]
+    expect(first?.pricing?.inPer1M).toBeGreaterThan(0)
+  })
+
+  it("enumerates HuggingFace's routed surface uniformly with the other routers", () => {
+    const res = buildCatalogProviderModels({ endpoint: "huggingface" })
+    expect(res.models.length).toBeGreaterThan(0)
+    expect(res.models.every(m => m.kind === "llm")).toBe(true)
+    expect(res.models.every(m => m.route === "huggingface")).toBe(true)
+    expect(res.models.every(m => m.id.endsWith("@huggingface"))).toBe(true)
+  })
+
+  it("does not duplicate OpenRouter ids when the router-table pass also serves them", () => {
+    const res = buildCatalogProviderModels({ endpoint: "openrouter" })
+    const ids = res.models.map(m => m.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
   it("returns an empty list for an unknown provider — never throws", () => {
     const res = buildCatalogProviderModels({ endpoint: "no-such-provider-xyz" })
     expect(res).toEqual({ provider: "no-such-provider-xyz", models: [] })

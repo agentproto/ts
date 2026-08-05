@@ -68,4 +68,18 @@ describe("claude-sdk model routing", () => {
       provider: "openrouter",
     })
   })
+
+  it("curates the Requesty models under the `@requesty` route, same as claude-code", () => {
+    const allowed = claudeSdk.models?.allowed ?? []
+    const entries = allowed.filter((m): m is AgentCliModelEntry => typeof m !== "string")
+    const byId = (id: string) => entries.find((e) => e.id === id)
+    expect(byId("sference/thinkingcap-qwen3.6-27b@requesty")).toEqual({
+      id: "sference/thinkingcap-qwen3.6-27b@requesty",
+      provider: "requesty",
+    })
+    expect(byId("sference/glm-5.2@requesty")).toEqual({
+      id: "sference/glm-5.2@requesty",
+      provider: "requesty",
+    })
+  })
 })
