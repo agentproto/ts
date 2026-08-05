@@ -76,7 +76,14 @@ vi.mock("@agentproto/auth", async importOriginal => {
   }
 })
 
-import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import {
+  spawnAgentSession,
+  cleanAgentLines,
+  gcSpawnClaims,
+  type SpawnAgentSessionDeps,
+  type SpawnAgentSessionResult,
+  type SpawnClaim,
+} from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
@@ -848,8 +855,8 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
     const first = await spawnAgentSession(deps, input)
     expect(first.ok).toBe(true)
 
-    // 31s later — past SPAWN_CLAIM_WINDOW_MS (30s).
-    nowSpy.mockReturnValue(1_000 + 31_000)
+    // Past SPAWN_CLAIM_WINDOW_MS (10 minutes).
+    nowSpy.mockReturnValue(1_000 + 600_001)
     const second = await spawnAgentSession(deps, input)
     expect(second.ok).toBe(true)
 
@@ -882,6 +889,141 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
     expect(
       registry.list().filter(s => s.parentSessionId === "fanout-parent"),
     ).toHaveLength(2)
+  })
+
+  it("a same-key retry 42s later (the measured incident gap) is still deduped — the old 30s window would have missed it", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = { adapter: "mock", cwd: "/tmp", idempotencyKey: "req-incident-gap" }
+    const nowSpy = vi.spyOn(Date, "now")
+
+    nowSpy.mockReturnValue(1_000)
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(true)
+
+    nowSpy.mockReturnValue(1_000 + 42_000)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+
+    nowSpy.mockRestore()
+  })
+})
+
+describe("spawnAgentSession — resolved-claim eviction policy (gcSpawnClaims)", () => {
+  // Pure-function coverage of the size/LRU backstop, without driving 1000+
+  // real spawns through spawnAgentSession(). See the sizing docblock above
+  // SPAWN_CLAIM_WINDOW_MS / MAX_RESOLVED_CLAIMS in session-spawn.ts.
+  function resolvedClaim(resolvedAt: number): SpawnClaim {
+    return { result: Promise.resolve({ ok: true } as SpawnAgentSessionResult), resolvedAt }
+  }
+  function inFlightClaim(): SpawnClaim {
+    return { result: new Promise(() => {}) }
+  }
+
+  it("drops a resolved claim once it's older than SPAWN_CLAIM_WINDOW_MS", () => {
+    const claims = new Map<string, SpawnClaim>([
+      ["stale", resolvedClaim(0)],
+      ["fresh", resolvedClaim(500_000)],
+    ])
+    gcSpawnClaims(claims, 700_000)
+    expect(claims.has("stale")).toBe(false)
+    expect(claims.has("fresh")).toBe(true)
+  })
+
+  it("never evicts an in-flight claim on time, however old its entry", () => {
+    const claims = new Map<string, SpawnClaim>([["pending", inFlightClaim()]])
+    gcSpawnClaims(claims, 10_000_000)
+    expect(claims.has("pending")).toBe(true)
+  })
+
+  it("evicts the OLDEST-resolved entries first once resolved claims exceed MAX_RESOLVED_CLAIMS", () => {
+    const claims = new Map<string, SpawnClaim>()
+    // All well within the time window — only the size bound should fire.
+    for (let i = 0; i < 1_005; i++) {
+      claims.set(`key-${i}`, resolvedClaim(i))
+    }
+    gcSpawnClaims(claims, 1_005)
+    expect(claims.size).toBe(1_000)
+    // The 5 oldest-resolved (lowest resolvedAt) are gone…
+    for (let i = 0; i < 5; i++) expect(claims.has(`key-${i}`)).toBe(false)
+    // …the newest 1000 survive.
+    for (let i = 5; i < 1_005; i++) expect(claims.has(`key-${i}`)).toBe(true)
+  })
+
+  it("an in-flight claim never counts against the resolved-claim size cap", () => {
+    const claims = new Map<string, SpawnClaim>()
+    for (let i = 0; i < 1_000; i++) claims.set(`resolved-${i}`, resolvedClaim(i))
+    claims.set("pending", inFlightClaim())
+    gcSpawnClaims(claims, 1_000)
+    expect(claims.has("pending")).toBe(true)
+    expect(claims.size).toBe(1_001)
+  })
+})
+
+describe("spawnAgentSession — no-key duplicate-live-session warning (label+cwd backstop)", () => {
+  // Distinct from the idempotencyKey guard above: this needs no caller
+  // opt-in and never blocks a spawn, it only warns — see the docblock at
+  // the `desc.label && desc.cwd` check in session-spawn.ts.
+
+  it("warns when a second LIVE session shares label AND cwd with an existing one", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(first.warnings ?? []).toHaveLength(0)
+    expect(second.warnings?.some(w => w.includes("worker") && w.includes(first.descriptor.id))).toBe(
+      true,
+    )
+  })
+
+  it("does NOT warn when cwd matches but label differs", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", label: "worker-a" })
+    const second = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", label: "worker-b" })
+
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.warnings ?? []).toHaveLength(0)
+  })
+
+  it("does NOT warn when neither spawn carries a label, even sharing cwd (cwd alone is too noisy)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    const second = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.warnings ?? []).toHaveLength(0)
+  })
+
+  it("does NOT warn against a session that already exited — only LIVE duplicates count", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
+
+    const first = await spawnAgentSession(deps, input)
+    if (!first.ok) throw new Error("expected success")
+    registry.get(first.descriptor.id)!.status = "exited"
+
+    const second = await spawnAgentSession(deps, input)
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.warnings ?? []).toHaveLength(0)
   })
 })
 

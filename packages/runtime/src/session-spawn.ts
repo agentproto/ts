@@ -140,10 +140,38 @@ export type SandboxSpecInput = SandboxSpec & { reuse?: string }
  * a FAILED claim is dropped immediately so a genuine post-error retry tries
  * fresh instead of replaying the same failure forever. Scoped per registry
  * instance (WeakMap) so independent daemons/tests never share a cache.
+ *
+ * Sizing `SPAWN_CLAIM_WINDOW_MS`: it must outlive the retry it exists to
+ * absorb, not just "feel generous". The retry is provoked by the CALLER's
+ * own idle/request timeout giving up on a slow-but-succeeding spawn and
+ * trying again — measured in the incident this guards against at 300s (the
+ * `agent-cli` driver's own default per-completion timeout,
+ * `packages/driver/agent-cli/src/model.ts`'s `timeoutMs ?? 5 * 60 * 1000`,
+ * is the same order of magnitude and the best first-party corroboration of
+ * that figure). A resolved claim that's GC'd before that timeout even
+ * fires is a guard that's already gone by the time the retry it was built
+ * for shows up — exactly the gap the incident exposed at the old 30s
+ * value. 10 minutes (2x the 300s timeout) covers the retry arriving the
+ * instant the client's timer fires, plus slack for the retry's own network
+ * transit and clock skew between caller and daemon, without being so long
+ * that a stale claim starts looking like a memory leak.
+ *
+ * That alone would make the map's worst case "unboundedly many resolved
+ * claims sitting for up to 10 minutes" under high spawn-rate idempotent
+ * traffic — the same class of problem the original 30s GC existed to cap,
+ * just with a longer fuse. `MAX_RESOLVED_CLAIMS` bounds it independently of
+ * time: once resolved entries exceed the cap, the OLDEST-resolved are
+ * evicted first (a size/LRU backstop), so a burst of distinct idempotency
+ * keys can't grow the map without limit even inside the window.
  */
-const SPAWN_CLAIM_WINDOW_MS = 30_000
+const SPAWN_CLAIM_WINDOW_MS = 600_000
 
-interface SpawnClaim {
+/** Backstop on map growth, independent of `SPAWN_CLAIM_WINDOW_MS` — see the
+ *  docblock above. Only resolved claims count against this; an in-flight
+ *  claim is bounded by real concurrent spawn load, not by this cap. */
+const MAX_RESOLVED_CLAIMS = 1_000
+
+export interface SpawnClaim {
   result: Promise<SpawnAgentSessionResult>
   /** Wall-clock time the claim settled successfully — undefined while
    *  still in-flight. Only set for `ok: true` results; see the docblock
@@ -160,6 +188,31 @@ function claimsFor(registry: SessionsRegistry): Map<string, SpawnClaim> {
     spawnClaimsByRegistry.set(registry, claims)
   }
   return claims
+}
+
+/** Two independent eviction passes — see the sizing docblock above the two
+ *  constants. Time first (a claim past `SPAWN_CLAIM_WINDOW_MS` is simply
+ *  stale, regardless of map size), then a size/LRU pass over whatever
+ *  resolved claims survive it. In-flight claims (`resolvedAt` undefined)
+ *  are never touched by either pass — evicting one would let a retry that's
+ *  still genuinely in-flight fork a second process, the exact bug this
+ *  module exists to prevent. */
+// Exported (only) so the eviction policy can be unit-tested directly against
+// a synthetic map, instead of via a 1000+ real spawnAgentSession() calls.
+export function gcSpawnClaims(claims: Map<string, SpawnClaim>, now: number): void {
+  const resolved: [string, SpawnClaim][] = []
+  for (const [k, claim] of claims) {
+    if (claim.resolvedAt === undefined) continue
+    if (now - claim.resolvedAt > SPAWN_CLAIM_WINDOW_MS) {
+      claims.delete(k)
+    } else {
+      resolved.push([k, claim])
+    }
+  }
+  const excess = resolved.length - MAX_RESOLVED_CLAIMS
+  if (excess <= 0) return
+  resolved.sort((a, b) => a[1].resolvedAt! - b[1].resolvedAt!)
+  for (const [k] of resolved.slice(0, excess)) claims.delete(k)
 }
 
 function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key" {
@@ -1673,12 +1726,7 @@ export async function spawnAgentSession(
   if (input.idempotencyKey) {
     const claims = claimsFor(registry)
     const key = `${input.adapter}\x1f${cwd}\x1f${input.idempotencyKey}`
-    const now = Date.now()
-    for (const [k, claim] of claims) {
-      if (claim.resolvedAt !== undefined && now - claim.resolvedAt > SPAWN_CLAIM_WINDOW_MS) {
-        claims.delete(k)
-      }
-    }
+    gcSpawnClaims(claims, Date.now())
     const existing = claims.get(key)
     if (existing) {
       const result = await existing.result
@@ -1903,6 +1951,44 @@ export async function spawnAgentSession(
     // calls `sendPrompt` at all.
     if (initialTitle) desc.title = initialTitle
     liveSessionId = desc.id
+    // No-key backstop for the same incident `idempotencyKey` guards: every
+    // duplicate pair observed in production shared BOTH `label` AND `cwd`,
+    // and both members were still alive when found. This needs no caller
+    // opt-in (unlike the claim above) because it isn't trying to PREVENT the
+    // second spawn — deliberate parallel spawns into one cwd are a real,
+    // exercised pattern (see the `idempotencyKey` docblock) and refusing
+    // them would break that. It just tells the operator, at spawn time
+    // instead of twenty minutes later, that they now have two live sessions
+    // that look like the same intent in the same place.
+    //
+    // Requires a shared `label`, not `cwd` alone: an unlabelled fan-out
+    // (parallel workflow agents sharing one worktree, no label set) is
+    // routine here and would make a cwd-only warning fire on essentially
+    // every multi-agent worktree run, training operators to ignore it. A
+    // shared label is the actual signal — it means the SAME declared intent
+    // landed twice in the SAME place, which is what happened in the
+    // incident and what deliberate fan-out (distinct labels, or no label at
+    // all) doesn't look like.
+    if (desc.label && desc.cwd) {
+      const dupe = registry
+        .list()
+        .find(
+          s =>
+            s.id !== desc.id &&
+            s.label === desc.label &&
+            s.cwd === desc.cwd &&
+            (s.status === "running" || s.status === "starting"),
+        )
+      if (dupe) {
+        const warn =
+          `agent_start: another LIVE session ("${dupe.id}") already has the same ` +
+          `label ("${desc.label}") and cwd ("${desc.cwd}") as this one. If this is a ` +
+          `retried spawn rather than a deliberate parallel run, both are now editing ` +
+          `the same working directory concurrently — check before proceeding.`
+        spawnWarnings.push(warn)
+        console.warn(`[agent_start] ${warn}`)
+      }
+    }
     // Bind the scope-token's lifetime to the child session — once
     // it exits, the token is revoked so it can't outlive its child.
     bindOrchestratorLifecycle?.(desc.id)
