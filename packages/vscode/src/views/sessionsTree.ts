@@ -58,6 +58,7 @@ import {
   groupDescriptionFor,
   isCtaNode,
   isGroupNode,
+  isMachineOrigin,
   type CtaNode,
   type GroupNode,
   type RootNode,
@@ -103,6 +104,14 @@ function groupingSetting(): SessionGrouping {
   return cfg.get<boolean>("groupByWorkspace", true) ? "workspace" : "none"
 }
 
+/** `agentproto.hideMachineSessions` — default true, read fresh on every
+ *  rebuild. Safe to default on only because the tree always reports what it
+ *  hid (`hiddenCount`, the view badge below) — an operator who never sees a
+ *  gate-review session anywhere still sees the number change. */
+function hideMachineSessionsSetting(): boolean {
+  return vscode.workspace.getConfiguration("agentproto").get<boolean>("hideMachineSessions", true)
+}
+
 export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, vscode.Disposable {
   private readonly store: SessionStore
   private readonly filter: SessionFilterController
@@ -115,6 +124,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   private groupOf = new Map<string, GroupNode>()
   private now = Date.now()
   private _hiddenCount = 0
+  private _hidingMachineDefault = false
   private readonly repaintTimer: ReturnType<typeof setInterval>
 
   constructor(store: SessionStore, filter: SessionFilterController, seen: SeenTracker) {
@@ -139,9 +149,20 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     this._onDidChange.dispose()
   }
 
-  /** Sessions present in the store but excluded by the current filter. */
+  /** Sessions present in the store but excluded by the current filter (this
+   *  includes any hidden by the `hideMachineSessions` default below — the
+   *  badge doesn't distinguish the two sources, it just has to never lie
+   *  about the total). */
   get hiddenCount(): number {
     return this._hiddenCount
+  }
+
+  /** True when this rebuild's `hiddenCount` includes machine-origin sessions
+   *  hidden by the `agentproto.hideMachineSessions` default (as opposed to
+   *  only an explicit operator filter) — registerSessionsView's view
+   *  description reads this so the default hiding itself is never silent. */
+  get hidingMachineDefault(): boolean {
+    return this._hidingMachineDefault
   }
 
   /** Current top-level nodes — used by the "Expand All" command to reveal each
@@ -160,11 +181,20 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   private rebuild(): void {
     this.now = Date.now()
     const all = this.store.sessions
+    const hideMachineSessions = hideMachineSessionsSetting()
     // Filter first, then lay out the survivors: recency is a top-level
     // presentation split, not a filter dimension, so the divider is decided
     // from what's actually shown.
-    const survivors = filterSessions(all, this.filter.state, this.filter.workspaces)
+    const survivors = filterSessions(all, this.filter.state, this.filter.workspaces, {
+      hideMachineSessions,
+    })
     this._hiddenCount = all.length - survivors.length
+    // Mirrors filterSessions' own "operator's explicit origin choice wins"
+    // rule (sessionFilter.logic.ts's passesMachineDefault) — the description
+    // below must say "machine sessions hidden" only while that default is
+    // the thing actually doing the hiding, not whenever the setting merely
+    // happens to be on.
+    this._hidingMachineDefault = hideMachineSessions && (this.filter.state.origin?.length ?? 0) === 0
     // Collapse resume chains AFTER the filter (which already excludes
     // archived rows via the store's includeArchived toggle — see
     // sessionStore.ts) so a predecessor is hidden ONLY when its successor is
@@ -277,7 +307,12 @@ function findNode(nodes: readonly RootNode[], id: string): SessionNode | undefin
 /** Open/closed root-folder icon doubles as the "(open)" marker at a glance,
  *  same visual language VS Code's own Explorer uses for a workspace root. An
  *  origin group instead reads as a source: a plug icon + its own contextValue
- *  (no workspace inline actions apply to it). */
+ *  (no workspace inline actions apply to it) — EXCEPT a machine-origin group
+ *  (isMachineOrigin, e.g. `gate`), which gets `verified` instead of `plug`:
+ *  a plug reads as "a live connection to a place a person is", which is
+ *  exactly the wrong read for automated push-gate reviewer bookkeeping —
+ *  `verified` reads as automated verification/review, matching what these
+ *  sessions actually are. */
 function groupTreeItem(group: GroupNode): vscode.TreeItem {
   const collapsibleState =
     group.children.length > 0
@@ -290,7 +325,7 @@ function groupTreeItem(group: GroupNode): vscode.TreeItem {
   item.description = groupDescriptionFor(group.count)
   if (group.variant === "origin") {
     item.contextValue = "origin-group"
-    item.iconPath = new vscode.ThemeIcon("plug")
+    item.iconPath = new vscode.ThemeIcon(isMachineOrigin(group.slug) ? "verified" : "plug")
   } else if (group.variant === "status") {
     item.contextValue = "status-group"
     item.iconPath = new vscode.ThemeIcon("pulse")
@@ -359,7 +394,8 @@ export function registerSessionsView(
     vscode.workspace.onDidChangeConfiguration(e => {
       if (
         e.affectsConfiguration("agentproto.sessionGrouping") ||
-        e.affectsConfiguration("agentproto.groupByWorkspace")
+        e.affectsConfiguration("agentproto.groupByWorkspace") ||
+        e.affectsConfiguration("agentproto.hideMachineSessions")
       ) {
         provider.refresh()
       }
@@ -417,9 +453,17 @@ export function registerSessionsView(
 
   // The tree must never lie about hiding things: badge the count of
   // sessions the current filter excludes, and summarize the filter in the
-  // view description. Both clear the moment the filter goes inactive.
+  // view description. Both clear the moment nothing is being hidden.
+  //
+  // `active` covers two independent reasons hiddenCount can be nonzero: an
+  // explicit operator filter (isFilterActive), and the on-by-default
+  // `agentproto.hideMachineSessions` setting quietly dropping gate/review
+  // sessions (provider.hidingMachineDefault). Defaulting that setting to
+  // true is only safe BECAUSE this badge/description already surface
+  // whatever it hides — an operator who never sees a gate session anywhere
+  // still sees the count.
   const updateViewMeta = (): void => {
-    const active = isFilterActive(filter.state)
+    const active = isFilterActive(filter.state) || provider.hidingMachineDefault
     view.badge =
       active && provider.hiddenCount > 0
         ? {
@@ -427,7 +471,9 @@ export function registerSessionsView(
             tooltip: `${provider.hiddenCount} session${provider.hiddenCount === 1 ? "" : "s"} hidden by filter`,
           }
         : undefined
-    view.description = active ? filterSummary(filter.state) : undefined
+    const parts = [filterSummary(filter.state)].filter(Boolean)
+    if (provider.hidingMachineDefault) parts.push("machine sessions hidden")
+    view.description = parts.length > 0 ? parts.join(" · ") : undefined
   }
   updateViewMeta()
   ctx.subscriptions.push(provider.onDidChangeTreeData(updateViewMeta))
