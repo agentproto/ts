@@ -38,6 +38,40 @@ export type SessionEventType =
   | "task:changed"
 
 /**
+ * Fixed severity vocabulary for a judge-gate finding (WP-D). Deliberately
+ * small and fixed so `policy_status` output is comparable across different
+ * judge gates — but the engine never interprets it as a pass/fail threshold;
+ * see `JudgeVerdict`'s doc for why.
+ */
+export type VerdictSeverity = "info" | "low" | "medium" | "high" | "critical"
+
+/** One finding inside a structured judge verdict — mirrors the shape a real
+ *  consumer (the agentik-studio push gate reviewer) already produces. */
+export interface VerdictFinding {
+  severity: VerdictSeverity
+  file?: string
+  note: string
+}
+
+/**
+ * Structured judge-gate verdict (WP-D), an optional richer alternative to the
+ * plain `VERDICT: PASS|FAIL` text line WP7 already parses. `decision` is the
+ * SAME single bit the text line always carried: the engine's pass/fail comes
+ * directly from `decision`, never computed from `findings`' severities.
+ * Severity thresholds are deliberately the CALLER's business — encoded in the
+ * judge's own prompt ("FAIL if any finding is high or above"), not baked into
+ * this engine, because "what severity blocks" is domain vocabulary that
+ * differs per gate (a security review and a style lint don't share a bar).
+ * `summary`/`findings` are informational only, persisted so an operator
+ * reading a FAILED gate learns WHY it failed, not just THAT it failed.
+ */
+export interface JudgeVerdict {
+  decision: "PASS" | "FAIL"
+  summary?: string
+  findings?: VerdictFinding[]
+}
+
+/**
  * Structured detail on why a session is awaiting input, when derivable.
  * `source: "structured"` — a driver-reported ACP-style prompt (e.g. a tool
  * permission request with real options). `source: "heuristic"` — a
@@ -317,6 +351,9 @@ export interface PolicyPassedEvent {
   type: "policy:passed"
   policyId: string
   sessionId: string
+  /** The judge's structured verdict (WP-D), when the gate was a judge gate
+   *  and the judge emitted a parseable one. Absent for shell/cost gates. */
+  verdict?: JudgeVerdict
   ts: string
 }
 
@@ -326,6 +363,10 @@ export interface PolicyFailedEvent {
   policyId: string
   sessionId: string
   exitCode?: number
+  /** The judge's structured verdict (WP-D), when the gate was a judge gate
+   *  and the judge emitted a parseable one. Absent for shell/cost gates, and
+   *  for a judge gate whose reply was unparseable (fail-safe FAIL). */
+  verdict?: JudgeVerdict
   ts: string
 }
 
