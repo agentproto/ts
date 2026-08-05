@@ -1,5 +1,5 @@
 /**
- * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4 + WP5 + WP6 + WP7.
+ * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4 + WP5 + WP6 + WP7 + WP-D.
  *
  * WP7 (judge-gate): a gate may be a judge AGENT instead of a shell command —
  * `gate: { judge: { adapter, model?, prompt, timeoutMs? } }`. When the trigger
@@ -14,6 +14,25 @@
  * slot, so it is accounted for in the WP6 concurrency cap. Persistence: a judge
  * gate left in `gating` at crash is re-armed to `watching` like any active
  * policy and simply re-runs the judge — no in-flight judge is persisted.
+ *
+ * WP-D (structured verdict): a judge may OPTIONALLY answer with a fenced JSON
+ * block (`{decision, summary?, findings?}`, `findings: [{severity, file?,
+ * note}]`) instead of (immediately before) the plain `VERDICT:` line —
+ * `parseJsonVerdict` is tried first, falling back to the WP7 text-line parser
+ * `parseVerdict` when no JSON block validates. Either way `decision` alone
+ * drives pass/fail; `findings`' severities are never thresholded by the
+ * engine (see `JudgeVerdict`'s doc in `session-event-bus.ts` for the
+ * argument). The result is persisted as `PolicyRunState.verdict`, overwritten
+ * — not merged — on every gate run, and echoed on `policy:passed` /
+ * `policy:failed`. Fail-safe is unchanged: an unparseable-by-either-path
+ * reply still FAILs and leaves `verdict` unset.
+ *
+ * WP-D also lets a judge gate pick its own billing identity —
+ * `JudgeGateSpec.judge.access`/`route`/`mode` passthrough to the judge spawn
+ * (see `runJudge`) — so a rate-limited/revoked default wallet doesn't have to
+ * fail every judge gate in the daemon. A ranked, automatic-fail-over WALLET
+ * LADDER across multiple profiles is explicitly OUT of scope here (see
+ * `runJudge`'s doc) — this is a single explicit pin, not fail-over.
  *
  *
  * State machine per attached policy:
@@ -101,7 +120,7 @@ import {
   promises as fsp,
 } from "node:fs"
 import { isResumable, type SessionsRegistry } from "./sessions.js"
-import type { SessionEventBus } from "./session-event-bus.js"
+import type { SessionEventBus, JudgeVerdict, VerdictSeverity } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { CostBudget } from "@agentproto/auth"
 import { collectSessionSnapshots } from "./usage-rollup-service.js"
@@ -113,6 +132,9 @@ import {
   makeCwdAnchor,
 } from "./command-tools.js"
 import type { RunCommandInput, ExecuteResult } from "./command-tools.js"
+import { resolveAccessProfileAuth } from "./session-spawn.js"
+import type { RouteSpec } from "./session-config.js"
+import type { ResolvedAuthSpec } from "./spawn-defaults.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -152,6 +174,30 @@ export interface JudgeGateSpec {
     /** Max wall-clock for the judge turn before it is killed + FAIL.
      *  Default 120_000ms. */
     timeoutMs?: number
+    /**
+     * Named billing credential to pin the judge spawn to (WP-D) — resolved
+     * via `resolveAccessProfileAuth` (the same profile → credential chain
+     * `agent_start`'s `access.profileRef` uses) and forwarded to the judge's
+     * `startSession({auth})`. Omitted ⇒ today's behaviour: the judge spawns
+     * on whatever the daemon's default/ambient wallet resolves to for
+     * `adapter`. This is a single EXPLICIT pin, not a ranked list with
+     * automatic fail-over across profiles — see `runJudge`'s doc for why a
+     * wallet LADDER is out of scope here. An unresolvable profile fails the
+     * gate (fail-safe FAIL), same as any other judge-spawn failure.
+     */
+    access?: { profileRef?: string }
+    /** Decomposed route identity for the judge spawn (custom gateway /
+     *  preset id) — same shape and forwarding as `agent_start`'s `route`.
+     *  Only consulted together with `access.profileRef` (eligibility +
+     *  `resolveAuthSpec`'s `routeGateway`); a bare `route` with no profile is
+     *  NOT resolved (see `runJudge`'s doc) — the judge spawns on the
+     *  adapter's ambient default in that case, same as omitting `route`. */
+    route?: RouteSpec
+    /** AIP-45 mode id forwarded to the judge's `startSession({mode})` (e.g.
+     *  claude-code's `plan`/`bypass-permissions`). Forwarded as-is — the
+     *  driver validates it against the adapter's manifest, same as any other
+     *  spawn. */
+    mode?: string
   }
 }
 
@@ -342,6 +388,16 @@ export interface PolicyRunState {
   endedAt?: string
   lastGate?: { exitCode: number; at: string }
   /**
+   * Structured judge-gate verdict (WP-D). Set when the gate is a judge gate
+   * (`JudgeGateSpec`) and the judge's reply parsed — either a structured JSON
+   * block or, lacking one, the plain `VERDICT: PASS|FAIL` text line (in which
+   * case only `decision` is populated). Absent for shell/cost gates, and for
+   * a judge gate whose reply was wholly unparseable (fail-safe FAIL — see
+   * `state.error` for why). Overwritten (not merged) on every gate run, so a
+   * nudge-and-retry round never carries a stale verdict forward.
+   */
+  verdict?: JudgeVerdict
+  /**
    * The exact commit prepared at the green gate (WP5). Set when entering
    * `awaiting-ack` (or just before a direct commit) so that an ack arriving
    * after a daemon restart commits the same paths/message in the same cwd,
@@ -453,11 +509,24 @@ const DEFAULT_NUDGE_TEMPLATE =
 const DEFAULT_MAX_RETRIES = 2
 /** Judge-gate (WP7) wall-clock default before timeout → kill + FAIL. */
 const DEFAULT_JUDGE_TIMEOUT_MS = 120_000
-/** Fixed instruction appended to the judge prompt so its verdict is parseable. */
+/**
+ * Fixed instruction appended to the judge prompt so its verdict is parseable.
+ * The `VERDICT:` line stays MANDATORY (WP7's original contract, and the
+ * fail-safe anchor: `parseVerdict` below is the last line of defense when a
+ * structured block is absent or malformed). The fenced JSON block is
+ * OPTIONAL and additive (WP-D) — a judge/model that doesn't know about it
+ * still produces a fully working plain-text verdict, unchanged from before.
+ */
 const JUDGE_VERDICT_INSTRUCTION =
   "\n\nWhen you are done, end your reply with a single line containing exactly " +
   "`VERDICT: PASS` (if the criteria are met) or `VERDICT: FAIL` (if not). " +
-  "Do not write anything after that line."
+  "Optionally, immediately before that line, you may include a fenced JSON " +
+  "block with more detail — a decision plus an optional summary and findings:\n" +
+  "```json\n" +
+  '{"decision": "PASS", "summary": "...", "findings": [{"severity": "high", "file": "path/to/file", "note": "..."}]}\n' +
+  "```\n" +
+  '`decision` must be exactly "PASS" or "FAIL" and must match the VERDICT line. ' +
+  "Do not write anything after the VERDICT line."
 /** Strip ANSI escape sequences (mirrors session-tools.stripAnsi). */
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g
@@ -477,6 +546,74 @@ function parseVerdict(text: string): "PASS" | "FAIL" | null {
     last = m[1]!.toUpperCase() as "PASS" | "FAIL"
   }
   return last
+}
+
+/** The fixed severity vocabulary a judge's JSON verdict may use. */
+const KNOWN_SEVERITIES = new Set<VerdictSeverity>([
+  "info",
+  "low",
+  "medium",
+  "high",
+  "critical",
+])
+/** An unrecognized/missing severity collapses to "medium" — a visible,
+ *  neutral default rather than silently dropping the finding or guessing an
+ *  extreme the judge never actually said. */
+function coerceSeverity(v: unknown): VerdictSeverity {
+  return typeof v === "string" && KNOWN_SEVERITIES.has(v as VerdictSeverity)
+    ? (v as VerdictSeverity)
+    : "medium"
+}
+
+/**
+ * Parse a structured JSON verdict from the judge's reply (WP-D). Looks for
+ * fenced ` ```json ... ``` ` blocks first (the documented, robust form —
+ * handles multi-line `findings` arrays); if none are present, falls back to
+ * the last bare `{...}` object that mentions `"decision"` (best-effort only:
+ * a flat-object regex, so it won't reliably capture a bare-object `findings`
+ * array with its own nested braces — the fenced form is what the instruction
+ * asks for precisely to avoid that). Tries candidates from LAST to FIRST
+ * (mirrors `parseVerdict`'s "last occurrence wins" semantics — a judge
+ * revising itself mid-reply is trusted on its final word) and returns the
+ * first one that parses to a valid `{decision: "PASS"|"FAIL"}` shape. Returns
+ * null when nothing validates — caller falls back to `parseVerdict`.
+ */
+function parseJsonVerdict(text: string): JudgeVerdict | null {
+  const candidates: string[] = []
+  const fenceRe = /```json\s*([\s\S]*?)```/gi
+  let fm: RegExpExecArray | null
+  while ((fm = fenceRe.exec(text)) !== null) candidates.push(fm[1]!)
+  if (candidates.length === 0) {
+    const bareRe = /\{[^{}]*"decision"[^{}]*\}/gi
+    let bm: RegExpExecArray | null
+    while ((bm = bareRe.exec(text)) !== null) candidates.push(bm[0]!)
+  }
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(candidates[i]!.trim())
+    } catch {
+      continue
+    }
+    if (typeof parsed !== "object" || parsed === null) continue
+    const decision = (parsed as Record<string, unknown>).decision
+    if (decision !== "PASS" && decision !== "FAIL") continue
+    const verdict: JudgeVerdict = { decision }
+    const summary = (parsed as Record<string, unknown>).summary
+    if (typeof summary === "string") verdict.summary = summary
+    const findings = (parsed as Record<string, unknown>).findings
+    if (Array.isArray(findings)) {
+      verdict.findings = findings
+        .filter((f): f is Record<string, unknown> => typeof f === "object" && f !== null)
+        .map(f => ({
+          severity: coerceSeverity(f.severity),
+          ...(typeof f.file === "string" ? { file: f.file } : {}),
+          note: typeof f.note === "string" ? f.note : "",
+        }))
+    }
+    return verdict
+  }
+  return null
 }
 const PERSIST_DEBOUNCE_MS = 1_500
 /** Daemon-wide default cap on policies concurrently in gating/acting (WP6). */
@@ -792,6 +929,7 @@ export function createCompletionPolicySupervisor(opts: {
         policyId: state.policyId,
         sessionId: repr,
         ...(exitCode !== undefined ? { exitCode } : {}),
+        ...(state.verdict ? { verdict: state.verdict } : {}),
         ts: new Date().toISOString(),
       })
       schedulePersist()
@@ -851,6 +989,7 @@ export function createCompletionPolicySupervisor(opts: {
           type: "policy:passed",
           policyId: state.policyId,
           sessionId: repr,
+          ...(state.verdict ? { verdict: state.verdict } : {}),
           ts: new Date().toISOString(),
         })
         state.status = "done"
@@ -930,10 +1069,29 @@ export function createCompletionPolicySupervisor(opts: {
      * Fail-safe: no resolver / spawn failure / timeout / unparseable → FAIL.
      * The judge runs while this policy holds its `gating` slot, so it is already
      * accounted for in the WP6 concurrency cap.
+     *
+     * WP-D: `spec.access.profileRef` pins the judge spawn to a named billing
+     * profile — resolved via `resolveAccessProfileAuth` (the SAME
+     * profile→credential chain `agent_start`'s `access.profileRef` uses) —
+     * instead of the daemon's default/ambient wallet, so a rate-limited or
+     * revoked default doesn't turn EVERY judge gate in the daemon into a
+     * fail-safe FAIL. `spec.route` is consulted only alongside a profile
+     * (eligibility + `resolveAuthSpec`'s `routeGateway`); a bare `route` with
+     * no profile is ignored — replicating `spawnAgentSession`'s much larger
+     * ambient-default-plus-pinned-route provider-derivation chain for a gate
+     * that never asked for an explicit profile isn't worth the surface.
+     * `spec.mode` forwards straight to `startSession({mode})`, same as any
+     * spawn. A ranked, automatically-fail-over WALLET LADDER across several
+     * profiles is explicitly OUT of scope: this is one explicit pin per gate
+     * run, no retry-on-a-different-profile — a real ladder needs its own
+     * ordering/backoff/observability this WP doesn't attempt. The seam is
+     * clean for it, though: `access`/`route` already carry the exact shape
+     * `agent_start` uses, so a future ladder is an additive
+     * `access: {profileRef} | {ladder: string[]}` widening, not a rewrite.
      */
     const runJudge = async (
       spec: JudgeGateSpec["judge"],
-    ): Promise<{ passed: boolean; exitCode: number; reason?: string }> => {
+    ): Promise<{ passed: boolean; exitCode: number; reason?: string; verdict?: JudgeVerdict }> => {
       if (!resolveAgentAdapter) {
         return { passed: false, exitCode: 1, reason: "judge gate not enabled (no adapter resolver)" }
       }
@@ -945,6 +1103,24 @@ export function createCompletionPolicySupervisor(opts: {
       }
       if (!resolved) {
         return { passed: false, exitCode: 1, reason: `judge adapter '${spec.adapter}' not found` }
+      }
+
+      // WP-D: resolve the judge's own billing pin, if requested. Failure here
+      // is fail-safe FAIL, same as any other judge-spawn failure below.
+      let judgeAuth: ResolvedAuthSpec | undefined
+      if (spec.access?.profileRef) {
+        const authResult = await resolveAccessProfileAuth({
+          adapter: spec.adapter,
+          profileRef: spec.access.profileRef,
+          authDescriptor: resolved.authDescriptor,
+          route: spec.route,
+          model: spec.model,
+          defaultModel: resolved.defaultModel,
+        })
+        if (!authResult.ok) {
+          return { passed: false, exitCode: 1, reason: `judge access profile: ${authResult.message}` }
+        }
+        judgeAuth = authResult.authSpec
       }
 
       // Same trust rationale as the commit-plan cwd above: the watched
@@ -970,6 +1146,8 @@ export function createCompletionPolicySupervisor(opts: {
         const agentSession = await resolved.startSession({
           cwd,
           ...(spec.model ? { model: spec.model } : {}),
+          ...(spec.mode ? { mode: spec.mode } : {}),
+          ...(judgeAuth ? { auth: judgeAuth } : {}),
         })
         const desc = registry.spawnAgent({
           workspaceSlug: "default",
@@ -977,6 +1155,8 @@ export function createCompletionPolicySupervisor(opts: {
           agentSession,
           adapterSlug: spec.adapter,
           label: `judge:${state.policyId}`,
+          // PR #800: groups machine-run gate sessions in the VS Code tree.
+          origin: "gate",
           ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
         })
         judgeId = desc.id
@@ -1017,13 +1197,24 @@ export function createCompletionPolicySupervisor(opts: {
         }
 
         const reply = readTail(judgeId, 200)
+        // WP-D: prefer the structured JSON verdict; fall back to the plain
+        // VERDICT: line (WP7, unchanged) when no JSON block parses. Either
+        // way `decision` is the sole source of pass/fail — see the doc above
+        // `JUDGE_VERDICT_INSTRUCTION` / `JudgeVerdict` for why severities in
+        // `findings` never factor into it here.
+        const jsonVerdict = parseJsonVerdict(reply)
+        if (jsonVerdict) {
+          return jsonVerdict.decision === "PASS"
+            ? { passed: true, exitCode: 0, verdict: jsonVerdict }
+            : { passed: false, exitCode: 1, reason: "judge verdict: FAIL", verdict: jsonVerdict }
+        }
         const verdict = parseVerdict(reply)
         if (verdict === null) {
           return { passed: false, exitCode: 1, reason: "judge reply had no parseable VERDICT line" }
         }
         return verdict === "PASS"
-          ? { passed: true, exitCode: 0 }
-          : { passed: false, exitCode: 1, reason: "judge verdict: FAIL" }
+          ? { passed: true, exitCode: 0, verdict: { decision: "PASS" } }
+          : { passed: false, exitCode: 1, reason: "judge verdict: FAIL", verdict: { decision: "FAIL" } }
       } finally {
         // Always kill the judge session — success or failure.
         try {
@@ -1099,8 +1290,12 @@ export function createCompletionPolicySupervisor(opts: {
 
       // WP7: judge-agent gate.
       if (isJudgeGate(input.gate)) {
-        const { passed, exitCode, reason } = await runJudge(input.gate.judge)
+        const { passed, exitCode, reason, verdict } = await runJudge(input.gate.judge)
         state.lastGate = { exitCode, at: new Date().toISOString() }
+        // WP-D: overwritten (not merged) on every run, including to
+        // `undefined` on a totally unparseable reply — a nudge-and-retry
+        // round never carries a stale verdict forward.
+        state.verdict = verdict
         if (!passed && reason) state.error = reason
         schedulePersist()
         await act(passed, exitCode)

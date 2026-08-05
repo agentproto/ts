@@ -211,6 +211,191 @@ function spawnEligibilityManifest(
   }
 }
 
+/** A resolved access-profile pin — the mechanical `spec` a driver applies
+ *  plus the observable `echo` recorded on a session descriptor. */
+export interface AccessProfileAuthResult {
+  ok: true
+  authSpec?: ResolvedAuthSpec
+  authEcho?: AuthEcho
+  accessProfileEcho: { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
+}
+
+export interface AccessProfileAuthError {
+  ok: false
+  code:
+    | "access_profile_not_found"
+    | "access_profile_ineligible"
+    | "unsupported_auth_mode"
+    | "unsupported_auth_source"
+    | "auth_source_unresolved"
+  message: string
+  details?: Record<string, unknown>
+}
+
+/**
+ * Resolve a named `access.profileRef` into a `ResolvedAuthSpec` — profile
+ * lookup, route/model eligibility check, credential fetch (source-backed
+ * subscription resolved FRESH via Mode 3, or a static keychain read), then
+ * `resolveAuthSpec`. Extracted from `spawnAgentSession`'s inline branch so a
+ * SECOND spawn path — the completion-policy supervisor's judge gate
+ * (`supervisor.ts`'s `runJudge`, WP-D) — can pin an explicit billing profile
+ * for a judge agent without duplicating this ~130-line resolution chain.
+ * Deliberately narrow: a single named profile, no eligibility-ranked list, no
+ * automatic fail-over across profiles — that's a wallet LADDER, a bigger
+ * feature this function does not attempt (see `runJudge`'s doc).
+ *
+ * Messages are UNPREFIXED (no `"agent_start: "` etc.) so each caller can
+ * frame the error in its own vocabulary; `spawnAgentSession` re-adds its
+ * historical prefix at the call site, preserving its exact error strings.
+ */
+export async function resolveAccessProfileAuth(input: {
+  adapter: string
+  profileRef: string
+  authDescriptor: AdapterAuthDescriptor | undefined
+  route?: RouteSpec
+  /** Model used for eligibility (route/provider derivation) — falls back to
+   *  `defaultModel` when omitted. */
+  model?: string
+  /** Adapter's own default model (`resolved.defaultModel`) — used ONLY for
+   *  the eligibility check above, deliberately NOT as a fallback for the
+   *  `resolveAuthSpec({model})` call below (that call passes raw `model` as
+   *  a caller-explicit signal; a resolver-supplied default there would
+   *  misrepresent the request as having named a model it didn't). */
+  defaultModel?: string
+}): Promise<AccessProfileAuthResult | AccessProfileAuthError> {
+  const { adapter, profileRef, authDescriptor, route, model, defaultModel } = input
+  const profile = await getAuthProfile(profileRef)
+  if (!profile) {
+    return {
+      ok: false,
+      code: "access_profile_not_found",
+      message: `no auth profile "${profileRef}" found.`,
+    }
+  }
+  if (!authDescriptor) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message: `adapter "${adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
+    }
+  }
+  const projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
+  if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
+    const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message:
+        `profile "${profile.id}" (${profile.endpoint}/${profile.method}) is not eligible ` +
+        `for adapter "${adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
+    }
+  }
+  const authMode = profileMethodToAuthMode(profile.method)
+  // Subscription-credential resolution: a source-backed profile
+  // (`profile.source`) resolves the credential FRESH via Mode 3 on every
+  // spawn instead of a one-shot static keychain read — reusing
+  // `resolveSubscriptionCredential` rather than duplicating it. A
+  // credential-backed profile keeps a static read.
+  let subscriptionCredential: string | undefined
+  let subscriptionCredentialSource: CredentialSource | undefined
+  let apiKeyCredential: string | undefined
+  let externalSubscriptionVerified = false
+  // File-based (external) subscription — codex/gemini: the CLI reads its OWN
+  // login file, so a source-backed profile injects NOTHING. Verify the login
+  // is present (fail-loud) and let `resolveAuthSpec` produce a scrub-only
+  // external spec; never resolve/inject a bearer.
+  const externalSub = authDescriptor.authSubscription?.external === true
+  if (authMode === "subscription" && externalSub) {
+    try {
+      await verifyLocalLoginPresent(profile.source ?? adapter, adapter)
+      externalSubscriptionVerified = true
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) {
+        return {
+          ok: false,
+          code: err.code,
+          message: err.message,
+          details: { adapter, profile: profile.id },
+        }
+      }
+      throw err
+    }
+  } else if (authMode === "subscription" && profile.source !== undefined) {
+    try {
+      const subResolution = await resolveSubscriptionCredential(
+        { source: profile.source },
+        resolveClaudeCodeOauthToken,
+      )
+      subscriptionCredential = subResolution.credential
+      subscriptionCredentialSource = subResolution.source
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) {
+        return {
+          ok: false,
+          code: err.code,
+          message: err.message,
+          details: { adapter, profile: profile.id },
+        }
+      }
+      throw err
+    }
+  } else if (profile.credentialRef === undefined) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message: `profile "${profile.id}" has neither a credential nor a source configured.`,
+      details: { adapter },
+    }
+  } else {
+    const stored = await new KeychainStore().read({ path: profile.credentialRef })
+    if (authMode === "subscription") subscriptionCredential = stored?.value
+    else apiKeyCredential = stored?.value
+  }
+  let authSpec: ResolvedAuthSpec | undefined
+  let authEcho: AuthEcho | undefined
+  try {
+    const result = resolveAuthSpec({
+      descriptor: authDescriptor,
+      ...(model ? { model } : {}),
+      ...(route?.gateway ? { routeGateway: route.gateway } : {}),
+      ...(!route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
+      requestedMode: authMode,
+      // A profile reference is an explicit billing choice. Never consult the
+      // ambient environment or a different provider-store key as fallback.
+      explicit: true,
+      ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
+      ...(subscriptionCredentialSource !== undefined ? { subscriptionCredentialSource } : {}),
+      ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
+      ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
+    })
+    if (result) {
+      authSpec = result.spec
+      authEcho = result.echo
+    }
+  } catch (err) {
+    if (err instanceof AuthResolutionError) {
+      return {
+        ok: false,
+        code: "unsupported_auth_mode",
+        message: err.message,
+        details: { adapter, provider: profile.endpoint },
+      }
+    }
+    throw err
+  }
+  return {
+    ok: true,
+    authSpec,
+    authEcho,
+    accessProfileEcho: {
+      profileRef: profile.id,
+      ...(profile.label !== undefined ? { label: profile.label } : {}),
+      endpoint: profile.endpoint,
+      method: profile.method,
+    },
+  }
+}
+
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
  *  actually passed in (opts required), not the more permissive
@@ -1218,137 +1403,25 @@ export async function spawnAgentSession(
     | { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
     | undefined
   if (resolved && input.access?.profileRef) {
-    const profileRef = input.access.profileRef
-    const profile = await getAuthProfile(profileRef)
-    if (!profile) {
+    const result = await resolveAccessProfileAuth({
+      adapter: input.adapter,
+      profileRef: input.access.profileRef,
+      authDescriptor: resolved.authDescriptor,
+      route: input.route,
+      model: input.model,
+      defaultModel: resolved.defaultModel,
+    })
+    if (!result.ok) {
       return {
         ok: false,
-        code: "access_profile_not_found",
-        message: `agent_start: no auth profile "${profileRef}" found.`,
+        code: result.code,
+        message: `agent_start: ${result.message}`,
+        ...(result.details ? { details: result.details } : {}),
       }
     }
-    if (!resolved.authDescriptor) {
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message: `agent_start: adapter "${input.adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
-      }
-    }
-    const projected = spawnEligibilityManifest(
-      input.adapter,
-      resolved.authDescriptor,
-      input.route,
-      input.model ?? resolved.defaultModel,
-    )
-    if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
-      const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message:
-          `agent_start: profile "${profile.id}" (${profile.endpoint}/${profile.method}) is not eligible ` +
-          `for adapter "${input.adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
-      }
-    }
-    const authMode = profileMethodToAuthMode(profile.method)
-    // Subscription-credential resolution (SPEC §2, same as the non-profile
-    // branch below): a source-backed profile (`profile.source`) resolves the
-    // credential FRESH via Mode 3 on every spawn instead of a one-shot static
-    // keychain read — reusing `resolveSubscriptionCredential` rather than
-    // duplicating it. A credential-backed profile keeps today's static read.
-    let subscriptionCredential: string | undefined
-    let subscriptionCredentialSource: CredentialSource | undefined
-    let apiKeyCredential: string | undefined
-    let externalSubscriptionVerified = false
-    // File-based (external) subscription — codex/gemini: the CLI reads its OWN
-    // login file, so a source-backed profile injects NOTHING. Verify the login
-    // is present (fail-loud) and let `resolveAuthSpec` produce a scrub-only
-    // external spec; never resolve/inject a bearer.
-    const externalSub = resolved.authDescriptor.authSubscription?.external === true
-    if (authMode === "subscription" && externalSub) {
-      try {
-        await verifyLocalLoginPresent(profile.source ?? input.adapter, input.adapter)
-        externalSubscriptionVerified = true
-      } catch (err) {
-        if (err instanceof SubscriptionSourceError) {
-          return {
-            ok: false,
-            code: err.code,
-            message: `agent_start: ${err.message}`,
-            details: { adapter: input.adapter, profile: profile.id },
-          }
-        }
-        throw err
-      }
-    } else if (authMode === "subscription" && profile.source !== undefined) {
-      try {
-        const subResolution = await resolveSubscriptionCredential(
-          { source: profile.source },
-          resolveClaudeCodeOauthToken,
-        )
-        subscriptionCredential = subResolution.credential
-        subscriptionCredentialSource = subResolution.source
-      } catch (err) {
-        if (err instanceof SubscriptionSourceError) {
-          return {
-            ok: false,
-            code: err.code,
-            message: `agent_start: ${err.message}`,
-            details: { adapter: input.adapter, profile: profile.id },
-          }
-        }
-        throw err
-      }
-    } else if (profile.credentialRef === undefined) {
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message: `agent_start: profile "${profile.id}" has neither a credential nor a source configured.`,
-        details: { adapter: input.adapter },
-      }
-    } else {
-      const stored = await new KeychainStore().read({ path: profile.credentialRef })
-      if (authMode === "subscription") subscriptionCredential = stored?.value
-      else apiKeyCredential = stored?.value
-    }
-    try {
-      const result = resolveAuthSpec({
-        descriptor: resolved.authDescriptor,
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.route?.gateway ? { routeGateway: input.route.gateway } : {}),
-        ...(!input.route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
-        requestedMode: authMode,
-        // A profile reference is an explicit billing choice. Never consult the
-        // ambient environment or a different provider-store key as fallback.
-        explicit: true,
-        ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
-        ...(subscriptionCredentialSource !== undefined
-          ? { subscriptionCredentialSource }
-          : {}),
-        ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
-        ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
-      })
-      if (result) {
-        authSpec = result.spec
-        authEcho = result.echo
-      }
-    } catch (err) {
-      if (err instanceof AuthResolutionError) {
-        return {
-          ok: false,
-          code: "unsupported_auth_mode",
-          message: `agent_start: ${err.message}`,
-          details: { adapter: input.adapter, provider: profile.endpoint },
-        }
-      }
-      throw err
-    }
-    accessProfileEcho = {
-      profileRef: profile.id,
-      ...(profile.label !== undefined ? { label: profile.label } : {}),
-      endpoint: profile.endpoint,
-      method: profile.method,
-    }
+    authSpec = result.authSpec
+    authEcho = result.authEcho
+    accessProfileEcho = result.accessProfileEcho
   } else if (
     resolved &&
     input.sandbox === undefined &&
