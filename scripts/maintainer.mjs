@@ -133,24 +133,97 @@ function emit(decision, criticality, reason, pr) {
 
 /**
  * The shared verdict path: deterministic guardrail first, then the LLM judge,
- * fail-safe to escalate. `pr` is stamped onto the emitted object in PR/all
- * modes and omitted in no-args mode (so CI's output shape is untouched).
+ * fail-safe to escalate. Returns the verdict rather than emitting it, so PR
+ * modes can veto it against live CI state before it is printed.
  */
-async function judge({ changedFiles, escalateGlobs, diff, pr }) {
+async function decideVerdict({ changedFiles, escalateGlobs, diff }) {
   const hit = firstEscalateHit(changedFiles, escalateGlobs)
   if (hit) {
-    emit('escalate', 'high', `changed file '${hit}' matches an always-escalate path`, pr)
-    return
+    return { decision: 'escalate', criticality: 'high', reason: `changed file '${hit}' matches an always-escalate path` }
   }
   const { system, user } = buildJudgePrompt(changedFiles, diff)
   try {
     const raw = await runLlm({ system, user, engine: ENGINE })
     const v = parseJsonLoose(raw)
-    emit(v.decision === 'merge' ? 'merge' : 'escalate', v.criticality ?? 'medium', v.reason ?? '(no reason)', pr)
+    return {
+      decision: v.decision === 'merge' ? 'merge' : 'escalate',
+      criticality: v.criticality ?? 'medium',
+      reason: v.reason ?? '(no reason)',
+    }
   } catch (err) {
     // A failed judge must never silently auto-merge — fail safe to escalate.
-    emit('escalate', 'high', `maintainer judge failed (${err.message}) — escalating to be safe`, pr)
+    return {
+      decision: 'escalate',
+      criticality: 'high',
+      reason: `maintainer judge failed (${err.message}) — escalating to be safe`,
+    }
   }
+}
+
+/**
+ * `pr` is stamped onto the emitted object in PR/all modes and omitted in
+ * no-args mode (so CI's output shape is untouched).
+ */
+async function judge({ changedFiles, escalateGlobs, diff, pr }) {
+  const v = await decideVerdict({ changedFiles, escalateGlobs, diff })
+  emit(v.decision, v.criticality, v.reason, pr)
+}
+
+// ── CI veto ────────────────────────────────────────────────────────────────────
+
+/** Check conclusions that are unambiguously not a pass. */
+const FAILED_CONCLUSIONS = new Set([
+  'FAILURE',
+  'TIMED_OUT',
+  'CANCELLED',
+  'ACTION_REQUIRED',
+  'STARTUP_FAILURE',
+  'STALE',
+])
+
+/**
+ * Veto a `merge` verdict against the PR's live mergeability and check rollup.
+ *
+ * The judge reads the DIFF; it has no idea whether the thing it just called
+ * safe actually builds. Both are needed: a docs-only PR is correctly judged
+ * "safe to merge" and can still have a red `Build + test`, and merging on the
+ * judge's word alone lands a broken tree. This runs AFTER the judge and can
+ * only ever downgrade merge → escalate — it never upgrades, so a PR cannot
+ * buy itself a merge by having green checks.
+ *
+ * Deliberately strict, per this script's stated default of caution:
+ *   - any check that failed  → escalate
+ *   - any check not COMPLETED → escalate (a run still in flight is not a pass;
+ *     "0 pending" from a rollup snapshot is not the same as "settled")
+ *   - CONFLICTING / DIRTY, or an UNKNOWN mergeability GitHub hasn't computed
+ *     yet → escalate
+ *
+ * `pr` state comes from the caller so this stays pure and testable.
+ */
+export function applyCiVeto(verdict, prState) {
+  if (verdict.decision !== 'merge') return verdict
+  const veto = (reason) => ({ decision: 'escalate', criticality: 'medium', reason: `${reason} (judge said: ${verdict.reason})` })
+
+  const rollup = prState?.statusCheckRollup ?? []
+  const failed = rollup.filter((c) => FAILED_CONCLUSIONS.has(c?.conclusion))
+  if (failed.length > 0) {
+    const names = failed.map((c) => c.name || c.context || '(unnamed)').join(', ')
+    return veto(`CI is not green — failing: ${names}`)
+  }
+  // A CheckRun reports `status`; a legacy commit StatusContext has none and is
+  // judged on `state`/`conclusion` alone, so only gate on status when present.
+  const running = rollup.filter((c) => c?.status != null && c.status !== 'COMPLETED')
+  if (running.length > 0) {
+    const names = running.map((c) => c.name || '(unnamed)').join(', ')
+    return veto(`CI has not settled — still running: ${names}`)
+  }
+  if (prState?.mergeable === 'CONFLICTING' || prState?.mergeStateStatus === 'DIRTY') {
+    return veto('PR has merge conflicts against its base')
+  }
+  if (prState?.mergeable !== 'MERGEABLE') {
+    return veto(`GitHub reports mergeable=${prState?.mergeable ?? 'unset'} — mergeability not established`)
+  }
+  return verdict
 }
 
 // ── no-args mode (how CI calls it) ─────────────────────────────────────────────
@@ -222,7 +295,11 @@ function fetchBaseMergeCfg(repo, baseRef) {
 async function judgePr(pr, repo = repoSlug()) {
   let state
   try {
-    state = JSON.parse(run(`gh pr view ${pr} --repo ${repo} --json number,state,baseRefName,files`))
+    state = JSON.parse(
+      run(
+        `gh pr view ${pr} --repo ${repo} --json number,state,baseRefName,files,mergeable,mergeStateStatus,statusCheckRollup`,
+      ),
+    )
   } catch (err) {
     emit('escalate', 'high', `could not read PR #${pr}: ${err.message.split('\n')[0]}`, pr)
     return
@@ -257,7 +334,10 @@ async function judgePr(pr, repo = repoSlug()) {
     /* fall back to judging on the file list alone */
   }
 
-  await judge({ changedFiles, escalateGlobs, diff, pr })
+  // Judge the diff, then veto the verdict against live CI — never the other
+  // way round, so a green build can't talk the judge out of an escalation.
+  const verdict = applyCiVeto(await decideVerdict({ changedFiles, escalateGlobs, diff }), state)
+  emit(verdict.decision, verdict.criticality, verdict.reason, pr)
 }
 
 async function runAll() {

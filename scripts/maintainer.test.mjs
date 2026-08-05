@@ -8,6 +8,7 @@ import {
   truncateDiff,
   parseArgs,
   buildJudgePrompt,
+  applyCiVeto,
 } from './maintainer.mjs'
 
 // ── matchGlob ──────────────────────────────────────────────────────────────
@@ -94,4 +95,64 @@ test('buildJudgePrompt: includes changed files and diff, and the escalate contra
 test('buildJudgePrompt: empty file list renders (none)', () => {
   const { user } = buildJudgePrompt([], '')
   assert.match(user, /Changed files:\n\(none\)/)
+})
+
+// ── applyCiVeto ──────────────────────────────────────────────────────────────
+
+const MERGE = { decision: 'merge', criticality: 'low', reason: 'docs only' }
+const GREEN = {
+  mergeable: 'MERGEABLE',
+  mergeStateStatus: 'CLEAN',
+  statusCheckRollup: [{ name: 'Build + test', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+}
+
+test('applyCiVeto: green + mergeable passes the merge verdict through untouched', () => {
+  assert.deepEqual(applyCiVeto(MERGE, GREEN), MERGE)
+})
+
+test('applyCiVeto: a failing check downgrades merge → escalate and names the check', () => {
+  const v = applyCiVeto(MERGE, {
+    ...GREEN,
+    statusCheckRollup: [
+      { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'Build + test', status: 'COMPLETED', conclusion: 'FAILURE' },
+    ],
+  })
+  assert.equal(v.decision, 'escalate')
+  assert.match(v.reason, /Build \+ test/)
+  assert.match(v.reason, /judge said: docs only/) // the original verdict is preserved for the human
+})
+
+test('applyCiVeto: a check still running is not a pass', () => {
+  const v = applyCiVeto(MERGE, {
+    ...GREEN,
+    statusCheckRollup: [{ name: 'Build + test', status: 'IN_PROGRESS', conclusion: null }],
+  })
+  assert.equal(v.decision, 'escalate')
+  assert.match(v.reason, /not settled/)
+})
+
+test('applyCiVeto: conflicts and unestablished mergeability escalate', () => {
+  assert.equal(applyCiVeto(MERGE, { ...GREEN, mergeable: 'CONFLICTING' }).decision, 'escalate')
+  assert.equal(applyCiVeto(MERGE, { ...GREEN, mergeStateStatus: 'DIRTY' }).decision, 'escalate')
+  assert.equal(applyCiVeto(MERGE, { ...GREEN, mergeable: 'UNKNOWN' }).decision, 'escalate')
+})
+
+test('applyCiVeto: legacy status contexts carry no `status` and are judged on conclusion alone', () => {
+  const v = applyCiVeto(MERGE, {
+    ...GREEN,
+    statusCheckRollup: [{ context: 'ci/legacy', state: 'SUCCESS', conclusion: 'SUCCESS' }],
+  })
+  assert.deepEqual(v, MERGE)
+})
+
+test('applyCiVeto: never upgrades — an escalate stays escalate however green the build', () => {
+  const esc = { decision: 'escalate', criticality: 'high', reason: 'touches auth' }
+  assert.deepEqual(applyCiVeto(esc, GREEN), esc)
+})
+
+test('applyCiVeto: missing rollup (no checks configured) still requires mergeability', () => {
+  assert.deepEqual(applyCiVeto(MERGE, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }), MERGE)
+  assert.equal(applyCiVeto(MERGE, {}).decision, 'escalate')
+  assert.equal(applyCiVeto(MERGE, undefined).decision, 'escalate')
 })
