@@ -291,6 +291,9 @@ export type {
 // Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
 // PR-4's eager pass) — not a type-only export like the block above.
 export { ResumeDisabledError } from "./sessions.js"
+// Session identity env var names injected into every spawned process
+// (assigned last, after caller-supplied env, so they cannot be forged).
+export { SESSION_ID_ENV, WORKSPACE_SLUG_ENV } from "./sessions.js"
 export type {
   EagerResumeOutcome,
   EagerResumeSkipReason,
