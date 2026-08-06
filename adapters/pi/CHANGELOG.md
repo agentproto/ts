@@ -1,5 +1,12 @@
 # @agentproto/adapter-pi
 
+## 0.3.1
+
+### Patch Changes
+
+- e7ab81a: Expose Kimi K3 model across adapters and llm-endpoint library. Adds direct moonshot routes and llm-endpoint proxy variants for unified model routing.
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+
 ## 0.3.0
 
 ### Minor Changes

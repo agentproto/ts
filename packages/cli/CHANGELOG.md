@@ -1,5 +1,24 @@
 # @agentproto/cli
 
+## 0.11.1
+
+### Patch Changes
+
+- 832870d: Documentation sync: daemon restart command, sessions gc garbage collection, install --allow-unverified flag, Gemini adapter shipped, pi adapter support, xai-anthropic and llm-endpoint provider presets, and launchd crash-only KeepAlive behavior.
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+- 8228d88: Add dep-bump reclaim exemption for worktree GC: safely promote clean, unpushed worktrees from `hold` to `reclaim` when all commits are mechanical dependency bumps (subject and cumulative diff validation). Addresses storage bloat from recurring automated dependency-bump worktrees piling up as permanent holds. Includes comprehensive test coverage and applies re-validation at apply time (layer 2).
+- 678bc1a: Session identity environment variables: inject `AGENTPROTO_SESSION_ID` and `AGENTPROTO_WORKSPACE_SLUG` into every process spawned by the daemon on a session's behalf (agent adapters, terminals, commands, cron jobs). Each spawn gets its own freshly minted id; the variables are set last to prevent caller forgery. This enables spawned processes to report back session context, tag telemetry, and nest child sessions under parent sessions via `parentSessionId`.
+- Updated dependencies [c825a12]
+- Updated dependencies [c1399f3]
+- Updated dependencies [8228d88]
+- Updated dependencies [980276e]
+- Updated dependencies [fd3e287]
+  - @agentproto/model-catalog@0.8.0
+  - @agentproto/provider-kit@0.4.1
+  - @agentproto/sandbox-e2b@0.3.1
+  - @agentproto/worktree@0.5.0
+  - @agentproto/sandbox-box@0.2.1
+
 ## 0.11.0
 
 ### Minor Changes

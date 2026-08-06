@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/eval-reporters",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Adapter-kit family for eval reporters. Pluggable backends (Langfuse, stderr, in-memory array) configured by slug + credentials, mirroring the tunnel-provider adapter family.",
   "keywords": [
     "agentproto",

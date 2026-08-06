@@ -1,5 +1,12 @@
 # @agentproto/corpus-presets
 
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [bdba3a5]
+  - @agentproto/corpus@0.5.0
+
 ## 0.2.3
 
 ### Patch Changes
