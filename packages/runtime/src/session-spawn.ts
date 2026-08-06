@@ -95,6 +95,11 @@ import {
   type AttachField,
   type SpawnAttachMode,
 } from "./spawn-attach.js"
+import {
+  deriveImplicitIdempotencyKey,
+  loadSpawnDedupe,
+  type SpawnDedupeMode,
+} from "./spawn-dedupe.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -111,19 +116,34 @@ export type SandboxSpecInput = SandboxSpec & { reuse?: string }
  * with no way for the caller to detect it (the tool result only ever carries
  * the LAST spawn's id).
  *
- * This is deliberately CALLER-SUPPLIED (`idempotencyKey`), not derived from
- * request content (adapter+cwd+prompt+label hash). A content hash was tried
- * and rejected: this file's own test suite exercises a legitimate orchestrator
- * fan-out where two structurally-identical `agent_start` calls (same adapter,
- * cwd, no label/prompt) under one caller scope are expected to spawn as TWO
- * distinct sessions — the second is meant to be rejected by the maxChildren
- * quota check, not silently answered with the first session's descriptor.
- * Intentional identical-looking concurrent spawns are a real, exercised
- * pattern here (see also `Workflow`'s `isolation: "worktree"`, which exists
- * precisely because same-cwd concurrent agents are sometimes wanted and
- * sometimes dangerous) — content alone can't tell the two apart. Only the
- * caller's own declared intent can, so idempotency is opt-in: omitting
- * `idempotencyKey` is a byte-for-byte behavioural no-op.
+ * The primary mechanism is deliberately CALLER-SUPPLIED (`idempotencyKey`),
+ * not derived from request content (adapter+cwd+prompt+label hash). An
+ * unconditional content hash was tried and rejected: this file's own test
+ * suite exercises a legitimate orchestrator fan-out where two structurally-
+ * identical `agent_start` calls (same adapter, cwd, no label/prompt) under
+ * one caller scope are expected to spawn as TWO distinct sessions — the
+ * second is meant to be rejected by the maxChildren quota check, not
+ * silently answered with the first session's descriptor. Intentional
+ * identical-looking concurrent spawns are a real, exercised pattern here
+ * (see also `Workflow`'s `isolation: "worktree"`, which exists precisely
+ * because same-cwd concurrent agents are sometimes wanted and sometimes
+ * dangerous) — content alone, unconditionally, can't tell the two apart.
+ *
+ * WP-E (spawn-dedupe-default): omitting `idempotencyKey` is no longer a
+ * byte-for-byte no-op. A guard that only works when a caller remembers to
+ * ask for it is not a guard — the same argument `spawn.attach` already
+ * settled for parent lineage (`config.ts`'s `SpawnConfig.attach` docblock)
+ * — so by default (`spawn.dedupe: "always"`) the daemon now DERIVES an
+ * implicit key from `label` + a hash of `prompt` when the caller supplies
+ * none (`deriveImplicitIdempotencyKey`, `spawn-dedupe.ts`). This doesn't
+ * reopen the fan-out rejection above: derivation requires a `label` to
+ * produce anything at all, and the fan-out pattern this docblock protects
+ * is unlabelled by construction (same adapter/cwd, no label/prompt) — so it
+ * stays outside implicit dedup exactly as before. A `label`-bearing repeat
+ * is the incident's actual shape (PR #803's independently-derived label+cwd
+ * warning backstop below found the same boundary), not the fan-out pattern.
+ * The caller's own declared intent (an explicit key) still always wins over
+ * a derived guess, and a per-call `dedupe: false` opts back out entirely.
  *
  * Scope: guards only the actual fork + registry registration (the `try`
  * block below) — the one irreversible side effect. Pre-flight validation
@@ -166,6 +186,35 @@ export type SandboxSpecInput = SandboxSpec & { reuse?: string }
  */
 const SPAWN_CLAIM_WINDOW_MS = 600_000
 
+/**
+ * Window for a claim staked by a DERIVED (implicit) key — see
+ * `spawn-dedupe.ts` for how that key is built. Deliberately shorter than
+ * `SPAWN_CLAIM_WINDOW_MS`, not just "shorter to be safe": an explicit
+ * `idempotencyKey` is the caller's PROMISE that a same-key repeat within the
+ * window is the same logical spawn, so it's sized to the full retry horizon
+ * that promise needs to survive (see that constant's own docblock). An
+ * implicit key is only a GUESS built from `label` + a prompt hash — nobody
+ * told the daemon these two calls are the same spawn, it just noticed they
+ * look alike. The retry this guards against still arrives on the same
+ * client-timeout horizon as an explicit key's retry would (nothing about
+ * being implicit changes WHEN a dropped-response retry fires) — so this
+ * can't be cut down to "just cover an instant double-click" without missing
+ * the exact incident-shaped retry the feature exists to catch. What
+ * shrinking DOES buy: less time for a coincidence to happen. Every implicit
+ * key is reachable from ANY caller that supplies a label and skips
+ * `idempotencyKey` — a much wider, largely-unaudited surface than the
+ * targeted opt-in explicit-key path — so a false-collision candidate
+ * (automation that deliberately re-issues one label into one cwd with an
+ * unchanged prompt, e.g. a periodic health-check spawn) has less time to
+ * wander into the window before it's safely treated as a fresh spawn again.
+ * 120s (2 minutes) is chosen as comfortably inside typical retry timers
+ * (the 300s client default this repo has measured is still ~2.5x this
+ * window away) while being short enough that a deliberately-repeated
+ * automation run separated by anything more than a couple of minutes gets
+ * its own session rather than reattaching to a stale one.
+ */
+const IMPLICIT_SPAWN_CLAIM_WINDOW_MS = 120_000
+
 /** Backstop on map growth, independent of `SPAWN_CLAIM_WINDOW_MS` — see the
  *  docblock above. Only resolved claims count against this; an in-flight
  *  claim is bounded by real concurrent spawn load, not by this cap. */
@@ -177,6 +226,11 @@ export interface SpawnClaim {
    *  still in-flight. Only set for `ok: true` results; see the docblock
    *  above for why a failure is dropped instead of cached. */
   resolvedAt?: number
+  /** Eviction window for THIS claim, in ms. Defaults to
+   *  `SPAWN_CLAIM_WINDOW_MS` (an explicit-key claim) when omitted; a claim
+   *  staked from a derived implicit key sets `IMPLICIT_SPAWN_CLAIM_WINDOW_MS`
+   *  instead — see that constant's docblock for why the two differ. */
+  windowMs?: number
 }
 
 const spawnClaimsByRegistry = new WeakMap<SessionsRegistry, Map<string, SpawnClaim>>()
@@ -191,19 +245,21 @@ function claimsFor(registry: SessionsRegistry): Map<string, SpawnClaim> {
 }
 
 /** Two independent eviction passes — see the sizing docblock above the two
- *  constants. Time first (a claim past `SPAWN_CLAIM_WINDOW_MS` is simply
- *  stale, regardless of map size), then a size/LRU pass over whatever
- *  resolved claims survive it. In-flight claims (`resolvedAt` undefined)
- *  are never touched by either pass — evicting one would let a retry that's
- *  still genuinely in-flight fork a second process, the exact bug this
- *  module exists to prevent. */
+ *  constants. Time first (a claim past its OWN `windowMs` — explicit and
+ *  implicit claims share one map but carry different windows, see
+ *  `SpawnClaim.windowMs` — is simply stale, regardless of map size), then a
+ *  size/LRU pass over whatever resolved claims survive it. In-flight claims
+ *  (`resolvedAt` undefined) are never touched by either pass — evicting one
+ *  would let a retry that's still genuinely in-flight fork a second
+ *  process, the exact bug this module exists to prevent. */
 // Exported (only) so the eviction policy can be unit-tested directly against
 // a synthetic map, instead of via a 1000+ real spawnAgentSession() calls.
 export function gcSpawnClaims(claims: Map<string, SpawnClaim>, now: number): void {
   const resolved: [string, SpawnClaim][] = []
   for (const [k, claim] of claims) {
     if (claim.resolvedAt === undefined) continue
-    if (now - claim.resolvedAt > SPAWN_CLAIM_WINDOW_MS) {
+    const window = claim.windowMs ?? SPAWN_CLAIM_WINDOW_MS
+    if (now - claim.resolvedAt > window) {
       claims.delete(k)
     } else {
       resolved.push([k, claim])
@@ -534,6 +590,11 @@ export interface SpawnAgentSessionDeps {
    *  Defaults to `loadSpawnAttach` (reads the real config) when omitted;
    *  tests inject a stub to pin the mode without touching env or the file. */
   resolveSpawnAttach?: () => Promise<SpawnAttachMode>
+  /** Resolves the effective `spawn.dedupe` policy (env > config > `always`).
+   *  Defaults to `loadSpawnDedupe` (reads the real config) when omitted;
+   *  tests inject a stub to pin the mode without touching env or the file.
+   *  See `spawn-dedupe.ts`. */
+  resolveSpawnDedupe?: () => Promise<SpawnDedupeMode>
 }
 
 export interface SpawnAgentSessionInput {
@@ -721,14 +782,28 @@ export interface SpawnAgentSessionInput {
    *  — unchanged reap-eligible behaviour. Toggleable later via the
    *  `session_set_keepalive` MCP verb. */
   keepAlive?: boolean
-  /** Caller-declared "this is the same logical spawn" token. A second
-   *  `agent_start` with the same `(adapter, cwd, idempotencyKey)` within
-   *  `SPAWN_CLAIM_WINDOW_MS` of a SUCCESSFUL spawn returns that spawn's
-   *  descriptor instead of forking a second process — the fix for a
-   *  retried call otherwise silently duplicating a live agent. Omit for
-   *  today's behaviour (every call spawns). See the docblock on
-   *  `SpawnClaim` for why this is opt-in rather than automatic. */
+  /** Caller-declared "this is the same logical spawn" token — a PROMISE, not
+   *  a guess. A second `agent_start` with the same `(adapter, cwd,
+   *  idempotencyKey)` within `SPAWN_CLAIM_WINDOW_MS` of a SUCCESSFUL spawn
+   *  returns that spawn's descriptor instead of forking a second process —
+   *  the fix for a retried call otherwise silently duplicating a live
+   *  agent. Always wins over the daemon's own derived (implicit) key when
+   *  both would apply — see `dedupe` and `spawn-dedupe.ts`. Omitting this
+   *  does NOT mean "spawn unconditionally" anymore: when the daemon's
+   *  `spawn.dedupe` policy is `"always"` (the default) and this spawn
+   *  carries a `label`, the daemon derives an implicit key in its place —
+   *  see `dedupe` below to opt out per-call. */
   idempotencyKey?: string
+  /** Per-call override for the daemon's `spawn.dedupe` policy (implicit
+   *  dedupe when no `idempotencyKey` was supplied — see `spawn-dedupe.ts`).
+   *  `false` is the escape hatch: never derive an implicit key for THIS
+   *  spawn, regardless of policy — mirrors `attach: false` / `worktree:
+   *  false`. `true` forces derivation even under an `"on-request"` policy,
+   *  mirroring `attach: true`. Omitted ⇒ the policy mode decides. Has no
+   *  effect when an explicit `idempotencyKey` is supplied (it already wins
+   *  outright) or when this spawn carries no `label` (nothing to derive
+   *  from either way). */
+  dedupe?: boolean
   /**
    * OS-level confinement for the adapter's OWN spawned process
    * (`@agentproto/command-sandbox` — macOS Seatbelt / Linux bubblewrap),
@@ -762,9 +837,20 @@ export type SpawnAgentSessionResult =
        *  warn about. The spawn still succeeded; these are advisory. */
       warnings?: string[]
       /** Set when this result was returned to a duplicate call recognized
-       *  via `idempotencyKey` — no new process was spawned; `descriptor` is
-       *  the ORIGINAL spawn's. Absent on the original (non-duplicate) call. */
+       *  via `idempotencyKey` OR a derived implicit key — no new process was
+       *  spawned; `descriptor` is the ORIGINAL spawn's. Absent on the
+       *  original (non-duplicate) call. */
       deduped?: boolean
+      /** Set alongside `deduped` to say WHICH kind of dedup matched:
+       *  `"explicit"` for a caller-supplied `idempotencyKey`, `"implicit"`
+       *  for a daemon-derived key (see `spawn-dedupe.ts`). An implicit match
+       *  is a GUESS, not a promise the caller made — surfacing which one
+       *  fired lets a caller tell "you got back the session you thought you
+       *  started" from "the daemon merged this into an unrelated-looking
+       *  earlier spawn because it looked similar", instead of silently
+       *  returning a different session than the one someone thought they
+       *  started. Absent when `deduped` is absent. */
+      dedupeSource?: "explicit" | "implicit"
     }
   | {
       ok: false
@@ -846,6 +932,7 @@ export async function spawnAgentSession(
     provisionWorktree,
     resolveWorktreeIsolation,
     resolveSpawnAttach,
+    resolveSpawnDedupe,
   } = deps
 
   // cwd resolution: explicit cwd wins, then workspaceSlug lookup, then —
@@ -1721,19 +1808,45 @@ export async function spawnAgentSession(
     explicitTitle ?? spawnLabel ?? (input.prompt ? deriveSessionTitle(input.prompt) : undefined)
 
   // ── retry-safety claim (see SpawnClaim docblock above) ────────────
-  // Opt-in: no idempotencyKey ⇒ no map lookup, no behavioural change.
+  // Two independent doors into the SAME claim map. An EXPLICIT
+  // `idempotencyKey` is a caller PROMISE ("these are the same logical
+  // spawn") and always wins outright when present. A DERIVED implicit key
+  // — built by `deriveImplicitIdempotencyKey` from `label` + a hash of
+  // `prompt`, see `spawn-dedupe.ts` for the false-dedup analysis — is only
+  // a GUESS, and is attempted ONLY when the caller supplied no explicit
+  // key, didn't opt out (`dedupe: false`), and the resolved `spawn.dedupe`
+  // policy (or a per-call `dedupe: true` override) says to derive one. No
+  // `label` ⇒ nothing to derive ⇒ this spawn is untouched either way,
+  // identical to pre-dedupe-default behaviour — the fan-out safety net.
   let settleClaim: ((result: SpawnAgentSessionResult) => void) | undefined
-  if (input.idempotencyKey) {
+  let claimKey = input.idempotencyKey
+  let dedupeSource: "explicit" | "implicit" | undefined = claimKey ? "explicit" : undefined
+  if (!claimKey && input.dedupe !== false) {
+    const dedupeMode = resolveSpawnDedupe ? await resolveSpawnDedupe() : await loadSpawnDedupe()
+    if (dedupeMode === "always" || input.dedupe === true) {
+      const implicitKey = deriveImplicitIdempotencyKey({ label: input.label, prompt: input.prompt })
+      if (implicitKey) {
+        claimKey = implicitKey
+        dedupeSource = "implicit"
+      }
+    }
+  }
+  if (claimKey) {
     const claims = claimsFor(registry)
-    const key = `${input.adapter}\x1f${cwd}\x1f${input.idempotencyKey}`
+    const key = `${input.adapter}\x1f${cwd}\x1f${claimKey}`
     gcSpawnClaims(claims, Date.now())
     const existing = claims.get(key)
     if (existing) {
       const result = await existing.result
-      return result.ok ? { ...result, deduped: true } : result
+      return result.ok ? { ...result, deduped: true, dedupeSource } : result
     }
     let resolveClaim!: (result: SpawnAgentSessionResult) => void
-    claims.set(key, { result: new Promise(resolve => { resolveClaim = resolve }) })
+    claims.set(key, {
+      result: new Promise(resolve => { resolveClaim = resolve }),
+      // An implicit claim expires sooner than an explicit one — see
+      // `IMPLICIT_SPAWN_CLAIM_WINDOW_MS`'s docblock.
+      ...(dedupeSource === "implicit" ? { windowMs: IMPLICIT_SPAWN_CLAIM_WINDOW_MS } : {}),
+    })
     settleClaim = result => {
       if (result.ok) {
         const claim = claims.get(key)
@@ -1978,6 +2091,17 @@ export async function spawnAgentSession(
     // landed twice in the SAME place, which is what happened in the
     // incident and what deliberate fan-out (distinct labels, or no label at
     // all) doesn't look like.
+    //
+    // WP-E note: under the default `spawn.dedupe: "always"` policy this
+    // branch mostly goes quiet for its own original incident shape — a
+    // same-label/cwd/prompt repeat with no explicit `idempotencyKey` is now
+    // usually caught (and DEDUPED, not merely warned about) by the implicit-
+    // key claim above, which returns before a second `registry.spawnAgent`
+    // is ever reached. This check still fires for the cases dedup doesn't
+    // cover: a different `prompt` under the same label (implicit key
+    // legitimately differs, so both spawn — and a human may still want to
+    // know), `spawn.dedupe: "on-request"` with no per-call opt-in, or a
+    // caller that set `dedupe: false`.
     if (desc.label && desc.cwd) {
       const dupe = registry
         .list()

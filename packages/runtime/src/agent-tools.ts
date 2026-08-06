@@ -402,16 +402,33 @@ export function registerAgentTools(
         .min(1)
         .optional()
         .describe(
-          "Caller-declared 'this is the same logical spawn' token. A retried " +
-            "agent_start call (e.g. after a slow/lost response) that repeats the " +
-            "same `idempotencyKey` for the same `adapter`+`cwd` within ~30s of a " +
-            "successful spawn gets that SAME session's descriptor back instead of " +
-            "forking a second process — set `deduped: true` on the response so " +
-            "you can tell. Omit to spawn unconditionally (today's behaviour, and " +
-            "still required for deliberate concurrent spawns into the same cwd — " +
-            "this field can't distinguish a retry from an intentional duplicate " +
-            "spawn, only your own declared key can). Recommended for any caller " +
-            "that might retry a spawn it can't otherwise confirm succeeded."
+          "Caller-declared 'this is the same logical spawn' token — a PROMISE, " +
+            "not a guess. A retried agent_start call (e.g. after a slow/lost " +
+            "response) that repeats the same `idempotencyKey` for the same " +
+            "`adapter`+`cwd` within ~10min of a successful spawn gets that SAME " +
+            "session's descriptor back instead of forking a second process — the " +
+            "response carries `deduped: true` and `dedupeSource: \"explicit\"` so " +
+            "you can tell. Always wins over the daemon's own derived key (see " +
+            "`dedupe` below) when both would apply. Omitting this does NOT mean " +
+            "'spawn unconditionally' — see `dedupe`."
+        ),
+      dedupe: mcpBool
+        .optional()
+        .describe(
+          "Per-call override for the daemon's `spawn.dedupe` policy — what " +
+            "happens when NO `idempotencyKey` is supplied. By DEFAULT " +
+            "(`spawn.dedupe: \"always\"`) a spawn that carries a `label` gets an " +
+            "IMPLICIT key derived from that label plus a hash of `prompt`, and " +
+            "dedupes against it exactly like an explicit key — set " +
+            "`dedupeSource: \"implicit\"` on the response (alongside `deduped: " +
+            "true`) so you can tell it wasn't your own promise that matched. A " +
+            "spawn with no `label` is never touched by this — deliberate " +
+            "parallel fan-out into one cwd (a real, exercised pattern here) needs " +
+            "no label and stays exactly as many sessions as you asked for. Pass " +
+            "`dedupe: false` to opt this ONE spawn out of implicit derivation " +
+            "regardless of policy — the escape hatch, mirroring `attach: false` / " +
+            "`worktree: false`. `dedupe: true` forces derivation even under an " +
+            "`\"on-request\"` daemon policy, mirroring `attach: true`."
         ),
       permissionHold: mcpBool
         .optional()
@@ -966,6 +983,7 @@ export function registerAgentTools(
           ...(result.output ? { output: result.output } : {}),
           ...(warnings.length > 0 ? { warnings } : {}),
           ...(result.deduped ? { deduped: true } : {}),
+          ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
           ...(costBudgetPolicyId ? { costBudgetPolicyId } : {}),
         }
         return {
