@@ -1,5 +1,17 @@
 # @agentproto/corpus-cli
 
+## 0.7.0
+
+### Minor Changes
+
+- bdba3a5: Add PDF fetcher: browser-free extraction with `unpdf` as tier-3 in the import-web fetcher chain. Preserves page breaks, extracts document metadata (page count, sha256, title/author/dates), and fails loudly on encryption/missing text layer. Type-safe integration with backward-compatible additions to `FetchedSource` interface.
+
+### Patch Changes
+
+- Updated dependencies [bdba3a5]
+  - @agentproto/corpus@0.5.0
+  - @agentproto/corpus-presets@0.2.4
+
 ## 0.6.0
 
 ### Minor Changes

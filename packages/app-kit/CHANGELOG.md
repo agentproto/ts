@@ -1,5 +1,13 @@
 # @agentproto/app-kit
 
+## 0.3.2
+
+### Patch Changes
+
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+- Updated dependencies [c1399f3]
+  - @agentproto/mastra@0.2.4
+
 ## 0.3.1
 
 ### Patch Changes

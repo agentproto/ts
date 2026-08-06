@@ -1,5 +1,26 @@
 # agentproto-vscode
 
+## 0.4.0
+
+### Minor Changes
+
+- f37fe7a: Add origin-based session filtering and separate machine-origin sessions in the status bar and tree view. Introduces `agentproto.hideMachineSessions` setting (default: true) to suppress automated gate-review sessions by default while keeping them visible in a separate status-bar segment and tree icon with "verified" icon instead of "plug".
+
+### Patch Changes
+
+- 8228d88: Add dep-bump reclaim exemption for worktree GC: safely promote clean, unpushed worktrees from `hold` to `reclaim` when all commits are mechanical dependency bumps (subject and cumulative diff validation). Addresses storage bloat from recurring automated dependency-bump worktrees piling up as permanent holds. Includes comprehensive test coverage and applies re-validation at apply time (layer 2).
+- Updated dependencies [c825a12]
+- Updated dependencies [832870d]
+- Updated dependencies [c1399f3]
+- Updated dependencies [8228d88]
+- Updated dependencies [678bc1a]
+- Updated dependencies [980276e]
+- Updated dependencies [df10f28]
+- Updated dependencies [6280066]
+- Updated dependencies [b99245b]
+- Updated dependencies [fd3e287]
+  - @agentproto/runtime@2.1.0
+
 ## 0.3.0
 
 ### Minor Changes

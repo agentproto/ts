@@ -1,5 +1,12 @@
 # @agentproto/sandbox-e2b
 
+## 0.3.1
+
+### Patch Changes
+
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+  - @agentproto/sandbox@0.2.1
+
 ## 0.3.0
 
 ### Minor Changes

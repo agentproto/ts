@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-code
 
+## 2.1.1
+
+### Patch Changes
+
+- e7ab81a: Expose Kimi K3 model across adapters and llm-endpoint library. Adds direct moonshot routes and llm-endpoint proxy variants for unified model routing.
+- Updated dependencies [832870d]
+  - @agentproto/provider-presets@0.5.1
+
 ## 2.1.0
 
 ### Minor Changes

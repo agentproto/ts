@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-knowledge-qdrant",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Knowledge adapter: implements @agentproto/knowledge-engine's IKnowledgeProvider over a Qdrant collection via pure fetch (upsert/search/scroll) with OpenAI-compatible embeddings (text-embedding-3-small, 1536d). Optional tenant-scoped payload filtering isolates many tenants in one collection. Registers as a provider-kit family. No vendor SDK, no app coupling.",
   "keywords": [
     "agentproto",

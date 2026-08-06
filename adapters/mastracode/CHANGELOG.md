@@ -1,5 +1,12 @@
 # @agentproto/adapter-mastracode
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [c1399f3]
+  - @agentproto/provider-kit@0.4.1
+
 ## 0.3.0
 
 ### Minor Changes

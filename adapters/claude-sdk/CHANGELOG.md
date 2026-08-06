@@ -1,5 +1,17 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.5.1
+
+### Patch Changes
+
+- e7ab81a: Expose Kimi K3 model across adapters and llm-endpoint library. Adds direct moonshot routes and llm-endpoint proxy variants for unified model routing.
+- 980276e: Router-aware LLM model enumeration for Requesty and HuggingFace.
+
+  Introduces `listRouterLlmRoutes` to systematically enumerate all models a router serves, and enhances `getModelsByProvider` to fold these router tables into provider queries while deduplicating against OpenRouter's existing bare-id surface. Requesty and HuggingFace models now enumerate from their generated route tables as `vendor/product@router` ids. Claude SDK adapter adds Requesty model curation to its allowed list.
+
+- Updated dependencies [832870d]
+  - @agentproto/provider-presets@0.5.1
+
 ## 0.5.0
 
 ### Minor Changes

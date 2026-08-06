@@ -1,5 +1,22 @@
 # @agentproto/model-catalog
 
+## 0.8.0
+
+### Minor Changes
+
+- 980276e: Router-aware LLM model enumeration for Requesty and HuggingFace.
+
+  Introduces `listRouterLlmRoutes` to systematically enumerate all models a router serves, and enhances `getModelsByProvider` to fold these router tables into provider queries while deduplicating against OpenRouter's existing bare-id surface. Requesty and HuggingFace models now enumerate from their generated route tables as `vendor/product@router` ids. Claude SDK adapter adds Requesty model curation to its allowed list.
+
+### Patch Changes
+
+- c825a12: Sync generated catalog data from the pinned provider sources.
+
+  catalog-sync and runtime are named because their `src/__tests__` assertions
+  had to follow the refreshed data (context-window entry count, gpt-5.6 tier
+  repricing), and the coverage check counts anything under `src/` as
+  publish-affecting.
+
 ## 0.7.0
 
 ### Minor Changes

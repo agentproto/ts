@@ -1,5 +1,20 @@
 # @agentproto/catalog-sync
 
+## 0.5.3
+
+### Patch Changes
+
+- c825a12: Sync generated catalog data from the pinned provider sources.
+
+  catalog-sync and runtime are named because their `src/__tests__` assertions
+  had to follow the refreshed data (context-window entry count, gpt-5.6 tier
+  repricing), and the coverage check counts anything under `src/` as
+  publish-affecting.
+
+- Updated dependencies [c825a12]
+- Updated dependencies [980276e]
+  - @agentproto/model-catalog@0.8.0
+
 ## 0.5.2
 
 ### Patch Changes
