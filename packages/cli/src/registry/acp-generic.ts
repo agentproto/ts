@@ -178,6 +178,23 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
     bin_args: ["--experimental-acp"],
     install_hint: "npm install -g @iflow-ai/iflow-cli",
   },
+  {
+    slug: "mistral-vibe",
+    name: "Mistral Vibe",
+    description:
+      "Mistral AI's Vibe coding CLI, driven over the Agent Client Protocol via its bundled `vibe-acp` binary. Auth via MISTRAL_API_KEY (`vibe --setup`).",
+    bin: "vibe-acp",
+    install_hint: "uv tool install mistral-vibe",
+  },
+  {
+    slug: "kimi-cli",
+    name: "Kimi CLI",
+    description:
+      "Moonshot AI's Kimi CLI in ACP server mode (`kimi acp`), driven over the Agent Client Protocol. Requires `kimi login` once beforehand.",
+    bin: "kimi",
+    bin_args: ["acp"],
+    install_hint: "uv tool install --python 3.13 kimi-cli",
+  },
 ] as const
 
 /**

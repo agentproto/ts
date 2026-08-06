@@ -1,0 +1,63 @@
+{
+  "name": "@agentproto/adapter-antigravity",
+  "version": "0.1.0",
+  "description": "@agentproto/adapter-antigravity — AIP-45 AGENT-CLI adapter for Google Antigravity's headless CLI (`agy`). Spawns `agy -p --output-format stream-json`; Antigravity has no ACP mode yet (feature request google-antigravity/antigravity-cli#31).",
+  "keywords": [
+    "agentproto",
+    "aip-45",
+    "antigravity",
+    "agy",
+    "google",
+    "print",
+    "agent-cli",
+    "adapter"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-45",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "adapters/antigravity"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./ANTIGRAVITY.md": "./ANTIGRAVITY.md",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "ANTIGRAVITY.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

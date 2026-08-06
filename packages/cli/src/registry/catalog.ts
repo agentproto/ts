@@ -67,6 +67,17 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "antigravity",
+    name: "Google Antigravity",
+    description:
+      "Google Antigravity's headless CLI (`agy`) — a multi-model coding agent " +
+      "(Gemini 3.x, Claude, GPT-OSS) driven via `agy -p --output-format stream-json`. " +
+      "No ACP mode yet (feature request google-antigravity/antigravity-cli#31).",
+    packageName: "@agentproto/adapter-antigravity",
+    hint: "google · headless · multi-model",
+  },
+  {
+    type: "agent-cli",
     slug: "pi",
     name: "Pi",
     description:
