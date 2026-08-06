@@ -19,9 +19,15 @@
  * / blessed dep. Terminal emulator quirks (xterm vs iTerm, key
  * sequences for arrow keys) are limited to a couple lines below.
  *
- * Endpoint discovery: reads `~/.agentproto/runtime.json` written by
- * the daemon at startup. Falls back to the env var
- * `AGENTPROTO_DAEMON_URL` when the file is missing or stale.
+ * Endpoint discovery: layered fallback, first live candidate wins — env
+ * override (`AGENTPROTO_DAEMON_URL`/`_TOKEN`) > home
+ * `~/.agentproto/runtime.json` (only if its pid is still alive) > the
+ * central registry `~/.agentproto/daemons/<port>.json` for the port
+ * declared in config.json > each workspace's own runtime.json. A
+ * descriptor whose pid is dead is skipped, never trusted — see
+ * `discoverDaemon()` in `_daemon-helpers.ts` and this package's README
+ * ("Discovery + token") for the full order and the daemon-restart race
+ * it's guarding against.
  */
 import { parseArgs } from "node:util"
 import { basename, resolve } from "node:path"
@@ -95,9 +101,20 @@ Usage:
                                timeout: 900000ms/15m with --until, 60000ms/60s
                                bare — --timeout always wins)
 
-Discovers the daemon via ~/.agentproto/runtime.json. The token in that file
-is sent as Bearer on mutating routes; set AGENTPROTO_DAEMON_URL +
-AGENTPROTO_DAEMON_TOKEN to override.
+Discovers the daemon in this order — first live candidate wins:
+  1. AGENTPROTO_DAEMON_URL env var (token from AGENTPROTO_DAEMON_TOKEN, or
+     looked up from a matching runtime.json if that's unset)
+  2. ~/.agentproto/runtime.json, only if its pid is still alive
+  3. the central registry ~/.agentproto/daemons/<port>.json, for the port
+     declared in config.json (falling back to any other live entry)
+  4. each configured workspace's own <workspace>/.agentproto/runtime.json
+A descriptor whose pid is dead is ignored, never trusted — see this
+package's README ("Discovery + token") for the full explanation. The
+token from whichever descriptor wins is sent as Bearer on mutating
+routes. A 401 here almost always means the few-second window right after
+a daemon restart, where the previous process is still alive with a
+now-stale token; the error diagnoses that case and names the file it
+came from — AGENTPROTO_DAEMON_TOKEN is the manual override.
 
 sessions start flags:
   --auth subscription|api-key   deterministic billing-auth mode for adapters that

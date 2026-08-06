@@ -6,8 +6,10 @@
  * `agentproto tunnel status <id-or-name> [--json]`
  *
  * Manage public tunnels via the daemon's /tunnels HTTP routes.
- * Discovers the daemon via ~/.agentproto/runtime.json (same pattern as
- * `agentproto sessions`).
+ * Discovers the daemon via the same layered `discoverDaemon()` fallback
+ * as `agentproto sessions` (env override > live home runtime.json >
+ * central registry > workspace runtime.json; dead-pid descriptors are
+ * skipped).
  */
 import { parseArgs } from "node:util"
 import type { TunnelDescriptor } from "@agentproto/runtime"
@@ -31,7 +33,9 @@ Usage:
   agentproto tunnel stop   <id-or-name> [--json]       (alias: delete, rm)
   agentproto tunnel status <id-or-name> [--json]
 
-Discovers the daemon via ~/.agentproto/runtime.json.
+Discovers the daemon the same layered way \`agentproto sessions\` does — see
+\`agentproto sessions --help\` or this package's README ("Discovery + token")
+for the full fallback order.
 
 Providers (built-in; legacy aliases quick/named accepted):
   cloudflare-quick (default)  Cloudflare Quick Tunnel — no API key, ephemeral

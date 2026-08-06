@@ -255,7 +255,7 @@ What `serve` exposes:
 
 ### Discovery + token
 
-At boot the daemon writes `<workspace>/.agentproto/runtime.json` (mode `0600`) with:
+At boot the daemon writes `<workspace>/.agentproto/runtime.json` (mode `0600`) **and** registers itself in the central registry `~/.agentproto/daemons/<port>.json` with:
 
 ```json
 {
@@ -270,10 +270,27 @@ At boot the daemon writes `<workspace>/.agentproto/runtime.json` (mode `0600`) w
 }
 ```
 
-- The CLI reads this file to find the daemon URL and the bearer token.
-- The token is required on **mutating** `/sessions/*` routes and the `/sessions/:id/pty` WebSocket upgrade. There is **no loopback bypass** — the threat we're defending against (a browser fetch from a localhost-loaded page) is itself on loopback. A browser can't read `runtime.json` (mode 0600); a same-user CLI can.
+The CLI does **not** just read one fixed file — `discoverDaemon()` (`src/commands/_daemon-helpers.ts`) walks candidates in this order and takes the **first one that's actually live**:
+
+1. **`AGENTPROTO_DAEMON_URL`** env override. If `AGENTPROTO_DAEMON_TOKEN` isn't also set, the CLI still searches every registered workspace's `runtime.json` for one whose URL matches, so mutating routes don't 401 just because the token wasn't forwarded.
+2. **`~/.agentproto/runtime.json`** — an explicit, hand-placed or previously-written file — but only if its `pid` is still alive (`process.kill(pid, 0)`). This is the file most docs (and older `--help` text) call out as *the* discovery mechanism; it's really just the second-highest-priority candidate, and a dead one is skipped rather than trusted.
+3. The **central registry**, `~/.agentproto/daemons/<port>.json`, preferring the entry whose port matches `config.json`'s declared `daemon.port` (default `18790`) over any other live entry — a short-lived transient runtime on a random port must not shadow the long-running `serve` daemon.
+4. Each configured workspace's own `<workspace>/.agentproto/runtime.json`, in `workspaces.json` order.
+
+A candidate whose `pid` is dead is never trusted — it's recorded as `stale` and discovery moves to the next one. This matters because a `runtime.json` **outlives an unclean shutdown**: `kill -9`, a crash, or a reboot all leave the file behind with a now-invalid token, and it can sit anywhere a daemon was ever started from (including `~` itself, if `agentproto serve` was ever run without `--workspace` from the home directory). `agentproto serve` also sweeps dead-PID `runtime.json` files for every *registered* workspace and the central registry at boot — but a stray file under a workspace that was never registered (e.g. `~` used as an ad-hoc workspace) isn't swept, so it can linger indefinitely; the pid-liveness check in `discoverDaemon()` is what actually keeps it harmless.
+
+- The token from whichever descriptor wins is required on **mutating** `/sessions/*` routes and the `/sessions/:id/pty` WebSocket upgrade. There is **no loopback bypass** — the threat we're defending against (a browser fetch from a localhost-loaded page) is itself on loopback. A browser can't read `runtime.json` (mode 0600); a same-user CLI can.
 - Override via env: `AGENTPROTO_DAEMON_URL=http://… AGENTPROTO_DAEMON_TOKEN=…`.
 - Read routes (`GET /sessions`, SSE `/stream`) stay open so existing read-only tooling keeps working.
+
+**Known limitation — the restart handoff window.** `pid` liveness is not the same as *token* liveness. For the few seconds right after `agentproto serve` is restarted, the **previous** daemon process can still be alive (mid-shutdown) with its now-superseded token, while a fresher descriptor for the new process hasn't been written yet. `discoverDaemon()` will validly pick the old-but-still-alive candidate and the daemon will answer `401 sessions_unauthorized`. This is a narrow race, not silent: the CLI's `explain401()` helper probes the resolved URL's `/health`, reports which file the rejected token came from, and — since the daemon *is* reachable — tells you it's a token mismatch rather than printing a bare 401. The workaround is the same env override as above, pointed at the file `explain401()` names in its output — typically the central registry entry for the daemon's port:
+
+```bash
+export AGENTPROTO_DAEMON_TOKEN=$(node -p "require('$HOME/.agentproto/daemons/18790.json').token")
+export AGENTPROTO_DAEMON_URL=http://127.0.0.1:18790
+```
+
+It resolves itself once the old process finishes exiting and the stale descriptor's `pid` check starts failing.
 
 ### Gateway auth (persistent bearer token)
 
