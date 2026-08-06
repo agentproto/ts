@@ -106,6 +106,7 @@
     "node-pty": "^1.0.0"
   },
   "devDependencies": {
+    "@agentproto/adapter-antigravity": "workspace:*",
     "@agentproto/adapter-claude-code": "workspace:*",
     "@agentproto/adapter-claude-sdk": "workspace:*",
     "@agentproto/adapter-codex": "workspace:*",

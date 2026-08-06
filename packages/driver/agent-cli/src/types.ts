@@ -623,8 +623,16 @@ export interface AgentCliPrintConfig {
    *   `--output-format stream-json` taxonomy.
    * - `"mastra-jsonl"` — Mastra Code's `--output jsonl` taxonomy
    *   (`AgentControllerEvent` shapes).
+   * - `"antigravity-stream-json"` — Google Antigravity's (`agy`)
+   *   `--output-format stream-json` taxonomy. Superficially it mirrors
+   *   Claude Code's headless flag surface (`-p`, `--output-format
+   *   stream-json`, `--continue`), but the WIRE events do NOT: each line
+   *   is discriminated by an `event` field ("init" | "step_update" |
+   *   "result"), the payload is nested under a matching key, and the
+   *   session id is a nested `conversation_id` — so it needs its own
+   *   mapper, not the Claude one.
    */
-  event_schema?: "claude-stream-json" | "mastra-jsonl"
+  event_schema?: "claude-stream-json" | "mastra-jsonl" | "antigravity-stream-json"
 }
 
 /**

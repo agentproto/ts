@@ -72,6 +72,11 @@ const DEFAULT_OUTPUT: string[] = ["--output-format", "stream-json"]
 const DEFAULT_PRE_PROMPT: string[] = ["--no-interactive"]
 const DEFAULT_RESUME = { flag: "--resume", kind: "value" as const }
 
+/** The event taxonomies the print arm knows how to map. Mirrors
+ *  `AgentCliPrintConfig.event_schema` (minus the optional/undefined) so the
+ *  mapper dispatch and the manifest stay in lockstep. */
+type PrintEventSchema = NonNullable<AgentCliPrintConfig["event_schema"]>
+
 export function createPrintSession(
   opts: PrintArmOptions,
 ): AgentCliRuntimeSession {
@@ -195,7 +200,14 @@ export function createPrintSession(
 
           const sid = capturedSessionId || sessionId || ""
           const mapped = mapEvent(evt, sid, stderrLines, eventSchema, mastraState)
-          if (mapped) queue.push(mapped)
+          // A single wire line can fan out to several StreamEvents — e.g. an
+          // Antigravity tool step carries both the call and its result, and its
+          // terminal `result` line carries usage + turn-end together.
+          if (Array.isArray(mapped)) {
+            for (const m of mapped) queue.push(m)
+          } else if (mapped) {
+            queue.push(mapped)
+          }
         })
         rl.once("close", () => queue.end())
 
@@ -211,7 +223,11 @@ export function createPrintSession(
 
         if (exitCode !== 0 && exitCode !== null) {
           const binLabel =
-            eventSchema === "mastra-jsonl" ? "mastracode" : "claude"
+            eventSchema === "mastra-jsonl"
+              ? "mastracode"
+              : eventSchema === "antigravity-stream-json"
+                ? "agy"
+                : "claude"
           const errEvt: StreamEvent = {
             kind: "error",
             error: {
@@ -298,7 +314,7 @@ export function createPrintSession(
  */
 function setupMcpConfigFile(
   opts: PrintArmOptions,
-  eventSchema: "claude-stream-json" | "mastra-jsonl",
+  eventSchema: PrintEventSchema,
 ): (() => void) | undefined {
   if (eventSchema !== "mastra-jsonl") return undefined
   if (!opts.mcpServers || opts.mcpServers.length === 0) return undefined
@@ -417,7 +433,7 @@ function extractPromptText(message: unknown): string {
 
 function captureSessionId(
   evt: Record<string, unknown>,
-  schema: "claude-stream-json" | "mastra-jsonl",
+  schema: PrintEventSchema,
 ): string | null {
   switch (schema) {
     case "claude-stream-json":
@@ -428,6 +444,24 @@ function captureSessionId(
       )
         return evt.session_id
       return null
+    case "antigravity-stream-json": {
+      // `agy` stamps `conversation_id` on every line, but at two different
+      // levels: top-level on the opening `init` event, and nested in the
+      // payload on `result`. Capture it from the `init` (available before
+      // the turn produces any text — so a mid-turn crash still resumes) and
+      // re-confirm it from the authoritative terminal `result`. A pre-flight
+      // failure (e.g. unknown --model) emits `result` with an empty
+      // conversation_id; the `&& id` guard drops that so we never clobber a
+      // good id with "". Verified against antigravity.google/docs/cli/headless.
+      if (evt.event === "init" && typeof evt.conversation_id === "string" && evt.conversation_id)
+        return evt.conversation_id
+      if (evt.event === "result") {
+        const r = evt.result as Record<string, unknown> | undefined
+        if (typeof r?.conversation_id === "string" && r.conversation_id)
+          return r.conversation_id
+      }
+      return null
+    }
     case "mastra-jsonl":
       // Mastra Code writes exactly one authoritative final line per run
       // regardless of success/failure path: { type: "result", threadId,
@@ -451,12 +485,14 @@ function mapEvent(
   evt: Record<string, unknown>,
   sessionId: string,
   stderrLines: string[],
-  schema: "claude-stream-json" | "mastra-jsonl",
+  schema: PrintEventSchema,
   mastraState?: MastraMapperState,
-): StreamEvent | null {
+): StreamEvent | StreamEvent[] | null {
   switch (schema) {
     case "claude-stream-json":
       return mapClaudeEvent(evt, sessionId, stderrLines)
+    case "antigravity-stream-json":
+      return mapAntigravityEvent(evt, sessionId, stderrLines)
     case "mastra-jsonl": {
       if (!mastraState) {
         // Should never happen — mastra-jsonl schema always creates state
@@ -536,6 +572,178 @@ function mapClaudeEvent(
 
     default:
       return null
+  }
+}
+
+// ── Google Antigravity stream-json mapper ──────────────────────────
+
+/**
+ * Maps a single Google Antigravity (`agy --output-format stream-json`)
+ * NDJSON line to this repo's {@link StreamEvent} taxonomy.
+ *
+ * The wire shape was verified against antigravity.google/docs/cli/headless.
+ * Despite `agy` mirroring Claude Code's headless FLAGS (`-p`,
+ * `--output-format stream-json`, `--continue`), its EVENTS are a different
+ * taxonomy discriminated by an `event` field, not Claude's `type`:
+ *
+ *   {"event":"init","conversation_id":"…","init":{cwd,tools,permission_mode,…}}
+ *   {"event":"step_update","step_update":{conversation_id,step_index,state,
+ *       step_type,text_delta?,tool_name?,tool_info?,usage?,…}}
+ *   {"event":"result","result":{conversation_id,status,response,error?,usage,…}}
+ *
+ * - Text streams as INCREMENTAL `step_update.text_delta` fragments on
+ *   `agent_response` steps (the docs' own `jq -j … .text_delta` recipe
+ *   concatenates them, so fragments never overlap — emit each verbatim, no
+ *   accumulation state needed, unlike the Mastra mapper).
+ * - A `tool` step's terminal `DONE` carries the call AND its result in one
+ *   `tool_info` ({name, parameters, output, error?}). `agy` assigns no tool
+ *   call id, so we synthesize one from `step_index` to correlate the pair.
+ *   Returning a two-element array fans that single line out to a `tool-call`
+ *   + `tool-result` (the print-arm line handler flattens arrays).
+ * - The terminal `result` carries the run's total `usage` and its `status`;
+ *   we emit a `usage_update` then the terminal `turn-end`/`error`.
+ */
+function mapAntigravityEvent(
+  evt: Record<string, unknown>,
+  sessionId: string,
+  stderrLines: string[],
+): StreamEvent | StreamEvent[] | null {
+  switch (evt.event) {
+    case "step_update": {
+      const su = evt.step_update as Record<string, unknown> | undefined
+      if (!su) return null
+      const stepType = su.step_type
+
+      // Incremental assistant text.
+      if (
+        stepType === "agent_response" &&
+        typeof su.text_delta === "string" &&
+        su.text_delta
+      ) {
+        return { kind: "text-delta", sessionId, text: su.text_delta }
+      }
+
+      // A completed tool step carries the call and its result together.
+      // Emit the pair only on DONE; a preceding ACTIVE tool step (if any)
+      // is skipped so the call isn't announced twice.
+      if (stepType === "tool" && su.state === "DONE") {
+        const ti = su.tool_info as Record<string, unknown> | undefined
+        const toolName =
+          typeof su.tool_name === "string" && su.tool_name
+            ? su.tool_name
+            : typeof ti?.name === "string" && ti.name
+              ? (ti.name as string)
+              : "?"
+        const toolCallId =
+          typeof su.step_index === "number" ? `step-${su.step_index}` : ""
+        const err = ti?.error as Record<string, unknown> | undefined
+        const call: StreamEvent = {
+          kind: "tool-call",
+          sessionId,
+          toolCallId,
+          toolName,
+          arguments: ti?.parameters ?? {},
+        }
+        const result: StreamEvent = {
+          kind: "tool-result",
+          sessionId,
+          toolCallId,
+          result: err
+            ? typeof err.message === "string"
+              ? err.message
+              : err
+            : (ti?.output ?? null),
+          isError: !!err,
+        }
+        return [call, result]
+      }
+
+      // user_input / checkpoint / subagent steps carry no host-facing
+      // StreamEvent — skip them (subagents are surfaced by their own run).
+      return null
+    }
+
+    case "result": {
+      const r = evt.result as Record<string, unknown> | undefined
+      if (!r) return null
+      const status = typeof r.status === "string" ? r.status : ""
+      const out: StreamEvent[] = []
+
+      const usage = mapAntigravityUsage(r.usage, sessionId)
+      if (usage) out.push(usage)
+
+      if (status === "ERROR" || status === "INVALID") {
+        out.push({
+          kind: "error",
+          sessionId,
+          error: {
+            message:
+              typeof r.error === "string" && r.error
+                ? r.error
+                : `agy run ended with status ${status || "ERROR"}`,
+            ...(stderrLines.length
+              ? { data: { stderr: stderrLines.join("\n") } }
+              : {}),
+          },
+        })
+      } else {
+        out.push({
+          kind: "turn-end",
+          sessionId,
+          reason: mapAntigravityStatus(status),
+        })
+      }
+      return out.length ? out : null
+    }
+
+    // init and any unknown event carry no host-facing StreamEvent.
+    default:
+      return null
+  }
+}
+
+/**
+ * Normalize `agy` terminal `result.status` to a StreamEvent turn-end reason.
+ * ERROR / INVALID are handled as `error` events upstream, so only the
+ * non-error terminal statuses land here.
+ */
+function mapAntigravityStatus(
+  raw: string,
+): "completed" | "cancelled" | "max_turns" | "error" {
+  switch (raw) {
+    case "CANCELED":
+    case "INTERRUPTED":
+      return "cancelled"
+    // SUCCESS, WAITING, RUNNING (or anything else non-error): the turn ended.
+    default:
+      return "completed"
+  }
+}
+
+/**
+ * Map `agy`'s `result.usage` ({input_tokens, output_tokens, thinking_tokens,
+ * cache_read_tokens, total_tokens}) to a `usage_update` StreamEvent. `agy`
+ * reports no context-window size/used or per-turn cost here, so those stay 0
+ * / absent (the daemon's projector guards on >0 and never clobbers a real
+ * size). Returns null when no token counts are present.
+ */
+function mapAntigravityUsage(
+  usage: unknown,
+  sessionId: string,
+): StreamEvent | null {
+  if (usage === null || typeof usage !== "object") return null
+  const u = usage as Record<string, unknown>
+  const tokensIn = typeof u.input_tokens === "number" ? u.input_tokens : undefined
+  const tokensOut =
+    typeof u.output_tokens === "number" ? u.output_tokens : undefined
+  if (tokensIn === undefined && tokensOut === undefined) return null
+  return {
+    kind: "usage_update",
+    sessionId,
+    size: 0,
+    used: 0,
+    ...(tokensIn !== undefined ? { tokensIn } : {}),
+    ...(tokensOut !== undefined ? { tokensOut } : {}),
   }
 }
 
