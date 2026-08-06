@@ -88,6 +88,7 @@ import {
   type WorktreeField,
   type WorktreeIsolationMode,
   type WorktreeProvisioner,
+  type WorktreeRequest,
 } from "./worktree-isolation.js"
 import {
   decideSpawnAttach,
@@ -878,6 +879,7 @@ export type SpawnAgentSessionResult =
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
         | "worktree_requires_explicit_repo"
+        | "worktree_async_wait_conflict"
       message: string
       details?: Record<string, unknown>
     }
@@ -1198,7 +1200,7 @@ export async function spawnAgentSession(
   // would be meaningless. Validation-class rejects (`never` + explicit
   // request, or a provision with no provisioner wired) fail LOUD here, before
   // any side effect — mirroring the role/depth gates above.
-  let worktreeRequest: { slug?: string; base?: string } | undefined
+  let worktreeRequest: WorktreeRequest | undefined
   // Non-fatal spawn-time notices, surfaced on the success result (`warnings`)
   // AND logged. Populated by the worktree decision below (shared-dirty-cwd).
   const spawnWarnings: string[] = []
@@ -1269,6 +1271,22 @@ export async function spawnAgentSession(
         }
       }
       worktreeRequest = decision.request
+    }
+  }
+  // `worktree.async` returns before the tree — and therefore the driver
+  // session — exists, so there is no first-turn output for `wait` to block
+  // on and return. The two are a contradiction, not a priority order; fail
+  // loud here (no side effects yet) rather than silently picking one.
+  if (worktreeRequest?.async && input.wait) {
+    return {
+      ok: false,
+      code: "worktree_async_wait_conflict",
+      message:
+        "agent_start: `worktree.async` and `wait` cannot be combined — async " +
+        "provisioning returns before the worktree (and the driver session in " +
+        "it) exists, so there is no first-turn output for `wait` to block on. " +
+        "Drop `wait` and poll the session's `status` instead, or drop " +
+        "`worktree.async` to provision synchronously.",
     }
   }
   // ── Model-slug advisory (opaque late failure → early "did you mean") ──────
@@ -1862,6 +1880,185 @@ export async function spawnAgentSession(
     return result
   }
   try {
+    // Independent of cwd/the worktree — safe to resolve before either the
+    // async or the synchronous provisioning branch below needs it.
+    const resolvedMcpServers = await resolveMcpCredentialHeaders(mcpServers)
+    // ── Async worktree provisioning ──────────────────────────────────
+    // WP-F: `git worktree add` + the repo's `agentproto.json` setup hooks
+    // can run minutes, and every prior guard (PR #803's claim window, #805's
+    // implicit dedup) only treats the RETRY that provokes — this treats the
+    // wait. Opt-in only (`worktree: { async: true }` — see
+    // `WorktreeRequest.async`'s doc for why default stays synchronous):
+    // register a real, stable session NOW (status "starting"), settle the
+    // retry-safety claim with THIS early result so a caller retry arriving
+    // mid-provision dedupes against this row instead of forking a second
+    // `git worktree add`, then finish provisioning + the driver spawn in the
+    // background. `registry.settlePendingAgent` is the only thing allowed to
+    // move status off "starting" — on success it flips to "running" and
+    // fires the deferred initial prompt (never dispatched into a tree that
+    // isn't built yet); on failure it flips to "error" with a readable
+    // `lastError` so a spawn that can never run ends VISIBLY instead of
+    // sitting in "starting" forever.
+    if (worktreeRequest?.async && provisionWorktree) {
+      const pendingDesc = registry.spawnAgentPending({
+        id: mintedSessionId,
+        workspaceSlug: resolvedSlug,
+        cwd,
+        adapterSlug: input.adapter,
+        harness: input.harness ?? input.adapter,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.mode ? { mode: input.mode } : {}),
+        ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.route ? { route: input.route } : {}),
+        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+        ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+        ...(input.label ? { label: input.label } : {}),
+        ...(initialTitle ? { title: initialTitle } : {}),
+        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(parentSessionId ? { parentSessionId } : {}),
+        ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+        ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
+        depth: recordedDepth,
+        ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
+        ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
+        contextContinuity: resolvedContextContinuity,
+        ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.trace !== undefined ? { trace: input.trace } : {}),
+        ...(authEcho?.fingerprint
+          ? {
+              auth: {
+                mode: authEcho.authMode,
+                fingerprint: authEcho.fingerprint,
+                provider: authEcho.provider,
+                credentialSource: authEcho.credentialSource,
+                setEnv: authEcho.setEnv,
+              },
+            }
+          : {}),
+        ...(input.permissionHold ? { permissionHold: true } : {}),
+        ...(input.keepAlive ? { keepAlive: true } : {}),
+      })
+      // Anything from here to the early return must never throw past this
+      // point without settling the row it just registered — otherwise the
+      // outer catch below would report `agent_spawn_failed` to the ORIGINAL
+      // caller while leaving an orphaned "starting" placeholder no one will
+      // ever resolve.
+      try {
+        bindOrchestratorLifecycle?.(pendingDesc.id)
+        if (input.notifyUrl && webhookNotifier) {
+          webhookNotifier.register(pendingDesc.id, input.notifyUrl)
+        }
+      } catch (err) {
+        registry.settlePendingAgent(pendingDesc.id, {
+          ok: false,
+          message: `agent_start: spawn failed — ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        })
+        throw err
+      }
+      const earlyResult = finish({
+        ok: true,
+        descriptor: pendingDesc,
+        ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
+      })
+      const baseCwd = cwd
+      void (async () => {
+        let outcome: Awaited<ReturnType<WorktreeProvisioner>>
+        try {
+          outcome = await provisionWorktree({
+            cwd: baseCwd,
+            ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
+            ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
+            ...(input.label ? { labelHint: input.label } : {}),
+          })
+        } catch (err) {
+          registry.settlePendingAgent(pendingDesc.id, {
+            ok: false,
+            message: `agent_start: worktree provisioning failed — ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          })
+          return
+        }
+        const finalCwd = outcome.isolated ? outcome.cwd : baseCwd
+        try {
+          const agentSession = await resolved!.startSession({
+            cwd: finalCwd,
+            ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+            ...(input.mode ? { mode: input.mode } : {}),
+            ...(launchConfig.options ? { options: launchConfig.options } : {}),
+            ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
+            ...(input.effort ? { effort: input.effort } : {}),
+            ...(input.posture !== undefined ? { posture: input.posture } : {}),
+            ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+            ...(authSpec ? { auth: authSpec } : {}),
+            ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+            ...(input.permissionHold ? { permissionHold: true } : {}),
+            ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+            onActivity: () => registry.pulseActivity(pendingDesc.id),
+          })
+          let asyncPrompt = effectivePrompt
+          if (input.posture !== undefined) {
+            const resolution = resolvePosture(input.posture, agentSession.availableModes ?? [])
+            if (resolution.kind === "native" && agentSession.setSessionMode) {
+              await agentSession.setSessionMode(resolution.mode.id)
+            } else if (resolution.kind === "prompt" && asyncPrompt) {
+              asyncPrompt = `${resolution.preamble}\n\n${asyncPrompt}`
+            }
+          }
+          const commandPreview = resolved!.commandPreview
+          const readUsage = resolved!.readUsage
+            ? () => resolved!.readUsage!(agentSession.sessionId)
+            : undefined
+          // Best-effort duplicate-live-session advisory — see the sync
+          // path's "no-key backstop" for the full rationale. Console-only:
+          // the caller already got its (early) response, so there is no
+          // `warnings` array left to attach this to.
+          if (pendingDesc.label) {
+            const dupe = registry
+              .list()
+              .find(
+                s =>
+                  s.id !== pendingDesc.id &&
+                  s.label === pendingDesc.label &&
+                  s.cwd === finalCwd &&
+                  (s.status === "running" || s.status === "starting"),
+              )
+            if (dupe) {
+              console.warn(
+                `[agent_start] another LIVE session ("${dupe.id}") already has the same ` +
+                  `label ("${pendingDesc.label}") and cwd ("${finalCwd}") as this one. If ` +
+                  "this is a retried spawn rather than a deliberate parallel run, both are " +
+                  "now editing the same working directory concurrently — check before proceeding.",
+              )
+            }
+          }
+          registry.settlePendingAgent(pendingDesc.id, {
+            ok: true,
+            agentSession,
+            cwd: finalCwd,
+            ...(commandPreview ? { commandPreview } : {}),
+            ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
+            ...(resolved?.nativeTerminalResume !== undefined
+              ? { nativeTerminalResume: resolved.nativeTerminalResume }
+              : {}),
+            ...(readUsage ? { readUsage } : {}),
+            ...(asyncPrompt ? { initialPrompt: asyncPrompt } : {}),
+          })
+        } catch (err) {
+          registry.settlePendingAgent(pendingDesc.id, {
+            ok: false,
+            message: `agent_start: spawn failed — ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          })
+        }
+      })()
+      return earlyResult
+    }
     // ── Worktree provisioning (side-effecting half) ─────────────────
     // Runs AFTER the idempotency dedup above (a deduped retry returned
     // early, so it never reaches here — one logical spawn ⇒ at most one
@@ -1894,7 +2091,6 @@ export async function spawnAgentSession(
     // returns below, but `onActivity` can start firing as soon as
     // `startSession` connects — this box lets the closure defer
     // pulsing until the id is known, dropping any pre-spawn activity.
-    const resolvedMcpServers = await resolveMcpCredentialHeaders(mcpServers)
     let liveSessionId: string | undefined
 
     let agentSession: AgentSessionLike
