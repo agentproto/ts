@@ -372,6 +372,10 @@ export interface RunWorkflowArgs {
   /** Namespacing label for this run's cache lookups (the workflow_start cacheKey).
    *  Both `cache` and `cacheKey` must be set for any caching to happen. */
   cacheKey?: string
+  /** Called when a step begins execution (before spawn/prompt). */
+  onStepStart?: (stepId: string) => void
+  /** Called when a step completes execution, with its output. */
+  onStepComplete?: (stepId: string, output: unknown) => void
 }
 
 export interface WorkflowRunResult {
