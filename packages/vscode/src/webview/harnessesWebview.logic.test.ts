@@ -87,4 +87,39 @@ describe("buildHarnessesWebviewModel", () => {
     const model = buildHarnessesWebviewModel([adapter({ hint: "custom hint" })], "")
     expect((model.rows[0] as HarnessWebviewRow).description).toBe("custom hint")
   })
+
+  it("gives an installed (non-installable) harness the start action", () => {
+    const model = buildHarnessesWebviewModel([adapter({ slug: "claude-code", status: "ready" })], "")
+    expect(model.rows[0]?.action).toBe("start")
+  })
+
+  it("gives an installable harness the install action by default", () => {
+    const model = buildHarnessesWebviewModel([adapter({ slug: "codex", status: "available" })], "")
+    expect(model.rows[0]?.action).toBe("install")
+  })
+
+  it("gives an installable harness the installing action when its slug is in the optimistic set", () => {
+    const model = buildHarnessesWebviewModel(
+      [adapter({ slug: "codex", status: "available" })],
+      "",
+      new Set(["codex"]),
+    )
+    expect(model.rows[0]?.action).toBe("installing")
+  })
+
+  it("leaves other rows' actions untouched by an unrelated slug in the optimistic set", () => {
+    const adapters = [adapter({ slug: "codex", status: "available" }), adapter({ slug: "claude-code", status: "ready" })]
+    const model = buildHarnessesWebviewModel(adapters, "", new Set(["gemini-cli"]))
+    expect(model.rows.find(r => r.slug === "codex")?.action).toBe("install")
+    expect(model.rows.find(r => r.slug === "claude-code")?.action).toBe("start")
+  })
+
+  it("falls back to start once a previously-installing harness reports ready, ignoring the stale optimistic flag", () => {
+    const model = buildHarnessesWebviewModel(
+      [adapter({ slug: "codex", status: "ready" })],
+      "",
+      new Set(["codex"]),
+    )
+    expect(model.rows[0]?.action).toBe("start")
+  })
 })

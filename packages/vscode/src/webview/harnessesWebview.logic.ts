@@ -10,12 +10,26 @@ import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
 
 export type HarnessStatus = "ready" | "available" | "dim"
 
+/**
+ * The row's single labeled action button — always the same slot, never a
+ * hover-swap:
+ * - "start"      — installed harness, real `<button>` "▶ Start"
+ * - "install"    — not yet installed, click kicks off adapter_install
+ * - "installing" — optimistic state the panel sets right after the click,
+ *   held until the next adapters refresh lands (panel-side; see
+ *   harnessesWebviewPanel.ts). A row can only be "installing" while it's
+ *   still installable — once the underlying adapter reports installed, the
+ *   action falls back to "start" regardless of any stale optimistic flag.
+ */
+export type HarnessAction = "start" | "install" | "installing"
+
 export interface HarnessWebviewRow {
   slug: string
   name: string
   description: string
   status: HarnessStatus
   installable: boolean
+  action: HarnessAction
   logo: AdapterLogo
 }
 
@@ -51,13 +65,20 @@ function rowMatchesSearch(row: HarnessWebviewRow, search: string): boolean {
   )
 }
 
-function toRow(adapter: AdapterInfo): HarnessWebviewRow {
+function actionFor(installable: boolean, installing: boolean): HarnessAction {
+  if (!installable) return "start"
+  return installing ? "installing" : "install"
+}
+
+function toRow(adapter: AdapterInfo, installingSlugs: ReadonlySet<string>): HarnessWebviewRow {
+  const installable = canInstallHarness(adapter.status)
   return {
     slug: adapter.slug,
     name: adapter.name?.trim() || adapter.slug,
     description: harnessDescription(adapter),
     status: harnessStatusFor(adapter.status),
-    installable: canInstallHarness(adapter.status),
+    installable,
+    action: actionFor(installable, installingSlugs.has(adapter.slug)),
     logo: adapterLogoFor(adapter.slug),
   }
 }
@@ -65,11 +86,12 @@ function toRow(adapter: AdapterInfo): HarnessWebviewRow {
 export function buildHarnessesWebviewModel(
   adapters: readonly AdapterInfo[],
   search: string,
+  installingSlugs: ReadonlySet<string> = new Set(),
 ): HarnessesWebviewModel {
   const sorted = adapters
     .slice()
     .sort((a, b) => rawStatusRank(a.status) - rawStatusRank(b.status))
-    .map(toRow)
+    .map(a => toRow(a, installingSlugs))
   const trimmed = search.trim()
   const visible = trimmed.length === 0 ? sorted : sorted.filter(r => rowMatchesSearch(r, trimmed))
   return { rows: visible, shownCount: visible.length, totalCount: adapters.length }
