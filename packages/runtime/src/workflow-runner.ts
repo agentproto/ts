@@ -25,7 +25,7 @@ import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
 import { buildAgentStep, runWorkflow } from "@agentproto/workflow-runtime"
-import type { AgentSandboxRef, RuntimeWorkflow } from "@agentproto/workflow-runtime"
+import type { AgentSandboxRef, Bindings, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import type { WorkflowHandle } from "@agentproto/workflow"
@@ -149,7 +149,21 @@ function translateStages(
       id: step.label,
       steps: [
         buildAgentStep(step.label, {
-          prompt: step.prompt ?? "",
+          prompt: (b: Bindings) => {
+            const base = step.prompt ?? ""
+            // Inject previous steps' text output into the prompt context
+            const prevTexts: string[] = []
+            if (b.steps && typeof b.steps === "object") {
+              for (const [id, val] of Object.entries(b.steps as Record<string, unknown>)) {
+                if (val && typeof val === "object" && "text" in val) {
+                  const text = (val as { text?: string }).text
+                  if (text) prevTexts.push(`[Output from step "${id}"]\n${text}`)
+                }
+              }
+            }
+            if (prevTexts.length > 0) return `${prevTexts.join("\n\n")}\n\n---\n\n${base}`
+            return base
+          },
           ...(step.adapter !== undefined ? { adapter: step.adapter } : {}),
           ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
           ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),

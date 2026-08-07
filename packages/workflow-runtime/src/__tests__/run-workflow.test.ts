@@ -587,6 +587,88 @@ describe("runWorkflow — agent step", () => {
       /no session/,
     )
   })
+
+  it("returns { sessionId, text } when no outputSchema and readFinalMessage available", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => "Here is my analysis..."),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-text-output",
+      steps: [
+        {
+          kind: "agent",
+          id: "analyze",
+          adapter: "mock",
+          prompt: () => "analyze this",
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toEqual({ sessionId: "sess_fake", text: "Here is my analysis..." })
+    expect(host.readFinalMessage).toHaveBeenCalledWith("sess_fake")
+  })
+
+  it("returns { sessionId } when no outputSchema and readFinalMessage unavailable", async () => {
+    const host = fakeHost({
+      readFinalMessage: undefined,
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-no-text",
+      steps: [
+        {
+          kind: "agent",
+          id: "s6",
+          adapter: "mock",
+          prompt: () => "do something",
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toEqual({ sessionId: "sess_fake" })
+  })
+
+  it("threads agent step text output into next step's prompt via bindings.steps", async () => {
+    const prompts: string[] = []
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async (sid: string) => {
+        if (sid === "sess_step1") return "Step 1 found 3 issues."
+        return "Step 2 verification complete."
+      }),
+      spawn: vi.fn(async (_adapter, opts) => {
+        return opts!.stepId === "step1" ? "sess_step1" : "sess_step2"
+      }),
+      sendPromptAndWait: vi.fn(async (_sid, prompt) => {
+        prompts.push(prompt)
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-chaining",
+      steps: [
+        {
+          kind: "agent",
+          id: "step1",
+          adapter: "mock",
+          prompt: () => "Find bugs",
+        },
+        {
+          kind: "agent",
+          id: "step2",
+          adapter: "mock",
+          prompt: (b) => {
+            const step1Out = b.steps.step1 as { sessionId: string; text?: string }
+            return step1Out.text
+              ? `Verify these findings: ${step1Out.text}`
+              : "Verify findings"
+          },
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    expect((bindings.steps.step1 as { text: string }).text).toBe("Step 1 found 3 issues.")
+    expect((bindings.steps.step2 as { text: string }).text).toBe("Step 2 verification complete.")
+    // Second prompt should contain the first step's output
+    expect(prompts[1]).toContain("Step 1 found 3 issues.")
+  })
 })
 
 // ── AgentStep outputSchema tests ─────────────────────────────────────
