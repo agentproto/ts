@@ -89,6 +89,16 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // node-pty is an optional dep with a native binary (.node). Bundling
     // it breaks the relative-path native-binding resolution at runtime.
     "node-pty",
+    // @ast-grep/napi ships per-platform native .node bindings selected by
+    // a switch in its own JS shim, and is pulled in transitively (@mastra/
+    // core -> its bundled workspace/code-search tooling does a dynamic
+    // `import("@ast-grep/napi")`, reachable once @agentproto/runtime ->
+    // @agentproto/app-kit -> @agentproto/mastra is bundled into cli.mjs).
+    // Bundling it makes esbuild statically resolve every platform branch
+    // in that shim, which fails for every platform's binary except
+    // whichever one happens to be installed locally. Externalise it like
+    // node-pty so it resolves from node_modules at runtime instead.
+    "@ast-grep/napi",
   ],
   // Workspace @agentproto/* packages NOT yet on npm — bundle them
   // into cli.mjs. Once each lands on npm independently, move it to
