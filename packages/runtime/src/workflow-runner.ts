@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
-import { runWorkflow } from "@agentproto/workflow-runtime"
+import { buildAgentStep, runWorkflow } from "@agentproto/workflow-runtime"
 import type { AgentSandboxRef, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
@@ -148,16 +148,14 @@ function translateStages(
     const branches = stage.steps.map((step) => ({
       id: step.label,
       steps: [
-        {
-          kind: "agent" as const,
-          id: step.label,
+        buildAgentStep(step.label, {
+          prompt: step.prompt ?? "",
           ...(step.adapter !== undefined ? { adapter: step.adapter } : {}),
           ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
           ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
           ...(step.cacheable ? { cacheable: true } : {}),
-          prompt: () => step.prompt ?? "",
-          policy: step.policy ?? { awaiting: "fail" as const },
-        },
+          policy: step.policy,
+        }),
       ],
     }))
     return {

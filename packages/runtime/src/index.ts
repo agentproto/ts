@@ -90,7 +90,8 @@ import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
-import { registerAppTools } from "./app-tools.js"
+import { registerAppTools, resolveAgentRefsForWorkflow } from "./app-tools.js"
+import { createAppRegistry } from "./app-registry.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
@@ -1260,6 +1261,14 @@ export async function createGateway(
     dispatchTool,
   })
 
+  // Installed-app registry — singleton per daemon, shared between
+  // `registerAppTools` (app_install/app_run/…) and the workflow runner's
+  // `compileWorkflow` closure below, so a declarative `kind:"agent"` step's
+  // `agent.ref` resolves against every app this daemon has installed (WP-B4).
+  // Declared here (not inside `registerAppTools`) purely so both consumers
+  // share the one instance — same persistence defaults as before this WP.
+  const appRegistry = createAppRegistry()
+
   // Workflow runner — singleton per daemon, shared across all MCP
   // connections. Persists run state to ~/.agentproto/workflow-runs.json so
   // runs survive daemon restarts (interrupted runs are marked "failed" on
@@ -1284,7 +1293,14 @@ export async function createGateway(
         // the same `dispatchTool` the routine registrar / cron scheduler use
         // (see `workflow-tool-registry.ts`). Agent-step workflows are
         // unaffected: an empty tool registry compiles them exactly as before.
-        compileWorkflow: handle => compileWorkflow(handle, createDaemonToolRegistry(handle, dispatchTool)),
+        // `agentRefs` resolves a declarative agent-step's `agent.ref` against
+        // whichever installed app bundles this workflow id (undefined when
+        // none does — a plain `workflow_run_file` outside any app).
+        compileWorkflow: handle =>
+          compileWorkflow(handle, {
+            ...createDaemonToolRegistry(handle, dispatchTool),
+            agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+          }),
       })
     : undefined
 
@@ -1646,6 +1662,7 @@ export async function createGateway(
     registerAppTools(server, {
       registry: sessions,
       listRegisteredToolIds,
+      appRegistry,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })

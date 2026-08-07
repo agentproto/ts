@@ -246,6 +246,23 @@ export interface AgentStep {
    *  adapter + sessionRef are hashed. Default false — most agent steps have
    *  side effects. */
   cacheable?: boolean
+  /** Manifest-declared adapter option id → value, forwarded to a NEW spawn's
+   *  `startSession({ options })` — e.g. mastra-agent's `agent` option, set by
+   *  {@link CompileWorkflowOptions.agentRefs} resolution when this step's
+   *  declarative `agent.ref` names an app-scoped agent. Only meaningful with
+   *  `adapter`; ignored on a `sessionRef` reuse. */
+  options?: Record<string, boolean | number | string>
+}
+
+/** What a declarative agent-step's `agent.ref` resolves to — the adapter to
+ *  spawn under plus any adapter options that pick which concrete agent runs
+ *  (e.g. mastra-agent's `agent` option, an emitted AGENT.md path). Built by
+ *  the host from its own app-install state; the compiler only consumes it. */
+export interface AgentRefResolution {
+  /** Adapter slug to spawn (e.g. "mastra-agent"). */
+  adapter: string
+  /** Adapter option id → value merged onto the compiled step's `options`. */
+  options?: Record<string, boolean | number | string>
 }
 
 /**
@@ -298,7 +315,14 @@ export interface AgentSessionHost {
    *  host. */
   spawn(
     adapter: string,
-    opts: { cwd?: string; workspaceSlug?: string; stepId?: string; sandbox?: AgentSandboxRef },
+    opts: {
+      cwd?: string
+      workspaceSlug?: string
+      stepId?: string
+      sandbox?: AgentSandboxRef
+      /** Adapter option id → value for this spawn (see {@link AgentStep.options}). */
+      options?: Record<string, boolean | number | string>
+    },
   ): Promise<string>
   /** Send a prompt to an existing session and wait for its turn to end. */
   sendPromptAndWait(sessionId: string, prompt: string): Promise<void>

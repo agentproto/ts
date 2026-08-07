@@ -8,7 +8,17 @@
  */
 
 export type Step = StepCommon &
-  (StepTool | StepBranch | StepParallel | StepSuspend | StepApproval | StepMap | StepLoop | StepSubworkflow)
+  (
+    | StepTool
+    | StepBranch
+    | StepParallel
+    | StepSuspend
+    | StepApproval
+    | StepMap
+    | StepLoop
+    | StepSubworkflow
+    | StepAgent
+  )
 export type Approval = ("auto" | "always" | "on-mutate" | "per-step") | string
 export type Trigger =
   | {
@@ -88,7 +98,16 @@ export interface StepCommon {
   id: string
   name?: string
   description?: string
-  kind: "tool" | "branch" | "parallel" | "suspend" | "approval" | "map" | "loop" | "subworkflow"
+  kind:
+    | "tool"
+    | "branch"
+    | "parallel"
+    | "suspend"
+    | "approval"
+    | "map"
+    | "loop"
+    | "subworkflow"
+    | "agent"
   inputs?: {}
   outputs?: JsonSchema
   next?: string
@@ -215,6 +234,40 @@ export interface StepLoop {
 export interface StepSubworkflow {
   kind: "subworkflow"
   workflow: string
+}
+/**
+ * Spawn or reuse an agent session and send it a prompt — the declarative
+ * manifest counterpart of `@agentproto/workflow-runtime`'s `AgentStep`
+ * (see WP-B4 / `compileWorkflow`). `agent.ref` names an app-scoped agent id
+ * (e.g. `"@my-app/reviewer"`) the host resolves to a concrete adapter +
+ * spawn options at compile time — an unresolvable ref fails compilation,
+ * never the run.
+ */
+export interface StepAgent {
+  kind: "agent"
+  /** App-scoped agent id to resolve at compile time. Omit to spawn a plain
+   *  `adapter` (no app-ref resolution) or reuse via `sessionRef`. */
+  agent?: {
+    ref: string
+  }
+  prompt: string
+  /** Adapter slug for spawning a NEW session. Ignored (and unnecessary) when
+   *  `agent.ref` resolves one for you. Omit both to reuse via `sessionRef`. */
+  adapter?: string
+  /** Reuse an earlier agent step's spawned session, by that step's id. */
+  sessionRef?: string
+  sandbox?: string | { provider: string; [k: string]: unknown }
+  /** Cache this step's output under the run's cacheKey. Default false. */
+  cacheable?: boolean
+  /** Re-prompt-and-retry attempts on `outputSchema` mismatch. Default 2. */
+  maxRetries?: number
+  /** A zod `ZodType` (TS-authored) validating the session's final message;
+   *  re-prompts on mismatch. */
+  outputSchema?: unknown
+  policy?:
+    | { awaiting: "auto-allow"; prompt: string }
+    | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
+    | { awaiting: "fail" }
 }
 /**
  * Defined by AIP-16 — the IO `inputsFiles` block.

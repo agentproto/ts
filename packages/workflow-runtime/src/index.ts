@@ -18,6 +18,7 @@ export {
   type CompileWorkflowOptions,
 } from "./compile-workflow.js"
 export { compileWorkflowManifest } from "./load-workflow.js"
+export { buildAgentStep, type AgentStepFields } from "./build-agent-step.js"
 export type {
   Bindings,
   Selector,
@@ -36,6 +37,7 @@ export type {
   GroupStep,
   SubworkflowStep,
   AgentStep,
+  AgentRefResolution,
   AgentSandboxRef,
   AgentSessionHost,
   StepCache,
