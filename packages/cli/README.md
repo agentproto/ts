@@ -399,11 +399,18 @@ The terminal tools let one agent **orchestrate** other sessions: an agent in a s
 
 ## Adapter resolution
 
-`<slug>` resolves to the npm package `@agentproto/adapter-<slug>`. Install adapters globally so `agentproto` can find them on its `NODE_PATH`. Built-in adapters as of v0.1:
+`<slug>` resolves to the npm package `@agentproto/adapter-<slug>`. Install adapters globally so `agentproto` can find them on its `NODE_PATH`. First-party adapters shipped today include:
 
-- `@agentproto/adapter-claude-code` — Anthropic Claude Code via [@agentclientprotocol/claude-agent-acp](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp) (protocol: ACP, structured events)
+- `@agentproto/adapter-claude-code` — Anthropic Claude Code (protocol: ACP, structured events)
+- `@agentproto/adapter-claude-sdk` — Anthropic Claude Agent SDK
+- `@agentproto/adapter-codex` — OpenAI Codex
+- `@agentproto/adapter-gemini` — Google Gemini CLI (`gemini --experimental-acp`)
 - `@agentproto/adapter-hermes` — Hermes (protocol: ACP)
-- `@agentproto/adapter-openclaw` / `opencode` / `codex` / `mastra` — others discoverable via `GET /adapters` on a live daemon
+- `@agentproto/adapter-opencode` — OpenCode
+- `@agentproto/adapter-openclaw` — OpenClaw
+- `@agentproto/adapter-mastra` / `adapter-mastra-agent` / `adapter-mastracode` / `adapter-mastracode-inprocess` — Mastra-based agents
+- `@agentproto/adapter-browser` — browser / CDP session adapter
+- `@agentproto/adapter-pi` — pi
 
 Use `agentproto sessions terminal -- claude` (or `-- hermes`, `-- aider`, …) when you want the **raw interactive TUI** instead of the structured ACP event stream.
 

@@ -96,7 +96,7 @@ nothing is touched without `--apply`.**
 
 | Class | Definition | `--apply` does |
 |-------|-----------|----------------|
-| `reclaim` | (merged or fresh) + clean + idle | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. |
+| `reclaim` | `(merged or fresh) + clean + idle`, **or** a clean `unpushed` worktree whose only commits are mechanical dependency bumps (`chore(deps)` / `fix(deps)` subjects and the diff touches only lockfiles + `package.json`) | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. |
 | `salvage` | merged + dirty, and not written to in the last 15 minutes | Nothing, unless `--salvage-dirty` — then archives it (snapshot, then remove). |
 | `hold` | everything else, including a fresh or merged branch with uncommitted work | **Never touched**, with or without flags. |
 
@@ -138,10 +138,13 @@ agentproto worktree gc --apply --salvage-dirty
 `agent_start` takes a `worktree` field so a spawn isolates itself without a
 separate `worktree new` first: `worktree: true` provisions one (branch
 `wt/<slug>` cut from `origin/main`, slug auto-minted from the session label)
-and lands the session in it; `worktree: { slug, base }` pins either. It bites
-only for a **root** spawn whose cwd is inside a git repo — a spawn made through
-an orchestrator inherits its parent's tree, and a cwd outside any repo spawns
-plain.
+and lands the session in it; `worktree: { slug, base }` pins either. For a
+fast-return registration that provisions in the background, use
+`worktree: { async: true }` — the session descriptor is returned immediately
+with status `"starting"` and the resolved `cwd` is backfilled once the tree is
+ready (this cannot be combined with `wait: true`). It bites only for a **root**
+spawn whose cwd is inside a git repo — a spawn made through an orchestrator
+inherits its parent's tree, and a cwd outside any repo spawns plain.
 
 The daemon can force the behaviour with `worktrees.isolation` in
 `~/.agentproto/config.json` (or `AGENTPROTO_WORKTREES_ISOLATION`): `always`

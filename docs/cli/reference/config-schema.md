@@ -107,6 +107,12 @@ agentproto config set daemon.port 18791
     "isolation": "on-request"
   },
 
+  // Spawn-time policy for `agent_start` (dedupe, attach). See "spawn" below.
+  "spawn": {
+    "dedupe": "always",
+    "attach": "always"
+  },
+
   // Named terminal/TUI launch presets for `agentproto sessions terminal
   // --preset <name>`. See "terminalPresets" below.
   "terminalPresets": {
@@ -220,6 +226,15 @@ policy for isolating spawned agent sessions into one.
 | ------ | ------ | ------------------------------------------------------------------------------------------------------------- |
 | `root` | string | Absolute path new worktrees are created under (layout `<root>/<repoName>/<slug>`). Resolution order: `--root` flag > `AGENTPROTO_WORKTREES_ROOT` env > this field > the hardcoded default `~/.agentproto/worktrees`. |
 | `isolation` | `"always"` \| `"on-request"` \| `"never"` | Policy for `agent_start`'s `worktree` field. `on-request` (default) isolates only when a spawn passes `worktree`; `always` isolates every **root** spawn whose cwd is inside a git repo (a spawn made through an orchestrator inherits its parent's tree; a cwd outside any repo spawns plain); `never` turns it off and **rejects** an explicit `worktree` rather than silently ignoring it. Resolution order: `AGENTPROTO_WORKTREES_ISOLATION` env > this field > the default `on-request`. The worktree is **not** auto-removed on session exit — reclaim it with `agentproto worktree rm\|archive\|gc`. |
+
+### `spawn: object`
+
+Daemon-side policy for `agent_start` spawns.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `attach` | `"always"` \| `"on-request"` | Whether a spawn auto-attaches to its caller as parent lineage. `"always"` (default) nests a child under the spawning session whenever the identity is derivable; `"on-request"` disables auto-attribution unless the caller opts in. Resolution order: `AGENTPROTO_SPAWN_ATTACH` env > this field > `"always"`. A per-call `attach: false` opts out. |
+| `dedupe` | `"always"` \| `"on-request"` | Implicit idempotency-key policy. `"always"` (default) derives a key from the spawn's `label` + a hash of the initial `prompt` when no explicit `idempotencyKey` is given; `"on-request"` disables implicit derivation. Resolution order: `AGENTPROTO_SPAWN_DEDUPE` env > this field > `"always"`. A per-call `dedupe: false` opts out. |
 
 ### `terminalPresets: Record<string, object>`
 

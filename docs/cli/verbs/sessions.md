@@ -197,6 +197,24 @@ lazy resume revives the same descriptor row and so keeps the same id.
 mutable, and absent on most sessions; look one up via
 `AGENTPROTO_SESSION_ID` + `session_list` instead.
 
+#### Implicit spawn deduplication
+
+`agent_start` deduplicates spawns by default. When a spawn has a `label` and no
+explicit `idempotencyKey`, the daemon derives an implicit key from the label
+plus a hash of the initial `prompt`; a repeat with the same adapter, cwd, and
+key within ~2 minutes returns the existing session instead of forking a second
+one. Unlabelled spawns are never deduped, so deliberate parallel fan-out into
+one cwd is still safe.
+
+Control the policy with the `spawn.dedupe` config field or the
+`AGENTPROTO_SPAWN_DEDUPE` env var:
+
+- `"always"` (default) — derive an implicit key whenever a label is present.
+- `"on-request"` — only an explicit `idempotencyKey` dedupes (pre-default behaviour).
+
+Over MCP/HTTP, pass `dedupe: false` on a single spawn to opt out regardless of
+the policy. `session_restart` always mints a new session id and is unaffected.
+
 #### Orchestrator & `mcpServers`
 
 `--orchestrator` and `--mcp-servers-json` reach the same spawn capability as

@@ -28,7 +28,7 @@ already-installed checks pass.
 agentproto install claude-code
 agentproto install hermes
 agentproto install opencode --force          # reinstall ignoring version_check
-agentproto install gemini-cli --dry-run      # print would-be steps
+agentproto install gemini --dry-run          # print would-be steps
 agentproto install goose --skip-setup        # install binary, skip post-install pipeline
 ```
 
