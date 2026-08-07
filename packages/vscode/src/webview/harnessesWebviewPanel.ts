@@ -3,7 +3,8 @@
  * TreeView (`agentproto.harnessesView === "webview"`, see package.json's
  * mutually-exclusive `when` clauses). Mirrors the Sessions webview's row
  * grammar: hairline separators, 7x7px status dots, real adapter logos in the
- * second column, and an inline "Install" pill for installable harnesses.
+ * second column, and one labeled action button (Install / Installing… /
+ * ▶ Start) that never changes slot or swaps on hover.
  */
 
 import { randomBytes } from "node:crypto"
@@ -32,6 +33,7 @@ interface RenderRow {
   description: string
   status: HarnessWebviewRow["status"]
   installable: boolean
+  action: HarnessWebviewRow["action"]
   logo: RenderLogo
 }
 
@@ -61,6 +63,12 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
   private search = ""
   private adapters: AdapterInfo[] = []
+  // Optimistic "Installing…" state set the moment the click fires. Cleared in
+  // bulk on the next adapters refresh (see fetch()) — that refresh is the
+  // authoritative signal that an install attempt has settled, whether it
+  // succeeded or failed, since installHarness's `finally` always calls
+  // provider.refresh() (packages/vscode/src/commands/harnesses.ts).
+  private installingSlugs = new Set<string>()
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -100,6 +108,10 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
     } catch {
       this.adapters = []
     }
+    // Authoritative refresh lands — drop any optimistic "installing" flags
+    // and let buildHarnessesWebviewModel derive the real action from the
+    // fresh adapter statuses (ready → "start", still-installable → "install").
+    this.installingSlugs.clear()
     this.post()
   }
 
@@ -115,6 +127,11 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
       case "install": {
         const adapter = this.adapters.find(a => a.slug === msg.slug)
         if (adapter) {
+          // Flip the row to "Installing…" immediately, before the command
+          // (which shows its own progress notification and awaits the
+          // daemon) resolves — the row's own feedback shouldn't wait on that.
+          this.installingSlugs.add(msg.slug)
+          this.post()
           const node: HarnessNode = { adapter }
           void vscode.commands.executeCommand("agentproto.installHarness", node)
         }
@@ -133,7 +150,7 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
 
   private post(): void {
     if (!this.view) return
-    const model = buildHarnessesWebviewModel(this.adapters, this.search)
+    const model = buildHarnessesWebviewModel(this.adapters, this.search, this.installingSlugs)
     const message: ModelMessage = {
       type: "model",
       rows: model.rows.map(r => toRenderRow(r, this.view!.webview, this.extensionUri)),
@@ -190,6 +207,7 @@ function toRenderRow(row: HarnessWebviewRow, webview: vscode.Webview, extensionU
     description: row.description,
     status: row.status,
     installable: row.installable,
+    action: row.action,
     logo: toRenderLogo(row.logo, webview, extensionUri),
   }
 }
@@ -243,9 +261,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
     #list { flex: 1 1 auto; overflow-y: auto; }
     .row {
       position: relative; padding: 7px 12px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25));
-      cursor: default; display: grid; grid-template-columns: 10px 20px 1fr auto; column-gap: 8px; align-items: center;
+      cursor: pointer; display: grid; grid-template-columns: 10px 20px 1fr auto; column-gap: 8px; align-items: center;
     }
     .row:hover { background: var(--vscode-list-hoverBackground); }
+    .row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     .dot { width: 7px; height: 7px; border-radius: 50%; justify-self: center; }
     .dot.ready { background: var(--vscode-charts-green, #2ea043); }
     .dot.available { background: var(--vscode-editorWarning-foreground, #cca700); opacity: 0.9; }
@@ -261,17 +280,25 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .name { font-size: 12.5px; font-weight: 550; letter-spacing: -0.01em; color: var(--vscode-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .desc { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
     .desc .pipe { opacity: 0.5; margin: 0 4px; }
-    .right { font-size: 10.5px; color: var(--vscode-descriptionForeground); text-align: right; white-space: nowrap; }
-    .right.install {
-      font-size: 10px; color: var(--vscode-textLink-foreground, #8fc2ff); border: 1px solid rgba(143,194,255,0.35);
-      padding: 1px 6px; border-radius: 3px; opacity: 0.9; cursor: pointer;
+    .act {
+      font-family: var(--vscode-font-family); font-size: 11px; line-height: 1;
+      padding: 3px 10px; border-radius: 4px; border: 1px solid var(--vscode-descriptionForeground);
+      background: transparent; color: var(--vscode-descriptionForeground); opacity: 0.7;
+      cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+      min-width: 64px;
     }
-    .row:not(:hover) .right.install { opacity: 0.55; }
-    .right.check { font-size: 10.5px; color: var(--vscode-descriptionForeground); }
-    .row:hover .right.check { display: none; }
-    .right.start { display: none; cursor: pointer; font-size: 11px; color: var(--vscode-descriptionForeground); }
-    .row:hover .right.start { display: inline-block; }
-    .right.start:hover { color: var(--vscode-foreground); }
+    .act.primary { color: var(--vscode-foreground); opacity: 0.85; }
+    .row:hover .act, .act:hover, .act:focus-visible { opacity: 1; color: var(--vscode-foreground); border-color: var(--vscode-foreground); }
+    .act:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+    .act[disabled] { cursor: default; }
+    .act .tri { font-size: 8px; }
+    .spin {
+      width: 10px; height: 10px; border: 1.5px solid var(--vscode-descriptionForeground);
+      border-top-color: var(--vscode-foreground); border-radius: 50%;
+      animation: agentproto-harness-spin 0.8s linear infinite; display: inline-block;
+    }
+    @keyframes agentproto-harness-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
     #empty { padding: 32px 16px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; }
     #empty[hidden] { display: none; }
   </style>
@@ -310,21 +337,25 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return '<span class="logo img"><img src="' + escapeHtml(logo.uri) + '" alt="" /></span>';
       }
 
-      function rowHTML(r) {
-        var right;
-        if (r.installable) {
-          right = '<span class="right install" data-install="' + escapeHtml(r.slug) + '">Install</span>';
-        } else {
-          right = '<span class="right check">✓</span><span class="right start" data-spawn="' + escapeHtml(r.slug) + '" title="Start session with this harness">▶</span>';
+      function actionHTML(r) {
+        if (r.action === 'start') {
+          return '<button class="act primary" data-act="start" title="Start a session with ' + escapeHtml(r.name) + '"><span class="tri">▶</span>Start</button>';
         }
-        return '<div class="row" data-slug="' + escapeHtml(r.slug) + '">' +
+        if (r.action === 'installing') {
+          return '<button class="act" disabled><span class="spin"></span>Installing…</button>';
+        }
+        return '<button class="act" data-act="install">Install</button>';
+      }
+
+      function rowHTML(r) {
+        return '<div class="row" tabindex="0" data-slug="' + escapeHtml(r.slug) + '" data-act="' + escapeHtml(r.action) + '">' +
           '<span class="dot ' + r.status + '"></span>' +
           logoHtml(r.logo) +
           '<div class="mid">' +
             '<div class="name">' + escapeHtml(r.name) + '</div>' +
             '<div class="desc">' + escapeHtml(r.description).replace(/ · /g, '<span class="pipe">·</span>') + '</div>' +
           '</div>' +
-          right +
+          actionHTML(r) +
         '</div>';
       }
 
@@ -362,17 +393,27 @@ export function buildHtml(nonce: string, cspSource: string): string {
         for (var j = 0; j < svgs.length; j++) loadSvg(svgs[j]);
       }
 
+      function fireRow(row) {
+        if (!row) return;
+        var act = row.getAttribute('data-act');
+        var slug = row.getAttribute('data-slug');
+        if (act === 'installing') return;
+        if (act === 'install') {
+          vscode.postMessage({ type: 'install', slug: slug });
+        } else if (act === 'start') {
+          vscode.postMessage({ type: 'spawn', slug: slug });
+        }
+      }
+
       listEl.addEventListener('click', function (e) {
-        var installBtn = e.target.closest('[data-install]');
-        if (installBtn) {
-          vscode.postMessage({ type: 'install', slug: installBtn.getAttribute('data-install') });
-          return;
-        }
-        var spawnBtn = e.target.closest('[data-spawn]');
-        if (spawnBtn) {
-          vscode.postMessage({ type: 'spawn', slug: spawnBtn.getAttribute('data-spawn') });
-          return;
-        }
+        fireRow(e.target.closest('.row'));
+      });
+      listEl.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter') return;
+        var row = e.target.closest('.row');
+        if (!row) return;
+        e.preventDefault();
+        fireRow(row);
       });
 
       var filterTimer = null;
