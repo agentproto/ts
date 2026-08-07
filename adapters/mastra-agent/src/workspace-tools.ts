@@ -9,27 +9,58 @@
  * directory the daemon spawned it in.
  */
 
-import { exec } from "node:child_process"
+import { exec, execFile } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { promises as fs } from "node:fs"
-import { isAbsolute, relative, resolve, sep } from "node:path"
+import { tmpdir } from "node:os"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 import { createTool } from "@mastra/core/tools"
+import type { MastraToolLike } from "@agentproto/mastra"
 import { z } from "zod"
 
 const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 /** A Mastra tool (structural — avoids coupling to a @mastra/core type name). */
 export interface WorkspaceTool {
   id: string
 }
 
+/** `command`'s argv0 must be one of these for `run_tests` — no arbitrary exec. */
+const ALLOWED_TEST_ARGV0 = new Set(["npm", "pnpm", "yarn", "node", "npx"])
+
+/** Keep tool output bounded — return only the tail. */
+function tail(s: string, maxChars = 4000): string {
+  return s.length > maxChars ? s.slice(-maxChars) : s
+}
+
+/** Pull the file paths a unified diff touches out of its `---`/`+++` headers. */
+function extractPatchPaths(patch: string): string[] {
+  const paths = new Set<string>()
+  for (const line of patch.split("\n")) {
+    const m = /^(?:\+\+\+|---) (?:a\/|b\/)?(.+?)(?:\t.*)?$/.exec(line)
+    if (!m) continue
+    const p = m[1]!.trim()
+    if (p === "/dev/null") continue
+    paths.add(p)
+  }
+  return [...paths]
+}
+
 export interface WorkspaceToolsOptions {
   /** Absolute path the agent is confined to (the spawn cwd). */
   cwd: string
-  /** When false, `run_command` is omitted from the toolset. Default true. */
+  /** When false, `run_command` (and the other exec-gated tools) are omitted. Default true. */
   allowExec?: boolean
   /** Per-command timeout (ms). Default 120_000. */
   execTimeoutMs?: number
+  /**
+   * Extra tools merged over the built-ins, keyed by id — lets an embedding
+   * host add tools the built-in toolset doesn't cover. On id collision, an
+   * extra tool wins over a built-in of the same id.
+   */
+  extraTools?: Record<string, MastraToolLike>
 }
 
 /** Resolve `p` against `cwd`, throwing if the result escapes the workspace. */
@@ -166,7 +197,112 @@ export function makeWorkspaceTools(
         }
       },
     })
+
+    tools.read_diff = createTool({
+      id: "read_diff",
+      description:
+        "Show `git diff` for the workspace — staged and unstaged changes against HEAD (or against `base` if given), as unified diff text. Optionally scoped to `paths`.",
+      inputSchema: z.object({
+        paths: z
+          .array(z.string())
+          .optional()
+          .describe("Restrict the diff to these paths, relative to the workspace root."),
+        base: z.string().optional().describe("Git ref to diff against. Defaults to HEAD."),
+      }),
+      outputSchema: z.object({ diff: z.string() }),
+      execute: async (input: { paths?: string[]; base?: string }) => {
+        const relPaths = (input.paths ?? []).map((p) => {
+          const abs = resolveInCwd(cwd, p)
+          return relative(cwd, abs) || "."
+        })
+        const args = [
+          "diff",
+          input.base ?? "HEAD",
+          ...(relPaths.length ? ["--", ...relPaths] : []),
+        ]
+        try {
+          const { stdout } = await execFileAsync("git", args, {
+            cwd,
+            timeout: execTimeoutMs,
+            maxBuffer: 10 * 1024 * 1024,
+          })
+          return { diff: stdout }
+        } catch (err) {
+          const e = err as { stderr?: string; message?: string }
+          throw new Error(`git diff failed: ${e.stderr ?? e.message ?? String(err)}`)
+        }
+      },
+    })
+
+    tools.apply_patch = createTool({
+      id: "apply_patch",
+      description:
+        "Apply a unified diff to files in the workspace (`git apply --whitespace=nowarn`). Paths in the patch that escape the workspace are rejected.",
+      inputSchema: z.object({
+        patch: z.string().describe("Unified diff text to apply."),
+      }),
+      outputSchema: z.object({ applied: z.boolean(), output: z.string() }),
+      execute: async (input: { patch: string }) => {
+        for (const p of extractPatchPaths(input.patch)) {
+          resolveInCwd(cwd, p) // throws if the patch touches a path outside cwd
+        }
+        const patchFile = join(tmpdir(), `mastra-agent-patch-${randomUUID()}.diff`)
+        await fs.writeFile(patchFile, input.patch, "utf8")
+        try {
+          const { stdout, stderr } = await execFileAsync(
+            "git",
+            ["apply", "--whitespace=nowarn", patchFile],
+            { cwd, timeout: execTimeoutMs, maxBuffer: 10 * 1024 * 1024 },
+          )
+          return { applied: true, output: stdout || stderr || "" }
+        } catch (err) {
+          const e = err as { stdout?: string; stderr?: string; message?: string }
+          throw new Error(`git apply failed: ${e.stderr ?? e.stdout ?? e.message ?? String(err)}`)
+        } finally {
+          await fs.unlink(patchFile).catch(() => {})
+        }
+      },
+    })
+
+    tools.run_tests = createTool({
+      id: "run_tests",
+      description:
+        "Run the workspace's test command (default `npm test`, overridable via `command` or the MASTRA_AGENT_TEST_CMD env) and return its exit code + output tail.",
+      inputSchema: z.object({
+        command: z
+          .string()
+          .optional()
+          .describe("Override the test command. Its argv0 must be one of npm, pnpm, yarn, node, npx."),
+      }),
+      outputSchema: z.object({ exitCode: z.number(), output: z.string() }),
+      execute: async (input: { command?: string }) => {
+        const commandStr = input.command ?? process.env.MASTRA_AGENT_TEST_CMD ?? "npm test"
+        const argv0 = commandStr.trim().split(/\s+/)[0]
+        if (!argv0 || !ALLOWED_TEST_ARGV0.has(argv0)) {
+          throw new Error(
+            `run_tests: command '${commandStr}' is not allowed — argv0 must be one of ${[...ALLOWED_TEST_ARGV0].join(", ")}.`,
+          )
+        }
+        try {
+          const { stdout, stderr } = await execAsync(commandStr, {
+            cwd,
+            timeout: execTimeoutMs,
+            maxBuffer: 10 * 1024 * 1024,
+          })
+          return { exitCode: 0, output: tail(stdout + stderr) }
+        } catch (err) {
+          const e = err as { stdout?: string; stderr?: string; code?: number; message?: string }
+          return {
+            exitCode: typeof e.code === "number" ? e.code : 1,
+            output: tail((e.stdout ?? "") + (e.stderr ?? e.message ?? String(err))),
+          }
+        }
+      },
+    })
   }
 
-  return tools
+  return {
+    ...tools,
+    ...(opts.extraTools as Record<string, ReturnType<typeof createTool>> | undefined),
+  }
 }

@@ -464,6 +464,12 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@agentproto/app-kit':
+        specifier: workspace:*
+        version: link:../../packages/app-kit
+      '@agentproto/apps':
+        specifier: workspace:*
+        version: link:../../packages/apps
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../../packages/tooling
