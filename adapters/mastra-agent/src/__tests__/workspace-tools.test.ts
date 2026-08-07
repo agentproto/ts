@@ -182,3 +182,50 @@ describe("read_diff / apply_patch / run_tests (git-backed)", () => {
     )
   })
 })
+
+describe("read_diff / run_command: git ceiling (fixes #818)", () => {
+  let parentDir: string
+  let childDir: string
+  const git = (dir: string, args: string[]) =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+
+  beforeAll(async () => {
+    // Create a git repo as the parent, with a committed file and an uncommitted change
+    parentDir = await fs.mkdtemp(join(tmpdir(), "mastra-parent-git-"))
+    git(parentDir, ["init", "-q"])
+    git(parentDir, ["config", "user.email", "test@example.com"])
+    git(parentDir, ["config", "user.name", "Test"])
+    await fs.writeFile(join(parentDir, "parent.txt"), "initial\n")
+    git(parentDir, ["add", "."])
+    git(parentDir, ["commit", "-q", "-m", "parent commit"])
+    await fs.writeFile(join(parentDir, "parent.txt"), "modified\n")
+
+    // Create a non-git subdirectory inside the parent repo
+    childDir = join(parentDir, "child-workspace")
+    await fs.mkdir(childDir)
+    await fs.writeFile(join(childDir, "child.txt"), "child content\n")
+  })
+
+  afterAll(async () => {
+    await fs.rm(parentDir, { recursive: true, force: true })
+  })
+
+  const exec = (tool: { execute?: unknown } | undefined) =>
+    (tool!.execute as (i: unknown) => Promise<Record<string, unknown>>)
+
+  it("read_diff on a non-git workspace inside a git repo does not discover the parent repo", async () => {
+    const tools = makeWorkspaceTools({ cwd: childDir })
+    // Without the GIT_CEILING_DIRECTORIES fix, this would show parent.txt changes;
+    // with the fix, git sees no repo and returns an error or empty diff.
+    await expect(exec(tools.read_diff)({})).rejects.toThrow(/git diff failed/)
+  })
+
+  it("run_command with 'git status' on a non-git workspace inside a git repo does not discover the parent repo", async () => {
+    const tools = makeWorkspaceTools({ cwd: childDir })
+    const r = await exec(tools.run_command)({ command: "git status" })
+    // Without the fix, git would discover the parent repo and return exitCode 0.
+    // With the fix, git fails to find a repo (exits nonzero).
+    expect(r.exitCode).not.toBe(0)
+    expect((r.stderr as string).toLowerCase()).toContain("not a git repository")
+  })
+})
