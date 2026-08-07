@@ -65,6 +65,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@agentproto/app-kit": "workspace:*",
+    "@agentproto/apps": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
     "tsup": "^8.5.1",

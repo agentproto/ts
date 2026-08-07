@@ -7,6 +7,7 @@
 import { readFile } from "node:fs/promises"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent"
 import { buildMastraAgent } from "@agentproto/mastra"
+import type { MastraToolLike } from "@agentproto/mastra"
 import type { MastraLike } from "./acp-host.js"
 import { buildSqliteMemory } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
@@ -34,6 +35,12 @@ export interface AgentSourceOptions {
   cwd?: string
   /** When false, the `run_command` tool is withheld. Default true. */
   allowExec?: boolean
+  /**
+   * Extra tools merged over the built-in workspace toolset (extra wins on id
+   * collision) — programmatic-only, for a host embedding this agent that
+   * wants to grant tools the built-in toolset doesn't cover. No CLI flag.
+   */
+  extraTools?: Record<string, MastraToolLike>
 }
 
 /** The built-in AGENT.md used when no file is supplied. */
@@ -92,7 +99,11 @@ export function makeAgentFactory(
     const handle = agentFromManifest({ frontmatter, body })
 
     const cwd = opts.cwd ?? process.cwd()
-    const workspaceTools = makeWorkspaceTools({ cwd, allowExec: opts.allowExec })
+    const workspaceTools = makeWorkspaceTools({
+      cwd,
+      allowExec: opts.allowExec,
+      extraTools: opts.extraTools,
+    })
 
     const { agent } = await buildMastraAgent(handle, {
       resolveModel: (ref) => resolveMastraModel(ref),
