@@ -45,11 +45,18 @@ export function defineApp(def: AppDefinition): AppHandle {
   if (!Array.isArray(def.agents) || def.agents.length === 0) {
     throw new AppDefinitionError("`agents` must be a non-empty array.")
   }
+  if (def.id !== undefined && def.id.trim() === "") {
+    throw new AppDefinitionError("`id` must be non-empty when present.")
+  }
 
   const agents = def.agents.map(normalizeEntry)
   const workflows = def.workflows ?? []
   const attachments = def.attach ?? []
   const workspace = def.workspace ? toWorkspaceHandle(def.workspace) : undefined
+  const id = def.id
+  const name = def.name
+  const version = def.version ?? (id ? "0.1.0" : undefined)
+  const description = def.description
 
   validateAttachment(agents, workflows)
 
@@ -62,6 +69,10 @@ export function defineApp(def: AppDefinition): AppHandle {
     workflows: frozenWorkflows,
     attachments: frozenAttachments,
     ...(workspace ? { workspace } : {}),
+    ...(id !== undefined ? { id } : {}),
+    ...(name !== undefined ? { name } : {}),
+    ...(version !== undefined ? { version } : {}),
+    ...(description !== undefined ? { description } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
       const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
@@ -87,7 +98,15 @@ export function defineApp(def: AppDefinition): AppHandle {
 
     emit(dir: string) {
       return emitApp(
-        { agents: frozenAgents, workflows: frozenWorkflows, ...(workspace ? { workspace } : {}) },
+        {
+          agents: frozenAgents,
+          workflows: frozenWorkflows,
+          ...(workspace ? { workspace } : {}),
+          ...(id !== undefined ? { id } : {}),
+          ...(name !== undefined ? { name } : {}),
+          ...(version !== undefined ? { version } : {}),
+          ...(description !== undefined ? { description } : {}),
+        },
         dir,
       )
     },

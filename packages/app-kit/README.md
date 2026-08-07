@@ -119,6 +119,7 @@ shared root `.agents/` convention:
 
 ```
 <dir>/WORKSPACE.md                                      (AIP-34 root manifest — only when the app has a workspace)
+<dir>/.agentproto/APP.md                                (root index — always written)
 <dir>/.agentproto/agents/reviewer/AGENT.md
 <dir>/.agentproto/agents/fixer/AGENT.md
 <dir>/.agentproto/workflows/review-and-fix/WORKFLOW.md   (shared — a workflow may be run by several agents)
@@ -128,10 +129,33 @@ The daemon's state root is migrating toward a `tenants/<t>/…` segment
 (AIP-46 / DESIGN.md §9); app-kit will add that segment once the daemon's tenant
 layer lands, rather than inventing the shape ahead of it.
 
-Both are plain markdown: frontmatter = the validated handle, body = the agent's
-`body` (AGENT.md) / the workflow description (WORKFLOW.md). Because a
-`defineWorkflow` handle is pure data, the `WORKFLOW.md` needs no `entry:` module —
-the manifest *is* the workflow, so `loadWorkflowHandle` returns it directly.
+All manifests are plain markdown: frontmatter = the validated handle, body = the
+agent's `body` (AGENT.md) / the workflow description (WORKFLOW.md) / the app
+description (APP.md). Because a `defineWorkflow` handle is pure data, the
+`WORKFLOW.md` needs no `entry:` module — the manifest *is* the workflow, so
+`loadWorkflowHandle` returns it directly.
+
+### `APP.md` — the root index, and `loadAppHandle(dir)`
+
+`emit` always writes `<dir>/.agentproto/APP.md`: a `schema: "app/v1"` manifest
+whose frontmatter lists every agent + workflow the app bundles as `{ id, path }`
+refs (relative to `dir`), plus the app's own optional `id` / `name` / `version`
+(defaults to `"0.1.0"` when `id` is set) / `description` and, when the app has a
+home workspace, that workspace's `id`. Nothing reads `AGENT.md`/`WORKFLOW.md`
+files on their own today — `APP.md` is the thing a future daemon `app_install`
+discovers and consumes.
+
+`loadAppHandle(dir)` is the inverse: it reads `APP.md`, loads each referenced
+`AGENT.md` / `WORKFLOW.md` (and `WORKSPACE.md`, if declared) with their own
+package's loader, and re-runs `defineApp` on the result — so the attachment
+invariant re-validates exactly as it did at authoring time.
+
+```ts
+import { loadAppHandle } from "@agentproto/app-kit"
+
+const app = await loadAppHandle("/path/to/emitted/app")
+app.agents.map((e) => e.agent.id) // ["@agentik/reviewer", "fixer"]
+```
 
 ## Runtime note
 

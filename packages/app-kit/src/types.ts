@@ -86,6 +86,18 @@ export interface AppDefinition {
    * alongside the agents. Omit for a workspace-less bundle.
    */
   readonly workspace?: WorkspaceInput
+  /**
+   * Machine identifier for the app itself (distinct from its agents' ids).
+   * Must be non-empty when present. Setting it is what makes the app
+   * discoverable — `emit` writes it into the root `APP.md` identity block.
+   */
+  readonly id?: string
+  /** Human-readable app name. */
+  readonly name?: string
+  /** App version. Defaults to `"0.1.0"` when `id` is set. */
+  readonly version?: string
+  /** App description. Becomes the `APP.md` body. */
+  readonly description?: string
 }
 
 /** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
@@ -99,6 +111,8 @@ export interface EmittedApp {
   readonly workflowPaths: readonly string[]
   /** Absolute path to the root `WORKSPACE.md`, when the app has a workspace. */
   readonly workspacePath?: string
+  /** Absolute path to the root `APP.md` index, always written. */
+  readonly appPath: string
 }
 
 /**
@@ -111,6 +125,14 @@ export interface AppHandle {
   readonly attachments: readonly DoctypeHandle[]
   /** The app's home workspace (AIP-34), normalized to a handle. Absent if none. */
   readonly workspace?: WorkspaceHandle
+  /** Machine identifier for the app itself. Absent for an anonymous bundle. */
+  readonly id?: string
+  /** Human-readable app name. */
+  readonly name?: string
+  /** App version. Defaulted to `"0.1.0"` when `id` is set. */
+  readonly version?: string
+  /** App description. */
+  readonly description?: string
 
   /**
    * Build agents into runnable Mastra agents whose `instructions` field is
