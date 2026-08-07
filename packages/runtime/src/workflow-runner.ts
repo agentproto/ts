@@ -426,6 +426,7 @@ async function executeRunWorkflow(
   cache?: StepCache,
   cacheKey?: string,
   input?: unknown,
+  persist?: () => void,
 ): Promise<void> {
   try {
     await runWorkflow({
@@ -436,14 +437,55 @@ async function executeRunWorkflow(
       workspaceSlug: state.workspaceSlug,
       input,
       ...(cache ? { cache, cacheKey } : {}),
+      onStepStart: (stepId) => {
+        // Find and mark the step as running
+        for (const stage of state.run.stages) {
+          const step = stage.steps.find((s) => s.label === stepId)
+          if (step) {
+            if (step.status === "pending") {
+              step.status = "running"
+              step.startedAt = new Date().toISOString()
+            }
+            // Update stage status if it's still pending
+            if (stage.status === "pending") {
+              stage.status = "running"
+            }
+            persist?.()
+            break
+          }
+        }
+      },
+      onStepComplete: (stepId, output) => {
+        // Find and mark the step as done
+        for (const stage of state.run.stages) {
+          const step = stage.steps.find((s) => s.label === stepId)
+          if (step) {
+            step.status = "done"
+            step.endedAt = new Date().toISOString()
+            // Extract sessionId from output if present
+            if (output && typeof output === "object" && "sessionId" in output) {
+              step.sessionId = (output as { sessionId: string }).sessionId
+            }
+            // Check if all steps in stage are done
+            const allDone = stage.steps.every((s) => s.status === "done")
+            if (allDone) {
+              stage.status = "done"
+            }
+            persist?.()
+            break
+          }
+        }
+      },
     })
 
-    // Success — mark all stages/steps done.
+    // Success — mark all stages/steps done (fallback for any missed).
     for (const stage of state.run.stages) {
-      stage.status = "done"
+      if (stage.status !== "done") stage.status = "done"
       for (const step of stage.steps) {
-        step.status = "done"
-        step.endedAt = new Date().toISOString()
+        if (step.status !== "done") {
+          step.status = "done"
+          step.endedAt = new Date().toISOString()
+        }
       }
     }
     state.run.status = "done"
@@ -573,7 +615,7 @@ export function createWorkflowRunner(opts: {
 
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
-      void executeRunWorkflow(state, workflow, agents, abort.signal, cache, input.cacheKey).then(() => {
+      void executeRunWorkflow(state, workflow, agents, abort.signal, cache, input.cacheKey, undefined, persist).then(() => {
         persist()
       })
 
@@ -642,6 +684,7 @@ export function createWorkflowRunner(opts: {
         cache,
         args.cacheKey,
         args.input,
+        persist,
       ).then(() => {
         persist()
       })

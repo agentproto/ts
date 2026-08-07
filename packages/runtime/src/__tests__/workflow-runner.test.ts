@@ -680,5 +680,83 @@ steps:
     expect(final?.result?.sessionIds).toEqual(["sess_review_001"])
   })
 
+  it("reports progressive step status updates during execution (not all-pending until done)", async () => {
+    const bus = createSessionEventBus()
+    const statusSnapshots: Array<{ step1: string; step2: string }> = []
+    let step1Started = false
+    let step2Started = false
+
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => {
+        const id = input.label === "step1" ? "sess_1" : "sess_2"
+        if (input.label === "step1") step1Started = true
+        if (input.label === "step2") step2Started = true
+        return {
+          id,
+          kind: "agent-cli" as const,
+          workspaceSlug: "test",
+          command: "mock",
+          pid: null,
+          status: "running" as const,
+          startedAt: new Date().toISOString(),
+          cwd: input.cwd,
+        }
+      }),
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        // Delay to allow status checks during execution
+        await new Promise(res => setTimeout(res, 50))
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) => ({ id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" })),
+    })
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+    })
+
+    const run = await runner.start({
+      workflowId: "progress-test",
+      stages: [
+        {
+          steps: [
+            { label: "step1", adapter: "mock", prompt: "task 1" },
+            { label: "step2", adapter: "mock", prompt: "task 2" },
+          ],
+        },
+      ],
+    })
+
+    // Poll and capture status snapshots
+    const terminal = new Set(["done", "failed", "cancelled"])
+    for (let i = 0; i < 100; i++) {
+      await new Promise(res => setTimeout(res, 10))
+      const current = runner.status(run.runId)
+      if (!current) break
+
+      const step1Status = current.stages[0]?.steps.find(s => s.label === "step1")?.status ?? "unknown"
+      const step2Status = current.stages[0]?.steps.find(s => s.label === "step2")?.status ?? "unknown"
+
+      statusSnapshots.push({ step1: step1Status, step2: step2Status })
+
+      if (terminal.has(current.status)) break
+    }
+
+    const final = runner.status(run.runId)
+    expect(final?.status).toBe("done")
+
+    // Verify we saw progressive updates, not just all-pending then all-done
+    const hasRunningStep = statusSnapshots.some(s => s.step1 === "running" || s.step2 === "running")
+    expect(hasRunningStep).toBe(true)
+
+    // Final state should have both done
+    expect(final?.stages[0]?.steps[0]?.status).toBe("done")
+    expect(final?.stages[0]?.steps[1]?.status).toBe("done")
+
+    // Both steps should have endedAt timestamps
+    expect(final?.stages[0]?.steps[0]?.endedAt).toBeDefined()
+    expect(final?.stages[0]?.steps[1]?.endedAt).toBeDefined()
+  })
 })
 

@@ -87,6 +87,12 @@ export function makeWorkspaceTools(
   const cwd = resolve(opts.cwd)
   const allowExec = opts.allowExec ?? true
   const execTimeoutMs = opts.execTimeoutMs ?? 120_000
+  /**
+   * Shared env for all exec calls — sets GIT_CEILING_DIRECTORIES to prevent
+   * git from discovering repos above cwd (fixes #818: read_diff escaping the
+   * workspace to operate on an enclosing repo).
+   */
+  const execEnv = { ...process.env, GIT_CEILING_DIRECTORIES: resolve(cwd, "..") }
 
   const list_dir = createTool({
     id: "list_dir",
@@ -185,6 +191,7 @@ export function makeWorkspaceTools(
             cwd,
             timeout: execTimeoutMs,
             maxBuffer: 10 * 1024 * 1024,
+            env: execEnv,
           })
           return { stdout, stderr, exitCode: 0 }
         } catch (err) {
@@ -225,6 +232,7 @@ export function makeWorkspaceTools(
             cwd,
             timeout: execTimeoutMs,
             maxBuffer: 10 * 1024 * 1024,
+            env: execEnv,
           })
           return { diff: stdout }
         } catch (err) {
@@ -252,7 +260,7 @@ export function makeWorkspaceTools(
           const { stdout, stderr } = await execFileAsync(
             "git",
             ["apply", "--whitespace=nowarn", patchFile],
-            { cwd, timeout: execTimeoutMs, maxBuffer: 10 * 1024 * 1024 },
+            { cwd, timeout: execTimeoutMs, maxBuffer: 10 * 1024 * 1024, env: execEnv },
           )
           return { applied: true, output: stdout || stderr || "" }
         } catch (err) {
@@ -288,6 +296,7 @@ export function makeWorkspaceTools(
             cwd,
             timeout: execTimeoutMs,
             maxBuffer: 10 * 1024 * 1024,
+            env: execEnv,
           })
           return { exitCode: 0, output: tail(stdout + stderr) }
         } catch (err) {
