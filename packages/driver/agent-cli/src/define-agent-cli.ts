@@ -262,20 +262,53 @@ export function createAgentCliRuntime(
         opts?.posture,
         config?.mode,
       )
+      // Isolation from ambient config must NOT be conditional on a
+      // requested posture/mode — a caller that never passes `posture` (the
+      // common case: `agent_start` / `spawnAgentSession` with no opinion on
+      // permission posture) used to get NO `CLAUDE_CONFIG_DIR` override at
+      // all, so the child inherited the DAEMON's own `process.env` and,
+      // through it, the operator's real `~/.claude.json` — including every
+      // globally-registered MCP server (e.g. an `agentproto` MCP entry
+      // pointing right back at this same daemon's `agent_start`, letting an
+      // unscoped one-shot worker spawn further unscoped children on its
+      // own). Confirmed in production 2026-08-07: a batch worker
+      // (`pmlawhub/tools/fiches/run-lane.sh`) self-spawned dozens of
+      // uncontrolled child sessions this way. Verified by reading
+      // `@anthropic-ai/claude-agent-sdk`'s bundled `sdk.mjs` directly: the
+      // SDK resolves its GLOBAL config file (the one carrying `mcpServers`)
+      // as `$CLAUDE_CONFIG_DIR/.claude.json` (falling back to
+      // `$CLAUDE_CONFIG_DIR/.config.json` if present) — never the real
+      // `~/.claude.json` once `CLAUDE_CONFIG_DIR` is set to anything else.
+      // So isolating every claude-code spawn through this path, regardless
+      // of whether a posture/mode was requested, closes the leak; only the
+      // settings.json CONTENT (permissions.defaultMode) stays conditional
+      // on `permissionMode` actually resolving to something.
+      const isolateClaudeCodeConfig = definition.id === "claude-code"
       // Hoisted out of the `if` below so it's visible to the commandSandbox
       // wrap further down: bwrap's `--tmpfs /tmp` (`command-sandbox.ts`)
       // would otherwise HIDE this dir on Linux since it's mkdtemp'd under
       // `os.tmpdir()` BEFORE the confined spawn — it must ride along as an
       // extraWritePaths entry, not rely on the workspace bind.
       let claudeConfigDir: string | undefined
-      if (permissionMode) {
+      if (isolateClaudeCodeConfig) {
         claudeConfigDir = mkdtempSync(
           join(tmpdir(), "agentproto-claude-config-"),
         )
+        // Explicit empty `mcpServers` rather than just leaving the global
+        // config file absent — an absent file falls back to whatever the
+        // SDK treats as "fresh install" defaults, which is unspecified and
+        // could change; writing it makes the isolation load-bearing on our
+        // own content, not on unverified fallback behavior.
         writeFileSync(
-          join(claudeConfigDir, "settings.json"),
-          JSON.stringify({ permissions: { defaultMode: permissionMode } }),
+          join(claudeConfigDir, ".claude.json"),
+          JSON.stringify({ mcpServers: {} }),
         )
+        if (permissionMode) {
+          writeFileSync(
+            join(claudeConfigDir, "settings.json"),
+            JSON.stringify({ permissions: { defaultMode: permissionMode } }),
+          )
+        }
         env.CLAUDE_CONFIG_DIR = claudeConfigDir
       }
 
@@ -548,8 +581,14 @@ async function buildProtocolArm(
  * is specific to that adapter's ACP wrapper; every other adapter's
  * `bin_args_append` is applied to argv as normal and this returns
  * `undefined` for them. Also `undefined` for an unrequested mode, or a
- * mode (like "default") that has no `--permission-mode` patch —
- * callers use that to skip the `CLAUDE_CONFIG_DIR` override entirely.
+ * mode (like "default") that has no `--permission-mode` patch — the
+ * caller (`start()` above) uses that to skip writing
+ * `permissions.defaultMode` into the isolated `CLAUDE_CONFIG_DIR`'s
+ * `settings.json`, NOT to skip the `CLAUDE_CONFIG_DIR` override itself:
+ * that override is unconditional for every claude-code spawn (see
+ * `isolateClaudeCodeConfig` in `start()`) so ambient global config
+ * (`~/.claude.json`, including registered `mcpServers`) never leaks into a
+ * spawn that never requested a posture.
  */
 function resolveClaudeCodePermissionMode(
   definition: AgentCliHandle,
