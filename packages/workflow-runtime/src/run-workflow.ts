@@ -195,7 +195,17 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
     ctx.state.costBySession.set(sessionId, await ctx.agents!.readCostUsd(sessionId))
   }
 
-  if (!step.outputSchema) return { sessionId }
+  if (!step.outputSchema) {
+    let text: string | undefined
+    if (ctx.agents!.readFinalMessage) {
+      try {
+        text = await ctx.agents!.readFinalMessage(sessionId)
+      } catch {
+        // ignore
+      }
+    }
+    return { sessionId, ...(text !== undefined ? { text } : {}) }
+  }
 
   // Validate-and-retry loop
   if (!ctx.agents!.readFinalMessage) {
