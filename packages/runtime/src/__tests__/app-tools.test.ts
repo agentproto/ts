@@ -16,7 +16,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { defineApp } from "@agentproto/app-kit"
 import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
-import { registerAppTools } from "../app-tools.js"
+import { loadWorkflowHandle } from "@agentproto/workflow-loader"
+import { compileWorkflow, type AgentStep } from "@agentproto/workflow-runtime"
+import { registerAppTools, resolveAgentRefsForWorkflow } from "../app-tools.js"
+import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
@@ -75,6 +78,7 @@ async function setup(opts: {
   listRegisteredToolIds?: () => Promise<string[]>
   resolveAgentAdapter?: AgentAdapterResolver | null
   startSession?: ReturnType<typeof fakeStartSession>
+  appRegistry?: AppRegistry
 } = {}) {
   const registry = createSessionsRegistry({ persist: false })
   const startSession = opts.startSession ?? fakeStartSession()
@@ -85,11 +89,13 @@ async function setup(opts: {
         (async (slug: string) =>
           slug === "mastra-agent" ? { startSession, commandPreview: "mock-adapter" } : null)
   const listRegisteredToolIds = opts.listRegisteredToolIds ?? (async () => ["known_tool"])
+  const appRegistry = opts.appRegistry ?? createAppRegistry()
 
   const server = new McpServer({ name: "app-tools-test-server", version: "0.0.0" })
   registerAppTools(server, {
     registry,
     listRegisteredToolIds,
+    appRegistry,
     ...(resolveAgentAdapter ? { resolveAgentAdapter } : {}),
   })
 
@@ -97,7 +103,7 @@ async function setup(opts: {
   await server.connect(serverTransport)
   const client = new Client({ name: "app-tools-test-client", version: "0.0.0" })
   await client.connect(clientTransport)
-  return { client, registry, startSession }
+  return { client, registry, startSession, appRegistry }
 }
 
 describe("app_* verbs", () => {
@@ -201,5 +207,120 @@ describe("app_* verbs", () => {
     expect(isError(res)).toBe(true)
     const body = parseToolJson(res)
     expect(body.error).toContain("nope")
+  })
+})
+
+describe("declarative agent-step round-trip (WP-B4)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-agent-step-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("defineApp → emit → app_install → loadWorkflowHandle → compileWorkflow resolves agent.ref to the app's emitted AGENT.md", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app",
+      name: "Agent Step App",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+            workflows: [{ ref: "do-thing" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing",
+          name: "Do thing",
+          description: "Does a thing, declaratively, via an agent step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            {
+              id: "step1",
+              kind: "agent",
+              agent: { ref: "worker" },
+              prompt: "Do the thing.",
+            },
+          ],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(
+      await client.callTool({ name: "app_install", arguments: { dir } }),
+    )
+    expect(installed.appId).toBe("@test/agent-step-app")
+
+    const workflowPath = installed.workflows[0].path as string
+    const handle = await loadWorkflowHandle(workflowPath)
+    expect(handle.steps.map((s) => `${s.id}:${s.kind}`)).toEqual(["step1:agent"])
+
+    const compiled = compileWorkflow(handle, {
+      tools: {},
+      candidates: [],
+      agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.kind).toBe("agent")
+    expect(step.adapter).toBe("mastra-agent")
+    expect(step.options).toEqual({ agent: installed.agents[0].path })
+    expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe(
+      "Do the thing.",
+    )
+  })
+
+  it("compiling a bundled workflow's agent-step against a DIFFERENT app's registry fails naming the ref", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app-2",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+            workflows: [{ ref: "do-thing-2" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing-2",
+          name: "Do thing",
+          description: "Does a thing.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            { id: "step1", kind: "agent", agent: { ref: "worker" }, prompt: "Do the thing." },
+          ],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    // No app_install call — the shared appRegistry stays empty, so
+    // `resolveAgentRefsForWorkflow` finds no bundling app for this workflow id.
+    const { appRegistry } = await setup()
+    const handle = await loadWorkflowHandle(join(dir, ".agentproto", "workflows", "do-thing-2", "WORKFLOW.md"))
+    expect(() =>
+      compileWorkflow(handle, {
+        tools: {},
+        candidates: [],
+        agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+      }),
+    ).toThrow(/unknown agent ref 'worker'.*not running in an app context/)
   })
 })

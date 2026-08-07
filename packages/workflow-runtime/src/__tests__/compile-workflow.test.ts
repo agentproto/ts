@@ -11,11 +11,13 @@ import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { defineWorkflow } from "@agentproto/workflow"
 import {
+  buildAgentStep,
   compileWorkflow,
   runWorkflow,
   WorkflowCompileError,
   resolveRef,
   evalPredicate,
+  type AgentStep,
 } from "../index.js"
 
 const doubleTool = defineTool({
@@ -187,5 +189,168 @@ describe("compileWorkflow", () => {
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(
       WorkflowCompileError,
     )
+  })
+})
+
+describe("compileWorkflow — declarative agent step", () => {
+  it("compiles a plain-adapter agent step field-for-field with translateStages's construction", () => {
+    const wf = defineWorkflow({
+      name: "Ask",
+      id: "ask",
+      description: "One agent step, no app ref.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "s1", kind: "agent", adapter: "claude-code", prompt: "hello" },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const step = compiled.steps[0] as AgentStep
+    const expected = buildAgentStep("s1", { prompt: "hello", adapter: "claude-code" })
+    expect(step.kind).toBe("agent")
+    expect(step.id).toBe("s1")
+    expect(step.adapter).toBe("claude-code")
+    expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe(
+      expected.prompt({ input: undefined, item: undefined, index: undefined, steps: {} }),
+    )
+    expect(step.policy).toEqual({ awaiting: "fail" })
+  })
+
+  it("resolves a $steps ref in the prompt through the same grammar as a tool step's inputs", async () => {
+    const wf = defineWorkflow({
+      name: "Ask with ref",
+      id: "ask-ref",
+      description: "Prompt threads a prior step's output.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "d", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "s1", kind: "agent", adapter: "mock", prompt: "$steps.d.n" },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const host = {
+      spawn: async () => "sess_1",
+      sendPromptAndWait: async (_id: string, prompt: string) => {
+        expect(prompt).toBe("10")
+      },
+      resolveByLabel: () => undefined,
+    }
+    await runWorkflow({ workflow: compiled, agents: host, input: { n: 5 } })
+  })
+
+  it("compiles a declarative agent.ref against opts.agentRefs — adapter + options resolved at compile time", () => {
+    const wf = defineWorkflow({
+      name: "Team ask",
+      id: "team-ask",
+      description: "Agent step scoped to an installed app.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "implement",
+          kind: "agent",
+          agent: { ref: "@my-app/implementer" },
+          prompt: "Implement the change.",
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: {
+        "@my-app/implementer": {
+          adapter: "mastra-agent",
+          options: { agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" },
+        },
+      },
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.adapter).toBe("mastra-agent")
+    expect(step.options).toEqual({ agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" })
+  })
+
+  it("rejects an empty agent.ref", () => {
+    const wf = defineWorkflow({
+      name: "Empty ref",
+      id: "empty-ref",
+      description: "An agent step with a blank ref.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s1", kind: "agent", agent: { ref: "" }, prompt: "hi" }],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/empty 'agent.ref'/)
+  })
+
+  it("rejects an unknown agent.ref, naming the available refs", () => {
+    const wf = defineWorkflow({
+      name: "Unknown ref",
+      id: "unknown-ref",
+      description: "An agent step referencing an agent the app doesn't bundle.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "s1", kind: "agent", agent: { ref: "@my-app/ghost" }, prompt: "hi" },
+      ],
+    })
+    expect(() =>
+      compileWorkflow(wf, {
+        tools,
+        candidates,
+        agentRefs: { "@my-app/reviewer": { adapter: "mastra-agent" } },
+      }),
+    ).toThrow(/unknown agent ref '@my-app\/ghost'.*@my-app\/reviewer/)
+  })
+
+  it("rejects agent.ref when no agentRefs are configured for the compile", () => {
+    const wf = defineWorkflow({
+      name: "No app context",
+      id: "no-app-context",
+      description: "An agent.ref step compiled outside any app.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s1", kind: "agent", agent: { ref: "@my-app/x" }, prompt: "hi" }],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/not running in an app context/)
+  })
+
+  it("rejects an empty prompt", () => {
+    const wf = defineWorkflow({
+      name: "Empty prompt",
+      id: "empty-prompt",
+      description: "An agent step with no prompt.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s1", kind: "agent", adapter: "claude-code", prompt: "" }],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/non-empty 'prompt'/)
+  })
+
+  it("passes an entry-based agent step (function-valued prompt) through unchanged", async () => {
+    const handle = {
+      id: "entry-agent",
+      description: "demo",
+      steps: [
+        { kind: "agent", id: "s1", adapter: "mock", prompt: () => "from entry" },
+      ],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    const compiled = compileWorkflow(handle, { tools, candidates })
+    const host = {
+      spawn: async () => "sess_entry",
+      sendPromptAndWait: async (_id: string, prompt: string) => {
+        expect(prompt).toBe("from entry")
+      },
+      resolveByLabel: () => undefined,
+    }
+    await runWorkflow({ workflow: compiled, agents: host })
   })
 })

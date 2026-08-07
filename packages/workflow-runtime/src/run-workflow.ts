@@ -176,6 +176,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         workspaceSlug: ctx.workspaceSlug,
         stepId: step.id,
         ...(sandbox !== undefined ? { sandbox } : {}),
+        ...(step.options !== undefined ? { options: step.options } : {}),
       })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)

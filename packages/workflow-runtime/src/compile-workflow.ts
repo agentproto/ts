@@ -25,7 +25,8 @@
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
-import type { Bindings, RunStep, RuntimeWorkflow } from "./types.js"
+import type { AgentRefResolution, AgentStep, Bindings, RunStep, RuntimeWorkflow } from "./types.js"
+import { buildAgentStep } from "./build-agent-step.js"
 
 export interface CompileWorkflowOptions {
   /** TOOL contracts by id — each `tool` step resolves its handle here. */
@@ -38,6 +39,14 @@ export interface CompileWorkflowOptions {
   workflows?:
     | ReadonlyMap<string, WorkflowHandle>
     | Record<string, WorkflowHandle>
+  /** App-scoped agent ids for a declarative `kind:"agent"` step's
+   *  `agent.ref` — e.g. `{ "@app/reviewer": { adapter: "mastra-agent",
+   *  options: { agent: "<dir>/.agentproto/agents/reviewer/AGENT.md" } } }`.
+   *  Built by the host from its own app-install state (see
+   *  `@agentproto/runtime`'s `resolveAgentRefsForWorkflow`). A step using
+   *  `agent.ref` with this unset, or naming a ref this map doesn't have,
+   *  fails compilation — never the runtime. */
+  agentRefs?: ReadonlyMap<string, AgentRefResolution> | Record<string, AgentRefResolution>
 }
 
 export class WorkflowCompileError extends Error {
@@ -199,6 +208,62 @@ function compileStepList(
   return { kind: "group", id, steps: steps.map((s) => compileStep(s, opts)) }
 }
 
+/**
+ * Compile a declarative `kind:"agent"` manifest step — `{ agent: { ref },
+ * prompt, adapter?, sessionRef?, sandbox?, cacheable?, policy?, outputSchema?,
+ * maxRetries? }` — into a real {@link AgentStep}. `prompt` runs through the
+ * same `$input`/`$steps.<id>` ref grammar as a `tool` step's `inputs`.
+ * `agent.ref` resolves via `opts.agentRefs` — unresolvable (no map, or an id
+ * the map doesn't have) fails HERE, at compile time, never at the runtime
+ * spawn.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compileAgentStep(step: any, id: string, opts: CompileWorkflowOptions): AgentStep {
+  const prompt = f<string>(step, "prompt")
+  if (typeof prompt !== "string" || prompt.length === 0) {
+    throw new WorkflowCompileError(`agent step '${id}' needs a non-empty 'prompt'`)
+  }
+
+  let adapter: string | undefined = typeof step.adapter === "string" ? step.adapter : undefined
+  let options: Record<string, boolean | number | string> | undefined =
+    step.options !== undefined ? step.options : undefined
+
+  const agentRef: unknown = step.agent?.ref
+  if (agentRef !== undefined) {
+    if (typeof agentRef !== "string" || agentRef.trim().length === 0) {
+      throw new WorkflowCompileError(`agent step '${id}' has an empty 'agent.ref'`)
+    }
+    const resolved = opts.agentRefs ? get(opts.agentRefs, agentRef) : undefined
+    if (!resolved) {
+      const available = opts.agentRefs
+        ? opts.agentRefs instanceof Map
+          ? [...opts.agentRefs.keys()]
+          : Object.keys(opts.agentRefs)
+        : []
+      throw new WorkflowCompileError(
+        `agent step '${id}' references unknown agent ref '${agentRef}'` +
+          (available.length > 0
+            ? ` — available refs: ${available.join(", ")}`
+            : " — no agent refs are configured for this compile (not running in an app context?)"),
+      )
+    }
+    adapter = resolved.adapter
+    options = resolved.options
+  }
+
+  return buildAgentStep(id, {
+    prompt: (b: Bindings) => String(resolveValue(prompt, b)),
+    ...(adapter !== undefined ? { adapter } : {}),
+    ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
+    ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
+    ...(step.cacheable ? { cacheable: true } : {}),
+    ...(options !== undefined ? { options } : {}),
+    policy: step.policy,
+    ...(step.outputSchema !== undefined ? { outputSchema: step.outputSchema } : {}),
+    ...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),
+  })
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
   const id: string = step.id
@@ -288,19 +353,29 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
       return { kind: "subworkflow", id, workflow: compiledChild }
     }
 
-    case "agent":
+    case "agent": {
+      // Two shapes reach here under the same `kind:"agent"`: an ENTRY-based
+      // handle's already-built runtime AgentStep (function-valued `prompt`
+      // selector — nothing declarative left to resolve, pass through
+      // unchanged), or a purely-declarative manifest step (`prompt` is a
+      // plain string) that this compiler must turn into a real AgentStep,
+      // the same way `translateStages` does for `workflow_start`.
+      if (typeof step.prompt === "function") {
+        const passthrough: RunStep = step
+        return passthrough
+      }
+      return compileAgentStep(step, id, opts)
+    }
+
     case "transform": {
-      // Neither `agent` nor `transform` is a declarative manifest kind — both
-      // only reach the compiler from an ENTRY-based handle, already built as
-      // a runtime AgentStep (function-valued adapter/cwd/prompt selectors) or
-      // TransformStep (function-valued `compute`). There is nothing
-      // declarative to resolve, so pass through unchanged. This is what lets
-      // a WORKFLOW.md whose entry.mjs chains agent steps run via
-      // `startFromFile` — and, for `transform`, what lets an entry.mjs step
-      // shape/serialize an earlier tool step's output (e.g. `JSON.stringify`
-      // a prior `$steps.<id>` value) for a later tool step to consume as a
-      // plain string input, something the `$steps.*` ref grammar alone can't
-      // do. `step` is `any`, so no cast is needed.
+      // Not a declarative manifest kind — no string expression language for
+      // `compute` — so it only reaches the compiler from an ENTRY-based
+      // handle, already built as a runtime TransformStep (function-valued
+      // `compute`). Passes through unchanged: this is what lets an entry.mjs
+      // step shape/serialize an earlier tool step's output (e.g.
+      // `JSON.stringify` a prior `$steps.<id>` value) for a later tool step
+      // to consume as a plain string input, something the `$steps.*` ref
+      // grammar alone can't do. `step` is `any`, so no cast is needed.
       const passthrough: RunStep = step
       return passthrough
     }

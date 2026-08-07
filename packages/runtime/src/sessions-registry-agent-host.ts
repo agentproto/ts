@@ -53,7 +53,13 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
 
   async spawn(
     adapter: string,
-    opts: { cwd?: string; workspaceSlug?: string; stepId?: string; sandbox?: AgentSandboxRef },
+    opts: {
+      cwd?: string
+      workspaceSlug?: string
+      stepId?: string
+      sandbox?: AgentSandboxRef
+      options?: Record<string, boolean | number | string>
+    },
   ): Promise<string> {
     const workspaceSlug = opts.workspaceSlug ?? this.opts?.workspaceSlug ?? "default"
     const cwd = opts.cwd ?? this.opts?.cwd ?? process.cwd()
@@ -93,6 +99,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           workspaceSlug,
           sandbox,
           label: `agent-step:${adapter}`,
+          ...(opts.options !== undefined ? { options: opts.options } : {}),
         },
       )
       if (!result.ok) {
@@ -115,6 +122,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         [SESSION_ID_ENV]: stepSessionId,
         [WORKSPACE_SLUG_ENV]: workspaceSlug,
       },
+      ...(opts.options !== undefined ? { options: opts.options } : {}),
     })
     const desc = this.registry.spawnAgent({
       id: stepSessionId,

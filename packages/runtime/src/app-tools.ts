@@ -24,6 +24,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { loadAppHandle } from "@agentproto/app-kit"
 import type { AnyRef } from "@agentproto/agent"
+import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { createDaemonToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
 import type { SessionsRegistry } from "./sessions.js"
@@ -33,7 +34,29 @@ import { createAppRegistry, type AppRegistry, type InstalledAppRef } from "./app
 
 /** The only agent adapter this WP knows how to run an emitted AGENT.md
  *  under — see `adapters/mastra-agent`'s `agent` option (`--agent <path>`). */
-const DEFAULT_AGENT_ADAPTER = "mastra-agent"
+export const DEFAULT_AGENT_ADAPTER = "mastra-agent"
+
+/**
+ * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
+ * installed app — every agent id the app bundles resolves to a spawn under
+ * `mastra-agent`, pointed at that agent's emitted AGENT.md (WP-B4). Returns
+ * undefined when no installed app bundles `workflowId` (a plain
+ * `workflow_run_file` outside any app), so a `kind:"agent"` step using
+ * `agent.ref` fails compilation naming "no agent refs are configured"
+ * rather than a silently-empty map producing the same message either way.
+ */
+export function resolveAgentRefsForWorkflow(
+  appRegistry: AppRegistry,
+  workflowId: string,
+): Record<string, AgentRefResolution> | undefined {
+  const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
+  if (!app) return undefined
+  const refs: Record<string, AgentRefResolution> = {}
+  for (const agent of app.agents) {
+    refs[agent.id] = { adapter: DEFAULT_AGENT_ADAPTER, options: { agent: agent.path } }
+  }
+  return refs
+}
 
 function textResult(body: unknown): { content: { type: "text"; text: string }[] } {
   return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] }
@@ -107,11 +130,17 @@ export interface RegisterAppToolsOptions {
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
    *  explicitly supplied, `false` otherwise — mirrors workflow-runner.ts. */
   persist?: boolean
+  /** Share an already-built `AppRegistry` instead of creating a private one
+   *  — the host wires the same instance into `WorkflowRunner`'s
+   *  `compileWorkflow` closure so `resolveAgentRefsForWorkflow` sees every
+   *  installed app (see `@agentproto/runtime`'s daemon composition root).
+   *  Omitted ⇒ creates its own (this module's prior behaviour). */
+  appRegistry?: AppRegistry
 }
 
 export function registerAppTools(server: McpServer, opts: RegisterAppToolsOptions): void {
   const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner } = opts
-  const appRegistry: AppRegistry = createAppRegistry({
+  const appRegistry: AppRegistry = opts.appRegistry ?? createAppRegistry({
     ...(opts.persistPath !== undefined ? { persistPath: opts.persistPath } : {}),
     ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
   })

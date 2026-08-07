@@ -92,6 +92,54 @@ describe("loadAppHandle — the inverse of emit", () => {
     expect(loaded.workspace).toBeUndefined()
   })
 
+  it("round-trips a declarative agent-step workflow (WP-B4): agent.ref + prompt survive emit → loadAppHandle", async () => {
+    const original = defineApp({
+      id: "@acme/agent-step-app",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "Does the thing.",
+            model: "claude-sonnet-5",
+            workflows: [{ ref: "do-thing" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing",
+          name: "Do thing",
+          description: "One agent step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            {
+              id: "step1",
+              kind: "agent",
+              agent: { ref: "worker" },
+              prompt: "Do the thing.",
+            },
+          ],
+        }),
+      ],
+    })
+    await original.emit(dir)
+
+    const loaded = await loadAppHandle(dir)
+    const step = loaded.workflows[0]!.steps[0] as unknown as {
+      id: string
+      kind: string
+      agent?: { ref: string }
+      prompt?: string
+    }
+    expect(step.kind).toBe("agent")
+    expect(step.agent).toEqual({ ref: "worker" })
+    expect(step.prompt).toBe("Do the thing.")
+  })
+
   it("round-trips app identity (id/name/version/description) when set", async () => {
     const original = buildApp({ id: "@acme/reviewer-app" })
     await original.emit(dir)

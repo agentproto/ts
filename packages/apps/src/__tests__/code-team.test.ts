@@ -40,4 +40,15 @@ describe("code-team app", () => {
     const built = await codeTeam.toMastraAgents({ resolveModel: () => fakeModel })
     expect(built["@agentproto/reviewer"]!.agent.name).toBe("reviewer")
   })
+
+  it("delivers the change through three agent steps, one per team agent (WP-B4)", () => {
+    const wf = codeTeam.workflows[0]!
+    expect(wf.steps.map((s) => `${s.id}:${s.kind}`)).toEqual([
+      "implement:agent",
+      "review:agent",
+      "fix:agent",
+    ])
+    const refs = wf.steps.map((s) => (s as { agent?: { ref: string } }).agent?.ref)
+    expect(refs).toEqual(["@agentproto/implementer", "@agentproto/reviewer", "@agentproto/fixer"])
+  })
 })
