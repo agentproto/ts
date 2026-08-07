@@ -55,6 +55,8 @@ interface RunCtx {
   readonly workspaceSlug?: string
   readonly cache?: RunWorkflowArgs["cache"]
   readonly cacheKey?: RunWorkflowArgs["cacheKey"]
+  readonly onStepStart?: RunWorkflowArgs["onStepStart"]
+  readonly onStepComplete?: RunWorkflowArgs["onStepComplete"]
 }
 
 function view(state: RunState, item?: unknown, index?: number): Bindings {
@@ -149,6 +151,7 @@ async function runSequence(
   for (const s of steps) {
     const out = await execStep(s, ctx, item, index)
     ctx.state.steps[s.id] = out
+    ctx.onStepComplete?.(s.id, out)
     last = out
   }
   return last
@@ -156,6 +159,9 @@ async function runSequence(
 
 /** Execute the full AgentStep body — spawn, prompt, policy, budget, outputSchema retry loop. */
 async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise<unknown> {
+  // Notify step start before any execution
+  ctx.onStepStart?.(step.id)
+
   if (
     step.adapter &&
     ctx.state.maxTotalCostUsd !== undefined &&
@@ -236,6 +242,12 @@ async function execStep(
 ): Promise<unknown> {
   const { state, signal } = ctx
   const b = view(state, item, index)
+
+  // Notify step start for non-agent steps (agent steps notify in execAgentStep)
+  if (step.kind !== "agent") {
+    ctx.onStepStart?.(step.id)
+  }
+
   switch (step.kind) {
     case "tool": {
       const input = step.input(b)
@@ -425,7 +437,7 @@ async function execStep(
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd }
@@ -434,6 +446,7 @@ async function runWorkflowInner(
   for (const step of workflow.steps) {
     const out = await execStep(step, ctx, undefined, undefined)
     state.steps[step.id] = out
+    ctx.onStepComplete?.(step.id, out)
     lastId = step.id
   }
   const bindings = view(state)
@@ -457,5 +470,7 @@ export async function runWorkflow(
     workspaceSlug: args.workspaceSlug,
     cache: args.cache,
     cacheKey: args.cacheKey,
+    onStepStart: args.onStepStart,
+    onStepComplete: args.onStepComplete,
   }, args.maxTotalCostUsd)
 }
