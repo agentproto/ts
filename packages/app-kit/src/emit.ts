@@ -47,6 +47,7 @@ interface EmitInput {
   readonly name?: string
   readonly version?: string
   readonly description?: string
+  readonly requires?: readonly string[]
 }
 
 export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> {
@@ -102,6 +103,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     agents: agentRefs,
     workflows: workflowRefs,
     ...(app.workspace ? { workspace: app.workspace.id } : {}),
+    ...(app.requires !== undefined ? { requires: app.requires } : {}),
   }
   await writeFile(appPath, toManifest(appFrontmatter, app.description ?? ""), "utf8")
 

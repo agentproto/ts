@@ -53,6 +53,7 @@ interface AppFrontmatter {
   readonly agents: readonly AppRef[]
   readonly workflows: readonly AppRef[]
   readonly workspace?: string
+  readonly requires?: readonly string[]
 }
 
 function resolveRef(dir: string, path: string): string {
@@ -86,6 +87,11 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
     throw new AppLoadError(
       `'${appPath}': frontmatter 'workflows' must be an array of { id, path }.`,
     )
+  }
+  if (data.requires !== undefined) {
+    if (!Array.isArray(data.requires) || !data.requires.every((e) => typeof e === "string")) {
+      throw new AppLoadError(`'${appPath}': frontmatter 'requires' must be an array of strings.`)
+    }
   }
   return data as unknown as AppFrontmatter
 }
@@ -184,5 +190,6 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(fm.name !== undefined ? { name: fm.name } : {}),
     ...(fm.version !== undefined ? { version: fm.version } : {}),
     ...(fm.description !== undefined ? { description: fm.description } : {}),
+    ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
   })
 }

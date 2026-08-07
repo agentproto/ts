@@ -98,6 +98,8 @@ export interface AppDefinition {
   readonly version?: string
   /** App description. Becomes the `APP.md` body. */
   readonly description?: string
+  /** APP ids this app depends on. */
+  readonly requires?: readonly string[]
 }
 
 /** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
@@ -133,6 +135,8 @@ export interface AppHandle {
   readonly version?: string
   /** App description. */
   readonly description?: string
+  /** APP ids this app depends on. */
+  readonly requires?: readonly string[]
 
   /**
    * Build agents into runnable Mastra agents whose `instructions` field is

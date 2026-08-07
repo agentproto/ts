@@ -27,6 +27,7 @@ export interface InstalledApp {
   /** Agent-declared (AIP-14) tool refs — the adapter's business, never
    *  validated at install time. Surfaced for visibility only. */
   readonly unvalidatedAgentTools: readonly string[]
+  readonly requires?: readonly string[]
   readonly installedAt: string
   readonly updatedAt: string
 }
@@ -45,9 +46,16 @@ export interface AppRun {
   endedAt?: string
 }
 
+export interface AppliedMount {
+  readonly scopeId: string
+  readonly appId: string
+  readonly appliedAt: string
+}
+
 interface AppRegistryState {
   apps: InstalledApp[]
   runs: AppRun[]
+  applied: AppliedMount[]
 }
 
 export interface AppRegistry {
@@ -63,12 +71,18 @@ export interface AppRegistry {
   /** Mark a run "stopped" with `endedAt` now. No-op (returns undefined) for
    *  an unknown appRunId. */
   endRun(appRunId: string): AppRun | undefined
+  /** Apply an app to a scope (idempotent upsert per scopeId+appId pair). */
+  applyApp(input: { scopeId: string; appId: string }): AppliedMount
+  /** Remove a scope mount. Returns the removed mount or undefined if not applied. */
+  unapplyApp(input: { scopeId: string; appId: string }): AppliedMount | undefined
+  /** List applied mounts, optionally filtered by scopeId. */
+  listApplied(scopeId?: string): AppliedMount[]
 }
 
 const DEFAULT_PERSIST_PATH = (): string => join(homedir(), ".agentproto", "apps.json")
 
 function loadState(persistPath: string): AppRegistryState {
-  const empty: AppRegistryState = { apps: [], runs: [] }
+  const empty: AppRegistryState = { apps: [], runs: [], applied: [] }
   if (!existsSync(persistPath)) return empty
   let raw: string
   try {
@@ -81,6 +95,7 @@ function loadState(persistPath: string): AppRegistryState {
     return {
       apps: Array.isArray(parsed.apps) ? parsed.apps : [],
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+      applied: Array.isArray(parsed.applied) ? parsed.applied : [],
     }
   } catch {
     return empty
@@ -106,7 +121,7 @@ export function createAppRegistry(opts?: {
   const shouldPersist = opts?.persist ?? opts?.persistPath !== undefined
   const state: AppRegistryState = shouldPersist
     ? loadState(persistPath)
-    : { apps: [], runs: [] }
+    : { apps: [], runs: [], applied: [] }
 
   const persist = (): void => {
     if (shouldPersist) saveState(state, persistPath)
@@ -157,6 +172,34 @@ export function createAppRegistry(opts?: {
       run.endedAt = new Date().toISOString()
       persist()
       return run
+    },
+    applyApp(input) {
+      const idx = state.applied.findIndex(
+        m => m.scopeId === input.scopeId && m.appId === input.appId
+      )
+      const mount: AppliedMount = {
+        scopeId: input.scopeId,
+        appId: input.appId,
+        appliedAt: idx === -1 ? new Date().toISOString() : state.applied[idx]!.appliedAt,
+      }
+      if (idx === -1) state.applied.push(mount)
+      else state.applied[idx] = mount
+      persist()
+      return mount
+    },
+    unapplyApp(input) {
+      const idx = state.applied.findIndex(
+        m => m.scopeId === input.scopeId && m.appId === input.appId
+      )
+      if (idx === -1) return undefined
+      const removed = state.applied[idx]!
+      state.applied.splice(idx, 1)
+      persist()
+      return removed
+    },
+    listApplied(scopeId) {
+      if (scopeId === undefined) return [...state.applied]
+      return state.applied.filter(m => m.scopeId === scopeId)
     },
   }
 }

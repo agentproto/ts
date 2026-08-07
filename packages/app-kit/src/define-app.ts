@@ -57,6 +57,7 @@ export function defineApp(def: AppDefinition): AppHandle {
   const name = def.name
   const version = def.version ?? (id ? "0.1.0" : undefined)
   const description = def.description
+  const requires = def.requires ? Object.freeze([...def.requires]) : undefined
 
   validateAttachment(agents, workflows)
 
@@ -73,6 +74,7 @@ export function defineApp(def: AppDefinition): AppHandle {
     ...(name !== undefined ? { name } : {}),
     ...(version !== undefined ? { version } : {}),
     ...(description !== undefined ? { description } : {}),
+    ...(requires !== undefined ? { requires } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
       const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
@@ -106,6 +108,7 @@ export function defineApp(def: AppDefinition): AppHandle {
           ...(name !== undefined ? { name } : {}),
           ...(version !== undefined ? { version } : {}),
           ...(description !== undefined ? { description } : {}),
+          ...(requires !== undefined ? { requires } : {}),
         },
         dir,
       )

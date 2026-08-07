@@ -227,4 +227,58 @@ describe("loadAppHandle — the inverse of emit", () => {
       await rm(badDir, { recursive: true, force: true })
     }
   })
+
+  it("round-trips requires field when present", async () => {
+    const app = defineApp({
+      id: "@test/dependent-app",
+      name: "Dependent App",
+      requires: ["@test/base-app", "@test/util-app"],
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "Worker agent.",
+            model: "claude-sonnet-5",
+            workflows: [{ ref: "do-thing" }],
+          }),
+          body: "Do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing",
+          name: "Do thing",
+          description: "Does a thing.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [{ id: "step1", kind: "tool", tool: "noop" }],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const loaded = await loadAppHandle(dir)
+    expect(loaded.requires).toEqual(["@test/base-app", "@test/util-app"])
+
+    const appPath = join(dir, ".agentproto", "APP.md")
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.requires).toEqual(["@test/base-app", "@test/util-app"])
+  })
+
+  it("throws AppLoadError when requires is not an array of strings", async () => {
+    const badDir = await mkdtemp(join(tmpdir(), "app-kit-load-bad-requires-"))
+    try {
+      await mkdir(join(badDir, ".agentproto"), { recursive: true })
+      await writeFile(
+        join(badDir, ".agentproto", "APP.md"),
+        ["---", "schema: app/v1", "agents: []", "workflows: []", "requires: 123", "---", ""].join("\n"),
+      )
+      await expect(loadAppHandle(badDir)).rejects.toThrow(AppLoadError)
+      await expect(loadAppHandle(badDir)).rejects.toThrow(/requires.*array of strings/)
+    } finally {
+      await rm(badDir, { recursive: true, force: true })
+    }
+  })
 })
