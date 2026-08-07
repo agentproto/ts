@@ -138,6 +138,66 @@ export interface RegisterAppToolsOptions {
   appRegistry?: AppRegistry
 }
 
+export async function performInstall(
+  dir: string,
+  appRegistry: AppRegistry,
+  listRegisteredToolIds: () => Promise<string[]>,
+  resolveAgentAdapter?: AgentAdapterResolver,
+): Promise<{ ok: true; record: Awaited<ReturnType<typeof appRegistry.upsertApp>> } | { ok: false; error: string }> {
+  let handle: Awaited<ReturnType<typeof loadAppHandle>>
+  try {
+    handle = await loadAppHandle(dir)
+  } catch (err) {
+    return { ok: false, error: `${err instanceof Error ? err.message : String(err)}` }
+  }
+
+  if (!handle.id) {
+    return { ok: false, error: "the app has no `id` — set one in defineApp()/APP.md frontmatter to install it." }
+  }
+
+  const missingByWorkflow: Record<string, string[]> = {}
+  const registeredIds = new Set(await listRegisteredToolIds())
+  for (const workflow of handle.workflows) {
+    const { tools } = createDaemonToolRegistry(workflow, async () => undefined)
+    const missing = Object.keys(tools).filter(id => !registeredIds.has(id))
+    if (missing.length > 0) missingByWorkflow[workflow.id] = missing
+  }
+  if (Object.keys(missingByWorkflow).length > 0) {
+    return {
+      ok: false,
+      error: `unknown daemon tool id(s) referenced by workflow step(s) — would otherwise fail at STEP-DISPATCH time: ${JSON.stringify(missingByWorkflow)}`,
+    }
+  }
+
+  if (handle.agents.length > 0) {
+    const resolved = resolveAgentAdapter ? await resolveAgentAdapter(DEFAULT_AGENT_ADAPTER) : null
+    if (!resolved) {
+      return {
+        ok: false,
+        error: `agent adapter "${DEFAULT_AGENT_ADAPTER}" could not be resolved — run \`agentproto install ${DEFAULT_AGENT_ADAPTER}\` first.`,
+      }
+    }
+  }
+
+  const refs = await readAppRefs(dir)
+  const unvalidatedAgentTools = [
+    ...new Set(handle.agents.flatMap(e => (e.agent.tools ?? []).map(refIdOf))),
+  ]
+
+  const record = appRegistry.upsertApp({
+    appId: handle.id,
+    dir,
+    ...(handle.version ? { version: handle.version } : {}),
+    ...(handle.name ? { name: handle.name } : {}),
+    agents: refs.agents,
+    workflows: refs.workflows,
+    unvalidatedAgentTools,
+    ...(handle.requires ? { requires: handle.requires } : {}),
+  })
+
+  return { ok: true, record }
+}
+
 export function registerAppTools(server: McpServer, opts: RegisterAppToolsOptions): void {
   const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner } = opts
   const appRegistry: AppRegistry = opts.appRegistry ?? createAppRegistry({
@@ -163,59 +223,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "result. Re-installing the same appId upserts.",
     { dir: z.string().describe("Absolute path to the app's directory.") },
     async input => {
-      let handle: Awaited<ReturnType<typeof loadAppHandle>>
-      try {
-        handle = await loadAppHandle(input.dir)
-      } catch (err) {
-        return errorResult(`app_install: ${err instanceof Error ? err.message : String(err)}`)
-      }
-
-      if (!handle.id) {
-        return errorResult(
-          "app_install: the app has no `id` — set one in defineApp()/APP.md frontmatter to install it.",
-        )
-      }
-
-      const missingByWorkflow: Record<string, string[]> = {}
-      const registeredIds = new Set(await listRegisteredToolIds())
-      for (const workflow of handle.workflows) {
-        const { tools } = createDaemonToolRegistry(workflow, async () => undefined)
-        const missing = Object.keys(tools).filter(id => !registeredIds.has(id))
-        if (missing.length > 0) missingByWorkflow[workflow.id] = missing
-      }
-      if (Object.keys(missingByWorkflow).length > 0) {
-        return errorResult(
-          "app_install: unknown daemon tool id(s) referenced by workflow step(s) — " +
-            `would otherwise fail at STEP-DISPATCH time: ${JSON.stringify(missingByWorkflow)}`,
-        )
-      }
-
-      if (handle.agents.length > 0) {
-        const resolved = resolveAgentAdapter ? await resolveAgentAdapter(DEFAULT_AGENT_ADAPTER) : null
-        if (!resolved) {
-          return errorResult(
-            `app_install: agent adapter "${DEFAULT_AGENT_ADAPTER}" could not be resolved — ` +
-              `run \`agentproto install ${DEFAULT_AGENT_ADAPTER}\` first.`,
-          )
-        }
-      }
-
-      const refs = await readAppRefs(input.dir)
-      const unvalidatedAgentTools = [
-        ...new Set(handle.agents.flatMap(e => (e.agent.tools ?? []).map(refIdOf))),
-      ]
-
-      const record = appRegistry.upsertApp({
-        appId: handle.id,
-        dir: input.dir,
-        ...(handle.version ? { version: handle.version } : {}),
-        ...(handle.name ? { name: handle.name } : {}),
-        agents: refs.agents,
-        workflows: refs.workflows,
-        unvalidatedAgentTools,
-      })
-
-      return textResult(record)
+      const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter)
+      if (!result.ok) return errorResult(`app_install: ${result.error}`)
+      return textResult(result.record)
     },
   )
 
@@ -261,6 +271,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         .string()
         .optional()
         .describe("Working directory for spawned sessions. Defaults to the app's installed `dir`."),
+      scopeId: z
+        .string()
+        .optional()
+        .describe("When passed, refuse to run if the app is not applied to this scope."),
       // follow-up: no sandbox support in this WP — the e2b image doesn't carry
       // the mastra-agent adapter yet (see output/phase-a-findings.md A3). Thread
       // a `sandbox` field through to `spawnAgentSession` here once an image
@@ -272,6 +286,15 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       const installed = appRegistry.getApp(input.appId)
       if (!installed) {
         return errorResult(`app_run: no installed app "${input.appId}" — call app_install first.`)
+      }
+
+      if (input.scopeId) {
+        const applied = appRegistry.listApplied(input.scopeId)
+        if (!applied.some(m => m.appId === input.appId)) {
+          return errorResult(
+            `app_run: app "${input.appId}" is not applied to scope "${input.scopeId}". Call app_apply first.`,
+          )
+        }
       }
 
       let refs: { agents: InstalledAppRef[]; workflows: InstalledAppRef[] }
@@ -370,6 +393,117 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         ...(notFound.length > 0 ? { notFound } : {}),
         status: ended?.status ?? run.status,
       })
+    },
+  )
+
+  server.tool(
+    "app_apply",
+    "Apply an app to a scope, making its capabilities available in that scope. " +
+      "If the app is not installed and `dir` is provided, installs it first. " +
+      "Validates that all `requires` dependencies are already applied to the same scope. " +
+      "Idempotent — re-applying the same app to the same scope updates the timestamp.",
+    {
+      appId: z.string(),
+      scopeId: z.string().optional().describe("Scope to apply to. Defaults to 'root'."),
+      dir: z.string().optional().describe("Absolute path to install from if not already installed."),
+    },
+    async input => {
+      const scopeId = input.scopeId ?? "root"
+      let installed = appRegistry.getApp(input.appId)
+
+      if (!installed && input.dir) {
+        const installResult = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter)
+        if (!installResult.ok) return errorResult(`app_apply: ${installResult.error}`)
+        installed = installResult.record
+      } else if (!installed) {
+        return errorResult(
+          `app_apply: app "${input.appId}" is not installed. Either call app_install first or provide a 'dir' parameter.`,
+        )
+      }
+
+      if (installed.requires && installed.requires.length > 0) {
+        const applied = appRegistry.listApplied(scopeId)
+        const appliedIds = new Set(applied.map(m => m.appId))
+        const missing = installed.requires.filter(reqId => !appliedIds.has(reqId))
+        if (missing.length > 0) {
+          return errorResult(
+            `app_apply: app "${input.appId}" requires the following apps to be applied to scope "${scopeId}" first: ${missing.join(", ")}`,
+          )
+        }
+      }
+
+      const mount = appRegistry.applyApp({ scopeId, appId: input.appId })
+      return textResult({
+        scopeId: mount.scopeId,
+        appId: mount.appId,
+        appliedAt: mount.appliedAt,
+        agents: installed.agents,
+        workflows: installed.workflows,
+        unvalidatedAgentTools: installed.unvalidatedAgentTools,
+      })
+    },
+  )
+
+  server.tool(
+    "app_unapply",
+    "Remove an app from a scope. Refuses if another applied app in the same scope requires this one.",
+    {
+      appId: z.string(),
+      scopeId: z.string().optional().describe("Scope to unapply from. Defaults to 'root'."),
+    },
+    async input => {
+      const scopeId = input.scopeId ?? "root"
+      const applied = appRegistry.listApplied(scopeId)
+      const dependents: string[] = []
+
+      for (const mount of applied) {
+        if (mount.appId === input.appId) continue
+        const app = appRegistry.getApp(mount.appId)
+        if (app?.requires?.includes(input.appId)) {
+          dependents.push(mount.appId)
+        }
+      }
+
+      if (dependents.length > 0) {
+        return errorResult(
+          `app_unapply: cannot unapply app "${input.appId}" from scope "${scopeId}" — ` +
+            `the following apps in this scope require it: ${dependents.join(", ")}`,
+        )
+      }
+
+      const removed = appRegistry.unapplyApp({ scopeId, appId: input.appId })
+      if (!removed) {
+        return errorResult(`app_unapply: app "${input.appId}" is not applied to scope "${scopeId}".`)
+      }
+
+      return textResult({ scopeId: removed.scopeId, appId: removed.appId, appliedAt: removed.appliedAt })
+    },
+  )
+
+  server.tool(
+    "app_list_applied",
+    "List applied mounts, optionally filtered by scope. Each mount is joined with its installed app summary.",
+    {
+      scopeId: z.string().optional().describe("Filter by scope. Omit to list all scopes."),
+    },
+    async input => {
+      const mounts = appRegistry.listApplied(input.scopeId)
+      const result = mounts.map(mount => {
+        const app = appRegistry.getApp(mount.appId)
+        return {
+          scopeId: mount.scopeId,
+          appId: mount.appId,
+          appliedAt: mount.appliedAt,
+          ...(app
+            ? {
+                agents: app.agents,
+                workflows: app.workflows,
+                unvalidatedAgentTools: app.unvalidatedAgentTools,
+              }
+            : {}),
+        }
+      })
+      return textResult(result)
     },
   )
 }

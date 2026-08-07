@@ -324,3 +324,302 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     ).toThrow(/unknown agent ref 'worker'.*not running in an app context/)
   })
 })
+
+describe("app_apply/app_unapply/app_list_applied verbs", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-apply-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("app_apply: happy path applies an app to a scope", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    const applied = parseToolJson(
+      await client.callTool({
+        name: "app_apply",
+        arguments: { appId: "@test/fixture-app", scopeId: "guild-123" },
+      }),
+    )
+
+    expect(applied.scopeId).toBe("guild-123")
+    expect(applied.appId).toBe("@test/fixture-app")
+    expect(applied.appliedAt).toBeTruthy()
+    expect(applied.agents).toHaveLength(1)
+    expect(applied.workflows).toHaveLength(1)
+  })
+
+  it("app_apply: defaults scopeId to 'root'", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    const applied = parseToolJson(
+      await client.callTool({ name: "app_apply", arguments: { appId: "@test/fixture-app" } }),
+    )
+
+    expect(applied.scopeId).toBe("root")
+  })
+
+  it("app_apply: installs if dir provided and app not installed", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+
+    const applied = parseToolJson(
+      await client.callTool({
+        name: "app_apply",
+        arguments: { appId: "@test/fixture-app", dir },
+      }),
+    )
+
+    expect(applied.scopeId).toBe("root")
+    expect(applied.appId).toBe("@test/fixture-app")
+  })
+
+  it("app_apply: validates requires dependencies", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "app-tools-base-"))
+    const depDir = await mkdtemp(join(tmpdir(), "app-tools-dep-"))
+    try {
+      const baseApp = defineApp({
+        id: "@test/base-app",
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "base",
+              description: "Base agent.",
+              model: "claude-sonnet-5",
+              workflows: [{ ref: "base-wf" }],
+            }),
+            body: "Base.",
+          },
+        ],
+        workflows: [
+          defineWorkflow({
+            id: "base-wf",
+            name: "Base",
+            description: "Base.",
+            version: "0.1.0",
+            inputs: {},
+            outputs: {},
+            steps: [{ id: "step1", kind: "tool", tool: "known_tool" }],
+          }),
+        ],
+      })
+      await baseApp.emit(baseDir)
+
+      const depApp = defineApp({
+        id: "@test/dep-app",
+        requires: ["@test/base-app"],
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "dep",
+              description: "Dependent agent.",
+              model: "claude-sonnet-5",
+              workflows: [{ ref: "dep-wf" }],
+            }),
+            body: "Dep.",
+          },
+        ],
+        workflows: [
+          defineWorkflow({
+            id: "dep-wf",
+            name: "Dep",
+            description: "Dep.",
+            version: "0.1.0",
+            inputs: {},
+            outputs: {},
+            steps: [{ id: "step1", kind: "tool", tool: "known_tool" }],
+          }),
+        ],
+      })
+      await depApp.emit(depDir)
+
+      const { client } = await setup()
+      await client.callTool({ name: "app_install", arguments: { dir: baseDir } })
+      await client.callTool({ name: "app_install", arguments: { dir: depDir } })
+
+      const missingDep = await client.callTool({
+        name: "app_apply",
+        arguments: { appId: "@test/dep-app", scopeId: "guild-123" },
+      })
+      expect(isError(missingDep)).toBe(true)
+      const errBody = parseToolJson(missingDep)
+      expect(errBody.error).toContain("@test/base-app")
+
+      await client.callTool({
+        name: "app_apply",
+        arguments: { appId: "@test/base-app", scopeId: "guild-123" },
+      })
+
+      const withDep = parseToolJson(
+        await client.callTool({
+          name: "app_apply",
+          arguments: { appId: "@test/dep-app", scopeId: "guild-123" },
+        }),
+      )
+      expect(withDep.appId).toBe("@test/dep-app")
+    } finally {
+      await rm(baseDir, { recursive: true, force: true })
+      await rm(depDir, { recursive: true, force: true })
+    }
+  })
+
+  it("app_list_applied: lists mounts for a scope", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    await client.callTool({
+      name: "app_apply",
+      arguments: { appId: "@test/fixture-app", scopeId: "guild-123" },
+    })
+    await client.callTool({
+      name: "app_apply",
+      arguments: { appId: "@test/fixture-app", scopeId: "guild-456" },
+    })
+
+    const guild123 = parseToolJson(
+      await client.callTool({ name: "app_list_applied", arguments: { scopeId: "guild-123" } }),
+    )
+    expect(guild123).toHaveLength(1)
+    expect(guild123[0].scopeId).toBe("guild-123")
+    expect(guild123[0].appId).toBe("@test/fixture-app")
+
+    const all = parseToolJson(await client.callTool({ name: "app_list_applied", arguments: {} }))
+    expect(all).toHaveLength(2)
+  })
+
+  it("app_unapply: removes a mount", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    await client.callTool({
+      name: "app_apply",
+      arguments: { appId: "@test/fixture-app", scopeId: "guild-123" },
+    })
+
+    const removed = parseToolJson(
+      await client.callTool({
+        name: "app_unapply",
+        arguments: { appId: "@test/fixture-app", scopeId: "guild-123" },
+      }),
+    )
+    expect(removed.scopeId).toBe("guild-123")
+    expect(removed.appId).toBe("@test/fixture-app")
+
+    const afterRemoval = parseToolJson(
+      await client.callTool({ name: "app_list_applied", arguments: { scopeId: "guild-123" } }),
+    )
+    expect(afterRemoval).toHaveLength(0)
+  })
+
+  it("app_unapply: refuses if another app requires it", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "app-tools-base-unapply-"))
+    const depDir = await mkdtemp(join(tmpdir(), "app-tools-dep-unapply-"))
+    try {
+      const baseApp = defineApp({
+        id: "@test/base-app-2",
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "base",
+              description: "Base agent.",
+              model: "claude-sonnet-5",
+              workflows: [{ ref: "base-wf" }],
+            }),
+            body: "Base.",
+          },
+        ],
+        workflows: [
+          defineWorkflow({
+            id: "base-wf",
+            name: "Base",
+            description: "Base.",
+            version: "0.1.0",
+            inputs: {},
+            outputs: {},
+            steps: [{ id: "step1", kind: "tool", tool: "known_tool" }],
+          }),
+        ],
+      })
+      await baseApp.emit(baseDir)
+
+      const depApp = defineApp({
+        id: "@test/dep-app-2",
+        requires: ["@test/base-app-2"],
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "dep",
+              description: "Dependent agent.",
+              model: "claude-sonnet-5",
+              workflows: [{ ref: "dep-wf" }],
+            }),
+            body: "Dep.",
+          },
+        ],
+        workflows: [
+          defineWorkflow({
+            id: "dep-wf",
+            name: "Dep",
+            description: "Dep.",
+            version: "0.1.0",
+            inputs: {},
+            outputs: {},
+            steps: [{ id: "step1", kind: "tool", tool: "known_tool" }],
+          }),
+        ],
+      })
+      await depApp.emit(depDir)
+
+      const { client } = await setup()
+      await client.callTool({ name: "app_install", arguments: { dir: baseDir } })
+      await client.callTool({ name: "app_install", arguments: { dir: depDir } })
+      await client.callTool({
+        name: "app_apply",
+        arguments: { appId: "@test/base-app-2", scopeId: "guild-123" },
+      })
+      await client.callTool({
+        name: "app_apply",
+        arguments: { appId: "@test/dep-app-2", scopeId: "guild-123" },
+      })
+
+      const refused = await client.callTool({
+        name: "app_unapply",
+        arguments: { appId: "@test/base-app-2", scopeId: "guild-123" },
+      })
+      expect(isError(refused)).toBe(true)
+      const errBody = parseToolJson(refused)
+      expect(errBody.error).toContain("@test/dep-app-2")
+      expect(errBody.error).toContain("require")
+    } finally {
+      await rm(baseDir, { recursive: true, force: true })
+      await rm(depDir, { recursive: true, force: true })
+    }
+  })
+
+  it("app_run: refuses if scopeId provided but app not applied to that scope", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const refused = await client.callTool({
+      name: "app_run",
+      arguments: { appId: "@test/fixture-app", scopeId: "guild-123" },
+    })
+    expect(isError(refused)).toBe(true)
+    const errBody = parseToolJson(refused)
+    expect(errBody.error).toContain("not applied to scope")
+  })
+})

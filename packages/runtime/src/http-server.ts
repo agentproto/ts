@@ -38,6 +38,7 @@ import { SessionNotAliveError } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
+import type { AppRegistry } from "./app-registry.js"
 import {
   loadWorkspacesConfig,
   saveWorkspacesConfig,
@@ -706,6 +707,21 @@ export interface RuntimeHttpServerOptions {
    *  Same service the MCP `workflow_start/status/cancel/
    *  escalation_resolve/list` tools call. Without it the routes 404. */
   workflowRunner?: WorkflowRunner
+  /** Optional — when wired, exposes /apps/:appId/apply, DELETE /apps/:appId/apply,
+   *  and GET /scopes/:scopeId/apps routes for applying apps to scopes. Same
+   *  service the MCP `app_apply/app_unapply/app_list_applied` tools use. */
+  appRegistry?: AppRegistry
+  /** Optional — mirrors the install logic from app-tools.ts, threaded through
+   *  so both the MCP verb and the HTTP route can call it. Required when
+   *  `appRegistry` is wired. */
+  performAppInstall?: (
+    dir: string,
+    appRegistry: AppRegistry,
+    listRegisteredToolIds: () => Promise<string[]>,
+    resolveAgentAdapter?: AgentAdapterResolver,
+  ) => Promise<{ ok: true; record: any } | { ok: false; error: string }>
+  /** Optional — required when `appRegistry` is wired, for tool validation during install. */
+  listRegisteredToolIds?: () => Promise<string[]>
   /** Optional — when wired, enables `POST /inbound`, the push-ingress
    *  counterpart to `inbound-watcher.ts`'s poll loop. A human reply
    *  (e.g. from agentpush's Telegram webhook) routes into the session
@@ -2484,6 +2500,27 @@ export async function startHttpServer(
         // and /routine-defs/reconcile.
         if (opts.routineRegistrar && path.startsWith("/routine-defs/")) {
           const handled = await handleRoutineDefs(req, res, path, opts.routineRegistrar)
+          if (handled) return
+        }
+
+        // App routes — POST /apps/:appId/apply, DELETE /apps/:appId/apply,
+        // GET /scopes/:scopeId/apps. Mirrors the MCP app_apply/app_unapply/
+        // app_list_applied tools. Only mounted when appRegistry is wired.
+        if (
+          opts.appRegistry &&
+          opts.performAppInstall &&
+          opts.listRegisteredToolIds &&
+          (path.startsWith("/apps/") || path.startsWith("/scopes/"))
+        ) {
+          const handled = await handleApps(
+            req,
+            res,
+            path,
+            opts.appRegistry,
+            opts.performAppInstall,
+            opts.listRegisteredToolIds,
+            opts.resolveAgentAdapter,
+          )
           if (handled) return
         }
 
@@ -5763,6 +5800,144 @@ async function handleProviderInbound(
   })
   res.writeHead(200, { "content-type": "application/json" })
   res.end(JSON.stringify(result))
+}
+
+async function handleApps(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  appRegistry: AppRegistry,
+  performInstall: (
+    dir: string,
+    appRegistry: AppRegistry,
+    listRegisteredToolIds: () => Promise<string[]>,
+    resolveAgentAdapter?: AgentAdapterResolver,
+  ) => Promise<{ ok: true; record: any } | { ok: false; error: string }>,
+  listRegisteredToolIds: () => Promise<string[]>,
+  resolveAgentAdapter?: AgentAdapterResolver,
+): Promise<boolean> {
+  const method = req.method ?? "GET"
+
+  const applyMatch = path.match(/^\/apps\/([^/]+)\/apply$/)
+  if (applyMatch && method === "POST") {
+    const appId = decodeURIComponent(applyMatch[1]!)
+    const body = (await readJsonBody(req)) as { scopeId?: string; dir?: string } | null
+    const scopeId = body?.scopeId ?? "root"
+
+    let installed = appRegistry.getApp(appId)
+    if (!installed && body?.dir) {
+      const installResult = await performInstall(body.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter)
+      if (!installResult.ok) {
+        res.writeHead(400, { "content-type": "application/json" })
+        res.end(JSON.stringify({ error: installResult.error }))
+        return true
+      }
+      installed = installResult.record
+    }
+
+    if (!installed) {
+      res.writeHead(400, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: `app "${appId}" is not installed. Either call app_install first or provide a 'dir' parameter.`,
+        }),
+      )
+      return true
+    }
+
+    if (installed.requires && installed.requires.length > 0) {
+      const applied = appRegistry.listApplied(scopeId)
+      const appliedIds = new Set(applied.map(m => m.appId))
+      const missing = installed.requires.filter(reqId => !appliedIds.has(reqId))
+      if (missing.length > 0) {
+        res.writeHead(400, { "content-type": "application/json" })
+        res.end(
+          JSON.stringify({
+            error: `app "${appId}" requires the following apps to be applied to scope "${scopeId}" first: ${missing.join(", ")}`,
+          }),
+        )
+        return true
+      }
+    }
+
+    const mount = appRegistry.applyApp({ scopeId, appId })
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        scopeId: mount.scopeId,
+        appId: mount.appId,
+        appliedAt: mount.appliedAt,
+        agents: installed.agents,
+        workflows: installed.workflows,
+        unvalidatedAgentTools: installed.unvalidatedAgentTools,
+      }),
+    )
+    return true
+  }
+
+  if (applyMatch && method === "DELETE") {
+    const appId = decodeURIComponent(applyMatch[1]!)
+    const body = (await readJsonBody(req)) as { scopeId?: string } | null
+    const url = new URL(req.url ?? "", `http://${req.headers.host}`)
+    const scopeId = body?.scopeId ?? url.searchParams.get("scopeId") ?? "root"
+
+    const applied = appRegistry.listApplied(scopeId)
+    const dependents: string[] = []
+    for (const mount of applied) {
+      if (mount.appId === appId) continue
+      const app = appRegistry.getApp(mount.appId)
+      if (app?.requires?.includes(appId)) {
+        dependents.push(mount.appId)
+      }
+    }
+
+    if (dependents.length > 0) {
+      res.writeHead(400, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: `cannot unapply app "${appId}" from scope "${scopeId}" — the following apps in this scope require it: ${dependents.join(", ")}`,
+        }),
+      )
+      return true
+    }
+
+    const removed = appRegistry.unapplyApp({ scopeId, appId })
+    if (!removed) {
+      res.writeHead(404, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: `app "${appId}" is not applied to scope "${scopeId}".` }))
+      return true
+    }
+
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify({ scopeId: removed.scopeId, appId: removed.appId, appliedAt: removed.appliedAt }))
+    return true
+  }
+
+  const scopesMatch = path.match(/^\/scopes\/([^/]+)\/apps$/)
+  if (scopesMatch && method === "GET") {
+    const scopeId = decodeURIComponent(scopesMatch[1]!)
+    const mounts = appRegistry.listApplied(scopeId)
+    const result = mounts.map(mount => {
+      const app = appRegistry.getApp(mount.appId)
+      return {
+        scopeId: mount.scopeId,
+        appId: mount.appId,
+        appliedAt: mount.appliedAt,
+        ...(app
+          ? {
+              agents: app.agents,
+              workflows: app.workflows,
+              unvalidatedAgentTools: app.unvalidatedAgentTools,
+            }
+          : {}),
+      }
+    })
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify(result))
+    return true
+  }
+
+  return false
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

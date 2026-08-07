@@ -90,7 +90,7 @@ import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
-import { registerAppTools, resolveAgentRefsForWorkflow } from "./app-tools.js"
+import { registerAppTools, resolveAgentRefsForWorkflow, performInstall } from "./app-tools.js"
 import { createAppRegistry } from "./app-registry.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
@@ -1891,6 +1891,9 @@ export async function createGateway(
     activityProjector,
     taskLedger,
     ...(workflowRunner ? { workflowRunner } : {}),
+    appRegistry,
+    performAppInstall: performInstall,
+    listRegisteredToolIds,
     // POST /inbound push ingress — same shared transmitterBindings store
     // and liveness/restart adapters the inbound watcher's "route"/
     // "route-or-spawn" modes use above. No `spawnForContact`: an
