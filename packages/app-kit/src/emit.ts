@@ -9,20 +9,30 @@
  *   <dir>/.agentproto/agents/<id>/AGENT.md         (one per agent)
  *   <dir>/.agentproto/workflows/<wf.id>/WORKFLOW.md (shared — a workflow may
  *                                                    be run by several agents)
+ *   <dir>/.agentproto/APP.md                       (root index — always
+ *                                                    written, so a future
+ *                                                    `app_install` can
+ *                                                    discover the bundle)
  *
  * The "tenant" isn't a `tenants/<t>/…` path segment — it's the `owner` of
  * the AIP-34 WORKSPACE.md (guild / user / org), and local storage is its
  * AIP-35 `storage` block. So there is no bespoke tenant folder to invent.
  *
- * Both are plain markdown manifests: frontmatter = the validated handle,
- * body = the agent's `body` (its system prompt) or the workflow description.
- * Because a `defineWorkflow` handle is pure data, the WORKFLOW.md needs no
- * `entry:` module — the manifest *is* the workflow, so `loadWorkflowHandle`
- * returns it directly with nothing to reconcile against.
+ * All manifests are plain markdown: frontmatter = the validated handle (or,
+ * for APP.md, the identity + a manifest of `{ id, path }` refs to every
+ * agent/workflow it bundles), body = the agent's `body` (its system prompt),
+ * the workflow description, or the app description. Because a
+ * `defineWorkflow` handle is pure data, the WORKFLOW.md needs no `entry:`
+ * module — the manifest *is* the workflow, so `loadWorkflowHandle` returns
+ * it directly with nothing to reconcile against.
+ *
+ * `emitApp` stays dependency-light on purpose (no Mastra import) — that
+ * split lets a host write/discover an app without paying for the Mastra
+ * build path.
  */
 
 import { mkdir, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { join, relative } from "node:path"
 import matter from "gray-matter"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
@@ -33,6 +43,10 @@ interface EmitInput {
   readonly agents: readonly AgentEntry[]
   readonly workflows: readonly WorkflowHandle[]
   readonly workspace?: WorkspaceHandle
+  readonly id?: string
+  readonly name?: string
+  readonly version?: string
+  readonly description?: string
 }
 
 export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> {
@@ -60,15 +74,38 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
   }
 
   const workflowPaths: string[] = []
+  const workflowRefs: { id: string; path: string }[] = []
   for (const wf of app.workflows) {
     const wfDir = join(dir, ".agentproto", "workflows", wf.id)
     await mkdir(wfDir, { recursive: true })
     const wfPath = join(wfDir, "WORKFLOW.md")
     await writeFile(wfPath, toManifest(wf, wf.description ?? ""), "utf8")
     workflowPaths.push(wfPath)
+    workflowRefs.push({ id: wf.id, path: relative(dir, wfPath) })
   }
 
-  return { agentPaths, workflowPaths, ...(workspacePath ? { workspacePath } : {}) }
+  // Root APP.md (this WP): the index a future `app_install` reads to
+  // discover the bundle — always written, unlike WORKSPACE.md which is
+  // conditional on the app having a home workspace.
+  await mkdir(join(dir, ".agentproto"), { recursive: true })
+  const appPath = join(dir, ".agentproto", "APP.md")
+  const agentRefs = app.agents.map(({ agent }) => ({
+    id: agent.id,
+    path: relative(dir, agentPaths[agent.id]!),
+  }))
+  const appFrontmatter: Record<string, unknown> = {
+    schema: "app/v1",
+    ...(app.id !== undefined ? { id: app.id } : {}),
+    ...(app.name !== undefined ? { name: app.name } : {}),
+    version: app.version ?? "0.1.0",
+    ...(app.description !== undefined ? { description: app.description } : {}),
+    agents: agentRefs,
+    workflows: workflowRefs,
+    ...(app.workspace ? { workspace: app.workspace.id } : {}),
+  }
+  await writeFile(appPath, toManifest(appFrontmatter, app.description ?? ""), "utf8")
+
+  return { agentPaths, workflowPaths, appPath, ...(workspacePath ? { workspacePath } : {}) }
 }
 
 /**

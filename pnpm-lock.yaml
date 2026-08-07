@@ -897,6 +897,9 @@ importers:
       '@agentproto/workflow':
         specifier: workspace:*
         version: link:../workflow
+      '@agentproto/workflow-loader':
+        specifier: workspace:*
+        version: link:../workflow-loader
       '@agentproto/workspace':
         specifier: workspace:*
         version: link:../workspace
@@ -907,9 +910,6 @@ importers:
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling
-      '@agentproto/workflow-loader':
-        specifier: workspace:*
-        version: link:../workflow-loader
       '@mastra/core':
         specifier: 1.55.0
         version: 1.55.0(@bufbuild/protobuf@2.13.0)(ai@6.0.235(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3)

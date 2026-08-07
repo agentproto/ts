@@ -147,6 +147,36 @@ describe("defineApp — multi-agent + attachment invariant", () => {
     ).toThrow(/defineWorkspace \(AIP-34\)/)
   })
 
+  it("carries optional app identity through to the handle, defaulting version when id is set", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      id: "@acme/reviewers-app",
+      name: "Reviewers",
+      description: "A reviewer app.",
+    })
+    expect(app.id).toBe("@acme/reviewers-app")
+    expect(app.name).toBe("Reviewers")
+    expect(app.version).toBe("0.1.0")
+    expect(app.description).toBe("A reviewer app.")
+  })
+
+  it("keeps an explicit version instead of the default when id is set", () => {
+    const app = defineApp({ agents: [agent("solo", [])], id: "app-1", version: "2.3.0" })
+    expect(app.version).toBe("2.3.0")
+  })
+
+  it("leaves id/name/version/description undefined when none is given", () => {
+    const app = defineApp({ agents: [agent("solo", [])] })
+    expect(app.id).toBeUndefined()
+    expect(app.name).toBeUndefined()
+    expect(app.version).toBeUndefined()
+    expect(app.description).toBeUndefined()
+  })
+
+  it("throws on an empty (but present) app id", () => {
+    expect(() => defineApp({ agents: [agent("solo", [])], id: "  " })).toThrow(AppDefinitionError)
+  })
+
   it("matches string and { ref } workflow refs by the same key", () => {
     const app = defineApp({
       agents: [
