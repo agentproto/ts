@@ -2820,6 +2820,9 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
+      '@agentproto/app-kit':
+        specifier: workspace:*
+        version: link:../app-kit
       '@agentproto/auth':
         specifier: workspace:*
         version: link:../auth

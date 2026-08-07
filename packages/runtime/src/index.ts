@@ -90,6 +90,7 @@ import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
+import { registerAppTools } from "./app-tools.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
@@ -1220,6 +1221,18 @@ export async function createGateway(
     return dispatchToolBox.fn(name, inputs)
   }
 
+  // Same forward-reference trick as `dispatchToolBox` above, for `app_install`'s
+  // WORKFLOW.md tool-step validation (app-tools.ts) — it needs the SET of
+  // dispatchable tool ids, not a dispatcher. Wired to the real internal
+  // McpServer's `_registeredTools` keys alongside `dispatchToolBox.fn` below.
+  const listToolIdsBox: { fn?: () => Promise<string[]> } = {}
+  const listRegisteredToolIds = async (): Promise<string[]> => {
+    if (!listToolIdsBox.fn) {
+      throw new Error("app_install: tool registry not ready yet (daemon still booting)")
+    }
+    return listToolIdsBox.fn()
+  }
+
   // Cron scheduler — singleton per daemon, persisted to
   // ~/.agentproto/cron-jobs.json. Jobs survive daemon restarts;
   // skipped fires during downtime are NOT backfilled (documented behaviour).
@@ -1625,6 +1638,17 @@ export async function createGateway(
       endpointStore: inboundEndpointStore,
       telegramCreds: telegramBotCreds,
     })
+    // @agentproto/app-kit app lifecycle — install/list/run/status/stop
+    // (app-tools.ts). `resolveAgentAdapter` gates the adapter-resolves check
+    // (app_install) and the spawn (app_run) the same way it gates
+    // `workflowRunner` above; `listRegisteredToolIds` is always wired (the
+    // same lazy internal-server reach-in `dispatchTool` uses).
+    registerAppTools(server, {
+      registry: sessions,
+      listRegisteredToolIds,
+      ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+      ...(workflowRunner ? { workflowRunner } : {}),
+    })
     registerTelegramBotTools(server, { telegramCreds: telegramBotCreds })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
@@ -1775,6 +1799,12 @@ export async function createGateway(
       throw new Error(`routine/cron tool dispatch: unknown daemon tool "${name}"`)
     }
     return tool.handler(inputs, {})
+  }
+  listToolIdsBox.fn = async () => {
+    if (!internalToolServerPromise) internalToolServerPromise = mcpServerFactory()
+    const internalServer = await internalToolServerPromise
+    const internal = internalServer as unknown as { _registeredTools?: Record<string, unknown> }
+    return Object.keys(internal._registeredTools ?? {})
   }
 
   // AIP-41 routine registrar's first pass — scans `.routines/*/ROUTINE.md`
