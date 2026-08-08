@@ -10,6 +10,10 @@
  *   - Fenced code blocks (``` optionally with language)
  *   - Unordered lists (-, *, +) and ordered lists (1.)
  *   - Blockquotes (>)
+ *   - GFM pipe tables (a header row, a `|---|` separator row with optional
+ *     `:` alignment markers, and body rows) — inline formatting still applies
+ *     inside cells, `\|` and pipes inside code spans don't split cells, and a
+ *     block that only looks table-ish (no valid separator row) stays plain text
  *
  * All HTML is escaped before formatting is applied; no external markdown
  * library is used, keeping the webview dependency-free.
@@ -28,7 +32,10 @@ export function escapeHtml(text: string): string {
 }
 
 export function renderMarkdown(text: string): string {
-  const lines = text.split(/\r\n|\r|\n/)
+  const rawLines = text.split(/\r\n|\r|\n/)
+  // Escape once up front so table look-ahead and the per-line paths agree on
+  // what a cell's contents are (inlineFormat expects pre-escaped input).
+  const lines = rawLines.map(escapeHtml)
   const out: string[] = []
 
   let codeBuffer: string[] | undefined
@@ -67,8 +74,9 @@ export function renderMarkdown(text: string): string {
     flushBlockquote()
   }
 
-  for (const rawLine of lines) {
-    const line = escapeHtml(rawLine)
+  for (let idx = 0; idx < lines.length; idx++) {
+    const rawLine = rawLines[idx]!
+    const line = lines[idx]!
 
     // Code fence
     const fenceMatch = /^```(.*)$/.exec(line)
@@ -141,6 +149,17 @@ export function renderMarkdown(text: string): string {
       }
       listBuffer = listBuffer ?? { marker: "ol", items: [] }
       listBuffer.items.push(olMatch[2]!)
+      continue
+    }
+
+    // GFM pipe table (a header row immediately followed by a separator row).
+    // Checked before the paragraph fallback so a table interrupts pending
+    // prose; a block with no valid separator row falls through as plain text.
+    const table = tryParseTable(lines, idx)
+    if (table) {
+      flushAll()
+      out.push(table.html)
+      idx = table.next - 1
       continue
     }
 
@@ -233,4 +252,116 @@ function scanInline(text: string, cursor: Cursor, closer: "**" | "*" | null): Sc
   }
 
   return { html: out, closed: false }
+}
+
+type Alignment = "left" | "right" | "center" | null
+
+/** A separator cell is only hyphens with an optional leading/trailing colon. */
+const SEPARATOR_CELL = /^:?-+:?$/
+
+/**
+ * Split one HTML-escaped table row into trimmed cell strings. A `\|` is an
+ * escaped literal pipe (unescaped to `|` here) and a `|` inside a backtick code
+ * span is literal too — neither splits a cell. A leading/trailing delimiter
+ * pipe produces one empty edge cell, which is dropped so `| a | b |` and
+ * `a | b` both yield two cells.
+ */
+function splitTableCells(line: string): string[] {
+  const cells: string[] = []
+  let cur = ""
+  let inCode = false
+  const s = line.trim()
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === "\\" && s[i + 1] === "|" && !inCode) {
+      cur += "|"
+      i += 1
+      continue
+    }
+    if (ch === "`") {
+      inCode = !inCode
+      cur += ch
+      continue
+    }
+    if (ch === "|" && !inCode) {
+      cells.push(cur)
+      cur = ""
+      continue
+    }
+    cur += ch
+  }
+  cells.push(cur)
+  if (cells.length > 1 && cells[0] === "") cells.shift()
+  if (cells.length > 1 && cells[cells.length - 1] === "") cells.pop()
+  return cells.map(c => c.trim())
+}
+
+/**
+ * Parse a separator row into per-column alignments, or null if it isn't a valid
+ * separator. Requires a `|` (so a bare `---` setext underline is never mistaken
+ * for a one-column table) and every cell to be the hyphen/colon form.
+ */
+function parseSeparator(line: string): Alignment[] | null {
+  if (!line.includes("|")) return null
+  const cells = splitTableCells(line)
+  if (cells.length === 0) return null
+  const aligns: Alignment[] = []
+  for (const cell of cells) {
+    if (!SEPARATOR_CELL.test(cell)) return null
+    const left = cell.startsWith(":")
+    const right = cell.endsWith(":")
+    aligns.push(left && right ? "center" : right ? "right" : left ? "left" : null)
+  }
+  return aligns
+}
+
+function tableCell(tag: "th" | "td", content: string, align: Alignment): string {
+  const style = align ? ` style="text-align:${align}"` : ""
+  return `<${tag}${style}>${inlineFormat(content)}</${tag}>`
+}
+
+/**
+ * If the (HTML-escaped) lines at `idx` are a table header + separator, render
+ * the whole table and report the index just past its last body row. Body rows
+ * are the consecutive non-blank lines containing a pipe; each is padded or
+ * truncated to the column count. Returns null when it isn't a table.
+ */
+function tryParseTable(lines: string[], idx: number): { html: string; next: number } | null {
+  const header = lines[idx]
+  const separator = lines[idx + 1]
+  if (header === undefined || separator === undefined) return null
+  if (!header.includes("|")) return null
+
+  const aligns = parseSeparator(separator)
+  if (!aligns) return null
+
+  const headerCells = splitTableCells(header)
+  if (headerCells.length !== aligns.length) return null
+
+  const bodyRows: string[][] = []
+  let j = idx + 2
+  while (j < lines.length) {
+    const row = lines[j]!
+    if (row.trim() === "" || !row.includes("|")) break
+    const cells = splitTableCells(row)
+    const normalized: string[] = []
+    for (let c = 0; c < aligns.length; c++) normalized.push(cells[c] ?? "")
+    bodyRows.push(normalized)
+    j += 1
+  }
+
+  const thead = `<thead><tr>${headerCells
+    .map((cell, i) => tableCell("th", cell, aligns[i] ?? null))
+    .join("")}</tr></thead>`
+  const tbody =
+    bodyRows.length > 0
+      ? `<tbody>${bodyRows
+          .map(
+            cells =>
+              `<tr>${cells.map((cell, i) => tableCell("td", cell, aligns[i] ?? null)).join("")}</tr>`,
+          )
+          .join("")}</tbody>`
+      : ""
+
+  return { html: `<table>${thead}${tbody}</table>`, next: j }
 }
