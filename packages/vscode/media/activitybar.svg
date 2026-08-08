@@ -1,4 +1,6 @@
 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none"/>
-  <circle cx="12" cy="12" r="3" fill="currentColor"/>
+  <!-- agentproto activity-bar glyph — the CLI mark (prompt chevron + block cursor), monochrome.
+       Uses currentColor so VS Code themes active/inactive states. -->
+  <path d="M5 6 L11.5 12 L5 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="14.6" y="5.4" width="3.6" height="13.2" rx="1.2" fill="currentColor"/>
 </svg>
