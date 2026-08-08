@@ -2,7 +2,7 @@
 
 The `agentproto` binary is the reference host for AgentProto agent-CLI
 adapters. It installs adapter packages (`claude-code`, `claude-sdk`,
-`hermes`, `opencode`, `codex`, `mastra-agent`, `openclaw`, …), runs them locally
+`hermes`, `opencode`, `codex`, `mastra-agent`, `openclaw`, `antigravity`, …), runs them locally
 for a single turn or a long-lived session, exposes them as a daemon over
 an outbound WebSocket tunnel, and orchestrates multi-agent swarms
 through the runtime kernel.
@@ -11,7 +11,7 @@ This tree is **tool docs** — what the binary does, what flags it takes,
 what files it touches. For the protocol it implements, see the AIPs
 at <https://agentproto.sh/docs>.
 
-> **Status:** alpha. The package is pre-1.0 (`0.11.1`). See
+> **Status:** alpha. The package is pre-1.0 (`0.11.2`). See
 > [`../../VERSIONING.md`](../../VERSIONING.md) for what the alpha
 > guarantees and what may change between minor releases.
 

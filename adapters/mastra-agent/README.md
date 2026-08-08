@@ -46,13 +46,19 @@ cwd** (path-traversal guarded):
 | `write_file` | Create/overwrite a file (mkdir -p). |
 | `edit_file` | Replace a unique substring. |
 | `run_command` | Run a shell command (cwd-scoped, timeout). |
+| `read_diff` | Show `git diff` against HEAD (or a base ref), optionally scoped to paths. |
+| `apply_patch` | Apply a unified diff to workspace files (`git apply`). |
+| `run_tests` | Run the workspace test command (default `npm test`, overrideable). |
 
 > **Note:** `read_file` and `write_file` here are Mastra-native workspace tools
 > scoped to this adapter's session cwd. They are distinct from the runtime MCP
 > filesystem tools (`file_read`, `file_write`) registered on the daemon's `/mcp`
 > endpoint.
 
-`run_command` is on by default; set `AGENTPROTO_MASTRA_NO_EXEC=1` to withhold it.
+`run_command`, `read_diff`, `apply_patch`, and `run_tests` are gated by `allowExec`
+(default `true`); set `AGENTPROTO_MASTRA_NO_EXEC=1` to withhold them. Embedding hosts
+can also pass `extraTools` to merge additional tools over the built-in set (extra wins
+on id collision).
 
 ## Memory
 
