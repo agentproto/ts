@@ -2237,6 +2237,27 @@ describe("transcriptPanel webview — book view", () => {
     expect(ch[0]!.querySelector(".narration .story")?.textContent).toContain("The shell was lying")
   })
 
+  it("preserves markdown block structure (line breaks, lists, code fences) in narration", () => {
+    const panel = renderPanel()
+    // The html the host ships is renderMarkdown output — real <p>/<br>/<ul>/<pre>.
+    // The book must inject it intact, not flatten it into a run-on paragraph.
+    const md = "<p>Line A<br>Line B</p>\n<ul><li>one</li><li>two</li></ul>\n<pre><code>x=1\ny=2</code></pre>"
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "Do it" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: md }] },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: false }), nonce: "n", mode: "structured", conversation: conv })
+
+    const story = chapters(panel)[0]!.querySelector(".narration .story")
+    expect(story?.querySelector("br")).not.toBeNull() // single newline honoured
+    expect(story?.querySelectorAll("ul li")).toHaveLength(2) // list not collapsed
+    expect(story?.querySelector("pre code")?.textContent).toBe("x=1\ny=2") // fence intact
+  })
+
   it("folds past chapters and keeps the newest open; a fold click toggles a past chapter", () => {
     const panel = renderPanel()
     const conv: PresentedConversation = {
