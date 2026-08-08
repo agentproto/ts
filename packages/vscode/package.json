@@ -4,6 +4,7 @@
   "description": "Live operational views for the agentproto daemon — sessions, permissions, cost — plus spawn/drive/stop from the editor.",
   "version": "0.4.1",
   "publisher": "agentproto",
+  "icon": "media/icon.png",
   "license": "Apache-2.0",
   "private": true,
   "repository": {
