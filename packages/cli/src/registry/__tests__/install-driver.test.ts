@@ -1,9 +1,20 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
+  installAdapter,
   planAdapterInstall,
   parseNpmPackageFromHint,
   type AdapterInstallCandidate,
 } from "../install-driver.js"
+
+vi.mock("../resolve.js", () => ({
+  listAdaptersWithAcp: vi.fn(async () => [
+    { slug: "antigravity", status: "supported" },
+  ]),
+}))
+vi.mock("../../commands/install.js", () => ({
+  runInstall: vi.fn(async () => 0),
+}))
+import { runInstall } from "../../commands/install.js"
 
 // ── parseNpmPackageFromHint ─────────────────────────────────────────────
 
@@ -96,7 +107,10 @@ describe("planAdapterInstall", () => {
     expect(planAdapterInstall(brewHint).kind).toBe("unsupported")
   })
 
-  it("drives `agentproto install <slug>` for a first-party (no source) adapter", () => {
+  it("drives `agentproto install <slug> --allow-unverified` for a first-party (no source) adapter", () => {
+    // The flag is deliberate: adapter_install is an explicit request to
+    // install a cataloged manifest, and the TTY-less daemon would otherwise
+    // refuse every curl/download-method adapter (see planAdapterInstall).
     const supported: AdapterInstallCandidate = {
       slug: "opencode",
       status: "supported",
@@ -105,7 +119,7 @@ describe("planAdapterInstall", () => {
       kind: "agentproto-install",
       slug: "opencode",
       command: "agentproto",
-      args: ["install", "opencode"],
+      args: ["install", "opencode", "--allow-unverified"],
     })
   })
 
@@ -117,5 +131,25 @@ describe("planAdapterInstall", () => {
       status: "available",
     }
     expect(planAdapterInstall(available).kind).toBe("agentproto-install")
+  })
+})
+
+// ── installAdapter: the plan → runInstall seam ──────────────────────────
+
+describe("installAdapter", () => {
+  it("passes runInstall the args AFTER the verb (slug first)", async () => {
+    // Regression: plan.args keeps the leading "install" for command logging,
+    // but runInstall IS the install verb — handing it the verb made it
+    // resolve an adapter literally named "install" and fail with exit 1 for
+    // every first-party daemon/UI install.
+    const result = await installAdapter("antigravity")
+    expect(vi.mocked(runInstall)).toHaveBeenCalledWith([
+      "antigravity",
+      "--allow-unverified",
+    ])
+    expect(result.ok).toBe(true)
+    expect(result.command).toBe(
+      "agentproto install antigravity --allow-unverified",
+    )
   })
 })

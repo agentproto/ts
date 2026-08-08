@@ -111,11 +111,22 @@ export function planAdapterInstall(
   // pipeline. Works whether it's "supported" (not installed → bootstrap the
   // package + run install[]) or "available" (installed, setup/auth pending →
   // idempotent re-run).
+  //
+  // `--allow-unverified`: this path only runs for an explicit
+  // `adapter_install` / `POST /adapters/:slug/install` request — a
+  // deliberate install action on a cataloged `@agentproto/adapter-*`
+  // manifest, whose install steps ship inside a versioned npm package
+  // rather than from anywhere caller-controlled. The daemon has no TTY, so
+  // without the flag the runner's non-interactive gate would refuse every
+  // curl/download-method adapter (e.g. antigravity), making them
+  // permanently uninstallable from UIs. The gate keeps protecting the
+  // ambient cases it was built for (agents shelling out `agentproto
+  // install`, CI).
   return {
     kind: "agentproto-install",
     slug: entry.slug,
     command: "agentproto",
-    args: ["install", entry.slug],
+    args: ["install", entry.slug, "--allow-unverified"],
   }
 }
 
@@ -273,8 +284,11 @@ export async function installAdapter(
         : ` (exit ${res.code})${lastLine(res.output)}`
     }
   } else {
-    // agentproto-install
-    const res = await runInstallBounded(plan.args)
+    // agentproto-install. `runInstall` is the handler FOR the `install`
+    // verb — it wants the args after the verb (slug first). plan.args keeps
+    // the verb so `command` logs the real invocation; strip it here or the
+    // runner resolves an adapter literally named "install" and dies.
+    const res = await runInstallBounded(plan.args.slice(1))
     ok = res.code === 0
     exitCode = res.code
     if (!ok) {
