@@ -37,6 +37,22 @@ import { mentionQueryAt } from "./mentions.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
 import { accessIdentity, contextGauge, defaultPostureLabel, harnessGlyph, postureLabel } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
+import {
+  ASK_LONG_CHARS,
+  TITLE_MAX_CHARS,
+  activityFailed,
+  askOf,
+  buildBook,
+  chapterDurationMs,
+  chapterTitle,
+  clampTitle,
+  fillChapter,
+  firstSentence,
+  formatChapterDuration,
+  htmlToText,
+  newChapter,
+  pad2,
+} from "./conversationBook.logic.js"
 import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
@@ -366,6 +382,23 @@ export function buildHtml(
     postureLabel,
     defaultPostureLabel,
     contextGauge,
+    // Book (chapter) segmentation — injected by value so the webview runs the
+    // SAME tested pure functions the logic module's unit tests pin. buildBook
+    // calls the rest by name, so every one it touches must ride along as a
+    // sibling declaration; ASK_LONG_CHARS/TITLE_MAX_CHARS are interpolated as
+    // literals in the script below.
+    buildBook,
+    newChapter,
+    askOf,
+    fillChapter,
+    activityFailed,
+    chapterTitle,
+    firstSentence,
+    clampTitle,
+    htmlToText,
+    chapterDurationMs,
+    formatChapterDuration,
+    pad2,
   ]
     .map(fn => fn.toString())
     .join("\n      ")
@@ -1148,6 +1181,124 @@ export function buildHtml(
     #pty-view.active { display: block; }
     .xterm-viewport { background-color: transparent !important; }
     .xterm-screen { background-color: transparent !important; }
+
+    /* ── Book view ─────────────────────────────────────────────────────
+       A session as a BOOK: chapters split on asks. The palette here is
+       DELIBERATELY fixed (not vscode-themed) — same locked posture as the
+       sessions revamp — because the book is a designed reading surface, not a
+       chrome panel. Prose is a system serif stack (no webfont dependency,
+       offline-safe); chrome/steps/kickers are mono. */
+    #book {
+      --ink: #1b1b1c; --ink-2: #232324; --edge: #333335;
+      --paper: #f4f0e6;
+      --paper-72: rgba(244,240,230,.72); --paper-45: rgba(244,240,230,.45);
+      --paper-28: rgba(244,240,230,.28); --paper-tint: rgba(244,240,230,.055);
+      --phosphor: #2f9e63;
+      --serif: Charter, 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+      --bkmono: ui-monospace, 'SF Mono', Menlo, monospace;
+      flex: 1 1 auto;
+      overflow-y: auto;
+      background: var(--ink);
+      color: var(--paper);
+      font: 13px/1.6 var(--bkmono);
+      padding: 26px 0 40px;
+    }
+    #book[hidden] { display: none; }
+    #book .book-page { max-width: 640px; margin: 0 auto; padding: 0 26px; }
+    #book #book-empty { color: var(--paper-45); font-size: 12px; }
+
+    #book .chapter { margin-top: 6px; }
+    #book .fold {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 9px 10px; margin: 0 -10px; border-radius: 8px;
+      cursor: pointer; width: calc(100% + 20px);
+      background: transparent; border: none; text-align: left; color: inherit;
+      font: inherit;
+    }
+    #book .fold:hover { background: var(--ink-2); }
+    #book .fold:focus-visible { outline: 1px solid var(--phosphor); outline-offset: -1px; }
+    #book .fold .arrow { font-size: 10px; color: var(--paper-28); transition: transform .13s; flex: 0 0 auto; }
+    #book .chapter.openc .fold .arrow { transform: rotate(90deg); }
+    #book .fold h2 {
+      font: 600 15px var(--serif); color: var(--paper-72);
+      flex: 1; min-width: 0; margin: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #book .chapter.openc .fold h2 { color: var(--paper); white-space: normal; }
+    #book .fold .who { font-size: 9.5px; color: var(--paper-28); flex-shrink: 0; }
+    #book .fold .t { font-size: 10px; color: var(--paper-28); flex-shrink: 0; }
+
+    #book .cbody { display: none; padding: 2px 0 16px 20px; }
+    #book .chapter.openc .cbody, #book .chapter.live .cbody { display: block; }
+    /* The live chapter is always open and offers no fold affordance. */
+    #book .chapter.live .fold { cursor: default; }
+    #book .chapter.live .fold .arrow { visibility: hidden; }
+
+    #book .ask { background: var(--paper-tint); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+    #book .ask .alabel { font: 600 9.5px var(--bkmono); letter-spacing: .13em; color: var(--paper-45); }
+    #book .ask .atext { font: 14px/1.7 var(--serif); color: var(--paper); margin-top: 4px; }
+    #book .ask .atext > :first-child { margin-top: 0; }
+    #book .ask .atext > :last-child { margin-bottom: 0; }
+    #book .ask.clamped .atext {
+      display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    #book .amore {
+      font: 10.5px var(--bkmono); color: var(--paper-45); cursor: pointer;
+      margin-top: 4px; display: inline-block; background: none; border: none; padding: 0;
+    }
+    #book .amore:hover { color: var(--paper-72); }
+
+    #book .story { font: 14.5px/1.85 var(--serif); color: var(--paper-72); margin: 10px 0 0; }
+    #book .story b, #book .story strong { color: var(--paper); font-weight: 600; }
+    #book .story code {
+      font: 12px var(--bkmono); background: var(--ink-2); border: 1px solid var(--edge);
+      padding: 1px 5px; border-radius: 4px; color: var(--paper);
+    }
+    #book .story a { color: var(--phosphor); }
+    #book .story > :first-child { margin-top: 0; }
+
+    #book .details {
+      font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px;
+      cursor: pointer; display: inline-block; background: none; border: none; padding: 0;
+    }
+    #book .details:hover { color: var(--paper-72); }
+    #book .details::before { content: "$ "; color: var(--phosphor); }
+    #book .steps-body { margin-top: 10px; padding-left: 2px; }
+    #book .steps-body[hidden] { display: none; }
+    /* Reused transcript step cards read on the dark paper background. */
+    #book .steps-body .seg-label { color: var(--paper); }
+    #book .steps-body details.activity,
+    #book .steps-body .turn > details.tool,
+    #book .steps-body .turn > details.reasoning,
+    #book .steps-body > details.tool,
+    #book .steps-body > details.reasoning {
+      border-color: var(--edge); background: var(--ink-2);
+    }
+    #book .notices { margin-top: 10px; }
+
+    /* Live chapter: the blinking phosphor block cursor + the "$ now:" ticker. */
+    #book .cursor {
+      display: inline-block; width: 8px; height: 15px; border-radius: 2px;
+      background: var(--phosphor); vertical-align: -2px; margin-left: 3px;
+      animation: agentproto-blink 1.1s steps(1) infinite;
+    }
+    @keyframes agentproto-blink { 50% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { #book .cursor { animation: none; } }
+    #book .under { font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px; }
+    #book .under::before { content: "$ "; color: var(--phosphor); }
+    #book .under b { color: var(--paper-72); font-weight: 500; }
+
+    /* The pause: the inverted PAPER card when the agent stops to ask. */
+    #book .pause {
+      margin: 22px 0 4px; background: var(--paper); color: var(--ink);
+      border-radius: 10px; padding: 16px 18px;
+    }
+    #book .pause .phead {
+      font: 700 10px var(--bkmono); letter-spacing: .14em;
+      display: flex; align-items: center; gap: 8px;
+    }
+    #book .pause .phead .blk { width: 9px; height: 14px; border-radius: 2px; background: var(--phosphor); }
+    #book .pause .pquestion { font: 14px/1.7 var(--serif); margin-top: 8px; }
   </style>
   ${bundles.xtermCss ? `<style>${bundles.xtermCss}</style>` : ""}
 </head>
@@ -1161,6 +1312,8 @@ export function buildHtml(
       </div>
     </div>
     <div id="header-actions">
+      <button id="book-toggle" class="term-btn" type="button" hidden
+        title="Switch between the book and the raw transcript"></button>
       <div class="header-action">
         <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
         <div id="cost-popover" class="popover" hidden>
@@ -1190,6 +1343,7 @@ export function buildHtml(
     </div>
   </div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
+  <div id="book" hidden></div>
   <div id="pty-view"></div>
   <div id="blocked-note" hidden></div>
   <div id="working" hidden>
@@ -1243,6 +1397,10 @@ export function buildHtml(
       const MAX_ATTACHMENT_BYTES = ${MAX_ATTACHMENT_BYTES};
       const WARN_ATTACHMENT_BYTES = ${WARN_ATTACHMENT_BYTES};
       const ATTACHMENT_COUNT_CAP = ${ATTACHMENT_COUNT_CAP};
+      // Interpolated from conversationBook.logic.ts so the injected buildBook
+      // (and its helpers) resolve the SAME literals their unit tests pin.
+      const ASK_LONG_CHARS = ${ASK_LONG_CHARS};
+      const TITLE_MAX_CHARS = ${TITLE_MAX_CHARS};
       const INITIAL_ICON_SVG = ${JSON.stringify(bundles.headerIconSvg ?? "")};
       // Injected by value from the tested logic modules — see buildHtml.
       ${injectedHelpers}
@@ -1265,6 +1423,8 @@ export function buildHtml(
       const popoverContextSize = document.getElementById('popover-context-size');
       const blockedNote = document.getElementById('blocked-note');
       const transcript = document.getElementById('transcript');
+      const book = document.getElementById('book');
+      const bookToggle = document.getElementById('book-toggle');
       const working = document.getElementById('working');
       const workingText = document.getElementById('working-text');
       const composer = document.getElementById('composer');
@@ -1354,9 +1514,40 @@ export function buildHtml(
       // Turns/segments are addressed by stable id (data-turn-id/data-seg-id)
       // and patched in place — a live update never tears the DOM down, so
       // expand/collapse state and text selection survive for free.
-      // Pending tool rows whose elapsed-time label ticks independently of
-      // any patch: segId -> { startedMs, label, node }.
+      // Pending tool/activity rows whose elapsed-time label ticks
+      // independently of any patch. Keyed by the DOM NODE, not the seg id, so
+      // the same pending step can appear in BOTH the transcript timeline and
+      // the book's step drawer at once (they share seg ids) and each node ticks
+      // its own label — a seg-id key would let one view clobber the other's
+      // ticker. Value: { startedMs, label, node }.
       const pendingTools = new Map();
+
+      // ── Book (chapter) view state ──────────────────────────────────
+      // The book is a fold ABOVE the turn/segment timeline: it reuses the
+      // SAME presented turns (accumulated here from init + patch) and the SAME
+      // step renderer, and only groups them into chapters. It's the default
+      // for a structured session; the header 'transcript' toggle flips back to
+      // the raw turn rendering (#transcript), which is left fully intact.
+      const bookTurns = new Map();      // turnId -> PresentedTurn (insertion order preserved)
+      const bookChapterNodes = new Map(); // chapterId -> chapter DOM node
+      // The user's explicit fold choices, so a live patch never overrides a
+      // chapter they opened/closed by hand. A chapter absent from both keeps
+      // the default (newest open, the rest folded).
+      const bookOpened = new Set();
+      const bookClosed = new Set();
+      // Chapter ids whose ask card the user expanded ("$ full message") — so a
+      // live re-render doesn't re-clamp a message they chose to read in full.
+      const bookAskExpanded = new Set();
+      let bookScrolledUp = false;
+      // Book is the default view for a structured session; persisted per panel
+      // (webview state is already scoped to this session) so the choice sticks.
+      let bookView = true;
+      try {
+        const st = vscode.getState && vscode.getState();
+        if (st && typeof st.bookView === 'boolean') bookView = st.bookView;
+      } catch (e) { /* no persisted state yet */ }
+      const DEFAULT_PLACEHOLDER = input.getAttribute('placeholder') || '';
+      const BOOK_PLACEHOLDER = 'write back — your message opens the next chapter…';
 
       // Grow with the text instead of forcing the user to drag a resize
       // handle, up to the CSS max-height (then the textarea scrolls).
@@ -1484,6 +1675,9 @@ export function buildHtml(
         // over whatever was typed during it. This is the whole point of the
         // queue: the user types when they think of it, not when the agent is ready.
         if (wasBusy && !nowBusy && !exited && queuedText !== null) flushQueued(false);
+        // The book's live chapter, pause card, and "$ now:" line derive from
+        // session state, so repaint them on any descriptor change.
+        renderBook();
       }
 
       function setSending(sending) {
@@ -1779,10 +1973,10 @@ export function buildHtml(
               // card is collapsed, and the body is exactly what's hidden.
               const startedMs = seg.ts ? Date.parse(seg.ts) : NaN;
               const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label: elapsed, node };
-              pendingTools.set(seg.id, entry);
+              pendingTools.set(node, entry);
               paintElapsed(entry);
             } else {
-              pendingTools.delete(seg.id);
+              pendingTools.delete(node);
               node.classList.remove('tool-still-running');
             }
             if (seg.resultText !== undefined) {
@@ -1840,10 +2034,10 @@ export function buildHtml(
             if (seg.status === 'pending') {
               const startedMs = seg.pendingSince ? Date.parse(seg.pendingSince) : NaN;
               const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label: elapsed, node };
-              pendingTools.set(seg.id, entry);
+              pendingTools.set(node, entry);
               paintElapsed(entry);
             } else {
-              pendingTools.delete(seg.id);
+              pendingTools.delete(node);
               node.classList.remove('tool-still-running');
             }
             return;
@@ -1854,8 +2048,8 @@ export function buildHtml(
       // Ticks pending tools' elapsed labels independently of any patch —
       // "started but no answer yet" must keep moving even on a quiet poll.
       setInterval(() => {
-        for (const [segId, entry] of pendingTools) {
-          if (!entry.node.isConnected) { pendingTools.delete(segId); continue; }
+        for (const [key, entry] of pendingTools) {
+          if (!entry.node.isConnected) { pendingTools.delete(key); continue; }
           paintElapsed(entry);
         }
         // The working row's elapsed must keep moving on a quiet poll too — a
@@ -1864,6 +2058,11 @@ export function buildHtml(
         // The blocked note's delay must elapse on a quiet poll too — nothing
         // else re-renders it while the session sits unchanged mid-block.
         refreshBlockedNote();
+        // The live chapter's "$ now:" line must keep ticking on a quiet poll —
+        // a frozen counter is what "is it stuck?" looks like.
+        if (bookView && bookApplies()) {
+          book.querySelectorAll('.chapter.live .under[data-since]').forEach(renderNow);
+        }
       }, 1000);
 
       // Marks runs of consecutive tool segments so CSS can merge them into
@@ -2058,6 +2257,312 @@ export function buildHtml(
         }
         if (atBottom) transcript.scrollTop = transcript.scrollHeight;
       }
+
+      // ── Book view ──────────────────────────────────────────────────
+      // The book is a fold ABOVE the SAME presented turns the transcript view
+      // renders — grouped into chapters by buildBook (injected, tested). It
+      // reuses reconcileSegments/paintSegment verbatim for its step drawer, so
+      // tool cards / activity folds behave identically. #transcript is left
+      // fully intact as the 'transcript' escape hatch.
+
+      function bookApplies() { return mode === 'structured'; }
+
+      // Keep #book/#transcript visibility, the header toggle, and the composer
+      // placeholder in sync with the mode + the user's book/transcript choice.
+      function applyViewVisibility() {
+        const applies = bookApplies();
+        bookToggle.hidden = !applies;
+        if (applies) {
+          bookToggle.textContent = bookView ? 'Transcript' : 'Book';
+          bookToggle.title = bookView ? 'Switch to the raw transcript' : 'Switch to the book';
+          book.hidden = !bookView;
+          transcript.hidden = bookView;
+          input.placeholder = bookView ? BOOK_PLACEHOLDER : DEFAULT_PLACEHOLDER;
+        } else {
+          book.hidden = true;
+          input.placeholder = DEFAULT_PLACEHOLDER;
+        }
+      }
+
+      function toggleBookView() {
+        bookView = !bookView;
+        try {
+          const prev = (vscode.getState && vscode.getState()) || {};
+          if (vscode.setState) vscode.setState(Object.assign({}, prev, { bookView: bookView }));
+        } catch (e) { /* state persistence best-effort */ }
+        applyViewVisibility();
+        if (bookView) renderBook();
+      }
+
+      function setBookConversation(conv) {
+        bookTurns.clear();
+        if (conv && conv.turns) for (const t of conv.turns) bookTurns.set(t.id, t);
+      }
+
+      function applyBookPatch(patch) {
+        for (const id of (patch.removeTurnIds || [])) bookTurns.delete(id);
+        for (const t of (patch.upsertTurns || [])) bookTurns.set(t.id, t);
+      }
+
+      function clearBookDom() {
+        book.textContent = '';
+        bookChapterNodes.clear();
+      }
+
+      // A patch may deliver a late earlier turn, so order by the seq suffix of
+      // the turn id rather than trusting Map insertion order.
+      function orderedBookTurns() {
+        return Array.from(bookTurns.values())
+          .sort(function(a, b) { return turnSeq(a.id) - turnSeq(b.id); });
+      }
+
+      // The step actually running now, for a live chapter's "$ now:" line.
+      function currentStepInfo(steps) {
+        for (const seg of steps) {
+          if (seg.kind === 'tool' && seg.status === 'pending') {
+            return { label: seg.toolName || 'tool', since: seg.ts };
+          }
+          if (seg.kind === 'activity' && seg.status === 'pending') {
+            const head = (seg.summary || '').split(' · ')[0];
+            return { label: head || 'working', since: seg.pendingSince };
+          }
+        }
+        return undefined;
+      }
+
+      function buildChapterNode(ch) {
+        const node = el('div', 'chapter');
+        node.dataset.chapterId = ch.id;
+        const fold = el('div', 'fold');
+        fold.setAttribute('tabindex', '0');
+        fold.setAttribute('role', 'button');
+        fold.appendChild(el('span', 'arrow', '▶'));
+        fold.appendChild(el('h2'));
+        fold.appendChild(el('span', 'who'));
+        fold.appendChild(el('span', 't'));
+        const toggle = function() {
+          // The live chapter never folds.
+          if (node.classList.contains('live')) return;
+          const id = node.dataset.chapterId;
+          const nowOpen = !node.classList.contains('openc');
+          node.classList.toggle('openc', nowOpen);
+          fold.setAttribute('aria-expanded', String(nowOpen));
+          if (nowOpen) { bookOpened.add(id); bookClosed.delete(id); }
+          else { bookClosed.add(id); bookOpened.delete(id); }
+        };
+        fold.addEventListener('click', toggle);
+        fold.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+        });
+        node.appendChild(fold);
+
+        const cbody = el('div', 'cbody');
+        // Ask card (a chapter opened by YOU).
+        const ask = el('div', 'ask');
+        ask.hidden = true;
+        ask.appendChild(el('div', 'alabel', 'YOU ASKED'));
+        ask.appendChild(el('div', 'atext'));
+        const amore = el('button', 'amore', '$ full message');
+        amore.type = 'button';
+        amore.hidden = true;
+        amore.addEventListener('click', function() {
+          bookAskExpanded.add(node.dataset.chapterId);
+          ask.classList.remove('clamped');
+          amore.hidden = true;
+        });
+        ask.appendChild(amore);
+        cbody.appendChild(ask);
+        // Narration (the agent's own words).
+        cbody.appendChild(el('div', 'narration'));
+        // Steps drawer ("$ show N steps").
+        const steps = el('div', 'chapter-steps');
+        steps.hidden = true;
+        const details = el('button', 'details');
+        details.type = 'button';
+        const stepsBody = el('div', 'steps-body');
+        stepsBody.hidden = true;
+        details.addEventListener('click', function() {
+          const openNow = stepsBody.hidden;
+          stepsBody.hidden = !openNow;
+          node.classList.toggle('steps-open', openNow);
+        });
+        steps.appendChild(details);
+        steps.appendChild(stepsBody);
+        cbody.appendChild(steps);
+        // Notices (plans / errors / questions — kept visible, never folded).
+        cbody.appendChild(el('div', 'notices'));
+        // Live "$ now:" ticker line.
+        const under = el('div', 'under');
+        under.hidden = true;
+        cbody.appendChild(under);
+
+        node.appendChild(cbody);
+        return node;
+      }
+
+      function paintChapter(node, ch, index, chapters, isLive) {
+        node.classList.toggle('live', isLive);
+        const fold = node.querySelector(':scope > .fold');
+        fold.querySelector('h2').textContent = ch.title;
+        fold.querySelector('.who').textContent = ch.origin === 'you' ? '◈ you' : '';
+        const dur = chapterDurationMs(chapters, index);
+        fold.querySelector('.t').textContent = typeof dur === 'number' ? formatChapterDuration(dur) : '';
+
+        const open = isLive || bookOpened.has(ch.id) ||
+          (!bookClosed.has(ch.id) && index === chapters.length - 1);
+        node.classList.toggle('openc', open);
+        fold.setAttribute('aria-expanded', String(open));
+
+        // Ask card.
+        const ask = node.querySelector(':scope > .cbody > .ask');
+        if (ch.ask) {
+          ask.hidden = false;
+          ask.querySelector('.atext').innerHTML = ch.ask.html || '';
+          // Respect an earlier "$ full message" expansion across live re-renders.
+          const clamp = Boolean(ch.ask.long) && !bookAskExpanded.has(ch.id);
+          ask.classList.toggle('clamped', clamp);
+          ask.querySelector('.amore').hidden = !clamp;
+        } else {
+          ask.hidden = true;
+        }
+
+        // Narration — rebuilt each paint (cheap prose); the live chapter gets
+        // the blinking phosphor cursor after its last block.
+        const narration = node.querySelector(':scope > .cbody > .narration');
+        narration.textContent = '';
+        for (const seg of ch.narration) {
+          const p = el('div', 'story');
+          p.innerHTML = seg.html || '';
+          narration.appendChild(p);
+        }
+        if (isLive) {
+          let last = narration.lastElementChild;
+          if (!last) { last = el('div', 'story'); narration.appendChild(last); }
+          last.appendChild(el('span', 'cursor'));
+        }
+
+        // Steps drawer — reuse the transcript's own segment reconciler so tool
+        // cards / activity folds render (and keep their open state) identically.
+        const steps = node.querySelector(':scope > .cbody > .chapter-steps');
+        const stepsBody = steps.querySelector('.steps-body');
+        if (ch.steps.segments.length > 0) {
+          steps.hidden = false;
+          const n = ch.steps.count;
+          let label = 'show ' + n + ' step' + (n === 1 ? '' : 's');
+          if (ch.steps.failed > 0) label += ' · ' + ch.steps.failed + ' failed';
+          steps.querySelector('.details').textContent = label;
+          reconcileSegments(stepsBody, ch.steps.segments);
+        } else {
+          steps.hidden = true;
+          reconcileSegments(stepsBody, []);
+        }
+
+        // Notices.
+        reconcileSegments(node.querySelector(':scope > .cbody > .notices'), ch.notices);
+
+        // Live "$ now:" line.
+        paintNowLine(node, ch, isLive);
+      }
+
+      function paintNowLine(node, ch, isLive) {
+        const under = node.querySelector(':scope > .cbody > .under');
+        const info = isLive ? currentStepInfo(ch.steps.segments) : undefined;
+        const since = info && info.since ? Date.parse(info.since) : NaN;
+        if (!info || isNaN(since)) {
+          under.hidden = true;
+          under.removeAttribute('data-since');
+          return;
+        }
+        under.hidden = false;
+        under.dataset.since = String(since);
+        under.dataset.label = info.label;
+        renderNow(under);
+      }
+
+      function renderNow(under) {
+        const since = Number(under.dataset.since);
+        const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
+        under.textContent = '';
+        under.appendChild(document.createTextNode('now: '));
+        under.appendChild(el('b', undefined, under.dataset.label || ''));
+        under.appendChild(document.createTextNode(' · ' + secs + 's'));
+      }
+
+      function pauseQuestion(chapters) {
+        const last = chapters[chapters.length - 1];
+        if (last && last.narration.length) {
+          return htmlToText(last.narration[last.narration.length - 1].html);
+        }
+        return 'The agent is waiting for your input.';
+      }
+
+      function renderPauseCard(page, awaiting, chapters) {
+        let pause = page.querySelector(':scope > .pause');
+        if (!awaiting) { if (pause) pause.remove(); return; }
+        if (!pause) {
+          pause = el('div', 'pause');
+          const head = el('div', 'phead');
+          head.appendChild(el('span', 'blk'));
+          head.appendChild(document.createTextNode('THE AGENT PAUSED TO ASK'));
+          pause.appendChild(head);
+          pause.appendChild(el('div', 'pquestion'));
+          page.appendChild(pause);
+          // Focus the composer once, so the user can answer immediately (M0:
+          // structured answer buttons are M1).
+          if (!exited) input.focus();
+        } else {
+          page.appendChild(pause); // keep it last
+        }
+        pause.querySelector('.pquestion').textContent = pauseQuestion(chapters);
+      }
+
+      // Rebuild the book from the accumulated turns. Reconciles chapters by id
+      // so fold state survives live updates. A no-op when the book is hidden.
+      function renderBook() {
+        if (!bookApplies() || !bookView) return;
+        const atBottom = !bookScrolledUp;
+        const chapters = buildBook(orderedBookTurns());
+        let page = book.querySelector(':scope > .book-page');
+        if (!page) { page = el('div', 'book-page'); book.appendChild(page); }
+
+        if (chapters.length === 0) {
+          page.textContent = '';
+          bookChapterNodes.clear();
+          page.appendChild(el('div', 'book-empty', 'No messages yet.'));
+          return;
+        }
+
+        const live = !exited && busy;
+        const seen = {};
+        let anchor = null;
+        for (let i = 0; i < chapters.length; i++) {
+          const ch = chapters[i];
+          const isLive = i === chapters.length - 1 && live;
+          seen[ch.id] = true;
+          let node = bookChapterNodes.get(ch.id);
+          if (!node) { node = buildChapterNode(ch); bookChapterNodes.set(ch.id, node); }
+          paintChapter(node, ch, i, chapters, isLive);
+          const inPlace = anchor ? anchor.nextElementSibling === node : page.firstElementChild === node;
+          if (!inPlace) { if (anchor) anchor.after(node); else page.insertBefore(node, page.firstChild); }
+          anchor = node;
+        }
+        for (const id of Array.from(bookChapterNodes.keys())) {
+          if (!seen[id]) {
+            const n = bookChapterNodes.get(id);
+            if (n) n.remove();
+            bookChapterNodes.delete(id);
+          }
+        }
+        const awaiting = Boolean(lastSession && lastSession.awaitingInput) && !exited;
+        renderPauseCard(page, awaiting, chapters);
+        if (atBottom) book.scrollTop = book.scrollHeight;
+      }
+
+      book.addEventListener('scroll', function() {
+        const threshold = 20;
+        bookScrolledUp = book.scrollHeight - book.clientHeight - book.scrollTop > threshold;
+      });
+      bookToggle.addEventListener('click', toggleBookView);
 
       // A resume-chain ancestor's turns are rendered ONCE, statically — they
       // never patch again (the ancestor session is dead history), so this
@@ -2664,6 +3169,10 @@ export function buildHtml(
               composer.hidden = false;
               disposePtyTerm();
               renderFullConversation(msg.conversation);
+              // Rebuild the book from the same conversation snapshot.
+              clearBookDom();
+              setBookConversation(msg.conversation);
+              renderBook();
             } else if (mode === 'pty') {
               transcript.hidden = true;
               composer.hidden = true;
@@ -2697,12 +3206,20 @@ export function buildHtml(
             // PTY in a real VS Code terminal tab).
             openTerminalBtn.hidden = msg.session.kind !== 'agent-cli' && msg.mode !== 'pty';
             applySession(msg.session);
+            // Book is the default view for a structured session; this also
+            // hides the book + toggle for raw/pty and sets the placeholder.
+            applyViewVisibility();
             break;
           case 'conversation':
             renderFullConversation(msg.conversation);
+            clearBookDom();
+            setBookConversation(msg.conversation);
+            renderBook();
             break;
           case 'patch':
             applyPatch(msg);
+            applyBookPatch(msg);
+            renderBook();
             break;
           case 'sessionUpdate':
             applySession(msg.session);

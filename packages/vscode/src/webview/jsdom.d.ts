@@ -67,6 +67,8 @@ declare module "jsdom" {
     hidden?: boolean
     /** Native tooltip text. */
     title?: string
+    /** Read an attribute (e.g. the book fold's `aria-expanded`). */
+    getAttribute(name: string): string | null
     dispatchEvent(event: DomEvent): boolean
     querySelector(selectors: string): DomElement | null
     querySelectorAll(selectors: string): Iterable<DomElement>
@@ -74,6 +76,8 @@ declare module "jsdom" {
 
   export interface DomDocument {
     getElementById(id: string): DomElement | null
+    /** The focused element — the book's pause card focuses the composer. */
+    readonly activeElement: DomElement | null
     dispatchEvent(event: DomEvent): boolean
   }
 

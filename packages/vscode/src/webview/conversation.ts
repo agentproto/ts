@@ -467,6 +467,13 @@ export interface PresentedTurn {
   id: string
   role: "user" | "assistant"
   segments: PresentedSegment[]
+  /**
+   * ISO start time of the turn, when the reducer captured one. Purely a
+   * host-side view-model field (carried through from `ConversationTurn`); no
+   * daemon/protocol change. The "book" fold layer uses it to derive a
+   * chapter's duration, and gracefully omits the duration when it's absent.
+   */
+  startedAt?: string
 }
 
 export interface PresentedConversation {
@@ -496,6 +503,7 @@ export function presentConversation(
       id: turn.id,
       role: turn.role,
       segments: groupActivity(turn.segments.map(seg => presentSegment(seg, renderers))),
+      ...(turn.startedAt !== undefined ? { startedAt: turn.startedAt } : {}),
     })),
   }
 }

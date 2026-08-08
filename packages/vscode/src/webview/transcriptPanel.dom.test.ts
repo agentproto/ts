@@ -33,6 +33,7 @@ interface Panel {
   window: DomWindow
   document: DomDocument
   transcript: DomElement
+  book: DomElement
   send: (msg: ExtMessage) => void
 }
 
@@ -50,6 +51,9 @@ interface RenderOptions {
   /** Observe what the webview posts BACK to the host — the only way to assert
    *  that a mid-turn message was withheld rather than sent. */
   onPost?: (msg: unknown) => void
+  /** Backing store for the webview's persisted state (getState/setState) —
+   *  lets a test seed a prior choice and observe what the panel persists. */
+  state?: { value: Record<string, unknown> | undefined }
 }
 
 function renderPanel(opts: RenderOptions = {}): Panel {
@@ -59,8 +63,10 @@ function renderPanel(opts: RenderOptions = {}): Panel {
     beforeParse(window) {
       window.acquireVsCodeApi = () => ({
         postMessage: (msg: unknown) => opts.onPost?.(msg),
-        getState: () => undefined,
-        setState: () => {},
+        getState: () => (opts.state ? opts.state.value : undefined),
+        setState: (v: unknown) => {
+          if (opts.state) opts.state.value = v as Record<string, unknown>
+        },
       })
       if (opts.fakeTimers) {
         // DateConstructor is the same ambient type in both realms — a
@@ -78,10 +84,13 @@ function renderPanel(opts: RenderOptions = {}): Panel {
   const { document } = window
   const transcript = document.getElementById("transcript")
   if (!transcript) throw new Error("transcript element missing from buildHtml output")
+  const book = document.getElementById("book")
+  if (!book) throw new Error("book element missing from buildHtml output")
   return {
     window,
     document,
     transcript,
+    book,
     send: msg => window.dispatchEvent(new window.MessageEvent("message", { data: msg })),
   }
 }
@@ -2166,5 +2175,191 @@ describe("transcriptPanel webview — PTY mode", () => {
 
     const ptyView = el(panel, "pty-view")
     expect(ptyView.textContent).toContain("exited")
+  })
+})
+
+describe("transcriptPanel webview — book view", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error("missing #" + id)
+    return node
+  }
+  const chapters = (panel: Panel): DomElement[] => [...panel.book.querySelectorAll(".chapter")]
+
+  // One user prompt + its answering assistant turn = one chapter.
+  function askConv(): PresentedConversation {
+    return {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "Fix the boot" }], startedAt: "2026-01-01T00:00:00Z" },
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [{ kind: "assistant-text", id: "a1", html: "<p>The shell was lying. More detail.</p>" }],
+          startedAt: "2026-01-01T00:00:05Z",
+        },
+      ],
+    }
+  }
+
+  it("defaults to the book view for a structured session — book shown, transcript hidden, toggle offers Transcript", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
+
+    expect(panel.book.hidden).toBe(false)
+    expect(panel.transcript.hidden).toBe(true)
+    const toggle = el(panel, "book-toggle")
+    expect(toggle.hidden).toBe(false)
+    expect(toggle.textContent).toBe("Transcript")
+    // The composer placeholder switches to the book's invitation.
+    expect((el(panel, "input") as unknown as { placeholder: string }).placeholder).toContain("opens the next chapter")
+  })
+
+  it("hides the book and its toggle for a raw (non-structured) session", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "raw", initialHtml: "<div>raw</div>" })
+    expect(panel.book.hidden).toBe(true)
+    expect(el(panel, "book-toggle").hidden).toBe(true)
+  })
+
+  it("renders a user-opened chapter with an ask card, origin mark, narration, and a serif title", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
+
+    const ch = chapters(panel)
+    expect(ch).toHaveLength(1)
+    expect(ch[0]!.dataset.chapterId).toBe("turn-1")
+    // Title = first narration sentence, trailing period dropped.
+    expect(ch[0]!.querySelector(".fold h2")?.textContent).toBe("The shell was lying")
+    expect(ch[0]!.querySelector(".fold .who")?.textContent).toBe("◈ you")
+    expect(ch[0]!.querySelector(".ask .atext")?.textContent).toContain("Fix the boot")
+    expect(ch[0]!.querySelector(".narration .story")?.textContent).toContain("The shell was lying")
+  })
+
+  it("folds past chapters and keeps the newest open; a fold click toggles a past chapter", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "First" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: "First answer." }] },
+        { id: "turn-3", role: "user", segments: [{ kind: "user", id: "u2", html: "Second" }] },
+        { id: "turn-4", role: "assistant", segments: [{ kind: "assistant-text", id: "a2", html: "Second answer." }] },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: false }), nonce: "n", mode: "structured", conversation: conv })
+
+    const ch = chapters(panel)
+    expect(ch).toHaveLength(2)
+    expect(ch[0]!.className).not.toContain("openc") // past chapter folded
+    expect(ch[1]!.className).toContain("openc") // newest open
+    const fold = ch[0]!.querySelector(".fold") as DomElement
+    fold.dispatchEvent(new panel.window.Event("click"))
+    expect(ch[0]!.className).toContain("openc")
+    expect(fold.getAttribute("aria-expanded")).toBe("true")
+    fold.dispatchEvent(new panel.window.Event("click"))
+    expect(ch[0]!.className).not.toContain("openc")
+  })
+
+  it("aggregates working steps behind a '$ show N steps' drawer that expands on click", () => {
+    const panel = renderPanel()
+    const activity: PresentedActivitySegment = {
+      kind: "activity",
+      id: "act-1",
+      children: [
+        { kind: "tool", id: "t1", toolName: "bash", isError: false, status: "ok" },
+        { kind: "tool", id: "t2", toolName: "read", isError: true, status: "error" },
+      ],
+      summary: "2 steps · 1 failed",
+      count: 2,
+      status: "ok",
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "go" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: "Did it." }, activity] },
+      ],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const ch = chapters(panel)[0]!
+    const details = ch.querySelector(".chapter-steps .details") as DomElement
+    expect(details.textContent).toBe("show 2 steps · 1 failed")
+    const stepsBody = ch.querySelector(".chapter-steps .steps-body") as DomElement
+    expect(stepsBody.hidden).toBe(true)
+    details.dispatchEvent(new panel.window.Event("click"))
+    expect(stepsBody.hidden).toBe(false)
+    // The reused segment renderer built the activity card.
+    expect(stepsBody.querySelector("[data-seg-id='act-1']")).not.toBeNull()
+  })
+
+  it("switches to the transcript escape hatch and persists the choice", () => {
+    const state = { value: undefined as Record<string, unknown> | undefined }
+    const panel = renderPanel({ state })
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
+
+    const toggle = el(panel, "book-toggle")
+    toggle.dispatchEvent(new panel.window.Event("click"))
+    expect(panel.book.hidden).toBe(true)
+    expect(panel.transcript.hidden).toBe(false)
+    expect(toggle.textContent).toBe("Book")
+    expect(state.value?.bookView).toBe(false)
+  })
+
+  it("honors a persisted transcript-view choice on init", () => {
+    const state = { value: { bookView: false } as Record<string, unknown> | undefined }
+    const panel = renderPanel({ state })
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
+    expect(panel.book.hidden).toBe(true)
+    expect(panel.transcript.hidden).toBe(false)
+    expect(el(panel, "book-toggle").textContent).toBe("Book")
+  })
+
+  it("renders the pause card with the agent's question when the session is awaiting input", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ awaitingInput: true }),
+      nonce: "n",
+      mode: "structured",
+      conversation: askConv(),
+    })
+    const pause = panel.book.querySelector(".pause")
+    expect(pause).not.toBeNull()
+    expect(pause?.querySelector(".pquestion")?.textContent).toContain("More detail")
+    // The composer is focused so the user can answer immediately.
+    expect(panel.document.activeElement).toBe(el(panel, "input"))
+  })
+
+  it("marks the newest chapter live with a blinking cursor and a '$ now:' line while busy", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "go" }] },
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [
+            { kind: "assistant-text", id: "a1", html: "Working on it." },
+            { kind: "tool", id: "t1", toolName: "bash", isError: false, status: "pending", ts: new Date(Date.now() - 3000).toISOString() },
+          ],
+        },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: conv })
+
+    const ch = chapters(panel)[0]!
+    expect(ch.className).toContain("live")
+    expect(ch.querySelector(".narration .cursor")).not.toBeNull()
+    const under = ch.querySelector(".under") as DomElement
+    expect(under.hidden).toBe(false)
+    expect(under.textContent).toContain("now:")
+    expect(under.textContent).toContain("bash")
   })
 })
