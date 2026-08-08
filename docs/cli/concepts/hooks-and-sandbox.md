@@ -67,7 +67,7 @@ is recorded for the record but has no enforcement effect at the Plane-1 seam
 
 ## Cross-harness coverage — the three tiers
 
-The catalog has 11 agent-CLI adapters
+The catalog has 12 agent-CLI adapters
 (`packages/cli/src/registry/catalog.ts`). `protocol:"acp"` is not, by
 itself, a reliable signal for Plane-1 reach: two adapters declare it but run
 tools in-process behind a local ACP host and never raise
@@ -77,12 +77,12 @@ tools in-process behind a local ACP host and never raise
 |---|---|---|---|---|
 | **1 — Blockable** | claude-code, codex, gemini, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
 | **2 — Observable only** | claude-sdk, mastra-agent | No — in-process, `bypassPermissions`; ACP is transport only | Log only (after the fact) | Confined (both axes) |
-| **3 — Opaque** | pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
+| **3 — Opaque** | antigravity, pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
 
-**~6/11 harnesses are semantically gateable (tier 1). ~8/11 are loggable
-(tiers 1+2). ~3/11 are opaque to Plane 1 entirely (tier 3).** State this
+**~6/12 harnesses are semantically gateable (tier 1). ~8/12 are loggable
+(tiers 1+2). ~4/12 are opaque to Plane 1 entirely (tier 3).** State this
 loudly on every surface that talks about "a cross-harness hook engine" — a
-silent ~55% cliff reads as 100% coverage, and that's the exact failure mode
+silent ~50% cliff reads as 100% coverage, and that's the exact failure mode
 this doc exists to prevent.
 
 **Plane 2 confines all three tiers uniformly, once the adapter-spawn axis is

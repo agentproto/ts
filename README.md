@@ -26,7 +26,7 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 0.11.1-alpha.** APIs are stabilising; expect minor breaking changes
+> **Status: 0.11.2-alpha.** APIs are stabilising; expect minor breaking changes
 > between alpha releases.
 
 ## Quick start
@@ -48,9 +48,9 @@ for the honest split below.
 
 This repo ships two very different things under one name:
 
-- **Tier 1 — live, verified hands-on:** the daemon, the CLI, eleven agent
+- **Tier 1 — live, verified hands-on:** the daemon, the CLI, twelve agent
   adapters (Claude Code, Claude SDK, Codex, Gemini, Hermes, opencode, Mastra Code +
-  in-process, Mastra Agent, OpenClaw, browser-as-agent, pi), durable policy gates,
+  in-process, Mastra Agent, OpenClaw, browser-as-agent, Antigravity, pi), durable policy gates,
   nested orchestration with role gating, fan-in monitoring, workflows/cron,
   and an MCP surface (~90 tools) on the daemon itself.
 - **Tier 2 — the wider AIP spec family:** ~52 numbered specs live in
@@ -132,6 +132,8 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `command_log_tail` | Read the JSONL audit log for `command_execute` |
 | `policy_attach` / `policy_cancel` / `policy_status` | Supervisor completion-policy lifecycle |
 | `workflow_run_file` / `workflow_start` / `workflow_status` / `workflow_cancel` | Run WORKFLOW.md and stage-barrier workflows |
+| `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` | Install and run `@agentproto/app-kit` apps as live agent sessions |
+| `app_apply` / `app_unapply` / `app_list_applied` | Mount / unmount apps to scopes with dependency validation |
 | `tunnel_create` / `tunnel_list` / `tunnel_stop` / `tunnel_status` | Public URL tunnels for local ports |
 | `list_provider_presets` | Gateway presets (Anthropic, Moonshot, OpenRouter, Requesty, DeepSeek, xAI) |
 | `adapter_install` | Install a not-yet-installed agent-CLI harness by slug |
@@ -278,7 +280,7 @@ Key specs implemented here:
 | AIP-40 | EXTENSION.md | `@agentproto/extension` |
 | AIP-41 | ROUTINE.md | `@agentproto/routine` |
 | AIP-42 | AGENT.md | `@agentproto/agent`, `@agentproto/mastra` |
-| AIP-45 | Agent CLI adapter | `adapters/{claude-code,claude-sdk,hermes,opencode,codex,openclaw,mastra-agent}` |
+| AIP-45 | Agent CLI adapter | `adapters/{claude-code,claude-sdk,hermes,opencode,codex,openclaw,mastra-agent,antigravity}` |
 
 ## Building from source
 

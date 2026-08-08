@@ -2,7 +2,7 @@
 
 An **agent-CLI adapter** is the npm-installable definition of how to
 drive a specific CLI agent — claude-code, hermes, opencode,
-codex, mastra-agent, openclaw, and whatever your team ships. Adapters
+codex, mastra-agent, openclaw, antigravity, and whatever your team ships. Adapters
 declare:
 
 - Where to download the binary (npm / brew / curl / pip / cargo / go /
@@ -153,6 +153,10 @@ Newly shipped manifest fields (this release):
   its own login file, the runtime injects nothing, and only scrubs conflicting
   api-key env vars. `setEnv` is the bearer-injection shape (Claude Code). The
   two are mutually exclusive.
+- `print.event_schema?: "claude-stream-json" | "mastra-jsonl" | "antigravity-stream-json"`
+  selects the wire-event taxonomy for `protocol: "print"` adapters. The
+  `antigravity-stream-json` value is new this release and drives Google
+  Antigravity's `--output-format stream-json` output.
 
 The AgentProto spec for the adapter shape is AIP-45 — see
 <https://agentproto.sh/docs/aip-45>.

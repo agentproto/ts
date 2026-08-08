@@ -16,6 +16,18 @@ auth:
   ref: ./SECRETS.md
 sandbox: ./SANDBOX.md
 protocol: print
+print:
+  prompt_flag: "-p"
+  output_format: ["--output-format", "stream-json"]
+  pre_prompt: []
+  resume:
+    flag: "--conversation"
+    kind: "value"
+  event_schema: "antigravity-stream-json"
+session:
+  mode: "ephemeral"
+  idle_timeout_ms: 1800000
+  context_carryover: false
 tags: ["antigravity", "agy", "google", "print", "agent-runtime", "coding"]
 ---
 

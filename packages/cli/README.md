@@ -394,6 +394,8 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 | `mcp_import` / `mcp_imported_remove` | Curate the set                                     |
 | `mcp_imported_status`         | Connection status of every imported MCP                   |
 | `mcp_imported_tool_list` / `mcp_imported_call` | Proxy the imported MCP's tools         |
+| `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` | Install and run `@agentproto/app-kit` apps as live sessions |
+| `app_apply` / `app_unapply` / `app_list_applied` | Mount / unmount apps to scopes with dependency validation |
 
 The terminal tools let one agent **orchestrate** other sessions: an agent in a structured ACP session can call `terminal_start({argv: ["bash"]})`, then drive it turn-by-turn with `terminal_input` + `terminal_output`. Same surface backs the future `wire`/`tee` primitive for cross-session piping.
 
@@ -408,6 +410,7 @@ The terminal tools let one agent **orchestrate** other sessions: an agent in a s
 - `@agentproto/adapter-hermes` — Hermes (protocol: ACP)
 - `@agentproto/adapter-opencode` — OpenCode
 - `@agentproto/adapter-openclaw` — OpenClaw
+- `@agentproto/adapter-antigravity` — Google Antigravity (`agy`, print/headless, multi-model)
 - `@agentproto/adapter-mastra` / `adapter-mastra-agent` / `adapter-mastracode` / `adapter-mastracode-inprocess` — Mastra-based agents
 - `@agentproto/adapter-browser` — browser / CDP session adapter
 - `@agentproto/adapter-pi` — pi

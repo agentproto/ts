@@ -87,6 +87,10 @@ by at least one agent. A dangling ref or an orphan workflow throws
 `{ id }`), so a company, persona, or role rides along without app-kit depending
 on each doctype package.
 
+An app may also declare `requires: ["@acme/shared", ...]` — app ids that must be
+applied to the same scope before this one can run. The runtime validates the
+graph when mounting apps via `app_apply`.
+
 ## Consuming a bundle
 
 ### `handle.toMastraAgents(resolvers)` — run them
@@ -140,10 +144,10 @@ description (APP.md). Because a `defineWorkflow` handle is pure data, the
 `emit` always writes `<dir>/.agentproto/APP.md`: a `schema: "app/v1"` manifest
 whose frontmatter lists every agent + workflow the app bundles as `{ id, path }`
 refs (relative to `dir`), plus the app's own optional `id` / `name` / `version`
-(defaults to `"0.1.0"` when `id` is set) / `description` and, when the app has a
-home workspace, that workspace's `id`. Nothing reads `AGENT.md`/`WORKFLOW.md`
-files on their own today — `APP.md` is the thing a future daemon `app_install`
-discovers and consumes.
+(defaults to `"0.1.0"` when `id` is set) / `description`, an optional `requires`
+array of app ids it depends on, and, when the app has a home workspace, that
+workspace's `id`. Nothing reads `AGENT.md`/`WORKFLOW.md` files on their own today
+— `APP.md` is the thing a future daemon `app_install` discovers and consumes.
 
 `loadAppHandle(dir)` is the inverse: it reads `APP.md`, loads each referenced
 `AGENT.md` / `WORKFLOW.md` (and `WORKSPACE.md`, if declared) with their own
