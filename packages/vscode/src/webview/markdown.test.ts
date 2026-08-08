@@ -142,3 +142,91 @@ describe("renderMarkdown", () => {
     expect(html).toContain("<p>para</p>")
   })
 })
+
+describe("renderMarkdown pipe tables", () => {
+  it("renders a basic table with a header and body rows", () => {
+    const html = renderMarkdown("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |")
+    expect(html).toContain("<table>")
+    expect(html).toContain("<thead><tr><th>a</th><th>b</th></tr></thead>")
+    expect(html).toContain("<tbody><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></tbody>")
+  })
+
+  it("renders a header-only table (no body rows)", () => {
+    const html = renderMarkdown("| a | b |\n|---|---|")
+    expect(html).toContain("<thead><tr><th>a</th><th>b</th></tr></thead>")
+    expect(html).not.toContain("<tbody>")
+  })
+
+  it("accepts rows without surrounding pipes", () => {
+    const html = renderMarkdown("a | b\n---|---\n1 | 2")
+    expect(html).toContain("<th>a</th><th>b</th>")
+    expect(html).toContain("<td>1</td><td>2</td>")
+  })
+
+  it("applies column alignment from the separator colons", () => {
+    const html = renderMarkdown("| l | c | r |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |")
+    expect(html).toContain('<th style="text-align:left">l</th>')
+    expect(html).toContain('<th style="text-align:center">c</th>')
+    expect(html).toContain('<th style="text-align:right">r</th>')
+    expect(html).toContain('<td style="text-align:left">1</td>')
+    expect(html).toContain('<td style="text-align:center">2</td>')
+    expect(html).toContain('<td style="text-align:right">3</td>')
+  })
+
+  it("processes inline formatting inside cells", () => {
+    const html = renderMarkdown("| name | note |\n|---|---|\n| **bold** | `code` |")
+    expect(html).toContain("<td><strong>bold</strong></td>")
+    expect(html).toContain("<td><code>code</code></td>")
+  })
+
+  it("does not split cells on an escaped pipe", () => {
+    const html = renderMarkdown("| a | b |\n|---|---|\n| x \\| y | z |")
+    expect(html).toContain("<td>x | y</td><td>z</td>")
+  })
+
+  it("does not split cells on a pipe inside a code span", () => {
+    const html = renderMarkdown("| a | b |\n|---|---|\n| `x | y` | z |")
+    expect(html).toContain("<td><code>x | y</code></td><td>z</td>")
+  })
+
+  it("pads short body rows and truncates long ones to the column count", () => {
+    const html = renderMarkdown("| a | b |\n|---|---|\n| 1 |\n| 3 | 4 | 5 |")
+    expect(html).toContain("<tr><td>1</td><td></td></tr>")
+    expect(html).toContain("<tr><td>3</td><td>4</td></tr>")
+    expect(html).not.toContain("<td>5</td>")
+  })
+
+  it("leaves a table-ish block with no valid separator as plain text", () => {
+    const html = renderMarkdown("| a | b |\n| c | d |")
+    expect(html).not.toContain("<table>")
+    expect(html).toContain("<p>| a | b |<br>| c | d |</p>")
+  })
+
+  it("does not treat a setext-style underline as a one-column table", () => {
+    const html = renderMarkdown("heading\n---")
+    expect(html).not.toContain("<table>")
+  })
+
+  it("does not treat prose with a pipe as a table without a separator", () => {
+    const html = renderMarkdown("see foo | bar for details")
+    expect(html).not.toContain("<table>")
+    expect(html).toContain("foo | bar")
+  })
+
+  it("interrupts a preceding paragraph line", () => {
+    const html = renderMarkdown("intro text\n| a | b |\n|---|---|\n| 1 | 2 |")
+    expect(html).toContain("<p>intro text</p>")
+    expect(html).toContain("<table>")
+  })
+
+  it("escapes HTML inside table cells", () => {
+    const html = renderMarkdown("| a |\n|---|\n| <b> |")
+    expect(html).toContain("<td>&lt;b&gt;</td>")
+    expect(html).not.toContain("<td><b></td>")
+  })
+
+  it("requires a matching column count between header and separator", () => {
+    const html = renderMarkdown("| a | b | c |\n|---|---|\n| 1 | 2 | 3 |")
+    expect(html).not.toContain("<table>")
+  })
+})

@@ -623,6 +623,27 @@ export function buildHtml(
     }
     #transcript ul, #transcript ol { margin: 0 0 10px 18px; padding: 0; }
     #transcript li { margin-bottom: 2px; }
+    /* GFM pipe tables: quiet hairline grid, a slightly emphasized header, and
+       no zebra loudness. display:block + width:max-content lets a wide table
+       scroll horizontally at panel width instead of squashing its columns. */
+    #transcript table {
+      display: block;
+      width: max-content;
+      max-width: 100%;
+      overflow-x: auto;
+      border-collapse: collapse;
+      margin: 0 0 10px;
+      font-size: 0.95em;
+    }
+    #transcript th, #transcript td {
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      padding: 4px 10px;
+      text-align: left;
+    }
+    #transcript th {
+      font-weight: 600;
+      background: var(--vscode-textCodeBlock-background);
+    }
     .line {
       font-family: var(--vscode-editor-font-family);
       white-space: pre-wrap;
