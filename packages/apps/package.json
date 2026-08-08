@@ -46,6 +46,11 @@
       "import": "./dist/mail-triage.mjs",
       "default": "./dist/mail-triage.mjs"
     },
+    "./media-viewer": {
+      "types": "./dist/media-viewer/index.d.ts",
+      "import": "./dist/media-viewer.mjs",
+      "default": "./dist/media-viewer.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

@@ -10,6 +10,7 @@ export default createTsupConfig({
     "code-team": "src/code-team/index.ts",
     "content-team": "src/content-team/index.ts",
     "mail-triage": "src/mail-triage/index.ts",
+    "media-viewer": "src/media-viewer/index.ts",
   },
   format: ["esm"],
   splitting: false,
