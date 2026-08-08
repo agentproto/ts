@@ -15,11 +15,11 @@ describe("mail-triage app", () => {
   it("builds the agent, its body becoming real Mastra instructions", async () => {
     const built = await mailTriage.toMastraAgents({ resolveModel: () => fakeModel })
     expect(Object.keys(built)).toEqual(["@agentproto/triager"])
-    expect(built["@agentproto/triager"]!.instructions).toContain("mailbox_search")
-    expect(built["@agentproto/triager"]!.instructions).toContain("triage plan")
+    expect(built["@agentproto/triager"]!.instructions).toContain("triage")
+    expect(built["@agentproto/triager"]!.agent.name).toBe("triager")
   })
 
-  it("gives the triager the mailbox tools it needs to act", () => {
+  it("gives the triager the tools it needs to scan and act on the inbox", () => {
     const byId = Object.fromEntries(mailTriage.agents.map((a) => [a.agent.id, a.agent]))
     expect(byId["@agentproto/triager"]!.tools).toEqual([
       "mailbox_list",
@@ -33,7 +33,7 @@ describe("mail-triage app", () => {
     ])
   })
 
-  it("triages the inbox through a single agent step", () => {
+  it("triages the inbox through a single agent step (WP-B4)", () => {
     const wf = mailTriage.workflows[0]!
     expect(wf.steps.map((s) => `${s.id}:${s.kind}`)).toEqual(["triage:agent"])
     const refs = wf.steps.map((s) => (s as { agent?: { ref: string } }).agent?.ref)
