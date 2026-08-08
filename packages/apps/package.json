@@ -41,6 +41,11 @@
       "import": "./dist/content-team.mjs",
       "default": "./dist/content-team.mjs"
     },
+    "./mail-triage": {
+      "types": "./dist/mail-triage/index.d.ts",
+      "import": "./dist/mail-triage.mjs",
+      "default": "./dist/mail-triage.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
