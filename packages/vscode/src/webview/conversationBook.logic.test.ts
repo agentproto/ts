@@ -141,9 +141,12 @@ describe("buildBook — titles", () => {
     expect(chapter.title).toBe("The zsh -ic fix worked")
   })
 
-  it("falls back to the ask when the chapter has no narration yet", () => {
+  it("never titles a chapter with the ask — a no-narration chapter shows the generic marker", () => {
+    // The human's prompt is its own pinned block above the chapter; a response
+    // chapter that hasn't narrated yet must not borrow the user's words as its
+    // title (that conflation is exactly what dissociating the ask fixes).
     const chapter = buildBook([userTurn("turn-1", "Diagnose the boot failure please.")])[0]!
-    expect(chapter.title).toBe("Diagnose the boot failure please")
+    expect(chapter.title).toBe("Working…")
   })
 
   it("falls back to a generic marker when there is nothing to title", () => {

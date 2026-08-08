@@ -2258,6 +2258,69 @@ describe("transcriptPanel webview — book view", () => {
     expect(story?.querySelector("pre code")?.textContent).toBe("x=1\ny=2") // fence intact
   })
 
+  it("wraps wide narration blocks (table, code) with a pop-out that opens them in an editor", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    const md =
+      "<p>Here:</p>\n" +
+      "<table><thead><tr><th>Col</th></tr></thead><tbody><tr><td>Val</td></tr></tbody></table>\n" +
+      "<pre><code>const x = 1</code></pre>"
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "go" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: md }] },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: false }), nonce: "n", mode: "structured", conversation: conv })
+
+    const story = chapters(panel)[0]!.querySelector(".narration .story")
+    const blocks = [...(story?.querySelectorAll(".book-block") ?? [])]
+    expect(blocks).toHaveLength(2) // both the table and the code fence are wrapped
+    expect([...(story?.querySelectorAll(".block-popout") ?? [])]).toHaveLength(2)
+
+    // Clicking the table's pop-out posts openBlock with tab-separated cell text.
+    const tableWrap = blocks.find(b => b.querySelector("table"))
+    tableWrap?.querySelector(".block-popout")?.dispatchEvent(new panel.window.Event("click"))
+    const msg = posted.find(m => (m as { type?: string }).type === "openBlock") as
+      | { text: string; name: string }
+      | undefined
+    expect(msg).toBeTruthy()
+    expect(msg?.text).toContain("Col")
+    expect(msg?.text).toContain("Val")
+  })
+
+  it("pins the ask as its own block above the fold — not inside the foldable body, and never as the title", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "Please fix the boot sequence now" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: "The shell was lying." }] },
+        { id: "turn-3", role: "user", segments: [{ kind: "user", id: "u2", html: "Second ask" }] },
+        { id: "turn-4", role: "assistant", segments: [{ kind: "assistant-text", id: "a2", html: "Removed the dead servers." }] },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: false }), nonce: "n", mode: "structured", conversation: conv })
+
+    const first = chapters(panel)[0]!
+    // The ask is a direct child of the chapter, ABOVE the fold — never in .cbody.
+    const ask = first.querySelector(":scope > .ask")
+    expect(ask).not.toBeNull()
+    expect(first.querySelector(":scope > .cbody .ask")).toBeNull()
+    const kids = [...first.querySelectorAll(":scope > *")].map(n => n.className)
+    expect(kids.indexOf("ask")).toBeLessThan(kids.indexOf("fold"))
+    // The past chapter is folded, yet its ask block stays displayed (pinned).
+    expect(first.className).not.toContain("openc")
+    expect((ask as DomElement).hidden).toBe(false)
+    // The fold title is the agent's narration — NOT the user's words.
+    const title = first.querySelector(".fold h2")?.textContent
+    expect(title).toBe("The shell was lying")
+    expect(title).not.toContain("fix the boot sequence")
+  })
+
   it("folds past chapters and keeps the newest open; a fold click toggles a past chapter", () => {
     const panel = renderPanel()
     const conv: PresentedConversation = {
@@ -2354,6 +2417,20 @@ describe("transcriptPanel webview — book view", () => {
     expect(pause?.querySelector(".pquestion")?.textContent).toContain("More detail")
     // The composer is focused so the user can answer immediately.
     expect(panel.document.activeElement).toBe(el(panel, "input"))
+  })
+
+  it("does NOT render the pause card while the agent is actively working, even if awaitingInput lingers", () => {
+    const panel = renderPanel()
+    // A stale awaitingInput racing with a resumed turn (busy=true) must not
+    // flash the 'PAUSED TO ASK' card during active work.
+    panel.send({
+      type: "init",
+      session: session({ awaitingInput: true, busy: true }),
+      nonce: "n",
+      mode: "structured",
+      conversation: askConv(),
+    })
+    expect(panel.book.querySelector(".pause")).toBeNull()
   })
 
   it("marks the newest chapter live with a blinking cursor and a '$ now:' line while busy", () => {

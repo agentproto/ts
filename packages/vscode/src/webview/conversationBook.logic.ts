@@ -182,16 +182,15 @@ export function activityFailed(activity: PresentedActivitySegment): number {
 
 /**
  * The folded-row title: the first sentence of the chapter's first narration
- * block, trimmed to ~70 chars. Falls back to the ask's first sentence (a
- * chapter still streaming its answer), then to a generic marker — never empty.
+ * block, trimmed to ~70 chars. It is titled by the agent's OWN narration only —
+ * it NEVER falls back to the ask. The human's prompt is its own persistent block
+ * pinned above the chapter (see the ask card in transcriptPanel), so a chapter
+ * must not double as, or be titled by, the human's words. A response chapter
+ * that hasn't produced narration yet shows the generic "Working…" marker while
+ * it builds. Never empty.
  */
 export function chapterTitle(chapter: BookChapter): string {
-  const source =
-    chapter.narration.length > 0
-      ? htmlToText(chapter.narration[0]!.html)
-      : chapter.ask
-        ? htmlToText(chapter.ask.html)
-        : ""
+  const source = chapter.narration.length > 0 ? htmlToText(chapter.narration[0]!.html) : ""
   const title = clampTitle(firstSentence(source))
   return title || "Working…"
 }
