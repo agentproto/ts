@@ -1249,7 +1249,11 @@ export function buildHtml(
     #book .fold .who { font-size: 9.5px; color: var(--paper-28); flex-shrink: 0; }
     #book .fold .t { font-size: 10px; color: var(--paper-28); flex-shrink: 0; }
 
-    #book .cbody { display: none; padding: 2px 0 16px 20px; }
+    /* Body sits in the CHEVRON column: the fold bleeds 10px left (margin 0 -10px)
+       and pads 10px, so its arrow's left edge lands at the chapter's content
+       edge (0). Zeroing the body's left padding lines the ask card / narration /
+       steps up under the ▸ rather than under the title. */
+    #book .cbody { display: none; padding: 2px 0 16px 0; }
     #book .chapter.openc .cbody, #book .chapter.live .cbody { display: block; }
     /* The live chapter is always open and offers no fold affordance. */
     #book .chapter.live .fold { cursor: default; }
@@ -1277,6 +1281,50 @@ export function buildHtml(
     }
     #book .story a { color: var(--phosphor); }
     #book .story > :first-child { margin-top: 0; }
+    #book .story > :last-child { margin-bottom: 0; }
+
+    /* Markdown BLOCK structure inside the book's two prose surfaces — narration
+       (.story) and the ask card (.ask .atext). renderMarkdown emits real
+       <p>/<br>/<ul>/<ol>/<pre>/<blockquote>/<h*>; the book surface is
+       deliberately not vscode-themed, so without these rules those blocks fall
+       back to inconsistent UA defaults and read as one run-on wall. Style them
+       as distinct, spaced blocks so line breaks, lists, and code fences stay
+       legible (mirrors what #transcript already does, themed for dark paper). */
+    #book .story p, #book .ask .atext p { margin: 0 0 8px; }
+    #book .story ul, #book .story ol,
+    #book .ask .atext ul, #book .ask .atext ol { margin: 6px 0 8px; padding-left: 20px; }
+    #book .story li, #book .ask .atext li { margin: 3px 0; }
+    #book .story li::marker, #book .ask .atext li::marker { color: var(--paper-45); }
+    #book .story pre, #book .ask .atext pre {
+      margin: 8px 0; padding: 10px 12px; border-radius: 6px;
+      background: var(--ink-2); border: 1px solid var(--edge);
+      overflow-x: auto; white-space: pre;
+      font: 12px/1.55 var(--bkmono); color: var(--paper);
+    }
+    /* A fenced block's <code> must shed the inline-code chip styling above. */
+    #book .story pre code, #book .ask .atext pre code {
+      background: none; border: 0; padding: 0; border-radius: 0;
+      font: inherit; color: inherit;
+    }
+    #book .story blockquote, #book .ask .atext blockquote {
+      margin: 8px 0; padding-left: 12px; color: var(--paper-45);
+      border-left: 2px solid var(--edge);
+    }
+    #book .story h1, #book .story h2, #book .story h3,
+    #book .story h4, #book .story h5, #book .story h6,
+    #book .ask .atext h1, #book .ask .atext h2, #book .ask .atext h3,
+    #book .ask .atext h4, #book .ask .atext h5, #book .ask .atext h6 {
+      font: 600 15px/1.35 var(--serif); color: var(--paper); margin: 12px 0 4px;
+    }
+    #book .story table, #book .ask .atext table {
+      display: block; width: max-content; max-width: 100%; overflow-x: auto;
+      border-collapse: collapse; margin: 8px 0; font-size: 13px;
+    }
+    #book .story th, #book .story td,
+    #book .ask .atext th, #book .ask .atext td {
+      border: 1px solid var(--edge); padding: 4px 10px; text-align: left;
+    }
+    #book .story th, #book .ask .atext th { font-weight: 600; background: var(--ink-2); }
 
     #book .details {
       font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px;
