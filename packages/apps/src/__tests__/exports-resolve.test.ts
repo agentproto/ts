@@ -25,7 +25,7 @@ describe("@agentproto/apps package exports", () => {
 
   it("declares subpath entries for both teams", () => {
     expect(Object.keys(pkg.exports)).toEqual(
-      expect.arrayContaining([".", "./code-team", "./content-team"]),
+      expect.arrayContaining([".", "./code-team", "./content-team", "./mail-triage"]),
     )
   })
 
