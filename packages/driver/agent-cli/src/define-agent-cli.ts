@@ -303,12 +303,31 @@ export function createAgentCliRuntime(
           join(claudeConfigDir, ".claude.json"),
           JSON.stringify({ mcpServers: {} }),
         )
-        if (permissionMode) {
-          writeFileSync(
-            join(claudeConfigDir, "settings.json"),
-            JSON.stringify({ permissions: { defaultMode: permissionMode } }),
-          )
+        // Isolating CLAUDE_CONFIG_DIR also shadows the operator's real
+        // `~/.claude/settings.json` — including `attribution`, the key an
+        // operator sets to suppress Claude Code's own default "🤖 Generated
+        // with Claude Code" PR-body footer / `Co-authored-by: Claude` commit
+        // trailer. A spawned session has no ambient settings.json to fall
+        // back to at all once isolated, so it reverts to those CLI defaults
+        // regardless of what's configured globally — confirmed on
+        // agentproto/ts PR #837, opened after this isolation went
+        // unconditional (#824), which carried the footer despite the
+        // spawning operator's global settings disabling it. Bake the
+        // suppression into every isolated settings.json unconditionally
+        // rather than reading the real file back in: that would reopen
+        // exactly the ambient-leak surface this isolation exists to close,
+        // and make spawn output depend on whatever happens to be in the
+        // runner's home dir.
+        const isolatedSettings: Record<string, unknown> = {
+          attribution: { commit: "", pr: "", sessionUrl: false },
         }
+        if (permissionMode) {
+          isolatedSettings.permissions = { defaultMode: permissionMode }
+        }
+        writeFileSync(
+          join(claudeConfigDir, "settings.json"),
+          JSON.stringify(isolatedSettings),
+        )
         env.CLAUDE_CONFIG_DIR = claudeConfigDir
       }
 
