@@ -1,5 +1,39 @@
 # @agentproto/runtime
 
+## 2.2.0
+
+### Minor Changes
+
+- 087f0ea: Declarative agent steps for AIP-15 workflows (WP-B4): author `kind:"agent"` steps with `agent.ref` (app-scoped agent ids) that resolve at compile time to concrete adapters + spawn options. Includes app installation/lifecycle tools (`app_install`, `app_run`, `app_list`, `app_status`, `app_stop`) for managing installed-app state and running agents as live sessions. Tool-id validation now shifts from STEP-DISPATCH time to INSTALL time, listing all missing ids upfront instead of failing one-at-a-time.
+- 5e75a57: Add progressive step status reporting to workflow execution via optional `onStepStart` and `onStepComplete` callbacks. Steps now transition through pending → running → done states during execution, rather than remaining pending until workflow completion. This enables real-time progress tracking for long-running workflows.
+- 2962637: **Feature: Agent step output text threading in workflows**
+
+  Agent steps can now automatically capture their text output and inject it into subsequent steps' prompts, enabling multi-step workflows to share context and analysis. The workflow runtime captures the final message from each agent step (when `readFinalMessage` is available) and threads it through the bindings, making it accessible to downstream steps via the AIP-16 Selector pattern. Previous step outputs are formatted as `[Output from step "id"]\ntext` and prepended to the base prompt, improving agent reasoning across sequential steps.
+
+- 2b379e9: Add app dependency management and scope mount tracking. Introduces `requires` field on apps to declare dependencies, new MCP tools (`app_apply`, `app_unapply`, `app_list_applied`) for managing app mounts to scopes, HTTP endpoints mirroring the tools, and AppRegistry enhancements for persistence of applied mounts with dependency validation.
+
+### Patch Changes
+
+- 48b4302: Add app\_\* daemon tools (app_install, app_list, app_run, app_status, app_stop) for @agentproto/app-kit lifecycle management. Tools enable installing bundled agent-workflow apps, running agents as live sessions, and monitoring app execution. Moves workflow tool-id validation from step-dispatch time to install time, reporting all missing tool ids at once instead of failing one step at a time.
+- Updated dependencies [4b6bbe6]
+- Updated dependencies [3e187e5]
+- Updated dependencies [47ca357]
+- Updated dependencies [087f0ea]
+- Updated dependencies [5e75a57]
+- Updated dependencies [2962637]
+- Updated dependencies [492240c]
+- Updated dependencies [2b379e9]
+  - @agentproto/model-catalog@0.8.1
+  - @agentproto/driver-agent-cli@2.2.0
+  - @agentproto/app-kit@0.4.0
+  - @agentproto/workflow@0.2.0
+  - @agentproto/workflow-runtime@0.7.0
+  - @agentproto/providers-store@0.3.4
+  - @agentproto/sandbox@0.2.2
+  - @agentproto/workflow-loader@0.1.3
+  - @agentproto/eval-reporters@0.2.6
+  - @agentproto/telemetry-langfuse@0.2.4
+
 ## 2.1.0
 
 ### Minor Changes

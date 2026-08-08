@@ -1,5 +1,27 @@
 # @agentproto/cli
 
+## 0.11.2
+
+### Patch Changes
+
+- 4b6bbe6: Documentation sync: update version to 0.11.1-alpha and document new spawn policies (dedupe/attach), judge gate structured verdicts, implicit session deduplication, and worktree async provisioning.
+- 63b97e5: Enhance CLI daemon discovery documentation with comprehensive explanation of the layered fallback strategy (env override → home runtime.json → central registry → workspace runtime.json), PID liveness checks for stale file detection, and known limitation regarding restart handoff windows. Updates help text in `browser`, `presets`, `sessions`, and `tunnel` commands to reference the full discovery order.
+- 3e187e5: Add Google Antigravity adapter and extend print-arm event mapper.
+  - **New adapter: @agentproto/adapter-antigravity** — AIP-45 print/headless adapter for Google Antigravity's `agy` CLI (a multi-model coding agent supporting Gemini, Claude, GPT-OSS). Includes auth documentation (OS keyring + Google Sign-In), sandbox policy, and model/option configuration.
+  - **Print-arm event mapper extension** — Added `antigravity-stream-json` event schema handler to support `agy`'s custom wire-event taxonomy (discriminated by `event` field, nested `conversation_id`, incremental `text_delta` fragments). The mapper handles text streaming, tool calls, tool errors, usage tracking, and session resumption via `--conversation <id>`. Supports single wire lines that fan out to multiple StreamEvents (e.g., a tool step's terminal DONE carries both call and result).
+  - **Type safety** — Introduced `PrintEventSchema` type to union all supported event taxonomies; updated Zod schema validation to include `antigravity-stream-json`.
+  - **Catalog entries** — Added antigravity to the CLI adapter catalog; also included two new ACP generic agents (Mistral Vibe, Kimi CLI) with their VS Code lettermark overrides.
+
+- 865e84a: Add @ast-grep/napi native dependency and externalize it from the tsup bundle to prevent platform-specific .node binding resolution conflicts.
+- Updated dependencies [4b6bbe6]
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/model-catalog@0.8.1
+  - @agentproto/worktree@0.5.1
+  - @agentproto/driver-agent-cli@2.2.0
+  - @agentproto/sandbox-box@0.2.2
+  - @agentproto/sandbox-e2b@0.3.2
+
 ## 0.11.1
 
 ### Patch Changes

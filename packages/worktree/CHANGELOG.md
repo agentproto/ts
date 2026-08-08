@@ -1,5 +1,15 @@
 # @agentproto/worktree
 
+## 0.5.1
+
+### Patch Changes
+
+- 4b6bbe6: Documentation sync: update version to 0.11.1-alpha and document new spawn policies (dedupe/attach), judge gate structured verdicts, implicit session deduplication, and worktree async provisioning.
+- Updated dependencies [087f0ea]
+- Updated dependencies [5e75a57]
+- Updated dependencies [2962637]
+  - @agentproto/workflow-runtime@0.7.0
+
 ## 0.5.0
 
 ### Minor Changes
