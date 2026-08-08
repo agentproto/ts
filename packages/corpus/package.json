@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/corpus",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "@agentproto/corpus — canonical composition of AIP-10 KNOWLEDGE, AIP-12 PLAYBOOK, AIP-18 COLLECTION, AIP-9 OPERATOR, AIP-15 WORKFLOW, AIP-41 ROUTINE into an autonomous knowledge-improvement system. Pure: zero runtime, zero filesystem, zero HTTP — all I/O via injected ports.",
   "keywords": [
     "agentproto",

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/runtime",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "@agentproto/runtime — long-running gateway that turns an agentproto workspace into a live runtime. Composes @agentproto/mcp-server (CRUD verbs) with HTTP transport, HEARTBEAT.md autonomy loop, and append-only conversation persistence. Drop a workspace dir, point your MCP client at it, and the agent ticks on its own.",
   "keywords": [
     "agentproto",

@@ -1,5 +1,11 @@
 # @agentproto/model-catalog
 
+## 0.8.1
+
+### Patch Changes
+
+- 4b6bbe6: Documentation sync: update version to 0.11.1-alpha and document new spawn policies (dedupe/attach), judge gate structured verdicts, implicit session deduplication, and worktree async provisioning.
+
 ## 0.8.0
 
 ### Minor Changes

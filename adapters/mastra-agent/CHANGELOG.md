@@ -1,5 +1,19 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.4.0
+
+### Minor Changes
+
+- b29f6d3: Add three new git-backed workspace tools (read_diff, apply_patch, run_tests) with security validation (path escaping, command whitelisting), and introduce a pluggable extraTools mechanism for hosts to extend the toolset.
+
+### Patch Changes
+
+- 27c4fd2: Fix git operations escaping workspace to operate on enclosing parent repositories by setting GIT_CEILING_DIRECTORIES to prevent git from discovering repos above the workspace root.
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/driver-agent-cli@2.2.0
+  - @agentproto/mastra@0.2.5
+
 ## 0.3.1
 
 ### Patch Changes

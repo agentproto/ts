@@ -1,5 +1,20 @@
 # @agentproto/apps
 
+## 0.3.0
+
+### Minor Changes
+
+- ea4313a: Add `mail-triage` app: a single-agent example that scans the inbox, categorizes unread mail, and applies triage actions (label, archive) via app-kit.
+
+### Patch Changes
+
+- 087f0ea: Declarative agent steps for AIP-15 workflows (WP-B4): author `kind:"agent"` steps with `agent.ref` (app-scoped agent ids) that resolve at compile time to concrete adapters + spawn options. Includes app installation/lifecycle tools (`app_install`, `app_run`, `app_list`, `app_status`, `app_stop`) for managing installed-app state and running agents as live sessions. Tool-id validation now shifts from STEP-DISPATCH time to INSTALL time, listing all missing ids upfront instead of failing one-at-a-time.
+- Updated dependencies [47ca357]
+- Updated dependencies [087f0ea]
+- Updated dependencies [2b379e9]
+  - @agentproto/app-kit@0.4.0
+  - @agentproto/workflow@0.2.0
+
 ## 0.2.2
 
 ### Patch Changes
