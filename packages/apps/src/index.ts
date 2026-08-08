@@ -19,3 +19,4 @@
 
 export { codeTeam } from "./code-team/index.js"
 export { contentTeam } from "./content-team/index.js"
+export { mailTriage } from "./mail-triage/index.js"
