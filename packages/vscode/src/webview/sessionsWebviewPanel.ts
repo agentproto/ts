@@ -1,25 +1,28 @@
 /**
- * Sessions webview panel — the opt-in WebviewView alternative to the
- * Sessions TreeView (`agentproto.sessionsView === "webview"`, see
- * package.json's mutually-exclusive `when` clauses on
- * `agentproto.sessions` / `agentproto.sessionsWebview`). Reproduces
- * `sessions-webview-demo-models.html` (the locked design mock): a pinned
- * live-filter input, plain-text status tabs, two-line rows with a harness
- * glyph + model, subagent nesting, workspace tags, lifecycle actions, and
- * an "open in tab" indicator — all theme-aware via `--vscode-*` tokens.
+ * Sessions webview panel — the opt-in WebviewView alternative to the Sessions
+ * TreeView (`agentproto.sessionsView === "webview"`). Implements DESIGN B,
+ * "Attention-first sections" (validated 2026-08-07): the seven status tabs are
+ * gone. Status is no longer a control — it is the sort order the list
+ * organizes itself into. Every session falls into one of five fixed-priority
+ * sections (Needs you → Running → Attention → Quiet → Earlier), and navigation
+ * collapses to two axes: a top PROJECT RAIL (All + per-workspace chips, each
+ * with a count and an ochre "awaiting" dot) and an `Agents | Auto` SEGMENTED
+ * CONTROL (human- vs machine-origin, the latter grouped into Gate reviews /
+ * Crons / Commands). Calmed graphite palette, lifted from the validated
+ * iterations mock; the ochre "needs you" signal is the only accent allowed to
+ * catch the eye. Lifecycle actions match the harness panel language (#823):
+ * labeled, keyboard-reachable, optimistic (Stop → "Stopping…" → Stopped →
+ * Archive; Archive slides the row away).
  *
- * PROGRESSIVE LOADING ARCHITECTURE: the webview uses a dedicated summary
- * endpoint (`GET /sessions/summaries`) rather than the full
- * `SessionDescriptor` snapshot the tree consumes. The daemon projects each
- * row down to the fields the panel actually renders and supports
- * limit/offset pagination. The webview loads the first page immediately for
- * a bounded first paint, then offers a "Load more" affordance for older
- * sessions. Live correctness is preserved by refreshing the currently loaded
- * summary slice whenever the shared SessionStore signals a change (lifecycle
- * events, descriptor refresh). Pending optimistic rows are merged from the
- * store so a spawn in flight appears instantly.
+ * PROGRESSIVE LOADING: the webview uses `GET /sessions/summaries` (projected
+ * rows + limit/offset pagination) rather than the full SessionDescriptor
+ * snapshot the tree consumes. First page paints immediately; "Load more" in
+ * the footer pulls older pages. Live correctness is preserved by re-fetching
+ * the currently loaded slice on every SessionStore change. All classification
+ * (activity, origin lane, cron collapsing) reuses existing logic — NO daemon
+ * changes.
  *
- * CSP/nonce/`--vscode-*` pattern copied from transcriptPanel.ts.
+ * CSP/nonce/palette pattern copied from transcriptPanel.ts.
  */
 
 import { randomBytes } from "node:crypto"
@@ -37,11 +40,13 @@ import type { DaemonConnectionState, SessionStore } from "../services/sessionSto
 import {
   buildSessionsWebviewModel,
   summaryTextFor,
+  workspaceColorFor,
+  type RailEntry,
   type RowAction,
-  type SessionsWebviewTab,
+  type SessionLane,
+  type WebviewGroup,
   type WebviewRow,
   type WebviewWorkspace,
-  workspaceColorFor,
 } from "./sessionsWebview.logic.js"
 import type { TranscriptPanels } from "./transcriptPanel.js"
 
@@ -51,18 +56,13 @@ const SETUP_DOCS_URL = "https://agentproto.sh/docs"
 const CLAUDE_SETUP_PROMPT =
   "Set up Agentproto for this VS Code workspace. Install the Agentproto CLI, start its local daemon, register this workspace, connect Claude Code through the Agentproto MCP bridge, and verify that the Agentproto Sessions panel is live. Explain each command before I run it."
 
-/** Reads live: the operator can add/close a folder mid-session, same reasoning as sessionsTree.ts's own openFolderPaths(). */
-function openFolderPaths(): string[] {
-  return (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)
-}
-
-/** Row shape actually POSTed to the webview — `session` is stripped (the host resolves clicks by id against the live store) and `open` is computed fresh from `TranscriptPanels.activeSessionId()` on every render. */
+/** Row shape actually POSTed to the webview — `session` is stripped (the host resolves clicks by id) and `open` is computed fresh from `TranscriptPanels.activeSessionId()` on every render. */
 interface RenderRow {
   id: string
-  isSub: boolean
   open: boolean
   status: WebviewRow["status"]
   name: string
+  idMono: string | undefined
   message: string | undefined
   tag: string
   harnessGlyph: string
@@ -71,20 +71,28 @@ interface RenderRow {
   cost: string | undefined
   time: string
   unread: boolean
+  runs: number | undefined
+  approved: boolean
   action: RowAction | undefined
   workspace: (WebviewWorkspace & { css: string }) | undefined
   archived: boolean
 }
 
-interface RenderSection {
-  recent: RenderRow[]
-  older: RenderRow[]
+interface RenderGroup {
+  key: string
+  label: string
+  hint: string | undefined
+  rows: RenderRow[]
 }
 
 interface ModelMessage {
   type: "model"
   connection: DaemonConnectionState
-  section: RenderSection
+  lane: SessionLane
+  project: string | null
+  rail: RailEntry[]
+  laneCounts: Record<SessionLane, number>
+  groups: RenderGroup[]
   summary: string
   loading: boolean
   hasMore: boolean
@@ -100,7 +108,8 @@ type WebviewToHostMessage =
   | { type: "copyClaudePrompt" }
   | { type: "open"; id: string }
   | { type: "filter"; search: string }
-  | { type: "tab"; tab: SessionsWebviewTab }
+  | { type: "lane"; lane: SessionLane }
+  | { type: "project"; slug: string | null }
   | { type: "stop"; id: string }
   | { type: "archive"; id: string }
   | { type: "unarchive"; id: string }
@@ -118,10 +127,10 @@ function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
 function toRenderRow(row: WebviewRow, activeSessionId: string | undefined, seen: SeenTracker): RenderRow {
   return {
     id: row.id,
-    isSub: row.isSub,
     open: row.id === activeSessionId,
     status: row.status,
     name: row.name,
+    idMono: row.idMono,
     message: row.message,
     tag: row.tag,
     harnessGlyph: row.harnessGlyph,
@@ -130,15 +139,27 @@ function toRenderRow(row: WebviewRow, activeSessionId: string | undefined, seen:
     cost: row.cost,
     time: row.time,
     unread: seen.isUnread(row.session),
+    runs: row.runs,
+    approved: row.approved,
     action: row.action,
     workspace: row.workspace ? { ...row.workspace, css: workspaceColorFor(row.workspace.slug).css } : undefined,
     archived: row.archived,
   }
 }
 
+function toRenderGroup(group: WebviewGroup, activeSessionId: string | undefined, seen: SeenTracker): RenderGroup {
+  return {
+    key: group.key,
+    label: group.label,
+    hint: group.hint,
+    rows: group.rows.map(r => toRenderRow(r, activeSessionId, seen)),
+  }
+}
+
 class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
-  private tab: SessionsWebviewTab = "all"
+  private lane: SessionLane = "agents"
+  private project: string | null = null
   private search = ""
 
   private summaries: SessionSummary[] = []
@@ -166,8 +187,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 
     // A hidden view stops receiving webview.postMessage traffic reliably in
     // some hosts — repaint on reveal so a webview that missed updates while
-    // collapsed catches up immediately rather than waiting for the next
-    // store tick.
+    // collapsed catches up immediately.
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) this.post()
     })
@@ -176,15 +196,15 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       if (this.view === webviewView) this.view = undefined
     })
 
-    // Align canonical archive visibility with the active tab when the view first appears.
-    this.syncArchivedFlag()
+    // Design B has no archived view — keep the store's archived slice off.
+    if (this.store.showArchived) this.store.setShowArchived(false)
 
     // Initial bounded load: first page only. The list renders immediately
     // without waiting for the full daemon snapshot.
     void this.loadInitial()
   }
 
-  /** Called by registerSessionsWebview's store/filter/tab subscriptions — any source of truth this view depends on changed. */
+  /** Called by registerSessionsWebview's store/filter subscriptions — a source of truth this view depends on changed. */
   refresh(): void {
     void this.refreshSummaries()
   }
@@ -207,13 +227,17 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         this.search = msg.search
         this.post()
         return
-      case "tab":
-        this.setTab(msg.tab)
+      case "lane":
+        this.lane = msg.lane
+        this.post()
         return
-      case "open": {
+      case "project":
+        this.project = msg.slug
+        this.post()
+        return
+      case "open":
         void this.openSession(msg.id)
         return
-      }
       case "stop":
         void this.runSessionAction(msg.id, "stop")
         return
@@ -229,19 +253,6 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private setTab(next: SessionsWebviewTab): void {
-    const previous = this.tab
-    this.tab = next
-    if (next === "archived" && !this.store.showArchived) {
-      this.store.setShowArchived(true)
-    } else if (previous === "archived" && this.store.showArchived) {
-      this.store.setShowArchived(false)
-    }
-    // Tab changes reset the loaded set: different archived visibility and a
-    // fresh first page keep the model coherent.
-    void this.loadInitial()
-  }
-
   private async refreshDaemon(): Promise<void> {
     await this.store.refreshAll()
     this.post()
@@ -250,14 +261,6 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private async copyClaudeSetupPrompt(): Promise<void> {
     await vscode.env.clipboard.writeText(CLAUDE_SETUP_PROMPT)
     void vscode.window.showInformationMessage("Agentproto setup prompt copied — paste it into Claude Code.")
-  }
-
-  private syncArchivedFlag(): void {
-    if (this.tab === "archived" && !this.store.showArchived) {
-      this.store.setShowArchived(true)
-    } else if (this.tab !== "archived" && this.store.showArchived) {
-      this.store.setShowArchived(false)
-    }
   }
 
   private async openSession(id: string): Promise<void> {
@@ -277,10 +280,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async runSessionAction(
-    id: string,
-    action: RowAction,
-  ): Promise<void> {
+  private async runSessionAction(id: string, action: RowAction): Promise<void> {
     if (isPendingSession({ id })) {
       vscode.window.showWarningMessage(`agentproto: session ${id} is still starting.`)
       return
@@ -299,10 +299,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         }
         await this.client.kill(id)
         await this.store.refreshAll()
-        const restart = await vscode.window.showInformationMessage(
-          `agentproto: stopped ${label}`,
-          "Restart",
-        )
+        const restart = await vscode.window.showInformationMessage(`agentproto: stopped ${label}`, "Restart")
         if (restart === "Restart") {
           await vscode.commands.executeCommand("agentproto.restartSession", id)
         }
@@ -349,15 +346,11 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     this.post()
     try {
       const result = await this.client.listSessionSummaries({
-        includeArchived: this.tab === "archived",
+        includeArchived: false,
         limit: PAGE_SIZE,
         offset,
       })
-      if (offset === 0) {
-        this.summaries = result.summaries
-      } else {
-        this.summaries = [...this.summaries, ...result.summaries]
-      }
+      this.summaries = offset === 0 ? result.summaries : [...this.summaries, ...result.summaries]
       this.serverTotal = result.total
     } catch (err) {
       this.loadError = err instanceof Error ? err.message : String(err)
@@ -369,16 +362,16 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Live refresh of the currently loaded slice. Triggered by SessionStore
-   * lifecycle events, this re-fetches the first N summaries (where N is how
-   * many rows the user has already loaded) so active/recent status changes
-   * appear without a manual reload while keeping the request bounded.
+   * lifecycle events, this re-fetches the first N summaries (N = rows already
+   * loaded) so active/recent status changes appear without a manual reload
+   * while keeping the request bounded.
    */
   private async refreshSummaries(): Promise<void> {
     if (this.loading || this.summaries.length === 0) return
     this.loading = true
     try {
       const result = await this.client.listSessionSummaries({
-        includeArchived: this.tab === "archived",
+        includeArchived: false,
         limit: this.summaries.length,
         offset: 0,
       })
@@ -386,8 +379,6 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       this.serverTotal = result.total
       this.loadError = undefined
     } catch (err) {
-      // Keep the existing loaded data; surface the error only if we're not
-      // already showing something useful.
       this.loadError = err instanceof Error ? err.message : String(err)
     } finally {
       this.loading = false
@@ -399,20 +390,23 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     if (!this.view) return
     const pendingRows = this.store.sessions.filter(isPendingSession)
     const model = buildSessionsWebviewModel([...pendingRows, ...this.summaries], this.filter.workspaces, {
-      tab: this.tab,
+      lane: this.lane,
+      project: this.project,
       search: this.search,
       now: Date.now(),
+      serverTotal: this.serverTotal,
     })
     const activeSessionId = this.transcriptPanels.activeSessionId()
-    const filterActive = this.tab !== "all" || this.search.trim().length > 0
+    const filterActive = this.search.trim().length > 0 || this.project !== null
     const hasMore = this.summaries.length < this.serverTotal
     const message: ModelMessage = {
       type: "model",
       connection: this.store.connectionState,
-      section: {
-        recent: model.section.recent.map(r => toRenderRow(r, activeSessionId, this.seen)),
-        older: model.section.older.map(r => toRenderRow(r, activeSessionId, this.seen)),
-      },
+      lane: model.lane,
+      project: this.project,
+      rail: model.rail,
+      laneCounts: model.laneCounts,
+      groups: model.groups.map(g => toRenderGroup(g, activeSessionId, this.seen)),
       summary: summaryTextFor(model, filterActive),
       loading: this.loading,
       hasMore,
@@ -425,10 +419,9 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 /**
  * Registers the WebviewViewProvider and wires every live-update source: the
  * shared SessionStore (lifecycle events + pending rows), the filter
- * controller's workspace-label cache, and the "open in tab" indicator's
- * source of truth (`TranscriptPanels.activeSessionId()`) — kept current via
- * `vscode.window.tabGroups.onDidChangeTabs`, which fires on every tab
- * activate/close/move, distinct from a plain click-selection.
+ * controller's workspace-label cache, and the "open in tab" indicator's source
+ * of truth (`TranscriptPanels.activeSessionId()`) via
+ * `vscode.window.tabGroups.onDidChangeTabs`.
  */
 export function registerSessionsWebview(
   ctx: vscode.ExtensionContext,
@@ -458,11 +451,7 @@ function describeError(err: unknown): string {
 
 /** Exported so sessionsWebview.dom.test.ts can execute the exact shipped HTML/script in jsdom. */
 export function buildHtml(nonce: string): string {
-  const csp = [
-    "default-src 'none'",
-    "style-src 'unsafe-inline'",
-    `script-src 'nonce-${nonce}'`,
-  ].join("; ")
+  const csp = ["default-src 'none'", "style-src 'unsafe-inline'", `script-src 'nonce-${nonce}'`].join("; ")
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -472,149 +461,146 @@ export function buildHtml(nonce: string): string {
   <meta http-equiv="Content-Security-Policy" content="${csp}">
   <title>agentproto sessions</title>
   <style>
+    /* ── Calmed graphite palette (locked, Design B) ────────────────────
+       Fixed tokens, not theme-derived: the point of Design B is a calm,
+       desaturated surface where the ONE accent allowed to draw the eye is
+       ochre = "needs you". */
     :root {
-      color: var(--vscode-foreground);
-      background-color: var(--vscode-sideBar-background);
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
+      --bg: #141415;
+      --panel: #1b1b1c;
+      --panel-2: #202021;
+      --fg: #c8c8c6;
+      --dim: #85857f;
+      --faint: #5c5c58;
+      --border: #2e2e2f;
+      --hover: #232324;
+      --selected: #26262a;
+      --working: #7fa885;
+      --awaiting: #c2a05c;
+      --stalled: #bd6a5f;
+      --stop-hot: #c46a60;
+      color: var(--fg);
+      background-color: var(--bg);
+      font-family: var(--vscode-font-family, -apple-system, "Segoe UI", sans-serif);
+      font-size: 13px;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
-    body { display: flex; flex-direction: column; }
+    body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg); line-height: 1.45; }
+    .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+
     /* ── Daemon connection / first-run state ───────────────────────── */
     #daemon-state { display: none; flex: 1 1 auto; min-height: 0; padding: 24px 18px; align-items: center; justify-content: center; }
-    body.daemon-state > #search,
-    body.daemon-state > #workspace,
-    body.daemon-state > #tabs,
-    body.daemon-state > #summary,
+    body.daemon-state > #rail,
+    body.daemon-state > .brow2,
     body.daemon-state > #list,
-    body.daemon-state > #empty { display: none !important; }
+    body.daemon-state > #empty,
+    body.daemon-state > #footer { display: none !important; }
     body.daemon-state > #daemon-state { display: flex; }
-    .daemon-card { width: min(100%, 360px); text-align: center; color: var(--vscode-foreground); }
-    .daemon-mark { width: 32px; height: 32px; margin: 0 auto 14px; border: 2px solid var(--vscode-descriptionForeground); border-top-color: var(--vscode-focusBorder); border-radius: 50%; }
+    .daemon-card { width: min(100%, 360px); text-align: center; color: var(--fg); }
+    .daemon-mark { width: 32px; height: 32px; margin: 0 auto 14px; border: 2px solid var(--faint); border-top-color: var(--awaiting); border-radius: 50%; }
     #daemon-state[data-state="connecting"] .daemon-mark { animation: agentproto-daemon-spin 1s linear infinite; }
     @keyframes agentproto-daemon-spin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) { #daemon-state[data-state="connecting"] .daemon-mark { animation: none; } }
     .daemon-card h2 { margin: 0; font-size: 15px; font-weight: 600; }
-    .daemon-card p { margin: 8px 0 0; color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.5; }
-    .daemon-command { margin: 16px 0 0; padding: 9px 10px; overflow-x: auto; text-align: left; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.08)); color: var(--vscode-textPreformat-foreground, var(--vscode-foreground)); font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+    .daemon-card p { margin: 8px 0 0; color: var(--dim); font-size: 12px; line-height: 1.5; }
+    .daemon-command { display: block; margin: 16px 0 0; padding: 9px 10px; overflow-x: auto; text-align: left; border: 1px solid var(--border); background: var(--panel-2); color: var(--fg); font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
     .daemon-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
-    .daemon-actions button { width: 100%; min-height: 28px; padding: 4px 10px; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.2)); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); cursor: pointer; font: inherit; font-size: 12px; }
-    .daemon-actions button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-    .daemon-actions button:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,0.3)); }
-    .daemon-actions button.primary:hover { background: var(--vscode-button-hoverBackground); }
+    .daemon-actions button { width: 100%; min-height: 28px; padding: 4px 10px; border: 1px solid var(--border); background: var(--panel-2); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+    .daemon-actions button.primary { background: #33332f; }
+    .daemon-actions button:hover { background: var(--hover); }
     #daemon-state[data-state="connecting"] .offline-only { display: none; }
-    /* ── Pinned filter ─────────────────────────────────────────────── */
-    #search { flex: 0 0 auto; position: relative; margin: 10px 12px 0; }
-    #search .mag {
-      position: absolute; left: 2px; top: 50%; transform: translateY(-50%);
-      color: var(--vscode-descriptionForeground); font-size: 13px; pointer-events: none;
-    }
-    #q {
-      width: 100%; height: 26px; background: transparent; border: none;
-      border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
-      color: var(--vscode-input-foreground, var(--vscode-foreground));
-      font-size: 13px; padding: 0 16px 0 18px; outline: none;
-      font-family: var(--vscode-font-family);
-    }
-    #q::placeholder { color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); }
-    #q:focus { border-bottom-color: var(--vscode-focusBorder); }
-    #clear {
-      position: absolute; right: 0; top: 50%; transform: translateY(-50%);
-      color: var(--vscode-descriptionForeground); cursor: pointer; font-size: 11px; display: none;
-    }
-    #clear.show { display: block; }
-    /* ── Status tabs — plain text, underline on active, NOT chips ────── */
-    #tabs { flex: 0 0 auto; display: flex; gap: 16px; padding: 10px 12px 8px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); }
-    .tab {
-      font-size: 11px; color: var(--vscode-descriptionForeground); cursor: pointer;
-      padding-bottom: 3px; border-bottom: 1.5px solid transparent;
-      display: flex; align-items: center; gap: 5px; user-select: none;
-    }
-    .tab:hover { color: var(--vscode-foreground); }
-    .tab.on { color: var(--vscode-foreground); border-bottom-color: var(--vscode-foreground); }
-    #summary { flex: 0 0 auto; padding: 6px 12px 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
+
+    /* ── Project rail ──────────────────────────────────────────────── */
+    #rail { display: flex; gap: 5px; padding: 8px 10px; border-bottom: 1px solid var(--border); overflow-x: auto; flex: 0 0 auto; }
+    #rail::-webkit-scrollbar { display: none; }
+    .pchip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11.5px; color: var(--dim); white-space: nowrap; user-select: none; background: transparent; }
+    .pchip:hover { background: var(--hover); }
+    .pchip.on { color: var(--fg); background: var(--panel-2); border-color: #3d3d40; }
+    .pchip .n { color: var(--faint); font-size: 10.5px; }
+    .pchip .psq { width: 6px; height: 6px; border-radius: 2px; display: inline-block; }
+    .pchip .adot { width: 6px; height: 6px; border-radius: 50%; background: var(--awaiting); display: inline-block; }
+    .pchip:focus-visible, .segb:focus-visible, .row:focus-visible, .ghead:focus-visible, .abtn:focus-visible, button:focus-visible { outline: 1px solid #6a86a8; outline-offset: -1px; }
+
+    /* ── Segmented control + inline filter ─────────────────────────── */
+    .brow2 { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+    .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+    .segb { padding: 3px 12px; font-size: 11.5px; cursor: pointer; color: var(--dim); background: transparent; border: none; font-family: inherit; }
+    .segb.on { background: var(--panel-2); color: var(--fg); font-weight: 600; }
+    .segb .n { color: var(--faint); margin-left: 4px; font-size: 10.5px; }
+    #q { flex: 1; background: transparent; border: none; outline: none; color: var(--fg); font-size: 12px; min-width: 40px; font-family: inherit; }
+    #q::placeholder { color: var(--faint); }
+
     /* ── List ──────────────────────────────────────────────────────── */
-    #list { flex: 1 1 auto; overflow-y: auto; }
-    .section {
-      padding: 16px 12px 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
-      text-transform: uppercase; color: var(--vscode-descriptionForeground);
-      display: flex; justify-content: space-between; align-items: baseline;
-    }
-    .section .c { font-weight: 400; }
-    .subhead { padding: 10px 12px 4px; font-size: 10px; color: var(--vscode-descriptionForeground); }
-    /* No cards, no boxes, no rounded corners — hairline separators only. */
-    .row {
-      position: relative; padding: 9px 12px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25));
-      cursor: pointer; display: grid; grid-template-columns: 10px 1fr auto; column-gap: 10px; align-items: start;
-    }
-    .row:hover { background: var(--vscode-list-hoverBackground); }
-    .row.open { background: rgba(127,127,127,0.08); box-shadow: inset 2px 0 0 var(--vscode-focusBorder); }
-    .row.open .name { color: var(--vscode-foreground); font-weight: 600; }
-    .row.archived { opacity: 0.75; }
-    /* Nested subagents: indentation + dimming only, no connector line, no box. */
-    .row.sub { padding-left: 34px; border-bottom-color: transparent; }
-    .row.sub + .row:not(.sub) { border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); }
-    .row.sub .name { font-size: 12.5px; font-weight: 500; color: var(--vscode-descriptionForeground); }
-    .row.sub .dot { width: 5px; height: 5px; opacity: 0.7; }
-    .dot { margin-top: 5px; width: 7px; height: 7px; border-radius: 50%; }
-    /* Only genuinely working rows pulse green. Filter tabs are plain text, never animated dots. */
-    .dot.working { background: var(--vscode-charts-green, #2ea043); animation: agentproto-pulse-live 1.6s ease-in-out infinite; }
-    .dot.awaiting { border: 1.5px solid var(--vscode-editorWarning-foreground, #cca700); background: transparent; }
-    .dot.idle { border: 1.5px solid var(--vscode-descriptionForeground); background: transparent; opacity: 0.65; }
-    .dot.stalled { background: var(--vscode-editorWarning-foreground, #cca700); }
-    .dot.failed { background: var(--vscode-editorError-foreground, #f85149); }
-    .dot.stopped { border: 1.5px solid var(--vscode-descriptionForeground); background: transparent; opacity: 0.5; }
-    .dot.done { border: 1.5px solid var(--vscode-descriptionForeground); background: transparent; opacity: 0.5; }
-    .dot.done.unread { background: var(--vscode-charts-green, #2ea043); border-color: var(--vscode-charts-green, #2ea043); opacity: 1; }
-    @keyframes agentproto-pulse-live { 0%, 100% { opacity: 0.55; transform: scale(0.9); } 50% { opacity: 1; transform: scale(1); } }
-    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } }
-    .mid { min-width: 0; }
-    .name {
-      font-size: 13px; font-weight: 550; color: var(--vscode-foreground); letter-spacing: -0.01em;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px;
-    }
-    .msg {
-      margin-top: 3px; font-size: 12px; color: var(--vscode-descriptionForeground); line-height: 1.4;
-      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-    }
-    .tags { margin-top: 5px; display: flex; align-items: center; gap: 9px; font-size: 10.5px; color: var(--vscode-descriptionForeground); flex-wrap: wrap; }
-    .tag.harness { display: inline-flex; align-items: center; gap: 4px; }
-    .tag.model { color: var(--vscode-foreground); opacity: 0.75; }
-    .tag.cost { font-variant-numeric: tabular-nums; }
+    #list { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
+    #list::-webkit-scrollbar { width: 8px; }
+    #list::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+
+    /* ── Group headers (collapsible sections) ──────────────────────── */
+    .ghead { display: flex; align-items: center; gap: 7px; padding: 9px 12px 5px; color: var(--dim); font-size: 10.5px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; cursor: pointer; user-select: none; }
+    .ghead .tw { font-size: 8px; color: var(--faint); transition: transform 0.12s; }
+    .ghead.closed .tw { transform: rotate(-90deg); }
+    .ghead .n { color: var(--faint); font-weight: 400; }
+    .ghead .hint { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--faint); }
+    .gbody[hidden] { display: none; }
+
+    /* ── Rows ──────────────────────────────────────────────────────── */
+    .row { display: flex; gap: 9px; padding: 8px 10px 8px 12px; cursor: pointer; position: relative; border-left: 2px solid transparent; }
+    .row + .row { border-top: 1px solid #242425; }
+    .row:hover { background: var(--hover); }
+    .row.open { background: var(--selected); border-left-color: var(--awaiting); }
+    .row.open .name > span:first-child { color: var(--fg); }
+    .row.archived { opacity: 0.6; }
+    .row.gone { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; transition: all 0.25s ease; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
+    .dot.working { background: var(--working); animation: agentproto-pulse 2s infinite; }
+    .dot.awaiting { background: var(--awaiting); }
+    .dot.stalled, .dot.failed { background: var(--stalled); }
+    .dot.idle, .dot.stopped { background: transparent; border: 1px solid var(--faint); }
+    .dot.done { background: var(--faint); }
+    .dot.done.unread { background: var(--working); border-color: var(--working); }
+    @keyframes agentproto-pulse { 50% { opacity: 0.4; } }
+    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .spin { animation: none !important; } }
+    .mid { flex: 1; min-width: 0; }
+    .name { font-weight: 600; font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+    .name .id { font-weight: 400; color: var(--dim); }
+    .name .ok { color: var(--working); font-weight: 400; font-size: 12px; }
+    .name .runs { color: var(--faint); font-weight: 400; font-size: 11px; }
+    .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meta { display: flex; gap: 8px; margin-top: 3px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
+    .meta .proj { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); }
+    .meta .psq { width: 6px; height: 6px; border-radius: 2px; display: inline-block; }
+    .meta .harness { display: inline-flex; align-items: center; gap: 4px; }
+    .meta .model { color: var(--dim); }
     .ctxbar { display: inline-flex; align-items: center; gap: 5px; }
-    .ctxbar .track { width: 22px; height: 2px; background: var(--vscode-panel-border, rgba(128,128,128,0.35)); position: relative; }
-    .ctxbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--vscode-descriptionForeground); }
-    .right { position: relative; display: grid; align-items: center; justify-items: end; padding-top: 1px; min-height: 14px; }
-    .time { grid-area: 1 / 1; font-size: 10.5px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; opacity: 1; }
-    .row:hover .time { opacity: 0; }
-    .acts { grid-area: 1 / 1; opacity: 0; display: flex; gap: 6px; }
-    .row:hover .acts { opacity: 1; }
-    .act {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 16px; height: 16px; color: var(--vscode-descriptionForeground);
-      font-size: 11px; cursor: pointer; border-radius: 3px;
-    }
-    .act:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.2)); color: var(--vscode-foreground); }
-    .act.stop { color: var(--vscode-charts-red, #f85149); }
-    .act.stop:hover { color: var(--vscode-errorForeground, #f85149); }
-    .act.archive { color: var(--vscode-descriptionForeground); }
-    .act.unarchive { color: var(--vscode-descriptionForeground); }
-    #empty { padding: 32px 16px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; }
+    .ctxbar .track { width: 22px; height: 2px; background: var(--border); position: relative; }
+    .ctxbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--dim); }
+    .right { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: 0 0 auto; }
+    .time { color: var(--faint); font-size: 11px; white-space: nowrap; }
+
+    /* ── Lifecycle actions (hover-revealed, stable slot) ───────────── */
+    .acts { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
+    .row:hover .acts, .row.open .acts, .acts.busy { opacity: 1; }
+    .abtn { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--dim); cursor: pointer; border-radius: 4px; padding: 0; }
+    .abtn:hover { background: #2e2e30; color: var(--fg); }
+    .abtn.stop:hover { color: var(--stop-hot); }
+    .abtn svg { width: 15px; height: 15px; display: block; }
+    .spin { width: 12px; height: 12px; border: 1.5px solid var(--faint); border-top-color: var(--fg); border-radius: 50%; animation: agentproto-rot 0.8s linear infinite; }
+    @keyframes agentproto-rot { to { transform: rotate(360deg); } }
+
+    /* ── Empty + footer ────────────────────────────────────────────── */
+    #empty { padding: 36px 20px; text-align: center; color: var(--faint); font-size: 12px; }
     #empty[hidden] { display: none; }
-    /* ── Load more / progress footer ───────────────────────────────── */
-    #footer { flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); }
-    #load-more {
-      width: 100%; padding: 6px 0; background: transparent; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
-      color: var(--vscode-foreground); font-size: 12px; cursor: pointer; font-family: var(--vscode-font-family);
-    }
-    #load-more:hover { background: var(--vscode-list-hoverBackground); }
+    #footer { padding: 6px 12px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+    #summary { color: var(--faint); font-size: 11px; }
+    #load-more { margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--dim); font-size: 11px; padding: 3px 10px; cursor: pointer; border-radius: 4px; font-family: inherit; }
+    #load-more:hover { color: var(--fg); border-color: var(--dim); }
     #load-more:disabled { opacity: 0.5; cursor: default; }
     #load-more[hidden] { display: none; }
-    #footer-error { padding: 6px 0; font-size: 11px; color: var(--vscode-editorError-foreground); }
-    #footer-error[hidden] { display: none; }
-    #spinner { padding: 8px 0; text-align: center; font-size: 11px; color: var(--vscode-descriptionForeground); }
+    #spinner { color: var(--faint); font-size: 11px; }
     #spinner[hidden] { display: none; }
+    #footer-error { color: var(--stalled); font-size: 11px; }
+    #footer-error[hidden] { display: none; }
   </style>
 </head>
 <body class="daemon-state">
@@ -631,34 +617,28 @@ export function buildHtml(nonce: string): string {
       </div>
     </div>
   </section>
-  <div id="search">
-    <span class="mag" aria-hidden="true">⌕</span>
-    <input id="q" placeholder="Filter" autocomplete="off" />
-    <span id="clear" title="Clear filter">✕</span>
+  <div id="rail" role="tablist" aria-label="Project"></div>
+  <div class="brow2">
+    <div class="seg" id="seg" role="tablist" aria-label="Session lane">
+      <button class="segb on" type="button" data-lane="agents" role="tab">Agents<span class="n"></span></button>
+      <button class="segb" type="button" data-lane="auto" role="tab">Auto<span class="n"></span></button>
+    </div>
+    <input id="q" placeholder="⌕ Filter…" autocomplete="off" aria-label="Filter sessions" />
   </div>
-  <div id="tabs">
-    <div class="tab on" data-tab="all">All</div>
-    <div class="tab" data-tab="working">Working</div>
-    <div class="tab" data-tab="awaiting">Awaiting</div>
-    <div class="tab" data-tab="idle">Idle</div>
-    <div class="tab" data-tab="stalled">Stalled / failed</div>
-    <div class="tab" data-tab="done">Done</div>
-    <div class="tab" data-tab="archived">Archived</div>
-  </div>
-  <div id="summary"></div>
   <div id="list"></div>
-  <div id="empty" hidden>Nothing matches.</div>
+  <div id="empty" hidden>No sessions match.</div>
   <div id="footer">
+    <span id="summary"></span>
     <button id="load-more" hidden>Load more</button>
-    <div id="spinner" hidden>Loading…</div>
-    <div id="footer-error" hidden></div>
+    <span id="spinner" hidden>Loading…</span>
+    <span id="footer-error" hidden></span>
   </div>
   <script nonce="${nonce}">
     (function () {
       const vscode = acquireVsCodeApi();
+      const railEl = document.getElementById('rail');
+      const segEl = document.getElementById('seg');
       const qEl = document.getElementById('q');
-      const clearEl = document.getElementById('clear');
-      const tabsEl = document.getElementById('tabs');
       const listEl = document.getElementById('list');
       const emptyEl = document.getElementById('empty');
       const summaryEl = document.getElementById('summary');
@@ -669,6 +649,14 @@ export function buildHtml(nonce: string): string {
       const daemonTitleEl = document.getElementById('daemon-title');
       const daemonDescriptionEl = document.getElementById('daemon-description');
 
+      // Section collapse is a client-only concern; persist it across the
+      // frequent live re-renders so a collapsed section stays collapsed.
+      const collapsed = {};
+
+      const STOP_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.4" y="5.4" width="5.2" height="5.2" rx="1" fill="currentColor"/></svg>';
+      const ARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5M6 7.5h4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M5 2.8h6l1 2.2H4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
+      const UNARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M8 11V6.5M6 8l2-2 2 2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
       function escapeHtml(text) {
         return String(text).replace(/[&<>"']/g, function (ch) {
           return ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : ch === '"' ? '&quot;' : '&#39;';
@@ -677,45 +665,70 @@ export function buildHtml(nonce: string): string {
 
       function actionButton(r) {
         if (r.action === 'stop') {
-          return '<span class="act stop" title="Stop session" aria-label="Stop session" role="button" tabindex="0" data-stop="' + escapeHtml(r.id) + '" data-action>■</span>';
+          return '<button class="abtn stop" type="button" title="Stop session" aria-label="Stop session" data-stop="' + escapeHtml(r.id) + '" data-action>' + STOP_SVG + '</button>';
         }
         if (r.action === 'archive') {
-          return '<span class="act archive" title="Archive session" aria-label="Archive session" role="button" tabindex="0" data-archive="' + escapeHtml(r.id) + '" data-action>▣</span>';
+          return '<button class="abtn archive" type="button" title="Archive session" aria-label="Archive session" data-archive="' + escapeHtml(r.id) + '" data-action>' + ARCH_SVG + '</button>';
         }
         if (r.action === 'unarchive') {
-          return '<span class="act unarchive" title="Unarchive session" aria-label="Unarchive session" role="button" tabindex="0" data-unarchive="' + escapeHtml(r.id) + '" data-action>↩</span>';
+          return '<button class="abtn unarchive" type="button" title="Unarchive session" aria-label="Unarchive session" data-unarchive="' + escapeHtml(r.id) + '" data-action>' + UNARCH_SVG + '</button>';
         }
         return '';
       }
 
-      function workspaceTag(r) {
-        if (!r.workspace) return '<span class="tag workspace ws-accent">unassigned</span>';
-        return '<span class="tag workspace ws-accent" style="color:' + escapeHtml(r.workspace.css || '#808080') + '; border-color:' + escapeHtml(r.workspace.css || '#808080') + ';">' + escapeHtml(r.workspace.label) + '</span>';
+      function metaHTML(r) {
+        var parts = [];
+        if (r.workspace) {
+          parts.push('<span class="proj"><span class="psq" style="background:' + escapeHtml(r.workspace.css || '#808080') + '"></span>' + escapeHtml(r.workspace.label) + '</span>');
+        } else {
+          parts.push('<span class="proj"><span class="psq" style="background:#808080"></span>unassigned</span>');
+        }
+        parts.push('<span>' + escapeHtml(r.tag) + '</span>');
+        parts.push('<span class="harness"><span class="g">' + escapeHtml(r.harnessGlyph) + '</span>' + (r.model ? '<span class="model">' + escapeHtml(r.model) + '</span>' : '') + '</span>');
+        if (typeof r.ctxPercent === 'number') {
+          parts.push('<span class="ctxbar"><span class="track"><span class="fill" style="width:' + r.ctxPercent + '%"></span></span>' + r.ctxPercent + '%</span>');
+        }
+        if (r.cost) parts.push('<span class="cost">' + escapeHtml(r.cost) + '</span>');
+        return parts.join('');
       }
 
       function rowHTML(r) {
-        var classes = 'row' + (r.isSub ? ' sub' : '') + (r.open ? ' open' : '') + (r.archived ? ' archived' : '');
+        var classes = 'row' + (r.open ? ' open' : '') + (r.archived ? ' archived' : '');
         var dotClasses = 'dot ' + r.status + (r.status === 'done' && r.unread ? ' unread' : '');
-        var tags = '<span class="tag">' + escapeHtml(r.tag) + '</span>';
-        tags += workspaceTag(r);
-        tags += '<span class="tag harness"><span class="g">' + escapeHtml(r.harnessGlyph) + '</span>' +
-          (r.model ? '<span class="model">' + escapeHtml(r.model) + '</span>' : '') + '</span>';
-        if (typeof r.ctxPercent === 'number') {
-          tags += '<span class="ctxbar"><span class="track"><span class="fill" style="width:' + r.ctxPercent +
-            '%"></span></span>' + r.ctxPercent + '%</span>';
-        }
-        if (r.cost) tags += '<span class="tag cost">' + escapeHtml(r.cost) + '</span>';
+        var nameLine = '<span>' + escapeHtml(r.name) + '</span>' +
+          (r.idMono ? '<span class="id mono">· ' + escapeHtml(r.idMono) + '</span>' : '') +
+          (r.approved ? '<span class="ok">✓ approved</span>' : '') +
+          (r.runs ? '<span class="runs">×' + r.runs + ' runs</span>' : '');
         var acts = actionButton(r);
         return '<div class="' + classes + '" data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '" role="listitem" tabindex="0">' +
           '<span class="' + dotClasses + '"></span>' +
           '<div class="mid">' +
-            '<div class="name"><span>' + escapeHtml(r.name) + '</span></div>' +
+            '<div class="name">' + nameLine + '</div>' +
             (r.message ? '<div class="msg">' + escapeHtml(r.message) + '</div>' : '') +
-            '<div class="tags">' + tags + '</div>' +
+            '<div class="meta">' + metaHTML(r) + '</div>' +
           '</div>' +
-          '<div class="right"><span class="time">' + escapeHtml(r.time) + '</span>' +
-            (acts ? '<span class="acts">' + acts + '</span>' : '') + '</div>' +
+          '<div class="right"><span class="time">' + escapeHtml(r.time) + '</span><span class="acts">' + acts + '</span></div>' +
         '</div>';
+      }
+
+      function groupHTML(g) {
+        var isClosed = collapsed[g.key] === true;
+        var head = '<div class="ghead' + (isClosed ? ' closed' : '') + '" data-key="' + escapeHtml(g.key) + '" role="button" tabindex="0" aria-expanded="' + (isClosed ? 'false' : 'true') + '">' +
+          '<span class="tw">▾</span>' + escapeHtml(g.label) + ' <span class="n">' + g.rows.length + '</span>' +
+          (g.hint ? '<span class="hint">' + escapeHtml(g.hint) + '</span>' : '') + '</div>';
+        var body = '<div class="gbody" data-body="' + escapeHtml(g.key) + '"' + (isClosed ? ' hidden' : '') + '>' +
+          g.rows.map(rowHTML).join('') + '</div>';
+        return head + body;
+      }
+
+      function renderRail(rail, lane) {
+        railEl.innerHTML = rail.map(function (e) {
+          var on = (e.slug === null && currentProject === null) || (e.slug !== null && e.slug === currentProject);
+          return '<button class="pchip' + (on ? ' on' : '') + '" type="button" role="tab" data-slug="' + (e.slug === null ? '' : escapeHtml(e.slug)) + '">' +
+            (e.css ? '<span class="psq" style="background:' + escapeHtml(e.css) + '"></span>' : '') +
+            escapeHtml(e.label) + ' <span class="n">' + e.count + '</span>' +
+            (e.awaiting ? '<span class="adot" title="Awaiting you"></span>' : '') + '</button>';
+        }).join('');
       }
 
       function renderConnection(payload) {
@@ -733,19 +746,27 @@ export function buildHtml(nonce: string): string {
         return state;
       }
 
+      var currentProject = null;
+
       function render(payload) {
+        currentProject = payload.project === undefined ? currentProject : payload.project;
         if (renderConnection(payload) !== 'connected') return;
-        var html = '';
-        var shown = 0;
-        var recent = payload.section.recent;
-        var older = payload.section.older;
-        shown = recent.length + older.length;
-        for (var i = 0; i < recent.length; i++) html += rowHTML(recent[i]);
-        if (older.length > 0) {
-          html += '<div class="subhead">Older than 24 hours</div>';
-          for (var j = 0; j < older.length; j++) html += rowHTML(older[j]);
+
+        // Segmented control.
+        var segs = segEl.querySelectorAll('.segb');
+        for (var i = 0; i < segs.length; i++) {
+          var lane = segs[i].getAttribute('data-lane');
+          segs[i].classList.toggle('on', lane === payload.lane);
+          var nEl = segs[i].querySelector('.n');
+          if (nEl) nEl.textContent = payload.laneCounts && typeof payload.laneCounts[lane] === 'number' ? payload.laneCounts[lane] : '';
         }
-        listEl.innerHTML = html;
+
+        renderRail(payload.rail || [], payload.lane);
+
+        var groups = payload.groups || [];
+        var shown = 0;
+        for (var g = 0; g < groups.length; g++) shown += groups[g].rows.length;
+        listEl.innerHTML = groups.map(groupHTML).join('');
         emptyEl.hidden = shown !== 0;
         summaryEl.textContent = payload.summary;
         loadMoreEl.hidden = !payload.hasMore;
@@ -755,23 +776,62 @@ export function buildHtml(nonce: string): string {
         footerErrorEl.textContent = payload.loadError || '';
       }
 
+      // ── Rail: project selection ──
+      railEl.addEventListener('click', function (e) {
+        var chip = e.target.closest('.pchip');
+        if (!chip) return;
+        var slug = chip.getAttribute('data-slug');
+        currentProject = slug ? slug : null;
+        vscode.postMessage({ type: 'project', slug: currentProject });
+      });
+
+      // ── Segmented control ──
+      segEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('.segb');
+        if (!btn) return;
+        vscode.postMessage({ type: 'lane', lane: btn.getAttribute('data-lane') });
+      });
+
+      // ── List: row open / lifecycle actions / section collapse ──
       listEl.addEventListener('click', function (e) {
-        var action = e.target.closest('[data-action]');
-        if (action) {
-          e.stopPropagation();
-          if (action.hasAttribute('data-stop')) vscode.postMessage({ type: 'stop', id: action.getAttribute('data-stop') });
-          else if (action.hasAttribute('data-archive')) vscode.postMessage({ type: 'archive', id: action.getAttribute('data-archive') });
-          else if (action.hasAttribute('data-unarchive')) vscode.postMessage({ type: 'unarchive', id: action.getAttribute('data-unarchive') });
+        var head = e.target.closest('.ghead');
+        if (head) {
+          var key = head.getAttribute('data-key');
+          collapsed[key] = !collapsed[key];
+          head.classList.toggle('closed', collapsed[key]);
+          head.setAttribute('aria-expanded', collapsed[key] ? 'false' : 'true');
+          var body = listEl.querySelector('.gbody[data-body="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+          if (body) body.hidden = collapsed[key];
           return;
         }
-        var openBtn = e.target.closest('[data-open]');
+        var action = e.target.closest('[data-action]');
         var row = e.target.closest('.row');
-        var id = openBtn ? openBtn.getAttribute('data-open') : row ? row.getAttribute('data-id') : null;
-        if (id) vscode.postMessage({ type: 'open', id: id });
+        if (action && row) {
+          e.stopPropagation();
+          if (action.hasAttribute('data-stop')) {
+            row.querySelectorAll('.acts')[0].classList.add('busy');
+            action.outerHTML = '<span class="spin" role="status" aria-label="Stopping"></span>';
+            var msg = row.querySelector('.msg');
+            if (msg) msg.textContent = 'Stopping…';
+            vscode.postMessage({ type: 'stop', id: action.getAttribute('data-stop') });
+          } else if (action.hasAttribute('data-archive')) {
+            row.classList.add('gone');
+            vscode.postMessage({ type: 'archive', id: action.getAttribute('data-archive') });
+          } else if (action.hasAttribute('data-unarchive')) {
+            row.classList.add('gone');
+            vscode.postMessage({ type: 'unarchive', id: action.getAttribute('data-unarchive') });
+          }
+          return;
+        }
+        if (row) vscode.postMessage({ type: 'open', id: row.getAttribute('data-id') });
       });
 
       listEl.addEventListener('keydown', function (e) {
         if (e.key !== 'Enter' && e.key !== ' ') return;
+        var head = e.target.closest('.ghead');
+        if (head) { e.preventDefault(); head.click(); return; }
+        var action = e.target.closest('[data-action]');
+        if (action) { e.preventDefault(); action.click(); return; }
         var row = e.target.closest('.row');
         if (!row) return;
         e.preventDefault();
@@ -784,26 +844,10 @@ export function buildHtml(nonce: string): string {
 
       var filterTimer = null;
       qEl.addEventListener('input', function () {
-        clearEl.classList.toggle('show', qEl.value.length > 0);
         if (filterTimer) clearTimeout(filterTimer);
         filterTimer = setTimeout(function () {
           vscode.postMessage({ type: 'filter', search: qEl.value.trim() });
         }, 120);
-      });
-      clearEl.addEventListener('click', function () {
-        qEl.value = '';
-        clearEl.classList.remove('show');
-        vscode.postMessage({ type: 'filter', search: '' });
-        qEl.focus();
-      });
-
-      tabsEl.addEventListener('click', function (e) {
-        var t = e.target.closest('.tab');
-        if (!t) return;
-        var tabs = tabsEl.querySelectorAll('.tab');
-        for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('on');
-        t.classList.add('on');
-        vscode.postMessage({ type: 'tab', tab: t.getAttribute('data-tab') });
       });
 
       daemonStateEl.addEventListener('click', function (e) {

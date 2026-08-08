@@ -1,34 +1,43 @@
 /**
- * Pure sessions-WEBVIEW row/group model — NO vscode import, so it's
+ * Pure sessions-WEBVIEW row/section model — NO vscode import, so it's
  * unit-testable under plain vitest (sessionsWebviewPanel.ts wraps this into
  * the webview's HTML/postMessage payload, same split as sessionsTree.ts vs.
  * sessionsTree.logic.ts).
  *
- * Deliberately thin: every grouping, recency-split, subagent-nesting, and
- * filter decision is DELEGATED to the tree's own logic modules
- * (sessionsTree.logic.ts, sessionsGroups.logic.ts, sessionFilter.logic.ts) and
- * the workspace metadata helpers (workspaces.logic.ts) — this module only
- * reshapes their output into the flat two-line-row shape
- * `sessions-webview-demo-models.html` (the locked design mock) expects, now
- * as a single continuous list with per-row workspace tags and lifecycle
- * actions. That reuse is the point: the tree and the webview must never
- * disagree about which sessions exist, how they're grouped, or which are
- * nested under a parent — only how a row is PAINTED.
+ * DESIGN B — "Attention-first sections" (validated 2026-08-07). The seven
+ * status tabs are gone: status is no longer a control the operator drives, it
+ * is the SORT ORDER the list organizes itself into. Every session falls into
+ * exactly one of five fixed-priority sections —
+ *   Needs you → Running → Attention → Quiet → Earlier
+ * — keyed off the tree's canonical `activityFor` classifier, so the webview
+ * never disagrees with the tree about what a session IS.
+ *
+ * Navigation collapses to two axes only, both reusing logic that already
+ * exists (NO daemon changes):
+ *   - a top PROJECT RAIL (All + one chip per workspace, each with a count and
+ *     a tiny ochre dot when that project holds a session awaiting the human),
+ *   - an `Agents | Auto` SEGMENTED CONTROL. Agents = human-origin sessions
+ *     (the default); Auto = machine-origin sessions, reusing
+ *     `isMachineOrigin` (sessionsGroups.logic.ts) plus the cron-origin /
+ *     command-kind tells, grouped into Gate reviews / Crons / Commands.
+ *
+ * Deliberately thin: activity classification, isolation labels, cost/context
+ * formatting, workspace resolution, and resume-chain collapsing are all
+ * DELEGATED to the tree's own logic modules — this module only reshapes their
+ * output into the flat, section-organized row model the webview paints.
  *
  * ARCHITECTURE NOTE (progressive loading): the webview consumes
- * {@link SessionSummary} rows from the new `GET /sessions/summaries` endpoint
- * rather than the full `GET /sessions` SessionDescriptor snapshot. A summary
- * carries every field this panel renders (name, status, activity, cost,
- * context, workspace/isolation, parent/child nesting, resume chains) and
- * deliberately excludes large resume/transcript/policy context that the panel
- * never shows. This keeps first paint bounded and daemon serialization work
- * low even when the daemon holds hundreds of sessions. The tree and transcript
- * panels continue to use the full SessionDescriptor via SessionStore unchanged.
+ * {@link SessionSummary} rows from `GET /sessions/summaries` rather than the
+ * full `SessionDescriptor` snapshot. A summary carries every field this panel
+ * renders and excludes the large resume/transcript/policy context the panel
+ * never shows, keeping first paint bounded even with hundreds of sessions.
  */
 
 import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
 import { isLiveSession } from "../commands/sessionActions.logic.js"
 import { canArchive, canUnarchive } from "../commands/sessionArchive.logic.js"
+import { shortSessionId } from "../client/sessionName.js"
+import { isMachineOrigin } from "../views/sessionsGroups.logic.js"
 import { findWorkspaceByPath } from "../services/workspaces.logic.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import {
@@ -39,8 +48,6 @@ import {
 import {
   activityFor,
   activityLineFor,
-  buildSessionTree,
-  bucketFor,
   collapseResumeChains,
   compareSessions,
   contextPercent,
@@ -48,17 +55,13 @@ import {
   labelFor,
   relativeTime,
   type SessionActivity,
-  type SessionNode,
 } from "../views/sessionsTree.logic.js"
 
 /**
- * Harness → glyph, locked by the design mock (SESSIONS-WEBVIEW-BRIEF.md):
- * "a single monochrome glyph per harness + the model token". Keyed on
- * `adapterSlug` (the same field the tree's harness commands and
- * runtime SessionDescriptor.adapterSlug use — "claude-code" / "hermes" /
- * "codex" / "gemini-cli"). Any other/unknown slug falls back to `•` — a
- * *logo* treatment (SVG marks) can be added later behind `harnessGlyphFor`
- * without touching a call site, but only glyph ships now.
+ * Harness → glyph, locked by the design mock: "a single monochrome glyph per
+ * harness + the model token". Keyed on `adapterSlug` (the same field the
+ * tree's harness commands and runtime `SessionDescriptor.adapterSlug` use).
+ * Any other/unknown slug falls back to `•`.
  */
 export const HARNESS_GLYPHS: Readonly<Record<string, string>> = {
   "claude-code": "✳",
@@ -77,8 +80,7 @@ export function harnessGlyphFor(adapterSlug: string | undefined): string {
 
 /**
  * Cost as the row's trailing money tag, e.g. "$1.24" — undefined (renders
- * nothing) for a session with no cost yet, matching the mock's `s.cost`
- * being absent on a `done` row with $0 spend.
+ * nothing) for a session with no cost yet.
  */
 export function formatCost(costUsd: number | undefined): string | undefined {
   if (typeof costUsd !== "number" || !(costUsd > 0)) return undefined
@@ -86,10 +88,10 @@ export function formatCost(costUsd: number | undefined): string | undefined {
 }
 
 /**
- * The row's status dot — driven directly by the tree's canonical
- * `activityFor` classifier so the webview never disagrees with the tree
- * about what a session IS. Each activity gets its own CSS class; only
- * `working` rows pulse green, so an idle session never looks active.
+ * The row's status dot — driven directly by the tree's `activityFor`
+ * classifier. Each activity gets its own CSS class; only `working` rows pulse
+ * (moss), and only `awaiting` rows take the ochre accent — the one signal
+ * allowed to catch the eye.
  */
 export type WebviewRowStatus =
   | "working"
@@ -125,7 +127,7 @@ export function rowActionFor(session: SessionSummary): RowAction | undefined {
   return undefined
 }
 
-/** Stable, theme-agnostic accent palette for workspace tags. Mid-luminance so the color reads as an accent in both light and dark themes. */
+/** Stable, theme-agnostic accent palette for the workspace color square. Mid-luminance so the color reads as an accent in both light and dark themes. */
 export const WORKSPACE_PALETTE: readonly string[] = [
   "#c45c26", // orange
   "#2a8f5c", // green
@@ -139,6 +141,9 @@ export const WORKSPACE_PALETTE: readonly string[] = [
 
 /** Dedicated index for rows with no resolvable workspace — a neutral gray outside the accent palette. */
 export const UNASSIGNED_COLOR_INDEX = WORKSPACE_PALETTE.length
+
+/** Sentinel slug for the "no resolvable workspace" bucket in the project rail. */
+export const UNASSIGNED_SLUG = "__unassigned__"
 
 /** Relative luminance of an sRGB color (for accessibility sanity checks). */
 export function relativeLuminance(hex: string): number {
@@ -154,7 +159,7 @@ export function relativeLuminance(hex: string): number {
  * adding or removing workspaces never shifts another workspace's color.
  */
 export function workspaceColorFor(slug: string): { index: number; css: string } {
-  if (slug === "__unassigned__") {
+  if (slug === UNASSIGNED_SLUG) {
     return { index: UNASSIGNED_COLOR_INDEX, css: "#808080" }
   }
   const hash = [...slug].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 0)
@@ -162,21 +167,109 @@ export function workspaceColorFor(slug: string): { index: number; css: string } 
   return { index, css: WORKSPACE_PALETTE[index]! }
 }
 
-/** Workspace identity attached to a row for tag rendering. */
+/** Workspace identity attached to a row for the 6px color-square + label. */
 export interface WebviewWorkspace {
   slug: string
   label: string
   colorIndex: number
 }
 
-/** One rendered row — a root session or one of its flattened subagent descendants. */
+/** Which of the two segmented-control lanes a session belongs to. */
+export type SessionLane = "agents" | "auto"
+
+/** Auto-lane subgroups, in display order. */
+export type AutoGroupKind = "gate" | "cron" | "command"
+
+/**
+ * The Auto-lane subgroup a machine-origin session belongs to, or undefined
+ * when the session is human-origin (an "Agents"-lane session). Reuses the
+ * shared `isMachineOrigin` (today: `gate`) and adds the two other machine
+ * tells the webview needs to separate — a cron-fired session (`origin` is
+ * `"cron"`, stamped by the cron scheduler) and a raw command execution
+ * (`kind === "command"`). No daemon change: these are all existing fields.
+ */
+export function autoGroupOf(session: Pick<SessionSummary, "origin" | "kind">): AutoGroupKind | undefined {
+  if (isMachineOrigin(session.origin)) return "gate"
+  if (session.origin === "cron") return "cron"
+  if (session.kind === "command") return "command"
+  return undefined
+}
+
+/** Human-origin ("agents") vs machine-origin ("auto") — the segmented-control axis. */
+export function laneOf(session: Pick<SessionSummary, "origin" | "kind">): SessionLane {
+  return autoGroupOf(session) === undefined ? "agents" : "auto"
+}
+
+const AUTO_GROUP_LABELS: Readonly<Record<AutoGroupKind, string>> = {
+  gate: "Gate reviews",
+  cron: "Crons",
+  command: "Commands",
+}
+
+export const AUTO_GROUP_ORDER: readonly AutoGroupKind[] = ["gate", "cron", "command"]
+
+/**
+ * The cron job id a cron session runs under, extracted from its
+ * `cron:<jobId>` label (stamped by the runtime's cron scheduler). Undefined
+ * when the session is not a labelled cron run — the collapsing pass then
+ * leaves it as its own row.
+ */
+export function cronJobIdOf(session: Pick<SessionSummary, "label">): string | undefined {
+  const match = /^cron:(.+)$/.exec(session.label ?? "")
+  return match ? match[1] : undefined
+}
+
+/** Short, human tell for a cron job id — `cron_d8ee2e36-abcd-…` → `d8ee2e36`. */
+function shortCronId(jobId: string): string {
+  const trimmed = jobId.replace(/^cron_/, "").replace(/-.*$/, "").slice(0, 8)
+  return trimmed || jobId
+}
+
+/**
+ * Machine-session name cleanup. A cron/command/gate session carries an
+ * unfriendly raw label (`cron:cron_d8ee2e36-…`) that `sessionDisplayName`
+ * would surface verbatim; here it collapses to a clean `<kind> · <short id>`:
+ *   - gate    → `gate-review`      (no id — the verdict file is the identity)
+ *   - cron    → `cron · d8ee2e36`  (the cron job's short id)
+ *   - command → `command · f2e358` (the session's short id)
+ * Anything else falls through to the shared `labelFor`.
+ */
+function nameIdentityFor(session: SessionSummary): { name: string; idMono: string | undefined } {
+  switch (autoGroupOf(session)) {
+    case "gate":
+      return { name: "gate-review", idMono: undefined }
+    case "cron": {
+      const jobId = cronJobIdOf(session)
+      return { name: "cron", idMono: jobId ? shortCronId(jobId) : shortSessionId(session.id) }
+    }
+    case "command":
+      return { name: "command", idMono: shortSessionId(session.id) }
+    default:
+      return { name: labelFor(session), idMono: undefined }
+  }
+}
+
+/**
+ * Whether a gate-review session records an approval — surfaced as the row's
+ * optional `✓ approved` badge. Heuristic (no structured verdict field on the
+ * summary, and no daemon change to add one): the persisted activity line of an
+ * approving gate mentions its verdict. Conservative: only gate-lane sessions
+ * are ever considered.
+ */
+export function gateApproved(session: SessionSummary): boolean {
+  if (autoGroupOf(session) !== "gate") return false
+  return /approv/i.test(session.activitySummary?.text ?? "")
+}
+
+/** One rendered row. Flat — Design B organizes by attention section, not by parent/child nesting. */
 export interface WebviewRow {
   id: string
   session: SessionSummary
-  /** True for a subagent nested under a root — indentation + dimming only (no connector line, no box), per the locked mock. */
-  isSub: boolean
   status: WebviewRowStatus
+  lane: SessionLane
   name: string
+  /** The `· <id>` mono segment, for machine rows that split name from id. */
+  idMono: string | undefined
   /** Line 2 — the session's live activity summary, clamped; absent when there is none yet. */
   message: string | undefined
   /** Line 3 lead segment — isolation posture ("⑂ <worktree>" or "in-place"). */
@@ -187,137 +280,103 @@ export interface WebviewRow {
   ctxPercent: number | undefined
   cost: string | undefined
   time: string
+  /** Number of collapsed consecutive cron runs (≥2), else undefined. */
+  runs: number | undefined
+  /** True when this gate-review row records an approval. */
+  approved: boolean
   /** Lifecycle action for this row, if any. */
   action: RowAction | undefined
-  /** Workspace tag metadata. */
+  /** Workspace color-square metadata. */
   workspace: WebviewWorkspace | undefined
   /** Mirrors `session.archived` so the UI can style archived rows. */
   archived: boolean
 }
 
-export interface WebviewSection {
-  recent: WebviewRow[]
-  older: WebviewRow[]
+/** The five attention sections, in fixed priority order. */
+export type SectionKey = "needs-you" | "running" | "attention" | "quiet" | "earlier"
+
+export const SECTION_ORDER: readonly SectionKey[] = [
+  "needs-you",
+  "running",
+  "attention",
+  "quiet",
+  "earlier",
+]
+
+const SECTION_LABELS: Readonly<Record<SectionKey, string>> = {
+  "needs-you": "Needs you",
+  running: "Running",
+  attention: "Attention",
+  quiet: "Quiet",
+  earlier: "Earlier",
 }
 
-export type SessionsWebviewTab = "all" | "working" | "awaiting" | "idle" | "stalled" | "done" | "archived"
-
-/**
- * Tab → the set of {@link SessionActivity} values it should show. The tree's
- * classifier is the single source of truth; these tabs are just presentation
- * buckets. "Stalled / failed" gathers every incomplete non-live state
- * (stalled, failed, or stopped mid-turn) so nothing terminal leaks into
- * "Working"/"Idle" and nothing incomplete is filed under "Done".
- */
-const TAB_TO_ACTIVITIES: Readonly<
-  Record<Exclude<SessionsWebviewTab, "all" | "archived">, readonly SessionActivity[]>
-> = {
-  working: ["working"],
-  awaiting: ["needs-you"],
-  idle: ["idle"],
-  stalled: ["stalled", "failed", "stopped"],
-  done: ["done"],
+/** A section's optional right-aligned hint (only "Earlier" carries one). */
+const SECTION_HINTS: Readonly<Partial<Record<SectionKey, string>>> = {
+  earlier: "last 24 h",
 }
 
-function toRow(
-  session: SessionSummary,
-  isSub: boolean,
-  now: number,
-  workspaces: WorkspacesConfig,
-): WebviewRow {
-  const pctStr = contextPercent(session.contextUsed, session.contextSize)
-  const ws = workspaceFor(workspaces, session)
-  const workspace: WebviewWorkspace | undefined = ws
-    ? { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug).index }
-    : undefined
-  return {
-    id: session.id,
-    session,
-    isSub,
-    status: webviewRowStatus(session, now),
-    name: labelFor(session),
-    message: activityLineFor(session),
-    tag: isolationLabelFor(session),
-    harnessGlyph: harnessGlyphFor(session.adapterSlug ?? session.kind),
-    model: session.model,
-    ctxPercent: pctStr ? Number(pctStr.slice(0, -1)) : undefined,
-    cost: formatCost(session.costUsd),
-    time: relativeTime(session.lastActivityAt ?? session.lastOutputAt ?? session.startedAt, now),
-    action: rowActionFor(session),
-    workspace,
-    archived: session.archived === true,
-  }
+/** Fold a row's status into its attention section — the dot and the section
+ *  it lands in are then guaranteed to agree (both derive from the same
+ *  `now`-aware `activityFor`). */
+const SECTION_BY_STATUS: Readonly<Record<WebviewRowStatus, SectionKey>> = {
+  awaiting: "needs-you",
+  working: "running",
+  stalled: "attention",
+  failed: "attention",
+  idle: "quiet",
+  stopped: "earlier",
+  done: "earlier",
 }
 
-/** Depth-first flatten of a session and its (recursively nested) children — every descendant renders `isSub`, regardless of depth, matching the mock's single indentation level. */
-function flattenNode(
-  node: SessionNode,
-  isSub: boolean,
-  now: number,
-  workspaces: WorkspacesConfig,
-  out: WebviewRow[],
-): void {
-  out.push(toRow(node.session, isSub, now, workspaces))
-  for (const child of node.children) flattenNode(child, true, now, workspaces, out)
+/** Fold a session's fine-grained activity into its attention section. */
+export function sectionFor(session: SessionSummary, now?: number): SectionKey {
+  return SECTION_BY_STATUS[webviewRowStatus(session, now)]
 }
 
-function sectionFor(
-  roots: readonly SessionNode[],
-  now: number,
-  workspaces: WorkspacesConfig,
-): WebviewSection {
-  const recentRows: WebviewRow[] = []
-  const olderRows: WebviewRow[] = []
-  for (const root of roots) {
-    if (bucketFor(root.session, now) === "recent") {
-      flattenNode(root, false, now, workspaces, recentRows)
-    } else {
-      flattenNode(root, false, now, workspaces, olderRows)
-    }
-  }
-  return { recent: recentRows, older: olderRows }
+/** One rendered, collapsible group — an attention section (Agents lane) or an Auto subgroup. */
+export interface WebviewGroup {
+  key: SectionKey | AutoGroupKind
+  label: string
+  hint: string | undefined
+  rows: WebviewRow[]
 }
 
-/**
- * Keep sessions whose activity is in `activities`, plus any ancestors needed
- * to preserve the parentSessionId nesting rendered by `buildSessionTree`. This
- * mirrors `filterSessions`'s parent-retention rule, but uses the fine-grained
- * `activityFor` classifier instead of the coarser `SessionFilterState.status`
- * tokens.
- */
-function retainSessionsByActivity(
-  sessions: readonly SessionSummary[],
-  activities: readonly SessionActivity[],
-  now: number,
-): SessionSummary[] {
-  const matched = new Set<string>()
-  for (const session of sessions) {
-    if (activities.includes(activityFor(session, now))) matched.add(session.id)
-  }
-  if (matched.size === 0) return []
+/** One project-rail chip. `slug === null` is the "All" chip. */
+export interface RailEntry {
+  slug: string | null
+  label: string
+  /** Color-square css for a workspace chip; undefined for "All". */
+  css: string | undefined
+  count: number
+  /** True when this project holds at least one session awaiting the human. */
+  awaiting: boolean
+}
 
-  const childrenByParent = new Map<string, SessionSummary[]>()
-  for (const session of sessions) {
-    const parentId = session.parentSessionId
-    if (!parentId) continue
-    const list = childrenByParent.get(parentId)
-    if (list) list.push(session)
-    else childrenByParent.set(parentId, [session])
-  }
+export interface SessionsWebviewModel {
+  lane: SessionLane
+  rail: RailEntry[]
+  /** Segmented-control counts for the current project scope. */
+  laneCounts: Record<SessionLane, number>
+  /** Non-empty sections (Agents lane) or Auto subgroups, in fixed order. */
+  groups: WebviewGroup[]
+  /** Rows actually rendered across all groups (after cron collapsing). */
+  shownCount: number
+  /** Summaries currently loaded into the webview (the available result set). */
+  loadedCount: number
+  /** Total sessions the daemon reports for this view. */
+  serverTotal: number
+}
 
-  const descendantMatch = new Map<string, boolean>()
-  const hasMatchingDescendant = (id: string): boolean => {
-    const cached = descendantMatch.get(id)
-    if (cached !== undefined) return cached
-    descendantMatch.set(id, false)
-    const result = (childrenByParent.get(id) ?? []).some(
-      child => matched.has(child.id) || hasMatchingDescendant(child.id),
-    )
-    descendantMatch.set(id, result)
-    return result
-  }
-
-  return sessions.filter(session => matched.has(session.id) || hasMatchingDescendant(session.id))
+export interface BuildSessionsWebviewModelOptions {
+  lane: SessionLane
+  /** Selected project rail chip — a workspace slug, {@link UNASSIGNED_SLUG}, or null for "All". */
+  project: string | null
+  /** The filter input's live text — matched against name/command/cwd/id via the reused sessionFilter predicate. */
+  search: string
+  now: number
+  /** Daemon's total session count for this view; defaults to the loaded count. */
+  serverTotal?: number
 }
 
 /** Resolve a session's workspace to a stable slug/label, or undefined when unassigned. */
@@ -336,66 +395,210 @@ function workspaceFor(
   return undefined
 }
 
-export interface SessionsWebviewModel {
-  section: WebviewSection
-  /** Rows actually rendered across recent + older (roots + nested children). */
-  shownCount: number
-  /** Summaries currently loaded into the webview (the available result set). */
-  loadedCount: number
-  /** Total sessions reported by the daemon for this archived/visible view. */
-  serverTotal: number
+/** The rail slug a session belongs to — its workspace slug, or the unassigned sentinel. */
+function projectSlugOf(config: WorkspacesConfig, session: SessionSummary): string {
+  return workspaceFor(config, session)?.slug ?? UNASSIGNED_SLUG
 }
 
-export interface BuildSessionsWebviewModelOptions {
-  tab: SessionsWebviewTab
-  /** The pinned filter input's live text — matched against name/command/cwd/id via the reused sessionFilter.logic.ts predicate. */
-  search: string
-  now: number
+function toRow(session: SessionSummary, now: number, config: WorkspacesConfig): WebviewRow {
+  const pctStr = contextPercent(session.contextUsed, session.contextSize)
+  const ws = workspaceFor(config, session)
+  const identity = nameIdentityFor(session)
+  return {
+    id: session.id,
+    session,
+    status: webviewRowStatus(session, now),
+    lane: laneOf(session),
+    name: identity.name,
+    idMono: identity.idMono,
+    message: activityLineFor(session),
+    tag: isolationLabelFor(session),
+    harnessGlyph: harnessGlyphFor(session.adapterSlug ?? session.kind),
+    model: session.model,
+    ctxPercent: pctStr ? Number(pctStr.slice(0, -1)) : undefined,
+    cost: formatCost(session.costUsd),
+    time: relativeTime(session.lastActivityAt ?? session.lastOutputAt ?? session.startedAt, now),
+    runs: undefined,
+    approved: gateApproved(session),
+    action: rowActionFor(session),
+    workspace: ws
+      ? { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug).index }
+      : undefined,
+    archived: session.archived === true,
+  }
 }
 
 /**
- * The webview's single entry point — now a single continuous list ordered by
- * recency and parent-child nesting. Filtering (search, activity tab, archived)
- * is applied first; the survivors are then collapsed, re-nested, sorted, and
- * split into a global recent/older divider.
- *
- * The input is a {@link SessionSummary} slice from `GET /sessions/summaries`,
- * not the full SessionDescriptor snapshot. Search and status tabs operate
- * honestly over the loaded (available) set; older sessions become available
- * via the panel's load-more affordance.
+ * Collapse consecutive runs of the SAME cron job into one row carrying an
+ * `×N runs` count and the latest run's outcome. Input must be sorted
+ * recency-first (as the caller does): the first row of each consecutive
+ * same-job streak is the most recent, so it becomes the surviving row and the
+ * streak length rides along as `runs`. A row that is not a labelled cron run,
+ * or that breaks the streak, stands on its own.
+ */
+export function collapseCronRuns(rows: readonly WebviewRow[]): WebviewRow[] {
+  const out: WebviewRow[] = []
+  let i = 0
+  while (i < rows.length) {
+    const head = rows[i]!
+    const jobId = cronJobIdOf(head.session)
+    if (!jobId) {
+      out.push(head)
+      i += 1
+      continue
+    }
+    let count = 1
+    while (i + count < rows.length && cronJobIdOf(rows[i + count]!.session) === jobId) {
+      count += 1
+    }
+    out.push(count > 1 ? { ...head, runs: count } : head)
+    i += count
+  }
+  return out
+}
+
+/**
+ * The webview's single entry point. Filtering (archived-hidden, resume-chain
+ * collapse, search, project) is applied first; the survivors are split into
+ * the two lanes for the segmented-control counts and the project rail, then
+ * the selected lane's scope is sorted and organized — into the five attention
+ * sections (Agents) or the three Auto subgroups (Auto), the latter with
+ * consecutive cron runs collapsed.
  */
 export function buildSessionsWebviewModel(
   sessions: readonly SessionSummary[],
   workspaces: WorkspacesConfig,
   opts: BuildSessionsWebviewModelOptions,
 ): SessionsWebviewModel {
-  // 1. Search filter (reused predicate with parent retention).
+  // Design B has no archived view: archived rows simply drop out (an archive
+  // action slides the row away). Resume-chain predecessors collapse to their
+  // live tail, same as the tree.
+  const visible = collapseResumeChains(sessions.filter(s => s.archived !== true))
+
+  // 1. Search filter (reused predicate).
   const baseState: SessionFilterState = { ...EMPTY_FILTER, search: opts.search }
-  const searchSurvivors = filterSessions(sessions, baseState, workspaces)
+  const searchSurvivors = filterSessions(visible, baseState, workspaces)
 
-  // 2. Activity / archived tab filter.
-  let tabSurvivors: SessionSummary[]
-  if (opts.tab === "archived") {
-    tabSurvivors = searchSurvivors.filter(s => s.archived === true)
-  } else if (opts.tab === "all") {
-    tabSurvivors = searchSurvivors
-  } else {
-    tabSurvivors = retainSessionsByActivity(searchSurvivors, TAB_TO_ACTIVITIES[opts.tab], opts.now)
+  // 2. Project rail — counts per project within the CURRENT lane, independent
+  //    of the current project selection (the rail IS the selector). A chip
+  //    lights its ochre dot when it holds a session awaiting the human.
+  const railScope = searchSurvivors.filter(s => laneOf(s) === opts.lane)
+  const rail = buildRail(railScope, workspaces, opts.now)
+
+  // 3. Segmented-control counts — within the selected project.
+  const projectSurvivors =
+    opts.project === null
+      ? searchSurvivors
+      : searchSurvivors.filter(s => projectSlugOf(workspaces, s) === opts.project)
+  const laneCounts: Record<SessionLane, number> = { agents: 0, auto: 0 }
+  for (const s of projectSurvivors) laneCounts[laneOf(s)] += 1
+
+  // 4. The list itself — selected lane, sorted recency-first.
+  const scope = projectSurvivors
+    .filter(s => laneOf(s) === opts.lane)
+    .slice()
+    .sort((a, b) => compareSessions(a, b))
+  const rows = scope.map(s => toRow(s, opts.now, workspaces))
+
+  const groups = opts.lane === "agents" ? buildSections(rows) : buildAutoGroups(rows)
+  const shownCount = groups.reduce((n, g) => n + g.rows.length, 0)
+
+  return {
+    lane: opts.lane,
+    rail,
+    laneCounts,
+    groups,
+    shownCount,
+    loadedCount: sessions.length,
+    serverTotal: opts.serverTotal ?? sessions.length,
   }
-
-  // 3. Collapse resume chains, build the nested tree, sort globally.
-  const collapsed = collapseResumeChains(tabSurvivors)
-  const roots = buildSessionTree(collapsed)
-  roots.sort((a, b) => compareSessions(a.session, b.session))
-
-  // 4. Flatten into a single recent/older section.
-  const section = sectionFor(roots, opts.now, workspaces)
-  const shownCount = section.recent.length + section.older.length
-
-  return { section, shownCount, loadedCount: sessions.length, serverTotal: sessions.length }
 }
 
-/** The panel's subtitle line: "50 of 283 loaded" when unfiltered, "3 of 50 shown" when filtered. */
+function buildRail(
+  scope: readonly SessionSummary[],
+  workspaces: WorkspacesConfig,
+  now: number,
+): RailEntry[] {
+  const counts = new Map<string, { count: number; awaiting: boolean; label: string }>()
+  let allAwaiting = false
+  for (const session of scope) {
+    const slug = projectSlugOf(workspaces, session)
+    const label =
+      slug === UNASSIGNED_SLUG ? "Unassigned" : (workspaceFor(workspaces, session)?.label ?? slug)
+    const awaiting = activityFor(session, now) === "needs-you"
+    allAwaiting = allAwaiting || awaiting
+    const entry = counts.get(slug)
+    if (entry) {
+      entry.count += 1
+      entry.awaiting = entry.awaiting || awaiting
+    } else {
+      counts.set(slug, { count: 1, awaiting, label })
+    }
+  }
+
+  const projectChips: RailEntry[] = [...counts.entries()]
+    .map(([slug, { count, awaiting, label }]) => ({
+      slug,
+      label,
+      css: workspaceColorFor(slug).css,
+      count,
+      awaiting,
+    }))
+    // Unassigned last; otherwise alphabetical by label for a stable order.
+    .sort((a, b) => {
+      if (a.slug === UNASSIGNED_SLUG) return 1
+      if (b.slug === UNASSIGNED_SLUG) return -1
+      return a.label.localeCompare(b.label)
+    })
+
+  const all: RailEntry = {
+    slug: null,
+    label: "All",
+    css: undefined,
+    count: scope.length,
+    awaiting: allAwaiting,
+  }
+  return [all, ...projectChips]
+}
+
+function buildSections(rows: readonly WebviewRow[]): WebviewGroup[] {
+  const byKey = new Map<SectionKey, WebviewRow[]>()
+  for (const row of rows) {
+    const key = SECTION_BY_STATUS[row.status]
+    const bucket = byKey.get(key)
+    if (bucket) bucket.push(row)
+    else byKey.set(key, [row])
+  }
+  const groups: WebviewGroup[] = []
+  for (const key of SECTION_ORDER) {
+    const bucket = byKey.get(key)
+    if (bucket && bucket.length > 0) {
+      groups.push({ key, label: SECTION_LABELS[key], hint: SECTION_HINTS[key], rows: bucket })
+    }
+  }
+  return groups
+}
+
+function buildAutoGroups(rows: readonly WebviewRow[]): WebviewGroup[] {
+  const byKind = new Map<AutoGroupKind, WebviewRow[]>()
+  for (const row of rows) {
+    const kind = autoGroupOf(row.session)
+    if (!kind) continue
+    const bucket = byKind.get(kind)
+    if (bucket) bucket.push(row)
+    else byKind.set(kind, [row])
+  }
+  const groups: WebviewGroup[] = []
+  for (const kind of AUTO_GROUP_ORDER) {
+    const bucket = byKind.get(kind)
+    if (!bucket || bucket.length === 0) continue
+    const rendered = kind === "cron" ? collapseCronRuns(bucket) : bucket
+    groups.push({ key: kind, label: AUTO_GROUP_LABELS[kind], hint: undefined, rows: rendered })
+  }
+  return groups
+}
+
+/** The footer's count line: "50 of 283 loaded" when unfiltered, "3 of 50 shown" when a filter narrows the set. */
 export function summaryTextFor(model: SessionsWebviewModel, filterActive: boolean): string {
   if (filterActive) return `${model.shownCount} of ${model.loadedCount} shown`
   return `${model.loadedCount} of ${model.serverTotal} loaded`
