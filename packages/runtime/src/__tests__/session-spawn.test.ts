@@ -91,6 +91,7 @@ import {
   createSessionsRegistry,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
+  PARENT_SESSION_ID_ENV,
   type SessionsRegistry,
 } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -4064,5 +4065,166 @@ describe("spawnAgentSession — model/route reconciliation", () => {
       expect(result.descriptor.model).toBe("claude-opus-4-8")
       expect(result.descriptor.route).toEqual({ gateway: "anthropic" })
     }
+  })
+})
+
+describe("spawnAgentSession — child→parent report-back plumbing", () => {
+  function scopeWithOwner(ownerSessionId: string): OrchestratorScope {
+    return {
+      token: "tok",
+      tools: new Set(["agent_start", "message_parent"]),
+      ownerSessionId,
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+  }
+
+  function makeBuildOrchestratorMcp(): {
+    entry: AcpMcpServer
+    build: NonNullable<SpawnAgentSessionDeps["buildOrchestratorMcp"]>
+  } {
+    const entry: AcpMcpServer = {
+      name: "agentproto",
+      transport: "http",
+      ref: "http://127.0.0.1:1/mcp/orchestrator?scope=report-tok",
+    }
+    const build = vi.fn(() => ({
+      entry,
+      bindLifecycle: () => () => {},
+    }))
+    return { entry, build }
+  }
+
+  it("injects AGENTPROTO_PARENT_SESSION_ID for a scope-attributed child; a root spawn never carries it", async () => {
+    const startSession = vi.fn(async (_opts: { env?: Record<string, string> }) =>
+      fakeAgentSession(),
+    )
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    const child = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      { adapter: "mock", cwd: "/tmp", workspaceSlug: "w" },
+    )
+    expect(child.ok).toBe(true)
+    expect(startSession.mock.calls[0]?.[0]?.env?.[PARENT_SESSION_ID_ENV]).toBe("sess_parent01")
+
+    const root = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "w",
+    })
+    expect(root.ok).toBe(true)
+    expect(startSession.mock.calls[1]?.[0]?.env).not.toHaveProperty(PARENT_SESSION_ID_ENV)
+  })
+
+  it("a gateway-less child with a parent gets a minimal message_parent-only scope (role-independent, no delegation)", async () => {
+    const { entry, build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp: build })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      // Depth 1 → executor default: proves the report-only scope is minted
+      // even for the role whose delegation gate strips agent_start/agent_prompt.
+      { adapter: "mock", cwd: "/tmp", workspaceSlug: "w" },
+    )
+    expect(result.ok).toBe(true)
+    expect(build).toHaveBeenCalledTimes(1)
+    expect(build).toHaveBeenCalledWith({ tools: ["message_parent"], role: "executor" })
+    if (result.ok) {
+      expect(result.descriptor.mcpServers).toEqual([entry])
+    }
+  })
+
+  it("explicit `mcpServers` (even []) is a deliberate opt-out — no report-only scope minted", async () => {
+    const { build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp: build })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      { adapter: "mock", cwd: "/tmp", workspaceSlug: "w", mcpServers: [] },
+    )
+    expect(result.ok).toBe(true)
+    expect(build).not.toHaveBeenCalled()
+  })
+
+  it("`orchestrator: false` opts out of ANY injected scope, report-only included", async () => {
+    const { build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp: build })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      { adapter: "mock", cwd: "/tmp", workspaceSlug: "w", orchestrator: false },
+    )
+    expect(result.ok).toBe(true)
+    expect(build).not.toHaveBeenCalled()
+  })
+
+  it("hermes default gateway already reaches message_parent on the root /mcp server — no extra scope minted on top", async () => {
+    const { build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({
+      buildOrchestratorMcp: build,
+      daemonMcpUrl: "http://127.0.0.1:18790/mcp",
+    })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      { adapter: "hermes", cwd: "/tmp", workspaceSlug: "w" },
+    )
+    expect(result.ok).toBe(true)
+    expect(build).not.toHaveBeenCalled()
+    if (result.ok) {
+      // The executor-default denyTools strip keeps the delegation surface
+      // out but never names message_parent — the child keeps its report-back.
+      const ref = result.descriptor.mcpServers?.[0]?.ref ?? ""
+      expect(ref).toContain("denyTools=agent_start,agent_prompt")
+      expect(ref).not.toContain("message_parent")
+    }
+  })
+
+  it("a parentless root spawn mints nothing — there is no one to report to", async () => {
+    const { build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp: build })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "w",
+    })
+    expect(result.ok).toBe(true)
+    expect(build).not.toHaveBeenCalled()
+    if (result.ok) {
+      expect(result.descriptor.mcpServers ?? []).toEqual([])
+    }
+  })
+
+  it("the composed prompt tells a parented child who spawned it and how to report back, between disposition and task", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      {
+        adapter: "mock",
+        cwd: "/tmp",
+        workspaceSlug: "w",
+        prompt: "fix the bug",
+        wait: true,
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const sentMessage = sendPrompt.mock.calls[0]?.[1]
+    const prompt = typeof sentMessage === "string" ? sentMessage : ""
+    const dispositionIdx = prompt.indexOf("You are the leaf")
+    const lineageIdx = prompt.indexOf("You were spawned by session sess_parent01")
+    const taskIdx = prompt.indexOf("fix the bug")
+    expect(dispositionIdx).toBeGreaterThanOrEqual(0)
+    expect(lineageIdx).toBeGreaterThan(dispositionIdx)
+    expect(taskIdx).toBeGreaterThan(lineageIdx)
+    expect(prompt).toContain(PARENT_SESSION_ID_ENV)
+    expect(prompt).toContain("message_parent")
   })
 })

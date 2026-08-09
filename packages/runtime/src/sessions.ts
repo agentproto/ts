@@ -480,9 +480,18 @@ export function mintSessionId(): string {
  * assign-last rule is what makes that true by construction rather than by
  * accident, and is what guarantees a child spawned from inside a session
  * gets its OWN id rather than inheriting its parent's.
+ *
+ * `PARENT_SESSION_ID_ENV` is the third var, injected by `session-spawn.ts`
+ * only (agent spawns, and only when the spawn resolved a parent): the
+ * recorded `parentSessionId` lineage, so a child agent can know WHO spawned
+ * it without a registry round-trip — the discovery half of the child→parent
+ * report-back channel (`message_parent` is the delivery half). Same
+ * assign-last/no-forgery rule as the other two: it mirrors the descriptor's
+ * own `parentSessionId` field, never anything caller- or env-inherited.
  */
 export const SESSION_ID_ENV = "AGENTPROTO_SESSION_ID"
 export const WORKSPACE_SLUG_ENV = "AGENTPROTO_WORKSPACE_SLUG"
+export const PARENT_SESSION_ID_ENV = "AGENTPROTO_PARENT_SESSION_ID"
 
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =
