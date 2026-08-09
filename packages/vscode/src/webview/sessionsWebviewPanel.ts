@@ -39,14 +39,19 @@ import type { SeenTracker } from "../services/seen.js"
 import type { DaemonConnectionState, SessionStore } from "../services/sessionStore.js"
 import {
   buildSessionsWebviewModel,
+  isValidColorIndex,
   summaryTextFor,
+  UNASSIGNED_COLOR_CSS,
   workspaceColorFor,
+  WORKSPACE_PALETTE,
+  WORKSPACE_PALETTE_NAMES,
   type RailEntry,
   type RowAction,
   type SessionLane,
   type WebviewGroup,
   type WebviewRow,
   type WebviewWorkspace,
+  type WorkspaceColorOverrides,
 } from "./sessionsWebview.logic.js"
 import type { TranscriptPanels } from "./transcriptPanel.js"
 
@@ -62,6 +67,34 @@ const PAGE_SIZE = 50
  */
 const REPAINT_INTERVAL_MS = 15_000
 const SETUP_DOCS_URL = "https://agentproto.sh/docs"
+/** globalState key for the per-slug workspace color override map — {@link WorkspaceColorOverrides}. */
+export const COLOR_OVERRIDES_KEY = "agentproto.sessionsWebview.workspaceColorOverrides"
+
+/** Read the persisted color-override map from globalState (empty map when nothing is stored yet). */
+export function readColorOverrides(globalState: vscode.Memento): Record<string, number> {
+  return { ...(globalState.get<Record<string, number>>(COLOR_OVERRIDES_KEY) ?? {}) }
+}
+
+/**
+ * The override map after applying one slug's change — `index: null` resets that
+ * slug to the hash default (deletes its entry). Returns undefined (no-op) for
+ * an out-of-range index, so a corrupt/malicious webview message can't poison
+ * the persisted map.
+ */
+export function nextColorOverrides(
+  current: Readonly<Record<string, number>>,
+  slug: string,
+  index: number | null,
+): Record<string, number> | undefined {
+  const next = { ...current }
+  if (index === null) {
+    delete next[slug]
+    return next
+  }
+  if (!isValidColorIndex(index)) return undefined
+  next[slug] = index
+  return next
+}
 const CLAUDE_SETUP_PROMPT =
   "Set up Agentproto for this VS Code workspace. Install the Agentproto CLI, start its local daemon, register this workspace, connect Claude Code through the Agentproto MCP bridge, and verify that the Agentproto Sessions panel is live. Explain each command before I run it."
 
@@ -109,6 +142,10 @@ interface ModelMessage {
   hasMore: boolean
   loadError: string | undefined
   showArchived: boolean
+  /** Color-picker swatch options, in order — {@link WORKSPACE_PALETTE} plus the trailing neutral "unassigned" tone. */
+  palette: string[]
+  /** Accessible names for `palette`, same order. */
+  paletteNames: string[]
 }
 
 type HostMessage = ModelMessage
@@ -127,6 +164,8 @@ type WebviewToHostMessage =
   | { type: "unarchive"; id: string }
   | { type: "loadMore" }
   | { type: "toggleArchived" }
+  /** From the rail chip's swatch popover — `index: null` resets to the hash default. */
+  | { type: "setColor"; slug: string; index: number | null }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   return (
@@ -137,7 +176,12 @@ function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   )
 }
 
-function toRenderRow(row: WebviewRow, activeSessionId: string | undefined, seen: SeenTracker): RenderRow {
+function toRenderRow(
+  row: WebviewRow,
+  activeSessionId: string | undefined,
+  seen: SeenTracker,
+  colorOverrides: WorkspaceColorOverrides,
+): RenderRow {
   return {
     id: row.id,
     open: row.id === activeSessionId,
@@ -157,17 +201,24 @@ function toRenderRow(row: WebviewRow, activeSessionId: string | undefined, seen:
     watched: row.watched,
     depth: row.depth,
     action: row.action,
-    workspace: row.workspace ? { ...row.workspace, css: workspaceColorFor(row.workspace.slug).css } : undefined,
+    workspace: row.workspace
+      ? { ...row.workspace, css: workspaceColorFor(row.workspace.slug, colorOverrides).css }
+      : undefined,
     archived: row.archived,
   }
 }
 
-function toRenderGroup(group: WebviewGroup, activeSessionId: string | undefined, seen: SeenTracker): RenderGroup {
+function toRenderGroup(
+  group: WebviewGroup,
+  activeSessionId: string | undefined,
+  seen: SeenTracker,
+  colorOverrides: WorkspaceColorOverrides,
+): RenderGroup {
   return {
     key: group.key,
     label: group.label,
     hint: group.hint,
-    rows: group.rows.map(r => toRenderRow(r, activeSessionId, seen)),
+    rows: group.rows.map(r => toRenderRow(r, activeSessionId, seen, colorOverrides)),
   }
 }
 
@@ -188,6 +239,8 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
    *  relative times stay honest with no daemon event to trigger a render —
    *  the webview's equivalent of the tree's TREE_REPAINT_INTERVAL_MS. */
   private repaintTimer: ReturnType<typeof setInterval> | undefined
+  /** Per-slug color overrides set via the rail chip's swatch popover, persisted in globalState. */
+  private colorOverrides: Record<string, number>
 
   constructor(
     private readonly client: DaemonClient,
@@ -195,7 +248,10 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     private readonly filter: SessionFilterController,
     private readonly transcriptPanels: TranscriptPanels,
     private readonly seen: SeenTracker,
-  ) {}
+    private readonly globalState: vscode.Memento,
+  ) {
+    this.colorOverrides = readColorOverrides(globalState)
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView
@@ -287,7 +343,18 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         this.showArchived = !this.showArchived
         void this.loadInitial()
         return
+      case "setColor":
+        void this.setWorkspaceColor(msg.slug, msg.index)
+        return
     }
+  }
+
+  private async setWorkspaceColor(slug: string, index: number | null): Promise<void> {
+    const next = nextColorOverrides(this.colorOverrides, slug, index)
+    if (!next) return
+    this.colorOverrides = next
+    await this.globalState.update(COLOR_OVERRIDES_KEY, next)
+    this.post()
   }
 
   private async refreshDaemon(): Promise<void> {
@@ -448,6 +515,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         // Footer counts server-paged rows only — pending + pinned live rows are
         // live extras, not paged results.
         loadedCount: this.summaries.length,
+        colorOverrides: this.colorOverrides,
       },
     )
     const activeSessionId = this.transcriptPanels.activeSessionId()
@@ -460,12 +528,14 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       project: this.project,
       rail: model.rail,
       laneCounts: model.laneCounts,
-      groups: model.groups.map(g => toRenderGroup(g, activeSessionId, this.seen)),
+      groups: model.groups.map(g => toRenderGroup(g, activeSessionId, this.seen, this.colorOverrides)),
       summary: summaryTextFor(model, filterActive),
       loading: this.loading,
       hasMore,
       loadError: this.loadError,
       showArchived: this.showArchived,
+      palette: [...WORKSPACE_PALETTE, UNASSIGNED_COLOR_CSS],
+      paletteNames: [...WORKSPACE_PALETTE_NAMES, "Unassigned gray"],
     }
     void this.view.webview.postMessage(message satisfies HostMessage)
   }
@@ -486,7 +556,7 @@ export function registerSessionsWebview(
   transcriptPanels: TranscriptPanels,
   seen: SeenTracker,
 ): void {
-  const provider = new SessionsWebviewProvider(client, store, filter, transcriptPanels, seen)
+  const provider = new SessionsWebviewProvider(client, store, filter, transcriptPanels, seen, ctx.globalState)
   ctx.subscriptions.push(
     vscode.window.registerWebviewViewProvider(VIEW_TYPE, provider),
     store.onDidChange(() => provider.refresh()),
@@ -569,13 +639,26 @@ export function buildHtml(nonce: string): string {
     /* ── Project rail ──────────────────────────────────────────────── */
     #rail { display: flex; gap: 5px; padding: 8px 10px; border-bottom: 1px solid var(--border); overflow-x: auto; flex: 0 0 auto; }
     #rail::-webkit-scrollbar { display: none; }
-    .pchip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11.5px; color: var(--dim); white-space: nowrap; user-select: none; background: transparent; }
+    .pchip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px 3px 6px; border: 1px solid var(--border); border-radius: 4px; font-size: 11.5px; color: var(--dim); white-space: nowrap; user-select: none; background: transparent; }
     .pchip:hover { background: var(--hover); }
     .pchip.on { color: var(--fg); background: var(--panel-2); border-color: #3d3d40; }
     .pchip .n { color: var(--faint); font-size: 10.5px; }
     .pchip .psq { width: 6px; height: 6px; border-radius: 2px; display: inline-block; }
     .pchip .adot { width: 6px; height: 6px; border-radius: 50%; background: var(--awaiting); display: inline-block; }
-    .pchip:focus-visible, .segb:focus-visible, .row:focus-visible, .ghead:focus-visible, .abtn:focus-visible, button:focus-visible { outline: 1px solid #6a86a8; outline-offset: -1px; }
+    .pchip-label, .psq-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0; margin: 0; border: none; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+    .psq-btn { padding: 3px; border-radius: 3px; }
+    .psq-btn:hover { background: var(--hover); }
+    .pchip:focus-visible, .segb:focus-visible, .row:focus-visible, .ghead:focus-visible, .abtn:focus-visible, .pchip-label:focus-visible, .psq-btn:focus-visible, .swatch:focus-visible, .swatch-reset:focus-visible, button:focus-visible { outline: 1px solid #6a86a8; outline-offset: -1px; }
+
+    /* ── Color-picker popover (own absolutely-positioned element — a webview has no native popover API) ── */
+    .popover { position: fixed; z-index: 50; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
+    .popover[hidden] { display: none; }
+    .swatch-grid { display: grid; grid-template-columns: repeat(5, 20px); gap: 6px; }
+    .swatch { width: 20px; height: 20px; border-radius: 4px; border: 1px solid transparent; padding: 0; cursor: pointer; }
+    .swatch:hover { border-color: var(--dim); }
+    .swatch.active { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg); }
+    .swatch-reset { display: block; width: 100%; margin-top: 8px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--dim); font-size: 11px; font-family: inherit; cursor: pointer; }
+    .swatch-reset:hover { color: var(--fg); background: var(--hover); }
 
     /* ── Segmented control + inline filter ─────────────────────────── */
     .brow2 { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
@@ -683,6 +766,10 @@ export function buildHtml(nonce: string): string {
     </div>
   </section>
   <div id="rail" role="tablist" aria-label="Project"></div>
+  <div id="color-popover" class="popover" hidden role="menu" aria-label="Workspace color">
+    <div id="swatch-grid" class="swatch-grid" role="none"></div>
+    <button id="swatch-reset" class="swatch-reset" type="button">Reset to auto</button>
+  </div>
   <div class="brow2">
     <div class="seg" id="seg" role="tablist" aria-label="Session lane">
       <button class="segb on" type="button" data-lane="agents" role="tab">Agents<span class="n"></span></button>
@@ -703,6 +790,9 @@ export function buildHtml(nonce: string): string {
     (function () {
       const vscode = acquireVsCodeApi();
       const railEl = document.getElementById('rail');
+      const popoverEl = document.getElementById('color-popover');
+      const swatchGridEl = document.getElementById('swatch-grid');
+      const swatchResetEl = document.getElementById('swatch-reset');
       const segEl = document.getElementById('seg');
       const qEl = document.getElementById('q');
       const listEl = document.getElementById('list');
@@ -799,10 +889,21 @@ export function buildHtml(nonce: string): string {
       function renderRail(rail, lane) {
         railEl.innerHTML = rail.map(function (e) {
           var on = (e.slug === null && currentProject === null) || (e.slug !== null && e.slug === currentProject);
-          return '<button class="pchip' + (on ? ' on' : '') + '" type="button" role="tab" data-slug="' + (e.slug === null ? '' : escapeHtml(e.slug)) + '">' +
-            (e.css ? '<span class="psq" style="background:' + escapeHtml(e.css) + '"></span>' : '') +
-            escapeHtml(e.label) + ' <span class="n">' + e.count + '</span>' +
-            (e.awaiting ? '<span class="adot" title="Awaiting you"></span>' : '') + '</button>';
+          var slugAttr = e.slug === null ? '' : escapeHtml(e.slug);
+          // The swatch trigger is a SIBLING button, not nested inside the label
+          // button — a <button> can't contain another <button>.
+          var swatch = e.css
+            ? '<button type="button" class="psq-btn" data-color-trigger data-slug="' + slugAttr + '" data-index="' + e.colorIndex + '" title="Change ' + escapeHtml(e.label) + ' color" aria-label="Change ' + escapeHtml(e.label) + ' color" aria-haspopup="true">' +
+                '<span class="psq" style="background:' + escapeHtml(e.css) + '"></span>' +
+              '</button>'
+            : '';
+          return '<span class="pchip' + (on ? ' on' : '') + '" data-slug="' + slugAttr + '">' +
+            swatch +
+            '<button type="button" class="pchip-label" role="tab" aria-selected="' + on + '">' +
+              escapeHtml(e.label) + ' <span class="n">' + e.count + '</span>' +
+              (e.awaiting ? '<span class="adot" title="Awaiting you"></span>' : '') +
+            '</button>' +
+          '</span>';
         }).join('');
       }
 
@@ -822,9 +923,49 @@ export function buildHtml(nonce: string): string {
       }
 
       var currentProject = null;
+      var currentPalette = [];
+      var currentPaletteNames = [];
+      var popoverSlug = null;
+      var popoverTrigger = null;
+
+      function buildSwatchGrid(activeIndex) {
+        swatchGridEl.innerHTML = currentPalette.map(function (css, i) {
+          var isActive = i === activeIndex;
+          var label = currentPaletteNames[i] || ('Color ' + (i + 1));
+          return '<button type="button" class="swatch' + (isActive ? ' active' : '') + '" style="background:' + escapeHtml(css) + '" data-index="' + i + '" role="menuitemradio" aria-checked="' + isActive + '" aria-label="' + escapeHtml(label) + '" tabindex="' + (isActive ? '0' : '-1') + '"></button>';
+        }).join('');
+      }
+
+      function openColorPopover(trigger) {
+        var slug = trigger.getAttribute('data-slug');
+        var index = parseInt(trigger.getAttribute('data-index'), 10);
+        popoverSlug = slug;
+        popoverTrigger = trigger;
+        buildSwatchGrid(index);
+        popoverEl.hidden = false;
+        var rect = trigger.getBoundingClientRect();
+        popoverEl.style.top = (rect.bottom + 4) + 'px';
+        popoverEl.style.left = rect.left + 'px';
+        var swatches = swatchGridEl.querySelectorAll('.swatch');
+        var toFocus = swatches[index] || swatches[0];
+        if (toFocus) toFocus.focus();
+      }
+
+      function closeColorPopover(restoreFocus) {
+        if (popoverEl.hidden) return;
+        popoverEl.hidden = true;
+        if (restoreFocus && popoverTrigger) popoverTrigger.focus();
+        popoverSlug = null;
+        popoverTrigger = null;
+      }
 
       function render(payload) {
         currentProject = payload.project === undefined ? currentProject : payload.project;
+        currentPalette = payload.palette || [];
+        currentPaletteNames = payload.paletteNames || [];
+        // The rail (and its swatch triggers) is about to be fully rebuilt —
+        // any open popover's trigger reference would otherwise go stale.
+        closeColorPopover(false);
         if (renderConnection(payload) !== 'connected') return;
 
         // Segmented control.
@@ -855,13 +996,67 @@ export function buildHtml(nonce: string): string {
         footerErrorEl.textContent = payload.loadError || '';
       }
 
-      // ── Rail: project selection ──
+      // ── Rail: project selection + color-swatch trigger ──
       railEl.addEventListener('click', function (e) {
+        var trigger = e.target.closest('[data-color-trigger]');
+        if (trigger) {
+          openColorPopover(trigger);
+          return;
+        }
         var chip = e.target.closest('.pchip');
         if (!chip) return;
         var slug = chip.getAttribute('data-slug');
         currentProject = slug ? slug : null;
         vscode.postMessage({ type: 'project', slug: currentProject });
+      });
+
+      // ── Color-swatch popover: select / reset / keyboard nav / dismiss ──
+      swatchGridEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('.swatch');
+        if (!btn || !popoverSlug) return;
+        vscode.postMessage({ type: 'setColor', slug: popoverSlug, index: parseInt(btn.getAttribute('data-index'), 10) });
+        closeColorPopover(true);
+      });
+
+      swatchResetEl.addEventListener('click', function () {
+        if (!popoverSlug) return;
+        vscode.postMessage({ type: 'setColor', slug: popoverSlug, index: null });
+        closeColorPopover(true);
+      });
+
+      swatchGridEl.addEventListener('keydown', function (e) {
+        var swatches = Array.prototype.slice.call(swatchGridEl.querySelectorAll('.swatch'));
+        var idx = swatches.indexOf(document.activeElement);
+        if (idx === -1) return;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          swatches[idx].click();
+          return;
+        }
+        var cols = 5;
+        var next = -1;
+        if (e.key === 'ArrowRight') next = Math.min(idx + 1, swatches.length - 1);
+        else if (e.key === 'ArrowLeft') next = Math.max(idx - 1, 0);
+        else if (e.key === 'ArrowDown') next = Math.min(idx + cols, swatches.length - 1);
+        else if (e.key === 'ArrowUp') next = Math.max(idx - cols, 0);
+        else return;
+        e.preventDefault();
+        swatches[idx].setAttribute('tabindex', '-1');
+        swatches[next].setAttribute('tabindex', '0');
+        swatches[next].focus();
+      });
+
+      document.addEventListener('click', function (e) {
+        if (popoverEl.hidden) return;
+        if (popoverEl.contains(e.target) || (popoverTrigger && popoverTrigger.contains(e.target))) return;
+        closeColorPopover(false);
+      });
+
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !popoverEl.hidden) {
+          e.preventDefault();
+          closeColorPopover(true);
+        }
       });
 
       // ── Segmented control ──
