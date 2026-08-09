@@ -2237,6 +2237,20 @@ describe("transcriptPanel webview — book view", () => {
     expect(ch[0]!.querySelector(".narration .story")?.textContent).toContain("The shell was lying")
   })
 
+  it("attributes a supervisor-injected ask (promptSource agent:<id>) — SUPERVISOR ASKED label + supervisor origin mark", () => {
+    const panel = renderPanel()
+    const conv = askConv()
+    conv.turns[0]! = { ...conv.turns[0]!, promptSource: "agent:sess_boss1" }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const ch = chapters(panel)[0]!
+    expect(ch.querySelector(".fold .who")?.textContent).toBe("◈ supervisor")
+    const alabel = ch.querySelector(".ask .alabel")
+    expect(alabel?.textContent).toBe("SUPERVISOR ASKED")
+    // The injecting session's id stays reachable (hover title), not lost.
+    expect(alabel?.getAttribute("title")).toBe("sess_boss1")
+  })
+
   it("preserves markdown block structure (line breaks, lists, code fences) in narration", () => {
     const panel = renderPanel()
     // The html the host ships is renderMarkdown output — real <p>/<br>/<ul>/<pre>.

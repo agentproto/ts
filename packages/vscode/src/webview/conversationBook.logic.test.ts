@@ -155,6 +155,18 @@ describe("buildBook — titles", () => {
   })
 })
 
+describe("buildBook — ask.source", () => {
+  it("carries the turn's promptSource onto the ask; absent for a human turn", () => {
+    const supervised: PresentedTurn = {
+      ...userTurn("turn-1", "status?"),
+      promptSource: "agent:sess_boss1",
+    }
+    const chapters = buildBook([supervised, userTurn("turn-2", "a human turn")])
+    expect(chapters[0]!.ask?.source).toBe("agent:sess_boss1")
+    expect(chapters[1]!.ask?.source).toBeUndefined()
+  })
+})
+
 describe("buildBook — ask.long", () => {
   it("flags a long ask as truncatable and a short one as not", () => {
     const short = buildBook([userTurn("turn-1", "short")])[0]!

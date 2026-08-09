@@ -102,6 +102,18 @@ describe("reduceConversation", () => {
     })
   })
 
+  it("carries a user-prompt record's `source` onto the turn as promptSource", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "status?", source: "agent:sess_boss1" }),
+      rec({ kind: "turn-end", reason: "completed" }),
+      rec({ kind: "user-prompt", text: "a human turn" }),
+    ])
+    expect(conv.turns[0]!.promptSource).toBe("agent:sess_boss1")
+    // A source-less prompt (human) stays without the field.
+    expect(conv.turns[conv.turns.length - 1]!.promptSource).toBeUndefined()
+  })
+
   it("keeps reasoning, text, and tool segments in emission order", () => {
     freshSeq()
     const conv = reduceConversation("s1", [

@@ -98,6 +98,10 @@ export interface ConversationTurn {
   role: "user" | "assistant"
   startedAt?: string
   segments: ConversationSegment[]
+  /** User turns only: the prompt's provenance from the "user-prompt"
+   *  record's `source` — `agent:<sessionId>` when another session injected
+   *  it (a supervisor's agent_prompt / spawn prompt); absent for a human. */
+  promptSource?: string
 }
 
 /** Latest usage recap — conversation-level metadata, not an inline segment. */
@@ -170,6 +174,7 @@ export function reduceConversation(
           segments: [
             { kind: "user", id: `seg-${rec.seq}`, seq: rec.seq, ts: rec.ts, text: rec.text ?? "" },
           ],
+          ...(rec.source ? { promptSource: rec.source } : {}),
         })
         break
       }
@@ -474,6 +479,9 @@ export interface PresentedTurn {
    * chapter's duration, and gracefully omits the duration when it's absent.
    */
   startedAt?: string
+  /** Carried from `ConversationTurn.promptSource` — the book layer uses it
+   *  to attribute an ask card to a supervisor instead of "you". */
+  promptSource?: string
 }
 
 export interface PresentedConversation {
@@ -504,6 +512,7 @@ export function presentConversation(
       role: turn.role,
       segments: groupActivity(turn.segments.map(seg => presentSegment(seg, renderers))),
       ...(turn.startedAt !== undefined ? { startedAt: turn.startedAt } : {}),
+      ...(turn.promptSource !== undefined ? { promptSource: turn.promptSource } : {}),
     })),
   }
 }

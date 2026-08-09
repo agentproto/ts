@@ -80,8 +80,9 @@ export interface TranscriptWriter extends SessionObserver {
    *  kind (ACP's own "agent-prompt" means the agent asking the human a
    *  question, the opposite direction) — recorded under its own
    *  "user-prompt" kind so turns stay reconstructable without overloading
-   *  that name. */
-  recordPrompt(sessionId: string, message: unknown): void
+   *  that name. `opts.source` (provenance, e.g. `agent:<sessionId>` for a
+   *  supervisor-injected prompt) rides onto the record's `source` field. */
+  recordPrompt(sessionId: string, message: unknown, opts?: { source?: string }): void
   /** Record one structured stream event, ahead of `projectEvent`'s
    *  flattening. Coalesces consecutive text-delta/thought chunks the same
    *  way the ring buffer does. */
@@ -254,11 +255,16 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
   }
 
   return {
-    recordPrompt(sessionId, message) {
+    recordPrompt(sessionId, message, opts) {
       const state = getState(sessionId)
       flushBuffers(sessionId, state)
       const text = typeof message === "string" ? message : JSON.stringify(message)
-      writeRecord(sessionId, state, { kind: "user-prompt", sessionId, text })
+      writeRecord(sessionId, state, {
+        kind: "user-prompt",
+        sessionId,
+        text,
+        ...(opts?.source ? { source: opts.source } : {}),
+      })
     },
     recordEvent(sessionId, evt) {
       const state = getState(sessionId)
