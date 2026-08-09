@@ -17,6 +17,7 @@ import {
   formatDuration,
   activityFor,
   iconFor,
+  subtreeBusiestActivity,
   isResumableInPlace,
   isStalled,
   isolationLabelFor,
@@ -891,5 +892,31 @@ describe("formatDuration", () => {
     expect(formatDuration(12 * 60_000)).toBe("12min")
     expect(formatDuration(3 * 3_600_000)).toBe("3h")
     expect(formatDuration(2 * 86_400_000)).toBe("2d")
+  })
+})
+
+describe("subtreeBusiestActivity — collapsed parent inherits busiest descendant (#session-visibility)", () => {
+  const node = (over: Partial<SessionDescriptor>, children: SessionNode[] = []): SessionNode => ({
+    session: session(over),
+    children,
+  })
+
+  it("a quiet parent inherits a mid-turn grandchild's 'working'", () => {
+    const tree = node({ id: "root", busy: false }, [
+      node({ id: "mid", busy: false }, [node({ id: "leaf", busy: true })]),
+    ])
+    expect(subtreeBusiestActivity(tree)).toBe("working")
+  })
+
+  it("busy outranks a deeper awaiting descendant (approved precedence)", () => {
+    const tree = node({ id: "root", busy: false }, [
+      node({ id: "a", busy: true }),
+      node({ id: "b", awaitingInput: true }),
+    ])
+    expect(subtreeBusiestActivity(tree)).toBe("working")
+  })
+
+  it("a leaf keeps its own activity", () => {
+    expect(subtreeBusiestActivity(node({ id: "solo", busy: false }))).toBe("idle")
   })
 })

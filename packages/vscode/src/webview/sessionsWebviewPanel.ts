@@ -117,6 +117,7 @@ interface RenderRow {
   approved: boolean
   watched: boolean
   watcherCount: number
+  childrenBusy: number
   originLabel: string | undefined
   depth: number
   action: RowAction | undefined
@@ -202,6 +203,7 @@ function toRenderRow(
     approved: row.approved,
     watched: row.watched,
     watcherCount: row.watcherCount,
+    childrenBusy: row.childrenBusy,
     originLabel: row.originLabel,
     depth: row.depth,
     action: row.action,
@@ -700,8 +702,15 @@ export function buildHtml(nonce: string): string {
     .row.gone { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; transition: all 0.25s ease; }
     .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
     .dot.working { background: var(--working); animation: agentproto-pulse 2s infinite; }
+    /* Delegating — active through its subtree: the working colour (so it reads
+       live) but a steady ring, not the pulsing fill, since this session itself
+       isn't the one generating. */
+    .dot.delegating { background: transparent; border: 2px solid var(--working); }
     .dot.awaiting { background: var(--awaiting); }
     .dot.stalled, .dot.failed { background: var(--stalled); }
+    /* Parked — quiet but supervised: a faint filled dot, distinct from a bare
+       idle ring, so "someone will re-prompt this" reads without shouting. */
+    .dot.parked { background: var(--faint); }
     .dot.idle, .dot.stopped { background: transparent; border: 1px solid var(--faint); }
     .dot.done { background: var(--faint); }
     .dot.done.unread { background: var(--working); border-color: var(--working); }
@@ -719,6 +728,10 @@ export function buildHtml(nonce: string): string {
        long-poll / session_monitor is actively blocked on this session. Same
        calm register as .watch; it's an informational tell, not an alarm. */
     .name .eye { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
+    /* Delegating (#session-visibility) — "⟳ N children": this idle session is
+       really waiting on its own busy subtree. Working-coloured so it reads as
+       active work happening below it. */
+    .name .deleg { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
     /* Origin chip — the source channel (cowork/vscode/cron) on a root row. A
        faint, uppercase-ish tag so lineage attribution reads at a glance. */
     .name .origin { color: var(--faint); font-weight: 400; font-size: 10px; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; }
@@ -872,7 +885,8 @@ export function buildHtml(nonce: string): string {
           '<span>' + escapeHtml(r.name) + '</span>' +
           (r.idMono ? '<span class="id mono">· ' + escapeHtml(r.idMono) + '</span>' : '') +
           (r.watched ? '<span class="watch" title="Kept alive — watched">◉ watched</span>' : '') +
-          (r.watcherCount > 0 ? '<span class="eye" title="supervised — notify on turn-end (' + r.watcherCount + ' waiting)">👁 ' + r.watcherCount + '</span>' : '') +
+          (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on its own busy subtree">⟳ ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '</span>' : '') +
+          (r.watcherCount > 0 ? '<span class="eye" title="' + (r.status === 'parked' ? 'supervised — will be re-prompted' : 'supervised — notify on turn-end') + ' (' + r.watcherCount + ' waiting)">👁 ' + r.watcherCount + '</span>' : '') +
           (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
           (r.approved ? '<span class="ok">✓ approved</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + ' runs</span>' : '');

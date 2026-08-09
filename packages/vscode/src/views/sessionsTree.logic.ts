@@ -433,10 +433,43 @@ const IDLE_UNREAD_ICON: SessionIcon = { id: "circle-filled" }
  * read-receipt available", which paints filled: see isUnread on why unknown
  * must not read as read.
  */
-export function iconFor(session: SessionDescriptor, now?: number, unread?: boolean): SessionIcon {
-  const activity = activityFor(session, now)
+/** Map an already-resolved activity to its icon (the tail of {@link iconFor},
+ *  factored out so the subtree rollup can reuse it). */
+export function iconForActivity(activity: SessionActivity, unread?: boolean): SessionIcon {
   if (activity === "idle") return unread === false ? ACTIVITY_ICONS.idle : IDLE_UNREAD_ICON
   return ACTIVITY_ICONS[activity]
+}
+
+export function iconFor(session: SessionDescriptor, now?: number, unread?: boolean): SessionIcon {
+  return iconForActivity(activityFor(session, now), unread)
+}
+
+/**
+ * Busiest-first rank over activities (#session-visibility, subtree rollup),
+ * honoring the approved precedence busy > awaiting > … : a collapsed parent
+ * inherits the most-active state in its subtree. `working` (a turn in flight,
+ * anywhere below) outranks `needs-you`; terminal states rank lowest.
+ */
+const ACTIVITY_RANK: Readonly<Record<SessionActivity, number>> = {
+  working: 6,
+  "needs-you": 5,
+  stalled: 4,
+  idle: 3,
+  failed: 2,
+  stopped: 1,
+  done: 0,
+}
+
+/** The busiest activity across a node and its whole subtree. Used to give a
+ *  parent node the state of its most-active descendant, so a collapsed
+ *  orchestrator doesn't read "idle" while its children are mid-turn. */
+export function subtreeBusiestActivity(node: SessionNode, now?: number): SessionActivity {
+  let busiest = activityFor(node.session, now)
+  for (const child of node.children) {
+    const childBusiest = subtreeBusiestActivity(child, now)
+    if (ACTIVITY_RANK[childBusiest] > ACTIVITY_RANK[busiest]) busiest = childBusiest
+  }
+  return busiest
 }
 
 /**
