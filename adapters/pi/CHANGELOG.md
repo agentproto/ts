@@ -1,5 +1,12 @@
 # @agentproto/adapter-pi
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
 ## 0.3.2
 
 ### Patch Changes

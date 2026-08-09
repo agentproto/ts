@@ -1,5 +1,33 @@
 # agentproto-vscode
 
+## 0.5.0
+
+### Minor Changes
+
+- e578324: Implement Design B — attention-first sessions webview redesign. The seven status tabs are replaced by five fixed-priority attention sections (Needs you → Running → Attention → Quiet → Earlier). Navigation collapses to two axes: a project rail (All + one chip per workspace with "awaiting" indicators) and an Agents/Auto segmented control for human- vs machine-origin session filtering. Auto lane groups into Gate reviews, Crons, and Commands, with consecutive cron runs collapsing into a single row with a count. Supports progressive loading via GET /sessions/summaries for bounded first paint.
+- b8da097: Brand icon, activity-bar glyph, and comprehensive Marketplace README — extension icon (256×256), updated VS Code activity-bar icon using CLI brand mark (chevron + block cursor), and rewritten README for user onboarding and discovery.
+- 568a5b7: Dissociate user asks from agent chapter titles; add pop-out feature for wide narration blocks (tables, code) in book view; fix pause-card race condition when awaitingInput lingers during active work.
+- 7a2e2f0: Add archived session toggling, watched session indicators, subagent nesting with depth-based indentation, and improved activity preview text generation with markdown stripping and system-line filtering to the VS Code sessions webview.
+- 5f2ebb8: Add prompt provenance tracking to transcript records and webview, enabling accurate attribution of supervisor-orchestrated turns. When one agent session prompts another (via `agent_prompt` or spawn with `initialPrompt`), the originating session ID is now recorded as the turn's source and displayed in the conversation UI as "SUPERVISOR ASKED" instead of "YOU ASKED". The feature is backward-compatible: existing transcripts and API call sites are unaffected, and source fields are optional everywhere.
+- e5f5b80: Enhance session search to use token-AND semantics: each whitespace-separated token in the query must appear (case-insensitive substring) in the session's label, command, cwd, or id. Query tokens are independent of order, and an empty or whitespace-only query matches all sessions. This provides a better UX for multi-word searches (e.g., "build sales" now returns sessions matching both "build" AND "sales", not just the literal phrase).
+- 88aee63: Add a color picker UI for workspace colors in the Sessions webview. Users can now click the swatch on a workspace chip to override its color via a popover with arrow-key navigation, Enter/Escape keyboard support, and click-outside dismiss. Colors persist via VS Code globalState and hydrate on extension startup. Includes comprehensive type-safe validation, accessibility features (ARIA labels, roving tabindex), and end-to-end tests.
+- 87b89f4: Add autolinking for URLs and file paths in transcript webview. Bare URLs (http/https/file), markdown-style links, and file paths with `:line` citations are now clickable — external URLs open in the browser, file paths open in the editor.
+
+### Patch Changes
+
+- 68432a2: Add GFM pipe table support to the transcript markdown renderer. Tables support alignment markers, inline formatting inside cells, and properly handle escaped pipes and pipes inside code spans.
+- 13c7b9e: Add conversation book view — a redesigned reading surface that groups conversation turns into chapters (split on user prompts) with folding, duration tracking, and step aggregation. The book is the default view for structured sessions; users can toggle back to the raw transcript via a header button. All book logic is pure, testable, and injected into the webview alongside existing helper modules.
+- 8d025e4: Fix markdown block rendering in conversation book by adding CSS for structural elements (paragraphs, lists, code fences, blockquotes, headings, tables) and correct chevron alignment.
+- 2df0213: Replace stop-lookalike glyph with archive-box SVG icon in the Sessions webview archived toggle button. The ▣ character was visually similar to the stop button (square in circle), causing user confusion. Now uses the proper ARCH_SVG icon instead.
+- 3a16ea2: Improve plan block rendering with hanging-indent markers, state-specific color coding, and progress tracking. Separates marker and content into distinct elements for better accessibility and styling control.
+- fab3bfa: Refactor the "show archived" toggle to switch between mutually exclusive views (archived-only vs. active-only) instead of merging archived rows with active rows. Updates UI labels and aria-labels to reflect the new semantics, and adds empty-state messaging that adapts to the current view mode.
+- 1bce78e: Persist permission resolution in the durable transcript so the conversation UI can display resolved permissions and clear the "Awaiting your decision" state. Permission-resolved events are keyed by toolCallId to correlate with their originating agent-prompt asks.
+- Updated dependencies [29acda3]
+- Updated dependencies [a26d527]
+- Updated dependencies [5f2ebb8]
+- Updated dependencies [1bce78e]
+  - @agentproto/runtime@2.3.0
+
 ## 0.4.1
 
 ### Patch Changes

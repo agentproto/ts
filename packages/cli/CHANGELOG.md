@@ -1,5 +1,13 @@
 # @agentproto/cli
 
+## 0.11.3
+
+### Patch Changes
+
+- 671b628: Fix daemon adapter installs: strip the "install" verb before passing args to runInstall, and add --allow-unverified flag to allow TTY-less daemon/UI installs of catalog adapters.
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
 ## 0.11.2
 
 ### Patch Changes

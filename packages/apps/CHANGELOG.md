@@ -1,5 +1,11 @@
 # @agentproto/apps
 
+## 0.4.0
+
+### Minor Changes
+
+- 727ba11: Add media-viewer agentproto app for media file cataloging with cataloger agent and scan-media workflow.
+
 ## 0.3.0
 
 ### Minor Changes
