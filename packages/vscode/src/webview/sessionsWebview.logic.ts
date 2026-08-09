@@ -46,8 +46,8 @@ import {
   type SessionFilterState,
 } from "../views/sessionFilter.logic.js"
 import {
+  ACTIVITY_ROW_MAX,
   activityFor,
-  activityLineFor,
   collapseResumeChains,
   compareSessions,
   contextPercent,
@@ -85,6 +85,67 @@ export function harnessGlyphFor(adapterSlug: string | undefined): string {
 export function formatCost(costUsd: number | undefined): string | undefined {
   if (typeof costUsd !== "number" || !(costUsd > 0)) return undefined
   return `$${costUsd.toFixed(2)}`
+}
+
+/**
+ * Internal bookkeeping lines the daemon may leave in `activitySummary.text`
+ * that must NEVER surface as a row preview — they aren't a real user/agent
+ * message. Two shapes are filtered:
+ *   - a leading role tag the runtime prefixes onto injected lines, e.g.
+ *     "[context] …", "[continuity] …", "[system] …";
+ *   - the context-continuity decision line itself even when it arrives
+ *     un-tagged, e.g. "context at 69% — waiting for user decision (continue
+ *     fresh…)".
+ * Kept deliberately narrow so a genuine message that merely mentions "context"
+ * is never swallowed.
+ */
+const SYSTEM_PREVIEW_TAG = /^\s*\[(context|continuity|system|compaction|checkpoint|internal)\]/i
+const CONTINUITY_PHRASE =
+  /context at \d+%|waiting for user decision|continue fresh|continuing fresh|context (window )?(is )?(full|at capacity|nearly full)/i
+
+/** True when a preview candidate is the daemon's own context/system bookkeeping rather than a genuine user/agent message. */
+export function isSystemPreviewLine(text: string): boolean {
+  return SYSTEM_PREVIEW_TAG.test(text) || CONTINUITY_PHRASE.test(text)
+}
+
+/**
+ * Flatten inline Markdown to plain text for a single-line preview — the row's
+ * preview is one clamped line, so the raw markers ("**bold**", "`code`",
+ * "[label](url)") must not leak through as literal punctuation. Deliberately
+ * lossy and dependency-free (the full renderMarkdown is for the transcript
+ * book, not a sidebar row): strips emphasis/code/heading/quote/list markers,
+ * unwraps links to their label, and collapses all whitespace to single spaces.
+ */
+export function stripMarkdownToText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ") // fenced code blocks
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // images → alt
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // links → label
+    .replace(/`+/g, "") // inline code ticks
+    .replace(/(\*\*|__)(.*?)\1/g, "$2") // bold
+    .replace(/(\*|_)(.*?)\1/g, "$2") // italic
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "") // ATX headings
+    .replace(/^\s{0,3}>\s?/gm, "") // blockquotes
+    .replace(/^\s{0,3}([-*+]|\d+\.)\s+/gm, "") // list markers
+    .replace(/\s+/g, " ") // collapse whitespace → single line
+    .trim()
+}
+
+/**
+ * The row's preview line — the last genuine user/agent message, markdown
+ * stripped and clamped to a single truncated line. Sourced from the daemon's
+ * `activitySummary.text` (its "what is this doing now" heuristic), but with the
+ * runtime's internal context-continuity / system lines filtered out
+ * ({@link isSystemPreviewLine}) so a row never shows "[context] context at 69%
+ * — waiting for user decision" in place of real work. Returns undefined when
+ * there is nothing genuine to show — better a bare row than a misleading one.
+ */
+export function previewTextFor(session: Pick<SessionSummary, "activitySummary">): string | undefined {
+  const raw = session.activitySummary?.text?.trim()
+  if (!raw || isSystemPreviewLine(raw)) return undefined
+  const plain = stripMarkdownToText(raw)
+  if (!plain) return undefined
+  return plain.length > ACTIVITY_ROW_MAX ? `${plain.slice(0, ACTIVITY_ROW_MAX - 1)}…` : plain
 }
 
 /**
@@ -284,6 +345,12 @@ export interface WebviewRow {
   runs: number | undefined
   /** True when this gate-review row records an approval. */
   approved: boolean
+  /** True when the session is kept alive / watched (idle-reaper exempt) — the
+   *  one "someone is monitoring this" signal the summary carries (keepAlive). */
+  watched: boolean
+  /** Nesting depth in the parentSessionId lineage — 0 for a root, +1 per
+   *  ancestor present in the same section. Drives the row's indent. */
+  depth: number
   /** Lifecycle action for this row, if any. */
   action: RowAction | undefined
   /** Workspace color-square metadata. */
@@ -377,6 +444,13 @@ export interface BuildSessionsWebviewModelOptions {
   now: number
   /** Daemon's total session count for this view; defaults to the loaded count. */
   serverTotal?: number
+  /** Keep archived rows in the model (the "show archived" affordance). Default
+   *  false — Design B's default view drops archived rows entirely. */
+  includeArchived?: boolean
+  /** How many rows the panel has actually paged in from the server, for the
+   *  "N of M loaded" footer. Defaults to the input length; pass it explicitly
+   *  when the input is padded with live/pinned rows that aren't paged results. */
+  loadedCount?: number
 }
 
 /** Resolve a session's workspace to a stable slug/label, or undefined when unassigned. */
@@ -411,7 +485,7 @@ function toRow(session: SessionSummary, now: number, config: WorkspacesConfig): 
     lane: laneOf(session),
     name: identity.name,
     idMono: identity.idMono,
-    message: activityLineFor(session),
+    message: previewTextFor(session),
     tag: isolationLabelFor(session),
     harnessGlyph: harnessGlyphFor(session.adapterSlug ?? session.kind),
     model: session.model,
@@ -420,6 +494,8 @@ function toRow(session: SessionSummary, now: number, config: WorkspacesConfig): 
     time: relativeTime(session.lastActivityAt ?? session.lastOutputAt ?? session.startedAt, now),
     runs: undefined,
     approved: gateApproved(session),
+    watched: session.keepAlive === true,
+    depth: 0,
     action: rowActionFor(session),
     workspace: ws
       ? { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug).index }
@@ -470,10 +546,11 @@ export function buildSessionsWebviewModel(
   workspaces: WorkspacesConfig,
   opts: BuildSessionsWebviewModelOptions,
 ): SessionsWebviewModel {
-  // Design B has no archived view: archived rows simply drop out (an archive
-  // action slides the row away). Resume-chain predecessors collapse to their
-  // live tail, same as the tree.
-  const visible = collapseResumeChains(sessions.filter(s => s.archived !== true))
+  // Archived rows drop out unless the "show archived" affordance asked for them
+  // (an archive action slides the row away). Resume-chain predecessors collapse
+  // to their live tail, same as the tree.
+  const pool = opts.includeArchived ? sessions : sessions.filter(s => s.archived !== true)
+  const visible = collapseResumeChains(pool)
 
   // 1. Search filter (reused predicate).
   const baseState: SessionFilterState = { ...EMPTY_FILTER, search: opts.search }
@@ -509,7 +586,7 @@ export function buildSessionsWebviewModel(
     laneCounts,
     groups,
     shownCount,
-    loadedCount: sessions.length,
+    loadedCount: opts.loadedCount ?? sessions.length,
     serverTotal: opts.serverTotal ?? sessions.length,
   }
 }
@@ -561,6 +638,40 @@ function buildRail(
   return [all, ...projectChips]
 }
 
+/**
+ * Re-order a section's rows so each child session sits directly under its
+ * parent (parentSessionId lineage), depth-first, with `depth` set for the
+ * indent. A row whose parent is absent from THIS bucket is a root at depth 0 —
+ * no session is dropped and no cross-section parent is invented (a parent and
+ * child can legitimately fall in different attention sections). Sibling and
+ * root order is the incoming (already recency-sorted) order. Mirrors the
+ * tree's `buildSessionTree` parent/child nesting, flattened for the flat
+ * section list. A parentSessionId cycle can't loop: a node is only ever
+ * reached once because it's either a root or exactly one parent's child.
+ */
+export function nestByLineage(rows: readonly WebviewRow[]): WebviewRow[] {
+  const byId = new Map(rows.map(r => [r.id, r]))
+  const childrenOf = new Map<string, WebviewRow[]>()
+  const roots: WebviewRow[] = []
+  for (const row of rows) {
+    const parentId = row.session.parentSessionId
+    if (parentId && parentId !== row.id && byId.has(parentId)) {
+      const bucket = childrenOf.get(parentId)
+      if (bucket) bucket.push(row)
+      else childrenOf.set(parentId, [row])
+    } else {
+      roots.push(row)
+    }
+  }
+  const out: WebviewRow[] = []
+  const walk = (row: WebviewRow, depth: number): void => {
+    out.push(row.depth === depth ? row : { ...row, depth })
+    for (const child of childrenOf.get(row.id) ?? []) walk(child, depth + 1)
+  }
+  for (const root of roots) walk(root, 0)
+  return out
+}
+
 function buildSections(rows: readonly WebviewRow[]): WebviewGroup[] {
   const byKey = new Map<SectionKey, WebviewRow[]>()
   for (const row of rows) {
@@ -573,7 +684,8 @@ function buildSections(rows: readonly WebviewRow[]): WebviewGroup[] {
   for (const key of SECTION_ORDER) {
     const bucket = byKey.get(key)
     if (bucket && bucket.length > 0) {
-      groups.push({ key, label: SECTION_LABELS[key], hint: SECTION_HINTS[key], rows: bucket })
+      // Stack subagents under their spawner within the section.
+      groups.push({ key, label: SECTION_LABELS[key], hint: SECTION_HINTS[key], rows: nestByLineage(bucket) })
     }
   }
   return groups
