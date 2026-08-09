@@ -51,6 +51,7 @@ import type {
   LlmEndpointUpstreamTestResult,
   PendingPermission,
   ProviderPresetEntry,
+  RestartOverridePayload,
   RouteSpec,
   SessionDescriptor,
   SessionEventsPage,
@@ -403,6 +404,49 @@ export class DaemonClient {
     model: string,
   ): Promise<{ ok: boolean; id: string; applied: boolean; model?: string; reason?: string }> {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/model`, { model })
+  }
+
+  /**
+   * Switch the reasoning/compute budget (effort) on a LIVE agent-cli session —
+   * `POST /sessions/:id/effort`, the effort-axis sibling of {@link setSessionModel}.
+   * Same non-fatal contract: an effort the current model rejects resolves
+   * `{applied:false, reason}` rather than throwing.
+   */
+  async setSessionEffort(
+    id: string,
+    effort: string,
+  ): Promise<{ ok: boolean; id: string; applied: boolean; effort?: string; reason?: string }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/effort`, { effort })
+  }
+
+  /**
+   * Switch the posture on a LIVE agent-cli session — `POST /sessions/:id/posture`.
+   * A posture that maps to a native advertised harness mode switches live; one
+   * with no native mode resolves `{applied:false, reason:"requires-restart"}`,
+   * telling the caller to route it through {@link restartSessionWithOverride}.
+   * `posture` is a canonical value ("plan"/"bypass"/…) or a raw harness mode id.
+   */
+  async setSessionPosture(
+    id: string,
+    posture: string,
+  ): Promise<{ ok: boolean; id: string; applied: boolean; posture?: string; reason?: string }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/posture`, { posture })
+  }
+
+  /**
+   * Restart an agent-cli session with axis overrides, carrying the conversation
+   * over — `POST /sessions/:id/restart`. The single path for the restart-only
+   * axes (wallet via `access.profileRef`, route via `route.gateway`, plus
+   * model/effort/posture/contextProfile/mode). Returns the NEW descriptor (a
+   * fresh id) with `resumeVia` ("resumed via ACP" / "…summary") and
+   * `resumeFallback` describing what carried over. An unknown/ineligible
+   * override is a real error (thrown), NEVER a silent blank session.
+   */
+  async restartSessionWithOverride(
+    id: string,
+    overrides: RestartOverridePayload,
+  ): Promise<SessionDescriptor & { resumedFrom?: string; resumeVia?: string; resumeFallback?: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/restart`, overrides)
   }
 
   async deleteSession(id: string): Promise<{ ok: boolean; id: string }> {

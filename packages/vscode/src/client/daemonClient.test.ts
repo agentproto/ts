@@ -81,6 +81,11 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
       if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
       if (req.url?.startsWith("/sessions/s1/model") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, model: (req.body as { model?: string }).model } }
+      if (req.url?.startsWith("/sessions/s1/effort") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, effort: (req.body as { effort?: string }).effort } }
+      // Posture that has no native mode: a clean, non-fatal reject.
+      if (req.url?.startsWith("/sessions/s1/posture") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: false, reason: "requires-restart" } }
+      if (req.url?.startsWith("/sessions/s1/restart") && req.method === "POST") return { status: 200, body: { id: "s2", kind: "agent-cli", status: "running", command: "c", pid: 9, startedAt: "t", workspaceSlug: "ws", resumedFrom: "s1", resumeVia: "resumed via ACP" } }
+      if (req.url?.startsWith("/sessions/ghostwallet/restart") && req.method === "POST") return { status: 400, body: { error: "restart_override_invalid", message: "unknown access profile", sessionId: "ghostwallet" } }
       if (req.url?.startsWith("/sessions/s1/prompt") && req.method === "POST") return { status: 200, body: { ok: true } }
       if (req.url === "/sessions/s1" && req.method === "PATCH") {
         const patch = req.body as { title?: string | null; label?: string | null }
@@ -237,6 +242,36 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(last.method).toBe("POST")
     expect(last.url).toBe("/sessions/s1/model")
     expect(last.body).toEqual({ model: "opus-5" })
+  })
+
+  it("POST /sessions/:id/effort sends the effort body and returns the structured result", async () => {
+    const res = await client().setSessionEffort("s1", "high")
+    expect(res).toEqual({ ok: true, id: "s1", applied: true, effort: "high" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/s1/effort")
+    expect(last.body).toEqual({ effort: "high" })
+  })
+
+  it("POST /sessions/:id/posture surfaces a clean {applied:false, reason} reject without throwing", async () => {
+    const res = await client().setSessionPosture("s1", "plan")
+    expect(res.applied).toBe(false)
+    expect(res.reason).toBe("requires-restart")
+  })
+
+  it("POST /sessions/:id/restart carries overrides and returns the NEW descriptor + resumeVia", async () => {
+    const res = await client().restartSessionWithOverride("s1", { access: { profileRef: "claude-subs" } })
+    expect(res.id).toBe("s2") // rebind target — a fresh session id
+    expect(res.resumedFrom).toBe("s1")
+    expect(res.resumeVia).toBe("resumed via ACP")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/s1/restart")
+    expect(last.body).toEqual({ access: { profileRef: "claude-subs" } })
+  })
+
+  it("restart-with-override THROWS on a rejected override — never a silent blank session", async () => {
+    await expect(
+      client().restartSessionWithOverride("ghostwallet", { access: { profileRef: "nope" } }),
+    ).rejects.toThrow(/400/)
   })
 
   it("throws on a non-2xx response", async () => {
