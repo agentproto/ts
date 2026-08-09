@@ -1015,6 +1015,14 @@ export interface HarnessProviderCapability {
   id: string
   name?: string
   ready?: boolean
+  /** Billing endpoint this provider bills against (mirror of provider-kit
+   *  ProviderCapability.billingEndpoint). The daemon sends it on the wire;
+   *  the auth-model mind map reads it to key a harness→provider edge. Absent
+   *  ⇒ fall back to `id`. */
+  billingEndpoint?: string
+  /** Native wire protocol this provider speaks (mirror of provider-kit
+   *  ProviderCapability.apiMode). Drives native-vs-router classification. */
+  apiMode?: "anthropic" | "chat_completions"
 }
 
 /** Model discovery summary advertised by a harness (mirror of provider-kit
@@ -1045,6 +1053,16 @@ export interface HarnessCapabilities {
   models?: HarnessModelDiscovery
   /** Adapter-specific spawn options / defaults. */
   application?: HarnessApplicationContract
+  /** Which OpenAI/Anthropic-compatible endpoint this harness can be re-pointed
+   *  at, and how (mirror of provider-kit EndpointCompat). Presence of
+   *  `anthropic` is the live signal that a harness speaks the Anthropic wire
+   *  and accepts a custom base_url — the key input to the mind map's
+   *  native-vs-via-router reach classification. The daemon sends it on the
+   *  wire; older client mirrors dropped it. */
+  endpointCompat?: {
+    openai?: { via: "env" | "config-block" | "per-spawn-option"; key: string }
+    anthropic?: { via: "env" | "config-block" | "per-spawn-option"; key: string }
+  }
 }
 
 /** Per-axis option list for the Configuration Lab UI. */
