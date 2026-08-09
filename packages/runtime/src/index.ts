@@ -1302,7 +1302,7 @@ export async function createGateway(
   // `agent.ref` resolves against every app this daemon has installed (WP-B4).
   // Declared here (not inside `registerAppTools`) purely so both consumers
   // share the one instance — same persistence defaults as before this WP.
-  const appRegistry = createAppRegistry()
+  const appRegistry = createAppRegistry({ persist })
 
   // Workflow runner — singleton per daemon, shared across all MCP
   // connections. Persists run state to ~/.agentproto/workflow-runs.json so

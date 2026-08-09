@@ -11,6 +11,10 @@ import { cataloger } from "./agents/cataloger.js"
 import { scanMedia } from "./workflows/scan-media.js"
 
 export const mediaViewer: AppHandle = defineApp({
+  id: "@agentproto/media-viewer",
+  name: "Media Viewer",
+  version: "0.1.0",
+  description: "Scan a folder for images, video, and audio — gallery view.",
   agents: [cataloger],
   workflows: [scanMedia],
 })

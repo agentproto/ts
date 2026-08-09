@@ -11,6 +11,10 @@ import { triager } from "./agents/triager.js"
 import { triageInbox } from "./workflows/triage-inbox.js"
 
 export const mailTriage: AppHandle = defineApp({
+  id: "@agentproto/mail-triage",
+  name: "Mail Triage",
+  version: "0.1.0",
+  description: "Triage your inbox — categorize, label, archive.",
   agents: [triager],
   workflows: [triageInbox],
 })

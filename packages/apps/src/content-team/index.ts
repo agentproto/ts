@@ -16,6 +16,10 @@ import { produceContent } from "./workflows/produce-content.js"
 import { produceCover } from "./workflows/produce-cover.js"
 
 export const contentTeam: AppHandle = defineApp({
+  id: "@agentproto/content-team",
+  name: "Content Team",
+  version: "0.1.0",
+  description: "Research, draft, edit, and illustrate content.",
   agents: [researcher, writer, editor, illustrator],
   workflows: [produceContent, produceCover],
 })
