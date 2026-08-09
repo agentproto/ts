@@ -51,6 +51,7 @@ import {
   collapseResumeChains,
   compareSessions,
   contextPercent,
+  formatDuration,
   isolationLabelFor,
   labelFor,
   relativeTime,
@@ -359,6 +360,20 @@ export function gateApproved(session: SessionSummary): boolean {
   return /approv/i.test(session.activitySummary?.text ?? "")
 }
 
+/**
+ * Tooltip text for the ⚠ stalled badge, or undefined when the daemon's
+ * turn-liveness watchdog hasn't flagged this session. `session.stalledSinceMs`
+ * is the epoch ms of the last real adapter activity observed before the
+ * watchdog tripped — "silent for" is `now - stalledSinceMs`, exactly like
+ * the tree's own `silentForMs`, just server-confirmed rather than a live
+ * client-side clock comparison.
+ */
+export function stallTooltipFor(session: SessionSummary, now: number): string | undefined {
+  if (typeof session.stalledSinceMs !== "number") return undefined
+  const silentFor = formatDuration(Math.max(0, now - session.stalledSinceMs))
+  return `no adapter activity for ${silentFor} mid-turn — stream may be dead`
+}
+
 /** One rendered row. Flat — Design B organizes by attention section, not by parent/child nesting. */
 export interface WebviewRow {
   id: string
@@ -393,6 +408,13 @@ export interface WebviewRow {
   /** Source channel that spawned this session (cowork / vscode / cron / codex),
    *  for the origin chip. Undefined ⇒ unknown/unstamped root. */
   originLabel: string | undefined
+  /** Tooltip text for the ⚠ stalled badge — set iff the daemon's
+   *  turn-liveness watchdog flagged this session (`session.stalledSinceMs`
+   *  present). Distinct from the client-side `status === "stalled"`
+   *  heuristic (silence + busy, no `blockedOn` exemption): this is a
+   *  server-confirmed signal, so it gets its own badge rather than
+   *  reusing the dot color. Undefined ⇒ not currently flagged, no badge. */
+  stallTooltip: string | undefined
   /** Nesting depth in the parentSessionId lineage — 0 for a root, +1 per
    *  ancestor present in the same section. Drives the row's indent. */
   depth: number
@@ -554,6 +576,7 @@ function toRow(
     watched: session.keepAlive === true,
     watcherCount: session.watchers ?? 0,
     originLabel: session.origin,
+    stallTooltip: stallTooltipFor(session, now),
     depth: 0,
     action: rowActionFor(session),
     workspace: ws

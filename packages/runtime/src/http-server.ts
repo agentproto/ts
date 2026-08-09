@@ -771,6 +771,13 @@ export interface RuntimeHttpServerOptions {
      *  restart, or 0 when off. Kept in sync with the `daemon_health` MCP
      *  tool's field of the same name. */
     restartSweepIntervalMs?: number
+    /** Effective `daemon.turnStallAfterMs` knob (turn-liveness-watchdog
+     *  chantier) — the silence threshold (ms) past which a busy, unblocked
+     *  agent-cli session's turn is flagged stalled; DEFAULT ON (a sane
+     *  default applies even when unset), 0 only when explicitly disabled.
+     *  Kept in sync with the `daemon_health` MCP tool's field of the same
+     *  name. */
+    turnStallAfterMs?: number
   }
 }
 
@@ -1190,6 +1197,7 @@ export async function startHttpServer(
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
+        turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
       }),
     )
   }

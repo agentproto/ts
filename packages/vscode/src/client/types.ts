@@ -284,6 +284,11 @@ export interface SessionDescriptor {
   turnsCompleted?: number
   busy?: boolean
   blockedOn?: "subagent" | "command"
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.stalledSinceMs — epoch
+   *  ms of the last known adapter activity at the moment the turn-liveness
+   *  watchdog flagged this mid-turn session's stream silent past the
+   *  threshold. Absent unless currently flagged. */
+  stalledSinceMs?: number
   pendingToolCallId?: string
   /** Source label — the channel/harness this session was spawned from
    *  ("codex", "cowork", "vscode", …). Mirrors runtime SessionDescriptor.origin. */
@@ -390,6 +395,7 @@ export interface SessionSummary {
   turnsCompleted?: number
   busy?: boolean
   blockedOn?: "subagent" | "command"
+  stalledSinceMs?: number
   origin?: string
   parentSessionId?: string
   depth?: number

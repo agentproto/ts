@@ -221,6 +221,22 @@ describe("sessions webview — render", () => {
     expect(el(panel, "list").querySelector('[data-id="s1"] .eye')).toBeNull()
   })
 
+  it("renders the ⚠ stalled badge with the daemon's tooltip when the turn-liveness watchdog flagged the row", () => {
+    const panel = renderPanel()
+    const stallTooltip = "no adapter activity for 6min mid-turn — stream may be dead"
+    send(panel, modelMessage({ groups: [group("attention", "Attention", [{ ...ROW_A, stallTooltip }])] }))
+    const row = el(panel, "list").querySelector('[data-id="s1"]')!
+    const badge = row.querySelector(".stall")!
+    expect(badge.textContent).toContain("stalled")
+    expect(htmlEl(badge).getAttribute("title")).toBe(stallTooltip)
+  })
+
+  it("omits the stalled badge when the row isn't flagged", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, stallTooltip: undefined }])] }))
+    expect(el(panel, "list").querySelector('[data-id="s1"] .stall')).toBeNull()
+  })
+
   it("marks the row whose transcript tab is open with .open", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, open: true }])] }))

@@ -18,6 +18,7 @@ import {
   relativeLuminance,
   rowActionFor,
   sectionFor,
+  stallTooltipFor,
   stripMarkdownToText,
   summaryTextFor,
   UNASSIGNED_COLOR_INDEX,
@@ -455,6 +456,42 @@ describe("gateApproved", () => {
     expect(gateApproved(session({ origin: "gate", activitySummary: { text: "Verdict: approved", state: "done", at: "" } }))).toBe(true)
     expect(gateApproved(session({ origin: "gate", activitySummary: { text: "Verdict: changes requested", state: "done", at: "" } }))).toBe(false)
     expect(gateApproved(session({ activitySummary: { text: "approved" } as never }))).toBe(false)
+  })
+})
+
+describe("stallTooltipFor", () => {
+  it("is undefined when the session isn't flagged by the daemon's turn-liveness watchdog", () => {
+    expect(stallTooltipFor(session(), NOW)).toBeUndefined()
+  })
+
+  it("reports the silent duration since the daemon-stamped stalledSinceMs, not any client-side guess", () => {
+    const stalledSinceMs = NOW - 6 * 60_000
+    expect(stallTooltipFor(session({ stalledSinceMs }), NOW)).toBe(
+      "no adapter activity for 6min mid-turn — stream may be dead",
+    )
+  })
+
+  it("clamps to non-negative when stalledSinceMs is somehow after now", () => {
+    expect(stallTooltipFor(session({ stalledSinceMs: NOW + 60_000 }), NOW)).toBe(
+      "no adapter activity for 0s mid-turn — stream may be dead",
+    )
+  })
+})
+
+describe("toRow (via buildSessionsWebviewModel) — stall badge", () => {
+  it("carries stallTooltip through onto the rendered row only when stalledSinceMs is set", () => {
+    const flagged = session({ id: "flagged", busy: true, stalledSinceMs: NOW - 6 * 60_000 })
+    const healthy = session({ id: "healthy", busy: true })
+    const model = buildSessionsWebviewModel(
+      [flagged, healthy],
+      { version: 1, workspaces: [] },
+      opts(),
+    )
+    const rows = model.groups.flatMap(g => g.rows)
+    const flaggedRow = rows.find(r => r.id === "flagged")
+    const healthyRow = rows.find(r => r.id === "healthy")
+    expect(flaggedRow?.stallTooltip).toBe("no adapter activity for 6min mid-turn — stream may be dead")
+    expect(healthyRow?.stallTooltip).toBeUndefined()
   })
 })
 

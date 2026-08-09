@@ -118,6 +118,7 @@ interface RenderRow {
   watched: boolean
   watcherCount: number
   originLabel: string | undefined
+  stallTooltip: string | undefined
   depth: number
   action: RowAction | undefined
   workspace: (WebviewWorkspace & { css: string }) | undefined
@@ -203,6 +204,7 @@ function toRenderRow(
     watched: row.watched,
     watcherCount: row.watcherCount,
     originLabel: row.originLabel,
+    stallTooltip: row.stallTooltip,
     depth: row.depth,
     action: row.action,
     workspace: row.workspace
@@ -719,6 +721,12 @@ export function buildHtml(nonce: string): string {
        long-poll / session_monitor is actively blocked on this session. Same
        calm register as .watch; it's an informational tell, not an alarm. */
     .name .eye { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
+    /* Server-confirmed stall badge (turn-liveness watchdog) — a mid-turn
+       session whose adapter stream has gone silent past the daemon's
+       threshold with no legitimate blockedOn excuse. Ochre, like the
+       "needs you" register: unlike the client-heuristic stalled DOT (a
+       silence guess), this is a daemon-verified "this may be dead". */
+    .name .stall { color: var(--awaiting); font-weight: 400; font-size: 11px; opacity: 0.95; }
     /* Origin chip — the source channel (cowork/vscode/cron) on a root row. A
        faint, uppercase-ish tag so lineage attribution reads at a glance. */
     .name .origin { color: var(--faint); font-weight: 400; font-size: 10px; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; }
@@ -873,6 +881,7 @@ export function buildHtml(nonce: string): string {
           (r.idMono ? '<span class="id mono">· ' + escapeHtml(r.idMono) + '</span>' : '') +
           (r.watched ? '<span class="watch" title="Kept alive — watched">◉ watched</span>' : '') +
           (r.watcherCount > 0 ? '<span class="eye" title="supervised — notify on turn-end (' + r.watcherCount + ' waiting)">👁 ' + r.watcherCount + '</span>' : '') +
+          (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠ stalled</span>' : '') +
           (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
           (r.approved ? '<span class="ok">✓ approved</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + ' runs</span>' : '');

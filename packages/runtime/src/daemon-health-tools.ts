@@ -44,6 +44,14 @@ export interface RegisterDaemonHealthToolsOptions {
    *  before this knob existed still type-checks; defaults to 0 where
    *  consumed. */
   restartSweepIntervalMs?: number
+  /** Effective value of the `daemon.turnStallAfterMs` knob (turn-liveness-
+   *  watchdog chantier) — the silence threshold (ms) past which a busy,
+   *  unblocked agent-cli session's turn is flagged stalled, or 0 when
+   *  explicitly disabled. Detection is default-on, same shape as
+   *  `crashDetectIntervalMs`, so this is normally a positive value even when
+   *  the knob was never configured. Optional so a caller from before this
+   *  knob existed still type-checks; defaults to 0 where consumed. */
+  turnStallAfterMs?: number
 }
 
 function text(value: string | object): {
@@ -81,6 +89,7 @@ export function registerDaemonHealthTools(
         idleReapAfterMs: opts.idleReapAfterMs,
         crashDetectIntervalMs: opts.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.restartSweepIntervalMs ?? 0,
+        turnStallAfterMs: opts.turnStallAfterMs ?? 0,
       })
     },
   )

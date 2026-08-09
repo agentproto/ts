@@ -21,6 +21,8 @@ export type SessionEventType =
   | "session:permission-resolved"
   | "session:exited"
   | "session:reaped"
+  | "session:stalled"
+  | "session:stall-cleared"
   | "session:resumed"
   | "session:spawned"
   | "session:command-done"
@@ -189,6 +191,49 @@ export interface SessionReapedEvent {
   type: "session:reaped"
   sessionId: string
   idleMs: number
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted by the turn-liveness watchdog (`runStallWatchdogPass`) when a
+ * mid-turn agent-cli session's adapter stream has gone silent past the
+ * configured threshold: `busy:true`, not legitimately `blockedOn` a
+ * subagent/command, and no `lastActivityAt` traffic since. The target
+ * failure mode is a DEAD adapter stream — zero frames mid-turn, e.g. a
+ * network drop — that otherwise leaves the row `status:"running"`,
+ * `lastError:null`, indistinguishable from healthy long work except by
+ * manually comparing `lastActivityAt` to the clock. Detection + signal
+ * ONLY: nothing here kills or restarts the session (unlike `session:reaped`
+ * / crash-detect's `session:exited`). `stalledSinceMs` is the epoch ms of
+ * the last real activity that was observed before the trip — a consumer
+ * computes "silent for" as `Date.now() - stalledSinceMs`. Same bus
+ * distribution as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, the routine engine, `session_monitor`). Paired with
+ * `session:stall-cleared` when the flag is later cleared.
+ */
+export interface SessionStalledEvent {
+  type: "session:stalled"
+  sessionId: string
+  stalledSinceMs: number
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a session's `stalledSinceMs` flag (see {@link
+ * SessionStalledEvent}) is cleared — by new adapter activity
+ * (`pulseActivity`), the next turn starting, or the turn's own `finally`
+ * (busy flips false, so "mid-turn and silent" no longer holds either way).
+ * Does NOT imply the earlier trip was a false alarm — recovery from a
+ * genuinely dead stream normally happens via the turn eventually erroring
+ * out or being killed, not via a resumed stream; a clear immediately
+ * followed by fresh `lastActivityAt` traffic is the "it wasn't actually
+ * dead" case. Same bus distribution as every other lifecycle event.
+ */
+export interface SessionStallClearedEvent {
+  type: "session:stall-cleared"
+  sessionId: string
   label?: string
   ts: string
 }
@@ -466,6 +511,8 @@ export type SessionEvent =
   | SessionPermissionResolvedEvent
   | SessionExitedEvent
   | SessionReapedEvent
+  | SessionStalledEvent
+  | SessionStallClearedEvent
   | SessionResumedEvent
   | SessionSpawnedEvent
   | SessionCommandDoneEvent

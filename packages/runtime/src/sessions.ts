@@ -657,6 +657,25 @@ export interface SessionDescriptor {
   /** ISO 8601 timestamp of the crash-detect sweep that flipped this row to
    *  `endedReason:"crashed"`. Absent for every other terminal path. */
   crashedAt?: string
+  /** Epoch ms of the last known-good `lastActivityAt` reading at the moment
+   *  the turn-liveness watchdog (`runStallWatchdogPass`) decided this row's
+   *  in-flight turn had gone silent for too long: `busy:true`,
+   *  `blockedOn` undefined (not legitimately waiting on a subagent/command),
+   *  and no adapter traffic since. Distinct from a slow tool call — the
+   *  target failure mode is a dead adapter stream that will never emit
+   *  another frame (a network drop, a hung child), the case where `status`
+   *  stays `"running"`, `lastError` stays null, and nothing else
+   *  distinguishes it from healthy long work.
+   *
+   *  Stamped by `markStalled` (never by `list()`/read time — this is a
+   *  discrete trip, not a recomputed projection), and CLEARED by
+   *  `clearStalled` the moment ANY new activity is observed — the next
+   *  `pulseActivity`, the next turn start, or the turn's own `finally`
+   *  (busy flips false, so the mid-turn claim no longer holds). Absent
+   *  (never a stale value) whenever the session isn't currently flagged
+   *  stalled. Detection + signal only — nothing here kills or restarts the
+   *  session. */
+  stalledSinceMs?: number
   /** DERIVED, read-time only (never persisted — stripped by `snapshotRows`,
    *  stamped by `stampInterrupted` in list()/get()/findByIdOrName). True when
    *  this session died with a turn in flight under a daemon restart —
@@ -1208,6 +1227,7 @@ export interface SessionSummary {
   turnsCompleted?: number
   busy?: boolean
   blockedOn?: "subagent" | "command"
+  stalledSinceMs?: number
   origin?: string
   parentSessionId?: string
   depth?: number
@@ -1268,6 +1288,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     turnsCompleted: desc.turnsCompleted,
     busy: desc.busy,
     blockedOn: desc.blockedOn,
+    stalledSinceMs: desc.stalledSinceMs,
     origin: desc.origin,
     parentSessionId: desc.parentSessionId,
     depth: desc.depth,
@@ -2172,6 +2193,33 @@ export interface SessionsRegistry {
    *  an already-terminal or non-agent-cli row. Returns true iff a row was
    *  actually marked crashed. */
   markCrashed(id: string): boolean
+  /** Flip a LIVE, mid-turn agent-cli row to `stalledSinceMs:<ts>` — the
+   *  primitive the turn-liveness watchdog (`runStallWatchdogPass`) drives on
+   *  a periodic sweep when a turn's adapter stream has gone silent past the
+   *  threshold. Unlike `markCrashed`/`reapIdle`, this NEVER changes `status`,
+   *  kills anything, or clears the live binding — it's a pure signal
+   *  (detection + surfacing only), so the session stays exactly as running
+   *  as it was. Emits `session:stalled`.
+   *
+   *  Purely mechanical: the caller (the sweep) owns the silence/threshold
+   *  policy. This method only guards the invariants a stall-mark must never
+   *  violate — it refuses (returns false, no-op) a row that isn't a live
+   *  (`running`) agent-cli session, isn't currently `busy` (mid-turn), is
+   *  legitimately `blockedOn` a subagent/command, or is already flagged
+   *  stalled (idempotent — the sweep's own candidate filter already excludes
+   *  these, this is the second line of defense for any other caller).
+   *  Returns true iff the row was actually flagged. */
+  markStalled(id: string, stalledSinceMs: number): boolean
+  /** Clear a row's `stalledSinceMs` flag — called the instant ANY activity
+   *  disproves the stall claim: `pulseActivity` (new adapter traffic), the
+   *  next turn's start, and the turn's own `finally` (busy flips false, so
+   *  "mid-turn and silent" no longer holds either way). Emits
+   *  `session:stall-cleared` — but ONLY when the row was actually flagged;
+   *  a session that was never stalled clearing on every turn boundary would
+   *  spam the bus with a no-op event on every single turn. Returns true iff
+   *  a flag was actually cleared; false (no-op, no event) for an unknown id
+   *  or a row that wasn't flagged. */
+  clearStalled(id: string): boolean
   /** Whether an in-place resume is currently IN FLIGHT for this session
    *  (`rt.resumePromise` set) — the restart-scheduler's periodic sweep
    *  (`runRestartSweepPass`, PR-2) consults this to skip a row a concurrent
@@ -2857,6 +2905,24 @@ export function createSessionsRegistry(opts?: {
       label: rt.desc.label,
       ts: new Date().toISOString(),
       ...(rt.desc.endedReason ? { reason: rt.desc.endedReason } : {}),
+    })
+  }
+
+  // Clear a row's `stalledSinceMs` flag the instant any activity disproves
+  // the stall claim — shared by `pulseActivity` (new adapter traffic), turn
+  // start, and the turn's own `finally` (busy flips false), and by the
+  // `clearStalled` registry method itself. No-ops (no persist, no event)
+  // when the row wasn't flagged, so recovery is silent for the overwhelming
+  // majority of turns that were never stalled in the first place.
+  const clearStalledFlag = (rt: SessionRuntime): void => {
+    if (rt.desc.stalledSinceMs === undefined) return
+    rt.desc.stalledSinceMs = undefined
+    schedulePersist()
+    sessionEvents?.emit({
+      type: "session:stall-cleared",
+      sessionId: rt.desc.id,
+      ...(rt.desc.label ? { label: rt.desc.label } : {}),
+      ts: new Date().toISOString(),
     })
   }
 
@@ -4145,6 +4211,7 @@ export function createSessionsRegistry(opts?: {
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     rt.desc.awaitingQuestion = undefined
     releaseBlockedOn(rt.desc)      // clear stale blocked-on from prior turn
+    clearStalledFlag(rt)           // clear stale stall flag from prior turn
     let turnCompleted = false
     // Whether the adapter itself emitted a `turn-end` during this turn.
     // Drives the P5 guarantee: when the event stream ends WITHOUT one
@@ -4240,6 +4307,9 @@ export function createSessionsRegistry(opts?: {
       // crashed, stream ended early) must not leave the session flagged
       // blocked forever — the turn is over, nothing is pending anymore.
       releaseBlockedOn(rt.desc)
+      // The turn is over either way — "mid-turn and silent" can no longer
+      // hold, so any stall flag from this turn is stale.
+      clearStalledFlag(rt)
 
       // ── Synthetic tool-results for orphaned pending tool calls ─────────
       // Adapters that execute a tool but silently drop the matching
@@ -5479,6 +5549,9 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       if (!rt) return
       rt.desc.lastActivityAt = new Date().toISOString()
+      // Any adapter traffic disproves a "the stream died" claim — clear it
+      // immediately rather than waiting for the next sweep tick.
+      clearStalledFlag(rt)
       schedulePersist()
     },
     list(opts) {
@@ -5763,6 +5836,33 @@ export function createSessionsRegistry(opts?: {
       // see the row leave "running".
       emitExited(rt)
       return true
+    },
+    markStalled(id, stalledSinceMs) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      // Only a LIVE, mid-turn, unblocked agent-cli row is stall-markable —
+      // same defensive shape as reapIdle/markCrashed's guards, kept honest
+      // for any caller regardless of what the sweep already filtered for.
+      if (rt.desc.kind !== "agent-cli" || rt.desc.status !== "running") return false
+      if (rt.desc.busy !== true || rt.desc.blockedOn !== undefined) return false
+      if (rt.desc.stalledSinceMs !== undefined) return false
+      rt.desc.stalledSinceMs = stalledSinceMs
+      schedulePersist()
+      sessionEvents?.emit({
+        type: "session:stalled",
+        sessionId: rt.desc.id,
+        stalledSinceMs,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+      return true
+    },
+    clearStalled(id) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      const wasFlagged = rt.desc.stalledSinceMs !== undefined
+      clearStalledFlag(rt)
+      return wasFlagged
     },
     isResuming(id) {
       return !!sessions.get(id)?.resumePromise
