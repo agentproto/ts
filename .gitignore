@@ -73,3 +73,4 @@ pnpm-debug.log*
 .docs/
 .plans/
 packages/vscode/*.vsix
+.turbo-cache
