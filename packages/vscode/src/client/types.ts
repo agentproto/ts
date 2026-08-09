@@ -201,6 +201,11 @@ export interface SessionDescriptor {
    *  #session-visibility). Drives the "delegating" row state for an idle parent
    *  waiting on its busy subtree. Ephemeral, stamped at read time. */
   childrenBusy?: number
+  /** UI-COMPUTED, not from the daemon: whether the current model has more than
+   *  one gateway route to switch between (chip-pickers). The transcript panel
+   *  stamps it from the catalog before posting so the composer's route chip can
+   *  dim when there's nothing to pick. Absent ⇒ unknown (chip stays active). */
+  routeSwitchable?: boolean
   /** Mirrors `@agentproto/runtime` SessionDescriptor.lastError — a short
    *  human-readable string for the most recent automatic failure (currently
    *  only stamped by the crash-detect sweep). */

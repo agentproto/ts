@@ -2351,6 +2351,13 @@ export function buildHtml(
           composerEffort.textContent = session.effort ? ('effort: ' + session.effort) : '';
           // Route chip only shows when a gateway is pinned (:empty hides it).
           composerRoute.textContent = session.route && session.route.gateway ? ('route: ' + session.route.gateway) : '';
+          // Dim when the model has a single valid gateway — nothing to switch to
+          // (chip-pickers). Undefined (catalog not loaded yet) leaves it active.
+          const routeLocked = session.routeSwitchable === false;
+          composerRoute.classList.toggle('dimmed', routeLocked);
+          composerRoute.title = routeLocked
+            ? 'Only one route is available for this model'
+            : 'Switch route (restarts the session — conversation carries over)';
           composerPosture.textContent = defaultPostureLabel(session);
           const auth = accessIdentity(session);
           composerAuth.textContent = auth === '—' ? 'no wallet' : auth;
@@ -3843,6 +3850,8 @@ export function buildHtml(
         vscode.postMessage({ type: 'changeEffort' });
       });
       composerRoute.addEventListener('click', function() {
+        // Inert while dimmed — a single-gateway model has nothing to switch to.
+        if (composerRoute.classList.contains('dimmed')) return;
         vscode.postMessage({ type: 'changeRoute' });
       });
       // Posture and auth chips route through the same unified config picker

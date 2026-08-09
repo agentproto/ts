@@ -462,6 +462,37 @@ describe("transcriptPanel webview — composer", () => {
     expect(posted).toContainEqual({ type: "changeModel" })
   })
 
+  it("dims the route chip and makes it inert when only one gateway is valid (chip-pickers)", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "sonnet-5",
+      route: { gateway: "anthropic" } as SessionDescriptor["route"],
+      routeSwitchable: false,
+    })
+    const route = btn(panel, "composer-route")
+    expect(route.textContent).toBe("route: anthropic")
+    expect(route.classList.contains("dimmed")).toBe(true)
+    route.dispatchEvent(new panel.window.Event("click"))
+    expect(posted).not.toContainEqual({ type: "changeRoute" })
+  })
+
+  it("keeps the route chip active (clickable) when more than one gateway is valid", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "sonnet-5",
+      route: { gateway: "anthropic" } as SessionDescriptor["route"],
+      routeSwitchable: true,
+    })
+    const route = btn(panel, "composer-route")
+    expect(route.classList.contains("dimmed")).toBe(false)
+    route.dispatchEvent(new panel.window.Event("click"))
+    expect(posted).toContainEqual({ type: "changeRoute" })
+  })
+
   it("clicking the posture chip posts changePosture to the host", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
