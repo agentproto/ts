@@ -689,7 +689,7 @@ export function buildHtml(nonce: string): string {
       <button class="segb" type="button" data-lane="auto" role="tab">Auto<span class="n"></span></button>
     </div>
     <input id="q" placeholder="⌕ Filter…" autocomplete="off" aria-label="Filter sessions" />
-    <button id="arch-toggle" class="icon-btn" type="button" title="Show archived sessions" aria-label="Show archived sessions" aria-pressed="false">▣</button>
+    <button id="arch-toggle" class="icon-btn" type="button" title="Show archived sessions" aria-label="Show archived sessions" aria-pressed="false"></button>
   </div>
   <div id="list"></div>
   <div id="empty" hidden>No sessions match.</div>
@@ -723,6 +723,8 @@ export function buildHtml(nonce: string): string {
       const STOP_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.4" y="5.4" width="5.2" height="5.2" rx="1" fill="currentColor"/></svg>';
       const ARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5M6 7.5h4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M5 2.8h6l1 2.2H4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
       const UNARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M8 11V6.5M6 8l2-2 2 2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+      archToggleEl.innerHTML = ARCH_SVG;
 
       function escapeHtml(text) {
         return String(text).replace(/[&<>"']/g, function (ch) {
