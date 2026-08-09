@@ -48,7 +48,8 @@ agentproto config set daemon.port 18791
     "bind": "127.0.0.1",
     "allowedOrigins": [
       "https://guilde.work"
-    ]
+    ],
+    "turnStallAfterMs": 300000
   },
 
   // End-to-end pairing over an untrusted rendezvous broker. Read by
@@ -167,6 +168,7 @@ Defaults for `agentproto daemon` and `agentproto serve`:
 | `bind`           | string   | Bind address (default `127.0.0.1` — loopback-only).    |
 | `allowedOrigins` | string[] | CORS allow-list for browser callers of the daemon API. |
 | `authToken`      | string   | Stable bearer token for `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route — survives restarts, unlike the per-boot `runtime.json` token. Overridden inline by `agentproto serve --auth-token <token>`. Loopback callers with no `X-Forwarded-For` header are still exempt. Unset ⇒ those routes stay open. |
+| `turnStallAfterMs` | number | Turn-liveness watchdog threshold in ms. When a busy agent-cli session has had no adapter activity for longer than this, the daemon stamps `stalledSinceMs` on the descriptor and emits `session:stalled`. Detection-only — never auto-kills. Default on at 5 minutes (`300000`). Set to `0` or a negative value to disable. Env override: `AGENTPROTO_TURN_STALL_AFTER_MS`. |
 
 Verb flags override config; config overrides hard-coded defaults.
 

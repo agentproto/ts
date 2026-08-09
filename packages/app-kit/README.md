@@ -91,6 +91,42 @@ An app may also declare `requires: ["@acme/shared", ...]` — app ids that must 
 applied to the same scope before this one can run. The runtime validates the
 graph when mounting apps via `app_apply`.
 
+## UI surfaces, artifacts, and dev-launch config
+
+Beyond agents and workflows, an app can declare three optional surfaces that
+round-trip through `emit` and `loadAppHandle` and are integrated into the
+runtime app registry:
+
+- **`ui`** — an HTML dashboard/panel. `html` is written to
+  `.agentproto/ui/index.html`; `APP.md` frontmatter carries the relative path
+  plus optional `title`, `description`, `tools`, and `csp`.
+- **`artifacts`** — a list of artifact types the app's agents may produce,
+  declared for discovery.
+- **`dev`** — one or more local launch recipes (`name`, `runtimeExecutable`,
+  `runtimeArgs`, `port`, `url`) for running the app in development.
+
+```ts
+export const dashboardApp = defineApp({
+  id: "@acme/dashboard",
+  name: "Operations Dashboard",
+  agents: [/* … */],
+  workflows: [/* … */],
+  ui: {
+    html: "<!doctype html><html>…</html>",
+    title: "Ops Dashboard",
+    tools: ["terminal_start", "agent_start"],
+  },
+  artifacts: [
+    { type: "image/png", description: "Generated cover illustration" },
+  ],
+  dev: {
+    launch: [
+      { name: "web", runtimeExecutable: "npm", runtimeArgs: ["run", "dev"], port: 3000 },
+    ],
+  },
+})
+```
+
 ## Consuming a bundle
 
 ### `handle.toMastraAgents(resolvers)` — run them
@@ -127,6 +163,7 @@ shared root `.agents/` convention:
 <dir>/.agentproto/agents/reviewer/AGENT.md
 <dir>/.agentproto/agents/fixer/AGENT.md
 <dir>/.agentproto/workflows/review-and-fix/WORKFLOW.md   (shared — a workflow may be run by several agents)
+<dir>/.agentproto/ui/index.html                         (only when the app declares a `ui` surface)
 ```
 
 The daemon's state root is migrating toward a `tenants/<t>/…` segment
@@ -146,8 +183,11 @@ whose frontmatter lists every agent + workflow the app bundles as `{ id, path }`
 refs (relative to `dir`), plus the app's own optional `id` / `name` / `version`
 (defaults to `"0.1.0"` when `id` is set) / `description`, an optional `requires`
 array of app ids it depends on, and, when the app has a home workspace, that
-workspace's `id`. Nothing reads `AGENT.md`/`WORKFLOW.md` files on their own today
-— `APP.md` is the thing a future daemon `app_install` discovers and consumes.
+workspace's `id`. When declared, `ui` metadata, `artifacts`, and `dev` launch
+configs are also carried in the frontmatter (the `ui.html` document is written
+next to `APP.md` and referenced by path). Nothing reads `AGENT.md`/`WORKFLOW.md`
+files on their own today — `APP.md` is the thing a future daemon `app_install`
+discovers and consumes.
 
 `loadAppHandle(dir)` is the inverse: it reads `APP.md`, loads each referenced
 `AGENT.md` / `WORKFLOW.md` (and `WORKSPACE.md`, if declared) with their own

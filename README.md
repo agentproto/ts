@@ -26,7 +26,7 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 0.11.3-alpha.** APIs are stabilising; expect minor breaking changes
+> **Status: 0.11.4-alpha.** APIs are stabilising; expect minor breaking changes
 > between alpha releases.
 
 ## Quick start
