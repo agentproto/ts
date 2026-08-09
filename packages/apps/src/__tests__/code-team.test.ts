@@ -4,6 +4,12 @@ import { codeTeam } from "../code-team/index.js"
 const fakeModel = { provider: "test", id: "test-model" }
 
 describe("code-team app", () => {
+  it("exposes stable app identity fields", () => {
+    expect(codeTeam.id).toBe("@agentproto/code-team")
+    expect(codeTeam.name).toBe("Code Team")
+    expect(codeTeam.version).toBe("0.1.0")
+  })
+
   it("bundles the three team agents bound to the delivery workflow", () => {
     expect(codeTeam.agents.map((a) => a.agent.id).sort()).toEqual([
       "@agentproto/fixer",

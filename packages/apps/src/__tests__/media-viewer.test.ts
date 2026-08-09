@@ -4,6 +4,12 @@ import { mediaViewer } from "../media-viewer/index.js"
 const fakeModel = { provider: "test", id: "test-model" }
 
 describe("media-viewer app", () => {
+  it("exposes stable app identity fields", () => {
+    expect(mediaViewer.id).toBe("@agentproto/media-viewer")
+    expect(mediaViewer.name).toBe("Media Viewer")
+    expect(mediaViewer.version).toBe("0.1.0")
+  })
+
   it("bundles the single cataloger agent bound to the scan-media workflow", () => {
     expect(mediaViewer.agents.map((a) => a.agent.id)).toEqual(["@agentproto/media-cataloger"])
     expect(mediaViewer.workflows.map((w) => w.id)).toEqual(["scan-media"])
