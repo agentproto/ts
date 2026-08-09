@@ -120,7 +120,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerAuthProfileCommands(ctx, client, authProfilesProvider)
   registerLocalRouterCommands(ctx, client, authProfilesProvider) // agentproto.start/stopLlmEndpoint
   registerOnboardingCommand(ctx, client, authProfilesProvider) // agentproto.runOnboarding
-  registerAuthSettingsPanel(ctx, client, authProfilesProvider) // agentproto.openAuthSettings
+  registerAuthSettingsPanel(ctx) // agentproto.openAuthSettings — redirector to Wallets / Auth & Model Map
 
   // One-time auto-adopt of a local Claude Code login (agentproto.autoAdoptLocalLogin).
   // Fire-and-forget: it never throws into activation and self-gates on the setting.
