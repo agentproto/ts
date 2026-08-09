@@ -232,8 +232,9 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private serverTotal = 0
   private loading = false
   private loadError: string | undefined
-  /** "Show archived" affordance — when on, the summary fetch and the model
-   *  keep archived rows (item 4). Off by default (Design B's default view). */
+  /** "Show archived" toggle — switches the view between active-only (off,
+   *  the default) and archived-only (on): the summary fetch and the model
+   *  swap which set of rows is shown, they never merge. */
   private showArchived = false
   /** Clock-driven repaint so `now`-derived status (stall detection) and
    *  relative times stay honest with no daemon event to trigger a render —
@@ -284,8 +285,8 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     })
 
     // The webview owns its own archived visibility (the "show archived"
-    // affordance re-fetches summaries with includeArchived); the store's tree
-    // slice stays off.
+    // toggle re-fetches summaries with includeArchived to swap to the
+    // archived-only view); the store's tree slice stays off.
     if (this.store.showArchived) this.store.setShowArchived(false)
 
     // Initial bounded load: first page only. The list renders immediately
@@ -979,16 +980,19 @@ export function buildHtml(nonce: string): string {
 
         renderRail(payload.rail || [], payload.lane);
 
+        var showArchived = payload.showArchived === true;
         var groups = payload.groups || [];
         var shown = 0;
         for (var g = 0; g < groups.length; g++) shown += groups[g].rows.length;
         listEl.innerHTML = groups.map(groupHTML).join('');
         emptyEl.hidden = shown !== 0;
+        emptyEl.textContent = showArchived ? 'No archived sessions.' : 'No sessions match.';
         summaryEl.textContent = payload.summary;
-        var showArchived = payload.showArchived === true;
         archToggleEl.classList.toggle('on', showArchived);
         archToggleEl.setAttribute('aria-pressed', showArchived ? 'true' : 'false');
-        archToggleEl.title = showArchived ? 'Hide archived sessions' : 'Show archived sessions';
+        var archToggleLabel = showArchived ? 'Show active sessions' : 'Show archived only';
+        archToggleEl.title = archToggleLabel;
+        archToggleEl.setAttribute('aria-label', archToggleLabel);
         loadMoreEl.hidden = !payload.hasMore;
         loadMoreEl.disabled = payload.loading;
         spinnerEl.hidden = !payload.loading;

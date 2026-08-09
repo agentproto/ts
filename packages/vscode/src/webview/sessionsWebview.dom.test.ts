@@ -130,6 +130,7 @@ function modelMessage(
     hasMore?: boolean
     loadError?: string
     connection?: unknown
+    showArchived?: boolean
     palette?: string[]
     paletteNames?: string[]
   } = {},
@@ -149,6 +150,7 @@ function modelMessage(
     loading: overrides.loading ?? false,
     hasMore: overrides.hasMore ?? false,
     loadError: overrides.loadError ?? undefined,
+    showArchived: overrides.showArchived ?? false,
     palette: overrides.palette ?? PALETTE,
     paletteNames: overrides.paletteNames ?? PALETTE_NAMES,
   }
@@ -217,6 +219,14 @@ describe("sessions webview — render", () => {
     expect(el(panel, "empty").hidden).toBe(false)
     send(panel, modelMessage())
     expect(el(panel, "empty").hidden).toBe(true)
+  })
+
+  it("uses an archived-specific empty message in the archived-only view", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [] }))
+    expect(htmlEl(el(panel, "empty")).textContent).toBe("No sessions match.")
+    send(panel, modelMessage({ groups: [], showArchived: true }))
+    expect(htmlEl(el(panel, "empty")).textContent).toBe("No archived sessions.")
   })
 
   it("writes the host-computed summary line verbatim into the footer", () => {
@@ -384,15 +394,19 @@ describe("sessions webview — interactions", () => {
     expect(panel.posted).toEqual([{ type: "loadMore" }])
   })
 
-  it("clicking the archived toggle posts toggleArchived and reflects showArchived (item 4)", () => {
+  it("clicking the archived toggle posts toggleArchived and reflects showArchived as an archived-only view switch", () => {
     const panel = renderPanel()
     send(panel, modelMessage())
+    expect(htmlEl(el(panel, "arch-toggle")).getAttribute("title")).toBe("Show archived only")
+    expect(htmlEl(el(panel, "arch-toggle")).getAttribute("aria-label")).toBe("Show archived only")
     panel.posted.length = 0
     click(panel, el(panel, "arch-toggle"))
     expect(panel.posted).toEqual([{ type: "toggleArchived" }])
-    send(panel, { ...modelMessage(), showArchived: true })
+    send(panel, modelMessage({ showArchived: true }))
     expect(el(panel, "arch-toggle").classList.contains("on")).toBe(true)
     expect(htmlEl(el(panel, "arch-toggle")).getAttribute("aria-pressed")).toBe("true")
+    expect(htmlEl(el(panel, "arch-toggle")).getAttribute("title")).toBe("Show active sessions")
+    expect(htmlEl(el(panel, "arch-toggle")).getAttribute("aria-label")).toBe("Show active sessions")
   })
 
   it("renders the archived toggle as an archive-box icon, not the stop-lookalike glyph", () => {

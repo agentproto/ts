@@ -484,8 +484,10 @@ export interface BuildSessionsWebviewModelOptions {
   now: number
   /** Daemon's total session count for this view; defaults to the loaded count. */
   serverTotal?: number
-  /** Keep archived rows in the model (the "show archived" affordance). Default
-   *  false — Design B's default view drops archived rows entirely. */
+  /** Switch to the archived-only view (the "show archived" toggle). Default
+   *  false — the active-only view, exactly as before. When true the pool is
+   *  ONLY archived rows; active sessions are excluded, not merged in — the
+   *  two states are mutually exclusive views, not additive. */
   includeArchived?: boolean
   /** How many rows the panel has actually paged in from the server, for the
    *  "N of M loaded" footer. Defaults to the input length; pass it explicitly
@@ -593,10 +595,14 @@ export function buildSessionsWebviewModel(
   workspaces: WorkspacesConfig,
   opts: BuildSessionsWebviewModelOptions,
 ): SessionsWebviewModel {
-  // Archived rows drop out unless the "show archived" affordance asked for them
-  // (an archive action slides the row away). Resume-chain predecessors collapse
-  // to their live tail, same as the tree.
-  const pool = opts.includeArchived ? sessions : sessions.filter(s => s.archived !== true)
+  // The "show archived" toggle switches between two disjoint views, not an
+  // additive merge: OFF shows ONLY active rows, ON shows ONLY archived rows
+  // (an archive action slides a row from the active view into the archived
+  // one, never both). Resume-chain predecessors collapse to their live tail,
+  // same as the tree.
+  const pool = opts.includeArchived
+    ? sessions.filter(s => s.archived === true)
+    : sessions.filter(s => s.archived !== true)
   const visible = collapseResumeChains(pool)
 
   // 1. Search filter (reused predicate).
