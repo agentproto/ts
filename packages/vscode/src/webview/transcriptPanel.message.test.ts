@@ -87,7 +87,21 @@ describe("handleWebviewMessage", () => {
     })
   })
 
-  it("changePosture routes to the unified agentproto.configureSession picker", async () => {
+  it("changeRoute routes to the per-axis configureSessionAxis picker for route (chip-pickers)", async () => {
+    await handleWebviewMessage(
+      { type: "changeRoute" },
+      panel,
+      controller,
+      outputDocs,
+      client,
+    )
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSessionAxis", {
+      sessionId: "session-abc",
+      axis: "route",
+    })
+  })
+
+  it("changePosture routes to the per-axis configureSessionAxis picker for posture (chip-pickers)", async () => {
     await handleWebviewMessage(
       { type: "changePosture" },
       panel,
@@ -95,10 +109,13 @@ describe("handleWebviewMessage", () => {
       outputDocs,
       client,
     )
-    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSession", "session-abc")
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSessionAxis", {
+      sessionId: "session-abc",
+      axis: "posture",
+    })
   })
 
-  it("changeAccess routes to the unified agentproto.configureSession picker", async () => {
+  it("changeAccess routes to the per-axis configureSessionAxis picker for access/wallet (chip-pickers)", async () => {
     await handleWebviewMessage(
       { type: "changeAccess" },
       panel,
@@ -106,7 +123,10 @@ describe("handleWebviewMessage", () => {
       outputDocs,
       client,
     )
-    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSession", "session-abc")
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSessionAxis", {
+      sessionId: "session-abc",
+      axis: "access",
+    })
   })
 
   it("WP3: setView conversation reveals the webview panel", async () => {

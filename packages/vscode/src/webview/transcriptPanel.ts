@@ -270,9 +270,27 @@ export async function handleWebviewMessage(
         axis: "effort",
       })
       return
+    case "changeRoute":
+      // Restart-bound: configureSessionAxis runs the confirm → restart-with-
+      // override → rebind → resume-badge flow.
+      await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+        sessionId: controller.session.id,
+        axis: "route",
+      })
+      return
     case "changePosture":
+      await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+        sessionId: controller.session.id,
+        axis: "posture",
+      })
+      return
     case "changeAccess":
-      await vscode.commands.executeCommand("agentproto.configureSession", controller.session.id)
+      // Wallet — restart-bound; the per-axis flow runs the confirm → restart →
+      // rebind → resume-badge path.
+      await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+        sessionId: controller.session.id,
+        axis: "access",
+      })
       return
     case "send":
       await controller.onSend(msg.text, false)
@@ -1878,6 +1896,7 @@ export function buildHtml(
           <button id="composer-model" class="composer-chip composer-chip-btn" type="button" title="Switch model"></button>
           <button id="composer-effort" class="composer-chip composer-chip-btn" type="button" title="Switch effort"></button>
           <button id="composer-posture" class="composer-chip composer-chip-btn" type="button" title="Switch mode / posture"></button>
+          <button id="composer-route" class="composer-chip composer-chip-btn" type="button" title="Switch route (restarts the session — conversation carries over)"></button>
           <button id="composer-auth" class="composer-chip composer-chip-btn" type="button" title="Switch wallet (restarts the session — conversation carries over)"></button>
         </span>
         <span id="send-hint" class="send-hint">⏎ send · ⇧⏎ newline</span>
@@ -1938,6 +1957,7 @@ export function buildHtml(
       const composerHarness = document.getElementById('composer-harness');
       const composerModel = document.getElementById('composer-model');
       const composerEffort = document.getElementById('composer-effort');
+      const composerRoute = document.getElementById('composer-route');
       const composerPosture = document.getElementById('composer-posture');
       const composerAuth = document.getElementById('composer-auth');
       const input = document.getElementById('input');
@@ -2320,6 +2340,7 @@ export function buildHtml(
         composerHarness.hidden = isPlainPty;
         composerModel.hidden = isPlainPty;
         composerEffort.hidden = isPlainPty;
+        composerRoute.hidden = isPlainPty;
         composerPosture.hidden = isPlainPty;
         composerAuth.hidden = isPlainPty;
         if (!isPlainPty) {
@@ -2328,6 +2349,8 @@ export function buildHtml(
           // The effort chip only shows when the session carries one — an adapter
           // that has no effort axis leaves the chip empty (:empty hides it).
           composerEffort.textContent = session.effort ? ('effort: ' + session.effort) : '';
+          // Route chip only shows when a gateway is pinned (:empty hides it).
+          composerRoute.textContent = session.route && session.route.gateway ? ('route: ' + session.route.gateway) : '';
           composerPosture.textContent = defaultPostureLabel(session);
           const auth = accessIdentity(session);
           composerAuth.textContent = auth === '—' ? 'no wallet' : auth;
@@ -3818,6 +3841,9 @@ export function buildHtml(
       });
       composerEffort.addEventListener('click', function() {
         vscode.postMessage({ type: 'changeEffort' });
+      });
+      composerRoute.addEventListener('click', function() {
+        vscode.postMessage({ type: 'changeRoute' });
       });
       // Posture and auth chips route through the same unified config picker
       // (agentproto.configureSession) rather than their own dedicated flow —
