@@ -29,7 +29,7 @@ import matter from "gray-matter"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent/manifest"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { parseWorkspaceManifest, workspaceFromManifest } from "@agentproto/workspace/manifest"
-import type { AgentEntry, AppHandle } from "./types.js"
+import type { AgentEntry, AppArtifactDecl, AppDevDefinition, AppHandle } from "./types.js"
 import { defineApp } from "./define-app.js"
 
 export class AppLoadError extends Error {
@@ -44,6 +44,17 @@ interface AppRef {
   readonly path: string
 }
 
+interface AppFrontmatterUi {
+  readonly path: string
+  readonly title?: string
+  readonly description?: string
+  readonly tools?: readonly string[]
+  readonly csp?: {
+    readonly connectDomains?: readonly string[]
+    readonly resourceDomains?: readonly string[]
+  }
+}
+
 interface AppFrontmatter {
   readonly schema: string
   readonly id?: string
@@ -54,6 +65,9 @@ interface AppFrontmatter {
   readonly workflows: readonly AppRef[]
   readonly workspace?: string
   readonly requires?: readonly string[]
+  readonly ui?: AppFrontmatterUi
+  readonly artifacts?: readonly AppArtifactDecl[]
+  readonly dev?: AppDevDefinition
 }
 
 function resolveRef(dir: string, path: string): string {
@@ -182,6 +196,26 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     }
   }
 
+  let ui
+  if (fm.ui) {
+    const uiPath = resolveRef(dir, fm.ui.path)
+    let html: string
+    try {
+      html = await readFile(uiPath, "utf8")
+    } catch (err) {
+      throw new AppLoadError(
+        `ui: cannot read '${uiPath}': ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    ui = {
+      html,
+      ...(fm.ui.title !== undefined ? { title: fm.ui.title } : {}),
+      ...(fm.ui.description !== undefined ? { description: fm.ui.description } : {}),
+      ...(fm.ui.tools !== undefined ? { tools: fm.ui.tools } : {}),
+      ...(fm.ui.csp !== undefined ? { csp: fm.ui.csp } : {}),
+    }
+  }
+
   return defineApp({
     agents,
     workflows,
@@ -191,5 +225,8 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(fm.version !== undefined ? { version: fm.version } : {}),
     ...(fm.description !== undefined ? { description: fm.description } : {}),
     ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
+    ...(ui !== undefined ? { ui } : {}),
+    ...(fm.artifacts !== undefined ? { artifacts: fm.artifacts } : {}),
+    ...(fm.dev !== undefined ? { dev: fm.dev } : {}),
   })
 }

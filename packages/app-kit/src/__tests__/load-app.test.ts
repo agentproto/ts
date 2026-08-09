@@ -267,6 +267,95 @@ describe("loadAppHandle — the inverse of emit", () => {
     expect(parsed.data.requires).toEqual(["@test/base-app", "@test/util-app"])
   })
 
+  it("round-trips ui: html byte-equal, tools/csp preserved", async () => {
+    const html = "<html><body><h1>Panel</h1></body></html>"
+    const original = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent with a ui.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      ui: {
+        html,
+        title: "Solo Panel",
+        description: "A panel.",
+        tools: ["read_file"],
+        csp: { connectDomains: ["api.example.com"], resourceDomains: ["cdn.example.com"] },
+      },
+    })
+    await original.emit(dir)
+
+    const loaded = await loadAppHandle(dir)
+    expect(loaded.ui?.html).toBe(html)
+    expect(loaded.ui?.title).toBe("Solo Panel")
+    expect(loaded.ui?.description).toBe("A panel.")
+    expect(loaded.ui?.tools).toEqual(["read_file"])
+    expect(loaded.ui?.csp).toEqual({
+      connectDomains: ["api.example.com"],
+      resourceDomains: ["cdn.example.com"],
+    })
+  })
+
+  it("round-trips artifacts and dev", async () => {
+    const original = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      artifacts: [{ type: "report", description: "A generated report." }],
+      dev: {
+        launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 }],
+      },
+    })
+    await original.emit(dir)
+
+    const loaded = await loadAppHandle(dir)
+    expect(loaded.artifacts).toEqual([{ type: "report", description: "A generated report." }])
+    expect(loaded.dev?.launch).toEqual([
+      { name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 },
+    ])
+  })
+
+  it("throws AppLoadError when ui.path is set but the file is missing", async () => {
+    const missingUiDir = await mkdtemp(join(tmpdir(), "app-kit-load-missing-ui-"))
+    try {
+      const app = defineApp({
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "solo",
+              description: "Solo agent with a ui.",
+              model: "claude-sonnet-5",
+            }),
+            body: "Solo.",
+          },
+        ],
+        ui: { html: "<html></html>" },
+      })
+      const { uiPath } = await app.emit(missingUiDir)
+      await rm(uiPath!, { force: true })
+
+      await expect(loadAppHandle(missingUiDir)).rejects.toThrow(AppLoadError)
+      await expect(loadAppHandle(missingUiDir)).rejects.toThrow(/ui/)
+    } finally {
+      await rm(missingUiDir, { recursive: true, force: true })
+    }
+  })
+
   it("throws AppLoadError when requires is not an array of strings", async () => {
     const badDir = await mkdtemp(join(tmpdir(), "app-kit-load-bad-requires-"))
     try {

@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -193,6 +193,48 @@ describe("app_* verbs", () => {
     expect(stopped.killed).toEqual([sessionId])
     expect(stopped.status).toBe("stopped")
     expect(registry.get(sessionId)?.status).toBe("killed")
+  })
+
+  it("app_install persists ui with an absolute path, plus description/artifacts/dev", async () => {
+    const app = defineApp({
+      id: "@test/ui-app",
+      name: "UI App",
+      description: "An app with a ui.",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      ui: {
+        html: "<html><body>Panel</body></html>",
+        title: "Panel",
+        tools: ["read_file"],
+        csp: { connectDomains: ["api.example.com"] },
+      },
+      artifacts: [{ type: "report", description: "A generated report." }],
+      dev: { launch: [{ name: "dev", runtimeExecutable: "node", port: 3000 }] },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(false)
+    const record = parseToolJson(res)
+
+    expect(record.description).toBe("An app with a ui.")
+    expect(record.ui.path).toBe(join(dir, ".agentproto", "ui", "index.html"))
+    expect(isAbsolute(record.ui.path)).toBe(true)
+    expect(record.ui.title).toBe("Panel")
+    expect(record.ui.tools).toEqual(["read_file"])
+    expect(record.ui.csp).toEqual({ connectDomains: ["api.example.com"] })
+    expect(record.artifacts).toEqual([{ type: "report", description: "A generated report." }])
+    expect(record.dev).toEqual({ launch: [{ name: "dev", runtimeExecutable: "node", port: 3000 }] })
   })
 
   it("app_run rejects an unknown agent id", async () => {
