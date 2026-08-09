@@ -31,10 +31,12 @@ import { NoTranscriptError } from "../client/daemonClient.js"
 import type { DaemonClient } from "../client/daemonClient.js"
 import { subscribeSse, type SseSubscription } from "../client/sse.js"
 import type {
+  CatalogModelsResponse,
   SessionDescriptor,
   SessionEventRecord,
   SessionStreamLine,
 } from "../client/types.js"
+import { isRouteSwitchable } from "../commands/sessionConfig.logic.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { buildAuthHeaders } from "../auth.js"
 
@@ -286,6 +288,11 @@ export class TranscriptPanelController {
   private ptyHandle: ReturnType<typeof bridgePtyToWebview> | undefined
   /** Last conversation posted to the webview — the diff base for the next patch. */
   private lastPresented: PresentedConversation | undefined
+  /** Model catalog, fetched once and cached — used only to stamp
+   *  `routeSwitchable` onto the session so the composer's route chip can dim
+   *  when there's a single gateway (chip-pickers). Static-ish, so one fetch. */
+  private catalog: CatalogModelsResponse | undefined
+  private catalogRequested = false
 
   private readonly renderers = { renderMarkdown, escapeHtml }
 
@@ -307,14 +314,44 @@ export class TranscriptPanelController {
     })
   }
 
+  /** Stamp the UI-computed `routeSwitchable` flag onto a descriptor from the
+   *  cached catalog (chip-pickers). Left undefined until the catalog loads. */
+  private stampRouteSwitchable(session: SessionDescriptor): SessionDescriptor {
+    if (!this.catalog) return session
+    return { ...session, routeSwitchable: isRouteSwitchable(this.catalog, session.model) }
+  }
+
   onSessionUpdate(session: SessionDescriptor): void {
     this.exited = isExited(session.status)
     this.currentSession = session
+    // Fetch the catalog once (fire-and-forget); until it lands, routeSwitchable
+    // is left undefined (chip stays active). Once cached, we re-post so the
+    // route chip can settle into its dimmed/active state.
+    if (!this.catalogRequested) {
+      this.catalogRequested = true
+      // Defensive: the catalog is a NICE-TO-HAVE (route-chip dimming), never a
+      // reason to break a session update — a client without the method, or a
+      // synchronous throw, just leaves routeSwitchable unknown.
+      try {
+        void this.client
+          .catalogModels()
+          .then(catalog => {
+            this.catalog = catalog
+            if (this.initSent && !this.disposed) {
+              this.messenger.postMessage({ type: "sessionUpdate", session: this.stampRouteSwitchable(this.currentSession) })
+            }
+          })
+          .catch(() => {})
+      } catch {
+        /* no catalog support — route chip stays active */
+      }
+    }
+    const stamped = this.stampRouteSwitchable(session)
     if (!this.initSent) {
-      this.pendingSessionUpdate = session
+      this.pendingSessionUpdate = stamped
       return
     }
-    this.messenger.postMessage({ type: "sessionUpdate", session })
+    this.messenger.postMessage({ type: "sessionUpdate", session: stamped })
     // A lifecycle change (turn-end, exit, …) is a good moment to drain any
     // newly-durable events so the timeline stays responsive between ticks.
     if (this.autoPoll && this.mode === "structured") {
