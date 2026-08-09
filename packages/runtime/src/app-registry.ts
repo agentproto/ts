@@ -22,12 +22,33 @@ export interface InstalledApp {
   readonly dir: string
   readonly version?: string
   readonly name?: string
+  readonly description?: string
   readonly agents: readonly InstalledAppRef[]
   readonly workflows: readonly InstalledAppRef[]
   /** Agent-declared (AIP-14) tool refs — the adapter's business, never
    *  validated at install time. Surfaced for visibility only. */
   readonly unvalidatedAgentTools: readonly string[]
   readonly requires?: readonly string[]
+  readonly ui?: {
+    readonly path: string
+    readonly title?: string
+    readonly description?: string
+    readonly tools?: readonly string[]
+    readonly csp?: {
+      readonly connectDomains?: readonly string[]
+      readonly resourceDomains?: readonly string[]
+    }
+  }
+  readonly artifacts?: readonly { readonly type: string; readonly description?: string }[]
+  readonly dev?: {
+    readonly launch: readonly {
+      readonly name: string
+      readonly runtimeExecutable: string
+      readonly runtimeArgs?: readonly string[]
+      readonly port?: number
+      readonly url?: string
+    }[]
+  }
   readonly installedAt: string
   readonly updatedAt: string
 }

@@ -48,6 +48,10 @@ export type {
   DoctypeHandle,
   WorkspaceShorthand,
   WorkspaceInput,
+  AppUiDefinition,
+  AppArtifactDecl,
+  AppDevLaunchConfig,
+  AppDevDefinition,
   ToMastraAgentOptions,
   EmittedApp,
 } from "./types.js"

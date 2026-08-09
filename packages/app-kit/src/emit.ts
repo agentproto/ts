@@ -36,7 +36,7 @@ import { join, relative } from "node:path"
 import matter from "gray-matter"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
-import type { AgentEntry, EmittedApp } from "./types.js"
+import type { AgentEntry, AppArtifactDecl, AppDevDefinition, AppUiDefinition, EmittedApp } from "./types.js"
 import { stripOwner } from "./refs.js"
 
 interface EmitInput {
@@ -48,6 +48,9 @@ interface EmitInput {
   readonly version?: string
   readonly description?: string
   readonly requires?: readonly string[]
+  readonly ui?: AppUiDefinition
+  readonly artifacts?: readonly AppArtifactDecl[]
+  readonly dev?: AppDevDefinition
 }
 
 export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> {
@@ -72,6 +75,25 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     const agentPath = join(agentDir, "AGENT.md")
     await writeFile(agentPath, toManifest(agent, body ?? ""), "utf8")
     agentPaths[agent.id] = agentPath
+  }
+
+  // UI surface (`.agentproto/ui/index.html`): the `html` body is written to
+  // disk, never inlined into APP.md frontmatter — the frontmatter carries
+  // only the relative `path` plus the display metadata.
+  let uiPath: string | undefined
+  let uiFrontmatter: Record<string, unknown> | undefined
+  if (app.ui) {
+    const uiDir = join(dir, ".agentproto", "ui")
+    await mkdir(uiDir, { recursive: true })
+    uiPath = join(uiDir, "index.html")
+    await writeFile(uiPath, app.ui.html, "utf8")
+    uiFrontmatter = {
+      path: relative(dir, uiPath),
+      ...(app.ui.title !== undefined ? { title: app.ui.title } : {}),
+      ...(app.ui.description !== undefined ? { description: app.ui.description } : {}),
+      ...(app.ui.tools !== undefined ? { tools: app.ui.tools } : {}),
+      ...(app.ui.csp !== undefined ? { csp: app.ui.csp } : {}),
+    }
   }
 
   const workflowPaths: string[] = []
@@ -104,10 +126,19 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     workflows: workflowRefs,
     ...(app.workspace ? { workspace: app.workspace.id } : {}),
     ...(app.requires !== undefined ? { requires: app.requires } : {}),
+    ...(uiFrontmatter !== undefined ? { ui: uiFrontmatter } : {}),
+    ...(app.artifacts !== undefined ? { artifacts: app.artifacts } : {}),
+    ...(app.dev !== undefined ? { dev: app.dev } : {}),
   }
   await writeFile(appPath, toManifest(appFrontmatter, app.description ?? ""), "utf8")
 
-  return { agentPaths, workflowPaths, appPath, ...(workspacePath ? { workspacePath } : {}) }
+  return {
+    agentPaths,
+    workflowPaths,
+    appPath,
+    ...(workspacePath ? { workspacePath } : {}),
+    ...(uiPath ? { uiPath } : {}),
+  }
 }
 
 /**

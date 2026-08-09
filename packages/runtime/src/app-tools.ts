@@ -85,12 +85,23 @@ function resolveRef(dir: string, path: string): string {
  * `{ id, path }` refs directly. Only called after `loadAppHandle` already
  * validated the file, so this stays a plain best-effort re-parse.
  */
+interface AppRefsUi {
+  readonly path: string
+  readonly title?: string
+  readonly description?: string
+  readonly tools?: readonly string[]
+  readonly csp?: {
+    readonly connectDomains?: readonly string[]
+    readonly resourceDomains?: readonly string[]
+  }
+}
+
 async function readAppRefs(
   dir: string,
-): Promise<{ agents: InstalledAppRef[]; workflows: InstalledAppRef[] }> {
+): Promise<{ agents: InstalledAppRef[]; workflows: InstalledAppRef[]; ui?: AppRefsUi }> {
   const appPath = join(dir, ".agentproto", "APP.md")
   const source = await readFile(appPath, "utf8")
-  const { data } = matter(source) as { data: { agents?: unknown; workflows?: unknown } }
+  const { data } = matter(source) as { data: { agents?: unknown; workflows?: unknown; ui?: unknown } }
   const toRefs = (v: unknown): InstalledAppRef[] =>
     Array.isArray(v)
       ? v
@@ -103,7 +114,12 @@ async function readAppRefs(
           )
           .map(e => ({ id: e.id, path: resolveRef(dir, e.path) }))
       : []
-  return { agents: toRefs(data.agents), workflows: toRefs(data.workflows) }
+  let ui: AppRefsUi | undefined
+  if (typeof data.ui === "object" && data.ui !== null && typeof (data.ui as { path?: unknown }).path === "string") {
+    const uiData = data.ui as AppRefsUi
+    ui = { ...uiData, path: resolveRef(dir, uiData.path) }
+  }
+  return { agents: toRefs(data.agents), workflows: toRefs(data.workflows), ...(ui ? { ui } : {}) }
 }
 
 export interface RegisterAppToolsOptions {
@@ -184,15 +200,29 @@ export async function performInstall(
     ...new Set(handle.agents.flatMap(e => (e.agent.tools ?? []).map(refIdOf))),
   ]
 
+  const ui = refs.ui
+    ? {
+        path: refs.ui.path,
+        ...(handle.ui?.title !== undefined ? { title: handle.ui.title } : {}),
+        ...(handle.ui?.description !== undefined ? { description: handle.ui.description } : {}),
+        ...(handle.ui?.tools !== undefined ? { tools: handle.ui.tools } : {}),
+        ...(handle.ui?.csp !== undefined ? { csp: handle.ui.csp } : {}),
+      }
+    : undefined
+
   const record = appRegistry.upsertApp({
     appId: handle.id,
     dir,
     ...(handle.version ? { version: handle.version } : {}),
     ...(handle.name ? { name: handle.name } : {}),
+    ...(handle.description ? { description: handle.description } : {}),
     agents: refs.agents,
     workflows: refs.workflows,
     unvalidatedAgentTools,
     ...(handle.requires ? { requires: handle.requires } : {}),
+    ...(ui ? { ui } : {}),
+    ...(handle.artifacts ? { artifacts: handle.artifacts } : {}),
+    ...(handle.dev ? { dev: handle.dev } : {}),
   })
 
   return { ok: true, record }
