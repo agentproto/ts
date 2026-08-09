@@ -1443,6 +1443,67 @@ export function buildHtml(
     }
     #book .pause .phead .blk { width: 9px; height: 14px; border-radius: 2px; background: var(--phosphor); }
     #book .pause .pquestion { font: 14px/1.7 var(--serif); margin-top: 8px; }
+
+    /* ── Composer, harmonized for the BOOK surface ──────────────────────
+       The write-back composer is shared by both views, but the transcript is
+       deliberately vscode-themed while the book is the fixed paper/phosphor
+       reading surface. When the book is the ACTIVE view, re-skin the composer
+       to the brand palette — phosphor accent instead of VS Code's default blue
+       focus ring / send button, an ink/paper surface, a quiet edge border, and
+       a visible phosphor focus ring. Scoped by the sibling combinator (the
+       composer's #input-area follows #book in the body), so the transcript
+       composer keeps its native theming untouched. The book palette vars live
+       on #book alone, so re-declare the few needed here as --bk-* locals. */
+    #book:not([hidden]) ~ #input-area {
+      --bk-ink: #1b1b1c; --bk-ink-2: #232324; --bk-edge: #333335;
+      --bk-paper: #f4f0e6; --bk-paper-45: rgba(244,240,230,.45);
+      --bk-phosphor: #2f9e63;
+      background-color: var(--bk-ink);
+    }
+    #book:not([hidden]) ~ #input-area #composer {
+      background: var(--bk-ink-2);
+      border-color: var(--bk-edge);
+    }
+    /* Visible, brand-coloured focus indicator (a phosphor edge + soft ring). */
+    #book:not([hidden]) ~ #input-area #composer:focus-within {
+      border-color: var(--bk-phosphor);
+      box-shadow: 0 0 0 1px rgba(47,158,99,.55);
+    }
+    #book:not([hidden]) ~ #input-area #composer.drag-over {
+      border-color: var(--bk-phosphor);
+    }
+    #book:not([hidden]) ~ #input-area #input {
+      color: var(--bk-paper);
+      caret-color: var(--bk-phosphor);
+    }
+    #book:not([hidden]) ~ #input-area #input::placeholder { color: var(--bk-paper-45); }
+    #book:not([hidden]) ~ #input-area #composer-bar { color: var(--bk-paper-45); }
+    #book:not([hidden]) ~ #input-area #composer button { color: var(--bk-paper-45); }
+    #book:not([hidden]) ~ #input-area #composer button:hover:not(:disabled) {
+      background: rgba(244,240,230,.08); color: var(--bk-paper);
+    }
+    #book:not([hidden]) ~ #input-area .composer-chip-btn:hover:not(:disabled) {
+      background: transparent; color: var(--bk-phosphor);
+    }
+    /* Send / Restart: brand phosphor with a DARK ink glyph — ink-on-phosphor is
+       ~5:1 contrast (paper-on-phosphor is only ~3:1), so the label stays legible
+       (a deliberate, more-accessible read of the mock's paper-on-phosphor). */
+    #book:not([hidden]) ~ #input-area #send.has-text,
+    #book:not([hidden]) ~ #input-area #send.has-text:hover:not(:disabled),
+    #book:not([hidden]) ~ #input-area #restart-btn,
+    #book:not([hidden]) ~ #input-area #restart-btn:hover:not(:disabled) {
+      background: var(--bk-phosphor); color: var(--bk-ink);
+    }
+    /* Stop abandons a turn, not the session — a quiet outline, not a slab. */
+    #book:not([hidden]) ~ #input-area #stop {
+      background: transparent; border: 1px solid var(--bk-edge); color: var(--bk-paper-45);
+    }
+    #book:not([hidden]) ~ #input-area #stop:hover:not(:disabled) {
+      background: rgba(244,240,230,.08); color: var(--bk-paper);
+    }
+    #book:not([hidden]) ~ #input-area #queued {
+      border-color: var(--bk-edge); color: var(--bk-paper-45);
+    }
   </style>
   ${bundles.xtermCss ? `<style>${bundles.xtermCss}</style>` : ""}
 </head>
