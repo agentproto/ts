@@ -1784,9 +1784,15 @@ describe("createSessionsRegistry", () => {
             [WORKSPACE_SLUG_ENV]: "forged-workspace",
           },
         })
-        const output = await pollUntil(async () =>
-          existsSync(outFile) ? readFileSync(outFile, "utf8") : null,
-        )
+        const output = await pollUntil(async () => {
+          if (!existsSync(outFile)) return null
+          // `writeFileSync` truncates the file to 0 bytes on open before
+          // writing, so a poll landing in that window sees an empty file.
+          // The probe always emits `id|slug`, so wait for the delimiter
+          // rather than accepting a partial (empty) read as the result.
+          const s = readFileSync(outFile, "utf8")
+          return s.includes("|") ? s : null
+        })
         const [gotId, gotSlug] = output.split("|")
         expect(gotId).toBe(desc.id)
         expect(gotId).not.toBe("sess_ambient_leak")
