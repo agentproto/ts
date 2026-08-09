@@ -89,7 +89,10 @@ export interface RestartPolicy {
 export interface RestartOverridePayload {
   model?: string
   effort?: EffortLevel
-  posture?: string
+  /** A canonical posture value ("plan"/"bypass"/…) OR a raw harness mode id
+   *  wrapped as `{ harnessModeId }` — the daemon's restart-override accepts
+   *  both (session-tools.ts posture union). */
+  posture?: string | { harnessModeId: string }
   contextProfile?: string
   mode?: string
   access?: { profileRef: string }
