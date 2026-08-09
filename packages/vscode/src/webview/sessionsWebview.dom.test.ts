@@ -10,7 +10,11 @@ import type { DomDocument, DomElement, DomWindow } from "jsdom"
 import { JSDOM } from "jsdom"
 import { afterEach, describe, expect, it } from "vitest"
 
+import { UNASSIGNED_COLOR_CSS, WORKSPACE_PALETTE, WORKSPACE_PALETTE_NAMES } from "./sessionsWebview.logic.js"
 import { buildHtml } from "./sessionsWebviewPanel.js"
+
+const PALETTE = [...WORKSPACE_PALETTE, UNASSIGNED_COLOR_CSS]
+const PALETTE_NAMES = [...WORKSPACE_PALETTE_NAMES, "Unassigned gray"]
 
 interface Panel {
   window: DomWindow
@@ -126,6 +130,8 @@ function modelMessage(
     hasMore?: boolean
     loadError?: string
     connection?: unknown
+    palette?: string[]
+    paletteNames?: string[]
   } = {},
 ) {
   return {
@@ -135,14 +141,16 @@ function modelMessage(
     lane: overrides.lane ?? "agents",
     project: overrides.project ?? null,
     rail: overrides.rail ?? [
-      { slug: null, label: "All", css: undefined, count: 2, awaiting: false },
-      { slug: "studio", label: "Agentik Studio", css: "#c45c26", count: 2, awaiting: true },
+      { slug: null, label: "All", css: undefined, colorIndex: undefined, count: 2, awaiting: false },
+      { slug: "studio", label: "Agentik Studio", css: "#c45c26", colorIndex: 0, count: 2, awaiting: true },
     ],
     laneCounts: overrides.laneCounts ?? { agents: 2, auto: 0 },
     groups: overrides.groups ?? [group("running", "Running", [ROW_A])],
     loading: overrides.loading ?? false,
     hasMore: overrides.hasMore ?? false,
     loadError: overrides.loadError ?? undefined,
+    palette: overrides.palette ?? PALETTE,
+    paletteNames: overrides.paletteNames ?? PALETTE_NAMES,
   }
 }
 
@@ -403,5 +411,113 @@ describe("sessions webview — watched + nesting (items 5, 6)", () => {
     expect(nested).toBeTruthy()
     expect(htmlEl(nested).getAttribute("style")).toContain("padding-left")
     expect(htmlEl(nested).querySelector(".lineage")).not.toBeNull()
+  })
+})
+
+describe("sessions webview — workspace color picker", () => {
+  function openStudioPopover(panel: Panel): DomElement {
+    send(panel, modelMessage())
+    panel.posted.length = 0
+    click(panel, el(panel, "rail").querySelector('[data-color-trigger][data-slug="studio"]')!)
+    return el(panel, "color-popover")
+  }
+
+  function isHidden(element: DomElement): boolean {
+    return htmlEl(element).hidden
+  }
+
+  it("renders a swatch trigger on the chip, separate from the project-select label", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    const trigger = htmlEl(el(panel, "rail").querySelector('[data-color-trigger][data-slug="studio"]'))
+    expect(trigger.tagName).toBe("BUTTON")
+    expect(trigger.getAttribute("aria-label")).toContain("Agentik Studio")
+    expect(trigger.querySelector(".psq")?.getAttribute("style")).toContain("#c45c26")
+    // The "All" chip has no css — no swatch trigger for it.
+    expect(el(panel, "rail").querySelector('[data-color-trigger][data-slug=""]')).toBeNull()
+  })
+
+  it("clicking the swatch trigger opens the popover without also selecting the project", () => {
+    const panel = renderPanel()
+    const popover = openStudioPopover(panel)
+    expect(isHidden(popover)).toBe(false)
+    expect(panel.posted).toEqual([])
+  })
+
+  it("the popover renders every palette swatch plus the reset affordance, marking the active one", () => {
+    const panel = renderPanel()
+    const popover = openStudioPopover(panel)
+    const swatches = [...popover.querySelectorAll(".swatch")]
+    expect(swatches).toHaveLength(PALETTE.length)
+    expect(htmlEl(swatches[0]!).className).toContain("active") // ROW colorIndex 0
+    expect(htmlEl(swatches[0]!).getAttribute("aria-checked")).toBe("true")
+    expect(htmlEl(swatches[1]!).getAttribute("aria-checked")).toBe("false")
+    expect(htmlEl(swatches.at(-1)!).getAttribute("aria-label")).toBe("Unassigned gray")
+    expect(el(panel, "swatch-reset").textContent).toBe("Reset to auto")
+  })
+
+  it("clicking a swatch posts setColor with the workspace slug + index, and closes the popover", () => {
+    const panel = renderPanel()
+    const popover = openStudioPopover(panel)
+    const swatches = [...popover.querySelectorAll(".swatch")]
+    click(panel, swatches[3]!)
+    expect(panel.posted).toEqual([{ type: "setColor", slug: "studio", index: 3 }])
+    expect(isHidden(popover)).toBe(true)
+  })
+
+  it("clicking reset posts setColor with a null index", () => {
+    const panel = renderPanel()
+    openStudioPopover(panel)
+    click(panel, el(panel, "swatch-reset"))
+    expect(panel.posted).toEqual([{ type: "setColor", slug: "studio", index: null }])
+  })
+
+  it("arrow-key navigation moves the roving tabindex, Enter selects the focused swatch", () => {
+    const panel = renderPanel()
+    const popover = openStudioPopover(panel)
+    const swatches = [...popover.querySelectorAll(".swatch")]
+    expect(panel.document.activeElement).toBe(swatches[0])
+    swatches[0]!.dispatchEvent(new panel.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))
+    expect(panel.document.activeElement).toBe(swatches[1])
+    expect(htmlEl(swatches[1]!).getAttribute("tabindex")).toBe("0")
+    expect(htmlEl(swatches[0]!).getAttribute("tabindex")).toBe("-1")
+    swatches[1]!.dispatchEvent(new panel.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+    expect(panel.posted).toEqual([{ type: "setColor", slug: "studio", index: 1 }])
+  })
+
+  it("Escape closes the popover and restores focus to the trigger", () => {
+    const panel = renderPanel()
+    const popover = openStudioPopover(panel)
+    const trigger = el(panel, "rail").querySelector('[data-color-trigger][data-slug="studio"]')!
+    panel.document.dispatchEvent(new panel.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+    expect(isHidden(popover)).toBe(true)
+    expect(panel.document.activeElement).toBe(trigger)
+  })
+
+  it("clicking outside the popover dismisses it without posting a message", () => {
+    const panel = renderPanel()
+    const popover = openStudioPopover(panel)
+    click(panel, el(panel, "list"))
+    expect(isHidden(popover)).toBe(true)
+    expect(panel.posted).toEqual([])
+  })
+
+  it("hydrates the swatch grid from the host-posted palette/paletteNames rather than a hardcoded copy", () => {
+    const panel = renderPanel()
+    send(
+      panel,
+      modelMessage({
+        palette: ["#111111", "#222222"],
+        paletteNames: ["Custom One", "Custom Two"],
+        rail: [
+          { slug: null, label: "All", css: undefined, colorIndex: undefined, count: 1, awaiting: false },
+          { slug: "studio", label: "Agentik Studio", css: "#111111", colorIndex: 0, count: 1, awaiting: false },
+        ],
+      }),
+    )
+    click(panel, el(panel, "rail").querySelector('[data-color-trigger][data-slug="studio"]')!)
+    const swatches = [...el(panel, "color-popover").querySelectorAll(".swatch")]
+    expect(swatches).toHaveLength(2)
+    expect(htmlEl(swatches[1]!).getAttribute("aria-label")).toBe("Custom Two")
   })
 })
