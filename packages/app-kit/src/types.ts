@@ -71,6 +71,43 @@ export interface WorkspaceShorthand {
 export type WorkspaceInput = WorkspaceHandle | WorkspaceShorthand
 
 /**
+ * A single HTML surface an app ships alongside its agents — the artifact a
+ * host renders (e.g. an embedded panel). `html` is the full document; `emit`
+ * writes it to `.agentproto/ui/index.html` rather than inlining it into the
+ * APP.md frontmatter.
+ */
+export interface AppUiDefinition {
+  readonly html: string
+  readonly title?: string
+  readonly description?: string
+  readonly tools?: readonly string[]
+  readonly csp?: {
+    readonly connectDomains?: readonly string[]
+    readonly resourceDomains?: readonly string[]
+  }
+}
+
+/** A kind of artifact the app's agents may produce, declared for discovery. */
+export interface AppArtifactDecl {
+  readonly type: string
+  readonly description?: string
+}
+
+/** One way to launch the app for local development. */
+export interface AppDevLaunchConfig {
+  readonly name: string
+  readonly runtimeExecutable: string
+  readonly runtimeArgs?: readonly string[]
+  readonly port?: number
+  readonly url?: string
+}
+
+/** Dev-launch configuration for the app, carried verbatim in APP.md frontmatter. */
+export interface AppDevDefinition {
+  readonly launch: readonly AppDevLaunchConfig[]
+}
+
+/**
  * Input to `defineApp`. Each `agents[]` entry is an already-validated
  * `AgentHandle` (bare, no body) or an `AgentEntry` (handle + body).
  */
@@ -100,6 +137,12 @@ export interface AppDefinition {
   readonly description?: string
   /** APP ids this app depends on. */
   readonly requires?: readonly string[]
+  /** An HTML surface the app ships alongside its agents. */
+  readonly ui?: AppUiDefinition
+  /** Artifact types this app's agents may produce, declared for discovery. */
+  readonly artifacts?: readonly AppArtifactDecl[]
+  /** Dev-launch configuration for running the app locally. */
+  readonly dev?: AppDevDefinition
 }
 
 /** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
@@ -115,6 +158,8 @@ export interface EmittedApp {
   readonly workspacePath?: string
   /** Absolute path to the root `APP.md` index, always written. */
   readonly appPath: string
+  /** Absolute path to the written `.agentproto/ui/index.html`, when the app has a `ui`. */
+  readonly uiPath?: string
 }
 
 /**
@@ -137,6 +182,12 @@ export interface AppHandle {
   readonly description?: string
   /** APP ids this app depends on. */
   readonly requires?: readonly string[]
+  /** An HTML surface the app ships alongside its agents. */
+  readonly ui?: AppUiDefinition
+  /** Artifact types this app's agents may produce, declared for discovery. */
+  readonly artifacts?: readonly AppArtifactDecl[]
+  /** Dev-launch configuration for running the app locally. */
+  readonly dev?: AppDevDefinition
 
   /**
    * Build agents into runnable Mastra agents whose `instructions` field is

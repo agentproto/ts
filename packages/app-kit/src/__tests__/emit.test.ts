@@ -190,4 +190,75 @@ describe("emit — manifests round-trip through the loaders", () => {
     // Body = the app description.
     expect(parsed.content.trim()).toBe("Reviews PRs.")
   })
+
+  it("writes .agentproto/ui/index.html and points APP.md's ui.path at it, without inlining html", async () => {
+    const html = "<html><body><h1>Panel</h1></body></html>"
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent with a ui.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      ui: {
+        html,
+        title: "Solo Panel",
+        description: "A panel.",
+        tools: ["read_file"],
+        csp: { connectDomains: ["api.example.com"] },
+      },
+    })
+    const { uiPath, appPath } = await app.emit(dir)
+
+    expect(uiPath).toMatch(/\.agentproto\/ui\/index\.html$/)
+    expect(await readFile(uiPath!, "utf8")).toBe(html)
+
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.ui.path).toBe(".agentproto/ui/index.html")
+    expect(parsed.data.ui.title).toBe("Solo Panel")
+    expect(parsed.data.ui.description).toBe("A panel.")
+    expect(parsed.data.ui.tools).toEqual(["read_file"])
+    expect(parsed.data.ui.csp).toEqual({ connectDomains: ["api.example.com"] })
+    expect(parsed.data.ui.html).toBeUndefined()
+    expect(join(dir, parsed.data.ui.path)).toBe(uiPath)
+  })
+
+  it("omits uiPath and ui frontmatter when the app has no ui", async () => {
+    const { uiPath, appPath } = await buildApp().emit(dir)
+    expect(uiPath).toBeUndefined()
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.ui).toBeUndefined()
+  })
+
+  it("writes artifacts and dev verbatim into APP.md frontmatter", async () => {
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      artifacts: [{ type: "report", description: "A generated report." }],
+      dev: {
+        launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 }],
+      },
+    })
+    const { appPath } = await app.emit(dir)
+    const parsed = matter(await readFile(appPath, "utf8"))
+
+    expect(parsed.data.artifacts).toEqual([{ type: "report", description: "A generated report." }])
+    expect(parsed.data.dev).toEqual({
+      launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 }],
+    })
+  })
 })
