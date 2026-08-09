@@ -140,6 +140,46 @@ describe("filterSessions", () => {
     ).toEqual(["MATCH-ME"])
   })
 
+  it("search tokenizes on whitespace and ANDs tokens across different fields", () => {
+    const sessions = [
+      session({ id: "match", label: "gemini review", command: "claude-code --print" }),
+      session({ id: "only-gemini", label: "gemini task", command: "npm run build" }),
+      session({ id: "only-review", label: "review notes", command: "claude-code --print" }),
+    ]
+    const state: SessionFilterState = { ...EMPTY_FILTER, search: "gemini review" }
+    expect(filterSessions(sessions, state, config).map(s => s.id)).toEqual(["match"])
+  })
+
+  it("search token order is independent", () => {
+    const sessions = [session({ id: "s", label: "Sales Analysis", command: "npm run BUILD" })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, search: "build sales" }, config).map(s => s.id),
+    ).toEqual(["s"])
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, search: "sales build" }, config).map(s => s.id),
+    ).toEqual(["s"])
+  })
+
+  it("search excludes a session when any token fails to match", () => {
+    const sessions = [session({ id: "s", label: "Sales Analysis", command: "npm run BUILD" })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, search: "sales nope" }, config).map(s => s.id),
+    ).toEqual([])
+  })
+
+  it("search treats an empty or whitespace-only query as matching everything", () => {
+    const sessions = [session({ id: "a" }), session({ id: "b" })]
+    expect(filterSessions(sessions, { ...EMPTY_FILTER, search: "" }, config)).toEqual(sessions)
+    expect(filterSessions(sessions, { ...EMPTY_FILTER, search: "   " }, config)).toEqual(sessions)
+  })
+
+  it("search is case-insensitive across tokens", () => {
+    const sessions = [session({ id: "s", label: "Gemini Review" })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, search: "GEMINI review" }, config).map(s => s.id),
+    ).toEqual(["s"])
+  })
+
   it("combines predicates with AND", () => {
     const sessions = [
       session({ id: "match", status: "running", adapterSlug: "claude-code" }),
