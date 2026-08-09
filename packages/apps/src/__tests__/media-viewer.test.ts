@@ -35,4 +35,11 @@ describe("media-viewer app", () => {
     const refs = wf.steps.map((s) => (s as { agent?: { ref: string } }).agent?.ref)
     expect(refs).toEqual(["@agentproto/media-cataloger"])
   })
+
+  it("ships a gallery UI panel with the daemon tools it calls", () => {
+    expect(mediaViewer.ui).toBeDefined()
+    expect(mediaViewer.ui!.title).toBe("Media Viewer")
+    expect(mediaViewer.ui!.tools).toEqual(["directory_list", "file_info", "file_read"])
+    expect(mediaViewer.ui!.html.length).toBeGreaterThan(0)
+  })
 })

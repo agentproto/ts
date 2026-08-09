@@ -11,6 +11,7 @@ export default createTsupConfig({
     "content-team": "src/content-team/index.ts",
     "mail-triage": "src/mail-triage/index.ts",
     "media-viewer": "src/media-viewer/index.ts",
+    "bin/sync": "src/bin/sync.ts",
   },
   format: ["esm"],
   splitting: false,
