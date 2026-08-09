@@ -31,6 +31,7 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, type AppRegistry, type InstalledAppRef } from "./app-registry.js"
+import { loadAppCatalogFile } from "./app-catalog.js"
 
 /** The only agent adapter this WP knows how to run an emitted AGENT.md
  *  under — see `adapters/mastra-agent`'s `agent` option (`--agent <path>`). */
@@ -152,6 +153,20 @@ export interface RegisterAppToolsOptions {
    *  installed app (see `@agentproto/runtime`'s daemon composition root).
    *  Omitted ⇒ creates its own (this module's prior behaviour). */
   appRegistry?: AppRegistry
+  /** Dispatch a daemon tool call by name — same in-process caller
+   *  `dispatchTool` in index.ts wires to routines/cron. Backs `app_tool_call`
+   *  for every tool id NOT prefixed `imported:`. Omitted → `app_tool_call`
+   *  errors "not enabled" for those ids, mirroring `notEnabled` above. */
+  dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
+  /** Call a tool on an imported MCP server — backs `app_tool_call` for
+   *  `imported:<alias>/<toolName>` ids (see `mcp_imported_call` in
+   *  session-tools.ts, same `mcpProxy.callTool` underneath). Omitted →
+   *  `app_tool_call` errors "not enabled" for those ids. */
+  callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
+  /** Absolute path to the app catalog JSON file read by `app_catalog`.
+   *  Defaults to `~/.agentproto/app-catalog.json`. Missing file → empty
+   *  catalog (never an error). */
+  catalogPath?: string
 }
 
 export async function performInstall(
@@ -229,7 +244,8 @@ export async function performInstall(
 }
 
 export function registerAppTools(server: McpServer, opts: RegisterAppToolsOptions): void {
-  const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner } = opts
+  const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner, dispatchTool, callImportedTool } =
+    opts
   const appRegistry: AppRegistry = opts.appRegistry ?? createAppRegistry({
     ...(opts.persistPath !== undefined ? { persistPath: opts.persistPath } : {}),
     ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
@@ -534,6 +550,136 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         }
       })
       return textResult(result)
+    },
+  )
+
+  server.tool(
+    "app_tool_call",
+    "Call one of an installed app's UI-exposed tools — the allowlist set at " +
+      "`defineApp({ ui: { tools: [...] } })` time (`app_install`'s `record.ui.tools`). " +
+      "A tool id prefixed `imported:<alias>/<toolName>` dispatches through an imported " +
+      "MCP server (same proxy `mcp_imported_call` uses); every other id dispatches " +
+      "through the daemon's own registered tools (same reach-in routine/cron `target.tool` " +
+      "dispatch uses).",
+    {
+      appId: z.string(),
+      tool: z.string().describe("A tool id from the app's `ui.tools` allowlist."),
+      args: z.record(z.string(), z.unknown()).optional().describe("Tool arguments. Default: empty object."),
+    },
+    async input => {
+      const installed = appRegistry.getApp(input.appId)
+      if (!installed || !installed.ui) {
+        return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
+      }
+      const allowlist = installed.ui.tools ?? []
+      if (!allowlist.includes(input.tool)) {
+        return errorResult(
+          `app_tool_call: tool "${input.tool}" is not in app "${input.appId}"'s ui.tools allowlist: ` +
+            `${allowlist.length > 0 ? allowlist.join(", ") : "(empty)"}`,
+        )
+      }
+
+      const args = input.args ?? {}
+      try {
+        if (input.tool.startsWith("imported:")) {
+          if (!callImportedTool) return notEnabled("app_tool_call")
+          const rest = input.tool.slice("imported:".length)
+          const slash = rest.indexOf("/")
+          if (slash === -1) {
+            return errorResult(
+              `app_tool_call: malformed imported tool id "${input.tool}" — expected "imported:<alias>/<toolName>".`,
+            )
+          }
+          const result = await callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), args)
+          return textResult(result)
+        }
+        if (!dispatchTool) return notEnabled("app_tool_call")
+        const result = await dispatchTool(input.tool, args)
+        return textResult(result)
+      } catch (err) {
+        return errorResult(`app_tool_call: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    },
+  )
+
+  server.tool(
+    "app_uninstall",
+    "Remove an installed app's record. Refuses if the app is applied to any scope " +
+      "(unapply first via app_unapply) or has a running app_run (stop it first via app_stop).",
+    { appId: z.string() },
+    async input => {
+      const applied = appRegistry.listApplied().filter(m => m.appId === input.appId)
+      if (applied.length > 0) {
+        return errorResult(
+          `app_uninstall: app "${input.appId}" is applied to scope(s) ` +
+            `${applied.map(m => m.scopeId).join(", ")} — unapply from scopes first.`,
+        )
+      }
+
+      const runningRuns = appRegistry
+        .listRuns()
+        .filter(r => r.appId === input.appId && r.status === "running")
+      if (runningRuns.length > 0) {
+        return errorResult(
+          `app_uninstall: app "${input.appId}" has running app_run(s) ` +
+            `${runningRuns.map(r => r.appRunId).join(", ")} — stop app runs first.`,
+        )
+      }
+
+      const removed = appRegistry.removeApp(input.appId)
+      if (!removed) {
+        return errorResult(`app_uninstall: no installed app "${input.appId}".`)
+      }
+      return textResult({ appId: removed.appId })
+    },
+  )
+
+  server.tool(
+    "app_catalog",
+    "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
+      "tolerates a missing file), merged with installed-app status — every entry reports " +
+      "`installed` and `hasUi`. Installed apps absent from the catalog file are included too.",
+    {
+      scopeId: z
+        .string()
+        .optional()
+        .describe("Reserved for future scope-aware filtering. Currently unused."),
+    },
+    async () => {
+      const catalog = await loadAppCatalogFile(opts.catalogPath)
+      const installedApps = appRegistry.listApps()
+      const installedById = new Map(installedApps.map(a => [a.appId, a]))
+      const seen = new Set<string>()
+
+      const entries = catalog.apps.map(entry => {
+        const installed = installedById.get(entry.appId)
+        seen.add(entry.appId)
+        const name = entry.name ?? installed?.name
+        const description = entry.description ?? installed?.description
+        return {
+          appId: entry.appId,
+          ...(name ? { name } : {}),
+          ...(description ? { description } : {}),
+          dir: entry.dir,
+          ...(entry.category ? { category: entry.category } : {}),
+          installed: installed !== undefined,
+          hasUi: installed?.ui !== undefined,
+        }
+      })
+
+      for (const app of installedApps) {
+        if (seen.has(app.appId)) continue
+        entries.push({
+          appId: app.appId,
+          ...(app.name ? { name: app.name } : {}),
+          ...(app.description ? { description: app.description } : {}),
+          dir: app.dir,
+          installed: true,
+          hasUi: app.ui !== undefined,
+        })
+      }
+
+      return textResult(entries)
     },
   )
 }

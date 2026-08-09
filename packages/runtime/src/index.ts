@@ -93,6 +93,8 @@ import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { registerAppTools, resolveAgentRefsForWorkflow, performInstall } from "./app-tools.js"
 import { createAppRegistry } from "./app-registry.js"
+import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
+import type { AgnoMcpApp } from "./sessions-panel-app.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
@@ -854,6 +856,7 @@ const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "session_events_poll",
   "permissions_list",
   "permissions_respond",
+  "app_tool_call",
 ]
 
 export interface GatewayHandle {
@@ -1304,6 +1307,12 @@ export async function createGateway(
   // share the one instance — same persistence defaults as before this WP.
   const appRegistry = createAppRegistry({ persist })
 
+  // HTML cache for installed apps' `ui.path` panels (app-ui-apps.ts) —
+  // gateway-scope singleton so a `/mcp` request doesn't re-read an
+  // unchanged panel's HTML off disk every time `mcpServerFactory` rebuilds
+  // the server. Keyed by (path, app.updatedAt), so a re-install invalidates.
+  const appUiHtmlCache = createUiHtmlCache()
+
   // Workflow runner — singleton per daemon, shared across all MCP
   // connections. Persists run state to ~/.agentproto/workflow-runs.json so
   // runs survive daemon restarts (interrupted runs are marked "failed" on
@@ -1703,6 +1712,16 @@ export async function createGateway(
       registry: sessions,
       listRegisteredToolIds,
       appRegistry,
+      dispatchTool,
+      // Same proxy `mcp_imported_call` (session-tools.ts) dispatches
+      // through — unwraps `{ok,result}|{ok:false,error}` into a plain
+      // return-or-throw for `app_tool_call`'s `imported:<alias>/<toolName>`
+      // ids.
+      callImportedTool: async (alias, tool, args) => {
+        const out = await mcpProxy.callTool(alias, tool, args)
+        if (!out.ok) throw new Error(`app_tool_call: imported "${alias}".${tool}: ${out.error}`)
+        return out.result
+      },
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
@@ -1721,7 +1740,8 @@ export async function createGateway(
       }
       return rows
     }
-    registerMcpApps(server, [
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const builtinPanelApps: AgnoMcpApp<any, any>[] = [
       makeSessionsPanelApp({ listSessions: listSessionsFiltered }),
       makeAgentsOverviewApp({ listSessions: listSessionsFiltered }),
       makeBureauSessionsApp({ listSessions: listSessionsFiltered }),
@@ -1775,7 +1795,18 @@ export async function createGateway(
             }),
           ]
         : []),
-    ])
+    ]
+    // Dynamic UI panels for installed `@agentproto/app-kit` apps that ship
+    // a `ui` block (app-ui-apps.ts) — appended after the built-in panels so
+    // their tool ids can be checked for collisions against them. Never
+    // throws: a bad app record is skipped with a `console.warn` instead of
+    // failing the whole `/mcp` request.
+    const installedAppUiApps = await makeInstalledAppUiApps(
+      appRegistry,
+      appUiHtmlCache,
+      new Set(builtinPanelApps.map(app => app.id)),
+    )
+    registerMcpApps(server, [...builtinPanelApps, ...installedAppUiApps])
     // Server-side per-session summariser backing the agents-overview panel.
     // Heuristic today (no LLM in @agentproto/runtime) — see agents-overview-app.ts.
     registerSummarizeSessionTool(server, {
