@@ -26,6 +26,7 @@ import type {
   PresentedPlanSegment,
   PresentedTurn,
   PresentedToolSegment,
+  PresentedQuestionSegment,
 } from "./conversation.js"
 import type { SessionDescriptor } from "../client/types.js"
 import type { DomWindow, DomDocument, DomElement, DomEvent } from "jsdom"
@@ -160,6 +161,38 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
     expect(after?.querySelector(".seg-dot")).toBeNull()
     expect(after?.querySelector(".seg-badge")?.textContent).toBe("✓")
     expect(after?.querySelector(".tool-result")).not.toBeNull()
+  })
+
+  it("shows a permission ask as awaiting until a permission-resolved patch lands, then as resolved", () => {
+    const panel = renderPanel()
+    const pendingSeg: PresentedQuestionSegment = {
+      kind: "agent-question",
+      id: "q1",
+      options: ["Allow Once", "Always Allow", "Deny"],
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [pendingSeg] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const before = segNode(panel, "q1")
+    expect(before?.textContent).toContain("Awaiting your decision")
+    expect(before?.textContent).toContain("Always Allow")
+
+    const resolvedSeg: PresentedQuestionSegment = {
+      ...pendingSeg,
+      resolved: { decision: "approve", optionId: "allow_always", optionLabel: "Always Allow" },
+    }
+    const resolvedTurn: PresentedTurn = { id: "turn-1", role: "assistant", segments: [resolvedSeg] }
+    panel.send({ type: "patch", upsertTurns: [resolvedTurn], removeTurnIds: [] })
+
+    const after = segNode(panel, "q1")
+    expect(after).toBe(before) // same node — patched in place, not replaced
+    expect(after?.textContent).not.toContain("Awaiting your decision")
+    expect(after?.textContent).toContain("Approved")
+    expect(after?.textContent).toContain("Always Allow")
   })
 
   it("leaves untouched turns and segments referentially identical (===) across a patch touching one turn", () => {

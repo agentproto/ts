@@ -78,6 +78,20 @@ export interface PlanSegment extends SegmentBase {
 export interface QuestionSegment extends SegmentBase {
   kind: "agent-question"
   options: string[]
+  /** Correlates this ask to its "permission-resolved" record (same
+   *  toolCallId the daemon's "agent-prompt" carried) — absent for a
+   *  question that isn't a respondable permission (e.g. an ACP driver
+   *  that never sends a toolCallId). */
+  toolCallId?: string
+  /** optionId -> display label for THIS ask's offered options — same objects
+   *  `options` was flattened from. Reducer-internal: lets a later
+   *  "permission-resolved" record (which carries only an opaque optionId)
+   *  resolve back to a human label without a second daemon round-trip. Not
+   *  forwarded to the presented layer. */
+  optionsById?: Record<string, string>
+  /** Set once a "permission-resolved" record for this toolCallId arrives —
+   *  an ask with this set is ANSWERED, not still awaiting a human. */
+  resolved?: { decision: "approve" | "deny" | "cancelled"; optionId?: string; optionLabel?: string }
 }
 
 export interface ErrorSegment extends SegmentBase {
@@ -150,6 +164,7 @@ export function reduceConversation(
   let assistant: ConversationTurn | undefined
   let usage: ConversationUsage | undefined
   const toolIndex = new Map<string, ToolSegment>()
+  const questionIndex = new Map<string, QuestionSegment>()
   let cursor = 0
 
   const openAssistant = (rec: SessionEventRecord): ConversationTurn => {
@@ -295,13 +310,30 @@ export function reduceConversation(
       }
       case "agent-prompt": {
         const turn = openAssistant(rec)
-        turn.segments.push({
+        const optionsById = normalizeOptionsById(rec.options)
+        const seg: QuestionSegment = {
           kind: "agent-question",
           id: `seg-${rec.seq}`,
           seq: rec.seq,
           ts: rec.ts,
           options: normalizeOptions(rec.options),
-        })
+          ...(rec.toolCallId ? { toolCallId: rec.toolCallId } : {}),
+          ...(optionsById ? { optionsById } : {}),
+        }
+        turn.segments.push(seg)
+        if (rec.toolCallId) questionIndex.set(rec.toolCallId, seg)
+        break
+      }
+      case "permission-resolved": {
+        const seg = rec.toolCallId ? questionIndex.get(rec.toolCallId) : undefined
+        if (seg && (rec.decision === "approve" || rec.decision === "deny" || rec.decision === "cancelled")) {
+          const optionLabel = rec.optionId ? seg.optionsById?.[rec.optionId] : undefined
+          seg.resolved = {
+            decision: rec.decision,
+            ...(rec.optionId ? { optionId: rec.optionId } : {}),
+            ...(optionLabel ? { optionLabel } : {}),
+          }
+        }
         break
       }
       case "error": {
@@ -374,6 +406,26 @@ function normalizeOptions(raw: unknown): string[] {
   return out
 }
 
+/**
+ * Narrow an "agent-prompt" event's `options` into an `optionId -> label` map
+ * — the same objects `normalizeOptions` flattens to a label list, kept
+ * paired with their `optionId` this time so a later "permission-resolved"
+ * record (which only carries the chosen `optionId`) can look its label back
+ * up. Entries without a string `optionId` (or a plain-string option, which
+ * has no id to key on) are dropped — they can't be correlated anyway.
+ */
+function normalizeOptionsById(raw: unknown): Record<string, string> | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: Record<string, string> = {}
+  for (const o of raw) {
+    if (!o || typeof o !== "object") continue
+    const r = o as Record<string, unknown>
+    const label = r.label ?? r.name ?? r.id ?? r.optionId
+    if (typeof r.optionId === "string" && typeof label === "string") out[r.optionId] = label
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 // ── Presentation layer (host-side, injected renderers) ──────────────────
 //
 // The webview must never parse raw content, and all daemon text must be
@@ -423,6 +475,9 @@ export interface PresentedQuestionSegment {
   kind: "agent-question"
   id: string
   options: string[]
+  /** Set once this ask has been answered — see `QuestionSegment.resolved`.
+   *  Absent means still awaiting a human/orchestrator decision. */
+  resolved?: { decision: "approve" | "deny" | "cancelled"; optionId?: string; optionLabel?: string }
 }
 
 export interface PresentedErrorSegment {
@@ -651,7 +706,12 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
     case "plan":
       return { kind: "plan", id: seg.id, entries: seg.entries, done: seg.done, total: seg.total }
     case "agent-question":
-      return { kind: "agent-question", id: seg.id, options: seg.options }
+      return {
+        kind: "agent-question",
+        id: seg.id,
+        options: seg.options,
+        ...(seg.resolved ? { resolved: seg.resolved } : {}),
+      }
     case "error":
       return { kind: "error", id: seg.id, text: r.escapeHtml(seg.message) }
   }

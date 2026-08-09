@@ -863,6 +863,12 @@ export interface SessionEventRecord {
   reason?: string
   error?: { message: string; code?: number; data?: unknown }
   options?: unknown
+  /** "permission-resolved" outcome for the "agent-prompt" (same toolCallId)
+   *  it answers — see @agentproto/runtime's transcript-writer.ts. */
+  decision?: "approve" | "deny" | "cancelled"
+  /** "permission-resolved" chosen option id, when the driver's offered
+   *  options included one. */
+  optionId?: string
   entries?: Array<{ content: string; priority: string; status: string }>
   size?: number
   used?: number

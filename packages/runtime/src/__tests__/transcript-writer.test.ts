@@ -170,6 +170,49 @@ describe("createTranscriptWriter", () => {
     })
   })
 
+  it("records an agent-prompt then its permission-resolved outcome, correlated by toolCallId", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", {
+      kind: "agent-prompt",
+      toolCallId: "perm1",
+      options: [{ optionId: "allow_once", name: "Allow Once" }],
+    })
+    writer.recordEvent("sess_1", {
+      kind: "permission-resolved",
+      toolCallId: "perm1",
+      decision: "approve",
+      optionId: "allow_always",
+    })
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatchObject({ kind: "agent-prompt", toolCallId: "perm1" })
+    expect(lines[1]).toMatchObject({
+      kind: "permission-resolved",
+      toolCallId: "perm1",
+      decision: "approve",
+      optionId: "allow_always",
+    })
+  })
+
+  it("resolves independently across multiple pending permissions in one session", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", { kind: "agent-prompt", toolCallId: "perm1", options: [] })
+    writer.recordEvent("sess_1", { kind: "agent-prompt", toolCallId: "perm2", options: [] })
+    writer.recordEvent("sess_1", {
+      kind: "permission-resolved",
+      toolCallId: "perm2",
+      decision: "deny",
+    })
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    const resolved = lines.filter(l => l.kind === "permission-resolved")
+    expect(resolved).toHaveLength(1)
+    expect(resolved[0]).toMatchObject({ toolCallId: "perm2", decision: "deny" })
+  })
+
   it("flushes buffered text and writes a turn-end record at turn boundaries", async () => {
     const writer = createTranscriptWriter({ baseDir: tmp })
     writer.recordEvent("sess_1", { kind: "text-delta", text: "trailing fragment" })

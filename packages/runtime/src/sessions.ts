@@ -309,6 +309,16 @@ export interface AgentStreamEvent {
    *  but no `cost`). */
   tokensIn?: number
   tokensOut?: number
+  /** "permission-resolved" outcome for the "agent-prompt" it answers (same
+   *  `toolCallId`) — mirrors `session:permission-resolved`'s `decision` so
+   *  the durable transcript can tell an answered ask from a still-pending
+   *  one. Not an ACP `StreamEvent` kind (synthesized by the registry, same
+   *  as "notice"/"turn-end" synthetics) — see registerPendingPermission's
+   *  docblock for the "agent-prompt" ask this resolves. */
+  decision?: "approve" | "deny" | "cancelled"
+  /** "permission-resolved" chosen option id, when the driver's offered
+   *  options included one (e.g. ACP's `allow_always`). */
+  optionId?: string
 }
 
 /**
@@ -2901,6 +2911,15 @@ export function createSessionsRegistry(opts?: {
           ts: new Date().toISOString(),
         })
       }
+      // Durable counterpart to the "agent-prompt" this resolves — without
+      // it the book view's structured log never learns the ask was
+      // answered and shows it as pending forever (see transcript-writer.ts's
+      // "permission-resolved" case).
+      transcriptWriter.recordEvent(rt.desc.id, {
+        kind: "permission-resolved",
+        toolCallId: id,
+        decision: "cancelled",
+      })
     }
     delete rt.desc.awaitingPermission
   }
@@ -2981,6 +3000,14 @@ export function createSessionsRegistry(opts?: {
         ts: new Date().toISOString(),
       })
     }
+    // Durable counterpart to the "agent-prompt" this resolves — see
+    // cancelPendingPermissionsForSession's identical call for why.
+    transcriptWriter.recordEvent(pending.sessionId, {
+      kind: "permission-resolved",
+      toolCallId: id,
+      decision: input.decision,
+      ...(chosenOptionId ? { optionId: chosenOptionId } : {}),
+    })
     schedulePersist()
     if (!okResolved) {
       // The driver had already resolved this request (race with a

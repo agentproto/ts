@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:http"
@@ -30,6 +30,7 @@ import {
   type AgentSessionLike,
   type SessionsRegistry,
 } from "../sessions.js"
+import { sessionEventsPath } from "../transcript-writer.js"
 import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 import { createEventRing } from "../event-ring.js"
 import { registerOrchestrationTools } from "../orchestration-tools.js"
@@ -109,6 +110,20 @@ async function spawnAndPark(
     await new Promise(r => setTimeout(r, 5))
   }
   return desc.id
+}
+
+/** Read a session's durable structured-transcript records (events.jsonl),
+ *  parsed one JSON object per line — same file the book view reads. */
+function readTranscript(transcriptDir: string, sessionId: string): Array<Record<string, unknown>> {
+  const path = sessionEventsPath(sessionId, transcriptDir)
+  if (!existsSync(path)) return []
+  const out: Array<Record<string, unknown>> = []
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    out.push(JSON.parse(trimmed) as Record<string, unknown>)
+  }
+  return out
 }
 
 describe("pending-permissions inbox — registry", () => {
@@ -224,6 +239,28 @@ describe("pending-permissions inbox — registry", () => {
     registry.shutdown()
   })
 
+  it("writes a durable permission-resolved record to the session transcript, keyed by toolCallId", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = holdSession("acp-transcript", "perm-t")
+    const id = await spawnAndPark(registry, fake)
+    await registry.respondPermission("perm-t", { decision: "approve" })
+
+    // The write stream flushes asynchronously — poll rather than assume
+    // it's already durable the instant respondPermission resolves.
+    let records: Array<Record<string, unknown>> = []
+    for (let i = 0; i < 100; i++) {
+      records = readTranscript(transcriptDir, id)
+      if (records.some(r => r.kind === "permission-resolved")) break
+      await new Promise(r => setTimeout(r, 5))
+    }
+    const ask = records.find(r => r.kind === "agent-prompt")
+    const resolved = records.find(r => r.kind === "permission-resolved")
+    expect(ask).toMatchObject({ toolCallId: "perm-t" })
+    expect(resolved).toMatchObject({ toolCallId: "perm-t", decision: "approve", optionId: "opt-once" })
+
+    registry.shutdown()
+  })
+
   it("errors clearly on an unknown / already-resolved id", async () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
     const r1 = await registry.respondPermission("nope", { decision: "approve" })
@@ -254,6 +291,18 @@ describe("pending-permissions inbox — registry", () => {
       e => e.type === "session:permission-resolved" && e.permissionId === "perm-k",
     )
     expect(resolved).toMatchObject({ decision: "cancelled" })
+
+    let records: Array<Record<string, unknown>> = []
+    for (let i = 0; i < 100; i++) {
+      records = readTranscript(transcriptDir, id)
+      if (records.some(r => r.kind === "permission-resolved")) break
+      await new Promise(r => setTimeout(r, 5))
+    }
+    expect(records.find(r => r.kind === "permission-resolved")).toMatchObject({
+      toolCallId: "perm-k",
+      decision: "cancelled",
+    })
+
     registry.shutdown()
   })
 })

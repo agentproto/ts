@@ -999,6 +999,12 @@ export function buildHtml(
       border-left: 3px solid var(--vscode-editorWarning-foreground);
       padding: 4px 0 4px 10px;
     }
+    /* Resolved: the ask is already answered — a calmer border than the
+       still-pending warning color so the two states read apart at a glance. */
+    .seg.question.resolved {
+      border-left: 3px solid var(--vscode-descriptionForeground);
+      color: var(--vscode-descriptionForeground);
+    }
     .seg.error {
       color: var(--vscode-errorForeground);
       border-left: 3px solid var(--vscode-errorForeground);
@@ -2324,8 +2330,18 @@ export function buildHtml(
             return;
           }
           case 'agent-question': {
-            node.className = 'seg question';
             node.innerHTML = '';
+            if (seg.resolved) {
+              const decision = seg.resolved.decision;
+              node.className = 'seg question resolved resolved-' + decision;
+              const label = decision === 'approve' ? 'Approved'
+                : decision === 'deny' ? 'Denied'
+                : 'Cancelled';
+              const optionLabel = seg.resolved.optionLabel;
+              node.appendChild(el('div', undefined, optionLabel ? label + ' — ' + optionLabel : label));
+              return;
+            }
+            node.className = 'seg question';
             node.appendChild(el('div', undefined, 'Awaiting your decision'));
             if (seg.options && seg.options.length) {
               const ul = el('ul');

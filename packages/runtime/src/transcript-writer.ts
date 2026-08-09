@@ -374,6 +374,22 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             options: evt.options,
           })
           break
+        // Durable counterpart to "agent-prompt" — recorded when
+        // `respondPermission` (or a dying session's cancel-in-flight sweep)
+        // resolves the ask, keyed by the same `toolCallId` so a reader can
+        // tell an answered request from a still-pending one without relying
+        // on the in-memory pending-permissions map (see sessions.ts's
+        // `resolvePendingPermission` / `cancelPendingPermissionsForSession`).
+        case "permission-resolved":
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, {
+            kind: "permission-resolved",
+            sessionId,
+            toolCallId: evt.toolCallId,
+            decision: evt.decision,
+            ...(evt.optionId ? { optionId: evt.optionId } : {}),
+          })
+          break
         case "turn-end":
           flushBuffers(sessionId, state)
           writeRecord(sessionId, state, { kind: "turn-end", sessionId, reason: evt.reason })
