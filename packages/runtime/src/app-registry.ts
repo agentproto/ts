@@ -86,6 +86,11 @@ export interface AppRegistry {
   ): InstalledApp
   getApp(appId: string): InstalledApp | undefined
   listApps(): InstalledApp[]
+  /** Remove an installed-app record. Returns the removed record, or
+   *  undefined if no app with that id was installed. Callers (app_uninstall)
+   *  are responsible for checking there's no applied mount / running run
+   *  first — this does no such validation itself. */
+  removeApp(appId: string): InstalledApp | undefined
   createRun(input: { appId: string; sessions: readonly AppRunSession[] }): AppRun
   getRun(appRunId: string): AppRun | undefined
   listRuns(): AppRun[]
@@ -167,6 +172,13 @@ export function createAppRegistry(opts?: {
     },
     listApps() {
       return [...state.apps]
+    },
+    removeApp(appId) {
+      const idx = state.apps.findIndex(a => a.appId === appId)
+      if (idx === -1) return undefined
+      const [removed] = state.apps.splice(idx, 1)
+      persist()
+      return removed
     },
     createRun(input) {
       const run: AppRun = {

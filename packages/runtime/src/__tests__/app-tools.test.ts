@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -22,6 +22,8 @@ import { registerAppTools, resolveAgentRefsForWorkflow } from "../app-tools.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+import { registerMcpApps } from "../mcp-apps-adapter.js"
+import { makeInstalledAppUiApps, createUiHtmlCache } from "../app-ui-apps.js"
 
 function parseToolJson(result: unknown): any {
   const content = (result as { content?: Array<{ type: string; text?: string; isError?: boolean }> })
@@ -79,6 +81,9 @@ async function setup(opts: {
   resolveAgentAdapter?: AgentAdapterResolver | null
   startSession?: ReturnType<typeof fakeStartSession>
   appRegistry?: AppRegistry
+  dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
+  callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
+  catalogPath?: string
 } = {}) {
   const registry = createSessionsRegistry({ persist: false })
   const startSession = opts.startSession ?? fakeStartSession()
@@ -97,6 +102,9 @@ async function setup(opts: {
     listRegisteredToolIds,
     appRegistry,
     ...(resolveAgentAdapter ? { resolveAgentAdapter } : {}),
+    ...(opts.dispatchTool ? { dispatchTool: opts.dispatchTool } : {}),
+    ...(opts.callImportedTool ? { callImportedTool: opts.callImportedTool } : {}),
+    ...(opts.catalogPath ? { catalogPath: opts.catalogPath } : {}),
   })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -663,5 +671,270 @@ describe("app_apply/app_unapply/app_list_applied verbs", () => {
     expect(isError(refused)).toBe(true)
     const errBody = parseToolJson(refused)
     expect(errBody.error).toContain("not applied to scope")
+  })
+})
+
+describe("app_tool_call", () => {
+  it("dispatches an allowlisted tool through dispatchTool", async () => {
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@test/tool-app",
+      dir: "/tmp/fake-tool-app",
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: "/tmp/fake-tool-app/index.html", tools: ["known_tool"] },
+    })
+    const dispatchTool = vi.fn(async (name: string, args: Record<string, unknown>) => ({ name, args }))
+    const { client } = await setup({ appRegistry, dispatchTool })
+
+    const res = parseToolJson(
+      await client.callTool({
+        name: "app_tool_call",
+        arguments: { appId: "@test/tool-app", tool: "known_tool", args: { x: 1 } },
+      }),
+    )
+    expect(res).toEqual({ name: "known_tool", args: { x: 1 } })
+    expect(dispatchTool).toHaveBeenCalledWith("known_tool", { x: 1 })
+  })
+
+  it("dispatches an imported:<alias>/<toolName> id through callImportedTool", async () => {
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@test/imported-tool-app",
+      dir: "/tmp/fake-imported-app",
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: "/tmp/fake-imported-app/index.html", tools: ["imported:github/list_repos"] },
+    })
+    const callImportedTool = vi.fn(
+      async (alias: string, tool: string, args: Record<string, unknown>) => ({ alias, tool, args }),
+    )
+    const { client } = await setup({ appRegistry, callImportedTool })
+
+    const res = parseToolJson(
+      await client.callTool({
+        name: "app_tool_call",
+        arguments: {
+          appId: "@test/imported-tool-app",
+          tool: "imported:github/list_repos",
+          args: { q: "x" },
+        },
+      }),
+    )
+    expect(res).toEqual({ alias: "github", tool: "list_repos", args: { q: "x" } })
+    expect(callImportedTool).toHaveBeenCalledWith("github", "list_repos", { q: "x" })
+  })
+
+  it("rejects a tool that is not in the app's ui.tools allowlist", async () => {
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@test/allowlist-app",
+      dir: "/tmp/fake-allowlist-app",
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: "/tmp/fake-allowlist-app/index.html", tools: ["known_tool"] },
+    })
+    const dispatchTool = vi.fn(async () => ({}))
+    const { client } = await setup({ appRegistry, dispatchTool })
+
+    const res = await client.callTool({
+      name: "app_tool_call",
+      arguments: { appId: "@test/allowlist-app", tool: "other_tool" },
+    })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("other_tool")
+    expect(body.error).toContain("known_tool")
+    expect(dispatchTool).not.toHaveBeenCalled()
+  })
+
+  it("rejects a call for an app that is not installed or has no UI", async () => {
+    const { client } = await setup()
+    const res = await client.callTool({
+      name: "app_tool_call",
+      arguments: { appId: "@test/does-not-exist", tool: "known_tool" },
+    })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("not installed")
+  })
+})
+
+describe("app_uninstall", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-uninstall-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("removes an installed app's record", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const res = await client.callTool({
+      name: "app_uninstall",
+      arguments: { appId: "@test/fixture-app" },
+    })
+    expect(isError(res)).toBe(false)
+
+    const apps = parseToolJson(await client.callTool({ name: "app_list", arguments: {} }))
+    expect(apps).toHaveLength(0)
+  })
+
+  it("errors for an unknown appId", async () => {
+    const { client } = await setup()
+    const res = await client.callTool({
+      name: "app_uninstall",
+      arguments: { appId: "@test/does-not-exist" },
+    })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("no installed app")
+  })
+
+  it("refuses when the app is applied to a scope", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    await client.callTool({
+      name: "app_apply",
+      arguments: { appId: "@test/fixture-app", scopeId: "guild-123" },
+    })
+
+    const res = await client.callTool({
+      name: "app_uninstall",
+      arguments: { appId: "@test/fixture-app" },
+    })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("unapply")
+  })
+
+  it("refuses when the app has a running app_run", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } })
+
+    const res = await client.callTool({
+      name: "app_uninstall",
+      arguments: { appId: "@test/fixture-app" },
+    })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("stop app runs")
+  })
+})
+
+describe("app_catalog", () => {
+  let dir: string
+  let catalogDir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-catalog-test-"))
+    catalogDir = await mkdtemp(join(tmpdir(), "app-tools-catalog-file-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+    await rm(catalogDir, { recursive: true, force: true })
+  })
+
+  it("merges catalog file entries with installed-app status", async () => {
+    const catalogPath = join(catalogDir, "app-catalog.json")
+    await writeFile(
+      catalogPath,
+      JSON.stringify({
+        apps: [
+          { appId: "@test/fixture-app", name: "Fixture (catalog)", dir: "/catalog/fixture" },
+          { appId: "@test/not-installed", name: "Not Installed", dir: "/catalog/other" },
+        ],
+      }),
+      "utf8",
+    )
+
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup({ catalogPath })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
+    expect(entries).toHaveLength(2)
+
+    const fixture = entries.find((e: any) => e.appId === "@test/fixture-app")
+    expect(fixture.installed).toBe(true)
+    expect(fixture.hasUi).toBe(false)
+
+    const notInstalled = entries.find((e: any) => e.appId === "@test/not-installed")
+    expect(notInstalled.installed).toBe(false)
+    expect(notInstalled.hasUi).toBe(false)
+  })
+
+  it("tolerates a missing catalog file, still lists installed apps", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup({ catalogPath: join(catalogDir, "does-not-exist.json") })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
+    expect(entries).toHaveLength(1)
+    expect(entries[0].appId).toBe("@test/fixture-app")
+    expect(entries[0].installed).toBe(true)
+  })
+
+  it("returns an empty list when there's no catalog file and nothing installed", async () => {
+    const { client } = await setup({ catalogPath: join(catalogDir, "does-not-exist.json") })
+    const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
+    expect(entries).toEqual([])
+  })
+})
+
+describe("installed-app UI panels — tools/list integration", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-ui-toolslist-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("emit ui app → install → registering its AgnoMcpApp surfaces app_ui_<slug> in tools/list", async () => {
+    const app = defineApp({
+      id: "@test/ui-toolslist-app",
+      name: "UI Toolslist App",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      ui: { html: "<html><body>Panel</body></html>", title: "Panel", tools: ["read_file"] },
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(
+      await client.callTool({ name: "app_install", arguments: { dir } }),
+    )
+    expect(installed.appId).toBe("@test/ui-toolslist-app")
+
+    const uiServer = new McpServer({ name: "app-ui-toolslist-test-server", version: "0.0.0" })
+    const uiApps = await makeInstalledAppUiApps(appRegistry, createUiHtmlCache(), new Set())
+    registerMcpApps(uiServer, uiApps)
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await uiServer.connect(serverTransport)
+    const uiClient = new Client({ name: "app-ui-toolslist-test-client", version: "0.0.0" })
+    await uiClient.connect(clientTransport)
+
+    const { tools } = await uiClient.listTools()
+    expect(tools.map(t => t.name)).toContain("app_ui_ui_toolslist_app")
   })
 })
