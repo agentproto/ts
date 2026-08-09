@@ -49,6 +49,21 @@ describe("mail-triage app", () => {
     expect(refs).toEqual(["@agentproto/triager"])
   })
 
+  it("ships a triage dashboard UI panel with the daemon tools it calls", () => {
+    expect(mailTriage.ui).toBeDefined()
+    expect(mailTriage.ui!.title).toBe("Mail Triage")
+    expect(mailTriage.ui!.tools).toEqual([
+      "imported:agentpush/mailbox_list",
+      "imported:agentpush/mailbox_search",
+      "imported:agentpush/mailbox_triage_plan",
+      "imported:agentpush/mailbox_triage_apply",
+      "app_run",
+      "app_status",
+      "agent_output",
+    ])
+    expect(mailTriage.ui!.html.length).toBeGreaterThan(0)
+  })
+
   it("round-trips emit → loadAppHandle preserving identity", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mail-triage-roundtrip-"))
     try {
