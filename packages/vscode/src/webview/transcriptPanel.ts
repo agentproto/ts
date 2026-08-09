@@ -382,16 +382,43 @@ export async function openLinkTarget(
       selection,
     })
   } catch {
-    void vscode.window.showInformationMessage(`agentproto: couldn't open "${target}".`)
+    // openTextDocument only handles text: an image or other binary (a pasted
+    // screenshot attachment, a PDF) throws here. Hand it to VS Code's generic
+    // `vscode.open`, which routes each type to its real editor — the image
+    // preview for a PNG — so a clicked attachment opens instead of erroring.
+    try {
+      await vscode.commands.executeCommand("vscode.open", uri, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preview: true,
+      })
+    } catch {
+      void vscode.window.showInformationMessage(`agentproto: couldn't open "${target}".`)
+    }
   }
 }
 
-/** Resolve a file-path link target to an on-disk Uri, or undefined if no
- *  candidate exists. Never throws. */
-async function resolveFileTarget(
-  target: string,
-  controller: TranscriptPanelController,
-): Promise<vscode.Uri | undefined> {
+/** Directories never worth searching when a link doesn't resolve directly. */
+const LINK_SEARCH_EXCLUDES = "**/{node_modules,dist,out,.git,.turbo,.next,coverage}/**"
+
+/**
+ * Strip the decorations a rendered link often carries so a path resolves:
+ * surrounding quotes/backticks/brackets, a truncation ellipsis (the render
+ * clamps long paths), a trailing `:line[:col]`, and trailing sentence
+ * punctuation. Returns the cleaned path (trimmed), possibly unchanged. Pure —
+ * exported for unit tests.
+ */
+export function sanitizeLinkTarget(target: string): string {
+  let t = target.trim()
+  t = t.replace(/^[`'"(<[]+/, "").replace(/[`'")>\]]+$/, "")
+  t = t.replace(/(?:…|\.\.\.)$/, "")
+  t = t.replace(/:\d+(?::\d+)?$/, "")
+  t = t.replace(/[.,;:]+$/, "")
+  return t.trim()
+}
+
+/** The direct on-disk candidates for a link target — home / absolute / the
+ *  session cwd + each workspace folder for a relative path. */
+function buildFileCandidates(target: string, controller: TranscriptPanelController): string[] {
   const candidates: string[] = []
   if (target.startsWith("~/") || target === "~") {
     candidates.push(join(homedir(), target.slice(1)))
@@ -405,6 +432,11 @@ async function resolveFileTarget(
       candidates.push(join(folder.uri.fsPath, rel))
     }
   }
+  return candidates
+}
+
+/** First candidate that exists on disk as a file, or undefined. Never throws. */
+async function firstExistingFile(candidates: string[]): Promise<vscode.Uri | undefined> {
   for (const fsPath of candidates) {
     const uri = vscode.Uri.file(fsPath)
     try {
@@ -414,6 +446,69 @@ async function resolveFileTarget(
       // Not there — try the next candidate.
     }
   }
+  return undefined
+}
+
+/** Present multiple search hits and return the chosen file, or undefined if the
+ *  user dismissed the picker. Labels are workspace-relative for readability. */
+async function pickFileFromHits(
+  hits: readonly vscode.Uri[],
+  target: string,
+): Promise<vscode.Uri | undefined> {
+  const items = hits.map(uri => ({ label: vscode.workspace.asRelativePath(uri), uri }))
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: `Multiple files match "${target}" — pick one to open`,
+    matchOnDescription: true,
+  })
+  return picked?.uri
+}
+
+/**
+ * Resolve a file-path link target to an on-disk Uri, or undefined. Never throws.
+ *
+ * A rendered transcript link is often NOT a live, valid path from here: it can
+ * be a bare basename ("authProfilesWebviewPanel.ts"), a stale absolute path
+ * (a removed worktree), or clamped/decorated by the renderer. So the direct
+ * candidates are only the first rung — on a miss we sanitize, then search the
+ * workspace by progressively shorter path suffixes, then by basename, opening
+ * a unique hit outright and offering a QuickPick when several match.
+ */
+export async function resolveFileTarget(
+  target: string,
+  controller: TranscriptPanelController,
+): Promise<vscode.Uri | undefined> {
+  // 1. Direct candidates — the common, exact case.
+  const direct = await firstExistingFile(buildFileCandidates(target, controller))
+  if (direct) return direct
+
+  // 2. Sanitize (trailing :line, punctuation, ellipsis, wrappers) and retry.
+  const cleaned = sanitizeLinkTarget(target)
+  if (cleaned && cleaned !== target) {
+    const viaClean = await firstExistingFile(buildFileCandidates(cleaned, controller))
+    if (viaClean) return viaClean
+  }
+
+  const searchPath = cleaned || target
+  const segments = searchPath.split(/[\\/]/).filter(Boolean)
+  if (segments.length === 0) return undefined
+
+  // 3. Suffix-match: the last 3, then last 2 path segments — specific enough
+  //    that a single hit is almost always the file the link meant.
+  for (const n of [3, 2]) {
+    if (segments.length < n) continue
+    const suffix = segments.slice(-n).join("/")
+    const hits = await vscode.workspace.findFiles(`**/${suffix}`, LINK_SEARCH_EXCLUDES, 8)
+    if (hits.length === 1) return hits[0]
+    if (hits.length > 1) return pickFileFromHits(hits, target)
+  }
+
+  // 4. Basename search — last resort. Exactly one hit opens; several prompt;
+  //    zero falls through to the caller's "couldn't find" notice.
+  const basename = segments[segments.length - 1]!
+  const hits = await vscode.workspace.findFiles(`**/${basename}`, LINK_SEARCH_EXCLUDES, 20)
+  if (hits.length === 1) return hits[0]
+  if (hits.length > 1) return pickFileFromHits(hits, target)
+
   return undefined
 }
 
@@ -1375,6 +1470,26 @@ export function buildHtml(
     #book[hidden] { display: none; }
     #book .book-page { max-width: 640px; margin: 0 auto; padding: 0 26px; }
     #book #book-empty { color: var(--paper-45); font-size: 12px; }
+    /* Blank-conversation hero — a session-identity card, not a dead placeholder. */
+    #book .book-hero {
+      border: 1px solid var(--edge); border-radius: 10px;
+      background: var(--paper-tint);
+      padding: 18px 20px; max-width: 460px; margin: 8px 0;
+    }
+    #book .book-hero .bh-title { font: 600 17px/1.3 var(--serif); color: var(--paper); }
+    #book .book-hero .bh-sub {
+      font: 12px/1.6 var(--bkmono); color: var(--paper-45); margin-top: 6px;
+    }
+    #book .book-hero .bh-facts {
+      margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--edge);
+      display: flex; flex-direction: column; gap: 7px;
+    }
+    #book .book-hero .bh-row { display: flex; align-items: baseline; gap: 12px; }
+    #book .book-hero .bh-k {
+      flex: 0 0 68px; font: 700 9px var(--bkmono); letter-spacing: .13em;
+      color: var(--paper-28); text-transform: uppercase; padding-top: 1px;
+    }
+    #book .book-hero .bh-v { font: 13px var(--bkmono); color: var(--paper-72); }
 
     #book .chapter { margin-top: 6px; }
     #book .fold {
@@ -1947,7 +2062,14 @@ export function buildHtml(
       // Plus how long and how much — the three things a user waiting on a
       // reply actually wants, without expanding anything.
       function refreshWorking() {
-        working.hidden = !busy;
+        // The book view carries the live "Working…" state inside its own live
+        // chapter (title + "$ now:" line), so this separate row is pure
+        // redundancy there — a second working bar stacked above the composer.
+        // Hide it in book view; keep it for the raw transcript, where nothing
+        // else narrates the in-flight turn (and its stall warning earns its
+        // place). The text is still computed so a view switch shows it current.
+        const inBook = bookView && bookApplies();
+        working.hidden = !busy || inBook;
         if (!busy) return;
         const now = Date.now();
         const silent = lastSession ? silentForMs(lastSession, now) : undefined;
@@ -2623,6 +2745,10 @@ export function buildHtml(
           book.hidden = true;
           input.placeholder = DEFAULT_PLACEHOLDER;
         }
+        // The working row is suppressed in book view (renderBook's live chapter
+        // shows it instead) — re-evaluate on every view change so it appears the
+        // moment the user drops to the raw transcript and hides on the way back.
+        refreshWorking();
       }
 
       function toggleBookView() {
@@ -2847,6 +2973,20 @@ export function buildHtml(
             ask.classList.remove('clamped');
           }
           amore.hidden = !clamp;
+          // First paint measures clientHeight as 0, so the fit-check above is
+          // skipped and a >220-char message that actually wraps to ≤5 lines
+          // keeps a spurious expander. Re-measure once layout has settled and
+          // drop it if the whole message is already on screen. Guard on the
+          // still-clamped class so a user expansion in between isn't undone.
+          if (clamp) {
+            requestAnimationFrame(function() {
+              if (!ask.classList.contains('clamped')) return;
+              if (atext.scrollHeight <= atext.clientHeight + 1) {
+                ask.classList.remove('clamped');
+                amore.hidden = true;
+              }
+            });
+          }
         } else {
           ask.hidden = true;
         }
@@ -2942,6 +3082,37 @@ export function buildHtml(
         pause.querySelector('.pquestion').textContent = pauseQuestion(chapters);
       }
 
+      // The blank-conversation view. Rather than a dead "No messages yet."
+      // placeholder, introduce WHO is about to answer and on whose dime —
+      // harness / model / mode / wallet, the same facts the composer chips
+      // carry — so a fresh tab reads as a ready session, not an empty void.
+      function buildEmptyHero() {
+        const hero = el('div', 'book-hero');
+        hero.appendChild(el('div', 'bh-title', 'Ready when you are'));
+        const s = lastSession;
+        const isPlainPty = s && s.kind === 'terminal' && s.pty === true;
+        if (s && !isPlainPty) {
+          hero.appendChild(el('div', 'bh-sub', 'Your first message opens the book. This session will answer with:'));
+          const facts = el('div', 'bh-facts');
+          const row = function(k, v) {
+            if (!v) return;
+            const r = el('div', 'bh-row');
+            r.appendChild(el('span', 'bh-k', k));
+            r.appendChild(el('span', 'bh-v', v));
+            facts.appendChild(r);
+          };
+          const auth = accessIdentity(s);
+          row('Harness', s.adapterSlug || '');
+          row('Model', s.model || 'default');
+          row('Mode', defaultPostureLabel(s));
+          row('Wallet', auth && auth !== '—' ? auth : 'no wallet');
+          hero.appendChild(facts);
+        } else {
+          hero.appendChild(el('div', 'bh-sub', 'Your first message opens the book.'));
+        }
+        return hero;
+      }
+
       // Rebuild the book from the accumulated turns. Reconciles chapters by id
       // so fold state survives live updates. A no-op when the book is hidden.
       function renderBook() {
@@ -2954,7 +3125,7 @@ export function buildHtml(
         if (chapters.length === 0) {
           page.textContent = '';
           bookChapterNodes.clear();
-          page.appendChild(el('div', 'book-empty', 'No messages yet.'));
+          page.appendChild(buildEmptyHero());
           return;
         }
 
