@@ -104,14 +104,20 @@ function passesMachineDefault(
   return !isMachineOrigin(session.origin)
 }
 
+/**
+ * Token-AND: the query is split on whitespace and every non-empty token must
+ * appear somewhere in the haystack (case-insensitive substring). A token still
+ * can't span two fields — the `\n` join is a deliberate separator, not just a
+ * delimiter. Fuzzy/subsequence matching is out of scope; see the PR description.
+ */
 function matchesSearch(session: SessionDescriptor, search: string): boolean {
-  const term = search.trim().toLowerCase()
-  if (!term) return true
+  const tokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (tokens.length === 0) return true
   const haystack = [session.label, session.command, session.cwd, session.id]
     .filter((v): v is string => typeof v === "string")
     .join("\n")
     .toLowerCase()
-  return haystack.includes(term)
+  return tokens.every(token => haystack.includes(token))
 }
 
 function matchesFilter(
