@@ -1158,9 +1158,9 @@ describe("transcriptPanel webview — honest session state", () => {
     // they repeated the cost button in the same header.
     expect(el(panel, "ctx-pct").textContent).toBe("21%")
     expect(el(panel, "context-btn").hidden).toBe(false)
-    // 21% is a calm fill — the arc stays at the default (green) level.
-    expect(el(panel, "ctx-arc").classList.contains("mid")).toBe(false)
-    expect(el(panel, "ctx-arc").classList.contains("high")).toBe(false)
+    // 21% is a calm fill — the arc stays grey (below warnAtPct).
+    expect(el(panel, "ctx-arc").classList.contains("amber")).toBe(false)
+    expect(el(panel, "ctx-arc").classList.contains("red")).toBe(false)
   })
 
   it("colours the gauge arc as the context fills toward the ceiling", () => {
@@ -1173,7 +1173,8 @@ describe("transcriptPanel webview — honest session state", () => {
       conversation: { version: 1, sessionId: "s1", turns: [], usage: { seq: 1, contextUsed: 95, contextSize: 100 } },
     })
     expect(el(panel, "ctx-pct").textContent).toBe("95%")
-    expect(el(panel, "ctx-arc").classList.contains("high")).toBe(true)
+    // Past compactAtPct (default 90) — the ring goes red.
+    expect(el(panel, "ctx-arc").classList.contains("red")).toBe(true)
   })
 
   it("hides the context button rather than dividing by zero", () => {
@@ -1202,7 +1203,8 @@ describe("transcriptPanel webview — honest session state", () => {
     const panel = renderPanel({ fakeTimers: true })
     init(panel, { status: "running", busy: true, tokensOut: 983 })
     // The row lives in the raw transcript, where nothing else narrates the turn.
-    el(panel, "book-toggle").dispatchEvent(new panel.window.Event("click"))
+    // The segmented control delegates clicks, so the event must bubble.
+    el(panel, "view-toggle").querySelector('[data-view="transcript"]')!.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
 
     const row = el(panel, "working")
     expect(row.hidden).toBe(false)
@@ -1463,8 +1465,20 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
     const panel = renderPanel()
     init(panel, { costUsd: 0.03, tokensIn: 68694, tokensOut: 141 })
     // in/out used to render here AND again in #context-btn, in the same header.
-    expect(el(panel, "cost-btn").textContent).toBe("$0.0300")
+    // Two decimals on the pill face; full precision moves to the hover title.
+    expect(el(panel, "cost-btn").textContent).toBe("$0.03")
+    expect(el(panel, "cost-btn").title).toBe("$0.0300")
     expect(el(panel, "cost-btn").textContent).not.toContain("in ")
+  })
+
+  it("paints the title status dot from the visibility state (#conversation-chrome)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running", busy: true })
+    expect(el(panel, "title-status").className).toContain("busy")
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: false, awaitingInput: true }) })
+    expect(el(panel, "title-status").className).toContain("awaiting")
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: false }) })
+    expect(el(panel, "title-status").className).toContain("quiet")
   })
 
   it("shows context fill WITHOUT the token counts trailing it", () => {
@@ -2247,15 +2261,17 @@ describe("transcriptPanel webview — book view", () => {
     }
   }
 
-  it("defaults to the book view for a structured session — book shown, transcript hidden, toggle offers Transcript", () => {
+  it("defaults to the book view for a structured session — book shown, transcript hidden, Book segment active", () => {
     const panel = renderPanel()
     panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
 
     expect(panel.book.hidden).toBe(false)
     expect(panel.transcript.hidden).toBe(true)
-    const toggle = el(panel, "book-toggle")
+    const toggle = el(panel, "view-toggle")
     expect(toggle.hidden).toBe(false)
-    expect(toggle.textContent).toBe("Transcript")
+    // Segmented control shows WHERE YOU ARE: the Book segment is active.
+    expect(toggle.querySelector('[data-view="book"]')!.classList.contains("on")).toBe(true)
+    expect(toggle.querySelector('[data-view="transcript"]')!.classList.contains("on")).toBe(false)
     // The composer placeholder switches to the book's invitation.
     expect((el(panel, "input") as unknown as { placeholder: string }).placeholder).toContain("opens the next chapter")
   })
@@ -2288,7 +2304,7 @@ describe("transcriptPanel webview — book view", () => {
     const panel = renderPanel()
     panel.send({ type: "init", session: session(), nonce: "n", mode: "raw", initialHtml: "<div>raw</div>" })
     expect(panel.book.hidden).toBe(true)
-    expect(el(panel, "book-toggle").hidden).toBe(true)
+    expect(el(panel, "view-toggle").hidden).toBe(true)
   })
 
   it("renders a user-opened chapter with an ask card, origin mark, narration, and a serif title", () => {
@@ -2468,11 +2484,11 @@ describe("transcriptPanel webview — book view", () => {
     const panel = renderPanel({ state })
     panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
 
-    const toggle = el(panel, "book-toggle")
-    toggle.dispatchEvent(new panel.window.Event("click"))
+    const toggle = el(panel, "view-toggle")
+    toggle.querySelector('[data-view="transcript"]')!.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
     expect(panel.book.hidden).toBe(true)
     expect(panel.transcript.hidden).toBe(false)
-    expect(toggle.textContent).toBe("Book")
+    expect(toggle.querySelector('[data-view="transcript"]')!.classList.contains("on")).toBe(true)
     expect(state.value?.bookView).toBe(false)
   })
 
@@ -2482,7 +2498,7 @@ describe("transcriptPanel webview — book view", () => {
     panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
     expect(panel.book.hidden).toBe(true)
     expect(panel.transcript.hidden).toBe(false)
-    expect(el(panel, "book-toggle").textContent).toBe("Book")
+    expect(el(panel, "view-toggle").querySelector('[data-view="transcript"]')!.classList.contains("on")).toBe(true)
   })
 
   it("renders the pause card with the agent's question when the session is awaiting input", () => {
@@ -2543,18 +2559,22 @@ describe("transcriptPanel webview — book view", () => {
     expect(under.textContent).toContain("bash")
   })
 
-  it("renders a plan notice with own-column marker spans, per-state classes, and a done/total progress fill", () => {
+  it("renders the minimalist plan: done collapses to a summary, failed stay visible, current + next up (#conversation-chrome)", () => {
     const panel = renderPanel()
     const plan: PresentedPlanSegment = {
       kind: "plan",
       id: "seg-plan-1",
-      done: 1,
-      total: 4,
+      done: 2,
+      total: 8,
       entries: [
-        { content: "done step", priority: "high", status: "completed" },
-        { content: "current step", priority: "high", status: "in_progress" },
-        { content: "later step", priority: "medium", status: "pending" },
+        { content: "done a", priority: "high", status: "completed" },
+        { content: "done b", priority: "high", status: "completed" },
         { content: "broken step", priority: "high", status: "failed" },
+        { content: "current step", priority: "high", status: "in_progress" },
+        { content: "p1", priority: "medium", status: "pending" },
+        { content: "p2", priority: "medium", status: "pending" },
+        { content: "p3", priority: "medium", status: "pending" },
+        { content: "p4", priority: "medium", status: "pending" },
       ],
     }
     const conv: PresentedConversation = {
@@ -2571,25 +2591,34 @@ describe("transcriptPanel webview — book view", () => {
     }
     panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
 
-    const planNode = panel.book.querySelector(".notices .seg.plan")
-    expect(planNode).not.toBeNull()
-    expect(planNode?.querySelector(".plan-head")?.textContent).toBe("Plan 1/4")
-    // Progress fill width = done/total.
-    const fill = planNode?.querySelector(".plan-progress-fill") as unknown as { style: { width: string } }
+    const planNode = panel.book.querySelector(".notices .seg.plan")!
+    expect(planNode.querySelector(".plan-head")?.textContent).toBe("Plan 2/8")
+    const fill = planNode.querySelector(".plan-progress-fill") as unknown as { style: { width: string } }
     expect(fill.style.width).toBe("25%")
 
-    const lis = [...(planNode?.querySelectorAll(".plan-list li") ?? [])]
-    expect(lis).toHaveLength(4)
-    // The marker is its OWN <span>, never a text prefix on the content — that
-    // is what gives wrapped lines their hanging indent.
-    expect(lis[0]?.querySelector(".plan-mark")?.textContent).toBe("✓")
-    expect(lis[0]?.querySelector(".plan-text")?.textContent).toBe("done step")
-    expect(lis[0]?.className).toContain("plan-completed")
-    expect(lis[1]?.querySelector(".plan-mark")?.textContent).toBe("●")
-    expect(lis[1]?.className).toContain("plan-in_progress")
-    expect(lis[2]?.querySelector(".plan-mark")?.textContent).toBe("○")
-    expect(lis[2]?.className).toContain("plan-pending")
-    expect(lis[3]?.querySelector(".plan-mark")?.textContent).toBe("✗")
-    expect(lis[3]?.className).toContain("plan-failed")
+    // Collapsed: one "✓ 2 done" summary + failed + current + next 3 pending + "+1 more".
+    let lis = [...planNode.querySelectorAll(".plan-list li")]
+    expect(lis.map(l => l.className.replace("plan-", ""))).toEqual([
+      "donesum", "failed", "in_progress", "pending", "pending", "pending", "more",
+    ])
+    expect(lis[0]?.querySelector(".plan-text")?.textContent).toBe("2 done")
+    expect(lis[0]?.querySelector(".plan-chev")).not.toBeNull()
+    expect(lis[1]?.querySelector(".plan-text")?.textContent).toBe("broken step")
+    expect(lis[2]?.querySelector(".plan-text")?.textContent).toBe("current step")
+    expect(lis[6]?.querySelector(".plan-text")?.textContent).toBe("+1 more")
+    // No strikethrough anywhere.
+    expect(planNode.querySelector('[style*="line-through"]')).toBeNull()
+
+    // Expanding the summary reveals the completed steps as sub-rows.
+    ;(lis[0] as unknown as { dispatchEvent(e: unknown): void }).dispatchEvent(new panel.window.Event("click"))
+    lis = [...planNode.querySelectorAll(".plan-list li")]
+    const subTexts = lis.filter(l => l.className.includes("plan-sub")).map(l => l.querySelector(".plan-text")?.textContent)
+    expect(subTexts).toEqual(["done a", "done b"])
+
+    // Expanding "+N more" shows the rest of the queue.
+    const more = [...planNode.querySelectorAll(".plan-more")].pop()!
+    ;(more as unknown as { dispatchEvent(e: unknown): void }).dispatchEvent(new panel.window.Event("click"))
+    const pendingTexts = [...planNode.querySelectorAll(".plan-pending .plan-text")].map(n => n.textContent)
+    expect(pendingTexts).toContain("p4")
   })
 })
