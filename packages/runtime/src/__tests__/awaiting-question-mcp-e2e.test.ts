@@ -50,6 +50,8 @@ function makeMockRegistry(): SessionsRegistry {
   return {
     get: vi.fn((id: string) => (id === "sess_awaiting" ? desc : undefined)),
     findByIdOrName: vi.fn((q: string) => (q === "sess_awaiting" ? desc : undefined)),
+    incWatchers: vi.fn(),
+    decWatchers: vi.fn(),
     spawn: vi.fn(),
     register: vi.fn(),
     spawnAgent: vi.fn(),
@@ -156,6 +158,11 @@ describe("structured awaiting-input — GET /sessions/:id/wait (REST transport) 
     return {
       get: vi.fn((id: string) => descs[id]),
       findByIdOrName: vi.fn((q: string) => descs[q]),
+      // The wait long-poll registers/releases a watcher on the blocking branch
+      // (#session-visibility) — the real registry counts these; the stub only
+      // needs to not throw.
+      incWatchers: vi.fn(),
+      decWatchers: vi.fn(),
       spawn: vi.fn(),
       register: vi.fn(),
       spawnAgent: vi.fn(),

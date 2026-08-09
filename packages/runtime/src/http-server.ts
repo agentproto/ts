@@ -523,9 +523,18 @@ export interface RuntimeHttpServerOptions {
    * be attributed to the session that made it (see `command-tools.ts`'s
    * `RegisterCommandToolsOptions.callerSessionId`).
    */
+  /**
+   * `origin`, when present, is parsed from the request's `?origin=<label>`
+   * query string (#session-visibility) — the connecting client's source label
+   * (cowork/vscode/codex/cron). It becomes the DEFAULT origin for a spawn made
+   * through this one-shot server when the tool input doesn't carry its own,
+   * so a bridge client's spawn is attributed to its channel instead of landing
+   * as a bare top-level root.
+   */
   mcpServerFactory: (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
+    origin?: string,
   ) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
@@ -1092,11 +1101,25 @@ export async function startHttpServer(
     return raw && raw.length > 0 ? raw : undefined
   }
 
+  /** Mirrors `parseCallerSessionIdQuery` for the `origin` query param
+   *  (#session-visibility) — the connecting client's source label
+   *  (cowork/vscode/codex/cron). A non-session bridge client that omits a
+   *  `?callerSessionId=` still names itself here, so a spawn it makes is
+   *  stamped with an origin instead of landing as a bare root. See
+   *  `mcpServerFactory`'s doc for the wire contract. */
+  function parseOriginQuery(url: string): string | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("origin")
+    return raw && raw.length > 0 ? raw : undefined
+  }
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
     const denyTools = parseDenyToolsQuery(req.url ?? "")
     const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId)
+    const origin = parseOriginQuery(req.url ?? "")
+    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin)
     await serveMcp(req, res, server)
   }
 

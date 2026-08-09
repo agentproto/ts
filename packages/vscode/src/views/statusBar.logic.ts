@@ -44,6 +44,10 @@ export interface LiveSummary {
   stalled: number
   working: number
   idle: number
+  /** Alive sessions with ≥1 live supervisor waiting on them right now
+   *  (#session-visibility) — the "someone is watching this" count, across both
+   *  human and machine origin. */
+  watched: number
   costUsd: number
 }
 
@@ -66,6 +70,7 @@ export function summarizeLive(
     stalled: 0,
     working: 0,
     idle: 0,
+    watched: allLive.filter(s => (s.watchers ?? 0) > 0).length,
     costUsd: allLive.reduce((sum, s) => sum + (s.costUsd ?? 0), 0),
   }
   for (const session of live) {
@@ -137,6 +142,9 @@ export function buildStatusCounts(summary: LiveSummary): string {
     if (summary.idle > 0) parts.push(`${summary.idle} idle`)
   }
   if (summary.machineLive.length > 0) parts.push(`${summary.machineLive.length} gate`)
+  // "Someone is supervising this" — a trailing segment so a watched session is
+  // visible at a glance even when nothing else demands attention.
+  if (summary.watched > 0) parts.push(`${summary.watched} watched`)
   return parts.join(" · ")
 }
 
