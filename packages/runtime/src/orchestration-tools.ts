@@ -278,11 +278,20 @@ export async function monitorSessionWait(opts: {
     const unsubs: Array<() => void> = []
     let settled = false
 
+    // This is the one real blocking path (the ring-replay and
+    // already-in-target-state branches above return synchronously without
+    // subscribing, so they are NOT waiters). Register each target id as a live
+    // watcher for the life of this wait so `session_list`/`GET /sessions`
+    // surface "someone is supervising this" (#session-visibility). Balanced in
+    // `finish()`, which fires on both a match and the timeout.
+    for (const id of resolvedIds) registry.incWatchers(id)
+
     const finish = (result: SessionWaitResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       for (const u of unsubs) u()
+      for (const id of resolvedIds) registry.decWatchers(id)
       resolve(result)
     }
 

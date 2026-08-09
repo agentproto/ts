@@ -108,7 +108,7 @@ describe("DaemonClient — URL + auth header mapping", () => {
           },
         }
       }
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code" }] }) }] } } }
@@ -270,7 +270,10 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const result = await client().mcpCall<{ adapters: Array<{ slug: string }> }>("adapter_list")
     expect(result.adapters?.[0]?.slug).toBe("claude-code")
     const last = daemon.requests[daemon.requests.length - 1]!
-    expect(last.url).toBe("/mcp")
+    // Path is /mcp; the client announces its source channel via ?origin=
+    // (#session-visibility) so a spawn it makes is stamped origin=vscode.
+    expect(last.url?.split("?")[0]).toBe("/mcp")
+    expect(last.url).toContain("origin=vscode")
     expect(last.body).toMatchObject({ jsonrpc: "2.0", method: "tools/call", params: { name: "adapter_list" } })
   })
 
@@ -765,7 +768,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
   it("reads the status baseUrl, POSTs /v1/packs/reload directly, and returns the result", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { params?: { name?: string } }
         if (rpc.params?.name === "llm_endpoint_status") {
           return {
@@ -826,7 +829,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
   it("throws with the field-scoped errors when the reload is rejected (HTTP 400)", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {
@@ -868,7 +871,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
 
   it("throws when the router is not running (no base URL)", async () => {
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {
@@ -898,7 +901,7 @@ describe("DaemonClient — llmEndpointTestUpstream", () => {
   it("reads the status baseUrl, POSTs /v1/upstreams/:p/test directly, and returns the verdict", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { params?: { name?: string } }
         if (rpc.params?.name === "llm_endpoint_status") {
           return {
@@ -946,7 +949,7 @@ describe("DaemonClient — llmEndpointTestUpstream", () => {
 
   it("throws when the router is not running (no base URL)", async () => {
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {

@@ -236,6 +236,38 @@ describe("session_restart", () => {
     registry.shutdown()
   })
 
+  it("carries origin, parent, and depth forward onto the restarted descriptor (#session-visibility)", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      origin: "cowork",
+      parentSessionId: "sess_parent",
+      depth: 2,
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    // The regression this WP fixes: a restart used to reset lineage to a bare
+    // root. It must keep the logical session's source trace.
+    expect(desc.id).not.toBe(prev.id)
+    expect(desc.origin).toBe("cowork")
+    expect(desc.parentSessionId).toBe("sess_parent")
+    expect(desc.depth).toBe(2)
+
+    await close()
+    registry.shutdown()
+  })
+
   it("agent/ACP: retries as a fresh spawn when the adapter rejects the resume id as not found", async () => {
     const { client, registry, calls, close } = await buildHarness({ rejectResumeOnce: true })
 

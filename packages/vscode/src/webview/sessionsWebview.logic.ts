@@ -385,6 +385,14 @@ export interface WebviewRow {
   /** True when the session is kept alive / watched (idle-reaper exempt) — the
    *  one "someone is monitoring this" signal the summary carries (keepAlive). */
   watched: boolean
+  /** Count of live supervisors blocked waiting on this session right now
+   *  (#session-visibility) — distinct from `watched` (keepAlive): this is the
+   *  real "is anything watching it" signal (wait long-polls / session_monitor).
+   *  Drives the eye badge when > 0. */
+  watcherCount: number
+  /** Source channel that spawned this session (cowork / vscode / cron / codex),
+   *  for the origin chip. Undefined ⇒ unknown/unstamped root. */
+  originLabel: string | undefined
   /** Nesting depth in the parentSessionId lineage — 0 for a root, +1 per
    *  ancestor present in the same section. Drives the row's indent. */
   depth: number
@@ -544,6 +552,8 @@ function toRow(
     runs: undefined,
     approved: gateApproved(session),
     watched: session.keepAlive === true,
+    watcherCount: session.watchers ?? 0,
+    originLabel: session.origin,
     depth: 0,
     action: rowActionFor(session),
     workspace: ws
