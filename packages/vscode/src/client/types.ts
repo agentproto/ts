@@ -82,6 +82,23 @@ export interface RestartPolicy {
   resume?: boolean
 }
 
+/** Axis overrides for `POST /sessions/:id/restart` — mirrors @agentproto/runtime
+ *  RestartOverrides (the wire body of the restart-with-override route). Each
+ *  present axis overlays the prior session; an omitted one carries forward.
+ *  `access.profileRef` is the wallet swap; `route.gateway` the route swap. */
+export interface RestartOverridePayload {
+  model?: string
+  effort?: EffortLevel
+  /** A canonical posture value ("plan"/"bypass"/…) OR a raw harness mode id
+   *  wrapped as `{ harnessModeId }` — the daemon's restart-override accepts
+   *  both (session-tools.ts posture union). */
+  posture?: string | { harnessModeId: string }
+  contextProfile?: string
+  mode?: string
+  access?: { profileRef: string }
+  route?: { gateway: string; baseUrl?: string }
+}
+
 export type ContextContinuityMode = "manual" | "ask" | "auto"
 
 export interface ContextContinuityPolicy {
