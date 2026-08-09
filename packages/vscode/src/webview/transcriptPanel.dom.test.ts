@@ -23,6 +23,7 @@ import type { ExtMessage } from "./protocol.js"
 import type {
   PresentedActivitySegment,
   PresentedConversation,
+  PresentedPlanSegment,
   PresentedTurn,
   PresentedToolSegment,
 } from "./conversation.js"
@@ -2459,5 +2460,55 @@ describe("transcriptPanel webview — book view", () => {
     expect(under.hidden).toBe(false)
     expect(under.textContent).toContain("now:")
     expect(under.textContent).toContain("bash")
+  })
+
+  it("renders a plan notice with own-column marker spans, per-state classes, and a done/total progress fill", () => {
+    const panel = renderPanel()
+    const plan: PresentedPlanSegment = {
+      kind: "plan",
+      id: "seg-plan-1",
+      done: 1,
+      total: 4,
+      entries: [
+        { content: "done step", priority: "high", status: "completed" },
+        { content: "current step", priority: "high", status: "in_progress" },
+        { content: "later step", priority: "medium", status: "pending" },
+        { content: "broken step", priority: "high", status: "failed" },
+      ],
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "Plan it" }] },
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [{ kind: "assistant-text", id: "a1", html: "<p>Working.</p>" }, plan],
+        },
+      ],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const planNode = panel.book.querySelector(".notices .seg.plan")
+    expect(planNode).not.toBeNull()
+    expect(planNode?.querySelector(".plan-head")?.textContent).toBe("Plan 1/4")
+    // Progress fill width = done/total.
+    const fill = planNode?.querySelector(".plan-progress-fill") as unknown as { style: { width: string } }
+    expect(fill.style.width).toBe("25%")
+
+    const lis = [...(planNode?.querySelectorAll(".plan-list li") ?? [])]
+    expect(lis).toHaveLength(4)
+    // The marker is its OWN <span>, never a text prefix on the content — that
+    // is what gives wrapped lines their hanging indent.
+    expect(lis[0]?.querySelector(".plan-mark")?.textContent).toBe("✓")
+    expect(lis[0]?.querySelector(".plan-text")?.textContent).toBe("done step")
+    expect(lis[0]?.className).toContain("plan-completed")
+    expect(lis[1]?.querySelector(".plan-mark")?.textContent).toBe("●")
+    expect(lis[1]?.className).toContain("plan-in_progress")
+    expect(lis[2]?.querySelector(".plan-mark")?.textContent).toBe("○")
+    expect(lis[2]?.className).toContain("plan-pending")
+    expect(lis[3]?.querySelector(".plan-mark")?.textContent).toBe("✗")
+    expect(lis[3]?.className).toContain("plan-failed")
   })
 })
