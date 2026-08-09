@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>agentproto — conversation v3 "now-surface" (attention-first, cognitively grounded)</title>
+<style>
+  :root{
+    --bg:#141415; --panel:#1b1b1c; --panel-2:#202021; --fg:#c8c8c6; --dim:#85857f;
+    --faint:#5c5c58; --border:#2e2e2f; --hover:#232324;
+    --working:#7fa885; --awaiting:#c2a05c; --stalled:#bd6a5f;
+    --mono:ui-monospace,'SF Mono',Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,'Segoe UI',sans-serif;max-width:720px;margin:0 auto;padding-bottom:170px}
+
+  /* annotation toggle */
+  .annot-toggle{position:fixed;top:12px;right:16px;z-index:20;font:11px var(--mono);color:var(--faint);cursor:pointer;user-select:none}
+  .annot-toggle input{accent-color:var(--working)}
+  .note{display:none;font:10.5px var(--mono);color:#6a86a8;margin:2px 0 0}
+  body.annot .note{display:block}
+
+  /* ── mission line ─────────────────────────────────────── */
+  .mission{position:sticky;top:0;z-index:5;background:var(--bg);padding:12px 20px 0}
+  .mrow{display:flex;align-items:baseline;gap:10px}
+  .goal{font-size:12.5px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .meta{font:10.5px var(--mono);color:var(--faint);display:flex;gap:9px}
+  .mission::after{content:"";display:block;height:1px;background:var(--border);margin-top:10px}
+
+  /* ── since-you-left chip ──────────────────────────────── */
+  .syl{margin:14px 20px 0;display:inline-flex;align-items:center;gap:8px;font:11px var(--mono);color:var(--dim);
+    background:var(--panel);border:1px solid var(--border);border-radius:999px;padding:5px 13px}
+  .syl b{color:var(--fg);font-weight:600}
+  .syl .dismiss{color:var(--faint);cursor:pointer;margin-left:4px}
+
+  /* ── the aftermath ledger: past turns as outcome lines ── */
+  .ledger{padding:16px 20px 0}
+  .chap{font:600 9.5px var(--mono);letter-spacing:.12em;color:var(--faint);margin:10px 0 4px}
+  .led{display:flex;align-items:baseline;gap:9px;padding:3px 0;border-radius:4px;cursor:pointer}
+  .led:hover{background:var(--hover)}
+  .led:focus-visible{outline:1px solid #6a86a8;outline-offset:2px}
+  .led .d{width:6px;height:6px;border-radius:50%;background:var(--working);flex-shrink:0;position:relative;top:-1px}
+  .led.old .d{opacity:.35}
+  .led .verb{font-size:12.5px;color:var(--dim);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .led.old .verb{color:var(--faint)}
+  .led .verb b{color:var(--fg);font-weight:500}
+  .led.old .verb b{color:var(--dim)}
+  .led .t{font:10px var(--mono);color:var(--faint)}
+  .led .expand{font:10px var(--mono);color:var(--faint);opacity:0}
+  .led:hover .expand{opacity:1}
+
+  /* ── pinned open loop (the ONLY pop) ──────────────────── */
+  .pinned{margin:18px 20px 0;border-left:3px solid var(--awaiting);background:rgba(194,160,92,.06);
+    border-radius:0 8px 8px 0;padding:11px 14px}
+  .pinned .ptag{font:600 9.5px var(--mono);letter-spacing:.1em;color:var(--awaiting)}
+  .pinned p{font-size:13px;margin-top:4px}
+  .pacts{display:flex;gap:6px;margin-top:9px}
+  .pbtn{font-size:11.5px;padding:3px 12px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer}
+  .pbtn:hover{color:var(--fg);border-color:var(--dim)}
+  .pbtn.yes{border-color:#3a4a3f;background:rgba(127,168,133,.12);color:var(--working);font-weight:600}
+  .pbtn.yes:hover{background:rgba(127,168,133,.22)}
+
+  /* ── the NOW: the only full-text element ──────────────── */
+  .now{margin:18px 20px 0;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+  .now .ntag{display:flex;align-items:center;gap:7px;font:600 9.5px var(--mono);letter-spacing:.12em;color:var(--working)}
+  .pulse{width:6px;height:6px;border-radius:50%;background:var(--working);animation:pu 1.6s infinite}
+  @keyframes pu{50%{opacity:.3}}
+  @media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+  .now .lede{font-size:13.5px;margin-top:8px}
+  .now .lede code{font:12px var(--mono);background:var(--panel-2);padding:1px 4px;border-radius:3px}
+  .now .more{font:11px var(--mono);color:var(--faint);margin-top:8px;cursor:pointer}
+  .now .more:hover{color:var(--dim)}
+  .nowsteps{margin-top:10px;border-left:1px solid var(--border);padding-left:14px;display:flex;flex-direction:column;gap:6px}
+  .ns{display:flex;gap:8px;align-items:baseline}
+  .ns .tool{font:600 10px var(--mono);color:var(--faint)}
+  .ns .what{font-size:12px;color:var(--dim)}
+  .ns.live .what{color:var(--fg)}
+  .ns .sdur{margin-left:auto;font:10px var(--mono);color:var(--faint)}
+
+  /* ── dock ─────────────────────────────────────────────── */
+  .dock{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(transparent,var(--bg) 26%);padding:24px 20px 14px}
+  .dock .inner{max-width:680px;margin:0 auto}
+  .composer{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:9px 11px}
+  .cinput{color:var(--faint);font-size:12.5px;min-height:34px}
+  .cbar{display:flex;gap:6px;margin-top:8px;align-items:center}
+  .chip{font-size:10.5px;padding:2px 9px;border-radius:10px;border:1px solid var(--border);color:var(--dim);background:transparent;cursor:pointer}
+  .grow{flex:1}
+  .send{font-size:11.5px;padding:3px 12px;border-radius:4px;border:1px solid #3a4a3f;background:rgba(127,168,133,.12);color:var(--working);cursor:pointer;font-weight:600}
+  .stopb{font-size:11.5px;padding:3px 10px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer}
+  .stopb:hover{color:var(--stalled);border-color:var(--stalled)}
+</style>
+</head>
+<body class="annot">
+
+<label class="annot-toggle"><input type="checkbox" checked onchange="document.body.classList.toggle('annot',this.checked)"> ⓘ cognitive annotations</label>
+
+<div class="mission">
+  <div class="mrow">
+    <div class="goal">Diagnose + fix mastracode MCP config — bug 2: anthropic-direct model</div>
+    <div class="meta"><span>claude-opus-4-8</span><span>$1.82</span><span>ctx 8%</span><span>12m</span></div>
+  </div>
+</div>
+
+<div style="padding:0 20px"><div class="note">ⓘ glance level L0 — mission + cost always answerable without scrolling (recognition over recall)</div></div>
+
+<span class="syl">while you were away · <b>2 turns</b> · <b>1 result</b> · nothing needed you <span class="dismiss">✕</span></span>
+<div style="padding:0 20px"><div class="note">ⓘ resumption-lag killer (Gloria Mark) — one line reorients after a tab switch; no transcript re-reading</div></div>
+
+<div class="ledger">
+  <div class="note">ⓘ the aftermath ledger — Cowan's ~4 chunks: past turns compress to outcome VERBS grouped by chapter; oldest fade (temporal gradient). Click any line to re-expand the full turn (progressive disclosure L2).</div>
+  <div class="chap">INVESTIGATE</div>
+  <div class="led old" tabindex="0"><span class="d"></span><span class="verb">confirmed <b>ANTHROPIC_API_KEY present</b> in interactive shell — Bash env was the liar</span><span class="t">18s</span><span class="expand">expand ›</span></div>
+  <div class="chap">LOCATE CONFIG</div>
+  <div class="led old" tabindex="0"><span class="d"></span><span class="verb">found <b>4 config locations</b>, priority order — global mcp.json wins</span><span class="t">1m 04s</span><span class="expand">expand ›</span></div>
+  <div class="led" tabindex="0"><span class="d"></span><span class="verb">found <b>3 dead MCP servers</b> declared in ~/.mastracode/mcp.json</span><span class="t">24s</span><span class="expand">expand ›</span></div>
+</div>
+
+<div class="pinned">
+  <div class="ptag">NEEDS YOU</div>
+  <p>OK to remove the 3 dead server entries (design-team, katchy, intel) from the global mcp.json? They fail on every boot.</p>
+  <div class="pacts"><button class="pbtn yes">Yes, remove</button><button class="pbtn">Show me the file</button><button class="pbtn">Keep them</button></div>
+  <div class="note">ⓘ Zeigarnik — the ONE open loop stays pinned until closed; ochre is the single pre-attentive pop-out (Treisman) on the whole surface. Buttons are labeled actions (design-language rule 1), so answering costs one click, not one paragraph.</div>
+</div>
+
+<div class="now">
+  <div class="ntag"><span class="pulse"></span> NOW · FIX</div>
+  <p class="lede">Rewriting <code>~/.mastracode/mcp.json</code> without the dead entries, then re-running the boot check with the anthropic-direct model.</p>
+  <div class="note">ⓘ BLUF — verdict sentence first (the harness's activitySummary), evidence below. The now-card is the ONLY full-text element on screen.</div>
+  <div class="nowsteps">
+    <div class="ns"><span class="tool">edit</span><span class="what">mcp.json — removed 3 server blocks</span><span class="sdur">✓</span></div>
+    <div class="ns live"><span class="tool">bash</span><span class="what">zsh -ic "mastracode run --model anthropic/claude-sonnet-5"</span><span class="sdur">50s…</span></div>
+  </div>
+  <div class="more">▸ full message &amp; 4 earlier steps</div>
+</div>
+
+<div class="dock"><div class="inner">
+  <div class="composer">
+    <div class="cinput">Reply — or just answer the pinned question above…</div>
+    <div class="cbar">
+      <span class="chip">✳ claude-code</span>
+      <button class="chip">model · claude-opus-4-8</button>
+      <span class="grow"></span>
+      <button class="stopb">■ Stop</button>
+      <button class="send">Send ⏎</button>
+    </div>
+  </div>
+</div></div>
+
+</body>
+</html>

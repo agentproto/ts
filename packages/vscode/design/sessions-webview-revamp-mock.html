@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sessions webview — revamp mock (kind tabs + status chips)</title>
+<style>
+  /* VS Code dark theme approximation — same visual language as the shipped panel. */
+  :root {
+    --bg: #181818;
+    --fg: #cccccc;
+    --dim: #8b8b8b;
+    --border: rgba(128,128,128,0.3);
+    --hover: rgba(255,255,255,0.04);
+    --accent: #3b82f6;
+    --green: #3fb950;
+    --amber: #d29922;
+    --red: #f85149;
+    --magenta: #d946ef;
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 -apple-system, "Segoe UI", sans-serif; }
+  .panel { width: 380px; margin: 24px auto; border: 1px solid var(--border); display: flex; flex-direction: column; min-height: 640px; }
+  .caption { width: 380px; margin: 8px auto 32px; color: var(--dim); font-size: 11px; }
+
+  /* ── Row 1: KIND tabs (the only navigation axis) + search + archived toggles ── */
+  #topbar { display: flex; align-items: center; gap: 4px; padding: 8px 10px 0; border-bottom: 1px solid var(--border); }
+  .ktab { padding: 6px 10px 8px; cursor: pointer; color: var(--dim); border-bottom: 2px solid transparent; white-space: nowrap; }
+  .ktab .n { opacity: 0.65; font-size: 11px; margin-left: 4px; }
+  .ktab.on { color: var(--fg); border-bottom-color: var(--fg); font-weight: 600; }
+  .ktab.attn .n { color: var(--amber); opacity: 1; }
+  #topbar .spacer { flex: 1; }
+  .icon-btn { padding: 4px 6px 8px; cursor: pointer; color: var(--dim); font-size: 14px; }
+  .icon-btn:hover, .icon-btn.on { color: var(--fg); }
+
+  /* ── Search: collapsed by default, expands in place of the tab row ── */
+  #searchrow { display: none; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  #searchrow.open { display: flex; }
+  #searchrow input { flex: 1; background: transparent; border: none; outline: none; color: var(--fg); font-size: 13px; }
+  #searchrow .close { cursor: pointer; color: var(--dim); }
+  body.searching #topbar { display: none; }
+
+  /* ── Row 2: STATUS CHIPS — live counts, toggleable filters, doubles as summary ── */
+  #chips { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; font-size: 11px; color: var(--dim); }
+  .chip:hover { background: var(--hover); }
+  .chip.on { color: var(--fg); border-color: var(--fg); }
+  .chip .d { width: 7px; height: 7px; border-radius: 50%; }
+  .chip.zero { opacity: 0.4; }
+  .d.working { background: var(--green); }
+  .d.awaiting { background: var(--amber); }
+  .d.idle { background: transparent; border: 1px solid var(--dim); }
+  .d.stalled { background: var(--red); }
+  .d.done { background: var(--dim); }
+  .chip.awaiting.hot { border-color: var(--amber); color: var(--amber); }
+
+  /* ── List rows — anatomy unchanged from the shipped panel ── */
+  #list { flex: 1; overflow-y: auto; }
+  .ghead { display: flex; align-items: center; gap: 6px; padding: 10px 10px 4px; color: var(--dim); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; }
+  .ghead .tw { font-size: 9px; transition: transform 0.1s; }
+  .ghead.closed .tw { transform: rotate(-90deg); }
+  .row { display: flex; gap: 8px; padding: 8px 10px; border-bottom: 1px solid rgba(128,128,128,0.12); cursor: pointer; }
+  .row:hover { background: var(--hover); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
+  .dot.working { background: var(--green); animation: pulse 1.6s infinite; }
+  .dot.awaiting { background: var(--amber); }
+  .dot.idle, .dot.done, .dot.stopped { background: transparent; border: 1px solid var(--dim); }
+  .dot.stalled, .dot.failed { background: var(--red); }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  .mid { flex: 1; min-width: 0; }
+  .name { font-weight: 600; display: flex; gap: 6px; align-items: baseline; }
+  .name .ok { color: var(--green); font-weight: 400; }
+  .name .runs { color: var(--dim); font-weight: 400; font-size: 11px; }
+  .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tags { display: flex; gap: 6px; margin-top: 3px; align-items: center; font-size: 11px; color: var(--dim); flex-wrap: wrap; }
+  .tag.ws { color: var(--magenta); }
+  .time { color: var(--dim); font-size: 11px; white-space: nowrap; }
+  .right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+
+  #footer { padding: 6px 10px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  #footer .meta { color: var(--dim); font-size: 11px; }
+  #footer button { margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--fg); font-size: 11px; padding: 3px 10px; cursor: pointer; }
+  h3 { width: 380px; margin: 24px auto 4px; font-size: 12px; color: var(--dim); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+</style>
+</head>
+<body>
+
+<h3>Mock — click the tabs and chips</h3>
+<div class="panel">
+  <div id="topbar">
+    <div class="ktab on" data-k="agents">Agents<span class="n">4</span></div>
+    <div class="ktab attn" data-k="auto">Auto<span class="n">12</span></div>
+    <div class="spacer"></div>
+    <div class="icon-btn" id="search-toggle" title="Filter (name / cwd / id)">⌕</div>
+    <div class="icon-btn" id="arch-toggle" title="Show archived">▣</div>
+  </div>
+  <div id="searchrow">
+    <span>⌕</span><input placeholder="Filter by name, command, cwd, id…" />
+    <span class="close" id="search-close">✕</span>
+  </div>
+  <div id="chips">
+    <div class="chip awaiting hot on" data-s="awaiting"><span class="d awaiting"></span>1 awaiting</div>
+    <div class="chip on" data-s="working"><span class="d working"></span>2 working</div>
+    <div class="chip on" data-s="idle"><span class="d idle"></span>1 idle</div>
+    <div class="chip zero on" data-s="stalled"><span class="d stalled"></span>0 stalled</div>
+    <div class="chip on" data-s="done"><span class="d done"></span>done</div>
+  </div>
+
+  <div id="list"></div>
+
+  <div id="footer">
+    <span class="meta" id="loadmeta">50 of 283 loaded</span>
+    <button>Load more</button>
+  </div>
+</div>
+<div class="caption">
+  Top section: ONE navigation axis (kind), search collapsed behind ⌕, archived behind ▣.
+  Status = live count chips (toggle to filter; amber chip lights up when something awaits you).
+  “Auto” tab groups machine sessions by origin with collapsible headers; consecutive runs of
+  the same cron collapse into one row. “N of M loaded” moves to the footer, next to the
+  control it describes.
+</div>
+
+<script>
+  // ── Mock data, drawn from the real screenshots ──
+  const AGENTS = [
+    { s: "awaiting", name: "claude-code · d24044", msg: "Waiting for your reply — plan approved, ready to implement.", tags: ["in-place", "ws:Main monorepo", "✳ anthropic/claude-fable-5", "62%"], time: "1 min ago" },
+    { s: "working", name: "hermes · executor-wp3", msg: "Running pnpm test in packages/vscode…", tags: ["⑂ wt-sessions-revamp", "ws:agentproto/ts", "☿ deepseek-v4", "$0.31"], time: "just now" },
+    { s: "working", name: "claude-code · a91f02", msg: "Editing sessionsWebviewPanel.ts", tags: ["in-place", "ws:Main monorepo", "✳ claude-opus-4-8", "34%", "$2.10"], time: "3 mins ago" },
+    { s: "idle", name: "cowork · afternoon session", msg: "Turn ended — summary written.", tags: ["in-place", "ws:Main monorepo", "✳ claude-fable-5"], time: "2 hrs ago" },
+    { s: "done", name: "codex · fix-lint-sweep", msg: "PR #812 opened.", tags: ["⑂ wt-lint", "ws:agentproto/ts", "◈ gpt-5.3-codex", "$0.88"], time: "5 hrs ago" },
+  ];
+  const AUTO = [
+    { group: "Gate reviews", rows: [
+      { s: "done", name: "gate-review", ok: "✓ approved", msg: "Verdict written to `.gate-verdict-20681.json`.", tags: ["in-place", "ws:Main monorepo", "✳ claude-opus-4-8", "$1.42"], time: "0 mins ago" },
+      { s: "done", name: "gate-review", ok: "✓ approved", msg: "Verdict written to `.gate-verdict-20614.json`.", tags: ["in-place", "ws:Main monorepo", "✳ claude-opus-4-8", "$1.18"], time: "40 mins ago" },
+    ]},
+    { group: "Crons", rows: [
+      { s: "done", name: "cron · d8ee2e36", runs: "×3 runs", msg: "Last run OK — mailbox sweep, nothing to triage.", tags: ["in-place", "ws:Main monorepo"], time: "2 mins ago" },
+      { s: "failed", name: "cron · 41ac09b1", runs: "×1 run", msg: "Exit 1 — daemon socket unreachable.", tags: ["in-place", "ws:agentproto/ts"], time: "1 hr ago" },
+    ]},
+    { group: "Commands", rows: [
+      { s: "done", name: "command · f2e358", msg: "pnpm check-types — exit 0", tags: ["in-place", "ws:Main monorepo"], time: "just now" },
+      { s: "done", name: "command · 22bfd0", msg: "git status --porcelain — exit 0", tags: ["in-place", "ws:Main monorepo"], time: "40 mins ago" },
+    ]},
+  ];
+
+  const list = document.getElementById("list");
+  let kind = "agents";
+  const chipState = { awaiting: true, working: true, idle: true, stalled: true, done: true };
+
+  function rowHTML(r) {
+    const tags = r.tags.map(t => t.startsWith("ws:")
+      ? '<span class="tag ws">' + t.slice(3) + "</span>"
+      : "<span class='tag'>" + t + "</span>").join("");
+    return '<div class="row"><span class="dot ' + r.s + '"></span>' +
+      '<div class="mid"><div class="name"><span>' + r.name + "</span>" +
+      (r.ok ? '<span class="ok">' + r.ok + "</span>" : "") +
+      (r.runs ? '<span class="runs">' + r.runs + "</span>" : "") +
+      "</div>" +
+      '<div class="msg">' + r.msg + '</div><div class="tags">' + tags + "</div></div>" +
+      '<div class="right"><span class="time">' + r.time + "</span></div></div>";
+  }
+  const visible = r => chipState[r.s === "failed" ? "stalled" : r.s] !== false;
+
+  function render() {
+    if (kind === "agents") {
+      list.innerHTML = AGENTS.filter(visible).map(rowHTML).join("");
+      document.getElementById("loadmeta").textContent = "50 of 283 loaded";
+    } else {
+      list.innerHTML = AUTO.map(g =>
+        '<div class="ghead"><span class="tw">▾</span>' + g.group + " · " + g.rows.length + "</div>" +
+        g.rows.filter(visible).map(rowHTML).join("")
+      ).join("");
+      document.getElementById("loadmeta").textContent = "12 of 96 loaded";
+    }
+  }
+  document.querySelectorAll(".ktab").forEach(t => t.addEventListener("click", () => {
+    document.querySelectorAll(".ktab").forEach(x => x.classList.remove("on"));
+    t.classList.add("on"); kind = t.dataset.k; render();
+  }));
+  document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
+    c.classList.toggle("on"); chipState[c.dataset.s] = c.classList.contains("on"); render();
+  }));
+  document.getElementById("search-toggle").addEventListener("click", () => {
+    document.getElementById("searchrow").classList.add("open"); document.body.classList.add("searching");
+    document.querySelector("#searchrow input").focus();
+  });
+  document.getElementById("search-close").addEventListener("click", () => {
+    document.getElementById("searchrow").classList.remove("open"); document.body.classList.remove("searching");
+  });
+  document.getElementById("arch-toggle").addEventListener("click", e => e.target.classList.toggle("on"));
+  render();
+</script>
+</body>
+</html>

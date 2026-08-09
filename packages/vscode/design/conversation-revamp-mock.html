@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>agentproto — conversation view revamp (mock)</title>
+<style>
+  :root{
+    --bg:#141415; --panel:#1b1b1c; --panel-2:#202021; --edge:#2a2a2c;
+    --text:#e6e4df; --dim:#9a9aa0; --faint:#6b6b72;
+    --moss:#7fa885; --ochre:#c2a05c; --clay:#bd6a5f;
+    --mono:ui-monospace,'SF Mono',Menlo,monospace;
+    --sans:-apple-system,'Segoe UI',system-ui,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font:14px/1.6 var(--sans);max-width:760px;margin:0 auto;padding-bottom:120px}
+
+  /* ── sticky mission header ────────────────────────────── */
+  .mission{position:sticky;top:0;z-index:5;background:linear-gradient(var(--bg) 82%,transparent);padding:14px 20px 18px}
+  .mission .bar{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:12px}
+  .mission .goal{font-weight:600;font-size:13px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mission .meta{display:flex;gap:10px;font:11px var(--mono);color:var(--dim);flex-shrink:0}
+  .mission .meta b{color:var(--text);font-weight:500}
+  /* chapter strip — inferred sub-tasks, current highlighted */
+  .chapters{display:flex;gap:4px;margin:8px 4px 0}
+  .ch{flex:1;height:3px;border-radius:2px;background:var(--edge)}
+  .ch.done{background:var(--moss);opacity:.45}
+  .ch.now{background:var(--moss)}
+  .chlabels{display:flex;gap:4px;margin:4px 4px 0;font:10px var(--mono);color:var(--faint)}
+  .chlabels span{flex:1;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chlabels .now{color:var(--moss)}
+
+  .feed{padding:0 20px;display:flex;flex-direction:column;gap:18px}
+
+  /* ── user turn ────────────────────────────────────────── */
+  .you{background:var(--panel);border:1px solid var(--edge);border-left:3px solid var(--ochre);border-radius:10px;padding:12px 16px}
+  .you .tag{font:600 10px var(--mono);letter-spacing:.08em;color:var(--ochre);margin-bottom:6px}
+  .you p{color:var(--text);font-size:13.5px}
+  .you code{font:12px var(--mono);background:var(--panel-2);padding:1px 5px;border-radius:4px}
+
+  /* ── assistant narration = the primary reading layer ──── */
+  .say{font-size:14px;max-width:640px}
+  .say code{font:12.5px var(--mono);background:var(--panel);border:1px solid var(--edge);padding:1px 5px;border-radius:4px;color:var(--text)}
+  .say .hl{color:var(--moss)}
+
+  /* ── step group: collapsed row ────────────────────────── */
+  .steps{border:1px solid var(--edge);border-radius:10px;background:var(--panel);overflow:hidden}
+  .steps summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:9px 14px;font:12px var(--mono);color:var(--dim)}
+  .steps summary::-webkit-details-marker{display:none}
+  .steps summary:hover{background:var(--panel-2)}
+  .steps summary:focus-visible{outline:1px solid var(--moss);outline-offset:-1px}
+  .st-ok{color:var(--moss)} .st-fail{color:var(--clay)}
+  .tools{display:flex;gap:4px;margin-left:2px}
+  .tools i{font-style:normal;font-size:11px;background:var(--panel-2);border:1px solid var(--edge);border-radius:4px;padding:0 5px;color:var(--dim)}
+  .steps .dur{margin-left:auto;color:var(--faint)}
+  .steps .chev{color:var(--faint);transition:transform .15s}
+  details[open] .chev{transform:rotate(90deg)}
+
+  /* ── step group: expanded timeline with spine ─────────── */
+  .tl{padding:4px 14px 12px 14px;border-top:1px solid var(--edge)}
+  .step{display:flex;gap:12px;position:relative;padding:7px 0}
+  .step::before{content:"";position:absolute;left:7px;top:26px;bottom:-8px;width:1px;background:var(--edge)}
+  .step:last-child::before{display:none}
+  .dot{width:15px;height:15px;border-radius:50%;flex-shrink:0;margin-top:3px;display:flex;align-items:center;justify-content:center;font-size:9px;background:var(--panel-2);border:1px solid var(--edge);color:var(--moss)}
+  .step.fail .dot{color:var(--clay);border-color:#4a2e2a;background:#241a18}
+  .sbody{flex:1;min-width:0}
+  .sline{display:flex;align-items:baseline;gap:8px}
+  .sline .tool{font:600 11px var(--mono);color:var(--dim);background:var(--panel-2);border-radius:4px;padding:0 6px}
+  .sline .what{font-size:13px;color:var(--text)}
+  .sline .sdur{margin-left:auto;font:10px var(--mono);color:var(--faint)}
+  .out{font:11.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .step.fail .out{color:var(--clay);white-space:normal}
+  .retry{font:11px var(--mono);color:var(--dim);margin-top:4px}
+  .retry b{color:var(--moss);font-weight:600}
+
+  /* ── inline artifact card ─────────────────────────────── */
+  .artifact{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:12px 16px}
+  .artifact .atitle{font:600 11px var(--mono);color:var(--dim);letter-spacing:.06em;margin-bottom:8px}
+  .artifact ul{list-style:none}
+  .artifact li{font:12.5px var(--mono);padding:3px 0;color:var(--text)}
+  .artifact li b{color:var(--moss);font-weight:600;margin-right:8px}
+
+  /* ── live footer ──────────────────────────────────────── */
+  .live{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(transparent,var(--bg) 30%);padding:26px 20px 16px}
+  .live .inner{max-width:720px;margin:0 auto;background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:10px}
+  .pulse{width:8px;height:8px;border-radius:50%;background:var(--moss);animation:pu 1.6s infinite}
+  @keyframes pu{50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){.pulse{animation:none}}
+  .live .doing{font:12px var(--mono);color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .live .doing b{color:var(--moss);font-weight:600}
+  .live .t{font:11px var(--mono);color:var(--faint)}
+  .live .stop{font:11px var(--mono);color:var(--dim);border:1px solid var(--edge);border-radius:6px;padding:3px 10px;cursor:pointer}
+  .live .stop:hover{color:var(--clay);border-color:#4a2e2a}
+</style>
+</head>
+<body>
+
+<div class="mission">
+  <div class="bar">
+    <div class="goal">Diagnose + fix mastracode MCP config — bug 2: anthropic-direct model</div>
+    <div class="meta"><span>◆ <b>claude-opus-4-8</b></span><span><b>$1.82</b></span><span>ctx <b>8%</b></span><span><b>12m</b></span></div>
+  </div>
+  <div class="chapters">
+    <div class="ch done"></div><div class="ch done"></div><div class="ch now"></div><div class="ch"></div><div class="ch"></div>
+  </div>
+  <div class="chlabels">
+    <span>investigate</span><span>locate config</span><span class="now">inspect db</span><span>fix</span><span>verify</span>
+  </div>
+</div>
+
+<div class="feed">
+
+  <div class="you">
+    <div class="tag">YOU</div>
+    <p>Diagnose + fix BUG 2 as far as genuinely possible (fix config; if google is just out of credits, prove it and get anthropic-direct working instead). Do NOT touch this git repo's working tree — user-level config only. Do NOT commit. Then VERIFY: clean boot, no MCP errors, a direct-provider model producing real output.</p>
+  </div>
+
+  <p class="say">I'll investigate mastracode's config location and current state first.</p>
+
+  <details class="steps">
+    <summary tabindex="0"><span class="st-ok">✓</span> 4 steps <span class="st-fail">· 1 failed</span>
+      <span class="tools"><i>$ bash</i><i>⌘ read</i></span><span class="dur">18s</span><span class="chev">›</span></summary>
+  </details>
+
+  <p class="say">Good — confirmed: when sourcing <code>.zshrc</code> as an interactive shell, <code>ANTHROPIC_API_KEY</code> <span class="hl">is present</span> (the Bash tool's own env just doesn't inherit it). I'll use <code>zsh -ic</code> for mastracode runs to get the real host env. Now let's find mastracode's config and MCP server declarations.</p>
+
+  <details class="steps" open>
+    <summary tabindex="0"><span class="st-ok">✓</span> 9 steps <span class="st-fail">· 1 failed</span>
+      <span class="tools"><i>$ bash</i><i>⌘ read</i><i>◇ sqlite</i></span><span class="dur">1m 04s</span><span class="chev">›</span></summary>
+    <div class="tl">
+      <div class="step"><div class="dot">✓</div><div class="sbody">
+        <div class="sline"><span class="tool">$ bash</span><span class="what">locate config dirs</span><span class="sdur">2s</span></div>
+        <div class="out">~/.mastracode/  ~/.mastracode/settings.json  ~/.mastracode/state.db</div></div></div>
+      <div class="step"><div class="dot">✓</div><div class="sbody">
+        <div class="sline"><span class="tool">⌘ read</span><span class="what">settings.json — no `mcp` key in head -200</span><span class="sdur">1s</span></div>
+        <div class="out">{"theme":"dark","telemetry":false,"model":"google/gemini-2.5-flash", …</div></div></div>
+      <div class="step fail"><div class="dot">✕</div><div class="sbody">
+        <div class="sline"><span class="tool">$ bash</span><span class="what">mastracode --print-config</span><span class="sdur">4s</span></div>
+        <div class="out">exit 1 — unknown flag: --print-config</div>
+        <div class="retry"><b>recovered</b> · fell back to reading the sqlite state directly</div></div></div>
+      <div class="step"><div class="dot">✓</div><div class="sbody">
+        <div class="sline"><span class="tool">◇ sqlite</span><span class="what">.tables on state.db</span><span class="sdur">1s</span></div>
+        <div class="out">mastra_mcp_clients   mastra_mcp_servers   threads   messages</div></div></div>
+      <div class="step"><div class="dot">✓</div><div class="sbody">
+        <div class="sline"><span class="tool">◇ sqlite</span><span class="what">select * from mastra_mcp_servers</span><span class="sdur">1s</span></div>
+        <div class="out">design-team ✕ unreachable · katchy ✕ unreachable · intel ✕ unreachable</div></div></div>
+    </div>
+  </details>
+
+  <p class="say">Found it — <code>mastra_mcp_clients</code> / <code>mastra_mcp_servers</code> tables in the sqlite DB. Now I know exactly where to look: global <code>~/.mastracode/mcp.json</code>, project <code>.mcp.json</code>, <code>.mastracode/mcp.json</code>, and <code>.claude/settings.local.json</code>. Checking all four in priority order.</p>
+
+  <div class="artifact">
+    <div class="atitle">FOUND — 4 CONFIG LOCATIONS, PRIORITY ORDER</div>
+    <ul>
+      <li><b>1</b>~/.mastracode/mcp.json <span style="color:var(--faint)">— global, 3 dead servers declared here</span></li>
+      <li><b>2</b>./.mcp.json <span style="color:var(--faint)">— absent</span></li>
+      <li><b>3</b>./.mastracode/mcp.json <span style="color:var(--faint)">— absent</span></li>
+      <li><b>4</b>./.claude/settings.local.json <span style="color:var(--faint)">— present, unrelated keys</span></li>
+    </ul>
+  </div>
+
+  <details class="steps">
+    <summary tabindex="0"><span class="st-ok">✓</span> 6 steps
+      <span class="tools"><i>✎ edit</i><i>$ bash</i></span><span class="dur">42s</span><span class="chev">›</span></summary>
+  </details>
+
+</div>
+
+<div class="live">
+  <div class="inner">
+    <div class="pulse"></div>
+    <div class="doing">Working — <b>$ zsh -ic "mastracode run --model anthropic/claude-sonnet-5"</b></div>
+    <div class="t">50s · step 3/6</div>
+    <div class="stop" tabindex="0">■ stop</div>
+  </div>
+</div>
+
+</body>
+</html>

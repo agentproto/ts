@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>agentproto — conversation view v2 (minimal, design-language tokens)</title>
+<style>
+  /* tokens: verbatim from vscode-design-language.html */
+  :root{
+    --bg:#141415; --panel:#1b1b1c; --panel-2:#202021; --fg:#c8c8c6; --dim:#85857f;
+    --faint:#5c5c58; --border:#2e2e2f; --hover:#232324;
+    --working:#7fa885; --awaiting:#c2a05c; --stalled:#bd6a5f;
+    --mono:ui-monospace,'SF Mono',Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,'Segoe UI',sans-serif;max-width:720px;margin:0 auto;padding-bottom:170px}
+
+  /* ── mission header: one borderless line + hairline ───── */
+  .mission{position:sticky;top:0;z-index:5;background:var(--bg);padding:12px 20px 0}
+  .mrow{display:flex;align-items:baseline;gap:10px}
+  .goal{font-size:12.5px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .meta{font:10.5px var(--mono);color:var(--faint);flex-shrink:0;display:flex;gap:9px}
+  .chapters{display:flex;gap:3px;margin:8px 0 0}
+  .ch{flex:1;height:2px;border-radius:1px;background:var(--border)}
+  .ch.done{background:var(--working);opacity:.35}
+  .ch.now{background:var(--working);opacity:.8}
+  .mission::after{content:"";display:block;height:1px;background:var(--border);margin-top:10px}
+
+  .feed{padding:18px 20px 0;display:flex;flex-direction:column;gap:16px}
+
+  /* ── user turn: hairline, no box ──────────────────────── */
+  .you{border-left:2px solid var(--awaiting);padding:2px 0 2px 14px}
+  .you .tag{font:600 9.5px var(--mono);letter-spacing:.1em;color:var(--awaiting);opacity:.8}
+  .you p{color:var(--dim);font-size:12.5px;margin-top:3px}
+  .you code{font:11.5px var(--mono);color:var(--fg)}
+
+  /* ── assistant narration: the page itself ─────────────── */
+  .say{font-size:13.5px;color:var(--fg);max-width:640px}
+  .say code{font:12px var(--mono);color:var(--fg);background:var(--panel-2);padding:1px 4px;border-radius:3px}
+  .say .hl{color:var(--working)}
+
+  /* ── steps: no card — a quiet line, spine on expand ───── */
+  details.steps summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;
+    font:11px var(--mono);color:var(--faint);padding:2px 0;border-radius:4px}
+  details.steps summary::-webkit-details-marker{display:none}
+  details.steps summary:hover{color:var(--dim)}
+  details.steps summary:focus-visible{outline:1px solid #6a86a8;outline-offset:2px}
+  .ok{color:var(--working)} .bad{color:var(--stalled)}
+  .chev{transition:transform .12s;font-size:10px}
+  details[open] .chev{transform:rotate(90deg)}
+  .tl{margin:6px 0 2px 4px;border-left:1px solid var(--border);padding-left:16px;display:flex;flex-direction:column;gap:8px}
+  .step .l1{display:flex;align-items:baseline;gap:8px}
+  .tool{font:600 10px var(--mono);color:var(--faint)}
+  .what{font-size:12.5px;color:var(--fg)}
+  .sdur{margin-left:auto;font:10px var(--mono);color:var(--faint)}
+  .out{font:11px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .step.fail .what{color:var(--stalled)}
+  .step.fail .out{color:var(--stalled);opacity:.85;white-space:normal}
+  .recover{font:10.5px var(--mono);color:var(--faint);margin-top:2px}
+  .recover b{color:var(--working);font-weight:600}
+
+  /* ── artifact: hairline block, no chrome ──────────────── */
+  .artifact{border-left:2px solid var(--border);padding:2px 0 2px 14px}
+  .artifact .atitle{font:600 9.5px var(--mono);letter-spacing:.1em;color:var(--faint)}
+  .artifact li{list-style:none;font:12px var(--mono);padding:2px 0;color:var(--dim)}
+  .artifact li b{color:var(--working);font-weight:600;margin-right:8px}
+
+  /* ── floating layer ───────────────────────────────────── */
+  .jump{position:fixed;right:24px;bottom:150px;font:11px var(--mono);color:var(--dim);
+    background:var(--panel);border:1px solid var(--border);border-radius:999px;padding:5px 12px;cursor:pointer;
+    box-shadow:0 4px 16px rgba(0,0,0,.35)}
+  .jump:hover{color:var(--fg)}
+
+  /* ── bottom dock: working line + composer, one surface ── */
+  .dock{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(transparent,var(--bg) 26%);padding:24px 20px 14px}
+  .dock .inner{max-width:680px;margin:0 auto}
+  .workline{display:flex;align-items:center;gap:8px;font:11px var(--mono);color:var(--dim);padding:0 2px 8px}
+  .pulse{width:6px;height:6px;border-radius:50%;background:var(--working);animation:pu 1.6s infinite}
+  @keyframes pu{50%{opacity:.3}}
+  @media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+  .workline .cmd{color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+  .workline .st{color:var(--faint)}
+  .composer{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:9px 11px}
+  .cinput{color:var(--faint);font-size:12.5px;min-height:38px}
+  .cinput b{color:var(--dim);font-weight:500}
+  .cbar{display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap}
+  .chip{font-size:10.5px;padding:2px 9px;border-radius:10px;border:1px solid var(--border);color:var(--dim);background:transparent;cursor:pointer}
+  .chip:hover{color:var(--fg);border-color:var(--dim)}
+  .chip .lbl{color:var(--faint);margin-right:4px}
+  .grow{flex:1}
+  .send{font-size:11.5px;padding:3px 12px;border-radius:4px;border:1px solid #3a4a3f;background:rgba(127,168,133,.12);color:var(--working);cursor:pointer;font-weight:600}
+  .send:hover{background:rgba(127,168,133,.22)}
+  .stopb{font-size:11.5px;padding:3px 10px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer}
+  .stopb:hover{color:var(--stalled);border-color:var(--stalled)}
+</style>
+</head>
+<body>
+
+<div class="mission">
+  <div class="mrow">
+    <div class="goal">Diagnose + fix mastracode MCP config — bug 2: anthropic-direct model</div>
+    <div class="meta"><span>claude-opus-4-8</span><span>$1.82</span><span>ctx 8%</span><span>12m</span></div>
+  </div>
+  <div class="chapters"><div class="ch done"></div><div class="ch done"></div><div class="ch now"></div><div class="ch"></div><div class="ch"></div></div>
+</div>
+
+<div class="feed">
+
+  <div class="you">
+    <div class="tag">YOU · 12:04</div>
+    <p>Diagnose + fix BUG 2 as far as genuinely possible (fix config; if google is just out of credits, prove it and get anthropic-direct working instead). Do NOT touch this git repo's working tree — user-level config only. Do NOT commit. Then VERIFY: clean boot, no MCP errors, a direct-provider model producing real output.</p>
+  </div>
+
+  <p class="say">I'll investigate mastracode's config location and current state first.</p>
+
+  <details class="steps">
+    <summary tabindex="0"><span class="ok">✓</span> 4 steps <span class="bad">· 1 failed</span> · bash, read <span class="sdur">18s</span> <span class="chev">›</span></summary>
+  </details>
+
+  <p class="say">Good — confirmed: when sourcing <code>.zshrc</code> as an interactive shell, <code>ANTHROPIC_API_KEY</code> <span class="hl">is present</span> — the Bash tool's own env just doesn't inherit it. I'll use <code>zsh -ic</code> for mastracode runs. Now let's find the config and MCP declarations.</p>
+
+  <details class="steps" open>
+    <summary tabindex="0"><span class="ok">✓</span> 9 steps <span class="bad">· 1 failed</span> · bash, read, sqlite <span class="sdur">1m 04s</span> <span class="chev">›</span></summary>
+    <div class="tl">
+      <div class="step"><div class="l1"><span class="tool">bash</span><span class="what">locate config dirs</span><span class="sdur">2s</span></div>
+        <div class="out">~/.mastracode/  settings.json  state.db</div></div>
+      <div class="step"><div class="l1"><span class="tool">read</span><span class="what">settings.json — no `mcp` key in head −200</span><span class="sdur">1s</span></div>
+        <div class="out">{"theme":"dark","telemetry":false,"model":"google/gemini-2.5-flash", …</div></div>
+      <div class="step fail"><div class="l1"><span class="tool">bash</span><span class="what">mastracode --print-config</span><span class="sdur">4s</span></div>
+        <div class="out">exit 1 — unknown flag: --print-config</div>
+        <div class="recover"><b>recovered</b> · read the sqlite state directly instead</div></div>
+      <div class="step"><div class="l1"><span class="tool">sqlite</span><span class="what">.tables on state.db</span><span class="sdur">1s</span></div>
+        <div class="out">mastra_mcp_clients  mastra_mcp_servers  threads  messages</div></div>
+      <div class="step"><div class="l1"><span class="tool">sqlite</span><span class="what">select * from mastra_mcp_servers</span><span class="sdur">1s</span></div>
+        <div class="out">design-team ✕ · katchy ✕ · intel ✕ — all unreachable</div></div>
+    </div>
+  </details>
+
+  <p class="say">Found it — <code>mastra_mcp_clients</code> / <code>mastra_mcp_servers</code> tables in the sqlite DB. Now I know exactly where to look, in priority order:</p>
+
+  <div class="artifact">
+    <div class="atitle">4 CONFIG LOCATIONS · PRIORITY ORDER</div>
+    <ul>
+      <li><b>1</b>~/.mastracode/mcp.json — global, 3 dead servers declared here</li>
+      <li><b>2</b>./.mcp.json — absent</li>
+      <li><b>3</b>./.mastracode/mcp.json — absent</li>
+      <li><b>4</b>./.claude/settings.local.json — present, unrelated keys</li>
+    </ul>
+  </div>
+
+  <details class="steps">
+    <summary tabindex="0"><span class="ok">✓</span> 6 steps · edit, bash <span class="sdur">42s</span> <span class="chev">›</span></summary>
+  </details>
+
+</div>
+
+<button class="jump">↓ latest</button>
+
+<div class="dock"><div class="inner">
+  <div class="workline">
+    <div class="pulse"></div>
+    <div class="cmd">zsh -ic "mastracode run --model anthropic/claude-sonnet-5"</div>
+    <div class="st">step 3/6 · 50s</div>
+  </div>
+  <div class="composer">
+    <div class="cinput">Reply to the agent… <b>paste</b>, <b>drop</b>, or <b>@-mention</b> a file</div>
+    <div class="cbar">
+      <span class="chip">✳ claude-code</span>
+      <button class="chip"><span class="lbl">model</span>claude-opus-4-8</button>
+      <button class="chip"><span class="lbl">auth</span>max</button>
+      <span class="grow"></span>
+      <button class="stopb">■ Stop</button>
+      <button class="send">Send ⏎</button>
+    </div>
+  </div>
+</div></div>
+
+</body>
+</html>

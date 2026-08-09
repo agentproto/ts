@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>agentproto — auth settings: two screens (Providers · Harnesses→Provider)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1b1b1c; --ink-2:#232324; --ink-3:#1f1f20; --edge:#333335; --edge-soft:#2a2a2b;
+    --paper:#f4f0e6; --paper-70:rgba(244,240,230,.72); --paper-45:rgba(244,240,230,.45);
+    --paper-28:rgba(244,240,230,.28); --paper-14:rgba(244,240,230,.14);
+    --phosphor:#2f9e63; --phosphor-tint:rgba(47,158,99,.12); --phosphor-line:rgba(47,158,99,.4);
+    /* muted trio + steel, from the shared token system — warn / error / info only */
+    --ochre:#c2a05c; --ochre-tint:rgba(194,160,92,.12); --ochre-line:rgba(194,160,92,.4);
+    --clay:#bd6a5f; --clay-tint:rgba(189,106,95,.12);
+    --steel:#7d95ad; --steel-tint:rgba(125,149,173,.12); --steel-line:rgba(125,149,173,.4);
+    --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,'Cascadia Mono',monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--ink);color:var(--paper);font:13px/1.6 var(--mono);padding-bottom:70px}
+  .page{max-width:740px;margin:0 auto;padding:26px 28px 0}
+  button{font-family:var(--mono)}
+
+  /* ── top switches ───────────────────────────────────────── */
+  .topbar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:22px}
+  .seg{display:inline-flex;border:1px solid var(--edge);border-radius:8px;overflow:hidden;background:var(--ink-3)}
+  .seg button{font:600 12px var(--mono);padding:7px 16px;border:none;background:transparent;color:var(--paper-45);cursor:pointer;display:flex;align-items:center;gap:7px}
+  .seg button + button{border-left:1px solid var(--edge)}
+  .seg button.on{background:var(--phosphor-tint);color:var(--paper)}
+  .seg button:hover:not(.on){color:var(--paper-70)}
+  .seg .g{font-size:13px}
+  .statesw{display:flex;gap:6px;align-items:center}
+  .statesw .lbl{font-size:9.5px;letter-spacing:.12em;color:var(--paper-28)}
+  .sbtn{font:600 10.5px var(--mono);padding:4px 11px;border-radius:99px;border:1px solid var(--edge);background:transparent;color:var(--paper-45);cursor:pointer}
+  .sbtn.on{border-color:var(--phosphor);color:var(--paper);background:var(--phosphor-tint)}
+  .sbtn:hover{color:var(--paper)}
+
+  /* ── brand + title ──────────────────────────────────────── */
+  .brandline{display:flex;align-items:center;gap:9px;margin-bottom:18px}
+  .brandline svg{width:15px;height:15px}
+  .brandline span{font-weight:600;font-size:12px;letter-spacing:-.02em}
+  .brandline .crumb{color:var(--paper-45);font-weight:400}
+  .brandline .links{margin-left:auto;display:flex;gap:14px;font-size:10.5px}
+  .brandline .links a{color:var(--paper-45);text-decoration:none;cursor:pointer}
+  .brandline .links a:hover{color:var(--paper-70)}
+  .title h1{font-size:19px;font-weight:700;letter-spacing:-.03em;line-height:1.3}
+  .title .sub{font-size:12.5px;color:var(--paper-45);margin-top:6px}
+  .byline{font-size:10.5px;color:var(--paper-45);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap}
+  .byline b{color:var(--paper-70);font-weight:600}
+  .title::after{content:"";display:block;width:44px;height:3px;background:var(--phosphor);margin-top:16px;border-radius:2px}
+
+  /* ── journey rail (compact, split across the two screens) ── */
+  .rail{display:flex;margin-top:22px;border:1px solid var(--edge);border-radius:9px;overflow:hidden;background:var(--ink-3)}
+  .step{flex:1;padding:9px 13px;position:relative;min-width:0}
+  .step + .step{border-left:1px solid var(--edge-soft)}
+  .step .k{font-size:8.5px;font-weight:700;letter-spacing:.13em;color:var(--paper-28);display:flex;align-items:center;gap:6px}
+  .step .num{width:14px;height:14px;border-radius:50%;border:1px solid var(--paper-28);display:inline-flex;align-items:center;justify-content:center;font-size:8.5px;color:var(--paper-45)}
+  .step .h{font-size:11.5px;font-weight:600;margin-top:5px}
+  .step.done .k{color:var(--phosphor)} .step.done .num{background:var(--phosphor);border-color:var(--phosphor);color:var(--ink);font-weight:700}
+  .step.here{background:var(--phosphor-tint)} .step.here .k{color:var(--phosphor)} .step.here .num{border-color:var(--phosphor);color:var(--paper)}
+  .step.here::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--phosphor)}
+  .step.dim{opacity:.5}
+  .rail .thisscreen{margin-left:auto;font-size:8px;letter-spacing:.1em;color:var(--phosphor);font-weight:700}
+
+  /* ── section head ───────────────────────────────────────── */
+  .sec{margin-top:28px}
+  .chead{font-size:10px;font-weight:700;letter-spacing:.14em;color:var(--phosphor);display:flex;align-items:baseline;gap:10px}
+  .chead .n{color:var(--paper-28);font-weight:400}
+  .chead .t{margin-left:auto;color:var(--paper-28);font-weight:400;letter-spacing:0}
+  .sec h2{font-size:15px;font-weight:700;letter-spacing:-.025em;margin-top:6px}
+  .sec .lede{font-size:12px;color:var(--paper-45);margin-top:6px;line-height:1.7}
+  .lede code,.ds code,.line code{background:var(--ink-2);border:1px solid var(--edge);padding:1px 5px;border-radius:4px;color:var(--paper-70);font-size:11px}
+
+  /* ── buttons / tags ─────────────────────────────────────── */
+  .btn{font:600 11px var(--mono);padding:4px 12px;border-radius:6px;border:1px solid var(--edge);background:transparent;color:var(--paper-45);cursor:pointer;white-space:nowrap}
+  .btn:hover{color:var(--paper);border-color:var(--paper-45)}
+  .btn.go{border-color:var(--phosphor);color:var(--paper);background:var(--phosphor-tint)}
+  .btn.go:hover{background:rgba(47,158,99,.22)}
+  .btn.danger:hover{color:var(--clay);border-color:var(--clay)}
+  .btn.sm{font-size:10px;padding:2.5px 9px}
+  .tag{font-size:10px;padding:1.5px 8px;border-radius:99px;border:1px solid var(--edge);color:var(--paper-45);white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+  .tag .d{width:6px;height:6px;border-radius:50%}
+  .tag.good{color:var(--phosphor);border-color:var(--phosphor-line)}
+  .tag.good .d{background:var(--phosphor)}
+  .tag.warn{color:var(--ochre);border-color:var(--ochre-line)} .tag.warn .d{background:var(--ochre)}
+  .tag.steel{color:var(--steel);border-color:var(--steel-line)} .tag.steel .d{background:var(--steel)}
+  .tag.bad{color:var(--clay);border-color:rgba(189,106,95,.4)}
+  .tag.key,.tag.dim{color:var(--paper-45)} .tag.dim{color:var(--paper-28);border-color:var(--edge-soft)}
+  .logo{width:22px;height:22px;border-radius:5px;background:var(--paper-14);flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:var(--paper-70)}
+  .glyph{width:22px;height:22px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:15px;color:var(--paper-70)}
+
+  /* ── SCREEN A: wallet (profile) cards ───────────────────── */
+  .wallet{margin-top:12px;background:var(--ink-3);border:1px solid var(--edge);border-radius:10px;overflow:hidden}
+  .whead{display:flex;gap:12px;padding:12px 14px;align-items:center;background:var(--ink-2)}
+  .whead .id{display:flex;flex-direction:column;min-width:0;flex:1}
+  .whead .id .nm{font-size:13.5px;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+  .whead .id .nm .badge-named{font-size:8px;letter-spacing:.1em;color:var(--paper-28);border:1px solid var(--edge-soft);border-radius:4px;padding:1px 5px;font-weight:600}
+  .whead .id .prov{font-size:10.5px;color:var(--paper-45);margin-top:3px;display:flex;align-items:center;gap:7px}
+  .whead .id .prov .arw{color:var(--paper-28)}
+  .whead .creds{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+  .mode{display:inline-flex;border:1px solid var(--edge);border-radius:7px;overflow:hidden}
+  .mode button{font:600 10px var(--mono);padding:3px 10px;border:none;background:transparent;color:var(--paper-45);cursor:pointer}
+  .mode button.on{background:var(--phosphor-tint);color:var(--phosphor)}
+  .mlist{padding:2px 0}
+  .mrow{display:flex;gap:11px;padding:8px 14px;align-items:center;font-size:12px}
+  .mrow + .mrow{border-top:1px solid var(--edge-soft)}
+  .chk{width:15px;height:15px;border-radius:4px;border:1px solid var(--paper-28);flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--ink);cursor:pointer}
+  .chk.yes{background:var(--phosphor);border-color:var(--phosphor)}
+  .mname{flex:1;min-width:0;color:var(--paper-70)} .mname.off{color:var(--paper-45)}
+  .mname .via{font-size:9.5px;color:var(--steel);margin-left:8px}
+  .price{font-size:10.5px;color:var(--paper-45);white-space:nowrap}
+  .mnote{font-size:10.5px;color:var(--ochre);white-space:nowrap}
+  .allbanner{padding:9px 14px;font-size:11px;color:var(--paper-45)}
+  .allbanner .k{color:var(--phosphor)}
+  .newwallet{margin-top:12px;display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px dashed var(--edge);border-radius:10px;color:var(--paper-45);font-size:12px}
+  .newwallet .plus{width:22px;height:22px;border-radius:5px;border:1px dashed var(--paper-28);display:flex;align-items:center;justify-content:center;color:var(--paper-45)}
+
+  /* ── adopt callout ──────────────────────────────────────── */
+  .adopt{margin-top:12px;background:var(--paper);color:var(--ink);border-radius:10px;padding:14px 16px}
+  .adopt .h{font-size:10px;font-weight:700;letter-spacing:.13em;display:flex;align-items:center;gap:8px}
+  .adopt .h .blk{width:9px;height:14px;border-radius:2px;background:var(--phosphor)}
+  .adopt p{font-size:12.5px;line-height:1.65;margin-top:8px} .adopt p b{font-weight:700}
+  .aacts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  .abtn{font:600 11px var(--mono);padding:5px 13px;border-radius:6px;border:1.5px solid var(--ink);background:transparent;color:var(--ink);cursor:pointer}
+  .abtn:hover{background:rgba(27,27,28,.07)}
+  .abtn.yes{background:var(--phosphor);border-color:var(--phosphor);color:var(--paper)} .abtn.yes:hover{filter:brightness(1.07)}
+
+  /* ── SCREEN B: harness cards ────────────────────────────── */
+  .hcard{margin-top:12px;background:var(--ink-3);border:1px solid var(--edge);border-radius:10px;overflow:hidden}
+  .hcard.router{border-color:var(--ochre-line)}
+  .hcard.pack{border-color:var(--steel-line)}
+  .hhead{display:flex;gap:12px;padding:12px 14px;align-items:center}
+  .hhead .id{flex:1;min-width:0}
+  .hhead .id .nm{font-size:13.5px;font-weight:700}
+  .hhead .id .meta{font-size:10px;color:var(--paper-45);margin-top:3px}
+  .hhead .id .meta b{color:var(--paper-70);font-weight:600}
+  .chain{display:flex;align-items:center;gap:9px;padding:0 14px 12px;flex-wrap:wrap}
+  .node{display:flex;flex-direction:column;gap:1px;padding:6px 10px;border:1px solid var(--edge);border-radius:7px;background:var(--ink-2);min-width:0}
+  .node .k{font-size:8px;letter-spacing:.09em;color:var(--paper-28)}
+  .node .v{font-size:12px;font-weight:600}
+  .node.model .v{color:var(--paper)}
+  .node.wallet-node .v{color:var(--paper-70)}
+  .node.router-node{border-color:var(--ochre-line);border-style:dashed;background:var(--ochre-tint)}
+  .node.router-node.on{border-style:solid}
+  .node.router-node .k{color:var(--ochre)}
+  .node.router-node .v{color:var(--ochre);display:flex;align-items:center;gap:6px}
+  .arrow{color:var(--paper-28);font-size:13px;flex:0 0 auto}
+  .arrow.live{color:var(--phosphor)}
+  .arrow.warn{color:var(--ochre)}
+  .hfoot{border-top:1px solid var(--edge-soft);padding:9px 14px;display:flex;align-items:center;gap:10px;font-size:11px;color:var(--paper-45)}
+  .hfoot .grow{flex:1}
+  .packs{display:flex;gap:7px;padding:0 14px 12px;flex-wrap:wrap}
+  .packchip{border:1px solid var(--edge);border-radius:8px;padding:7px 10px;min-width:130px;cursor:pointer}
+  .packchip.on{border-color:var(--steel-line);background:var(--steel-tint)}
+  .packchip .pn{font-size:11.5px;font-weight:700;display:flex;align-items:center;gap:6px}
+  .packchip .pm{font-size:9.5px;color:var(--paper-45);margin-top:3px;line-height:1.5}
+  .packchip.on .pn{color:var(--steel)}
+
+  .locked-note{padding:13px 14px;font-size:11.5px;color:var(--paper-45);display:flex;align-items:center;gap:9px}
+  .locked-note + .locked-note{border-top:1px solid var(--edge-soft)}
+  .locked-note .num{width:16px;height:16px;border-radius:50%;border:1px solid var(--paper-28);display:inline-flex;align-items:center;justify-content:center;font-size:9px;color:var(--paper-45);flex:0 0 auto}
+  .panel{margin-top:12px;background:var(--ink-3);border:1px solid var(--edge);border-radius:10px;overflow:hidden}
+
+  .legend{margin-top:14px;display:flex;gap:16px;flex-wrap:wrap;font-size:10.5px;color:var(--paper-45)}
+  .legend .li{display:flex;align-items:center;gap:7px}
+
+  .foot{margin-top:26px;font-size:10.5px;color:var(--paper-28);line-height:1.7;border-top:1px solid var(--edge-soft);padding-top:14px}
+  .foot code{color:var(--paper-45)}
+
+  /* view toggling */
+  #pv-conf,#pv-fresh,#hn-conf,#hn-fresh{display:none}
+  body.screen-providers.state-configured #pv-conf{display:block}
+  body.screen-providers.state-fresh #pv-fresh{display:block}
+  body.screen-harnesses.state-configured #hn-conf{display:block}
+  body.screen-harnesses.state-fresh #hn-fresh{display:block}
+</style>
+</head>
+<body class="screen-providers state-configured">
+
+<div class="page">
+
+  <div class="brandline">
+    <svg viewBox="0 0 64 64"><path d="M13 17 L30 32 L13 47" fill="none" stroke="#f4f0e6" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><rect x="40" y="14" width="14" height="36" rx="3" fill="#2f9e63"/></svg>
+    <span>agentproto</span><span class="crumb">· auth &amp; routing</span>
+    <div class="links"><a>docs</a><a>refresh</a></div>
+  </div>
+
+  <div class="topbar">
+    <div class="seg" id="screenseg">
+      <button data-s="providers" class="on"><span class="g">▤</span>Providers</button>
+      <button data-s="harnesses"><span class="g">⚙</span>Harnesses → provider</button>
+    </div>
+    <div class="statesw">
+      <span class="lbl">STATE</span>
+      <button class="sbtn" data-st="fresh">Fresh</button>
+      <button class="sbtn on" data-st="configured">Configured</button>
+    </div>
+  </div>
+
+  <!-- ══════════════════ SCREEN A · PROVIDERS · configured ══════════════════ -->
+  <div id="pv-conf">
+    <div class="title">
+      <h1>Providers &amp; wallets</h1>
+      <div class="sub">Configure your wallets &amp; which models each can run.</div>
+      <div class="byline"><span><b>3</b> wallets</span><span><b>2</b> providers</span><span><b>8</b> models approved</span><span>1 self-refreshing</span></div>
+    </div>
+    <div class="rail">
+      <div class="step here"><div class="k"><span class="num">1</span>CONNECT</div><div class="h">Wallets</div></div>
+      <div class="step here"><div class="k"><span class="num">2</span>APPROVE</div><div class="h">Model allowlist</div></div>
+      <div class="step dim"><div class="k"><span class="num">3</span>ROUTE</div><div class="h">Harness → provider</div></div>
+      <div class="step dim"><div class="k"><span class="num">4</span>SPAWN</div><div class="h">Ready</div></div>
+    </div>
+
+    <div class="sec">
+      <div class="chead"><span class="n">§ A</span>WALLETS<span class="t">a wallet = a named profile you create</span></div>
+      <h2>Your wallets &amp; their approved models</h2>
+      <p class="lede">A <b>wallet</b> is a <b>named auth profile you create</b> — like <code>openrouterPerso</code> — not just "the openrouter provider". You can keep several per provider (a personal key and a work key). Each holds a credential (a pasted key <b>or</b> an adopted local login) and an <b>allowlist</b> of models it may run, with live prices.</p>
+
+      <!-- wallet 1 -->
+      <div class="wallet">
+        <div class="whead">
+          <span class="logo">AN</span>
+          <div class="id">
+            <div class="nm">anthropic·max <span class="badge-named">NAMED WALLET</span></div>
+            <div class="prov"><span class="arw">provider →</span> anthropic · adopted from Claude Code login</div>
+          </div>
+          <div class="creds">
+            <span class="tag good"><span class="d"></span>self-refreshing</span>
+            <div class="mode"><button>Allow all</button><button class="on">Allow selected</button></div>
+          </div>
+        </div>
+        <div class="mlist">
+          <div class="mrow"><span class="chk yes">✓</span><span class="mname">claude-opus-4-8</span><span class="price">$5 / $25 per 1M</span><button class="btn sm danger">Remove</button></div>
+          <div class="mrow"><span class="chk yes">✓</span><span class="mname">claude-fable-5</span><span class="price">$3 / $15 per 1M</span><button class="btn sm danger">Remove</button></div>
+          <div class="mrow"><span class="chk yes">✓</span><span class="mname">claude-sonnet-5</span><span class="price">$3 / $15 per 1M</span><button class="btn sm danger">Remove</button></div>
+          <div class="mrow"><span class="chk">&nbsp;</span><span class="mname off">claude-haiku-4-5</span><span class="price">$0.80 / $4 per 1M</span><button class="btn sm">Approve</button></div>
+        </div>
+      </div>
+
+      <!-- wallet 2 — the FEATURED one, holds the Kimi model -->
+      <div class="wallet">
+        <div class="whead">
+          <span class="logo">OR</span>
+          <div class="id">
+            <div class="nm">openrouterPerso <span class="badge-named">NAMED WALLET</span></div>
+            <div class="prov"><span class="arw">provider →</span> openrouter · gateway to 40+ vendors</div>
+          </div>
+          <div class="creds">
+            <span class="tag key"><span class="d" style="background:var(--paper-28)"></span>key ····4f2a</span>
+            <div class="mode"><button>Allow all</button><button class="on">Allow selected</button></div>
+          </div>
+        </div>
+        <div class="mlist">
+          <div class="mrow"><span class="chk yes">✓</span><span class="mname">deepseek-v4</span><span class="price">$0.40 / $1.60 per 1M</span><button class="btn sm danger">Remove</button></div>
+          <div class="mrow"><span class="chk yes">✓</span><span class="mname">z-ai/glm-5.2</span><span class="price">$0.60 / $2.20 per 1M</span><button class="btn sm danger">Remove</button></div>
+          <div class="mrow"><span class="chk yes">✓</span><span class="mname">moonshot/kimi-k2 <span class="via">↳ Anthropic clients reach this via the local router</span></span><span class="price">$0.55 / $2.20 per 1M</span><button class="btn sm danger">Remove</button></div>
+          <div class="mrow"><span class="chk">&nbsp;</span><span class="mname off">minimax/minimax-m3</span><span class="price">$0.30 / $1.20 per 1M</span><button class="btn sm">Approve</button></div>
+        </div>
+      </div>
+
+      <!-- wallet 3 — a second wallet on a connected provider, "all" mode -->
+      <div class="wallet">
+        <div class="whead">
+          <span class="logo">OA</span>
+          <div class="id">
+            <div class="nm">openaiCodex <span class="badge-named">NAMED WALLET</span></div>
+            <div class="prov"><span class="arw">provider →</span> openai · adopted from Codex login</div>
+          </div>
+          <div class="creds">
+            <span class="tag good"><span class="d"></span>self-refreshing</span>
+            <div class="mode"><button class="on">Allow all</button><button>Allow selected</button></div>
+          </div>
+        </div>
+        <div class="allbanner"><span class="k">services every eligible model</span> — <code>gpt-5.3-codex</code>, <code>gpt-5.3</code>, <code>o5-mini</code> … Switch to <b>Allow selected</b> to curate.</div>
+      </div>
+
+      <div class="newwallet"><span class="plus">＋</span><div><b style="color:var(--paper-70)">New wallet</b> — paste a key or adopt a local login. Name it whatever you like (e.g. <code>openrouterWork</code>) — a provider can back several.</div></div>
+    </div>
+
+    <div class="foot">
+      Grounded in <code>list_provider_presets</code> (which providers exist) · <code>auth_profile_summary</code> (each named wallet: <code>id</code>, <code>endpoint</code>, <code>keyStatus</code>, <code>models.mode</code>/<code>ids</code>) · <code>catalog_provider_models</code> (the allowlist picker + prices) · write via <code>setAuthProfileModels</code>. No secret renders — only <code>last4</code>/<code>fingerprint</code> or the <code>self-refreshing</code> flag.
+    </div>
+  </div>
+
+  <!-- ══════════════════ SCREEN A · PROVIDERS · fresh ══════════════════ -->
+  <div id="pv-fresh">
+    <div class="title">
+      <h1>Create your first wallet</h1>
+      <div class="sub">A wallet is a named profile that bills your models. Adopt one you already have, or paste a key.</div>
+    </div>
+    <div class="rail">
+      <div class="step here"><div class="k"><span class="num">1</span>CONNECT</div><div class="h">Wallets</div></div>
+      <div class="step dim"><div class="k"><span class="num">2</span>APPROVE</div><div class="h">Model allowlist</div></div>
+      <div class="step dim"><div class="k"><span class="num">3</span>ROUTE</div><div class="h">Harness → provider</div></div>
+      <div class="step dim"><div class="k"><span class="num">4</span>SPAWN</div><div class="h">Ready</div></div>
+    </div>
+    <div class="sec">
+      <div class="chead"><span class="n">§ A</span>WALLETS<span class="t">step 1 of 4</span></div>
+      <h2>Adopt a login you already have</h2>
+      <p class="lede">agentproto scanned this machine and found local CLI logins you can turn into a wallet with one click — <code>self-refreshing</code>, no key pasted or stored.</p>
+      <div class="adopt">
+        <div class="h"><span class="blk"></span>LOGINS FOUND ON THIS MACHINE</div>
+        <p>A <b>Claude Code</b> login and a <b>Codex</b> login are here. Adopt either and it becomes a named wallet instantly — <b>self-refreshing</b>.</p>
+        <div class="aacts">
+          <button class="abtn yes">Adopt Claude Code → name it…</button>
+          <button class="abtn yes">Adopt Codex → name it…</button>
+          <button class="abtn">Paste a key instead</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="locked-note"><span class="logo">AN</span><div><b style="color:var(--paper-70)">anthropic</b> — adopt your Claude Code login, or paste <code>ANTHROPIC_API_KEY</code>. Name the wallet <code>anthropic·max</code>.</div></div>
+        <div class="locked-note"><span class="logo">OR</span><div><b style="color:var(--paper-70)">openrouter</b> — one key, 40+ vendors. Paste <code>OPENROUTER_API_KEY</code>, name it <code>openrouterPerso</code>.</div></div>
+        <div class="locked-note"><span class="logo">OA</span><div><b style="color:var(--paper-70)">openai</b> — adopt your Codex login, or paste <code>OPENAI_API_KEY</code>.</div></div>
+      </div>
+    </div>
+    <div class="foot">Onboarding leads with <code>auth_discover_credentials</code> so the first click is "adopt what you already have", then <code>auth_profile_create</code> materialises the named, self-refreshing wallet (<code>source</code>, no stored secret).</div>
+  </div>
+
+  <!-- ══════════════════ SCREEN B · HARNESSES · configured ══════════════════ -->
+  <div id="hn-conf">
+    <div class="title">
+      <h1>Harnesses → provider</h1>
+      <div class="sub">For each harness, which wallet + model it runs on — and whether it can talk to it directly.</div>
+      <div class="byline"><span><b>4</b> native</span><span><b>1</b> via local router</span><span><b>1</b> pack-only</span><span>router :8788</span></div>
+    </div>
+    <div class="rail">
+      <div class="step done"><div class="k"><span class="num">✓</span>CONNECT</div><div class="h">Wallets</div></div>
+      <div class="step done"><div class="k"><span class="num">✓</span>APPROVE</div><div class="h">Model allowlist</div></div>
+      <div class="step here"><div class="k"><span class="num">3</span>ROUTE</div><div class="h">Harness → provider</div></div>
+      <div class="step here"><div class="k"><span class="num">4</span>SPAWN</div><div class="h">Ready</div></div>
+    </div>
+
+    <div class="sec">
+      <div class="chead"><span class="n">§ B</span>ROUTING<span class="t">harness → (router?) → wallet → model</span></div>
+      <h2>Compatibility, computed from each harness's manifest</h2>
+      <p class="lede">Validity = (the interface a harness <b>speaks</b> + whether it accepts a <code>base_url</code>) ∩ (the provider is <b>native</b> for that interface <b>or</b> a local-router <b>pack</b> bridges it). That yields three states, below.</p>
+      <div class="legend">
+        <span class="li"><span class="tag good"><span class="d"></span>NATIVE</span> direct — no router</span>
+        <span class="li"><span class="tag warn"><span class="d"></span>VIA LOCAL ROUTER</span> bridged behind the Anthropic interface</span>
+        <span class="li"><span class="tag steel"><span class="d"></span>PACK-ONLY</span> fixed model packs, no free provider</span>
+      </div>
+
+      <!-- claude-code — NATIVE -->
+      <div class="hcard">
+        <div class="hhead">
+          <span class="glyph">✳</span>
+          <div class="id"><div class="nm">claude-code</div><div class="meta">speaks <b>Anthropic</b> · accepts <code>base_url</code> · route <b>free</b></div></div>
+          <span class="tag good"><span class="d"></span>NATIVE</span>
+        </div>
+        <div class="chain">
+          <div class="node"><span class="k">HARNESS</span><span class="v">claude-code</span></div>
+          <span class="arrow live">→</span>
+          <div class="node wallet-node"><span class="k">WALLET</span><span class="v">anthropic·max</span></div>
+          <span class="arrow live">→</span>
+          <div class="node model"><span class="k">MODEL</span><span class="v">claude-opus-4-8</span></div>
+        </div>
+        <div class="hfoot">Anthropic client → Anthropic provider. Talks straight to <code>api.anthropic.com</code>.<span class="grow"></span><button class="btn sm">Change</button></div>
+      </div>
+
+      <!-- claude-sdk — VIA LOCAL ROUTER — the FEATURED scenario -->
+      <div class="hcard router" id="sdkcard">
+        <div class="hhead">
+          <span class="glyph">◆</span>
+          <div class="id"><div class="nm">claude-sdk</div><div class="meta">speaks <b>Anthropic</b> · accepts <code>base_url</code> (<code>ANTHROPIC_BASE_URL</code>) · route <b>free</b></div></div>
+          <span class="tag warn"><span class="d"></span>VIA LOCAL ROUTER</span>
+        </div>
+        <div class="chain">
+          <div class="node"><span class="k">HARNESS</span><span class="v">claude-sdk</span></div>
+          <span class="arrow warn">→</span>
+          <div class="node router-node" id="sdkrouter"><span class="k">LOCAL ROUTER</span><span class="v"><span id="sdkrouterglyph">⟳</span> <span id="sdkrouterlabel">openrouter pack · disabled</span></span></div>
+          <span class="arrow warn">→</span>
+          <div class="node wallet-node"><span class="k">WALLET</span><span class="v">openrouterPerso</span></div>
+          <span class="arrow warn">→</span>
+          <div class="node model"><span class="k">MODEL</span><span class="v">moonshot/kimi-k2</span></div>
+        </div>
+        <div class="hfoot" id="sdkfoot"><span id="sdkexplain">claude-sdk speaks <b>Anthropic</b>, but <b>kimi-k2</b> (Moonshot via openrouter) isn't Anthropic-native — the local router presents it behind <code>ANTHROPIC_BASE_URL → :8788/v1/openrouter/messages</code>.</span><span class="grow"></span><button class="btn go sm" id="sdkenable">Enable local router</button></div>
+      </div>
+
+      <!-- hermes — NATIVE -->
+      <div class="hcard">
+        <div class="hhead">
+          <span class="glyph">☿</span>
+          <div class="id"><div class="nm">hermes</div><div class="meta">speaks <b>OpenAI</b> · multi-vendor · route <b>derived-from-model</b> (<code>vendor/*</code> prefix)</div></div>
+          <span class="tag good"><span class="d"></span>NATIVE</span>
+        </div>
+        <div class="chain">
+          <div class="node"><span class="k">HARNESS</span><span class="v">hermes</span></div>
+          <span class="arrow live">→</span>
+          <div class="node wallet-node"><span class="k">WALLET</span><span class="v">openrouterPerso</span></div>
+          <span class="arrow live">→</span>
+          <div class="node model"><span class="k">MODEL</span><span class="v">deepseek-v4</span></div>
+        </div>
+        <div class="hfoot"><code>deepseek/*</code> prefix fixes the route; openrouter is OpenAI-compatible → no router needed.<span class="grow"></span><button class="btn sm">Change</button></div>
+      </div>
+
+      <!-- opencode — NATIVE -->
+      <div class="hcard">
+        <div class="hhead">
+          <span class="glyph">◐</span>
+          <div class="id"><div class="nm">opencode</div><div class="meta">speaks <b>Anthropic + OpenAI</b> · route <b>derived-from-model</b> · key derived from model</div></div>
+          <span class="tag good"><span class="d"></span>NATIVE</span>
+        </div>
+        <div class="chain">
+          <div class="node"><span class="k">HARNESS</span><span class="v">opencode</span></div>
+          <span class="arrow live">→</span>
+          <div class="node wallet-node"><span class="k">WALLET</span><span class="v">openrouterPerso</span></div>
+          <span class="arrow live">→</span>
+          <div class="node model"><span class="k">MODEL</span><span class="v">z-ai/glm-5.2</span></div>
+        </div>
+        <div class="hfoot">Provider &amp; key both fall out of the model prefix — opencode dials the vendor directly.<span class="grow"></span><button class="btn sm">Change</button></div>
+      </div>
+
+      <!-- codex — NATIVE -->
+      <div class="hcard">
+        <div class="hhead">
+          <span class="glyph">◈</span>
+          <div class="id"><div class="nm">codex</div><div class="meta">speaks <b>OpenAI</b> · no <code>base_url</code> · route fixed to <b>openai</b></div></div>
+          <span class="tag good"><span class="d"></span>NATIVE</span>
+        </div>
+        <div class="chain">
+          <div class="node"><span class="k">HARNESS</span><span class="v">codex</span></div>
+          <span class="arrow live">→</span>
+          <div class="node wallet-node"><span class="k">WALLET</span><span class="v">openaiCodex</span></div>
+          <span class="arrow live">→</span>
+          <div class="node model"><span class="k">MODEL</span><span class="v">gpt-5.3-codex</span></div>
+        </div>
+        <div class="hfoot">OpenAI client → OpenAI provider. No <code>base_url</code> to re-point, so it's openai-only — which is fine here.<span class="grow"></span><button class="btn sm">Change</button></div>
+      </div>
+
+      <!-- mastracode — PACK-ONLY -->
+      <div class="hcard pack">
+        <div class="hhead">
+          <span class="glyph">⬡</span>
+          <div class="id"><div class="nm">mastracode</div><div class="meta">fixed <code>models.allowed</code> list · no free <code>base_url</code> → chooses from packs, not a free provider</div></div>
+          <span class="tag steel"><span class="d"></span>PACK-ONLY</span>
+        </div>
+        <div class="packs" id="mastrapacks">
+          <div class="packchip on"><div class="pn">◆ terra</div><div class="pm">anthropic/claude-sonnet-4-5 · openai/gpt-5.1 · google/gemini-2.5</div></div>
+          <div class="packchip"><div class="pn">☾ kimi</div><div class="pm">moonshot/kimi-k2 · kimi-k2.7-code · glm-5.2</div></div>
+          <div class="packchip"><div class="pn">✦ gemini-lite</div><div class="pm">gemini-2.5-flash · gemini-2.0-flash · gemma-3</div></div>
+        </div>
+        <div class="hfoot">You pick a <b>pack</b> (a fixed model triple), not a wallet+model — mastracode can't be freely re-routed.<span class="grow"></span><button class="btn sm">Manage packs</button></div>
+      </div>
+
+    </div>
+
+    <div class="sec">
+      <div class="chead"><span class="n">§ B·4</span>SPAWN<span class="t">the journey closes</span></div>
+      <div class="hcard" style="border-color:var(--phosphor-line);background:var(--phosphor-tint)">
+        <div class="hhead"><span class="glyph" style="color:var(--phosphor);font-size:18px">▶</span>
+          <div class="id"><div class="nm">All 6 harnesses routed</div><div class="meta" style="color:var(--paper-70)">4 native · claude-sdk via the local router · mastracode on the <b>terra</b> pack</div></div>
+          <button class="btn go">Spawn a session</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot">
+      Grounded in the adapter manifests: each declares the interface it speaks (<code>ANTHROPIC_*</code> vs <code>OPENAI_*</code>), whether it accepts <code>base_url</code>, and <code>routeSelection</code> (<code>free</code> vs <code>derived-from-model</code>). The local router is <code>packages/llm-endpoint</code> — a <b>pack</b> maps a virtual model → a real upstream (<code>{provider, model}</code>) behind the Anthropic <code>/v1/{packId}/messages</code> interface. Native ∪ router-bridge ∪ pack-only is computed, never hand-set.
+    </div>
+  </div>
+
+  <!-- ══════════════════ SCREEN B · HARNESSES · fresh ══════════════════ -->
+  <div id="hn-fresh">
+    <div class="title">
+      <h1>Harnesses → provider</h1>
+      <div class="sub">Assign each harness a wallet + model. First you need a wallet.</div>
+    </div>
+    <div class="rail">
+      <div class="step here"><div class="k"><span class="num">1</span>CONNECT</div><div class="h">Wallets</div></div>
+      <div class="step dim"><div class="k"><span class="num">2</span>APPROVE</div><div class="h">Model allowlist</div></div>
+      <div class="step dim"><div class="k"><span class="num">3</span>ROUTE</div><div class="h">Harness → provider</div></div>
+      <div class="step dim"><div class="k"><span class="num">4</span>SPAWN</div><div class="h">Ready</div></div>
+    </div>
+    <div class="sec">
+      <div class="chead"><span class="n">§ B</span>ROUTING<span class="t">unlocks once a wallet exists</span></div>
+      <h2>No wallet yet — nothing to route</h2>
+      <p class="lede">Every harness below is installed and its compatibility is already known from its manifest — they just have no wallet to point at. <b>Create a wallet on the Providers screen</b>, then come back to assign.</p>
+      <div class="panel">
+        <div class="locked-note"><span class="glyph">✳</span><div><b style="color:var(--paper-70)">claude-code</b> · speaks Anthropic, accepts base_url — <span style="color:var(--phosphor)">native</span> to any Anthropic wallet, or via the router to others.</div></div>
+        <div class="locked-note"><span class="glyph">◆</span><div><b style="color:var(--paper-70)">claude-sdk</b> · speaks Anthropic, accepts base_url — non-Anthropic models arrive <span style="color:var(--ochre)">via the local router</span>.</div></div>
+        <div class="locked-note"><span class="glyph">☿</span><div><b style="color:var(--paper-70)">hermes</b> · speaks OpenAI, derived-from-model — <span style="color:var(--phosphor)">native</span> to openrouter/openai wallets.</div></div>
+        <div class="locked-note"><span class="glyph">◐</span><div><b style="color:var(--paper-70)">opencode</b> · Anthropic+OpenAI, derived-from-model — <span style="color:var(--phosphor)">native</span> to matching wallets.</div></div>
+        <div class="locked-note"><span class="glyph">◈</span><div><b style="color:var(--paper-70)">codex</b> · speaks OpenAI, no base_url — <span style="color:var(--phosphor)">native</span> to an openai wallet only.</div></div>
+        <div class="locked-note"><span class="glyph">⬡</span><div><b style="color:var(--paper-70)">mastracode</b> · fixed model list — <span style="color:var(--steel)">pack-only</span>, choose a pack once a key is present.</div></div>
+      </div>
+      <div style="margin-top:14px"><button class="btn go" id="gotoproviders">← Create a wallet on the Providers screen</button></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const body = document.body;
+  // primary screen switch
+  document.querySelectorAll("#screenseg button").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll("#screenseg button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    body.classList.remove("screen-providers","screen-harnesses");
+    body.classList.add("screen-" + b.dataset.s);
+  }));
+  // fresh / configured
+  document.querySelectorAll(".sbtn").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll(".sbtn").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    body.classList.remove("state-fresh","state-configured");
+    body.classList.add("state-" + b.dataset.st);
+  }));
+  // jump from fresh-harnesses to providers
+  const goto = document.getElementById("gotoproviders");
+  if (goto) goto.addEventListener("click", () => document.querySelector('#screenseg button[data-s="providers"]').click());
+
+  // model approve toggle (the allowlist)
+  document.querySelectorAll(".mrow").forEach(row => {
+    const chk = row.querySelector(".chk"), btn = row.querySelector(".btn"), name = row.querySelector(".mname");
+    function toggle(){
+      const on = chk.classList.toggle("yes");
+      chk.innerHTML = on ? "✓" : "&nbsp;";
+      name.classList.toggle("off", !on);
+      btn.textContent = on ? "Remove" : "Approve";
+      btn.classList.toggle("danger", on);
+    }
+    chk.addEventListener("click", toggle); btn.addEventListener("click", toggle);
+  });
+  // allow-all / allow-selected segments
+  document.querySelectorAll(".mode").forEach(seg => seg.querySelectorAll("button").forEach(b =>
+    b.addEventListener("click", () => { seg.querySelectorAll("button").forEach(x=>x.classList.remove("on")); b.classList.add("on"); })));
+  // pack chooser
+  document.querySelectorAll("#mastrapacks .packchip").forEach(p => p.addEventListener("click", () => {
+    document.querySelectorAll("#mastrapacks .packchip").forEach(x=>x.classList.remove("on")); p.classList.add("on");
+  }));
+  // FEATURED: enable the local router for claude-sdk
+  const enable = document.getElementById("sdkenable");
+  if (enable) enable.addEventListener("click", () => {
+    const node = document.getElementById("sdkrouter");
+    const on = node.classList.toggle("on");
+    document.getElementById("sdkrouterlabel").textContent = on ? "openrouter pack · :8788 · healthy" : "openrouter pack · disabled";
+    document.getElementById("sdkrouterglyph").textContent = on ? "⟲" : "⟳";
+    enable.textContent = on ? "Router enabled ✓" : "Enable local router";
+    enable.classList.toggle("go", !on);
+    document.querySelectorAll("#sdkcard .chain .arrow").forEach(a => a.classList.toggle("live", on));
+    document.getElementById("sdkexplain").innerHTML = on
+      ? "Local router <b>running on :8788</b> — <code>ANTHROPIC_BASE_URL</code> points at <code>/v1/openrouter/messages</code>; claude-sdk now reaches <b>kimi-k2</b> as if it were Anthropic."
+      : "claude-sdk speaks <b>Anthropic</b>, but <b>kimi-k2</b> (Moonshot via openrouter) isn't Anthropic-native — the local router presents it behind <code>ANTHROPIC_BASE_URL → :8788/v1/openrouter/messages</code>.";
+  });
+</script>
+</body>
+</html>

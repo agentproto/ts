@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>agentproto — auth &amp; routing · GLM vision: profiles &amp; reach (one board)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1b1b1c; --ink-2:#232324; --ink-3:#1f1f20; --edge:#333335; --edge-soft:#2a2a2b;
+    --paper:#f4f0e6; --paper-70:rgba(244,240,230,.72); --paper-45:rgba(244,240,230,.45);
+    --paper-28:rgba(244,240,230,.28); --paper-14:rgba(244,240,230,.14);
+    --phosphor:#2f9e63; --phosphor-tint:rgba(47,158,99,.12); --phosphor-line:rgba(47,158,99,.4);
+    --ochre:#c2a05c; --ochre-tint:rgba(194,160,92,.12); --ochre-line:rgba(194,160,92,.4);
+    --clay:#bd6a5f; --clay-tint:rgba(189,106,95,.12);
+    --steel:#7d95ad; --steel-tint:rgba(125,149,173,.12); --steel-line:rgba(125,149,173,.4);
+    --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,'Cascadia Mono',monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--ink);color:var(--paper);font:13px/1.6 var(--mono);padding-bottom:70px}
+  .page{max-width:880px;margin:0 auto;padding:26px 28px 0}
+  button{font-family:var(--mono)}
+  code{background:var(--ink-2);border:1px solid var(--edge);padding:1px 5px;border-radius:4px;color:var(--paper-70);font-size:11px}
+
+  /* ── brand + title ─────────────────────────────── */
+  .brandline{display:flex;align-items:center;gap:9px;margin-bottom:18px}
+  .brandline svg{width:15px;height:15px}
+  .brandline span{font-weight:600;font-size:12px;letter-spacing:-.02em}
+  .brandline .crumb{color:var(--paper-45);font-weight:400}
+  .brandline .links{margin-left:auto;display:flex;gap:14px;font-size:10.5px}
+  .brandline .links a{color:var(--paper-45);text-decoration:none;cursor:pointer}
+  .brandline .links a:hover{color:var(--paper-70)}
+  .title h1{font-size:19px;font-weight:700;letter-spacing:-.03em;line-height:1.3}
+  .title .sub{font-size:12.5px;color:var(--paper-45);margin-top:6px;line-height:1.7;max-width:640px}
+  .byline{font-size:10.5px;color:var(--paper-45);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap}
+  .byline b{color:var(--paper-70);font-weight:600}
+  .title::after{content:"";display:block;width:44px;height:3px;background:var(--phosphor);margin-top:16px;border-radius:2px}
+
+  /* ── state toggle ─────────────────────────────── */
+  .topbar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:20px 0 4px}
+  .statesw{display:flex;gap:6px;align-items:center}
+  .statesw .lbl{font-size:9.5px;letter-spacing:.12em;color:var(--paper-28)}
+  .sbtn{font:600 10.5px var(--mono);padding:4px 11px;border-radius:99px;border:1px solid var(--edge);background:transparent;color:var(--paper-45);cursor:pointer}
+  .sbtn.on{border-color:var(--phosphor);color:var(--paper);background:var(--phosphor-tint)}
+  .sbtn:hover{color:var(--paper)}
+
+  /* ── buttons / tags / logos (grammar reused) ───── */
+  .btn{font:600 11px var(--mono);padding:4px 12px;border-radius:6px;border:1px solid var(--edge);background:transparent;color:var(--paper-45);cursor:pointer;white-space:nowrap}
+  .btn:hover{color:var(--paper);border-color:var(--paper-45)}
+  .btn.go{border-color:var(--phosphor);color:var(--paper);background:var(--phosphor-tint)}
+  .btn.go:hover{background:rgba(47,158,99,.22)}
+  .btn.danger:hover{color:var(--clay);border-color:var(--clay)}
+  .btn.sm{font-size:10px;padding:2.5px 9px}
+  .tag{font-size:10px;padding:1.5px 8px;border-radius:99px;border:1px solid var(--edge);color:var(--paper-45);white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+  .tag .d{width:6px;height:6px;border-radius:50%}
+  .tag.good{color:var(--phosphor);border-color:var(--phosphor-line)} .tag.good .d{background:var(--phosphor)}
+  .tag.warn{color:var(--ochre);border-color:var(--ochre-line)} .tag.warn .d{background:var(--ochre)}
+  .tag.steel{color:var(--steel);border-color:var(--steel-line)} .tag.steel .d{background:var(--steel)}
+  .tag.bad{color:var(--clay);border-color:rgba(189,106,95,.4)} .tag.bad .d{background:var(--clay)}
+  .tag.key{color:var(--paper-45)} .tag.dim{color:var(--paper-28);border-color:var(--edge-soft)}
+  .logo{width:22px;height:22px;border-radius:5px;background:var(--paper-14);flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:var(--paper-70)}
+  .glyph{width:22px;height:22px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:15px;color:var(--paper-70)}
+
+  /* ── the board: profiles (left) · reach (right) ── */
+  .board{display:grid;grid-template-columns:286px 1fr;gap:18px;margin-top:22px;align-items:start}
+  .colhead{font-size:10px;font-weight:700;letter-spacing:.14em;color:var(--phosphor);display:flex;align-items:baseline;gap:8px;margin-bottom:9px}
+  .colhead .t{margin-left:auto;color:var(--paper-28);font-weight:400;letter-spacing:0}
+
+  /* profile selector card (the first-class home) */
+  .pcard{margin-top:9px;background:var(--ink-3);border:1px solid var(--edge);border-radius:10px;overflow:hidden}
+  .pcard.sel{border-color:var(--phosphor-line);background:var(--phosphor-tint)}
+  .phead{display:flex;gap:11px;padding:11px 13px;align-items:flex-start;cursor:pointer}
+  .phead .id{flex:1;min-width:0}
+  .phead .id .nm{font-size:13px;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .phead .id .pv{font-size:10px;color:var(--paper-45);margin-top:4px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .phead .id .pv .arw{color:var(--paper-28)}
+  .phead .rs{font-size:9.5px;color:var(--paper-45);text-align:right;line-height:1.45;flex:0 0 auto}
+  .phead .rs b{color:var(--phosphor);font-weight:700;font-size:11px}
+  .phead .rs .imp{color:var(--clay)}
+  .pmng{border-top:1px solid var(--edge-soft);padding:7px 13px;display:flex;align-items:center;gap:9px;font-size:10.5px;color:var(--paper-45)}
+  .pmng .grow{flex:1}
+  /* allowlist editor (the wallet), inline in the home */
+  .wallet{border-top:1px solid var(--edge-soft)}
+  .wallet .wbar{display:flex;gap:8px;padding:8px 13px;align-items:center;background:var(--ink-2);font-size:10px;color:var(--paper-45)}
+  .wallet .wbar b{color:var(--paper-70);font-weight:600}
+  .mode{display:inline-flex;border:1px solid var(--edge);border-radius:7px;overflow:hidden}
+  .mode button{font:600 10px var(--mono);padding:3px 10px;border:none;background:transparent;color:var(--paper-45);cursor:pointer}
+  .mode button.on{background:var(--phosphor-tint);color:var(--phosphor)}
+  .mlist{padding:2px 0}
+  .mrow{display:flex;gap:11px;padding:7px 13px;align-items:center;font-size:12px}
+  .mrow+.mrow{border-top:1px solid var(--edge-soft)}
+  .chk{width:15px;height:15px;border-radius:4px;border:1px solid var(--paper-28);flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--ink);cursor:pointer}
+  .chk.yes{background:var(--phosphor);border-color:var(--phosphor)}
+  .mname{flex:1;min-width:0;color:var(--paper-70)} .mname.off{color:var(--paper-45)}
+  .price{font-size:10px;color:var(--paper-45);white-space:nowrap}
+  .newp{margin-top:9px;display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px dashed var(--edge);border-radius:10px;color:var(--paper-45);font-size:11.5px;cursor:pointer}
+  .newp:hover{color:var(--paper-70);border-color:var(--paper-28)}
+  .newp .plus{width:22px;height:22px;border-radius:5px;border:1px dashed var(--paper-28);display:flex;align-items:center;justify-content:center;color:var(--paper-45)}
+
+  /* ── reach panel (right) ────────────────────────── */
+  .reach{min-width:0}
+  .rheader{background:var(--ink-3);border:1px solid var(--edge);border-radius:10px;padding:13px 15px}
+  .rheader .top{display:flex;gap:11px;align-items:center}
+  .rheader .top .id{flex:1;min-width:0}
+  .rheader .top .id .nm{font-size:15px;font-weight:700;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .rheader .top .id .meta{font-size:10.5px;color:var(--paper-45);margin-top:4px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .rheader .top .id .meta b{color:var(--paper-70);font-weight:600}
+  .rchip{font-size:10px;letter-spacing:.05em;padding:3px 9px;border-radius:99px;border:1px solid var(--phosphor-line);color:var(--phosphor);background:var(--phosphor-tint);white-space:nowrap}
+  .rchip .d{width:6px;height:6px;border-radius:50%;background:var(--phosphor);display:inline-block;margin-right:6px;vertical-align:middle}
+  .rsum{margin-top:11px;font-size:11px;color:var(--paper-45);line-height:1.7}
+  .rsum b{color:var(--paper-70);font-weight:600}
+
+  .legend{margin:13px 0 4px;display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:var(--paper-45)}
+  .legend .li{display:flex;align-items:center;gap:7px}
+
+  /* harness card (grammar reused) + reach rows */
+  .hcard{margin-top:11px;background:var(--ink-3);border:1px solid var(--edge);border-radius:10px;overflow:hidden}
+  .hcard.router{border-color:var(--ochre-line)}
+  .hcard.pack{border-color:var(--steel-line)}
+  .hcard.could{border-style:dashed;border-color:var(--edge)}
+  .hhead{display:flex;gap:12px;padding:11px 14px;align-items:center}
+  .hhead .id{flex:1;min-width:0}
+  .hhead .id .nm{font-size:13px;font-weight:700}
+  .hhead .id .meta{font-size:10px;color:var(--paper-45);margin-top:3px}
+  .hhead .id .meta b{color:var(--paper-70);font-weight:600}
+
+  .rlist{padding:2px 0}
+  .rrow{display:flex;gap:11px;padding:8px 14px;align-items:center;font-size:12px}
+  .rrow+.rrow{border-top:1px solid var(--edge-soft)}
+  .rdot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .rdot.native{background:var(--phosphor)} .rdot.router{background:var(--ochre)}
+  .rname{flex:1;min-width:0;color:var(--paper-70);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .rrow.cur .rname{color:var(--paper);font-weight:600}
+  .rname .via{font-size:9.5px;color:var(--paper-28)}
+  .rname .via.on{color:var(--ochre)}
+  .rtag{font-size:8.5px;letter-spacing:.07em;padding:1px 6px;border-radius:4px;border:1px solid var(--edge);color:var(--paper-45);white-space:nowrap}
+  .rtag.native{color:var(--phosphor);border-color:var(--phosphor-line)}
+  .rtag.router{color:var(--ochre);border-color:var(--ochre-line)}
+  .curbadge{font-size:8.5px;letter-spacing:.08em;color:var(--phosphor);border:1px solid var(--phosphor-line);border-radius:99px;padding:1px 7px;font-weight:700}
+  .rrow .price{font-size:10.5px;color:var(--paper-45);white-space:nowrap}
+
+  .hfoot{border-top:1px solid var(--edge-soft);padding:9px 14px;display:flex;align-items:center;gap:10px;font-size:11px;color:var(--paper-45)}
+  .hfoot .grow{flex:1}
+  .hfoot b{color:var(--paper-70);font-weight:600}
+
+  /* could-enable banner inside a reach panel */
+  .cebanner{margin:11px 14px 0;border:1px dashed var(--edge);border-radius:8px;padding:11px 12px;display:flex;gap:11px;align-items:flex-start;background:var(--ink-2)}
+  .cebanner .ic{color:var(--ochre);font-size:14px;flex:0 0 auto;line-height:1}
+  .cebanner .tx{flex:1;font-size:11.5px;color:var(--paper-70);line-height:1.6}
+  .cebanner .tx b{color:var(--paper)}
+  .cebanner .tx .step{color:var(--ochre);font-weight:600}
+  .cebanner .act{flex:0 0 auto}
+
+  /* impossible pair (clay) */
+  .imp{margin:11px 14px;border:1px solid rgba(189,106,95,.4);background:var(--clay-tint);border-radius:8px;padding:11px 12px;display:flex;gap:11px;align-items:flex-start}
+  .imp .ic{color:var(--clay);font-size:14px;flex:0 0 auto;line-height:1}
+  .imp .tx{flex:1;font-size:11px;color:var(--paper-70);line-height:1.6}
+  .imp .tx b{color:var(--paper)}
+  .imp .tx .hd{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+
+  /* pack-only shared zone (profile-independent) */
+  .packzone{margin-top:18px;border:1px solid var(--steel-line);border-radius:10px;background:var(--ink-3);overflow:hidden}
+  .packzone .pzhead{display:flex;gap:11px;padding:11px 14px;align-items:center;background:var(--steel-tint)}
+  .packzone .pzhead .id{flex:1}
+  .packzone .pzhead .id .nm{font-size:13px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .packzone .pzhead .id .meta{font-size:10px;color:var(--paper-45);margin-top:3px}
+  .packs{display:flex;gap:7px;padding:12px 14px;flex-wrap:wrap}
+  .packchip{border:1px solid var(--edge);border-radius:8px;padding:7px 10px;min-width:140px;cursor:pointer}
+  .packchip.on{border-color:var(--steel-line);background:var(--steel-tint)}
+  .packchip .pn{font-size:11.5px;font-weight:700;display:flex;align-items:center;gap:6px}
+  .packchip .pm{font-size:9.5px;color:var(--paper-45);margin-top:3px;line-height:1.5}
+  .packchip.on .pn{color:var(--steel)}
+  .packzone .pzfoot{border-top:1px solid var(--edge-soft);padding:9px 14px;font-size:11px;color:var(--paper-45)}
+
+  /* adopt callout (fresh) */
+  .adopt{margin-top:9px;background:var(--paper);color:var(--ink);border-radius:10px;padding:14px 15px}
+  .adopt .h{font-size:10px;font-weight:700;letter-spacing:.13em;display:flex;align-items:center;gap:8px}
+  .adopt .h .blk{width:9px;height:14px;border-radius:2px;background:var(--phosphor)}
+  .adopt p{font-size:12px;line-height:1.6;margin-top:8px} .adopt p b{font-weight:700}
+  .aacts{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}
+  .abtn{font:600 11px var(--mono);padding:5px 13px;border-radius:6px;border:1.5px solid var(--ink);background:transparent;color:var(--ink);cursor:pointer}
+  .abtn:hover{background:rgba(27,27,28,.07)}
+  .abtn.yes{background:var(--phosphor);border-color:var(--phosphor);color:var(--paper)} .abtn.yes:hover{filter:brightness(1.07)}
+
+  /* fresh-state potential grid */
+  .potgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:11px}
+  .potcard{background:var(--ink-3);border:1px dashed var(--edge);border-radius:9px;padding:11px 13px}
+  .potcard .h{font-size:12px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .potcard .p{font-size:10.5px;color:var(--paper-45);margin-top:5px;line-height:1.6}
+  .potcard .p b{color:var(--paper-70);font-weight:600}
+  .potcard .step{margin-top:8px;font-size:10px;color:var(--ochre);font-weight:600}
+
+  .foot{margin-top:26px;font-size:10.5px;color:var(--paper-28);line-height:1.7;border-top:1px solid var(--edge-soft);padding-top:14px}
+  .foot code{color:var(--paper-45)}
+
+  /* ── view toggling ─────────────────────────────── */
+  /* state */
+  #board-conf,#board-fresh{display:none}
+  body.state-configured #board-conf{display:block}
+  body.state-fresh #board-fresh{display:block}
+  /* profile selection */
+  .reach-panel{display:none}
+  body.p-anthropicmax #reach-anthropicmax{display:block}
+  body.p-openrouterperso #reach-openrouterperso{display:block}
+  body.p-openaicodex #reach-openaicodex{display:block}
+  /* inline allowlist editor */
+  .wallet{display:none}
+  .pcard.open .wallet{display:block}
+  /* pcard selection ring */
+  body.p-anthropicmax #pcard-an{border-color:var(--phosphor-line);background:var(--phosphor-tint)}
+  body.p-openrouterperso #pcard-or{border-color:var(--phosphor-line);background:var(--phosphor-tint)}
+  body.p-openaicodex #pcard-oa{border-color:var(--phosphor-line);background:var(--phosphor-tint)}
+</style>
+</head>
+<body class="state-configured p-openrouterperso">
+
+<div class="page">
+
+  <div class="brandline">
+    <svg viewBox="0 0 64 64"><path d="M13 17 L30 32 L13 47" fill="none" stroke="#f4f0e6" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><rect x="40" y="14" width="14" height="36" rx="3" fill="#2f9e63"/></svg>
+    <span>agentproto</span><span class="crumb">· auth &amp; routing · GLM vision</span>
+    <div class="links"><a>docs</a><a>refresh</a></div>
+  </div>
+
+  <div class="title">
+    <h1>Profiles &amp; Reach</h1>
+    <div class="sub">A <b>profile</b> is a named account you create — <code>openrouterPerso</code>, not "the openrouter provider". It carries a credential and an allowlist of models it may run, and it is the unit of billing. Every profile has <b>reach</b>: across the fleet of harnesses, which of its models light up <i>right now</i>, which <i>could</i> with one named step, and which are simply impossible. This whole surface is one board: <b>who you are</b> on the left, <b>what you can reach</b> on the right.</div>
+    <div class="byline"><span><b>3</b> profiles</span><span><b>6</b> harnesses</span><span>local router <b>:8788 · on</b></span><span><b>1</b> pack-only harness</span></div>
+  </div>
+
+  <div class="topbar">
+    <div class="statesw">
+      <span class="lbl">STATE</span>
+      <button class="sbtn" data-st="fresh">Fresh</button>
+      <button class="sbtn on" data-st="configured">Configured</button>
+    </div>
+    <div class="statesw" style="margin-left:auto">
+      <span class="lbl">SELECT A PROFILE →</span>
+    </div>
+  </div>
+
+  <!-- ═══════════════════ CONFIGURED BOARD ═══════════════════ -->
+  <div id="board-conf">
+  <div class="board">
+
+    <!-- ───────── LEFT · PROFILES (first-class home) ───────── -->
+    <div class="rail-col">
+      <div class="colhead">PROFILES<span class="t">a named account · its home</span></div>
+
+      <!-- profile: anthropic·max -->
+      <div class="pcard" id="pcard-an" data-p="anthropicmax">
+        <div class="phead">
+          <span class="logo">AN</span>
+          <div class="id">
+            <div class="nm">anthropic·max</div>
+            <div class="pv"><span class="arw">provider →</span> anthropic · <span class="tag good" style="padding:0 6px"><span class="d"></span>self-refreshing</span></div>
+          </div>
+          <div class="rs"><b>3/6</b> harnesses<br><span class="imp">2 impossible</span></div>
+        </div>
+        <div class="pmng"><span>3 models approved</span><span class="grow"></span><button class="btn sm manage">Manage</button></div>
+        <div class="wallet">
+          <div class="wbar"><b>Allowlist</b> · approved models for this profile<span class="grow"></span>
+            <div class="mode"><button>Allow all</button><button class="on">Allow selected</button></div>
+          </div>
+          <div class="mlist">
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">claude-opus-4-8</span><span class="price">$5 / $25 ·1M</span><button class="btn sm danger">Remove</button></div>
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">claude-fable-5</span><span class="price">$3 / $15 ·1M</span><button class="btn sm danger">Remove</button></div>
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">claude-sonnet-5</span><span class="price">$3 / $15 ·1M</span><button class="btn sm danger">Remove</button></div>
+            <div class="mrow"><span class="chk">&nbsp;</span><span class="mname off">claude-haiku-4-5</span><span class="price">$0.80 / $4 ·1M</span><button class="btn sm">Approve</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- profile: openrouterPerso (default selected) -->
+      <div class="pcard sel" id="pcard-or" data-p="openrouterperso">
+        <div class="phead">
+          <span class="logo">OR</span>
+          <div class="id">
+            <div class="nm">openrouterPerso</div>
+            <div class="pv"><span class="arw">provider →</span> openrouter · <span class="tag key" style="padding:0 6px"><span class="d" style="background:var(--paper-28)"></span>key ····4f2a</span></div>
+          </div>
+          <div class="rs"><b>4/6</b> harnesses<br><span class="imp">1 impossible</span></div>
+        </div>
+        <div class="pmng"><span>3 models approved</span><span class="grow"></span><button class="btn sm manage">Manage</button></div>
+        <div class="wallet">
+          <div class="wbar"><b>Allowlist</b> · approved models for this profile<span class="grow"></span>
+            <div class="mode"><button>Allow all</button><button class="on">Allow selected</button></div>
+          </div>
+          <div class="mlist">
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">moonshot/kimi-k2</span><span class="price">$0.55 / $2.20 ·1M</span><button class="btn sm danger">Remove</button></div>
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">deepseek-v4</span><span class="price">$0.40 / $1.60 ·1M</span><button class="btn sm danger">Remove</button></div>
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">z-ai/glm-5.2</span><span class="price">$0.60 / $2.20 ·1M</span><button class="btn sm danger">Remove</button></div>
+            <div class="mrow"><span class="chk">&nbsp;</span><span class="mname off">minimax/minimax-m3</span><span class="price">$0.30 / $1.20 ·1M</span><button class="btn sm">Approve</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- profile: openaiCodex -->
+      <div class="pcard" id="pcard-oa" data-p="openaicodex">
+        <div class="phead">
+          <span class="logo">OA</span>
+          <div class="id">
+            <div class="nm">openaiCodex</div>
+            <div class="pv"><span class="arw">provider →</span> openai · <span class="tag good" style="padding:0 6px"><span class="d"></span>self-refreshing</span></div>
+          </div>
+          <div class="rs"><b>3/6</b> harnesses<br><span style="color:var(--ochre)">2 could-enable</span></div>
+        </div>
+        <div class="pmng"><span>allow-all · every eligible model</span><span class="grow"></span><button class="btn sm manage">Manage</button></div>
+        <div class="wallet">
+          <div class="wbar"><b>Allowlist</b><span class="grow"></span>
+            <div class="mode"><button class="on">Allow all</button><button>Allow selected</button></div>
+          </div>
+          <div class="mlist">
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">gpt-5.3-codex</span><span class="price">$4 / $16 ·1M</span><button class="btn sm danger">Remove</button></div>
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">gpt-5.3</span><span class="price">$3.50 / $14 ·1M</span><button class="btn sm danger">Remove</button></div>
+            <div class="mrow"><span class="chk yes">✓</span><span class="mname">o5-mini</span><span class="price">$0.60 / $2.40 ·1M</span><button class="btn sm danger">Remove</button></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="newp" id="newp"><span class="plus">＋</span><div><b style="color:var(--paper-70)">New profile</b> — paste a key or adopt a local login. Name it whatever you like; a provider can back several.</div></div>
+    </div>
+
+    <!-- ───────── RIGHT · REACH ───────── -->
+    <div class="reach-col">
+      <div class="colhead">REACH<span class="t">what this profile can run, where — lit vs could vs impossible</span></div>
+
+      <div class="legend">
+        <span class="li"><span class="tag good"><span class="d"></span>NATIVE</span> direct, no router</span>
+        <span class="li"><span class="tag warn"><span class="d"></span>VIA ROUTER</span> bridged behind :8788</span>
+        <span class="li"><span class="tag dim"><span class="d" style="background:var(--paper-28)"></span>COULD</span> one named step away</span>
+        <span class="li"><span class="tag bad"><span class="d"></span>IMPOSSIBLE</span> no action fixes it</span>
+      </div>
+
+      <!-- ═══════ reach: openrouterPerso ═══════ -->
+      <div class="reach-panel" id="reach-openrouterperso">
+        <div class="rheader">
+          <div class="top">
+            <span class="logo">OR</span>
+            <div class="id">
+              <div class="nm">openrouterPerso <span class="tag key"><span class="d" style="background:var(--paper-28)"></span>key ····4f2a</span></div>
+              <div class="meta"><span>provider <b>openrouter</b></span><span><b>3</b> models approved</span><span>1 not yet approved</span></div>
+            </div>
+            <span class="rchip"><span class="d"></span>router :8788 · on</span>
+          </div>
+          <div class="rsum">Reaches <b>4 of 6</b> harnesses — 2 native (hermes, opencode), 2 via the local router (claude-code, claude-sdk). One harness is <b style="color:var(--clay)">impossible</b>; one is pack-only and takes no profile.</div>
+        </div>
+
+        <!-- could-enable: unapproved model -->
+        <div class="cebanner">
+          <span class="ic">✦</span>
+          <div class="tx"><b>minimax/minimax-m3</b> is available on openrouter but not yet on this profile's allowlist. Approve it and it lights up <b>4 harnesses</b> at once (claude-code &amp; claude-sdk via the router, hermes &amp; opencode natively). <span class="step">Next step → approve the model on the allowlist.</span></div>
+          <div class="act"><button class="btn go sm ce-btn" data-done="Approved ✓">Approve minimax-m3</button></div>
+        </div>
+
+        <!-- claude-code · VIA ROUTER · ready -->
+        <div class="hcard router">
+          <div class="hhead">
+            <span class="glyph">✳</span>
+            <div class="id"><div class="nm">claude-code</div><div class="meta">speaks <b>Anthropic</b> · accepts <code>base_url</code> · route <b>free</b></div></div>
+            <span class="tag warn"><span class="d"></span>VIA ROUTER</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow"><span class="rdot router"></span><span class="rname">moonshot/kimi-k2 <span class="rtag router">via :8788</span></span><span class="price">$0.55 / $2.20 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot router"></span><span class="rname">deepseek-v4 <span class="rtag router">via :8788</span></span><span class="price">$0.40 / $1.60 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot router"></span><span class="rname">z-ai/glm-5.2 <span class="rtag router">via :8788</span></span><span class="price">$0.60 / $2.20 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">openrouter isn't Anthropic-native, but claude-code accepts <code>base_url</code> — the router presents these behind <code>ANTHROPIC_BASE_URL → :8788/v1/openrouter/messages</code>.<span class="grow"></span><button class="btn sm">Change</button></div>
+        </div>
+
+        <!-- claude-sdk · VIA ROUTER · ready (featured) -->
+        <div class="hcard router">
+          <div class="hhead">
+            <span class="glyph">◆</span>
+            <div class="id"><div class="nm">claude-sdk</div><div class="meta">speaks <b>Anthropic</b> · accepts <code>base_url</code> (<code>ANTHROPIC_BASE_URL</code>) · route <b>free</b></div></div>
+            <span class="tag warn"><span class="d"></span>VIA ROUTER</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow cur"><span class="rdot router"></span><span class="rname">moonshot/kimi-k2 <span class="rtag router">via :8788</span><span class="curbadge">CURRENT</span></span><span class="price">$0.55 / $2.20 ·1M</span><button class="btn sm">Change</button></div>
+            <div class="rrow"><span class="rdot router"></span><span class="rname">deepseek-v4 <span class="rtag router">via :8788</span></span><span class="price">$0.40 / $1.60 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot router"></span><span class="rname">z-ai/glm-5.2 <span class="rtag router">via :8788</span></span><span class="price">$0.60 / $2.20 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">Same bridge as claude-code; the current model reaches claude-sdk as if it were Anthropic.<span class="grow"></span></div>
+        </div>
+
+        <!-- hermes · NATIVE · ready -->
+        <div class="hcard">
+          <div class="hhead">
+            <span class="glyph">☿</span>
+            <div class="id"><div class="nm">hermes</div><div class="meta">speaks <b>OpenAI</b> · multi-vendor · route <b>derived-from-model</b> (<code>vendor/*</code> prefix)</div></div>
+            <span class="tag good"><span class="d"></span>NATIVE</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow"><span class="rdot native"></span><span class="rname">deepseek-v4 <span class="rtag native">native</span></span><span class="price">$0.40 / $1.60 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">z-ai/glm-5.2 <span class="rtag native">native</span></span><span class="price">$0.60 / $2.20 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">moonshot/kimi-k2 <span class="rtag native">native</span></span><span class="price">$0.55 / $2.20 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">openrouter is OpenAI-compatible; the <code>vendor/*</code> prefix fixes the route — no router needed.</div>
+        </div>
+
+        <!-- opencode · NATIVE · ready -->
+        <div class="hcard">
+          <div class="hhead">
+            <span class="glyph">◐</span>
+            <div class="id"><div class="nm">opencode</div><div class="meta">speaks <b>Anthropic + OpenAI</b> · route <b>derived-from-model</b></div></div>
+            <span class="tag good"><span class="d"></span>NATIVE</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow"><span class="rdot native"></span><span class="rname">z-ai/glm-5.2 <span class="rtag native">native</span></span><span class="price">$0.60 / $2.20 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">deepseek-v4 <span class="rtag native">native</span></span><span class="price">$0.40 / $1.60 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">moonshot/kimi-k2 <span class="rtag native">native</span></span><span class="price">$0.55 / $2.20 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">Provider &amp; key both fall out of the model prefix — opencode dials the vendor directly on the OpenAI side.</div>
+        </div>
+
+        <!-- codex · IMPOSSIBLE -->
+        <div class="hcard" style="border-color:rgba(189,106,95,.4)">
+          <div class="hhead">
+            <span class="glyph" style="color:var(--clay)">◈</span>
+            <div class="id"><div class="nm">codex</div><div class="meta">speaks <b>OpenAI</b> · no <code>base_url</code> · route fixed to <b>openai</b></div></div>
+            <span class="tag bad"><span class="d"></span>IMPOSSIBLE</span>
+          </div>
+          <div class="imp">
+            <span class="ic">⊘</span>
+            <div class="tx"><b>codex</b> speaks OpenAI and accepts <b>no <code>base_url</code></b> — its route is fixed to the <code>openai</code> preset in the manifest. There is no re-pointable endpoint for the router to intercept, so <code>openrouterPerso</code> can <b>never</b> reach it, with or without the router. This doesn't move to "ready" no matter what you enable — it's a hard boundary, not a missing step.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════ reach: anthropic·max ═══════ -->
+      <div class="reach-panel" id="reach-anthropicmax">
+        <div class="rheader">
+          <div class="top">
+            <span class="logo">AN</span>
+            <div class="id">
+              <div class="nm">anthropic·max <span class="tag good"><span class="d"></span>self-refreshing</span></div>
+              <div class="meta"><span>provider <b>anthropic</b></span><span><b>3</b> models approved</span><span>1 not yet approved</span></div>
+            </div>
+            <span class="rchip"><span class="d"></span>router :8788 · on</span>
+          </div>
+          <div class="rsum">Reaches <b>3 of 6</b> harnesses — all <b>native</b>, because claude-code, claude-sdk &amp; opencode all speak Anthropic and dial <code>api.anthropic.com</code> straight. Two harnesses are <b style="color:var(--clay)">impossible</b> (OpenAI-only); one is pack-only.</div>
+        </div>
+
+        <div class="cebanner">
+          <span class="ic">✦</span>
+          <div class="tx"><b>claude-haiku-4-5</b> is available on anthropic but not yet approved. Approve it and it lights up <b>3 harnesses</b> (claude-code, claude-sdk, opencode) natively — no router needed. <span class="step">Next step → approve the model on the allowlist.</span></div>
+          <div class="act"><button class="btn go sm ce-btn" data-done="Approved ✓">Approve haiku-4-5</button></div>
+        </div>
+
+        <div class="hcard">
+          <div class="hhead">
+            <span class="glyph">✳</span>
+            <div class="id"><div class="nm">claude-code</div><div class="meta">speaks <b>Anthropic</b> · accepts <code>base_url</code> · route <b>free</b></div></div>
+            <span class="tag good"><span class="d"></span>NATIVE</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow cur"><span class="rdot native"></span><span class="rname">claude-opus-4-8 <span class="rtag native">native</span><span class="curbadge">CURRENT</span></span><span class="price">$5 / $25 ·1M</span><button class="btn sm">Change</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">claude-fable-5 <span class="rtag native">native</span></span><span class="price">$3 / $15 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">claude-sonnet-5 <span class="rtag native">native</span></span><span class="price">$3 / $15 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">Anthropic client → Anthropic provider, straight to <code>api.anthropic.com</code> — no router.</div>
+        </div>
+
+        <div class="hcard">
+          <div class="hhead">
+            <span class="glyph">◆</span>
+            <div class="id"><div class="nm">claude-sdk</div><div class="meta">speaks <b>Anthropic</b> · accepts <code>base_url</code> · route <b>free</b></div></div>
+            <span class="tag good"><span class="d"></span>NATIVE</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow"><span class="rdot native"></span><span class="rname">claude-opus-4-8 <span class="rtag native">native</span></span><span class="price">$5 / $25 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">claude-fable-5 <span class="rtag native">native</span></span><span class="price">$3 / $15 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">claude-sonnet-5 <span class="rtag native">native</span></span><span class="price">$3 / $15 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">Same native path — claude-sdk speaks Anthropic, so an anthropic profile needs no bridge.</div>
+        </div>
+
+        <div class="hcard">
+          <div class="hhead">
+            <span class="glyph">◐</span>
+            <div class="id"><div class="nm">opencode</div><div class="meta">speaks <b>Anthropic + OpenAI</b> · route <b>derived-from-model</b></div></div>
+            <span class="tag good"><span class="d"></span>NATIVE</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow"><span class="rdot native"></span><span class="rname">claude-opus-4-8 <span class="rtag native">native</span></span><span class="price">$5 / $25 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">claude-fable-5 <span class="rtag native">native</span></span><span class="price">$3 / $15 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">claude-sonnet-5 <span class="rtag native">native</span></span><span class="price">$3 / $15 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">opencode's Anthropic side dials anthropic directly; the OpenAI side is simply unused for this profile.</div>
+        </div>
+
+        <div class="hcard" style="border-color:rgba(189,106,95,.4)">
+          <div class="hhead">
+            <span class="glyph" style="color:var(--clay)">☿</span>
+            <div class="id"><div class="nm">hermes</div><div class="meta">speaks <b>OpenAI</b> · route <b>derived-from-model</b> (<code>vendor/*</code> prefix)</div></div>
+            <span class="tag bad"><span class="d"></span>IMPOSSIBLE</span>
+          </div>
+          <div class="imp">
+            <span class="ic">⊘</span>
+            <div class="tx">hermes speaks OpenAI and routes by a <code>vendor/*</code> prefix to OpenAI-compatible providers; anthropic is not OpenAI-compatible, and the local router bridges <b>toward</b> Anthropic-speaking clients (not from them). So <code>anthropic·max</code> can never reach hermes. No step fixes it.</div>
+          </div>
+        </div>
+
+        <div class="hcard" style="border-color:rgba(189,106,95,.4)">
+          <div class="hhead">
+            <span class="glyph" style="color:var(--clay)">◈</span>
+            <div class="id"><div class="nm">codex</div><div class="meta">speaks <b>OpenAI</b> · no <code>base_url</code> · route fixed to <b>openai</b></div></div>
+            <span class="tag bad"><span class="d"></span>IMPOSSIBLE</span>
+          </div>
+          <div class="imp">
+            <span class="ic">⊘</span>
+            <div class="tx">codex is openai-only. An anthropic profile will never appear here.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════ reach: openaiCodex ═══════ -->
+      <div class="reach-panel" id="reach-openaicodex">
+        <div class="rheader">
+          <div class="top">
+            <span class="logo">OA</span>
+            <div class="id">
+              <div class="nm">openaiCodex <span class="tag good"><span class="d"></span>self-refreshing</span></div>
+              <div class="meta"><span>provider <b>openai</b></span><span>allow-all · every eligible model</span></div>
+            </div>
+            <span class="rchip"><span class="d"></span>router :8788 · on</span>
+          </div>
+          <div class="rsum">Reaches <b>3 of 6</b> harnesses natively (codex, hermes, opencode — all OpenAI-speaking). The two Anthropic-only harnesses <b style="color:var(--ochre)">could</b> reach your gpt-5.3 via the local router, but the router has no <code>openai</code> pack yet — one named step each.</div>
+        </div>
+
+        <!-- could-enable: missing router pack (featured) -->
+        <div class="cebanner">
+          <span class="ic">⟳</span>
+          <div class="tx"><b>claude-code &amp; claude-sdk</b> speak Anthropic + accept <code>base_url</code>, so they <b>could</b> run your <code>gpt-5.3</code> through the local router — but the router has no <b>openai pack</b> mapping openai models behind the Anthropic interface yet. <span class="step">Next step → add an openai pack to the router on :8788.</span></div>
+          <div class="act"><button class="btn go sm ce-btn" data-done="Pack added ✓">Add an openai pack</button></div>
+        </div>
+
+        <div class="hcard">
+          <div class="hhead">
+            <span class="glyph">◈</span>
+            <div class="id"><div class="nm">codex</div><div class="meta">speaks <b>OpenAI</b> · no <code>base_url</code> · route fixed to <b>openai</b></div></div>
+            <span class="tag good"><span class="d"></span>NATIVE</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow cur"><span class="rdot native"></span><span class="rname">gpt-5.3-codex <span class="rtag native">native</span><span class="curbadge">CURRENT</span></span><span class="price">$4 / $16 ·1M</span><button class="btn sm">Change</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">gpt-5.3 <span class="rtag native">native</span></span><span class="price">$3.50 / $14 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">o5-mini <span class="rtag native">native</span></span><span class="price">$0.60 / $2.40 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">OpenAI client → OpenAI provider — codex is openai-only, which is exactly what this profile is.</div>
+        </div>
+
+        <div class="hcard">
+          <div class="hhead">
+            <span class="glyph">☿</span>
+            <div class="id"><div class="nm">hermes</div><div class="meta">speaks <b>OpenAI</b> · route <b>derived-from-model</b> (<code>vendor/*</code> prefix)</div></div>
+            <span class="tag good"><span class="d"></span>NATIVE</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow"><span class="rdot native"></span><span class="rname">gpt-5.3 <span class="rtag native">native</span></span><span class="price">$3.50 / $14 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">gpt-5.3-codex <span class="rtag native">native</span></span><span class="price">$4 / $16 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">o5-mini <span class="rtag native">native</span></span><span class="price">$0.60 / $2.40 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot"><code>openai/*</code> prefix fixes the route — openai is OpenAI-native, no router.</div>
+        </div>
+
+        <div class="hcard">
+          <div class="hhead">
+            <span class="glyph">◐</span>
+            <div class="id"><div class="nm">opencode</div><div class="meta">speaks <b>Anthropic + OpenAI</b> · route <b>derived-from-model</b></div></div>
+            <span class="tag good"><span class="d"></span>NATIVE</span>
+          </div>
+          <div class="rlist">
+            <div class="rrow"><span class="rdot native"></span><span class="rname">gpt-5.3 <span class="rtag native">native</span></span><span class="price">$3.50 / $14 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">gpt-5.3-codex <span class="rtag native">native</span></span><span class="price">$4 / $16 ·1M</span><button class="btn sm">Pick</button></div>
+            <div class="rrow"><span class="rdot native"></span><span class="rname">o5-mini <span class="rtag native">native</span></span><span class="price">$0.60 / $2.40 ·1M</span><button class="btn sm">Pick</button></div>
+          </div>
+          <div class="hfoot">opencode's OpenAI side dials openai directly; the Anthropic side is unused here.</div>
+        </div>
+
+        <!-- could-enable harness cards (router pack missing) -->
+        <div class="hcard could">
+          <div class="hhead">
+            <span class="glyph" style="color:var(--ochre)">✳</span>
+            <div class="id"><div class="nm">claude-code</div><div class="meta">speaks <b>Anthropic</b> · accepts <code>base_url</code> · route <b>free</b></div></div>
+            <span class="tag dim"><span class="d" style="background:var(--paper-28)"></span>COULD</span>
+          </div>
+          <div class="imp" style="border-color:var(--ochre-line);background:var(--ochre-tint)">
+            <span class="ic" style="color:var(--ochre)">⟳</span>
+            <div class="tx">Reachable in principle — claude-code accepts <code>base_url</code> — but the local router has no <b>openai pack</b> to present your gpt-5.3 behind the Anthropic interface. <span style="color:var(--ochre);font-weight:600">Add the pack and these light up:</span> gpt-5.3-codex, gpt-5.3, o5-mini (via :8788).<div style="margin-top:7px"><button class="btn go sm ce-btn" data-done="Pack added ✓">Add an openai pack</button></div></div>
+          </div>
+        </div>
+
+        <div class="hcard could">
+          <div class="hhead">
+            <span class="glyph" style="color:var(--ochre)">◆</span>
+            <div class="id"><div class="nm">claude-sdk</div><div class="meta">speaks <b>Anthropic</b> · accepts <code>base_url</code> (<code>ANTHROPIC_BASE_URL</code>) · route <b>free</b></div></div>
+            <span class="tag dim"><span class="d" style="background:var(--paper-28)"></span>COULD</span>
+          </div>
+          <div class="imp" style="border-color:var(--ochre-line);background:var(--ochre-tint)">
+            <span class="ic" style="color:var(--ochre)">⟳</span>
+            <div class="tx">Same gap as claude-code — no openai pack on the router yet. Add it and <code>gpt-5.3</code> arrives behind <code>ANTHROPIC_BASE_URL → :8788/v1/openai/messages</code>.<div style="margin-top:7px"><button class="btn go sm ce-btn" data-done="Pack added ✓">Add an openai pack</button></div></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ───────── pack-only zone (profile-independent, always under the board) ───────── -->
+  <div class="packzone">
+    <div class="pzhead">
+      <span class="glyph" style="color:var(--steel)">⬡</span>
+      <div class="id">
+        <div class="nm">mastracode <span class="tag steel"><span class="d"></span>PACK-ONLY</span></div>
+        <div class="meta">fixed <code>models.allowed</code> list · no free <code>base_url</code> → chooses from packs, not a profile</div>
+      </div>
+      <button class="btn sm">Manage packs</button>
+    </div>
+    <div class="packs" id="mastrapacks">
+      <div class="packchip on"><div class="pn">◆ terra</div><div class="pm">anthropic/claude-sonnet-4-5 · openai/gpt-5.1 · google/gemini-2.5</div></div>
+      <div class="packchip"><div class="pn">☾ kimi</div><div class="pm">moonshot/kimi-k2 · kimi-k2.7-code · glm-5.2</div></div>
+      <div class="packchip"><div class="pn">✦ gemini-lite</div><div class="pm">gemini-2.5-flash · gemini-2.0-flash · gemma-3</div></div>
+    </div>
+    <div class="pzfoot">Pack-only harnesses take no profile — you pick a fixed model triple, not a wallet+model. Lives below the board because it's the same for every profile.</div>
+  </div>
+
+  <div class="foot">
+    Profiles &amp; allowlists grounded in <code>list_provider_presets</code> (which providers exist) · <code>auth_profile_summary</code> (each named profile: <code>id</code>, <code>endpoint</code>, <code>keyStatus</code>, <code>models.mode</code>/<code>ids</code>) · <code>catalog_provider_models</code> (the allowlist picker + live prices) · write via <code>setAuthProfileModels</code>. Onboarding leads with <code>auth_discover_credentials</code> (adopt a local login) then <code>auth_profile_create</code>. Reach is <b>computed</b> per profile × harness from each adapter's manifest (interface it speaks, whether it accepts <code>base_url</code>, <code>routeSelection</code>) and the <code>packages/llm-endpoint</code> pack registry on :8788 — never hand-set. No secret ever renders: only <code>last4</code>/<code>fingerprint</code>, or the <code>self-refreshing</code> flag.
+  </div>
+  </div>
+
+  <!-- ═══════════════════ FRESH BOARD (empty state — rule 4) ═══════════════════ -->
+  <div id="board-fresh">
+    <div class="board">
+      <div class="rail-col">
+        <div class="colhead">PROFILES<span class="t">none yet</span></div>
+        <div class="adopt">
+          <div class="h"><span class="blk"></span>LOGINS FOUND ON THIS MACHINE</div>
+          <p>agentproto scanned this machine and found a <b>Claude Code</b> login and a <b>Codex</b> login. Adopt either and it becomes a named, <b>self-refreshing</b> profile — no key pasted, no secret stored.</p>
+          <div class="aacts">
+            <button class="abtn yes" id="adopt-cc">Adopt Claude Code → name it…</button>
+            <button class="abtn yes" id="adopt-cx">Adopt Codex → name it…</button>
+            <button class="abtn" id="paste-key">Paste a key instead</button>
+          </div>
+        </div>
+        <div class="newp" id="newp-fresh"><span class="plus">＋</span><div>Or create a profile from any provider — anthropic, openrouter, openai …</div></div>
+      </div>
+      <div class="reach-col">
+        <div class="colhead">REACH<span class="t">the potential, before any profile exists</span></div>
+        <div class="rheader">
+          <div class="top">
+            <div class="id">
+              <div class="nm" style="color:var(--paper-45)">No profiles yet</div>
+              <div class="meta">Once you create a profile on the left, this panel lights up with exactly which of its models each harness can run — and which are one step away.</div>
+            </div>
+            <span class="tag dim"><span class="d" style="background:var(--paper-28)"></span>EMPTY</span>
+          </div>
+        </div>
+        <div class="potgrid">
+          <div class="potcard">
+            <div class="h"><span class="glyph">✳</span>claude-code</div>
+            <div class="p">speaks Anthropic + <code>base_url</code> → <b>native</b> to an anthropic profile; <b>via router</b> to openrouter/openai.</div>
+            <div class="step">→ create an anthropic or openrouter profile</div>
+          </div>
+          <div class="potcard">
+            <div class="h"><span class="glyph">◆</span>claude-sdk</div>
+            <div class="p">Anthropic + <code>base_url</code> → richest reach: native to anthropic, router-bridged to everything else.</div>
+            <div class="step">→ create any profile</div>
+          </div>
+          <div class="potcard">
+            <div class="h"><span class="glyph">☿</span>hermes</div>
+            <div class="p">OpenAI + <code>vendor/*</code> → <b>native</b> to openrouter &amp; openai profiles.</div>
+            <div class="step">→ create an openrouter or openai profile</div>
+          </div>
+          <div class="potcard">
+            <div class="h"><span class="glyph">◐</span>opencode</div>
+            <div class="p">Anthropic + OpenAI → <b>native</b> to every profile you can make.</div>
+            <div class="step">→ create any profile</div>
+          </div>
+          <div class="potcard">
+            <div class="h"><span class="glyph">◈</span>codex</div>
+            <div class="p">OpenAI, no <code>base_url</code>, fixed to openai → <b>native</b> to an openai profile only.</div>
+            <div class="step">→ create an openai profile (adopt Codex)</div>
+          </div>
+          <div class="potcard" style="border-color:var(--steel-line);background:var(--steel-tint)">
+            <div class="h"><span class="glyph" style="color:var(--steel)">⬡</span>mastracode <span class="tag steel"><span class="d"></span>PACK-ONLY</span></div>
+            <div class="p">fixed model list → pick a pack of models, not a profile.</div>
+            <div class="step" style="color:var(--steel)">→ pick a pack once any key is present</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="foot">
+      Fresh state: every harness is installed and its compatibility is already known from its manifest — there is simply no profile to point at yet. The board never shows a silent empty list; it shows the <b>potential reach</b> of each harness and the concrete first step. Onboarding uses <code>auth_discover_credentials</code> then <code>auth_profile_create</code>.
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const body = document.body;
+
+  // ── state toggle (configured / fresh) ──
+  document.querySelectorAll(".sbtn").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll(".sbtn").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    body.classList.remove("state-fresh","state-configured");
+    body.classList.add("state-" + b.dataset.st);
+  }));
+
+  // ── select a profile → show its reach ──
+  function selectProfile(key){
+    body.classList.remove("p-anthropicmax","p-openrouterperso","p-openaicodex");
+    body.classList.add("p-" + key);
+    document.querySelectorAll(".pcard").forEach(p => p.classList.remove("sel"));
+    const card = document.querySelector(`.pcard[data-p="${key}"]`);
+    if (card) card.classList.add("sel");
+  }
+  document.querySelectorAll(".pcard .phead").forEach(h => h.addEventListener("click", e => {
+    if (e.target.closest(".wallet") || e.target.closest(".manage")) return;
+    selectProfile(h.closest(".pcard").dataset.p);
+  }));
+
+  // ── expand a profile's allowlist (its "home" editor) ──
+  document.querySelectorAll(".manage").forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    b.closest(".pcard").classList.toggle("open");
+    b.textContent = b.closest(".pcard").classList.contains("open") ? "Hide" : "Manage";
+  }));
+
+  // ── allow-all / allow-selected segments ──
+  document.querySelectorAll(".mode").forEach(seg => seg.querySelectorAll("button").forEach(b =>
+    b.addEventListener("click", () => { seg.querySelectorAll("button").forEach(x=>x.classList.remove("on")); b.classList.add("on"); })));
+
+  // ── approve / remove toggle on the allowlist ──
+  document.querySelectorAll(".mrow").forEach(row => {
+    const chk = row.querySelector(".chk"), btn = row.querySelector(".btn"), name = row.querySelector(".mname");
+    if(!chk||!btn) return;
+    function toggle(){
+      const on = chk.classList.toggle("yes");
+      chk.innerHTML = on ? "✓" : "&nbsp;";
+      name.classList.toggle("off", !on);
+      btn.textContent = on ? "Remove" : "Approve";
+      btn.classList.toggle("danger", on);
+    }
+    chk.addEventListener("click", toggle); btn.addEventListener("click", toggle);
+  });
+
+  // ── pack chooser (mastracode) ──
+  document.querySelectorAll("#mastrapacks .packchip").forEach(p => p.addEventListener("click", () => {
+    document.querySelectorAll("#mastrapacks .packchip").forEach(x=>x.classList.remove("on")); p.classList.add("on");
+  }));
+
+  // ── could-enable buttons: confirm, don't silently no-op ──
+  document.querySelectorAll(".ce-btn").forEach(b => b.addEventListener("click", () => {
+    b.textContent = b.dataset.done; b.classList.remove("go"); b.disabled = true;
+    b.style.opacity = ".7"; b.style.cursor = "default";
+  }));
+
+  // ── adopt buttons → jump to configured state on the adopted profile ──
+  const jump = (key) => { document.querySelector('.sbtn[data-st="configured"]').click(); selectProfile(key); };
+  const adoptCC = document.getElementById("adopt-cc");
+  if (adoptCC) adoptCC.addEventListener("click", () => jump("anthropicmax"));
+  const adoptCX = document.getElementById("adopt-cx");
+  if (adoptCX) adoptCX.addEventListener("click", () => jump("openaicodex"));
+  const pasteKey = document.getElementById("paste-key");
+  if (pasteKey) pasteKey.addEventListener("click", () => jump("openrouterperso"));
+</script>
+</body>
+</html>

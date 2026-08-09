@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Harnesses panel — button rework mock</title>
+<style>
+  :root {
+    --bg: #141415; --panel: #1b1b1c; --fg: #c8c8c6; --dim: #85857f; --faint: #5c5c58;
+    --border: #2e2e2f; --hover: #232324; --selected: #26262a;
+    --working: #7fa885; --awaiting: #c2a05c; --stalled: #bd6a5f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 -apple-system, "Segoe UI", sans-serif; }
+  .stage { display: flex; gap: 28px; padding: 28px; justify-content: center; flex-wrap: wrap; align-items: flex-start; }
+  .col { width: 360px; }
+  .col > h2 { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); margin: 0 0 2px; }
+  .col > p { font-size: 12px; color: var(--faint); margin: 0 0 10px; min-height: 48px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+
+  .row { display: grid; grid-template-columns: 10px 20px 1fr auto; column-gap: 8px; align-items: center; padding: 8px 12px; cursor: pointer; }
+  .row + .row { border-top: 1px solid #242425; }
+  .row:hover { background: var(--hover); }
+  .row:focus-visible { outline: 1px solid #6a86a8; outline-offset: -1px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; justify-self: center; }
+  .dot.ready { background: var(--working); }
+  .dot.available { background: transparent; border: 1px solid var(--faint); }
+  .logo { width: 16px; height: 16px; border-radius: 50%; background: rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: center; font-size: 10px; }
+  .mid { min-width: 0; }
+  .name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .desc { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+
+  /* BEFORE — current behavior reproduced */
+  .b-install { font-size: 10px; color: #8fc2ff; border: 1px solid rgba(143,194,255,0.35); padding: 1px 6px; border-radius: 3px; opacity: 0.55; cursor: pointer; }
+  .row:hover .b-install { opacity: 0.9; }
+  .b-check { font-size: 10.5px; color: var(--dim); }
+  .row:hover .b-check { display: none; }
+  .b-start { display: none; cursor: pointer; font-size: 11px; color: var(--dim); }
+  .row:hover .b-start { display: inline-block; }
+
+  /* AFTER — labeled buttons, stable layout, real states */
+  .act { font: 11px/-apple-system inherit; font-size: 11px; padding: 2.5px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; min-width: 62px; justify-content: center; }
+  .act:hover { color: var(--fg); border-color: var(--dim); background: #2a2a2c; }
+  .act:focus-visible { outline: 1px solid #6a86a8; outline-offset: 1px; }
+  .act.primary { color: var(--fg); }
+  .act[disabled] { cursor: default; opacity: 0.7; }
+  .act .tri { font-size: 8px; }
+  .spin { width: 10px; height: 10px; border: 1.5px solid var(--faint); border-top-color: var(--fg); border-radius: 50%; animation: rot 0.8s linear infinite; display: inline-block; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+  .flash { color: var(--working); font-size: 11px; }
+  .note { font-size: 11px; color: var(--faint); padding: 8px 12px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="col">
+    <h2>Before — shipped today</h2>
+    <p>Hover a ready row: the ✓ vanishes and a bare ▶ appears. Nothing is labeled, nothing is keyboard-reachable, Install gives no feedback after the click.</p>
+    <div class="panel">
+      <div class="row"><span class="dot ready"></span><span class="logo">✳</span>
+        <div class="mid"><div class="name">Claude Code</div><div class="desc">claude-code · ready · v2.1.4</div></div>
+        <span><span class="b-check">✓</span><span class="b-start" title="Start session with this harness">▶</span></span>
+      </div>
+      <div class="row"><span class="dot ready"></span><span class="logo">☿</span>
+        <div class="mid"><div class="name">Hermes</div><div class="desc">hermes · ready · v0.9.2</div></div>
+        <span><span class="b-check">✓</span><span class="b-start" title="Start session with this harness">▶</span></span>
+      </div>
+      <div class="row"><span class="dot available"></span><span class="logo">◈</span>
+        <div class="mid"><div class="name">Codex</div><div class="desc">codex · not installed</div></div>
+        <span class="b-install">Install</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>After — labeled, stable, stateful</h2>
+    <p>One labeled action per row, same slot, always the width it needs. Install actually walks: Install → Installing… → Start. Rows are focusable; Enter triggers the action.</p>
+    <div class="panel" id="after"></div>
+  </div>
+</div>
+
+<script>
+  const ADAPTERS = [
+    { slug: "claude-code", glyph: "✳", name: "Claude Code", desc: "claude-code · ready · v2.1.4", state: "ready" },
+    { slug: "hermes", glyph: "☿", name: "Hermes", desc: "hermes · ready · v0.9.2", state: "ready" },
+    { slug: "codex", glyph: "◈", name: "Codex", desc: "codex · not installed", state: "installable" },
+    { slug: "gemini-cli", glyph: "✦", name: "Gemini CLI", desc: "gemini-cli · not installed", state: "installable" },
+  ];
+  const el = document.getElementById("after");
+
+  function actionHTML(a) {
+    if (a.state === "ready")
+      return '<button class="act primary" data-act="start" title="Start a session with ' + a.name + '"><span class="tri">▶</span>Start</button>';
+    if (a.state === "installing")
+      return '<button class="act" disabled><span class="spin"></span>Installing…</button>';
+    if (a.state === "installed-now")
+      return '<button class="act primary" data-act="start"><span class="tri">▶</span>Start</button>';
+    return '<button class="act" data-act="install">Install</button>';
+  }
+  function render() {
+    el.innerHTML = ADAPTERS.map((a, i) =>
+      '<div class="row" tabindex="0" data-i="' + i + '">' +
+      '<span class="dot ' + (a.state === "ready" || a.state === "installed-now" ? "ready" : "available") + '"></span>' +
+      '<span class="logo">' + a.glyph + "</span>" +
+      '<div class="mid"><div class="name">' + a.name + "</div><div class=\"desc\">" + a.desc + "</div></div>" +
+      actionHTML(a) + "</div>"
+    ).join("") +
+    '<div class="note">Row click / Enter = the row’s action. The green dot already says “installed”, so the ✓ is gone.</div>';
+  }
+  function fire(i) {
+    const a = ADAPTERS[i];
+    if (a.state === "installable") {
+      a.state = "installing"; a.desc = a.slug + " · installing…"; render();
+      setTimeout(() => { a.state = "installed-now"; a.desc = a.slug + " · ready · just installed"; render(); }, 1400);
+    } else if (a.state !== "installing") {
+      a.desc = a.slug + " · session starting…"; render();
+      setTimeout(() => { a.desc = a.slug + " · ready"; render(); }, 1200);
+    }
+  }
+  el.addEventListener("click", e => { const r = e.target.closest(".row"); if (r) fire(+r.dataset.i); });
+  el.addEventListener("keydown", e => { if (e.key === "Enter") { const r = e.target.closest(".row"); if (r) fire(+r.dataset.i); } });
+  render();
+</script>
+</body>
+</html>

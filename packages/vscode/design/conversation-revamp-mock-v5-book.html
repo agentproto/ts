@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>agentproto — conversation v5: the book (a session you read, written live)</title>
+<style>
+  :root{
+    --bg:#141415; --panel:#1b1b1c; --panel-2:#202021; --fg:#c8c8c6; --dim:#85857f;
+    --faint:#5c5c58; --border:#2e2e2f; --hover:#232324;
+    --working:#7fa885; --awaiting:#c2a05c; --stalled:#bd6a5f;
+    --mono:ui-monospace,'SF Mono',Menlo,monospace;
+    --serif:Charter,'Iowan Old Style','Palatino Nova',Georgia,serif;
+    --ink-read:#d6d4cd;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,'Segoe UI',sans-serif;padding-bottom:150px}
+  .page{max-width:600px;margin:0 auto;padding:34px 28px 0}
+
+  /* ── title page ───────────────────────────────────────── */
+  .title h1{font:650 21px/1.3 var(--serif);color:var(--ink-read);letter-spacing:.002em}
+  .byline{font:10.5px var(--mono);color:var(--faint);margin-top:7px;display:flex;gap:11px}
+  .toplinks{margin-top:10px;display:flex;gap:14px;font:10.5px var(--mono)}
+  .toplinks a{color:var(--faint);text-decoration:none;cursor:pointer}
+  .toplinks a:hover{color:var(--dim)}
+  .title::after{content:"";display:block;width:44px;height:2px;background:var(--working);opacity:.55;margin:20px 0 4px;border-radius:1px}
+
+  /* ── the prose ────────────────────────────────────────── */
+  .chapter{margin-top:30px}
+  .chead{font:600 10px var(--mono);letter-spacing:.16em;color:var(--faint);display:flex;align-items:baseline;gap:10px}
+  .chead .t{margin-left:auto;font-weight:400}
+  .chapter h2{font:650 16.5px/1.35 var(--serif);color:var(--ink-read);margin-top:5px}
+  .chapter p{font:15px/1.75 var(--serif);color:var(--ink-read);margin-top:10px;
+    hanging-punctuation:first;}
+  .chapter p b{font-weight:650;color:#e8e6df}
+  .chapter p code{font:12.5px var(--mono);color:var(--fg);background:var(--panel-2);padding:1px 5px;border-radius:4px}
+  .details{font:10.5px var(--mono);color:var(--faint);margin-top:8px;cursor:pointer;display:inline-block}
+  .details:hover{color:var(--dim)}
+
+  /* opened detail (one shown as example) */
+  .pages{margin:10px 0 0 2px;border-left:1px solid var(--border);padding:2px 0 2px 16px;display:none}
+  .chapter.open .pages{display:block}
+  .pg{display:flex;gap:8px;align-items:baseline;padding:3px 0;font:11px var(--mono);color:var(--faint)}
+  .pg .tool{font-weight:600}
+  .pg .what{color:var(--dim);flex:1}
+  .pg.fail .what{color:var(--stalled)}
+
+  /* ── the pause (needs you) — an inset passage ─────────── */
+  .pause{margin-top:30px;padding:4px 0 4px 20px;border-left:2px solid var(--awaiting)}
+  .pause .phead{font:600 10px var(--mono);letter-spacing:.16em;color:var(--awaiting)}
+  .pause p{font:italic 15px/1.7 var(--serif);color:var(--ink-read);margin-top:7px}
+  .pacts{display:flex;gap:7px;margin-top:12px}
+  .pbtn{font:12px -apple-system,sans-serif;padding:4px 13px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer}
+  .pbtn:hover{color:var(--fg);border-color:var(--dim)}
+  .pbtn.yes{border-color:#3a4a3f;background:rgba(127,168,133,.12);color:var(--working);font-weight:600}
+  .pbtn.yes:hover{background:rgba(127,168,133,.22)}
+
+  /* ── the live sentence — being written now ────────────── */
+  .writing{margin-top:30px}
+  .writing p{font:15px/1.75 var(--serif);color:var(--ink-read)}
+  .cursor{display:inline-block;width:9px;height:17px;border-radius:2px;background:var(--working);
+    vertical-align:-2.5px;margin-left:3px;animation:blink 1.1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  @media (prefers-reduced-motion:reduce){.cursor{animation:none}}
+  .writing .under{font:10.5px var(--mono);color:var(--faint);margin-top:9px}
+  .writing .under b{color:var(--dim);font-weight:500}
+
+  /* ── planned — the unwritten chapter ──────────────────── */
+  .unwritten{margin-top:28px;color:var(--faint)}
+  .unwritten .chead{color:var(--faint)}
+  .unwritten h2{font:italic 400 15px var(--serif);color:var(--faint);margin-top:4px}
+
+  /* ── dock ─────────────────────────────────────────────── */
+  .dock{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(transparent,var(--bg) 26%);padding:24px 20px 14px}
+  .dock .inner{max-width:600px;margin:0 auto}
+  .composer{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:9px 11px}
+  .cinput{color:var(--faint);font-size:12.5px;min-height:30px}
+  .cbar{display:flex;gap:6px;margin-top:7px;align-items:center}
+  .chip{font-size:10.5px;padding:2px 9px;border-radius:10px;border:1px solid var(--border);color:var(--dim);background:transparent}
+  .grow{flex:1}
+  .send{font-size:11.5px;padding:3px 12px;border-radius:4px;border:1px solid #3a4a3f;background:rgba(127,168,133,.12);color:var(--working);cursor:pointer;font-weight:600}
+  .stopb{font-size:11.5px;padding:3px 10px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer}
+  .stopb:hover{color:var(--stalled);border-color:var(--stalled)}
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <div class="title">
+    <h1>Fixing mastracode's broken MCP config</h1>
+    <div class="byline"><span>written by claude-opus-4-8</span><span>$1.82</span><span>12 min</span><span>chapter 4 of 5</span></div>
+    <div class="toplinks"><a>⌘ full transcript</a><a>⌥ map view</a></div>
+  </div>
+
+  <div class="chapter">
+    <div class="chead">CH·1 — IS THE API KEY ACTUALLY MISSING? <span class="t">18s</span></div>
+    <h2>The shell was lying</h2>
+    <p>The first suspect was a missing API key — but the key was there all along. The agent's own shell simply couldn't see it: sourced interactively, <code>ANTHROPIC_API_KEY</code> appeared immediately. One dead end later, the fix was procedural — run everything through <code>zsh&nbsp;-ic</code> so mastracode gets the real environment.</p>
+    <span class="details">▸ 4 steps · 1 dead end · 18s</span>
+  </div>
+
+  <div class="chapter open">
+    <div class="chead">CH·2 — FIND WHERE MCP SERVERS ARE DECLARED <span class="t">1m 04s</span></div>
+    <h2>Four files claim authority</h2>
+    <p>Where does mastracode actually read its MCP servers from? Not where the docs imply. The trail led from <code>settings.json</code> (nothing) through a failed <code>--print-config</code> flag, into the sqlite state itself — where two tables, <b>mastra_mcp_clients</b> and <b>mastra_mcp_servers</b>, finally told the truth. Four config files can claim authority; the global <code>~/.mastracode/mcp.json</code> wins.</p>
+    <span class="details" onclick="this.parentElement.classList.toggle('open')">▾ 9 steps · 1 recovered · 1m 04s</span>
+    <div class="pages">
+      <div class="pg"><span class="tool">bash</span><span class="what">locate config dirs — ~/.mastracode/ settings.json state.db</span><span>2s</span></div>
+      <div class="pg"><span class="tool">read</span><span class="what">settings.json — no mcp key present</span><span>1s</span></div>
+      <div class="pg fail"><span class="tool">bash</span><span class="what">mastracode --print-config → exit 1, unknown flag</span><span>4s</span></div>
+      <div class="pg"><span class="tool">sqlite</span><span class="what">.tables → mastra_mcp_clients, mastra_mcp_servers</span><span>1s</span></div>
+      <div class="pg"><span class="tool">sqlite</span><span class="what">select * from mastra_mcp_servers → 3 unreachable</span><span>1s</span></div>
+    </div>
+  </div>
+
+  <div class="chapter">
+    <div class="chead">CH·3 — INSPECT THE DECLARED SERVERS <span class="t">24s</span></div>
+    <h2>Three dead servers, squatting</h2>
+    <p>Inside the winning file: three MCP servers — <b>design-team</b>, <b>katchy</b>, <b>intel</b> — declared long ago, unreachable on every boot, each one throwing errors before any model gets to speak. This is bug 2's whole anatomy: the noise wasn't the model, it was the dead weight around it.</p>
+    <span class="details">▸ 2 steps · 24s</span>
+  </div>
+
+  <div class="pause">
+    <div class="phead">THE AGENT PAUSED TO ASK</div>
+    <p>May I remove the three dead server entries from the global mcp.json? They fail on every boot, and nothing references them.</p>
+    <div class="pacts"><button class="pbtn yes">Yes, remove them</button><button class="pbtn">Show me the file</button><button class="pbtn">Keep them</button></div>
+  </div>
+
+  <div class="chapter writing">
+    <div class="chead">CH·4 — FIX THE CONFIG, PROVE THE BOOT <span class="t">writing…</span></div>
+    <h2>Surgery, then proof</h2>
+    <p>With the dead entries staged for removal, the boot check is queued: a clean start, no MCP errors, and an anthropic-direct model producing real output<span class="cursor"></span></p>
+    <div class="under">now: <b>zsh -ic "mastracode run --model anthropic/claude-sonnet-5"</b> · step 3/6 · 50s</div>
+  </div>
+
+  <div class="unwritten">
+    <div class="chead">CH·5 — VERIFY: CLEAN BOOT, REAL OUTPUT, NO MCP ERRORS</div>
+    <h2>to be written</h2>
+  </div>
+
+</div>
+
+<div class="dock"><div class="inner">
+  <div class="composer">
+    <div class="cinput">Write back — or answer the pause above…</div>
+    <div class="cbar">
+      <span class="chip">✳ claude-code</span>
+      <span class="chip">model · claude-opus-4-8</span>
+      <span class="grow"></span>
+      <button class="stopb">■ Stop</button>
+      <button class="send">Send ⏎</button>
+    </div>
+  </div>
+</div></div>
+
+</body>
+</html>

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>agentproto vscode — unified design language (auth / composer / settings / lab)</title>
+<style>
+  :root {
+    --bg: #141415; --panel: #1b1b1c; --panel-2: #202021; --fg: #c8c8c6; --dim: #85857f;
+    --faint: #5c5c58; --border: #2e2e2f; --hover: #232324; --selected: #26262a;
+    --working: #7fa885; --awaiting: #c2a05c; --stalled: #bd6a5f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 -apple-system, "Segoe UI", sans-serif; padding: 28px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .intro { color: var(--dim); font-size: 12px; max-width: 760px; margin-bottom: 6px; }
+  .rules { color: var(--faint); font-size: 11.5px; max-width: 760px; margin-bottom: 24px; }
+  .rules b { color: var(--dim); font-weight: 600; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--dim); margin: 30px 0 8px; }
+  .pair { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+  .half { width: 380px; }
+  .half .cap { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--faint); margin: 6px 0 6px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+
+  .row { display: flex; gap: 9px; padding: 8px 12px; align-items: center; position: relative; }
+  .row + .row { border-top: 1px solid #242425; }
+  .row.focusable { cursor: pointer; }
+  .row.focusable:hover { background: var(--hover); }
+  .row.focusable:focus-visible { outline: 1px solid #6a86a8; outline-offset: -1px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .logo { width: 16px; height: 16px; border-radius: 50%; background: rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: center; font-size: 9px; flex: 0 0 auto; }
+  .mid { flex: 1; min-width: 0; }
+  .name { font-size: 12.5px; font-weight: 600; }
+  .desc { font-size: 11px; color: var(--dim); }
+  .acts { display: flex; gap: 4px; opacity: 0; transition: opacity 0.12s; }
+  .row:hover .acts, .row:focus-within .acts { opacity: 1; }
+  .abtn { font-size: 11px; padding: 2px 9px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--dim); cursor: pointer; }
+  .abtn:hover { color: var(--fg); border-color: var(--dim); background: #2a2a2c; }
+  .abtn.danger:hover { color: var(--stalled); border-color: var(--stalled); }
+  .abtn:focus-visible { outline: 1px solid #6a86a8; outline-offset: 1px; }
+
+  /* BEFORE reproductions */
+  .b-glyphacts { display: none; gap: 8px; font-size: 12px; }
+  .row:hover .b-glyphacts { display: flex; }
+  .b-glyphacts span { cursor: pointer; }
+  .shiny-ready { background: #2ea043; } .shiny-avail { background: #cca700; }
+  .muted-ready { background: var(--working); } .muted-avail { border: 1px solid var(--faint); background: transparent; }
+  .errband { padding: 7px 12px; font-size: 11.5px; color: var(--awaiting); background: rgba(194,160,92,0.07); border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .errband button { margin-left: auto; }
+
+  /* composer */
+  .composer { padding: 10px 12px; }
+  .cinput { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; color: var(--faint); font-size: 12.5px; min-height: 40px; }
+  .cbar { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+  .chip { font-size: 11px; padding: 2px 9px; border-radius: 10px; border: 1px solid var(--border); color: var(--dim); background: transparent; cursor: pointer; }
+  .chip:hover { color: var(--fg); border-color: var(--dim); }
+  .chip .lbl { color: var(--faint); margin-right: 4px; }
+  .grow { flex: 1; }
+  .send { font-size: 11.5px; padding: 3px 12px; border-radius: 4px; border: 1px solid #3a4a3f; background: rgba(127,168,133,0.12); color: var(--working); cursor: pointer; font-weight: 600; }
+  .send:hover { background: rgba(127,168,133,0.22); }
+  .stopb { font-size: 11.5px; padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+  .stopb:hover { color: var(--stalled); border-color: var(--stalled); }
+  .stopb svg { width: 12px; height: 12px; }
+  .gsend, .gstop { font-size: 13px; padding: 2px 8px; cursor: pointer; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; background: transparent; }
+
+  /* badges / pills */
+  .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 9px; border: 1px solid transparent; }
+  .badge.ok-shiny { color: #3fb950; border-color: rgba(63,185,80,0.4); }
+  .badge.warn-shiny { color: #d29922; border-color: rgba(210,153,34,0.4); }
+  .badge.ok { color: var(--working); border-color: #3a4a3f; }
+  .badge.warn { color: var(--awaiting); border-color: #4d4230; }
+  .badge.off { color: var(--faint); border-color: var(--border); }
+  .pillrow { display: flex; gap: 6px; padding: 8px 12px; flex-wrap: wrap; align-items: center; }
+  .mpill { font-size: 11px; padding: 2px 9px; border-radius: 10px; border: 1px solid var(--border); color: var(--dim); display: inline-flex; gap: 5px; align-items: center; }
+  .mpill .d { width: 6px; height: 6px; border-radius: 50%; }
+  .mpill button { border: none; background: none; color: var(--faint); cursor: pointer; font-size: 12px; padding: 0 0 0 2px; }
+  .mpill button:hover { color: var(--stalled); }
+
+  /* config lab issues */
+  .issue { display: flex; gap: 8px; padding: 6px 12px; font-size: 12px; align-items: baseline; }
+  .itag { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; padding: 0.5px 6px; border-radius: 3px; flex: 0 0 auto; }
+  .itag.err { color: var(--stalled); background: rgba(189,106,95,0.12); }
+  .itag.warn { color: var(--awaiting); background: rgba(194,160,92,0.12); }
+  .itag.info { color: #7d95ad; background: rgba(125,149,173,0.12); }
+  .note { color: var(--faint); font-size: 11px; max-width: 760px; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h1>agentproto vscode — one design language for every surface</h1>
+  <div class="intro">Applying the sessions/harnesses language to the four surfaces with the worst UX debt. Left = current behavior reproduced; right = proposed. Everything on the right is hoverable/clickable/focusable here.</div>
+  <div class="rules"><b>The five rules:</b> 1 · every action is a labeled <code>&lt;button&gt;</code>, never a bare glyph span — hover may reveal, focus always reveals. 2 · dots encode state; they are never controls. 3 · status colors are the muted trio (moss / ochre / clay) via theme vars — no raw #2ea043. 4 · a failure renders a state, never a silent empty. 5 · destructive hover = clay, primary = moss tint.</div>
+
+  <h2>1 · Auth profiles webview — rows &amp; actions</h2>
+  <div class="pair">
+    <div class="half">
+      <div class="cap">BEFORE — hover-only glyphs + ⊘ 🗑 on non-focusable divs, shiny dots, silent failure</div>
+      <div class="panel">
+        <div class="row"><span class="dot shiny-ready"></span><span class="logo">AN</span>
+          <div class="mid"><div class="name">anthropic · max</div><div class="desc">claude-fable-5 · claude-opus-4-8 · +3</div></div>
+          <span class="b-glyphacts"><span title="Set models">+</span><span title="Disable">⊘</span><span title="Delete">🗑</span></span>
+        </div>
+        <div class="row"><span class="dot shiny-avail"></span><span class="logo">OR</span>
+          <div class="mid"><div class="name">openrouter · hermes</div><div class="desc">deepseek-v4 · glm-5.2</div></div>
+          <span class="b-glyphacts"><span>+</span><span>⊘</span><span>🗑</span></span>
+        </div>
+      </div>
+    </div>
+    <div class="half">
+      <div class="cap">AFTER — focusable rows, labeled buttons (visible on hover AND focus), muted dots, real error band</div>
+      <div class="panel">
+        <div class="row focusable" tabindex="0"><span class="dot muted-ready"></span><span class="logo">AN</span>
+          <div class="mid"><div class="name">anthropic · max</div><div class="desc">claude-fable-5 · claude-opus-4-8 · +3</div></div>
+          <span class="acts"><button class="abtn">Models</button><button class="abtn">Disable</button><button class="abtn danger">Delete</button></span>
+        </div>
+        <div class="row focusable" tabindex="0"><span class="dot muted-avail"></span><span class="logo">OR</span>
+          <div class="mid"><div class="name">openrouter · hermes</div><div class="desc">deepseek-v4 · glm-5.2</div></div>
+          <span class="acts"><button class="abtn">Models</button><button class="abtn">Enable</button><button class="abtn danger">Delete</button></span>
+        </div>
+        <div class="errband">⚠ Couldn’t reach the daemon — profiles may be stale. <button class="abtn">Retry</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="note">Tab onto a row: the actions appear without the mouse (focus-within), which the current webview can’t do at all.</div>
+
+  <h2>2 · Transcript composer — send / stop</h2>
+  <div class="pair">
+    <div class="half">
+      <div class="cap">BEFORE — primary actions are bare glyphs ↵ and ■ (title-only)</div>
+      <div class="panel"><div class="composer">
+        <div class="cinput">Reply to the agent… (paste, drop, or @-mention a file)</div>
+        <div class="cbar">
+          <span class="chip">✳ claude-code</span><span class="chip">claude-fable-5</span><span class="chip">default</span>
+          <span class="grow"></span>
+          <button class="gsend" title="Send (Enter)">↵</button>
+          <button class="gstop" title="Stop the current turn">■</button>
+        </div>
+      </div></div>
+    </div>
+    <div class="half">
+      <div class="cap">AFTER — labeled primary (moss tint) + labeled stop (clay on hover); chips get quiet role labels</div>
+      <div class="panel"><div class="composer">
+        <div class="cinput">Reply to the agent… (paste, drop, or @-mention a file)</div>
+        <div class="cbar">
+          <span class="chip">✳ claude-code</span>
+          <button class="chip" title="Switch model"><span class="lbl">model</span>claude-fable-5</button>
+          <button class="chip" title="Switch access profile"><span class="lbl">auth</span>max</button>
+          <span class="grow"></span>
+          <button class="stopb" title="Stop the current turn"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.4" y="5.4" width="5.2" height="5.2" rx="1" fill="currentColor"/></svg>Stop</button>
+          <button class="send" title="Send (Enter)">Send ⏎</button>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="note">Same stop-circle icon as the sessions rows — one stop symbol across the whole extension. Context-gauge colors also move from #4caf50/#d7a600/#e51400 to the muted trio.</div>
+
+  <h2>3 · Auth settings panel — badges &amp; model pills</h2>
+  <div class="pair">
+    <div class="half">
+      <div class="cap">BEFORE — shiny #3fb950/#d29922 badges, ●/○ glyph pills, 🔑 emoji</div>
+      <div class="panel"><div class="pillrow">
+        <span class="badge ok-shiny">connected</span><span class="badge warn-shiny">enabled</span>
+        <span class="mpill">● claude-fable-5<button title="Remove">×</button></span>
+        <span class="mpill">○ kimi-k2.7 (unavailable)</span>
+        <span>🔑 sk-ant-…4f2a</span>
+      </div></div>
+    </div>
+    <div class="half">
+      <div class="cap">AFTER — same info, muted trio + dot-in-pill, mono key chip, labeled remove target</div>
+      <div class="panel"><div class="pillrow">
+        <span class="badge ok">connected</span><span class="badge ok">enabled</span><span class="badge off">disabled</span>
+        <span class="mpill"><span class="d" style="background:var(--working)"></span>claude-fable-5<button title="Remove claude-fable-5" aria-label="Remove claude-fable-5">×</button></span>
+        <span class="mpill"><span class="d" style="border:1px solid var(--faint)"></span>kimi-k2.7 <span style="color:var(--faint)">unavailable</span></span>
+        <span class="mpill" style="font-family:ui-monospace,Menlo,monospace">key ····4f2a</span>
+      </div></div>
+    </div>
+  </div>
+
+  <h2>4 · Configuration lab — validation issues</h2>
+  <div class="pair">
+    <div class="half">
+      <div class="cap">BEFORE — bare severity glyphs ✕ ⚠ ℹ, ★ curated marker</div>
+      <div class="panel">
+        <div class="issue"><span>✕</span><span>Model “glm-5.2” is not available on profile “anthropic-max”.</span></div>
+        <div class="issue"><span>⚠</span><span>Posture “yolo” bypasses permission prompts.</span></div>
+        <div class="issue"><span>ℹ</span><span>Route “cheap-executor ★” pins effort to low.</span></div>
+      </div>
+    </div>
+    <div class="half">
+      <div class="cap">AFTER — typed severity tags, curated as a word</div>
+      <div class="panel">
+        <div class="issue"><span class="itag err">error</span><span>Model “glm-5.2” is not available on profile “anthropic-max”.</span></div>
+        <div class="issue"><span class="itag warn">warn</span><span>Posture “yolo” bypasses permission prompts.</span></div>
+        <div class="issue"><span class="itag info">info</span><span>Route “cheap-executor” <span class="badge off">curated</span> pins effort to low.</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="note">Not shown: the Story panel inherits its HTML from @agentproto/runtime (restyling means touching that package), and the Permissions tree + status bar are already clean (codicons, labeled counts). Suggested implementation order: 1 auth-profiles webview → 2 composer → 3 auth settings → 4 config lab — each a small standalone PR.</div>
+</body>
+</html>
