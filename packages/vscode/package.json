@@ -101,7 +101,7 @@
         },
         {
           "id": "agentproto.authProfilesWebview",
-          "name": "Auth Profiles",
+          "name": "Wallets",
           "type": "webview",
           "when": "config.agentproto.authProfilesView == 'webview'"
         }
@@ -871,7 +871,7 @@
           ],
           "enumDescriptions": [
             "The classic TreeView auth profiles panel.",
-            "The newer Auth Profiles webview panel — collapsible sections, provider logos, expandable model profiles."
+            "The newer Wallets webview panel — wallets grouped by provider, access-kind chips, provider logos."
           ],
           "default": "tree",
           "description": "Which Auth Profiles panel to show in the sidebar."

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import type { AdapterInfo } from "../client/types.js"
+import type { AdapterInfo, AuthProfileSummary, HarnessCapabilities } from "../client/types.js"
+import { reach } from "./authModelMindmap.logic.js"
 import {
   buildHarnessesWebviewModel,
   harnessStatusFor,
@@ -17,6 +18,29 @@ function adapter(over: Partial<AdapterInfo> = {}): AdapterInfo {
     hint: "anthropic · ACP · resumable",
     ...over,
   }
+}
+
+function profile(over: Partial<AuthProfileSummary>): AuthProfileSummary {
+  return { id: "p", endpoint: "anthropic", method: "api-key", ...over }
+}
+
+const claudeCodeAdapter: AdapterInfo = {
+  slug: "claude-code",
+  name: "Claude Code",
+  status: "ready",
+  routeSelection: "free",
+  modelDetails: [
+    { id: "claude-opus-4-8", provider: "anthropic" },
+    { id: "kimi-k3", provider: "moonshot" },
+  ],
+}
+const claudeCodeCap: HarnessCapabilities = {
+  adapter: "claude-code",
+  endpointCompat: { anthropic: { via: "env", key: "ANTHROPIC_BASE_URL" } },
+  providers: [
+    { id: "anthropic", billingEndpoint: "anthropic", apiMode: "anthropic" },
+    { id: "moonshot", billingEndpoint: "moonshot", apiMode: "anthropic" },
+  ],
 }
 
 describe("harnessStatusFor", () => {
@@ -121,5 +145,58 @@ describe("buildHarnessesWebviewModel", () => {
       new Set(["codex"]),
     )
     expect(model.rows[0]?.action).toBe("start")
+  })
+})
+
+describe("buildHarnessesWebviewModel — manifest facts + reach strip", () => {
+  const anthropicSub = profile({ id: "sub", endpoint: "anthropic", method: "oauth-bearer", source: "claude-code-oauth" })
+  const moonshotKey = profile({ id: "key", endpoint: "moonshot", method: "api-key" })
+
+  it("carries manifest facts straight from the mind map's HarnessView", () => {
+    const model = buildHarnessesWebviewModel(
+      [claudeCodeAdapter],
+      "",
+      new Set(),
+      [claudeCodeCap],
+      [anthropicSub, moonshotKey],
+      null,
+    )
+    const row = model.rows[0]!
+    expect(row.manifest).toEqual({ speaks: "Anthropic", route: "free", acceptsBaseUrl: true })
+  })
+
+  it("matches reach() exactly for every provider in the strip — single source of truth", () => {
+    const model = buildHarnessesWebviewModel(
+      [claudeCodeAdapter],
+      "",
+      new Set(),
+      [claudeCodeCap],
+      [anthropicSub, moonshotKey],
+      null,
+    )
+    const row = model.rows[0]!
+    expect(row.reach.length).toBeGreaterThan(0)
+    for (const entry of row.reach) {
+      expect(entry.state).toBe(reach(claudeCodeAdapter, claudeCodeCap, entry.endpoint))
+    }
+    // anthropic is native, moonshot only reachable via the local router.
+    expect(row.reach.find(e => e.endpoint === "anthropic")?.state).toBe("native")
+    expect(row.reach.find(e => e.endpoint === "moonshot")?.state).toBe("via-router")
+  })
+
+  it("falls back to fixed/derived manifest facts and an empty reach strip when the daemon reports no capabilities", () => {
+    const model = buildHarnessesWebviewModel([adapter({ slug: "unknown-harness" })], "", new Set(), [], [], null)
+    const row = model.rows[0]!
+    expect(row.manifest).toEqual({ speaks: "derived", route: "fixed", acceptsBaseUrl: false })
+    expect(row.reach).toEqual([])
+    expect(row.hiddenReachCount).toBe(0)
+  })
+
+  it("defaults capabilities/profiles/router so existing two-arg callers keep working", () => {
+    const model = buildHarnessesWebviewModel([claudeCodeAdapter], "")
+    // No profiles ⇒ buildProviders() has no provider columns ⇒ nothing to
+    // reach, even though the adapter itself still resolves manifest facts.
+    expect(model.rows[0]?.manifest).toEqual({ speaks: "Anthropic", route: "free", acceptsBaseUrl: true })
+    expect(model.rows[0]?.reach).toEqual([])
   })
 })

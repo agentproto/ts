@@ -75,6 +75,9 @@ const START_ROW = {
   installable: false,
   action: "start",
   logo: { kind: "lettermark", text: "C" },
+  manifest: { speaks: "Anthropic", route: "free", acceptsBaseUrl: true },
+  reach: [{ endpoint: "anthropic", state: "native" }, { endpoint: "moonshot", state: "via-router" }],
+  hiddenReachCount: 0,
 }
 
 const INSTALL_ROW = {
@@ -85,6 +88,9 @@ const INSTALL_ROW = {
   installable: true,
   action: "install",
   logo: { kind: "lettermark", text: "X" },
+  manifest: { speaks: "OpenAI", route: "fixed", acceptsBaseUrl: false },
+  reach: [{ endpoint: "openai", state: "native" }],
+  hiddenReachCount: 2,
 }
 
 const INSTALLING_ROW = {
@@ -143,7 +149,7 @@ describe("harnesses webview — render", () => {
     const panel = renderPanel()
     send(panel, modelMessage([INSTALLING_ROW]))
     const row = el(panel, "list").querySelector(".row")!
-    const btn = htmlEl(row.querySelector("button"))
+    const btn = htmlEl(row.querySelector("button.act"))
     expect((btn as unknown as HTMLButtonElement).disabled).toBe(true)
     expect(btn.textContent).toContain("Installing")
     expect(row.querySelector(".spin")).toBeTruthy()
@@ -154,6 +160,38 @@ describe("harnesses webview — render", () => {
     send(panel, modelMessage([START_ROW, INSTALL_ROW, INSTALLING_ROW]))
     const buttons = [...el(panel, "list").querySelectorAll("button.act")]
     expect(buttons).toHaveLength(3)
+  })
+
+  it("renders the manifest facts line", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([START_ROW]))
+    const manifest = el(panel, "list").querySelector(".manifest")!
+    expect(manifest.textContent).toContain("speaks Anthropic")
+    expect(manifest.textContent).toContain("route free")
+    expect(manifest.textContent).toContain("accepts custom base_url")
+  })
+
+  it("renders a reach chip per reachable provider plus a folded '+N' chip", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([START_ROW]))
+    const chips = [...el(panel, "list").querySelectorAll(".rchip")]
+    expect(chips.map(c => htmlEl(c).textContent)).toEqual(["anthropic", "moonshot"])
+    expect(htmlEl(chips[0]!).className).toContain("native")
+    expect(htmlEl(chips[1]!).className).toContain("via-router")
+  })
+
+  it("renders a folded '+N' chip when hiddenReachCount is set", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([INSTALL_ROW]))
+    const more = el(panel, "list").querySelector(".rchip.more")!
+    expect(more.textContent).toBe("+2")
+  })
+
+  it("gives every row an 'open in map' icon button", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([START_ROW, INSTALL_ROW]))
+    const mapBtns = [...el(panel, "list").querySelectorAll(".mapbtn")]
+    expect(mapBtns).toHaveLength(2)
   })
 })
 
@@ -204,5 +242,13 @@ describe("harnesses webview — interactions", () => {
     panel.posted.length = 0
     keydown(panel, el(panel, "list").querySelector(".row")!, "a")
     expect(panel.posted).toEqual([])
+  })
+
+  it("clicking the map button posts openMap instead of install/spawn", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([INSTALL_ROW]))
+    panel.posted.length = 0
+    click(panel, el(panel, "list").querySelector(".mapbtn")!)
+    expect(panel.posted).toEqual([{ type: "openMap" }])
   })
 })

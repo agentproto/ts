@@ -62,3 +62,51 @@ describe("session watchers counter", () => {
     reg.shutdown()
   })
 })
+
+describe("childrenBusy — subtree rollup", () => {
+  function spawn(reg: ReturnType<typeof createSessionsRegistry>, over: { parentSessionId?: string } = {}) {
+    return reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+      ...over,
+    })
+  }
+
+  it("counts busy descendants up the lineage (parent + grandparent), self excluded", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const root = spawn(reg)
+    const mid = spawn(reg, { parentSessionId: root.id })
+    const leaf = spawn(reg, { parentSessionId: mid.id })
+
+    // Nobody mid-turn yet.
+    expect(reg.get(root.id)?.childrenBusy).toBe(0)
+
+    // The leaf starts a turn — busy is mirrored onto its descriptor.
+    leaf.busy = true
+
+    // Both ancestors are now "delegating"; the busy leaf itself counts none.
+    expect(reg.get(root.id)?.childrenBusy).toBe(1)
+    expect(reg.get(mid.id)?.childrenBusy).toBe(1)
+    expect(reg.get(leaf.id)?.childrenBusy).toBe(0)
+
+    // Surfaces through list() too.
+    const rows = reg.list()
+    expect(rows.find(r => r.id === root.id)?.childrenBusy).toBe(1)
+
+    reg.shutdown()
+  })
+
+  it("ignores a stale busy flag on a terminal (killed) descendant", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const root = spawn(reg)
+    const child = spawn(reg, { parentSessionId: root.id })
+    child.busy = true
+    child.status = "killed" // busy is stale — the turn's finally never ran
+
+    expect(reg.get(root.id)?.childrenBusy).toBe(0)
+
+    reg.shutdown()
+  })
+})

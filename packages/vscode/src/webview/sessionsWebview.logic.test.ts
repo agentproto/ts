@@ -189,6 +189,19 @@ describe("webviewRowStatus", () => {
     const stalled = session({ busy: true, lastActivityAt: "2026-01-01T23:00:00Z" })
     expect(webviewRowStatus(stalled, NOW)).toBe("stalled")
   })
+
+  it("refines an idle session with a busy subtree into 'delegating' (#session-visibility)", () => {
+    expect(webviewRowStatus(session({ busy: false, childrenBusy: 2 }))).toBe("delegating")
+    // Only refines idle — a working session stays working, awaiting stays awaiting.
+    expect(webviewRowStatus(session({ busy: true, childrenBusy: 2 }))).toBe("working")
+    expect(webviewRowStatus(session({ awaitingInput: true, childrenBusy: 2 }))).toBe("awaiting")
+  })
+
+  it("refines an idle, supervised session into 'parked'; delegating outranks parked", () => {
+    expect(webviewRowStatus(session({ busy: false, watchers: 1 }))).toBe("parked")
+    // A busy subtree wins over a mere waiter.
+    expect(webviewRowStatus(session({ busy: false, childrenBusy: 1, watchers: 1 }))).toBe("delegating")
+  })
 })
 
 describe("rowActionFor", () => {

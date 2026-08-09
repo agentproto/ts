@@ -157,7 +157,9 @@ export function previewTextFor(session: Pick<SessionSummary, "activitySummary">)
  */
 export type WebviewRowStatus =
   | "working"
+  | "delegating" // idle itself, but its subtree is mid-turn (#session-visibility)
   | "awaiting"
+  | "parked" // idle + a supervisor is waiting on it — will be re-prompted
   | "idle"
   | "stalled"
   | "failed"
@@ -174,8 +176,43 @@ const ACTIVITY_TO_ROW_STATUS: Readonly<Record<SessionActivity, WebviewRowStatus>
   done: "done",
 }
 
+/**
+ * Busiest-first rank for the visibility states (#session-visibility), used to
+ * roll a collapsed parent up to the busiest state in its subtree and to sort
+ * within a section. Precedence: working > delegating > awaiting > stalled >
+ * parked > idle > terminal.
+ */
+export const ROW_STATUS_RANK: Readonly<Record<WebviewRowStatus, number>> = {
+  working: 8,
+  delegating: 7,
+  awaiting: 6,
+  stalled: 5,
+  parked: 4,
+  idle: 3,
+  failed: 2,
+  stopped: 1,
+  done: 0,
+}
+
+/** The busier of two row states (ties keep the first) — the subtree-rollup op. */
+export function busierRowStatus(a: WebviewRowStatus, b: WebviewRowStatus): WebviewRowStatus {
+  return ROW_STATUS_RANK[b] > ROW_STATUS_RANK[a] ? b : a
+}
+
+/**
+ * The row's presented status. Starts from the shared `activityFor`, then
+ * refines a genuinely-idle (alive, quiet, not-awaiting) session into
+ * "delegating" (its subtree is mid-turn) or "parked" (a supervisor is waiting
+ * on it). These refine ONLY `idle` — never override working/awaiting/terminal —
+ * so the precedence busy > delegating > awaiting > parked > quiet holds.
+ */
 export function webviewRowStatus(session: SessionSummary, now?: number): WebviewRowStatus {
-  return ACTIVITY_TO_ROW_STATUS[activityFor(session, now)]
+  const base = ACTIVITY_TO_ROW_STATUS[activityFor(session, now)]
+  if (base === "idle") {
+    if ((session.childrenBusy ?? 0) > 0) return "delegating"
+    if ((session.watchers ?? 0) > 0) return "parked"
+  }
+  return base
 }
 
 /** Per-row lifecycle action exposed by the webview. */
@@ -405,6 +442,9 @@ export interface WebviewRow {
    *  real "is anything watching it" signal (wait long-polls / session_monitor).
    *  Drives the eye badge when > 0. */
   watcherCount: number
+  /** Descendant sessions currently mid-turn (#session-visibility) — drives the
+   *  "⟳ N children" delegating badge. */
+  childrenBusy: number
   /** Source channel that spawned this session (cowork / vscode / cron / codex),
    *  for the origin chip. Undefined ⇒ unknown/unstamped root. */
   originLabel: string | undefined
@@ -456,8 +496,13 @@ const SECTION_HINTS: Readonly<Partial<Record<SectionKey, string>>> = {
 const SECTION_BY_STATUS: Readonly<Record<WebviewRowStatus, SectionKey>> = {
   awaiting: "needs-you",
   working: "running",
+  // A delegating parent is actively working (through its subtree), so it sorts
+  // with the live sessions rather than sinking into Quiet.
+  delegating: "running",
   stalled: "attention",
   failed: "attention",
+  // Parked = quiet but supervised; stays in Quiet, distinguished by its tell.
+  parked: "quiet",
   idle: "quiet",
   stopped: "earlier",
   done: "earlier",
@@ -575,6 +620,7 @@ function toRow(
     approved: gateApproved(session),
     watched: session.keepAlive === true,
     watcherCount: session.watchers ?? 0,
+    childrenBusy: session.childrenBusy ?? 0,
     originLabel: session.origin,
     stallTooltip: stallTooltipFor(session, now),
     depth: 0,

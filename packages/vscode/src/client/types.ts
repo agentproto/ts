@@ -179,6 +179,11 @@ export interface SessionDescriptor {
    *  of supervisors blocked waiting on this session (#session-visibility).
    *  Ephemeral, stamped at read time; 0/absent ⇒ nothing is watching. */
   watchers?: number
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.childrenBusy — how many
+   *  descendant sessions are currently mid-turn (subtree rollup,
+   *  #session-visibility). Drives the "delegating" row state for an idle parent
+   *  waiting on its busy subtree. Ephemeral, stamped at read time. */
+  childrenBusy?: number
   /** Mirrors `@agentproto/runtime` SessionDescriptor.lastError — a short
    *  human-readable string for the most recent automatic failure (currently
    *  only stamped by the crash-detect sweep). */
@@ -364,6 +369,9 @@ export interface SessionSummary {
    *  blocked on this session right now. Ephemeral, stamped at read time by the
    *  daemon; 0/absent ⇒ nothing is watching. */
   watchers?: number
+  /** Busy-descendant count (#session-visibility, subtree rollup) — drives the
+   *  "delegating" state for an idle parent waiting on its busy subtree. */
+  childrenBusy?: number
   label?: string
   title?: string
   renamedByUser?: boolean
