@@ -15,7 +15,8 @@
 
 import { randomBytes } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { homedir } from "node:os"
+import { isAbsolute, join } from "node:path"
 
 import * as vscode from "vscode"
 
@@ -324,7 +325,96 @@ export async function handleWebviewMessage(
       // re-derivation, same read-only editor tab as a tool value.
       await outputDocs.show(msg.name, msg.text)
       return
+    case "openLink":
+      // A URL or file path in the transcript prose was clicked. External URLs
+      // hand off to the OS browser; file paths open in the editor, positioned
+      // at the cited line. Both validated defensively — a hostile/broken target
+      // is dropped quietly rather than thrown.
+      await openLinkTarget(msg.kind, msg.target, msg.line, controller)
+      return
   }
+}
+
+/**
+ * Open a transcript link. `external` → the OS browser (http/https/file only);
+ * `file` → an editor tab at `line` (1-based). File-path resolution:
+ *   - absolute path → itself
+ *   - `~/…`         → against the home dir
+ *   - relative      → against the session cwd, then each workspace folder,
+ *                     preferring the first that actually exists on disk
+ * A missing file surfaces a gentle notice, never an exception.
+ */
+export async function openLinkTarget(
+  kind: "external" | "file",
+  target: string,
+  line: number | undefined,
+  controller: TranscriptPanelController,
+): Promise<void> {
+  if (kind === "external") {
+    let uri: vscode.Uri
+    try {
+      uri = vscode.Uri.parse(target, true)
+    } catch {
+      return
+    }
+    // Belt-and-braces: the renderer only emits http/https/file, but never hand
+    // an arbitrary scheme to openExternal.
+    if (!["http", "https", "file"].includes(uri.scheme.toLowerCase())) return
+    await vscode.env.openExternal(uri)
+    return
+  }
+
+  const uri = await resolveFileTarget(target, controller)
+  if (!uri) {
+    void vscode.window.showInformationMessage(`agentproto: couldn't find "${target}".`)
+    return
+  }
+  try {
+    const doc = await vscode.workspace.openTextDocument(uri)
+    const selection =
+      line != null && line > 0
+        ? new vscode.Range(line - 1, 0, line - 1, 0)
+        : undefined
+    await vscode.window.showTextDocument(doc, {
+      viewColumn: vscode.ViewColumn.Beside,
+      preview: true,
+      preserveFocus: false,
+      selection,
+    })
+  } catch {
+    void vscode.window.showInformationMessage(`agentproto: couldn't open "${target}".`)
+  }
+}
+
+/** Resolve a file-path link target to an on-disk Uri, or undefined if no
+ *  candidate exists. Never throws. */
+async function resolveFileTarget(
+  target: string,
+  controller: TranscriptPanelController,
+): Promise<vscode.Uri | undefined> {
+  const candidates: string[] = []
+  if (target.startsWith("~/") || target === "~") {
+    candidates.push(join(homedir(), target.slice(1)))
+  } else if (isAbsolute(target)) {
+    candidates.push(target)
+  } else {
+    const rel = target.replace(/^\.\//, "")
+    const cwd = controller.session.cwd
+    if (cwd) candidates.push(join(cwd, rel))
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      candidates.push(join(folder.uri.fsPath, rel))
+    }
+  }
+  for (const fsPath of candidates) {
+    const uri = vscode.Uri.file(fsPath)
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      if (stat.type === vscode.FileType.File) return uri
+    } catch {
+      // Not there — try the next candidate.
+    }
+  }
+  return undefined
 }
 
 function randomNonce(): string {
@@ -1339,6 +1429,24 @@ export function buildHtml(
       padding: 1px 5px; border-radius: 4px; color: var(--paper);
     }
     #book .story a { color: var(--phosphor); }
+
+    /* Clickable URLs / file paths in transcript prose (renderMarkdown's .tlink
+       anchors). Calm by default — phosphor, no underline until hover — with a
+       small "open" glyph (.tlink-open) that only fades in on hover so prose
+       stays quiet. Styled for both surfaces (#book paper + #transcript). */
+    .tlink {
+      color: var(--phosphor); text-decoration: none; cursor: pointer;
+      border-radius: 3px;
+    }
+    .tlink:hover { text-decoration: underline; }
+    .tlink:focus-visible { outline: 1px solid var(--phosphor); outline-offset: 1px; }
+    .tlink-open {
+      display: inline-block; opacity: 0; font-size: 0.85em;
+      margin-left: 0.15em; vertical-align: baseline;
+      transition: opacity 0.12s ease;
+    }
+    .tlink:hover .tlink-open, .tlink:focus-visible .tlink-open { opacity: 0.8; }
+
     #book .story > :first-child { margin-top: 0; }
     #book .story > :last-child { margin-bottom: 0; }
 
@@ -2872,6 +2980,22 @@ export function buildHtml(
         bookScrolledUp = book.scrollHeight - book.clientHeight - book.scrollTop > threshold;
       });
       bookToggle.addEventListener('click', toggleBookView);
+
+      // One delegated listener for every clickable link (.tlink) in the prose —
+      // book narration, ask cards, and the raw transcript all share it. Reading
+      // data-target off the anchor auto-un-escapes the HTML entities back to the
+      // real URL/path; the host decides browser-vs-editor from data-open.
+      document.addEventListener('click', function(e) {
+        const link = e.target && e.target.closest && e.target.closest('.tlink');
+        if (!link) return;
+        e.preventDefault();
+        const kind = link.getAttribute('data-open');
+        const target = link.getAttribute('data-target');
+        if (!target || (kind !== 'external' && kind !== 'file')) return;
+        const rawLine = link.getAttribute('data-line');
+        const line = rawLine ? parseInt(rawLine, 10) : undefined;
+        vscode.postMessage({ type: 'openLink', kind: kind, target: target, line: line });
+      });
 
       // A resume-chain ancestor's turns are rendered ONCE, statically — they
       // never patch again (the ancestor session is dead history), so this

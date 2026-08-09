@@ -200,21 +200,35 @@ function inlineFormat(text: string): string {
  * code span's contents, which must stay literal.
  *
  * A single scan avoids both: it walks the string once, and whichever of
- * {code span, bold, italic} starts first is resolved on the spot. A code
- * span's content is sliced out verbatim (never recursed into); bold/italic
- * recurse on their inner text so nesting and code-span-spanning fall out for
- * free instead of needing another pass.
+ * {markdown link, code span, bold, italic} starts first is resolved on the
+ * spot. A code span's content is sliced out verbatim (never recursed into);
+ * bold/italic recurse on their inner text so nesting and code-span-spanning
+ * fall out for free instead of needing another pass.
+ *
+ * Plain (non-token) runs are buffered and flushed through `linkifyText`, which
+ * autolinks bare URLs and file paths. Buffering means linkification only ever
+ * sees normal prose — never a code span's literal contents, and never text that
+ * straddles a bold/italic marker.
  */
 function scanInline(text: string, cursor: Cursor, closer: "**" | "*" | null): ScanResult {
   let out = ""
+  let plain = ""
+  const flush = (): void => {
+    if (plain) {
+      out += linkifyText(plain)
+      plain = ""
+    }
+  }
 
   while (cursor.pos < text.length) {
     if (closer === "**" && text.startsWith("**", cursor.pos)) {
       cursor.pos += 2
+      flush()
       return { html: out, closed: true }
     }
     if (closer === "*" && text[cursor.pos] === "*" && text[cursor.pos + 1] !== "*") {
       cursor.pos += 1
+      flush()
       return { html: out, closed: true }
     }
 
@@ -224,16 +238,31 @@ function scanInline(text: string, cursor: Cursor, closer: "**" | "*" | null): Sc
         // No closing backtick anywhere ahead: this backtick can't start a
         // code span, so treat it as a literal character and keep scanning
         // normally (bold/italic still apply to what follows).
-        out += "`"
+        plain += "`"
         cursor.pos += 1
         continue
       }
+      flush()
       out += `<code>${text.slice(cursor.pos + 1, close)}</code>`
       cursor.pos = close + 1
       continue
     }
 
+    // Markdown link [label](target) — checked before bold/italic so a target
+    // that happens to contain a `*` isn't mis-scanned. A malformed or
+    // disallowed-scheme link falls through and the `[` is treated as plain.
+    if (text[cursor.pos] === "[") {
+      const link = tryMarkdownLink(text, cursor.pos)
+      if (link) {
+        flush()
+        out += link.html
+        cursor.pos = link.next
+        continue
+      }
+    }
+
     if (text.startsWith("**", cursor.pos)) {
+      flush()
       cursor.pos += 2
       const inner = scanInline(text, cursor, "**")
       out += inner.closed ? `<strong>${inner.html}</strong>` : `**${inner.html}`
@@ -241,17 +270,186 @@ function scanInline(text: string, cursor: Cursor, closer: "**" | "*" | null): Sc
     }
 
     if (text[cursor.pos] === "*") {
+      flush()
       cursor.pos += 1
       const inner = scanInline(text, cursor, "*")
       out += inner.closed ? `<em>${inner.html}</em>` : `*${inner.html}`
       continue
     }
 
-    out += text[cursor.pos]
+    plain += text[cursor.pos]
     cursor.pos += 1
   }
 
+  flush()
   return { html: out, closed: false }
+}
+
+// ── Autolinking (URLs + file paths) ────────────────────────────────────────
+//
+// Every string handled here is ALREADY HTML-escaped (`renderMarkdown` escapes
+// up front). So a `"` in a URL is `&quot;`, an `&` is `&amp;`, etc. Two
+// consequences we lean on:
+//   - The escaped text is already attribute-safe, so it can drop straight into
+//     `data-target="…"` and into element text without re-escaping (which would
+//     double-encode). Reading `el.dataset.target` in the webview un-escapes the
+//     entities back to the real URL/path for free.
+//   - Punctuation peeling must not slice into an entity (`&quot;` ends in `;`),
+//     so leading/trailing entities are peeled as whole units first.
+
+/** File extensions that, on their own, make a bare word worth linkifying. Kept
+ *  as an allow-list so version strings (`1.2.3`) and dates (`2026/08/09`) — which
+ *  have no extension — stay plain text. */
+const KNOWN_EXT =
+  /\.(?:ts|tsx|js|jsx|mjs|cjs|json|jsonc|md|mdx|markdown|txt|rst|sh|bash|zsh|fish|py|rb|go|rs|java|kt|kts|c|h|cc|cpp|hpp|cxx|cs|php|swift|scala|clj|ex|exs|erl|lua|dart|css|scss|sass|less|html|htm|xml|svg|vue|svelte|astro|yml|yaml|toml|ini|cfg|conf|env|properties|lock|sql|graphql|gql|proto|prisma|csv|tsv|log|pdf|png|jpg|jpeg|gif|webp)$/i
+
+/** A path body (no line suffix): optional `/`, `./`, `../`, `~/` prefix, then
+ *  `/`-separated segments of word chars, `.`, `-`, `_`, `@`. Deliberately
+ *  excludes `:` — a `:line` suffix is peeled off before this is tested. */
+const PATH_BODY = /^(?:~\/|\.\.\/|\.\/|\/)?[\w.@-]+(?:\/[\w.@-]+)*$/
+
+/** Trailing `:line` or `:line:col` or `:line-end` citation (this repo writes
+ *  `supervisor.ts:1028` and `supervisor.ts:1028-1061` constantly). */
+const LINE_SUFFIX = /:(\d+)(?:[:-]\d+)?$/
+
+/** Leading wrappers to peel before classifying a token, including the escaped
+ *  forms of quotes/angle-brackets. */
+const LEAD = /^(?:&quot;|&#39;|&lt;|&gt;|[([{'"])+/
+/** Trailing escaped quote/angle wrappers — peeled as whole units so a `;` at
+ *  the tail of an entity is never mistaken for sentence punctuation. */
+const TRAIL_ENTITY = /(?:&quot;|&#39;|&lt;|&gt;)+$/
+
+function externalAnchor(target: string, label: string): string {
+  return `<a class="tlink" data-open="external" data-target="${target}">${label}<span class="tlink-open" aria-hidden="true">↗</span></a>`
+}
+
+function fileAnchor(target: string, label: string, line: number | null): string {
+  const lineAttr = line != null ? ` data-line="${line}"` : ""
+  return `<a class="tlink" data-open="file" data-target="${target}"${lineAttr}>${label}<span class="tlink-open" aria-hidden="true">⎘</span></a>`
+}
+
+/**
+ * Classify a markdown-link target (from `[label](target)`, already escaped).
+ * Author intent is explicit here, so any non-URL target is treated as a file
+ * path — but a disallowed scheme (`javascript:`, `data:`, …) is rejected so the
+ * whole link degrades to plain text. Returns null to reject.
+ */
+function classifyLinkTarget(
+  target: string,
+):
+  | { kind: "external"; target: string }
+  | { kind: "file"; target: string; line: number | null }
+  | null {
+  if (/^(?:https?|file):\/\//i.test(target)) return { kind: "external", target }
+  // Any other explicit scheme (javascript:, data:, vbscript:, mailto:, some://)
+  // is not one we open — reject so it renders literally. A `:line` citation is
+  // NOT a scheme (the char after `:` is a digit), so it's excluded here.
+  if (/^[a-z][a-z\d+.-]+:(?!\d)/i.test(target)) return null
+  const line = LINE_SUFFIX.exec(target)
+  const body = line ? target.slice(0, line.index) : target
+  if (!PATH_BODY.test(body)) return null
+  return { kind: "file", target: body, line: line ? Number(line[1]) : null }
+}
+
+/**
+ * If `text[start]` opens a valid `[label](target)`, return its anchor HTML and
+ * the index just past the closing `)`. Returns null when it isn't a usable
+ * link (no `](`, no closing `)`, empty target, or a rejected scheme).
+ */
+function tryMarkdownLink(text: string, start: number): { html: string; next: number } | null {
+  const closeLabel = text.indexOf("]", start + 1)
+  if (closeLabel === -1 || text[closeLabel + 1] !== "(") return null
+  const closeTarget = text.indexOf(")", closeLabel + 2)
+  if (closeTarget === -1) return null
+  const label = text.slice(start + 1, closeLabel)
+  const target = text.slice(closeLabel + 2, closeTarget).trim()
+  if (!target) return null
+  const cls = classifyLinkTarget(target)
+  if (!cls) return null
+  return {
+    html:
+      cls.kind === "external"
+        ? externalAnchor(cls.target, label)
+        : fileAnchor(cls.target, label, cls.line),
+    next: closeTarget + 1,
+  }
+}
+
+function count(s: string, ch: string): number {
+  let n = 0
+  for (const c of s) if (c === ch) n++
+  return n
+}
+
+/** Peel trailing sentence punctuation, keeping paired `)`/`]` that a URL may
+ *  legitimately contain (only an UNBALANCED closer is punctuation). */
+function peelTrailingPunct(core: string): { core: string; trail: string } {
+  let trail = ""
+  for (;;) {
+    const last = core[core.length - 1]
+    if (last === undefined) break
+    if (".,;:!?".includes(last)) {
+      trail = last + trail
+      core = core.slice(0, -1)
+      continue
+    }
+    if (last === ")" && count(core, "(") < count(core, ")")) {
+      trail = last + trail
+      core = core.slice(0, -1)
+      continue
+    }
+    if (last === "]" && count(core, "[") < count(core, "]")) {
+      trail = last + trail
+      core = core.slice(0, -1)
+      continue
+    }
+    break
+  }
+  return { core, trail }
+}
+
+/**
+ * Autolink a single whitespace-delimited token (already escaped). Wrapping
+ * punctuation is peeled off and re-attached around the anchor so `(https://x)`
+ * or `see foo.ts:10.` link only the URL/path. Returns the token unchanged when
+ * nothing qualifies — precision over recall.
+ */
+function linkifyToken(token: string): string {
+  const leadMatch = LEAD.exec(token)
+  const lead = leadMatch ? leadMatch[0] : ""
+  let core = token.slice(lead.length)
+
+  const entityTrail = TRAIL_ENTITY.exec(core)
+  let trail = entityTrail ? entityTrail[0] : ""
+  if (trail) core = core.slice(0, core.length - trail.length)
+  const peeled = peelTrailingPunct(core)
+  core = peeled.core
+  trail = peeled.trail + trail
+
+  if (!core) return token
+
+  // Bare URL — only the schemes we can actually open.
+  if (/^(?:https?|file):\/\/[^\s]+$/i.test(core)) {
+    return `${lead}${externalAnchor(core, core)}${trail}`
+  }
+
+  // File path. Precision guard: qualify only with a real prefix, a known
+  // extension, or a `:line` citation — never a bare `and/or`-style word.
+  const line = LINE_SUFFIX.exec(core)
+  const body = line ? core.slice(0, line.index) : core
+  if (!PATH_BODY.test(body)) return token
+  const qualifies = line != null || /^(?:~\/|\.\.\/|\.\/|\/)/.test(body) || KNOWN_EXT.test(body)
+  if (!qualifies) return token
+  return `${lead}${fileAnchor(body, core, line ? Number(line[1]) : null)}${trail}`
+}
+
+/** Autolink bare URLs/paths in a plain-text (escaped) run, leaving whitespace
+ *  and non-qualifying tokens exactly as they were. */
+function linkifyText(text: string): string {
+  return text
+    .split(/(\s+)/)
+    .map(part => (part === "" || /^\s+$/.test(part) ? part : linkifyToken(part)))
+    .join("")
 }
 
 type Alignment = "left" | "right" | "center" | null

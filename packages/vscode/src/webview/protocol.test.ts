@@ -116,4 +116,13 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "ptyResize", cols: "80", rows: 24 })).toBe(false)
     expect(isWebviewMessage({ type: "ptyResize", cols: 80 })).toBe(false)
   })
+
+  it("accepts openLink with a known kind, a target, and an optional line", () => {
+    expect(isWebviewMessage({ type: "openLink", kind: "external", target: "https://x" })).toBe(true)
+    expect(isWebviewMessage({ type: "openLink", kind: "file", target: "src/a.ts", line: 12 })).toBe(true)
+    expect(isWebviewMessage({ type: "openLink", kind: "file", target: "src/a.ts" })).toBe(true)
+    expect(isWebviewMessage({ type: "openLink", kind: "mailto", target: "x" })).toBe(false)
+    expect(isWebviewMessage({ type: "openLink", kind: "file" })).toBe(false)
+    expect(isWebviewMessage({ type: "openLink", kind: "file", target: "src/a.ts", line: "12" })).toBe(false)
+  })
 })
