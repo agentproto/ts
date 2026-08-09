@@ -140,6 +140,12 @@
         "icon": "$(gear)"
       },
       {
+        "command": "agentproto.openAuthModel",
+        "title": "agentproto: Open Auth & Model Map",
+        "category": "agentproto",
+        "icon": "$(circuit-board)"
+      },
+      {
         "command": "agentproto.promptSession",
         "title": "agentproto: Prompt Session",
         "category": "agentproto",
