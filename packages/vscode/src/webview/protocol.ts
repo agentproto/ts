@@ -252,6 +252,16 @@ export type WebviewMessage =
    */
   | { type: "openToolIo"; segmentId: string; field: "input" | "output" }
   /**
+   * Pop a wide book block (a narration table or fenced code block) out into a
+   * read-only editor tab, for content too wide for the book column.
+   *
+   * Unlike `openToolIo`, this one DOES carry its text: a book block is the
+   * agent's own narration prose, already fully rendered inside the webview
+   * (never raw daemon tool output), so there's nothing to re-derive host-side —
+   * the webview serializes the block it's showing and the host just opens it.
+   */
+  | { type: "openBlock"; text: string; name: string }
+  /**
    * Raw bytes of a pasted image, headed for `POST /files/upload`. The webview
    * can't write disk, so it structured-clones the ArrayBuffer to the host. Typed
    * as ArrayBuffer|view because the runtime may hand the host either — the guard
@@ -353,6 +363,8 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return typeof m.text === "string"
     case "openToolIo":
       return typeof m.segmentId === "string" && (m.field === "input" || m.field === "output")
+    case "openBlock":
+      return typeof m.text === "string" && typeof m.name === "string"
     case "attachImage":
       return isBinaryPayload(m.bytes) && typeof m.mime === "string"
     case "attachFile":

@@ -60,6 +60,13 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "openToolIo", field: "input" })).toBe(false)
   })
 
+  it("accepts openBlock only with text and name strings", () => {
+    expect(isWebviewMessage({ type: "openBlock", text: "a\tb", name: "table.tsv" })).toBe(true)
+    expect(isWebviewMessage({ type: "openBlock", text: "a\tb" })).toBe(false)
+    expect(isWebviewMessage({ type: "openBlock", name: "table.tsv" })).toBe(false)
+    expect(isWebviewMessage({ type: "openBlock", text: 5, name: "x" })).toBe(false)
+  })
+
   it("accepts attachImage carrying real bytes (ArrayBuffer or a view)", () => {
     expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4), mime: "image/png" })).toBe(true)
     expect(isWebviewMessage({ type: "attachImage", bytes: new Uint8Array([1, 2]), mime: "image/jpeg" })).toBe(true)

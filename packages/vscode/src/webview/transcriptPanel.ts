@@ -318,6 +318,12 @@ export async function handleWebviewMessage(
       await outputDocs.show(doc.name, doc.text)
       return
     }
+    case "openBlock":
+      // A book narration block (table / code) the user popped out. The text is
+      // the webview's own rendered prose, so it opens directly — no host-side
+      // re-derivation, same read-only editor tab as a tool value.
+      await outputDocs.show(msg.name, msg.text)
+      return
   }
 }
 
@@ -1259,7 +1265,15 @@ export function buildHtml(
     #book .chapter.live .fold { cursor: default; }
     #book .chapter.live .fold .arrow { visibility: hidden; }
 
-    #book .ask { background: var(--paper-tint); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+    /* The ask block is the HUMAN turn: a persistent, tinted paper card pinned
+       ABOVE its response chapter (not inside the fold), left edge in the chevron
+       column. A quiet phosphor edge marks it as your voice; the response chapter
+       builds directly beneath it. */
+    #book .ask {
+      background: var(--paper-tint); border-radius: 8px;
+      border-left: 2px solid var(--phosphor);
+      padding: 10px 14px; margin: 8px 0 6px;
+    }
     #book .ask .alabel { font: 600 9.5px var(--bkmono); letter-spacing: .13em; color: var(--paper-45); }
     #book .ask .atext { font: 14px/1.7 var(--serif); color: var(--paper); margin-top: 4px; }
     #book .ask .atext > :first-child { margin-top: 0; }
@@ -1316,15 +1330,25 @@ export function buildHtml(
     #book .ask .atext h4, #book .ask .atext h5, #book .ask .atext h6 {
       font: 600 15px/1.35 var(--serif); color: var(--paper); margin: 12px 0 4px;
     }
+    /* Tables read as LIGHT horizontal rules on the book surface — a hairline
+       between rows and a slightly firmer one under the header, no column grid
+       or outer box. display:block + max-content + overflow-x lets a wide table
+       scroll horizontally (contained to the book column) instead of squashing
+       or wrapping its cells. */
     #book .story table, #book .ask .atext table {
       display: block; width: max-content; max-width: 100%; overflow-x: auto;
-      border-collapse: collapse; margin: 8px 0; font-size: 13px;
+      border-collapse: collapse; margin: 10px 0; font: 13px/1.5 var(--bkmono);
     }
     #book .story th, #book .story td,
     #book .ask .atext th, #book .ask .atext td {
-      border: 1px solid var(--edge); padding: 4px 10px; text-align: left;
+      padding: 5px 16px 5px 0; text-align: left; vertical-align: top;
+      white-space: nowrap; border-bottom: 1px solid var(--edge);
     }
-    #book .story th, #book .ask .atext th { font-weight: 600; background: var(--ink-2); }
+    #book .story th, #book .ask .atext th {
+      color: var(--paper); font-weight: 600; border-bottom: 1px solid var(--paper-28);
+    }
+    #book .story td, #book .ask .atext td { color: var(--paper-72); }
+    #book .story tr:last-child td, #book .ask .atext tr:last-child td { border-bottom: none; }
 
     #book .details {
       font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px;
@@ -1332,18 +1356,69 @@ export function buildHtml(
     }
     #book .details:hover { color: var(--paper-72); }
     #book .details::before { content: "$ "; color: var(--phosphor); }
-    #book .steps-body { margin-top: 10px; padding-left: 2px; }
+    #book .steps-body { margin-top: 8px; padding-left: 0; }
     #book .steps-body[hidden] { display: none; }
-    /* Reused transcript step cards read on the dark paper background. */
-    #book .steps-body .seg-label { color: var(--paper); }
-    #book .steps-body details.activity,
-    #book .steps-body .turn > details.tool,
-    #book .steps-body .turn > details.reasoning,
-    #book .steps-body > details.tool,
-    #book .steps-body > details.reasoning {
-      border-color: var(--edge); background: var(--ink-2);
+    /* The steps drawer reuses the transcript's own tool/reasoning/activity
+       disclosure cards, but on the book surface they must read as QUIET ROWS on
+       paper — hairline dividers, mono chrome, a phosphor check — not the boxed
+       vscode-themed cards the transcript draws. Everything below re-skins those
+       reused nodes for the paper/phosphor palette. */
+    #book .steps-body details.tool,
+    #book .steps-body details.reasoning {
+      background: none; border: none; border-radius: 0;
+      border-bottom: 1px solid var(--edge); padding: 5px 2px;
     }
+    #book .steps-body > details.tool:last-child,
+    #book .steps-body > details.reasoning:last-child,
+    #book .steps-body > details.activity:last-child { border-bottom: none; }
+    /* A group is the one box that stays — a faint tinted card holding its run of
+       steps — so the tree of children reads as one unit. */
+    #book .steps-body details.activity {
+      background: var(--paper-tint); border: 1px solid var(--edge);
+      border-radius: 7px; padding: 4px 10px; margin: 4px 0;
+    }
+    #book .steps-body details.reasoning > summary,
+    #book .steps-body details.tool > summary,
+    #book .steps-body details.activity > summary {
+      font: 11.5px var(--bkmono); color: var(--paper-45);
+    }
+    #book .steps-body .seg-label { color: var(--paper-72); font-family: var(--bkmono); }
+    #book .steps-body details[open] > summary > .seg-label { color: var(--paper); }
+    /* The ✓ is phosphor (a settled step), a failure is a quiet clay ✗. */
+    #book .steps-body .seg-badge.badge-ok { color: var(--phosphor); opacity: 1; }
+    #book .steps-body .seg-badge.badge-error { color: #cf8b73; }
+    /* The live step's dot pulses in phosphor, matching the book's live cursor. */
+    #book .steps-body .seg-dot { background: var(--phosphor); }
+    #book .steps-body .seg-elapsed { color: var(--paper-45); }
+    /* A findable-but-quiet chevron affordance, rotating open like the fold's. */
+    #book .steps-body .seg-chev { color: var(--paper-28); opacity: 1; }
+    #book .steps-body summary:hover > .seg-chev { color: var(--paper-72); }
+    #book .steps-body .act-children { border-left-color: var(--edge); }
+    #book .steps-body .reasoning-body { color: var(--paper-45); }
+    #book .steps-body .tool-field-label { color: var(--paper-45); }
+    #book .steps-body .tool-args,
+    #book .steps-body .tool-result {
+      background: var(--ink); border: 1px solid var(--edge); border-radius: 5px;
+      color: var(--paper-72); font-family: var(--bkmono);
+    }
+    #book .steps-body .tool-io-open { color: var(--phosphor); }
+    #book .steps-body .tool-io-clamped { border-bottom-color: var(--edge); }
     #book .notices { margin-top: 10px; }
+
+    /* Pop-out affordance: a small hover button on a WIDE narration block (table
+       or fenced code) to open it in a full read-only editor tab, for content
+       too wide for the book column. */
+    #book .book-block { position: relative; margin: 8px 0; }
+    #book .book-block > pre, #book .book-block > table { margin: 0; }
+    #book .block-popout {
+      position: absolute; top: 5px; right: 5px; z-index: 1;
+      font: 11px/1 var(--bkmono); padding: 3px 6px; border-radius: 5px;
+      background: var(--ink-2); border: 1px solid var(--edge); color: var(--paper-45);
+      cursor: pointer; opacity: 0; transition: opacity .12s, color .12s, border-color .12s;
+    }
+    #book .book-block:hover .block-popout,
+    #book .block-popout:focus-visible { opacity: 1; }
+    #book .block-popout:hover { color: var(--phosphor); border-color: var(--phosphor); }
 
     /* Live chapter: the blinking phosphor block cursor + the "$ now:" ticker. */
     #book .cursor {
@@ -2402,6 +2477,26 @@ export function buildHtml(
       function buildChapterNode(ch) {
         const node = el('div', 'chapter');
         node.dataset.chapterId = ch.id;
+
+        // Ask block — the HUMAN turn. It lives ABOVE the fold and OUTSIDE the
+        // foldable body, so it stays visible (pinned) whether the chapter is
+        // open or folded, and never doubles as the chapter title. The agent's
+        // response builds as its OWN chapter below, titled by its narration.
+        const ask = el('div', 'ask');
+        ask.hidden = true;
+        ask.appendChild(el('div', 'alabel', 'YOU ASKED'));
+        ask.appendChild(el('div', 'atext'));
+        const amore = el('button', 'amore', '$ full message');
+        amore.type = 'button';
+        amore.hidden = true;
+        amore.addEventListener('click', function() {
+          bookAskExpanded.add(node.dataset.chapterId);
+          ask.classList.remove('clamped');
+          amore.hidden = true;
+        });
+        ask.appendChild(amore);
+        node.appendChild(ask);
+
         const fold = el('div', 'fold');
         fold.setAttribute('tabindex', '0');
         fold.setAttribute('role', 'button');
@@ -2426,21 +2521,6 @@ export function buildHtml(
         node.appendChild(fold);
 
         const cbody = el('div', 'cbody');
-        // Ask card (a chapter opened by YOU).
-        const ask = el('div', 'ask');
-        ask.hidden = true;
-        ask.appendChild(el('div', 'alabel', 'YOU ASKED'));
-        ask.appendChild(el('div', 'atext'));
-        const amore = el('button', 'amore', '$ full message');
-        amore.type = 'button';
-        amore.hidden = true;
-        amore.addEventListener('click', function() {
-          bookAskExpanded.add(node.dataset.chapterId);
-          ask.classList.remove('clamped');
-          amore.hidden = true;
-        });
-        ask.appendChild(amore);
-        cbody.appendChild(ask);
         // Narration (the agent's own words).
         cbody.appendChild(el('div', 'narration'));
         // Steps drawer ("$ show N steps").
@@ -2469,6 +2549,62 @@ export function buildHtml(
         return node;
       }
 
+      // Give every WIDE narration block (a table or fenced code block) a hover
+      // pop-out button that opens it in a full read-only editor tab — the book
+      // column is narrow, and some tables/code simply don't fit. Re-run on each
+      // paint: narration html is rebuilt every time, so wrappers stay fresh (the
+      // guard just skips a block already wrapped within one paint). The block's
+      // own rendered text is what ships to the host (openBlock) — it's the
+      // agent's narration, already in the webview, not raw daemon output.
+      function enhanceBookBlocks(root) {
+        const blocks = root.querySelectorAll('pre, table');
+        for (const block of blocks) {
+          const parent = block.parentElement;
+          if (!parent || parent.classList.contains('book-block')) continue;
+          const wrap = el('div', 'book-block');
+          parent.insertBefore(wrap, block);
+          wrap.appendChild(block);
+          const btn = el('button', 'block-popout', '⤢');
+          btn.type = 'button';
+          btn.title = 'Open in editor';
+          btn.setAttribute('aria-label', 'Open this block in an editor');
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const text = serializeBookBlock(block);
+            vscode.postMessage({ type: 'openBlock', text: text, name: bookBlockName(block, text) });
+          });
+          wrap.appendChild(btn);
+        }
+      }
+
+      // A <pre> is its own text; a table becomes tab-separated rows so it stays
+      // readable and re-pasteable in a plain editor. (fromCharCode, not '\\t' /
+      // '\\n' literals — this whole script is emitted from a template literal,
+      // where a literal newline inside a quoted string would break parsing.)
+      var TAB_CHAR = String.fromCharCode(9);
+      var NL_CHAR = String.fromCharCode(10);
+      function serializeBookBlock(block) {
+        if (block.tagName === 'TABLE') {
+          const lines = [];
+          const rows = block.querySelectorAll('tr');
+          for (const row of rows) {
+            const parts = [];
+            const cells = row.querySelectorAll('th, td');
+            for (const c of cells) parts.push((c.textContent || '').trim());
+            lines.push(parts.join(TAB_CHAR));
+          }
+          return lines.join(NL_CHAR);
+        }
+        return block.textContent || '';
+      }
+
+      function bookBlockName(block, text) {
+        const isTable = block.tagName === 'TABLE';
+        const first = (text.split(NL_CHAR)[0] || '').replace(/[^\w .-]+/g, ' ').trim().slice(0, 40);
+        return (first ? first + ' — ' : '') + (isTable ? 'table.tsv' : 'code.txt');
+      }
+
       function paintChapter(node, ch, index, chapters, isLive) {
         node.classList.toggle('live', isLive);
         const fold = node.querySelector(':scope > .fold');
@@ -2482,11 +2618,13 @@ export function buildHtml(
         node.classList.toggle('openc', open);
         fold.setAttribute('aria-expanded', String(open));
 
-        // Ask card.
-        const ask = node.querySelector(':scope > .cbody > .ask');
+        // Ask block — pinned above the fold, its own persistent human turn.
+        const ask = node.querySelector(':scope > .ask');
         if (ch.ask) {
           ask.hidden = false;
-          ask.querySelector('.atext').innerHTML = ch.ask.html || '';
+          const atext = ask.querySelector('.atext');
+          atext.innerHTML = ch.ask.html || '';
+          enhanceBookBlocks(atext);
           // Respect an earlier "$ full message" expansion across live re-renders.
           const clamp = Boolean(ch.ask.long) && !bookAskExpanded.has(ch.id);
           ask.classList.toggle('clamped', clamp);
@@ -2502,6 +2640,7 @@ export function buildHtml(
         for (const seg of ch.narration) {
           const p = el('div', 'story');
           p.innerHTML = seg.html || '';
+          enhanceBookBlocks(p);
           narration.appendChild(p);
         }
         if (isLive) {
@@ -2622,7 +2761,14 @@ export function buildHtml(
             bookChapterNodes.delete(id);
           }
         }
-        const awaiting = Boolean(lastSession && lastSession.awaitingInput) && !exited;
+        // The pause card is ONLY for a genuine end-of-turn wait — never while
+        // the agent is actively working. awaitingInput can linger from a prior
+        // pause after the user sends and the agent resumes (busy flips back to
+        // true before the next poll clears awaitingInput); a genuine awaiting
+        // state always carries busy=false (both the awaiting-input and turn-end
+        // lifecycle events set busy=false), so gate on !busy. While busy, the
+        // live chapter's "Working…" / "$ now:" state carries the moment instead.
+        const awaiting = Boolean(lastSession && lastSession.awaitingInput) && !busy && !exited;
         renderPauseCard(page, awaiting, chapters);
         if (atBottom) book.scrollTop = book.scrollHeight;
       }
