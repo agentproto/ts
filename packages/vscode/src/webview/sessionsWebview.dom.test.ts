@@ -204,6 +204,23 @@ describe("sessions webview — render", () => {
     expect([...el(panel, "list").querySelectorAll(".row")]).toHaveLength(2)
   })
 
+  it("renders the eye badge with the waiter count and the origin chip (#session-visibility)", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, watcherCount: 2, originLabel: "vscode" }])] }))
+    const row = el(panel, "list").querySelector('[data-id="s1"]')!
+    const eye = row.querySelector(".eye")!
+    expect(eye.textContent).toContain("2")
+    expect(htmlEl(eye).getAttribute("title")).toContain("supervised — notify on turn-end")
+    const origin = row.querySelector(".origin")!
+    expect(origin.textContent).toBe("vscode")
+  })
+
+  it("omits the eye badge when nothing is watching", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, watcherCount: 0 }])] }))
+    expect(el(panel, "list").querySelector('[data-id="s1"] .eye')).toBeNull()
+  })
+
   it("marks the row whose transcript tab is open with .open", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, open: true }])] }))

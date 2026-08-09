@@ -641,6 +641,14 @@ export interface SessionDescriptor {
    *  every read since it's a live OS query, stale the instant it's
    *  written to disk. */
   processAlive?: boolean
+  /** Count of live supervisors currently blocked waiting on this session —
+   *  HTTP `GET /sessions/:id/wait` long-polls and `session_monitor`
+   *  subscriptions, both via `monitorSessionWait` (#session-visibility).
+   *  Ephemeral, in-memory, stamped at read time (list()/get()) from the
+   *  registry's waiter counter — NEVER persisted (a waiter can't survive a
+   *  daemon restart). 0/absent ⇒ nothing is watching. Lets a UI mark a
+   *  session "supervised — notify on turn-end". */
+  watchers?: number
   /** Short human-readable string describing the most recent automatic
    *  failure — currently only stamped by `markCrashed` (e.g. "adapter
    *  process gone (pid 1234) — session crashed"). Not a stack trace or raw
@@ -1170,6 +1178,9 @@ export interface SessionSummary {
   lastOutputAt?: string
   lastActivityAt?: string
   processAlive?: boolean
+  /** Live supervisor waiter count (#session-visibility) — see
+   *  `SessionDescriptor.watchers`. Ephemeral, stamped at read time. */
+  watchers?: number
   label?: string
   title?: string
   renamedByUser?: boolean
@@ -1229,6 +1240,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     lastOutputAt: desc.lastOutputAt,
     lastActivityAt: desc.lastActivityAt,
     processAlive: desc.processAlive,
+    watchers: desc.watchers,
     label: desc.label,
     title: desc.title,
     renamedByUser: desc.renamedByUser,
@@ -2018,6 +2030,15 @@ export interface SessionsRegistry {
     offset?: number
   }): { summaries: SessionSummary[]; total: number }
   get(id: string): SessionDescriptor | undefined
+  /** Register a live waiter on a session (#session-visibility) — bumps the
+   *  ephemeral `watchers` counter surfaced on the descriptor at read time.
+   *  Called by `monitorSessionWait` when a `/sessions/:id/wait` long-poll or
+   *  `session_monitor` subscription actually blocks. A no-op for an unknown id
+   *  is fine (the wait may outlive the row). */
+  incWatchers(id: string): void
+  /** Balance an {@link incWatchers} when the waiter resolves or times out.
+   *  Clamps at 0 and drops the map entry at zero so the counter can't leak. */
+  decWatchers(id: string): void
   /** Archive a TERMINAL-status session (exited/killed/error) — sets
    *  `archived: true` and persists. Pure housekeeping: hides the row from
    *  `list()`'s default view, nothing else. Refuses (throws) a still-alive
@@ -2678,6 +2699,17 @@ export function createSessionsRegistry(opts?: {
   const sessionEvents = opts?.sessionEvents
   const resolveAgentAdapter = opts?.resolveAgentAdapter
   const sessions = new Map<string, SessionRuntime>()
+  // Ephemeral per-session waiter counter (#session-visibility) — how many live
+  // supervisors are blocked on this id via `monitorSessionWait`. Kept off the
+  // persisted SessionRuntime rows (a waiter can't survive a restart) and
+  // stamped onto the descriptor at read time, like `processAlive`.
+  const watchersById = new Map<string, number>()
+  /** Stamp the live waiter count onto a descriptor at read time (mirrors
+   *  `stampProcessAlive`). 0 when nothing is waiting — the field is always set
+   *  so a reader can tell "no watchers" from "field unsupported". */
+  const stampWatchers = (desc: SessionDescriptor): void => {
+    desc.watchers = watchersById.get(desc.id) ?? 0
+  }
   // Cross-session pending-permissions inbox: every request parked by a
   // permission-hold session, keyed by the driver's stable request id.
   // Insertion order is preserved so `listPendingPermissions` reads oldest→
@@ -5458,6 +5490,7 @@ export function createSessionsRegistry(opts?: {
         .map(desc => {
           stampProcessAlive(desc)
           stampInterrupted(desc)
+          stampWatchers(desc)
           return desc
         })
     },
@@ -5473,6 +5506,7 @@ export function createSessionsRegistry(opts?: {
       const summaries = slice.map(desc => {
         stampProcessAlive(desc)
         stampInterrupted(desc)
+        stampWatchers(desc)
         return toSessionSummary(desc)
       })
       return { summaries, total: all.length }
@@ -5482,8 +5516,17 @@ export function createSessionsRegistry(opts?: {
       if (desc) {
         stampProcessAlive(desc)
         stampInterrupted(desc)
+        stampWatchers(desc)
       }
       return desc
+    },
+    incWatchers(id) {
+      watchersById.set(id, (watchersById.get(id) ?? 0) + 1)
+    },
+    decWatchers(id) {
+      const next = (watchersById.get(id) ?? 0) - 1
+      if (next > 0) watchersById.set(id, next)
+      else watchersById.delete(id)
     },
     attach(id, onLine) {
       const rt = sessions.get(id)

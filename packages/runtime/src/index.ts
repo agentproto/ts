@@ -1515,6 +1515,7 @@ export async function createGateway(
   const mcpServerFactory = async (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
+    origin?: string,
   ) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
@@ -1596,6 +1597,9 @@ export async function createGateway(
       // a spawn made by an agent session attaches under it by default (see
       // spawn-attach.ts). Absent on a human/root `/mcp` call → no auto-parent.
       ...(callerSessionId ? { callerSessionId } : {}),
+      // `?origin=` query (#session-visibility) — the connecting client's source
+      // label, used as the default origin for a spawn that doesn't set its own.
+      ...(origin ? { mcpBridgeOrigin: origin } : {}),
       webhookNotifier,
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,

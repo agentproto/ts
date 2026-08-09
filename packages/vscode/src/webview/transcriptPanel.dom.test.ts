@@ -1189,10 +1189,20 @@ describe("transcriptPanel webview — honest session state", () => {
     expect(el(panel, "context-btn").hidden).toBe(true)
   })
 
-  it("shows the working row with a ticking elapsed only while busy", () => {
+  it("keeps the working row hidden in book view — the live chapter carries 'Working…' there instead", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running", busy: true, tokensOut: 983 })
+    // Book view is the default; its live chapter already narrates the in-flight
+    // turn, so the separate row stays hidden to avoid a doubled "Working…".
+    expect(el(panel, "working").hidden).toBe(true)
+  })
+
+  it("shows the working row with a ticking elapsed only while busy — in the raw transcript", () => {
     vi.useFakeTimers()
     const panel = renderPanel({ fakeTimers: true })
     init(panel, { status: "running", busy: true, tokensOut: 983 })
+    // The row lives in the raw transcript, where nothing else narrates the turn.
+    el(panel, "book-toggle").dispatchEvent(new panel.window.Event("click"))
 
     const row = el(panel, "working")
     expect(row.hidden).toBe(false)
@@ -2248,6 +2258,30 @@ describe("transcriptPanel webview — book view", () => {
     expect(toggle.textContent).toBe("Transcript")
     // The composer placeholder switches to the book's invitation.
     expect((el(panel, "input") as unknown as { placeholder: string }).placeholder).toContain("opens the next chapter")
+  })
+
+  it("shows a session-identity hero (not 'No messages yet') for a blank conversation", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({
+        adapterSlug: "claude-code",
+        model: "claude-opus-4-8",
+        accessProfile: { profileRef: "p1", label: "Claude Subs Agentik", vendor: "anthropic", method: "oauth-bearer" },
+      }),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+    const hero = panel.book.querySelector(".book-hero")
+    expect(hero).not.toBeNull()
+    expect(panel.book.querySelector("#book-empty")).toBeNull()
+    const text = hero!.textContent ?? ""
+    expect(text).not.toContain("No messages yet")
+    // The facts a fresh tab needs: who answers, on which model, on whose dime.
+    expect(text).toContain("claude-code")
+    expect(text).toContain("claude-opus-4-8")
+    expect(text).toContain("Claude Subs Agentik")
   })
 
   it("hides the book and its toggle for a raw (non-structured) session", () => {

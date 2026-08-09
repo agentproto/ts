@@ -779,6 +779,15 @@ export async function restartAgentSession(
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+      // Lineage carry-forward (#session-visibility). A restart is a NEW
+      // descriptor, but it is the same logical session continued — so its
+      // origin (which channel spawned it: cowork/vscode/codex/cron) and its
+      // parent/depth must survive, exactly as continue-fresh already carries
+      // them (session-continue-fresh.ts). Dropping them here is what left a
+      // restarted session a bare top-level root with no source trace.
+      ...(prev.origin ? { origin: prev.origin } : {}),
+      ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
+      ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
       // Verifiability echo (never the credential) — see the auth
       // resolution block above. Absent when no credential resolved,
       // same as session-spawn.ts.

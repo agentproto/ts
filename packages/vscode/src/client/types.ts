@@ -175,6 +175,10 @@ export interface SessionDescriptor {
   lastOutputAt?: string
   lastActivityAt?: string
   processAlive?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.watchers — the live count
+   *  of supervisors blocked waiting on this session (#session-visibility).
+   *  Ephemeral, stamped at read time; 0/absent ⇒ nothing is watching. */
+  watchers?: number
   /** Mirrors `@agentproto/runtime` SessionDescriptor.lastError — a short
    *  human-readable string for the most recent automatic failure (currently
    *  only stamped by the crash-detect sweep). */
@@ -350,6 +354,11 @@ export interface SessionSummary {
   lastOutputAt?: string
   lastActivityAt?: string
   processAlive?: boolean
+  /** Live supervisor waiter count (#session-visibility) — how many
+   *  `/sessions/:id/wait` long-polls / `session_monitor` subscriptions are
+   *  blocked on this session right now. Ephemeral, stamped at read time by the
+   *  daemon; 0/absent ⇒ nothing is watching. */
+  watchers?: number
   label?: string
   title?: string
   renamedByUser?: boolean

@@ -211,6 +211,14 @@ export interface RegisterAgentToolsOptions {
    *  instead of orphaning. Absent → no auto-parent (attribution falls back to
    *  an explicit `parentSessionId` hint, if any). */
   callerSessionId?: string
+  /** The connecting client's source label from this `/mcp` request's `?origin=`
+   *  query (#session-visibility) — cowork/vscode/codex/cron. Used as the
+   *  DEFAULT `origin` for an `agent_start` that doesn't pass its own, so a
+   *  spawn made by a non-session bridge client is attributed to its channel
+   *  instead of landing as a bare top-level root. An explicit `input.origin`
+   *  always wins. This is the daemon side of the auto-stamp the `agent_start`
+   *  schema advertises. */
+  mcpBridgeOrigin?: string
   /** Optional webhook notifier — when provided, per-session `notifyUrl`
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
@@ -260,6 +268,7 @@ export function registerAgentTools(
     buildOrchestratorMcp,
     callerScope,
     callerSessionId,
+    mcpBridgeOrigin,
     webhookNotifier,
     daemonMcpUrl,
     loadRoleRegistry,
@@ -960,6 +969,12 @@ export function registerAgentTools(
         {
           ...spawnInput,
           adapter,
+          // Auto-stamp the source channel (#session-visibility): when the
+          // caller didn't pass an explicit `origin`, fall back to the connecting
+          // client's `?origin=` label so a bridge-client spawn (cowork/vscode/
+          // codex) is attributed instead of landing as a bare root. An explicit
+          // `input.origin` (already in `spawnInput`) always wins.
+          ...(!spawnInput.origin && mcpBridgeOrigin ? { origin: mcpBridgeOrigin } : {}),
           // The trusted caller id (from `?callerSessionId=`) becomes the
           // implicit auto-parent — attach-by-default without the caller
           // passing its own id. An explicit `parentSessionId` still outranks

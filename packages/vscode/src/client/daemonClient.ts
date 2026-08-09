@@ -506,7 +506,10 @@ export class DaemonClient {
    */
   async mcpCall<T = unknown>(toolName: string, args: Record<string, unknown> = {}): Promise<T> {
     const token = await this.resolveToken()
-    const res = await this.fetchImpl(`${this.url}/mcp`, {
+    // Announce this client's source label so a spawn made through it (agent_start)
+    // is stamped origin=vscode instead of landing as a bare root
+    // (#session-visibility — the daemon reads `?origin=` in handleMcp).
+    const res = await this.fetchImpl(`${this.url}/mcp?origin=vscode`, {
       method: "POST",
       headers: {
         "content-type": "application/json",

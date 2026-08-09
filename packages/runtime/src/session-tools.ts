@@ -258,6 +258,11 @@ export interface RegisterSessionToolsOptions {
    *  this `/mcp` request, used as the implicit auto-parent for attach-by-
    *  default. See `RegisterAgentToolsOptions.callerSessionId`. */
   callerSessionId?: string
+  /** Forwarded to `registerAgentTools` — the connecting client's source label
+   *  from this `/mcp` request's `?origin=` query, used as the default origin
+   *  for a spawn that doesn't set its own. See
+   *  `RegisterAgentToolsOptions.mcpBridgeOrigin`. */
+  mcpBridgeOrigin?: string
   /** Optional webhook notifier — when provided, per-session `notifyUrl`
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
@@ -1924,6 +1929,13 @@ export function registerSessionTools(
             rows: input.rows ?? 24,
             ...(prev.name ? { name: prev.name } : {}),
             ...(prev.label ? { label: prev.label } : {}),
+            // Lineage carry-forward (#session-visibility) — same reasoning as
+            // the agent branch in session-restart-core.ts: a restart keeps the
+            // logical session's origin/parent/depth rather than resetting it to
+            // a bare root.
+            ...(prev.origin ? { origin: prev.origin } : {}),
+            ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
+            ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
             resumedFrom: prev.id,
             resumeVia: describeResumePath(augmented),
           })

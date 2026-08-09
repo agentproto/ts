@@ -116,6 +116,8 @@ interface RenderRow {
   runs: number | undefined
   approved: boolean
   watched: boolean
+  watcherCount: number
+  originLabel: string | undefined
   depth: number
   action: RowAction | undefined
   workspace: (WebviewWorkspace & { css: string }) | undefined
@@ -199,6 +201,8 @@ function toRenderRow(
     runs: row.runs,
     approved: row.approved,
     watched: row.watched,
+    watcherCount: row.watcherCount,
+    originLabel: row.originLabel,
     depth: row.depth,
     action: row.action,
     workspace: row.workspace
@@ -711,6 +715,13 @@ export function buildHtml(nonce: string): string {
     /* "Watched" (keepAlive) — a calm, monochrome tell that someone is keeping
        this session alive/monitored; deliberately NOT the ochre "needs you". */
     .name .watch { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.85; }
+    /* Live supervisor waiters (#session-visibility) — an eye + count when a wait
+       long-poll / session_monitor is actively blocked on this session. Same
+       calm register as .watch; it's an informational tell, not an alarm. */
+    .name .eye { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
+    /* Origin chip — the source channel (cowork/vscode/cron) on a root row. A
+       faint, uppercase-ish tag so lineage attribution reads at a glance. */
+    .name .origin { color: var(--faint); font-weight: 400; font-size: 10px; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; }
     /* Nested subagent lineage — a faint connector before the child's name and a
        quiet left guide, so the parent→child stack reads without shouting. */
     .name .lineage { color: var(--faint); font-weight: 400; }
@@ -861,6 +872,8 @@ export function buildHtml(nonce: string): string {
           '<span>' + escapeHtml(r.name) + '</span>' +
           (r.idMono ? '<span class="id mono">· ' + escapeHtml(r.idMono) + '</span>' : '') +
           (r.watched ? '<span class="watch" title="Kept alive — watched">◉ watched</span>' : '') +
+          (r.watcherCount > 0 ? '<span class="eye" title="supervised — notify on turn-end (' + r.watcherCount + ' waiting)">👁 ' + r.watcherCount + '</span>' : '') +
+          (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
           (r.approved ? '<span class="ok">✓ approved</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + ' runs</span>' : '');
         var acts = actionButton(r);

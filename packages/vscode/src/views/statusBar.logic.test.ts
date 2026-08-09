@@ -60,6 +60,21 @@ describe("summarizeLive", () => {
     expect(summary.stalled).toBe(1)
   })
 
+  it("counts watched live sessions and surfaces a '· N watched' segment (#session-visibility)", () => {
+    const summary = summarizeLive(
+      [
+        session({ watchers: 2 }),
+        session({ id: "s2", watchers: 0 }),
+        working({ id: "s3", watchers: 1 }),
+        // A finished session is history — its stale watcher count is not counted.
+        session({ id: "s4", status: "exited", watchers: 5 }),
+      ],
+      NOW,
+    )
+    expect(summary.watched).toBe(2)
+    expect(buildStatusCounts(summary)).toContain("2 watched")
+  })
+
   it("sums cost across live sessions only", () => {
     const summary = summarizeLive(
       [
