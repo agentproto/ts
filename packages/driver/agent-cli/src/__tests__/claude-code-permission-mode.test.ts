@@ -128,6 +128,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
     const settingsPath = `${configDir}/settings.json`
     expect(existsSync(settingsPath)).toBe(true)
     expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+      attribution: { commit: "", pr: "", sessionUrl: false },
       permissions: { defaultMode: "plan" },
     })
     // The ambient-isolation write happens alongside the permission-mode
@@ -144,6 +145,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
 
     const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR!
     expect(JSON.parse(readFileSync(`${configDir}/settings.json`, "utf8"))).toEqual({
+      attribution: { commit: "", pr: "", sessionUrl: false },
       permissions: { defaultMode: "bypassPermissions" },
     })
   })
@@ -159,6 +161,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
 
     const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR!
     expect(JSON.parse(readFileSync(`${configDir}/settings.json`, "utf8"))).toEqual({
+      attribution: { commit: "", pr: "", sessionUrl: false },
       permissions: { defaultMode: "bypassPermissions" },
     })
     expect(spawnCalls[0]!.env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBe("1")
@@ -179,11 +182,14 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
     const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR
     expect(configDir).toBeTruthy()
 
-    // No posture/mode was requested, so there is nothing to put in
-    // settings.json — it should not exist at all (distinct from existing
-    // but empty; the permission-mode write is still conditional on
-    // `permissionMode` resolving to something).
-    expect(existsSync(`${configDir}/settings.json`)).toBe(false)
+    // No posture/mode was requested, so `permissions.defaultMode` is
+    // absent — but settings.json still exists, carrying the
+    // attribution-suppression default that rides along unconditionally
+    // (see the comment above `isolatedSettings` in define-agent-cli.ts).
+    expect(existsSync(`${configDir}/settings.json`)).toBe(true)
+    expect(JSON.parse(readFileSync(`${configDir}/settings.json`, "utf8"))).toEqual({
+      attribution: { commit: "", pr: "", sessionUrl: false },
+    })
 
     // The isolation file itself: an explicit empty `mcpServers`, not an
     // absent file relying on unspecified SDK fallback behavior. This is
@@ -204,7 +210,10 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
 
     const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR
     expect(configDir).toBeTruthy()
-    expect(existsSync(`${configDir}/settings.json`)).toBe(false)
+    expect(existsSync(`${configDir}/settings.json`)).toBe(true)
+    expect(JSON.parse(readFileSync(`${configDir}/settings.json`, "utf8"))).toEqual({
+      attribution: { commit: "", pr: "", sessionUrl: false },
+    })
     expect(JSON.parse(readFileSync(`${configDir}/.claude.json`, "utf8"))).toEqual({
       mcpServers: {},
     })
