@@ -860,13 +860,51 @@ export function buildHtml(
        escalation is "this number is now shouting", not another border. */
     .tool-still-running > summary > .seg-elapsed { font-weight: 600; }
     .seg.plan {
-      border-left: 3px solid var(--vscode-progressBar-background);
+      /* Semantic state colours resolved to VS Code theme tokens on the
+         timeline. #book re-binds these same vars to the paper palette (see the
+         "#book .seg.plan" block near .notices), so the ONE structural ruleset
+         below serves both reading surfaces without duplication. */
+      --plan-accent: var(--vscode-charts-green, var(--vscode-progressBar-background));
+      --plan-muted: var(--vscode-descriptionForeground);
+      --plan-faint: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+      --plan-error: var(--vscode-errorForeground);
+      --plan-track: var(--vscode-progressBar-background);
+      border-left: 3px solid var(--plan-accent);
       padding: 4px 0 4px 10px;
     }
     .plan-head { font-weight: 600; font-size: 0.9em; margin-bottom: 4px; }
+    /* Thin done/total track under the head — accent fill over a faint groove. */
+    .plan-progress {
+      height: 2px; border-radius: 2px; margin: 0 0 6px;
+      background: var(--plan-track); opacity: 0.35; overflow: hidden;
+    }
+    .plan-progress-fill {
+      height: 100%; width: 0; border-radius: 2px;
+      background: var(--plan-accent); transition: width .2s ease;
+    }
     .plan-list { list-style: none; margin: 0; padding: 0; }
-    .plan-list li { font-size: 0.92em; }
-    .plan-list li.plan-completed { color: var(--vscode-descriptionForeground); text-decoration: line-through; }
+    /* Two columns: [marker | text]. A fixed marker column + baseline alignment
+       give wrapped lines a hanging indent that lands on the text's left edge,
+       not under the glyph. The marker is its own element, never a text prefix. */
+    .plan-list li {
+      display: grid;
+      grid-template-columns: 1.3em 1fr;
+      align-items: baseline;
+      column-gap: 0.4em;
+      font-size: 0.92em;
+      line-height: 1.45;
+      padding: 3px 0;
+    }
+    .plan-mark { text-align: center; }
+    .plan-text { min-width: 0; }
+    .plan-list li.plan-pending { color: var(--plan-faint); }
+    .plan-list li.plan-pending .plan-mark { color: var(--plan-faint); }
+    .plan-list li.plan-in_progress { font-weight: 600; }
+    .plan-list li.plan-in_progress .plan-mark { color: var(--plan-accent); }
+    .plan-list li.plan-completed { color: var(--plan-muted); text-decoration: line-through; }
+    .plan-list li.plan-completed .plan-mark { color: var(--plan-accent); text-decoration: none; }
+    .plan-list li.plan-failed { color: var(--plan-error); }
+    .plan-list li.plan-failed .plan-mark { color: var(--plan-error); }
     .seg.question {
       border-left: 3px solid var(--vscode-editorWarning-foreground);
       padding: 4px 0 4px 10px;
@@ -1411,6 +1449,18 @@ export function buildHtml(
     #book .steps-body .tool-io-open { color: var(--phosphor); }
     #book .steps-body .tool-io-clamped { border-bottom-color: var(--edge); }
     #book .notices { margin-top: 10px; }
+    /* The plan notice re-themed for the paper surface: the structural rules
+       (grid, hanging indent, progress track) are shared with the timeline —
+       only the state colours swap from VS Code tokens to the book palette, by
+       re-binding the same --plan-* vars the base .seg.plan rules read. */
+    #book .seg.plan {
+      --plan-accent: var(--phosphor);
+      --plan-muted: var(--paper-45);
+      --plan-faint: var(--paper-28);
+      --plan-error: #cf8b73;
+      --plan-track: var(--paper-45);
+    }
+    #book .seg.plan .plan-head { color: var(--paper-72); }
 
     /* Pop-out affordance: a small hover button on a WIDE narration block (table
        or fenced code) to open it in a full read-only editor tab, for content
@@ -2140,11 +2190,27 @@ export function buildHtml(
             node.className = 'seg plan';
             node.innerHTML = '';
             node.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
+            // Thin progress track under the head — width = done/total.
+            const track = el('div', 'plan-progress');
+            const fill = el('div', 'plan-progress-fill');
+            const pct = seg.total > 0 ? Math.round((seg.done / seg.total) * 100) : 0;
+            fill.style.width = pct + '%';
+            track.appendChild(fill);
+            node.appendChild(track);
             const ul = el('ul', 'plan-list');
             for (const entry of seg.entries || []) {
-              const mark = entry.status === 'completed' ? '☑ '
-                : entry.status === 'in_progress' ? '▸ ' : '☐ ';
-              ul.appendChild(el('li', 'plan-' + entry.status, mark + entry.content));
+              // Steady text glyphs (not emoji-variant): crisp in a monospace
+              // column and colour-controlled per state via the .plan-mark span.
+              const mark = entry.status === 'completed' ? '✓'      // ✓
+                : entry.status === 'in_progress' ? '●'            // ●
+                : entry.status === 'failed' ? '✗'                 // ✗
+                : '○';                                            // ○ pending
+              const li = el('li', 'plan-' + entry.status);
+              // Marker is its OWN element, never a text prefix — that is what
+              // lets wrapped lines hang-indent to the text column.
+              li.appendChild(el('span', 'plan-mark', mark));
+              li.appendChild(el('span', 'plan-text', entry.content));
+              ul.appendChild(li);
             }
             node.appendChild(ul);
             return;
