@@ -82,12 +82,23 @@ export function registerFsTools(
 
   server.tool(
     "file_read",
-    "Read a UTF-8 file from the workspace.",
-    { path: z.string().describe("Workspace-relative path to the file.") },
-    async ({ path }) => {
+    "Read a file from the workspace. Defaults to UTF-8 text; pass " +
+      "encoding: \"base64\" for binary files (images, audio, video, …) — " +
+      "UTF-8 decoding a non-text file replaces invalid byte sequences " +
+      "(e.g. a PNG's 0x89 header byte) with U+FFFD, corrupting the content.",
+    {
+      path: z.string().describe("Workspace-relative path to the file."),
+      encoding: z
+        .enum(["utf8", "base64"])
+        .optional()
+        .describe(
+          "\"utf8\" (default) for text files, \"base64\" for binary files.",
+        ),
+    },
+    async ({ path, encoding }) => {
       const abs = anchor(path)
       const buf = await readFile(abs)
-      return text(buf.toString("utf8"))
+      return text(buf.toString(encoding === "base64" ? "base64" : "utf8"))
     },
   )
 
