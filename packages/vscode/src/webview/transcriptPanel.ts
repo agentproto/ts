@@ -262,6 +262,14 @@ export async function handleWebviewMessage(
     case "changeModel":
       await runChangeModelFlow(controller, client)
       return
+    case "changeEffort":
+      // Per-axis picker: switches in place via POST /sessions/:id/effort, or
+      // routes to the restart-confirm flow if the value needs a restart.
+      await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+        sessionId: controller.session.id,
+        axis: "effort",
+      })
+      return
     case "changePosture":
     case "changeAccess":
       await vscode.commands.executeCommand("agentproto.configureSession", controller.session.id)
@@ -1399,6 +1407,9 @@ export function buildHtml(
       text-overflow: ellipsis;
     }
     .composer-chip:empty { display: none; }
+    /* A non-switchable axis (e.g. harness on a live session) reads as present
+       but inert — dimmed, with a tooltip explaining why (chip-pickers WP). */
+    .composer-chip.dimmed { opacity: 0.5; cursor: default; }
     /* The model chip is the one clickable chip (click → switch model) — reset
        the generic button rule's chrome so it still reads as plain chip text,
        only gaining an underline + link color on hover as the click affordance. */
@@ -1863,10 +1874,11 @@ export function buildHtml(
       <textarea id="input" rows="1" placeholder="Reply to the agent… (paste, drop, or @-mention a file)"></textarea>
       <div id="composer-bar">
         <span id="composer-meta">
-          <span id="composer-harness" class="composer-chip"></span>
+          <span id="composer-harness" class="composer-chip dimmed" title="Harness can't be switched on a live session — start a new one to change it"></span>
           <button id="composer-model" class="composer-chip composer-chip-btn" type="button" title="Switch model"></button>
+          <button id="composer-effort" class="composer-chip composer-chip-btn" type="button" title="Switch effort"></button>
           <button id="composer-posture" class="composer-chip composer-chip-btn" type="button" title="Switch mode / posture"></button>
-          <button id="composer-auth" class="composer-chip composer-chip-btn" type="button" title="Switch access profile"></button>
+          <button id="composer-auth" class="composer-chip composer-chip-btn" type="button" title="Switch wallet (restarts the session — conversation carries over)"></button>
         </span>
         <span id="send-hint" class="send-hint">⏎ send · ⇧⏎ newline</span>
         <span id="send-status"></span>
@@ -1925,6 +1937,7 @@ export function buildHtml(
       const composer = document.getElementById('composer');
       const composerHarness = document.getElementById('composer-harness');
       const composerModel = document.getElementById('composer-model');
+      const composerEffort = document.getElementById('composer-effort');
       const composerPosture = document.getElementById('composer-posture');
       const composerAuth = document.getElementById('composer-auth');
       const input = document.getElementById('input');
@@ -2306,11 +2319,15 @@ export function buildHtml(
         const isPlainPty = session.kind === 'terminal' && session.pty === true;
         composerHarness.hidden = isPlainPty;
         composerModel.hidden = isPlainPty;
+        composerEffort.hidden = isPlainPty;
         composerPosture.hidden = isPlainPty;
         composerAuth.hidden = isPlainPty;
         if (!isPlainPty) {
           composerHarness.textContent = session.adapterSlug || '';
           composerModel.textContent = session.model || 'model?';
+          // The effort chip only shows when the session carries one — an adapter
+          // that has no effort axis leaves the chip empty (:empty hides it).
+          composerEffort.textContent = session.effort ? ('effort: ' + session.effort) : '';
           composerPosture.textContent = defaultPostureLabel(session);
           const auth = accessIdentity(session);
           composerAuth.textContent = auth === '—' ? 'no wallet' : auth;
@@ -3798,6 +3815,9 @@ export function buildHtml(
       // the webview — see runChangeModelFlow / changeModel.logic.ts).
       composerModel.addEventListener('click', function() {
         vscode.postMessage({ type: 'changeModel' });
+      });
+      composerEffort.addEventListener('click', function() {
+        vscode.postMessage({ type: 'changeEffort' });
       });
       // Posture and auth chips route through the same unified config picker
       // (agentproto.configureSession) rather than their own dedicated flow —

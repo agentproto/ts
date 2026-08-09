@@ -73,6 +73,20 @@ describe("handleWebviewMessage", () => {
     expect(executeCommand).toHaveBeenCalledWith("agentproto.restartAsTerminal", "session-abc")
   })
 
+  it("changeEffort routes to the per-axis configureSessionAxis picker for effort (chip-pickers)", async () => {
+    await handleWebviewMessage(
+      { type: "changeEffort" },
+      panel,
+      controller,
+      outputDocs,
+      client,
+    )
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSessionAxis", {
+      sessionId: "session-abc",
+      axis: "effort",
+    })
+  })
+
   it("changePosture routes to the unified agentproto.configureSession picker", async () => {
     await handleWebviewMessage(
       { type: "changePosture" },

@@ -290,6 +290,12 @@ export type WebviewMessage =
    */
   | { type: "changeModel" }
   /**
+   * The effort chip was clicked — open the per-axis config picker for effort
+   * (`agentproto.configureSessionAxis` with axis "effort"). Carries no payload,
+   * same reasoning as `changeModel`.
+   */
+  | { type: "changeEffort" }
+  /**
    * The posture chip was clicked — open the unified per-session config
    * picker (`agentproto.configureSession`) so the user can switch posture.
    * Carries no payload, same reasoning as `changeModel`: the host already
@@ -363,6 +369,7 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "restart":
     case "restartAsTerminal":
     case "changeModel":
+    case "changeEffort":
     case "changePosture":
     case "changeAccess":
     case "openTerminal":
