@@ -501,10 +501,14 @@ export function resolveAuthSpec(
 
   const sub = input.descriptor.authSubscription
   // Gateway routes are normally API-key only; subscription mode is only
-  // supported on direct routes where the adapter declares authSubscription.
+  // supported on direct routes where the adapter declares authSubscription
+  // OR has modelDerivedApiKey (the subscription token is injected via the
+  // model-derived env var — Anthropic OATs work as API keys).
   // A native fixed-provider gateway preset (e.g. codex + route.gateway "openai")
   // is a direct route, so subscription stays eligible.
-  const supportsSub = sub !== undefined && (gatewayRoute === undefined || isNativeGatewayPreset)
+  const supportsSub =
+    (sub !== undefined || input.descriptor.modelDerivedApiKey === true) &&
+    (gatewayRoute === undefined || isNativeGatewayPreset)
   const enforce = input.descriptor.authEnforce ?? "when-configured"
 
   // File-based (external) subscription (codex/gemini): the CLI reads its OWN
@@ -567,10 +571,10 @@ export function resolveAuthSpec(
     credentialSource = subCredAvailable ? "cli-local-login" : "none"
     externalCredential = true
   } else if (mode === "subscription") {
-    // Guaranteed present: the explicit path validated supportsSub, and the
-    // ordered path only yields "subscription" when supportsSub. A bearer
-    // (non-external) authSubscription always declares setEnv (schema-enforced).
-    setEnv = sub!.setEnv!
+    // Bearer authSubscription declares setEnv (schema-enforced); a
+    // modelDerivedApiKey adapter without authSubscription injects the
+    // subscription token via the model-derived provider env var instead.
+    setEnv = sub?.setEnv ?? apiKeyEnv
     credential = input.subscriptionCredential
     credentialSource =
       credential !== undefined

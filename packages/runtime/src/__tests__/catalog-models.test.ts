@@ -491,14 +491,14 @@ describe("buildCatalogModels — mastracode model-derived api-key eligibility", 
     expect(route?.eligibleProfiles).toEqual(["work-anthropic-key"])
   })
 
-  it("does NOT make an anthropic subscription profile eligible for mastracode (no authSubscription)", () => {
+  it("makes an anthropic subscription profile eligible for mastracode (modelDerivedApiKey accepts oauth-bearer)", () => {
     const response = buildCatalogModels({
       adapters: [MASTRACODE],
       profiles: [anthropicSubscription],
     })
     const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
-    expect(route?.runnable).toBe(false)
-    expect(route?.eligibleProfiles).toEqual([])
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["jeremy-max"])
   })
 
   it("keeps direct-route eligibility scoped by model-derived provider", () => {
