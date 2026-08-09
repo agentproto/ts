@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest"
 
 import type {
   AuthProfileSummary,
+  CatalogModelsResponse,
   LlmEndpointStatusResult,
   ProviderPresetEntry,
 } from "../client/types.js"
 import { accessKind } from "./authModelMindmap.logic.js"
+import { profileCuratedIds } from "../views/authProfilesTree.logic.js"
 import {
   buildAuthProfilesWebviewModel,
   routerStatusFor,
@@ -26,6 +28,39 @@ function preset(over: Partial<ProviderPresetEntry> = {}): ProviderPresetEntry {
 
 function profile(over: Partial<AuthProfileSummary> = {}): AuthProfileSummary {
   return { id: "anthropic-local", endpoint: "anthropic", method: "oauth-bearer", ...over }
+}
+
+const NO_CATALOG: CatalogModelsResponse = { vendors: [] }
+
+function xaiCatalog(opts: { allowedIds?: string[] } = {}): CatalogModelsResponse {
+  const products = ["grok-4.5", "grok-4.20", "grok-4.20-reasoning", "grok-4.20-multi-agent", "grok-4.3", "grok-build-0.1"]
+  return {
+    vendors: [
+      {
+        vendor: "xai",
+        products: products.map(product => {
+          const ref = `xai/${product}`
+          const isAllowed = !opts.allowedIds || opts.allowedIds.includes(ref)
+          return {
+            product,
+            routes: [
+              {
+                route: "xai",
+                ref,
+                baseUrl: null,
+                pricing: null,
+                runnable: isAllowed,
+                eligibleProfiles: isAllowed ? ["xai-api"] : [],
+                adapterModes: [],
+                adapters: [],
+                curated: false,
+              },
+            ],
+          }
+        }),
+      },
+    ],
+  }
 }
 
 const ALL_EXPANDED: AuthProfilesExpandedState = { providers: true, router: true }
@@ -73,6 +108,7 @@ describe("buildAuthProfilesWebviewModel", () => {
     const model = buildAuthProfilesWebviewModel(
       [],
       [anthropicSub, anthropicKey],
+      NO_CATALOG,
       STOPPED_ROUTER,
       "",
       ALL_EXPANDED,
@@ -93,6 +129,7 @@ describe("buildAuthProfilesWebviewModel", () => {
     const model = buildAuthProfilesWebviewModel(
       [],
       [profile({ id: "disabled", disabled: true })],
+      NO_CATALOG,
       STOPPED_ROUTER,
       "",
       ALL_EXPANDED,
@@ -104,14 +141,14 @@ describe("buildAuthProfilesWebviewModel", () => {
 
   it("folds long-tail providers behind 'more' at the same count as the map", () => {
     const profiles = Array.from({ length: 8 }, (_, i) => profile({ id: `p${i}`, endpoint: `endpoint${i}` }))
-    const model = buildAuthProfilesWebviewModel([], profiles, STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    const model = buildAuthProfilesWebviewModel([], profiles, NO_CATALOG, STOPPED_ROUTER, "", ALL_EXPANDED, false)
     expect(model.providers.rows).toHaveLength(6)
     expect(model.moreCount).toBe(2)
   })
 
   it("shows every provider once showAllProviders is set", () => {
     const profiles = Array.from({ length: 8 }, (_, i) => profile({ id: `p${i}`, endpoint: `endpoint${i}` }))
-    const model = buildAuthProfilesWebviewModel([], profiles, STOPPED_ROUTER, "", ALL_EXPANDED, true)
+    const model = buildAuthProfilesWebviewModel([], profiles, NO_CATALOG, STOPPED_ROUTER, "", ALL_EXPANDED, true)
     expect(model.providers.rows).toHaveLength(8)
     expect(model.moreCount).toBe(0)
   })
@@ -120,6 +157,7 @@ describe("buildAuthProfilesWebviewModel", () => {
     const model = buildAuthProfilesWebviewModel(
       [preset({ slug: "anthropic" }), preset({ slug: "openai", name: "OpenAI" })],
       [profile({ id: "anthropic-local", endpoint: "anthropic" })],
+      NO_CATALOG,
       STOPPED_ROUTER,
       "",
       ALL_EXPANDED,
@@ -130,7 +168,7 @@ describe("buildAuthProfilesWebviewModel", () => {
   })
 
   it("renders router status in its own section", () => {
-    const model = buildAuthProfilesWebviewModel([], [], RUNNING_ROUTER, "", ALL_EXPANDED, false)
+    const model = buildAuthProfilesWebviewModel([], [], NO_CATALOG, RUNNING_ROUTER, "", ALL_EXPANDED, false)
     expect(model.router.rows[0]?.status).toBe("ready")
     expect(model.router.rows[0]?.name).toContain("running")
     expect(String(model.router.count)).toBe("healthy")
@@ -140,6 +178,7 @@ describe("buildAuthProfilesWebviewModel", () => {
     const model = buildAuthProfilesWebviewModel(
       [preset({ slug: "openai", name: "OpenAI" })],
       [profile({ id: "anthropic-local", endpoint: "anthropic" })],
+      NO_CATALOG,
       STOPPED_ROUTER,
       "anthropic",
       ALL_EXPANDED,
@@ -151,8 +190,45 @@ describe("buildAuthProfilesWebviewModel", () => {
 
   it("honors expanded state per section", () => {
     const collapsed: AuthProfilesExpandedState = { providers: false, router: false }
-    const model = buildAuthProfilesWebviewModel([], [], STOPPED_ROUTER, "", collapsed, false)
+    const model = buildAuthProfilesWebviewModel([], [], NO_CATALOG, STOPPED_ROUTER, "", collapsed, false)
     expect(model.providers.expanded).toBe(false)
     expect(model.router.expanded).toBe(false)
+  })
+})
+
+describe("buildAuthProfilesWebviewModel — curation summary (migrated from Auth Settings)", () => {
+  it("summarizes curated vs active in a single terse line, not a chip wall", () => {
+    const allowed = ["xai/grok-4.5", "xai/grok-4.3", "xai/grok-4.20", "xai/grok-build-0.1"]
+    const p = profile({ id: "xai-api", endpoint: "xai", models: { mode: "allow", ids: allowed } })
+    const model = buildAuthProfilesWebviewModel([], [p], xaiCatalog({ allowedIds: allowed }), STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    const wallet = model.providers.rows[0]!.wallets[0]!
+    expect(wallet.curationSummary).toBe("4 curated · 4 active")
+  })
+
+  it("reports a disabled wallet's summary without implying a broken credential", () => {
+    const p = profile({ id: "xai-api", endpoint: "xai", disabled: true })
+    const model = buildAuthProfilesWebviewModel([], [p], xaiCatalog(), STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    const wallet = model.providers.rows[0]!.wallets[0]!
+    expect(wallet.curationSummary).toBe("0 active · 6 catalog (disabled)")
+  })
+
+  it("reports 'no catalog models' when nothing in the catalog bills this endpoint", () => {
+    const model = buildAuthProfilesWebviewModel([], [profile({ id: "anthropic-local" })], NO_CATALOG, STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    const wallet = model.providers.rows[0]!.wallets[0]!
+    expect(wallet.curationSummary).toBe("no catalog models")
+  })
+
+  it("carries the curated ids straight from profileCuratedIds — single source of truth", () => {
+    const p = profile({ id: "anthropic-local", models: { mode: "allow", ids: ["anthropic/claude-fable-5"] } })
+    const model = buildAuthProfilesWebviewModel([], [p], NO_CATALOG, STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    const wallet = model.providers.rows[0]!.wallets[0]!
+    expect(wallet.curatedIds).toEqual(profileCuratedIds(p))
+  })
+
+  it("keeps native xai and xai-anthropic profiles from cross-qualifying", () => {
+    const xaiP = profile({ id: "xai-api", endpoint: "xai" })
+    const model = buildAuthProfilesWebviewModel([], [xaiP], xaiCatalog(), STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    const wallet = model.providers.rows[0]!.wallets[0]!
+    expect(wallet.curationSummary).toBe("6 curated · 6 active")
   })
 })

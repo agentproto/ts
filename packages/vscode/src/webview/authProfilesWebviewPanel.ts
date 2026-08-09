@@ -15,6 +15,7 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type {
   AuthProfileSummary,
+  CatalogModelsResponse,
   LlmEndpointStatusResult,
   ProviderPresetEntry,
 } from "../client/types.js"
@@ -40,6 +41,7 @@ import {
   buildModelPickItems,
   resolveModelSelection,
 } from "../commands/authProfileModelPicker.logic.js"
+import { runCreateAuthProfileFlow, runToggleAuthProfileModelFlow } from "../commands/authProfiles.js"
 
 const VIEW_TYPE = "agentproto.authProfilesWebview"
 
@@ -76,6 +78,8 @@ type WebviewToHostMessage =
   | { type: "delete"; profileId: string }
   | { type: "setModels"; profileId: string; ids: string[] }
   | { type: "requestSetModels"; profileId: string }
+  | { type: "removeModel"; profileId: string; model: string }
+  | { type: "addProfile" }
   | { type: "openMap" }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
@@ -116,6 +120,7 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
   private search = ""
   private presets: ProviderPresetEntry[] = []
   private profiles: AuthProfileSummary[] = []
+  private catalog: CatalogModelsResponse = { vendors: [] }
   private routerStatus: LlmEndpointStatusResult | null = null
   private expanded: AuthProfilesExpandedState = { providers: true, router: false }
   private showAllProviders = false
@@ -153,12 +158,14 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private async fetch(): Promise<void> {
-    const [presets, profiles] = await Promise.all([
+    const [presets, profiles, catalog] = await Promise.all([
       this.client.listProviderPresets().catch((): ProviderPresetEntry[] => []),
       this.client.listAuthProfiles().catch((): AuthProfileSummary[] => []),
+      this.client.catalogModels().catch((): CatalogModelsResponse => ({ vendors: [] })),
     ])
     this.presets = presets
     this.profiles = profiles
+    this.catalog = catalog
     this.routerStatus = await this.client.llmEndpointStatus().catch(() => null)
     this.post()
   }
@@ -182,6 +189,14 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
         return
       case "openMap": {
         void vscode.commands.executeCommand("agentproto.openAuthModel")
+        return
+      }
+      case "addProfile": {
+        void runCreateAuthProfileFlow(this.client, this.treeProvider)
+        return
+      }
+      case "removeModel": {
+        void runToggleAuthProfileModelFlow(this.client, this.treeProvider, msg.profileId, msg.model)
         return
       }
       case "requestConnect": {
@@ -223,6 +238,7 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
     const model = buildAuthProfilesWebviewModel(
       this.presets,
       this.profiles,
+      this.catalog,
       this.routerStatus,
       this.search,
       this.expanded,
@@ -433,6 +449,13 @@ export function buildHtml(nonce: string, cspSource: string): string {
       padding: 5px 8px; border-radius: 4px; cursor: pointer;
     }
     #maplink:hover { border-color: var(--vscode-textLink-foreground, #8fc2ff); }
+    #toolbar { display: flex; gap: 6px; margin: 8px 12px 0; }
+    #toolbar #maplink { margin: 0; flex: 1 1 auto; }
+    #addwallet {
+      flex: 0 0 auto; font: 600 11px var(--vscode-font-family); padding: 5px 10px; border-radius: 4px;
+      border: none; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer;
+    }
+    #addwallet:hover { background: var(--vscode-button-hoverBackground); }
     #list { flex: 1 1 auto; overflow-y: auto; }
     .section { border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); }
     .section:last-child { border-bottom: none; }
@@ -477,6 +500,12 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .kchip.sub { color: var(--vscode-charts-green, #2ea043); border-color: currentColor; }
     .kchip.key { color: var(--vscode-charts-blue, #3794ff); border-color: currentColor; }
     .wmeta { font-size: 10.5px; color: var(--vscode-descriptionForeground); margin-top: 3px; }
+    .wmeta .curation-toggle { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; margin-left: 4px; }
+    .wmeta .curation-toggle:hover { color: var(--vscode-foreground); }
+    .curated-chips { display: none; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+    .curated-chips.show { display: flex; }
+    .curated-chips .chip { font-size: 9.5px; padding: 1px 5px 1px 7px; border-radius: 99px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); color: var(--vscode-descriptionForeground); display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+    .curated-chips .chip button { background: none; border: none; color: var(--vscode-errorForeground); cursor: pointer; padding: 0; font-size: 11px; line-height: 1; }
     .wactions { display: none; gap: 6px; position: absolute; top: 6px; right: 8px; }
     .wcard:hover .wactions { display: flex; }
     .wactions span { cursor: pointer; color: var(--vscode-descriptionForeground); }
@@ -533,6 +562,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .dialog-actions button:hover { background: var(--vscode-button-hoverBackground); }
     .dialog-actions button.secondary { background: transparent; color: var(--vscode-foreground); }
     .dialog-actions button.secondary:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
+  </style>
 </head>
 <body>
   <div id="search">
@@ -541,7 +571,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
     <span id="clear" title="Clear filter">✕</span>
   </div>
   <div id="summary"></div>
-  <button id="maplink" title="Open the full auth &amp; model configuration map">↗ open Auth &amp; Model Map</button>
+  <div id="toolbar">
+    <button id="maplink" title="Open the full auth &amp; model configuration map">↗ open Auth &amp; Model Map</button>
+    <button id="addwallet" title="Add a wallet — an existing local login or a new endpoint/credential">+ Add wallet</button>
+  </div>
   <div id="list"></div>
   <div id="empty" hidden>Nothing matches.</div>
   <div id="dialog-backdrop" class="dialog-backdrop">
@@ -563,6 +596,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
       const emptyEl = document.getElementById('empty');
       const summaryEl = document.getElementById('summary');
       const mapEl = document.getElementById('maplink');
+      const addWalletEl = document.getElementById('addwallet');
       const dialogBackdrop = document.getElementById('dialog-backdrop');
       const dialogTitle = document.getElementById('dialog-title');
       const dialogBody = document.getElementById('dialog-body');
@@ -609,19 +643,34 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return k === 'subscription-refreshing' ? 'SUB · SELF-REFRESH' : k === 'subscription-stored' ? 'SUB · STORED' : 'API KEY';
       }
 
+      function curatedChipsHTML(w) {
+        if (!w.curatedIds.length) return '';
+        var chips = '';
+        for (var i = 0; i < w.curatedIds.length; i++) {
+          var id = w.curatedIds[i];
+          chips += '<span class="chip">' + escapeHtml(id) +
+            '<button data-remove-model="' + escapeHtml(id) + '" title="Remove ' + escapeHtml(id) + '">×</button></span>';
+        }
+        return '<div class="curated-chips">' + chips + '</div>';
+      }
+
       function walletCardHTML(w) {
         var actions = '<span class="wactions">' +
           '<span title="Set allowed models" data-set-models="' + escapeHtml(w.id) + '">+</span>' +
           '<span title="' + (w.enabled ? 'Disable' : 'Enable') + '" data-toggle="' + escapeHtml(w.id) + '">' + (w.enabled ? '⊘' : '✓') + '</span>' +
           '<span title="Delete" data-delete="' + escapeHtml(w.id) + '">🗑</span>' +
           '</span>';
+        var curationToggle = w.curatedIds.length
+          ? ' · <span class="curation-toggle" data-curation-toggle="' + escapeHtml(w.id) + '">' + w.curatedIds.length + ' curated ▾</span>'
+          : '';
         return '<div class="wcard" data-profile-id="' + escapeHtml(w.id) + '" data-enabled="' + w.enabled + '">' +
           '<div class="wtop">' +
             '<span class="dot ' + escapeHtml(w.keyStatus || 'stored') + '"></span>' +
             '<span class="wname">' + escapeHtml(w.label) + '</span>' +
             '<span class="kchip ' + kindClass(w.accessKind) + '">' + kindLabel(w.accessKind) + '</span>' +
           '</div>' +
-          '<div class="wmeta">' + escapeHtml(w.credential) + ' · ' + escapeHtml(w.models) + (w.enabled ? '' : ' · disabled') + '</div>' +
+          '<div class="wmeta">' + escapeHtml(w.credential) + ' · ' + escapeHtml(w.curationSummary) + (w.enabled ? '' : ' · disabled') + curationToggle + '</div>' +
+          curatedChipsHTML(w) +
           actions +
         '</div>';
       }
@@ -771,6 +820,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
       mapEl.addEventListener('click', function () {
         vscode.postMessage({ type: 'openMap' });
       });
+      addWalletEl.addEventListener('click', function () {
+        vscode.postMessage({ type: 'addProfile' });
+      });
 
       listEl.addEventListener('click', function (e) {
         var sectionHeader = e.target.closest('.section-header');
@@ -786,6 +838,21 @@ export function buildHtml(nonce: string, cspSource: string): string {
         }
         var wcard = e.target.closest('[data-profile-id]');
         if (wcard) {
+          var curationToggle = e.target.closest('[data-curation-toggle]');
+          if (curationToggle) {
+            var chips = wcard.querySelector('.curated-chips');
+            if (chips) chips.classList.toggle('show');
+            return;
+          }
+          var removeBtn = e.target.closest('[data-remove-model]');
+          if (removeBtn) {
+            vscode.postMessage({
+              type: 'removeModel',
+              profileId: wcard.getAttribute('data-profile-id'),
+              model: removeBtn.getAttribute('data-remove-model'),
+            });
+            return;
+          }
           var setModelsBtn = e.target.closest('[data-set-models]');
           if (setModelsBtn) {
             vscode.postMessage({ type: 'requestSetModels', profileId: setModelsBtn.getAttribute('data-set-models') });

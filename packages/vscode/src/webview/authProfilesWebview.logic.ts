@@ -5,10 +5,17 @@
  * this sidebar and the Auth & Model Map agree on what a wallet is by
  * construction, not by convention. Presets with no wallet yet surface as a
  * separate "connect a provider" list.
+ *
+ * This is also the wallet-first home for what used to live in the (now
+ * redirector) Auth Settings panel: a catalog-cross-referenced curation
+ * summary per wallet ("N curated · N active") and the curated model ids for
+ * the card's collapsed-by-default remove-chip editor — deliberately a single
+ * summary line, not the old panel's always-on chip wall.
  */
 
 import type {
   AuthProfileSummary,
+  CatalogModelsResponse,
   LlmEndpointStatusResult,
   ProviderPresetEntry,
 } from "../client/types.js"
@@ -17,6 +24,7 @@ import {
   type ProviderView,
   type WalletView,
 } from "./authModelMindmap.logic.js"
+import { profileCuratedIds } from "../views/authProfilesTree.logic.js"
 import {
   routerDescription,
   routerLabel,
@@ -31,6 +39,14 @@ export interface WalletWebviewRow extends WalletView {
   /** Convenience mirror of `!disabled`, so the panel toggles without
    *  re-deriving it from the wallet's `disabled` flag every time. */
   enabled: boolean
+  /** Catalog-cross-referenced summary, e.g. "6 curated · 4 active" or
+   *  "no catalog models" or "0 active · 6 catalog (disabled)" — one line, not
+   *  a wall of per-model pills. */
+  curationSummary: string
+  /** Curated model ids (only when the profile is in `allow` mode) — rendered
+   *  as removable chips behind the card's collapsed-by-default curation
+   *  editor. Empty means "allows all". */
+  curatedIds: string[]
 }
 
 export interface ProviderWebviewRow {
@@ -97,16 +113,82 @@ function routerCountLabel(status: LlmEndpointStatusResult | null): string {
   return status.status
 }
 
-function toWalletRow(w: WalletView): WalletWebviewRow {
-  return { ...w, enabled: !w.disabled }
+/**
+ * Per-model curation gate — local mirror of the predicate in
+ * `packages/runtime/src/catalog-models.ts`. An absent/`all` curation admits
+ * everything; an `allow` curation admits the model when its id appears as the
+ * route-qualified `ref`, the route-independent `vendor/product`, or (on a
+ * direct route only) the bare product.
+ */
+function profileAllowsModel(profile: AuthProfileSummary, ref: string, vendorProduct: string): boolean {
+  const curation = profile.models
+  if (!curation || curation.mode === "all") return true
+  const slash = vendorProduct.indexOf("/")
+  const product = slash === -1 ? vendorProduct : vendorProduct.slice(slash + 1)
+  const isDirect = !ref.includes("@")
+  return (
+    curation.ids.includes(ref) || curation.ids.includes(vendorProduct) || (isDirect && curation.ids.includes(product))
+  )
 }
 
-function toProviderRow(p: ProviderView): ProviderWebviewRow {
+interface WalletCatalogCounts {
+  catalogCount: number
+  curatedCount: number
+  runnableCount: number
+}
+
+/**
+ * Counts for a single wallet against the catalog join, scoped to the wallet's
+ * own billing endpoint (`route.route === profile.endpoint`) — keeps native
+ * `xai` and `xai-anthropic` profiles from cross-qualifying.
+ */
+function walletCatalogCounts(profile: AuthProfileSummary, enabled: boolean, catalog: CatalogModelsResponse): WalletCatalogCounts {
+  let catalogCount = 0
+  let curatedCount = 0
+  let runnableCount = 0
+  for (const vendor of catalog.vendors ?? []) {
+    for (const product of vendor.products ?? []) {
+      for (const route of product.routes ?? []) {
+        if (route.route !== profile.endpoint) continue
+        catalogCount++
+        const vendorProduct = `${vendor.vendor}/${product.product}`
+        if (profileAllowsModel(profile, route.ref, vendorProduct)) curatedCount++
+        if (enabled && route.runnable && route.eligibleProfiles.includes(profile.id)) runnableCount++
+      }
+    }
+  }
+  return { catalogCount, curatedCount, runnableCount }
+}
+
+/** One summary line for the wallet card — deliberately terse: two numbers,
+ *  not a three-clause catalog/curated/active/excluded breakdown. */
+function curationSummaryFor(enabled: boolean, counts: WalletCatalogCounts): string {
+  if (!enabled) return `0 active · ${counts.catalogCount} catalog (disabled)`
+  if (counts.catalogCount === 0) return "no catalog models"
+  return `${counts.curatedCount} curated · ${counts.runnableCount} active`
+}
+
+function toWalletRow(w: WalletView, profile: AuthProfileSummary | undefined, catalog: CatalogModelsResponse): WalletWebviewRow {
+  const enabled = !w.disabled
+  const counts = profile ? walletCatalogCounts(profile, enabled, catalog) : { catalogCount: 0, curatedCount: 0, runnableCount: 0 }
+  return {
+    ...w,
+    enabled,
+    curationSummary: curationSummaryFor(enabled, counts),
+    curatedIds: profileCuratedIds(profile),
+  }
+}
+
+function toProviderRow(
+  p: ProviderView,
+  profileById: ReadonlyMap<string, AuthProfileSummary>,
+  catalog: CatalogModelsResponse,
+): ProviderWebviewRow {
   return {
     endpoint: p.endpoint,
     native: p.native,
     logo: adapterLogoFor(p.endpoint),
-    wallets: p.wallets.map(toWalletRow),
+    wallets: p.wallets.map(w => toWalletRow(w, profileById.get(w.id), catalog)),
     subscriptionCount: p.subscriptionCount,
     apiKeyCount: p.apiKeyCount,
     primary: p.primary,
@@ -126,17 +208,20 @@ function presetMatchesSearch(row: UnconnectedProviderRow, term: string): boolean
 /**
  * Build the "Wallets" webview model: provider groups (with wallet cards)
  * folded at {@link DEFAULT_PROVIDER_COUNT}, unconnected presets, and the
- * Local Router status — all from the daemon's live auth profiles + presets.
+ * Local Router status — all from the daemon's live auth profiles + presets +
+ * catalog.
  */
 export function buildAuthProfilesWebviewModel(
   presets: readonly ProviderPresetEntry[],
   profiles: readonly AuthProfileSummary[],
+  catalog: CatalogModelsResponse,
   routerStatus: LlmEndpointStatusResult | null,
   search: string,
   expanded: AuthProfilesExpandedState,
   showAllProviders: boolean,
 ): AuthProfilesWebviewModel {
-  const allProviders = buildProviders([...profiles], new Map()).map(toProviderRow)
+  const profileById = new Map(profiles.map(p => [p.id, p]))
+  const allProviders = buildProviders([...profiles], new Map()).map(p => toProviderRow(p, profileById, catalog))
 
   const trimmed = search.trim().toLowerCase()
   const filteredProviders = trimmed.length === 0 ? allProviders : allProviders.filter(p => providerMatchesSearch(p, trimmed))
