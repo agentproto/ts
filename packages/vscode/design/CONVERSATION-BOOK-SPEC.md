@@ -1,9 +1,12 @@
 # Conversation "book" view — M0 spec (validated 2026-08-08)
 
-Design record: `conversation-revamp-mock-v8-asks.html` (THE reference — open it),
-lineage v5→v8 in this directory. Design language: `vscode-design-language.html`
-(five rules apply: labeled buttons, dots are state not controls, muted status
-trio, failures render a state, clay destructive / moss-tint primary).
+Design record: the `conversation-revamp-mock-v*.html` exploration series
+(lineage v2→v9) that informed this spec has been removed now that the book
+view, sessions revamp, and chrome described below have shipped in the
+extension itself — treat the shipped implementation as the live reference.
+Design language: `vscode-design-language.html` (five rules apply: labeled
+buttons, dots are state not controls, muted status trio, failures render a
+state, clay destructive / moss-tint primary).
 
 ## The model
 
