@@ -65,10 +65,13 @@ import {
   type SessionGrouping,
 } from "./sessionsGroups.logic.js"
 import {
+  activityFor,
   collapseResumeChains,
   descriptionFor,
   formatDuration,
   iconFor,
+  iconForActivity,
+  subtreeBusiestActivity,
   isSeparatorNode,
   labelFor,
   silentForMs,
@@ -249,9 +252,16 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     item.description = withArchivedTag(baseDescription, session.archived)
     item.contextValue = treeContextValueFor(session)
     item.tooltip = buildTooltip(session, this.now)
+    // A parent node inherits the busiest state in its subtree (#session-
+    // visibility), so a collapsed orchestrator whose children are mid-turn
+    // doesn't sit there reading "idle". A leaf uses its own activity.
+    const iconActivity =
+      element.children.length > 0
+        ? subtreeBusiestActivity(element, this.now)
+        : activityFor(session, this.now)
     item.iconPath = session.archived
       ? new vscode.ThemeIcon("archive")
-      : toThemeIcon(iconFor(session, this.now, this.seen.isUnread(session)))
+      : toThemeIcon(iconForActivity(iconActivity, this.seen.isUnread(session)))
     // Single click opens the transcript — the inline $(open-preview) icon
     // (view/item/context menu, wired in package.json) remains as a second
     // way to trigger the same command.

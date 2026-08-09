@@ -649,6 +649,14 @@ export interface SessionDescriptor {
    *  daemon restart). 0/absent ⇒ nothing is watching. Lets a UI mark a
    *  session "supervised — notify on turn-end". */
   watchers?: number
+  /** Count of DESCENDANT sessions (children, grandchildren, …) currently
+   *  mid-turn, derived at read time from the `parentSessionId` lineage
+   *  (#session-visibility, subtree rollup). Lets a UI show an idle parent that
+   *  is really "delegating" — waiting on its own busy subtree — distinctly
+   *  from a genuinely quiet session. Ephemeral, never persisted; 0/absent ⇒ no
+   *  busy descendants. NOTE: in-process subagents a harness runs itself are
+   *  invisible to the daemon between turns, so they don't count here. */
+  childrenBusy?: number
   /** Short human-readable string describing the most recent automatic
    *  failure — currently only stamped by `markCrashed` (e.g. "adapter
    *  process gone (pid 1234) — session crashed"). Not a stack trace or raw
@@ -1181,6 +1189,9 @@ export interface SessionSummary {
   /** Live supervisor waiter count (#session-visibility) — see
    *  `SessionDescriptor.watchers`. Ephemeral, stamped at read time. */
   watchers?: number
+  /** Busy-descendant count (#session-visibility, subtree rollup) — see
+   *  `SessionDescriptor.childrenBusy`. Drives the "delegating" row state. */
+  childrenBusy?: number
   label?: string
   title?: string
   renamedByUser?: boolean
@@ -1241,6 +1252,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     lastActivityAt: desc.lastActivityAt,
     processAlive: desc.processAlive,
     watchers: desc.watchers,
+    childrenBusy: desc.childrenBusy,
     label: desc.label,
     title: desc.title,
     renamedByUser: desc.renamedByUser,
@@ -2709,6 +2721,30 @@ export function createSessionsRegistry(opts?: {
    *  so a reader can tell "no watchers" from "field unsupported". */
   const stampWatchers = (desc: SessionDescriptor): void => {
     desc.watchers = watchersById.get(desc.id) ?? 0
+  }
+  /** Read-time subtree rollup (#session-visibility): for every session, how
+   *  many of its descendants (via `parentSessionId`) are currently mid-turn.
+   *  Computed by walking each busy session's ancestor chain and crediting each
+   *  ancestor — O(n · depth), with a per-walk cycle guard. A descendant counts
+   *  only while genuinely mid-turn (busy AND alive), so a stale busy flag on a
+   *  killed child doesn't make a parent look like it's still delegating. */
+  const childrenBusyCounts = (): Map<string, number> => {
+    const all = Array.from(sessions.values())
+    const parentOf = new Map<string, string | undefined>(all.map(s => [s.desc.id, s.desc.parentSessionId]))
+    const counts = new Map<string, number>()
+    for (const s of all) {
+      const d = s.desc
+      const midTurn = d.busy === true && (d.status === "running" || d.status === "starting")
+      if (!midTurn) continue
+      const seen = new Set<string>([d.id])
+      let pid = d.parentSessionId
+      while (pid && !seen.has(pid)) {
+        seen.add(pid)
+        counts.set(pid, (counts.get(pid) ?? 0) + 1)
+        pid = parentOf.get(pid)
+      }
+    }
+    return counts
   }
   // Cross-session pending-permissions inbox: every request parked by a
   // permission-hold session, keyed by the driver's stable request id.
@@ -5483,6 +5519,7 @@ export function createSessionsRegistry(opts?: {
     },
     list(opts) {
       const includeArchived = opts?.includeArchived ?? false
+      const childrenBusy = childrenBusyCounts()
       return Array.from(sessions.values())
         .map(s => s.desc)
         .filter(desc => includeArchived || !desc.archived)
@@ -5491,6 +5528,7 @@ export function createSessionsRegistry(opts?: {
           stampProcessAlive(desc)
           stampInterrupted(desc)
           stampWatchers(desc)
+          desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
           return desc
         })
     },
@@ -5498,6 +5536,7 @@ export function createSessionsRegistry(opts?: {
       const includeArchived = opts?.includeArchived ?? false
       const limit = Math.max(1, Math.min(200, opts?.limit ?? 50))
       const offset = Math.max(0, opts?.offset ?? 0)
+      const childrenBusy = childrenBusyCounts()
       const all = Array.from(sessions.values())
         .map(s => s.desc)
         .filter(desc => includeArchived || !desc.archived)
@@ -5507,6 +5546,7 @@ export function createSessionsRegistry(opts?: {
         stampProcessAlive(desc)
         stampInterrupted(desc)
         stampWatchers(desc)
+        desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
         return toSessionSummary(desc)
       })
       return { summaries, total: all.length }
@@ -5517,6 +5557,7 @@ export function createSessionsRegistry(opts?: {
         stampProcessAlive(desc)
         stampInterrupted(desc)
         stampWatchers(desc)
+        desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
       }
       return desc
     },
