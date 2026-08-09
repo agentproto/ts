@@ -1098,6 +1098,102 @@ export function registerAgentTools(
     }
   )
 
+  // ── message_parent ─────────────────────────────────────
+  // The child→parent half of the supervision channel. `agent_prompt` is a
+  // delegation tool (drive ANY session by id, stripped from executor
+  // children); this one is deliberately not: it takes no session id, the
+  // daemon resolves the caller's own recorded `parentSessionId`, and it can
+  // reach nothing else — which is why it stays out of
+  // `DELEGATION_TOOL_NAMES` and is granted role-independently. Delivery
+  // mirrors `supervisor-notify.ts` (the crash-notice path): enqueue as a
+  // normal prompt on an idle parent, stamp onto the parent's pending-notice
+  // queue when it's mid-turn — a child's report never interrupts the
+  // parent's in-flight turn.
+  server.tool(
+    "message_parent",
+    "Report a message UP to the session that spawned you (your parent/" +
+      "supervisor) — a result, a progress update, or a blocker. No session " +
+      "id needed: the daemon resolves your recorded parent from your own " +
+      "session identity (also visible as the AGENTPROTO_PARENT_SESSION_ID " +
+      "env var). Delivered as a prompt when the parent is idle, or queued " +
+      "onto its next turn when it's mid-turn (never interrupts). Errors if " +
+      "this session has no recorded parent or the parent is gone.",
+    {
+      message: z
+        .string()
+        .min(1)
+        .describe("The message to deliver to your parent session (plain text)."),
+    },
+    async input => {
+      const fail = (text: string) => ({
+        content: [{ type: "text" as const, text }],
+        isError: true,
+      })
+      // The scoped gateway's token is the caller's identity; on the plain
+      // `/mcp` path the trusted `?callerSessionId=` self-ref query is —
+      // same precedence as spawn attribution (spawn-attach.ts).
+      const selfId = callerScope?.ownerSessionId ?? callerSessionId
+      if (!selfId) {
+        return fail(
+          "message_parent: cannot identify the calling session — this tool " +
+            "needs gateway access attributed to a session (a scoped " +
+            "orchestrator gateway, or a daemon `/mcp` URL carrying " +
+            "`?callerSessionId=`). A human/root caller has no parent to message."
+        )
+      }
+      const self = registry.get(selfId)
+      if (!self) {
+        return fail(`message_parent: calling session "${selfId}" is not in the registry.`)
+      }
+      const parentId = self.parentSessionId
+      if (!parentId || parentId === selfId) {
+        return fail(
+          "message_parent: this session has no recorded parent — it was " +
+            "spawned at the root, so there is no one to report up to."
+        )
+      }
+      const parent = registry.get(parentId)
+      if (!parent) {
+        return fail(`message_parent: parent session "${parentId}" no longer exists.`)
+      }
+      if (parent.status !== "running" && parent.status !== "starting") {
+        return fail(
+          `message_parent: parent session "${parentId}" is not running ` +
+            `(status: ${parent.status}) — the message cannot be delivered.`
+        )
+      }
+      const who = self.label ?? selfId
+      const notice = `[child-message] ${who} (${selfId}): ${input.message}`
+      const done = (delivery: "enqueued" | "queued-next-turn") => ({
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ok: true, parentSessionId: parentId, delivery }, null, 2),
+          },
+        ],
+      })
+      if (!parent.busy) {
+        try {
+          await registry.enqueuePrompt(parentId, notice, {})
+          return done("enqueued")
+        } catch {
+          // Raced into busy/admission-rejected between the check and the
+          // enqueue — fall through to the pending-notice stamp below.
+        }
+      }
+      // Same mechanism the crash notice uses: stamped notices are flushed
+      // ahead of the parent's next outgoing message (see
+      // `pendingChildCrashNotices` in sessions.ts — generic despite the
+      // crash-flavored name).
+      if (!registry.stampPendingChildCrashNotice(parentId, notice)) {
+        return fail(
+          `message_parent: parent session "${parentId}" vanished mid-delivery.`
+        )
+      }
+      return done("queued-next-turn")
+    }
+  )
+
   // ── agent_output ───────────────────────────────────
   server.tool(
     "agent_output",
