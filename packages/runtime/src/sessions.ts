@@ -480,9 +480,18 @@ export function mintSessionId(): string {
  * assign-last rule is what makes that true by construction rather than by
  * accident, and is what guarantees a child spawned from inside a session
  * gets its OWN id rather than inheriting its parent's.
+ *
+ * `PARENT_SESSION_ID_ENV` is the third var, injected by `session-spawn.ts`
+ * only (agent spawns, and only when the spawn resolved a parent): the
+ * recorded `parentSessionId` lineage, so a child agent can know WHO spawned
+ * it without a registry round-trip — the discovery half of the child→parent
+ * report-back channel (`message_parent` is the delivery half). Same
+ * assign-last/no-forgery rule as the other two: it mirrors the descriptor's
+ * own `parentSessionId` field, never anything caller- or env-inherited.
  */
 export const SESSION_ID_ENV = "AGENTPROTO_SESSION_ID"
 export const WORKSPACE_SLUG_ENV = "AGENTPROTO_WORKSPACE_SLUG"
+export const PARENT_SESSION_ID_ENV = "AGENTPROTO_PARENT_SESSION_ID"
 
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =
@@ -1839,7 +1848,7 @@ export interface SessionsRegistry {
   sendPrompt(
     id: string,
     message: unknown,
-    opts?: { interrupt?: boolean }
+    opts?: { interrupt?: boolean; source?: string }
   ): Promise<void>
   /** Fire-and-forget variant of `sendPrompt` for the TURN ITSELF only.
    *  Admission (resume attempt + the missing/wrong-kind/dead/busy
@@ -1859,10 +1868,13 @@ export interface SessionsRegistry {
    *  prompt is admitted + fired on the SAME live session. Ignored
    *  (identical to the default) when the session is idle. Omitted or
    *  `false` reproduces today's mid-turn rejection byte-for-byte. */
+  /** `opts.source` on either prompt verb is the turn's provenance
+   *  (`agent:<sessionId>` when another session injected it — see
+   *  `SessionObserver.recordPrompt`); recording-only, never behavioral. */
   enqueuePrompt(
     id: string,
     message: unknown,
-    opts?: { interrupt?: boolean }
+    opts?: { interrupt?: boolean; source?: string }
   ): Promise<void>
   /** Eagerly resume ONE dead-but-resumable agent-cli session IN PLACE,
    *  WITHOUT a prompt — the boot-time counterpart to the lazy resume that
@@ -4025,7 +4037,12 @@ export function createSessionsRegistry(opts?: {
 
   const runAgentTurn = async (
     rt: SessionRuntime,
-    message: unknown
+    message: unknown,
+    // Prompt provenance for the transcript's "user-prompt" record —
+    // `agent:<sessionId>` when another session injected this turn
+    // (agent_prompt from a supervisor, a parent's spawn prompt), absent for
+    // a human operator. Recording-only: never alters turn behavior.
+    turnOpts?: { promptSource?: string }
   ): Promise<void> => {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
@@ -4099,7 +4116,11 @@ export function createSessionsRegistry(opts?: {
         `\x1b[2m── ▶ ${typeof message === "string" ? message : JSON.stringify(message)} ──\x1b[0m`,
         "stdout"
       )
-      transcriptWriter.recordPrompt(rt.desc.id, message)
+      transcriptWriter.recordPrompt(
+        rt.desc.id,
+        message,
+        turnOpts?.promptSource ? { source: turnOpts.promptSource } : undefined
+      )
       // ACP's `prompt` field expects ContentBlock[] (or a single
       // block). Hosts that send a raw string get auto-wrapped into
       // `{type: "text", text: "..."}` so callers can hand us
@@ -4679,7 +4700,14 @@ export function createSessionsRegistry(opts?: {
       // the ring buffer + bump status to "error" but don't reject
       // the spawn — the descriptor was already returned.
       if (input.initialPrompt) {
-        void runAgentTurn(rt, input.initialPrompt).catch(err => {
+        // A spawn with a recorded parent got its opening prompt FROM that
+        // parent (agent_start), so attribute the turn to it — same
+        // provenance shape as an agent_prompt-injected turn.
+        void runAgentTurn(
+          rt,
+          input.initialPrompt,
+          desc.parentSessionId ? { promptSource: `agent:${desc.parentSessionId}` } : undefined
+        ).catch(err => {
           appendLine(
             rt,
             `[turn error] ${err instanceof Error ? err.message : String(err)}`,
@@ -4817,7 +4845,12 @@ export function createSessionsRegistry(opts?: {
       // specifically, so it never dispatches into a tree that wasn't built
       // yet (see `settlePendingAgent`'s doc).
       if (outcome.initialPrompt) {
-        void runAgentTurn(rt, outcome.initialPrompt).catch(err => {
+        // Same parent attribution as `spawnAgent`'s own initial-prompt fire.
+        void runAgentTurn(
+          rt,
+          outcome.initialPrompt,
+          rt.desc.parentSessionId ? { promptSource: `agent:${rt.desc.parentSessionId}` } : undefined
+        ).catch(err => {
           appendLine(
             rt,
             `[turn error] ${err instanceof Error ? err.message : String(err)}`,
@@ -5126,7 +5159,7 @@ export function createSessionsRegistry(opts?: {
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
-      await runAgentTurn(rt, message)
+      await runAgentTurn(rt, message, opts?.source ? { promptSource: opts.source } : undefined)
     },
     async enqueuePrompt(id, message, opts) {
       // Admission phase — AWAITED, unlike the turn itself below. This
@@ -5156,7 +5189,7 @@ export function createSessionsRegistry(opts?: {
       // the ring buffer as `[error]` lines so the SSE consumer sees
       // them; admission already succeeded so there's nothing else to
       // report back to the original caller.
-      void runAgentTurn(rt, message).catch(err => {
+      void runAgentTurn(rt, message, opts?.source ? { promptSource: opts.source } : undefined).catch(err => {
         appendLine(
           rtPre,
           `[error] ${err instanceof Error ? err.message : String(err)}`,

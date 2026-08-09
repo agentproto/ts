@@ -46,6 +46,19 @@ describe("createTranscriptWriter", () => {
     expect(typeof lines[0]?.ts).toBe("string")
   })
 
+  it("records prompt provenance — `opts.source` rides onto the user-prompt record", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordPrompt("sess_1", "status?", { source: "agent:sess_boss1" })
+    writer.recordPrompt("sess_1", "a human turn")
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    expect(lines[0]).toMatchObject({ kind: "user-prompt", text: "status?", source: "agent:sess_boss1" })
+    // A source-less prompt stays source-less — no empty/undefined key leaks in.
+    expect(lines[1]).toMatchObject({ kind: "user-prompt", text: "a human turn" })
+    expect("source" in (lines[1] ?? {})).toBe(false)
+  })
+
   it("JSON-stringifies non-string prompt messages", async () => {
     const writer = createTranscriptWriter({ baseDir: tmp })
     writer.recordPrompt("sess_1", { type: "text", text: "structured" })

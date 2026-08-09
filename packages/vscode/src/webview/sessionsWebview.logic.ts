@@ -439,7 +439,8 @@ export interface BuildSessionsWebviewModelOptions {
   lane: SessionLane
   /** Selected project rail chip — a workspace slug, {@link UNASSIGNED_SLUG}, or null for "All". */
   project: string | null
-  /** The filter input's live text — matched against name/command/cwd/id via the reused sessionFilter predicate. */
+  /** The filter input's live text — whitespace-tokenized, each token matched (AND, case-insensitive)
+   *  against name/command/cwd/id via the reused sessionFilter predicate. */
   search: string
   now: number
   /** Daemon's total session count for this view; defaults to the loaded count. */

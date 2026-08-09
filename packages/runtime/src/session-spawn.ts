@@ -8,7 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import { mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -1509,6 +1509,41 @@ export async function spawnAgentSession(
       }
     })
   }
+  // ── Report-back channel (child → parent) ──────────────────────────
+  // Every child with a recorded parent should be able to reach
+  // `message_parent` (report a result or blocker UP to the session that
+  // spawned it) without being handed the delegation surface. Two cases are
+  // already covered: an orchestrator scope carries `message_parent` in its
+  // default allowlist, and any daemon-targeting `/mcp` entry (the hermes
+  // default above, or caller-supplied) reaches the root gateway, where the
+  // tool is registered and never deny-gated. The remaining case is a child
+  // with a parent and NO gateway at all (e.g. a plain claude-code leaf):
+  // mint a scope narrowed to `message_parent` only, riding the same
+  // token/lifecycle machinery as a full orchestrator scope (revoked when
+  // the child exits). This grants NO delegation — the scope's tool set has
+  // no `agent_start`/`agent_prompt`, and its role is the child's own, so
+  // the `canSpawn` gate stays shut for an executor. An explicit
+  // `mcpServers` (including `[]`) or `orchestrator: false` is a deliberate
+  // caller choice and is respected as an opt-out; a sandbox spawn is
+  // skipped (a remote box can't reach the loopback gateway anyway).
+  if (
+    mcpServers === undefined &&
+    parentSessionId &&
+    buildOrchestratorMcp &&
+    input.orchestrator !== false &&
+    input.sandbox === undefined
+  ) {
+    // No `caller` ceiling on purpose: report-back is universal, not a
+    // re-grant — a parent whose own scope lacks `message_parent` must not
+    // strip its children of the ability to report up. The scope can spawn
+    // nothing (no delegation tools), so depth bookkeeping is moot.
+    const injection = buildOrchestratorMcp({
+      tools: ["message_parent"],
+      role: role.name,
+    })
+    mcpServers = [injection.entry]
+    bindOrchestratorLifecycle = injection.bindLifecycle
+  }
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
@@ -1797,8 +1832,21 @@ export async function spawnAgentSession(
   // separate system-prompt field on `startSession`). No `prompt` at all
   // ⇒ nothing to compose onto; the child still gets the tool gate above,
   // it just doesn't see the disposition until its first turn.
+  //
+  // A child with a recorded parent also gets one lineage line: without it
+  // the child has no way to KNOW it was spawned by another session (the
+  // env var alone is invisible to harnesses that don't surface env), and
+  // the report-back channel goes unused.
+  const parentContextLine = parentSessionId
+    ? `You were spawned by session ${parentSessionId} (also available in the ` +
+      `${PARENT_SESSION_ID_ENV} env var). When you finish — or hit a blocker ` +
+      `you cannot resolve — report back to it via the message_parent tool if ` +
+      `one is available (no session id needed; the daemon resolves your parent).`
+    : undefined
   let effectivePrompt = input.prompt
-    ? `${composeRoleContext(role, input.promptAppend, roleRegistry)}\n\n${input.prompt}`
+    ? [composeRoleContext(role, input.promptAppend, roleRegistry), parentContextLine, input.prompt]
+        .filter((p): p is string => !!p)
+        .join("\n\n")
     : input.prompt
   // The session's title must name the CALLER's ask, not whatever text
   // happens to be first in the composed prompt above. `deriveSessionTitle`
@@ -2153,6 +2201,11 @@ export async function spawnAgentSession(
         env: {
           [SESSION_ID_ENV]: mintedSessionId,
           [WORKSPACE_SLUG_ENV]: resolvedSlug,
+          // Lineage (PARENT_SESSION_ID_ENV's doc, sessions.ts) — mirrors
+          // the descriptor's `parentSessionId` so the child can discover
+          // who spawned it without a registry round-trip. Absent on a
+          // parentless root spawn.
+          ...(parentSessionId ? { [PARENT_SESSION_ID_ENV]: parentSessionId } : {}),
         },
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)

@@ -66,6 +66,11 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "agent_prompt",
   "agent_output",
   "agent_kill",
+  // Child→parent report-back. NOT a delegation tool (takes no session id;
+  // the daemon resolves the caller's own recorded parent, and it can reach
+  // nothing else) — it's also the sole tool of the minimal report-only
+  // scope `session-spawn.ts` mints for a gateway-less child with a parent.
+  "message_parent",
   "session_monitor",
   "session_events_poll",
   "session_list",

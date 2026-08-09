@@ -400,6 +400,16 @@ describe("sessions webview — interactions", () => {
     expect(htmlEl(el(panel, "arch-toggle")).getAttribute("title")).toBe("Show active sessions")
     expect(htmlEl(el(panel, "arch-toggle")).getAttribute("aria-label")).toBe("Show active sessions")
   })
+
+  it("renders the archived toggle as an archive-box icon, not the stop-lookalike glyph", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    const toggle = el(panel, "arch-toggle")
+    expect(toggle.querySelector("svg")).toBeTruthy()
+    expect(toggle.textContent).not.toContain("▣")
+    const stopSvg = htmlEl(el(panel, "list").querySelector('[data-stop="s1"]'))!.querySelector("svg")!
+    expect(toggle.querySelector("svg")!.innerHTML).not.toBe(stopSvg.innerHTML)
+  })
 })
 
 describe("sessions webview — watched + nesting (items 5, 6)", () => {

@@ -921,12 +921,20 @@ export function buildHtml(
        one earns colour on hover only, so a red slab never sits permanently
        under the user's eyes. */
     #input-area {
+      /* Locked palette, mirroring #book: the composer is part of the same
+         DESIGNED reading surface, not vscode chrome, so it shares the book's
+         ink / paper / phosphor instead of the editor theme — which is why it
+         used to read as a blue-focused box on a different background. */
+      --ink: #1b1b1c; --ink-2: #232324; --edge: #333335;
+      --paper: #f4f0e6; --paper-45: rgba(244,240,230,.45); --paper-28: rgba(244,240,230,.28);
+      --phosphor: #2f9e63;
       flex: 0 0 auto;
       display: flex;
       flex-direction: column;
       gap: 8px;
       padding: 10px 14px 12px;
-      background-color: var(--vscode-editor-background);
+      background-color: var(--ink);
+      color: var(--paper);
     }
     /* ── Error banner ─────────────────────────────────────────────────
        Errors used to be one line of red text wedged under the buttons,
@@ -983,15 +991,15 @@ export function buildHtml(
       flex-direction: column;
       gap: 6px;
       padding: 8px 10px;
-      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,0.35)));
+      border: 1px solid var(--edge);
       border-radius: 8px;
-      background: var(--vscode-input-background);
+      background: var(--ink-2);
     }
-    #composer:focus-within { border-color: var(--vscode-focusBorder); }
+    #composer:focus-within { border-color: var(--phosphor); }
     #composer.disabled { opacity: 0.6; }
     /* Drop affordance: the composer is the drop target, so it lights up while a
        file is dragged over the panel. */
-    #composer.drag-over { border-color: var(--vscode-focusBorder); border-style: dashed; }
+    #composer.drag-over { border-color: var(--phosphor); border-style: dashed; }
     /* ── Attachment chips ─────────────────────────────────────────────
        A pasted/dragged/mentioned path becomes a removable chip here, not
        raw text in the box — the path still rides along in the sent prompt
@@ -1008,10 +1016,10 @@ export function buildHtml(
       gap: 6px;
       max-width: 260px;
       padding: 2px 4px 2px 8px;
-      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,0.35)));
+      border: 1px solid var(--edge);
       border-radius: 10px;
-      background: var(--vscode-badge-background, rgba(128,128,128,0.18));
-      color: var(--vscode-badge-foreground, var(--vscode-editor-foreground));
+      background: var(--ink);
+      color: var(--paper);
       font-size: 0.85em;
     }
     .attach-chip-label {
@@ -1074,20 +1082,20 @@ export function buildHtml(
       padding: 0;
       border: none;
       background: transparent;
-      color: var(--vscode-input-foreground);
+      color: var(--paper);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
       line-height: 1.4;
     }
     #input:focus { outline: none; }
-    #input::placeholder { color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); }
+    #input::placeholder { color: var(--paper-45); }
     #input:disabled { cursor: not-allowed; }
     #composer-bar {
       display: flex;
       align-items: center;
       gap: 8px;
       font-size: 0.85em;
-      color: var(--vscode-descriptionForeground);
+      color: var(--paper-45);
     }
     /* Which agent/model will answer belongs where you type, not only in the
        header — so the header no longer repeats it. */
@@ -1117,7 +1125,7 @@ export function buildHtml(
     }
     .composer-chip-btn:hover:not(:disabled) {
       background: transparent;
-      color: var(--vscode-textLink-foreground, var(--vscode-editor-foreground));
+      color: var(--phosphor);
       text-decoration: underline;
     }
     button {
@@ -1151,12 +1159,12 @@ export function buildHtml(
       padding: 4px 8px;
     }
     #send.has-text {
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
+      background: var(--phosphor);
+      color: var(--ink);
     }
     #send.has-text:hover:not(:disabled) {
-      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
-      color: var(--vscode-button-foreground);
+      background: #37b473;
+      color: var(--ink);
     }
     /* Destructive-but-not-alarming: it abandons a turn, not the session, so
        this stops short of the errorForeground/errorBackground pair #kill's
@@ -1182,11 +1190,11 @@ export function buildHtml(
       font-size: 0.85em;
       line-height: 1;
       padding: 4px 8px;
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
+      background: var(--phosphor);
+      color: var(--ink);
     }
     #restart-btn:hover:not(:disabled) {
-      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+      background: #37b473;
     }
     #send-status {
       flex: 0 0 auto;
@@ -1267,11 +1275,10 @@ export function buildHtml(
 
     /* The ask block is the HUMAN turn: a persistent, tinted paper card pinned
        ABOVE its response chapter (not inside the fold), left edge in the chevron
-       column. A quiet phosphor edge marks it as your voice; the response chapter
-       builds directly beneath it. */
+       column. The tint alone marks it as an incoming voice — no colored edge;
+       the response chapter builds directly beneath it. */
     #book .ask {
       background: var(--paper-tint); border-radius: 8px;
-      border-left: 2px solid var(--phosphor);
       padding: 10px 14px; margin: 8px 0 6px;
     }
     #book .ask .alabel { font: 600 9.5px var(--bkmono); letter-spacing: .13em; color: var(--paper-45); }
@@ -2607,9 +2614,16 @@ export function buildHtml(
 
       function paintChapter(node, ch, index, chapters, isLive) {
         node.classList.toggle('live', isLive);
+        // Provenance: a prompt injected by another session (agent_prompt from
+        // a supervisor, a parent's spawn prompt) carries source
+        // "agent:<sessionId>" — attribute the ask to it instead of "you".
+        // NB: this whole script is a template literal — no backticks here.
+        const askSource = ch.ask && typeof ch.ask.source === 'string' ? ch.ask.source : '';
+        const fromAgent = askSource.indexOf('agent:') === 0;
         const fold = node.querySelector(':scope > .fold');
         fold.querySelector('h2').textContent = ch.title;
-        fold.querySelector('.who').textContent = ch.origin === 'you' ? '◈ you' : '';
+        fold.querySelector('.who').textContent =
+          ch.origin === 'you' ? (fromAgent ? '◈ supervisor' : '◈ you') : '';
         const dur = chapterDurationMs(chapters, index);
         fold.querySelector('.t').textContent = typeof dur === 'number' ? formatChapterDuration(dur) : '';
 
@@ -2622,13 +2636,27 @@ export function buildHtml(
         const ask = node.querySelector(':scope > .ask');
         if (ch.ask) {
           ask.hidden = false;
+          const alabel = ask.querySelector('.alabel');
+          alabel.textContent = fromAgent ? 'SUPERVISOR ASKED' : 'YOU ASKED';
+          // Full provenance on hover — the injecting session's id.
+          if (fromAgent) alabel.title = askSource.slice('agent:'.length);
+          else alabel.removeAttribute('title');
           const atext = ask.querySelector('.atext');
           atext.innerHTML = ch.ask.html || '';
           enhanceBookBlocks(atext);
           // Respect an earlier "$ full message" expansion across live re-renders.
-          const clamp = Boolean(ch.ask.long) && !bookAskExpanded.has(ch.id);
+          const amore = ask.querySelector('.amore');
+          let clamp = Boolean(ch.ask.long) && !bookAskExpanded.has(ch.id);
           ask.classList.toggle('clamped', clamp);
-          ask.querySelector('.amore').hidden = !clamp;
+          // The char-count is only a heuristic — trust the actual layout: a
+          // message that already fits entirely inside the clamp needs no
+          // "$ full message" expander. (clientHeight is 0 before first
+          // layout — keep the heuristic's verdict in that case.)
+          if (clamp && atext.clientHeight > 0 && atext.scrollHeight <= atext.clientHeight + 1) {
+            clamp = false;
+            ask.classList.remove('clamped');
+          }
+          amore.hidden = !clamp;
         } else {
           ask.hidden = true;
         }
