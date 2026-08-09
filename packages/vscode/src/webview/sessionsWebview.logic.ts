@@ -200,11 +200,39 @@ export const WORKSPACE_PALETTE: readonly string[] = [
   "#ef4444", // red
 ]
 
+/** Human-readable names for {@link WORKSPACE_PALETTE}, same order — accessible labels for the color-picker swatches. */
+export const WORKSPACE_PALETTE_NAMES: readonly string[] = [
+  "Orange",
+  "Green",
+  "Blue",
+  "Purple",
+  "Magenta",
+  "Cyan",
+  "Gold",
+  "Red",
+]
+
 /** Dedicated index for rows with no resolvable workspace — a neutral gray outside the accent palette. */
 export const UNASSIGNED_COLOR_INDEX = WORKSPACE_PALETTE.length
 
+/** The neutral gray used for {@link UNASSIGNED_COLOR_INDEX} — also selectable as a swatch on any workspace. */
+export const UNASSIGNED_COLOR_CSS = "#808080"
+
 /** Sentinel slug for the "no resolvable workspace" bucket in the project rail. */
 export const UNASSIGNED_SLUG = "__unassigned__"
+
+/** Per-slug user color override — a palette index (0..{@link UNASSIGNED_COLOR_INDEX}), keyed by workspace slug. */
+export type WorkspaceColorOverrides = Readonly<Record<string, number>>
+
+/** Resolve a palette index (including {@link UNASSIGNED_COLOR_INDEX}) to its css color. */
+function cssForPaletteIndex(index: number): string {
+  return index === UNASSIGNED_COLOR_INDEX ? UNASSIGNED_COLOR_CSS : WORKSPACE_PALETTE[index]!
+}
+
+/** Whether a value is a valid palette index an override may carry — an integer in [0, {@link UNASSIGNED_COLOR_INDEX}]. */
+export function isValidColorIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= UNASSIGNED_COLOR_INDEX
+}
 
 /** Relative luminance of an sRGB color (for accessibility sanity checks). */
 export function relativeLuminance(hex: string): number {
@@ -217,11 +245,20 @@ export function relativeLuminance(hex: string): number {
 
 /**
  * Deterministic, stable workspace color. Hashing the workspace slug means
- * adding or removing workspaces never shifts another workspace's color.
+ * adding or removing workspaces never shifts another workspace's color —
+ * this is the fallback used when `overrides` carries no entry for `slug`.
+ * An override (set via the rail chip's swatch popover) always wins.
  */
-export function workspaceColorFor(slug: string): { index: number; css: string } {
+export function workspaceColorFor(
+  slug: string,
+  overrides?: WorkspaceColorOverrides,
+): { index: number; css: string } {
+  const override = overrides?.[slug]
+  if (isValidColorIndex(override)) {
+    return { index: override, css: cssForPaletteIndex(override) }
+  }
   if (slug === UNASSIGNED_SLUG) {
-    return { index: UNASSIGNED_COLOR_INDEX, css: "#808080" }
+    return { index: UNASSIGNED_COLOR_INDEX, css: UNASSIGNED_COLOR_CSS }
   }
   const hash = [...slug].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 0)
   const index = hash % WORKSPACE_PALETTE.length
@@ -415,6 +452,8 @@ export interface RailEntry {
   label: string
   /** Color-square css for a workspace chip; undefined for "All". */
   css: string | undefined
+  /** Palette index backing `css` (override or hash default); undefined for "All" — the color-picker's active swatch. */
+  colorIndex: number | undefined
   count: number
   /** True when this project holds at least one session awaiting the human. */
   awaiting: boolean
@@ -454,6 +493,8 @@ export interface BuildSessionsWebviewModelOptions {
    *  "N of M loaded" footer. Defaults to the input length; pass it explicitly
    *  when the input is padded with live/pinned rows that aren't paged results. */
   loadedCount?: number
+  /** Per-slug workspace color overrides (host-persisted via globalState) — see {@link workspaceColorFor}. */
+  colorOverrides?: WorkspaceColorOverrides
 }
 
 /** Resolve a session's workspace to a stable slug/label, or undefined when unassigned. */
@@ -477,7 +518,12 @@ function projectSlugOf(config: WorkspacesConfig, session: SessionSummary): strin
   return workspaceFor(config, session)?.slug ?? UNASSIGNED_SLUG
 }
 
-function toRow(session: SessionSummary, now: number, config: WorkspacesConfig): WebviewRow {
+function toRow(
+  session: SessionSummary,
+  now: number,
+  config: WorkspacesConfig,
+  colorOverrides: WorkspaceColorOverrides | undefined,
+): WebviewRow {
   const pctStr = contextPercent(session.contextUsed, session.contextSize)
   const ws = workspaceFor(config, session)
   const identity = nameIdentityFor(session)
@@ -501,7 +547,7 @@ function toRow(session: SessionSummary, now: number, config: WorkspacesConfig): 
     depth: 0,
     action: rowActionFor(session),
     workspace: ws
-      ? { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug).index }
+      ? { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug, colorOverrides).index }
       : undefined,
     archived: session.archived === true,
   }
@@ -567,7 +613,7 @@ export function buildSessionsWebviewModel(
   //    of the current project selection (the rail IS the selector). A chip
   //    lights its ochre dot when it holds a session awaiting the human.
   const railScope = searchSurvivors.filter(s => laneOf(s) === opts.lane)
-  const rail = buildRail(railScope, workspaces, opts.now)
+  const rail = buildRail(railScope, workspaces, opts.now, opts.colorOverrides)
 
   // 3. Segmented-control counts — within the selected project.
   const projectSurvivors =
@@ -582,7 +628,7 @@ export function buildSessionsWebviewModel(
     .filter(s => laneOf(s) === opts.lane)
     .slice()
     .sort((a, b) => compareSessions(a, b))
-  const rows = scope.map(s => toRow(s, opts.now, workspaces))
+  const rows = scope.map(s => toRow(s, opts.now, workspaces, opts.colorOverrides))
 
   const groups = opts.lane === "agents" ? buildSections(rows) : buildAutoGroups(rows)
   const shownCount = groups.reduce((n, g) => n + g.rows.length, 0)
@@ -602,6 +648,7 @@ function buildRail(
   scope: readonly SessionSummary[],
   workspaces: WorkspacesConfig,
   now: number,
+  colorOverrides: WorkspaceColorOverrides | undefined,
 ): RailEntry[] {
   const counts = new Map<string, { count: number; awaiting: boolean; label: string }>()
   let allAwaiting = false
@@ -621,13 +668,17 @@ function buildRail(
   }
 
   const projectChips: RailEntry[] = [...counts.entries()]
-    .map(([slug, { count, awaiting, label }]) => ({
-      slug,
-      label,
-      css: workspaceColorFor(slug).css,
-      count,
-      awaiting,
-    }))
+    .map(([slug, { count, awaiting, label }]) => {
+      const color = workspaceColorFor(slug, colorOverrides)
+      return {
+        slug,
+        label,
+        css: color.css,
+        colorIndex: color.index,
+        count,
+        awaiting,
+      }
+    })
     // Unassigned last; otherwise alphabetical by label for a stable order.
     .sort((a, b) => {
       if (a.slug === UNASSIGNED_SLUG) return 1
@@ -639,6 +690,7 @@ function buildRail(
     slug: null,
     label: "All",
     css: undefined,
+    colorIndex: undefined,
     count: scope.length,
     awaiting: allAwaiting,
   }

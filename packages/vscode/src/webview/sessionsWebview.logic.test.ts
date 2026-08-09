@@ -20,6 +20,7 @@ import {
   sectionFor,
   stripMarkdownToText,
   summaryTextFor,
+  UNASSIGNED_COLOR_INDEX,
   UNASSIGNED_SLUG,
   webviewRowStatus,
   WORKSPACE_PALETTE,
@@ -213,6 +214,39 @@ describe("workspaceColorFor", () => {
   it("uses a neutral gray for the unassigned sentinel", () => {
     expect(workspaceColorFor(UNASSIGNED_SLUG).css).toBe("#808080")
   })
+
+  it("an override takes precedence over the hash default", () => {
+    const hashDefault = workspaceColorFor("studio")
+    const overrideIndex = (hashDefault.index + 1) % WORKSPACE_PALETTE.length
+    const overridden = workspaceColorFor("studio", { studio: overrideIndex })
+    expect(overridden.index).toBe(overrideIndex)
+    expect(overridden.css).toBe(WORKSPACE_PALETTE[overrideIndex])
+    expect(overridden.css).not.toBe(hashDefault.css)
+  })
+
+  it("an override for the neutral unassigned index resolves to the neutral gray", () => {
+    expect(workspaceColorFor("studio", { studio: UNASSIGNED_COLOR_INDEX })).toEqual({
+      index: UNASSIGNED_COLOR_INDEX,
+      css: "#808080",
+    })
+  })
+
+  it("an override only applies to its own slug — other slugs keep their hash default", () => {
+    const studioDefault = workspaceColorFor("studio")
+    expect(workspaceColorFor("studio", { other: 3 })).toEqual(studioDefault)
+  })
+
+  it("no override present (or reset — key absent) falls back to the hash default, unchanged", () => {
+    expect(workspaceColorFor("studio", {})).toEqual(workspaceColorFor("studio"))
+    expect(workspaceColorFor("studio", undefined)).toEqual(workspaceColorFor("studio"))
+  })
+
+  it("ignores an out-of-range or non-integer override and falls back to the hash default", () => {
+    const hashDefault = workspaceColorFor("studio")
+    expect(workspaceColorFor("studio", { studio: -1 })).toEqual(hashDefault)
+    expect(workspaceColorFor("studio", { studio: UNASSIGNED_COLOR_INDEX + 1 })).toEqual(hashDefault)
+    expect(workspaceColorFor("studio", { studio: 1.5 })).toEqual(hashDefault)
+  })
 })
 
 describe("WORKSPACE_PALETTE accessibility", () => {
@@ -390,6 +424,29 @@ describe("cronJobIdOf / collapseCronRuns", () => {
     expect(crons.rows[0]!.runs).toBe(3)
     expect(crons.rows[0]!.idMono).toBe("d8ee2e36")
     expect(model.shownCount).toBe(1)
+  })
+})
+
+describe("buildSessionsWebviewModel — colorOverrides", () => {
+  it("an override reflects in both the rail chip and the row's workspace colorIndex", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", busy: true })]
+    const hashDefault = workspaceColorFor("studio")
+    const overrideIndex = (hashDefault.index + 1) % WORKSPACE_PALETTE.length
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ colorOverrides: { studio: overrideIndex } }))
+    const railEntry = model.rail.find(r => r.slug === "studio")
+    expect(railEntry?.colorIndex).toBe(overrideIndex)
+    expect(railEntry?.css).toBe(WORKSPACE_PALETTE[overrideIndex])
+    const row = model.groups.flatMap(g => g.rows).find(r => r.id === "a")
+    expect(row?.workspace?.colorIndex).toBe(overrideIndex)
+  })
+
+  it("with no colorOverrides, rail/row colors are unchanged from the hash default", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", busy: true })]
+    const withOverrides = buildSessionsWebviewModel(sessions, studioConfig, opts({ colorOverrides: {} }))
+    const withoutOverrides = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(withOverrides.rail.find(r => r.slug === "studio")?.colorIndex).toBe(
+      withoutOverrides.rail.find(r => r.slug === "studio")?.colorIndex,
+    )
   })
 })
 

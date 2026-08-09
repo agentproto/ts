@@ -15,7 +15,8 @@
 
 import { randomBytes } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { homedir } from "node:os"
+import { isAbsolute, join } from "node:path"
 
 import * as vscode from "vscode"
 
@@ -324,7 +325,96 @@ export async function handleWebviewMessage(
       // re-derivation, same read-only editor tab as a tool value.
       await outputDocs.show(msg.name, msg.text)
       return
+    case "openLink":
+      // A URL or file path in the transcript prose was clicked. External URLs
+      // hand off to the OS browser; file paths open in the editor, positioned
+      // at the cited line. Both validated defensively — a hostile/broken target
+      // is dropped quietly rather than thrown.
+      await openLinkTarget(msg.kind, msg.target, msg.line, controller)
+      return
   }
+}
+
+/**
+ * Open a transcript link. `external` → the OS browser (http/https/file only);
+ * `file` → an editor tab at `line` (1-based). File-path resolution:
+ *   - absolute path → itself
+ *   - `~/…`         → against the home dir
+ *   - relative      → against the session cwd, then each workspace folder,
+ *                     preferring the first that actually exists on disk
+ * A missing file surfaces a gentle notice, never an exception.
+ */
+export async function openLinkTarget(
+  kind: "external" | "file",
+  target: string,
+  line: number | undefined,
+  controller: TranscriptPanelController,
+): Promise<void> {
+  if (kind === "external") {
+    let uri: vscode.Uri
+    try {
+      uri = vscode.Uri.parse(target, true)
+    } catch {
+      return
+    }
+    // Belt-and-braces: the renderer only emits http/https/file, but never hand
+    // an arbitrary scheme to openExternal.
+    if (!["http", "https", "file"].includes(uri.scheme.toLowerCase())) return
+    await vscode.env.openExternal(uri)
+    return
+  }
+
+  const uri = await resolveFileTarget(target, controller)
+  if (!uri) {
+    void vscode.window.showInformationMessage(`agentproto: couldn't find "${target}".`)
+    return
+  }
+  try {
+    const doc = await vscode.workspace.openTextDocument(uri)
+    const selection =
+      line != null && line > 0
+        ? new vscode.Range(line - 1, 0, line - 1, 0)
+        : undefined
+    await vscode.window.showTextDocument(doc, {
+      viewColumn: vscode.ViewColumn.Beside,
+      preview: true,
+      preserveFocus: false,
+      selection,
+    })
+  } catch {
+    void vscode.window.showInformationMessage(`agentproto: couldn't open "${target}".`)
+  }
+}
+
+/** Resolve a file-path link target to an on-disk Uri, or undefined if no
+ *  candidate exists. Never throws. */
+async function resolveFileTarget(
+  target: string,
+  controller: TranscriptPanelController,
+): Promise<vscode.Uri | undefined> {
+  const candidates: string[] = []
+  if (target.startsWith("~/") || target === "~") {
+    candidates.push(join(homedir(), target.slice(1)))
+  } else if (isAbsolute(target)) {
+    candidates.push(target)
+  } else {
+    const rel = target.replace(/^\.\//, "")
+    const cwd = controller.session.cwd
+    if (cwd) candidates.push(join(cwd, rel))
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      candidates.push(join(folder.uri.fsPath, rel))
+    }
+  }
+  for (const fsPath of candidates) {
+    const uri = vscode.Uri.file(fsPath)
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      if (stat.type === vscode.FileType.File) return uri
+    } catch {
+      // Not there — try the next candidate.
+    }
+  }
+  return undefined
 }
 
 function randomNonce(): string {
@@ -860,13 +950,51 @@ export function buildHtml(
        escalation is "this number is now shouting", not another border. */
     .tool-still-running > summary > .seg-elapsed { font-weight: 600; }
     .seg.plan {
-      border-left: 3px solid var(--vscode-progressBar-background);
+      /* Semantic state colours resolved to VS Code theme tokens on the
+         timeline. #book re-binds these same vars to the paper palette (see the
+         "#book .seg.plan" block near .notices), so the ONE structural ruleset
+         below serves both reading surfaces without duplication. */
+      --plan-accent: var(--vscode-charts-green, var(--vscode-progressBar-background));
+      --plan-muted: var(--vscode-descriptionForeground);
+      --plan-faint: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+      --plan-error: var(--vscode-errorForeground);
+      --plan-track: var(--vscode-progressBar-background);
+      border-left: 3px solid var(--plan-accent);
       padding: 4px 0 4px 10px;
     }
     .plan-head { font-weight: 600; font-size: 0.9em; margin-bottom: 4px; }
+    /* Thin done/total track under the head — accent fill over a faint groove. */
+    .plan-progress {
+      height: 2px; border-radius: 2px; margin: 0 0 6px;
+      background: var(--plan-track); opacity: 0.35; overflow: hidden;
+    }
+    .plan-progress-fill {
+      height: 100%; width: 0; border-radius: 2px;
+      background: var(--plan-accent); transition: width .2s ease;
+    }
     .plan-list { list-style: none; margin: 0; padding: 0; }
-    .plan-list li { font-size: 0.92em; }
-    .plan-list li.plan-completed { color: var(--vscode-descriptionForeground); text-decoration: line-through; }
+    /* Two columns: [marker | text]. A fixed marker column + baseline alignment
+       give wrapped lines a hanging indent that lands on the text's left edge,
+       not under the glyph. The marker is its own element, never a text prefix. */
+    .plan-list li {
+      display: grid;
+      grid-template-columns: 1.3em 1fr;
+      align-items: baseline;
+      column-gap: 0.4em;
+      font-size: 0.92em;
+      line-height: 1.45;
+      padding: 3px 0;
+    }
+    .plan-mark { text-align: center; }
+    .plan-text { min-width: 0; }
+    .plan-list li.plan-pending { color: var(--plan-faint); }
+    .plan-list li.plan-pending .plan-mark { color: var(--plan-faint); }
+    .plan-list li.plan-in_progress { font-weight: 600; }
+    .plan-list li.plan-in_progress .plan-mark { color: var(--plan-accent); }
+    .plan-list li.plan-completed { color: var(--plan-muted); text-decoration: line-through; }
+    .plan-list li.plan-completed .plan-mark { color: var(--plan-accent); text-decoration: none; }
+    .plan-list li.plan-failed { color: var(--plan-error); }
+    .plan-list li.plan-failed .plan-mark { color: var(--plan-error); }
     .seg.question {
       border-left: 3px solid var(--vscode-editorWarning-foreground);
       padding: 4px 0 4px 10px;
@@ -1301,6 +1429,24 @@ export function buildHtml(
       padding: 1px 5px; border-radius: 4px; color: var(--paper);
     }
     #book .story a { color: var(--phosphor); }
+
+    /* Clickable URLs / file paths in transcript prose (renderMarkdown's .tlink
+       anchors). Calm by default — phosphor, no underline until hover — with a
+       small "open" glyph (.tlink-open) that only fades in on hover so prose
+       stays quiet. Styled for both surfaces (#book paper + #transcript). */
+    .tlink {
+      color: var(--phosphor); text-decoration: none; cursor: pointer;
+      border-radius: 3px;
+    }
+    .tlink:hover { text-decoration: underline; }
+    .tlink:focus-visible { outline: 1px solid var(--phosphor); outline-offset: 1px; }
+    .tlink-open {
+      display: inline-block; opacity: 0; font-size: 0.85em;
+      margin-left: 0.15em; vertical-align: baseline;
+      transition: opacity 0.12s ease;
+    }
+    .tlink:hover .tlink-open, .tlink:focus-visible .tlink-open { opacity: 0.8; }
+
     #book .story > :first-child { margin-top: 0; }
     #book .story > :last-child { margin-bottom: 0; }
 
@@ -1411,6 +1557,18 @@ export function buildHtml(
     #book .steps-body .tool-io-open { color: var(--phosphor); }
     #book .steps-body .tool-io-clamped { border-bottom-color: var(--edge); }
     #book .notices { margin-top: 10px; }
+    /* The plan notice re-themed for the paper surface: the structural rules
+       (grid, hanging indent, progress track) are shared with the timeline —
+       only the state colours swap from VS Code tokens to the book palette, by
+       re-binding the same --plan-* vars the base .seg.plan rules read. */
+    #book .seg.plan {
+      --plan-accent: var(--phosphor);
+      --plan-muted: var(--paper-45);
+      --plan-faint: var(--paper-28);
+      --plan-error: #cf8b73;
+      --plan-track: var(--paper-45);
+    }
+    #book .seg.plan .plan-head { color: var(--paper-72); }
 
     /* Pop-out affordance: a small hover button on a WIDE narration block (table
        or fenced code) to open it in a full read-only editor tab, for content
@@ -2140,11 +2298,27 @@ export function buildHtml(
             node.className = 'seg plan';
             node.innerHTML = '';
             node.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
+            // Thin progress track under the head — width = done/total.
+            const track = el('div', 'plan-progress');
+            const fill = el('div', 'plan-progress-fill');
+            const pct = seg.total > 0 ? Math.round((seg.done / seg.total) * 100) : 0;
+            fill.style.width = pct + '%';
+            track.appendChild(fill);
+            node.appendChild(track);
             const ul = el('ul', 'plan-list');
             for (const entry of seg.entries || []) {
-              const mark = entry.status === 'completed' ? '☑ '
-                : entry.status === 'in_progress' ? '▸ ' : '☐ ';
-              ul.appendChild(el('li', 'plan-' + entry.status, mark + entry.content));
+              // Steady text glyphs (not emoji-variant): crisp in a monospace
+              // column and colour-controlled per state via the .plan-mark span.
+              const mark = entry.status === 'completed' ? '✓'      // ✓
+                : entry.status === 'in_progress' ? '●'            // ●
+                : entry.status === 'failed' ? '✗'                 // ✗
+                : '○';                                            // ○ pending
+              const li = el('li', 'plan-' + entry.status);
+              // Marker is its OWN element, never a text prefix — that is what
+              // lets wrapped lines hang-indent to the text column.
+              li.appendChild(el('span', 'plan-mark', mark));
+              li.appendChild(el('span', 'plan-text', entry.content));
+              ul.appendChild(li);
             }
             node.appendChild(ul);
             return;
@@ -2806,6 +2980,22 @@ export function buildHtml(
         bookScrolledUp = book.scrollHeight - book.clientHeight - book.scrollTop > threshold;
       });
       bookToggle.addEventListener('click', toggleBookView);
+
+      // One delegated listener for every clickable link (.tlink) in the prose —
+      // book narration, ask cards, and the raw transcript all share it. Reading
+      // data-target off the anchor auto-un-escapes the HTML entities back to the
+      // real URL/path; the host decides browser-vs-editor from data-open.
+      document.addEventListener('click', function(e) {
+        const link = e.target && e.target.closest && e.target.closest('.tlink');
+        if (!link) return;
+        e.preventDefault();
+        const kind = link.getAttribute('data-open');
+        const target = link.getAttribute('data-target');
+        if (!target || (kind !== 'external' && kind !== 'file')) return;
+        const rawLine = link.getAttribute('data-line');
+        const line = rawLine ? parseInt(rawLine, 10) : undefined;
+        vscode.postMessage({ type: 'openLink', kind: kind, target: target, line: line });
+      });
 
       // A resume-chain ancestor's turns are rendered ONCE, statically — they
       // never patch again (the ancestor session is dead history), so this

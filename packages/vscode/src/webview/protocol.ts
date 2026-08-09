@@ -342,6 +342,15 @@ export type WebviewMessage =
    * `{kind:"resize",cols,rows}` frame.
    */
   | { type: "ptyResize"; cols: number; rows: number }
+  /**
+   * A clickable link in the transcript prose was activated (see the `.tlink`
+   * anchors `renderMarkdown` emits). `kind` is `external` (a URL, opened in the
+   * browser) or `file` (a path, opened in the editor). `target` is the raw
+   * URL/path — the webview reads it back from the anchor's `data-target`, which
+   * the browser has already un-escaped from its HTML-entity form. `line` is a
+   * 1-based line number when the citation carried a `:line` suffix.
+   */
+  | { type: "openLink"; kind: "external" | "file"; target: string; line?: number }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -379,6 +388,12 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return typeof m.text === "string"
     case "ptyResize":
       return typeof m.cols === "number" && typeof m.rows === "number"
+    case "openLink":
+      return (
+        (m.kind === "external" || m.kind === "file") &&
+        typeof m.target === "string" &&
+        (m.line === undefined || typeof m.line === "number")
+      )
     default:
       return false
   }
