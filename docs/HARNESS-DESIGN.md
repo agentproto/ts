@@ -53,7 +53,7 @@ Adapters live in top-level `adapters/`. The `adapter` field of
 | `opencode` | `@agentproto/adapter-opencode` | ACP | — | `--model {value}` (CLI), supports `openrouter/<provider>/<model>` |
 | `codex` | `@agentproto/adapter-codex` | ACP | `gpt-5-codex` | `--model {value}`, enum |
 | `openclaw` | `@agentproto/adapter-openclaw` | ACP | gateway-managed | n/a in manifest |
-| `antigravity` | `@agentproto/adapter-antigravity` | print | — | `-p <prompt>` with `--output-format stream-json`; supports `--continue <conversation-id>` |
+| `antigravity` | `@agentproto/adapter-antigravity` | print | — | `-p <prompt>` with `--output-format stream-json`; supports `--conversation <conversation-id>` |
 
 > ⚠️ **Grounding note on the requested models.** The harness brief names
 > `hermes + deepseek-v4-pro` (coder) and `hermes + GLM-5.2` (researcher). Those
