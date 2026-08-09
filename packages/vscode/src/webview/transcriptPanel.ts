@@ -1275,11 +1275,10 @@ export function buildHtml(
 
     /* The ask block is the HUMAN turn: a persistent, tinted paper card pinned
        ABOVE its response chapter (not inside the fold), left edge in the chevron
-       column. A quiet phosphor edge marks it as your voice; the response chapter
-       builds directly beneath it. */
+       column. The tint alone marks it as an incoming voice — no colored edge;
+       the response chapter builds directly beneath it. */
     #book .ask {
       background: var(--paper-tint); border-radius: 8px;
-      border-left: 2px solid var(--phosphor);
       padding: 10px 14px; margin: 8px 0 6px;
     }
     #book .ask .alabel { font: 600 9.5px var(--bkmono); letter-spacing: .13em; color: var(--paper-45); }
@@ -2615,9 +2614,16 @@ export function buildHtml(
 
       function paintChapter(node, ch, index, chapters, isLive) {
         node.classList.toggle('live', isLive);
+        // Provenance: a prompt injected by another session (agent_prompt from
+        // a supervisor, a parent's spawn prompt) carries source
+        // "agent:<sessionId>" — attribute the ask to it instead of "you".
+        // NB: this whole script is a template literal — no backticks here.
+        const askSource = ch.ask && typeof ch.ask.source === 'string' ? ch.ask.source : '';
+        const fromAgent = askSource.indexOf('agent:') === 0;
         const fold = node.querySelector(':scope > .fold');
         fold.querySelector('h2').textContent = ch.title;
-        fold.querySelector('.who').textContent = ch.origin === 'you' ? '◈ you' : '';
+        fold.querySelector('.who').textContent =
+          ch.origin === 'you' ? (fromAgent ? '◈ supervisor' : '◈ you') : '';
         const dur = chapterDurationMs(chapters, index);
         fold.querySelector('.t').textContent = typeof dur === 'number' ? formatChapterDuration(dur) : '';
 
@@ -2630,13 +2636,27 @@ export function buildHtml(
         const ask = node.querySelector(':scope > .ask');
         if (ch.ask) {
           ask.hidden = false;
+          const alabel = ask.querySelector('.alabel');
+          alabel.textContent = fromAgent ? 'SUPERVISOR ASKED' : 'YOU ASKED';
+          // Full provenance on hover — the injecting session's id.
+          if (fromAgent) alabel.title = askSource.slice('agent:'.length);
+          else alabel.removeAttribute('title');
           const atext = ask.querySelector('.atext');
           atext.innerHTML = ch.ask.html || '';
           enhanceBookBlocks(atext);
           // Respect an earlier "$ full message" expansion across live re-renders.
-          const clamp = Boolean(ch.ask.long) && !bookAskExpanded.has(ch.id);
+          const amore = ask.querySelector('.amore');
+          let clamp = Boolean(ch.ask.long) && !bookAskExpanded.has(ch.id);
           ask.classList.toggle('clamped', clamp);
-          ask.querySelector('.amore').hidden = !clamp;
+          // The char-count is only a heuristic — trust the actual layout: a
+          // message that already fits entirely inside the clamp needs no
+          // "$ full message" expander. (clientHeight is 0 before first
+          // layout — keep the heuristic's verdict in that case.)
+          if (clamp && atext.clientHeight > 0 && atext.scrollHeight <= atext.clientHeight + 1) {
+            clamp = false;
+            ask.classList.remove('clamped');
+          }
+          amore.hidden = !clamp;
         } else {
           ask.hidden = true;
         }

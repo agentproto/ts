@@ -874,6 +874,10 @@ export interface SessionEventRecord {
   costUsd?: number
   contextSize?: number
   contextUsed?: number
+  /** usage_snapshot: which usage source produced the recap. user-prompt:
+   *  the turn's provenance — `agent:<sessionId>` when another session
+   *  injected it (agent_prompt from a supervisor, a parent's spawn
+   *  prompt); absent for a human operator. */
   source?: string
 }
 

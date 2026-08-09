@@ -45,6 +45,11 @@ export interface ChapterAsk {
   /** True when the plaintext is long enough to warrant a "$ full message"
    *  expander (the card clamps until expanded). */
   long: boolean
+  /** The prompt's provenance (`PresentedTurn.promptSource`) —
+   *  `agent:<sessionId>` when a supervisor injected it via agent_prompt (or
+   *  a parent's spawn prompt); absent for a human. Drives the card's
+   *  "SUPERVISOR ASKED" attribution. */
+  source?: string
 }
 
 export interface ChapterSteps {
@@ -139,7 +144,11 @@ export function askOf(turn: PresentedTurn): ChapterAsk | undefined {
     (s): s is PresentedTextSegment => s.kind === "user",
   )
   if (!user) return undefined
-  return { html: user.html, long: htmlToText(user.html).length > ASK_LONG_CHARS }
+  return {
+    html: user.html,
+    long: htmlToText(user.html).length > ASK_LONG_CHARS,
+    ...(turn.promptSource ? { source: turn.promptSource } : {}),
+  }
 }
 
 /** Partition an assistant turn's segments into the chapter's narration,

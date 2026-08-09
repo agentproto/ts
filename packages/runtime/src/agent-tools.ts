@@ -1069,8 +1069,16 @@ export function registerAgentTools(
         // instead of a lying `{queued: true}` for a prompt that goes
         // nowhere. The caller polls agent_output for the turn's actual
         // progress/completion.
+        // Prompt provenance: when this call is attributed to a session (the
+        // scoped orchestrator gateway's verified scope, else the trusted
+        // `?callerSessionId=` self-ref query), record the injected turn as
+        // that agent's — a transcript view then shows the supervisor as the
+        // author instead of "you". An unattributed call (a human operator
+        // driving the MCP surface directly) stays source-less.
+        const promptSource = callerScope?.ownerSessionId ?? callerSessionId
         await registry.enqueuePrompt(sessionId, input.prompt, {
           interrupt: input.interrupt,
+          ...(promptSource ? { source: `agent:${promptSource}` } : {}),
         })
         return {
           content: [
