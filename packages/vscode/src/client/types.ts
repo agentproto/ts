@@ -179,6 +179,11 @@ export interface SessionDescriptor {
    *  of supervisors blocked waiting on this session (#session-visibility).
    *  Ephemeral, stamped at read time; 0/absent ⇒ nothing is watching. */
   watchers?: number
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.childrenBusy — descendant
+   *  sessions currently mid-turn (subtree rollup). Drives the title status
+   *  dot's "delegating" state. (Lands with the delegating-state PR; absent
+   *  until then, so the dot simply never shows delegating yet.) */
+  childrenBusy?: number
   /** Mirrors `@agentproto/runtime` SessionDescriptor.lastError — a short
    *  human-readable string for the most recent automatic failure (currently
    *  only stamped by the crash-detect sweep). */

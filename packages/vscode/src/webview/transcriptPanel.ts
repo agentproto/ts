@@ -36,7 +36,7 @@ import {
 } from "./attachments.logic.js"
 import { mentionQueryAt } from "./mentions.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
-import { accessIdentity, contextGauge, defaultPostureLabel, harnessGlyph, postureLabel } from "./panelChrome.logic.js"
+import { accessIdentity, contextGauge, contextRingLevel, defaultPostureLabel, formatCostShort, harnessGlyph, postureLabel, projectPlan, titleStatusState } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import {
   ASK_LONG_CHARS,
@@ -573,6 +573,12 @@ export function buildHtml(
     postureLabel,
     defaultPostureLabel,
     contextGauge,
+    // Conversation-chrome pure helpers (#conversation-chrome) — same by-value
+    // injection so the webview runs the tested source.
+    contextRingLevel,
+    formatCostShort,
+    titleStatusState,
+    projectPlan,
     // Book (chapter) segmentation — injected by value so the webview runs the
     // SAME tested pure functions the logic module's unit tests pin. buildBook
     // calls the rest by name, so every one it touches must ride along as a
@@ -690,6 +696,37 @@ export function buildHtml(
     .header-action { position: relative; }
     .header-btn { font-size: 0.85em; }
     .header-btn:empty { display: none; }
+    /* Merged metrics pill (#conversation-chrome): cost · context ring in one
+       bordered capsule, so the two figures read as one glance. The inner
+       buttons shed their own chrome. */
+    .metrics-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));
+      border-radius: 999px; padding: 1px 9px;
+    }
+    .metrics-pill .header-btn { border: none; background: none; padding: 0; }
+    .metrics-pill .metrics-sep { color: var(--vscode-descriptionForeground); opacity: 0.6; }
+    .metrics-pill #context-btn[hidden] { display: none; }
+    .metrics-pill #context-btn[hidden] + #context-popover { display: none; }
+    /* When there's no context figure yet, the trailing separator would dangle. */
+    .metrics-pill:has(#context-btn[hidden]) .metrics-sep { display: none; }
+    /* View segmented control — shows WHERE YOU ARE, active segment filled. */
+    .segmented { display: inline-flex; border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35)); border-radius: 6px; overflow: hidden; }
+    .segmented[hidden] { display: none; }
+    .segmented button {
+      font: inherit; font-size: 0.82em; padding: 2px 9px; border: none; cursor: pointer;
+      background: transparent; color: var(--vscode-descriptionForeground);
+    }
+    .segmented button + button { border-left: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35)); }
+    .segmented button.on { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); color: var(--vscode-foreground); }
+    .segmented button:hover:not(.on) { color: var(--vscode-foreground); }
+    /* Title status dot — the visibility state at a glance (#session-visibility). */
+    .tstatus { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
+    .tstatus:empty, .tstatus.quiet { background: transparent; border: 1px solid var(--vscode-descriptionForeground); }
+    .tstatus.busy { background: var(--vscode-charts-green, #4caf50); }
+    .tstatus.delegating { background: transparent; border: 2px solid var(--vscode-charts-green, #4caf50); }
+    .tstatus.awaiting { background: var(--vscode-charts-yellow, #d7a600); }
+    .tstatus.parked { background: var(--vscode-descriptionForeground); }
     /* The harness/adapter mark, sitting left of the session name so a glance at
        any transcript tab says which agent answers there. A quiet glyph, not a
        chip — colour comes from the surrounding title row. Empty (no adapter
@@ -750,9 +787,10 @@ export function buildHtml(
     .ctx-gauge[hidden] { display: none; }
     .ctx-ring { flex: 0 0 auto; }
     .ctx-track { stroke: var(--vscode-panel-border, rgba(128,128,128,0.35)); }
-    .ctx-arc { stroke: var(--vscode-charts-green, #4caf50); transition: stroke-dasharray 0.2s ease; }
-    .ctx-arc.mid { stroke: var(--vscode-charts-yellow, #d7a600); }
-    .ctx-arc.high { stroke: var(--vscode-charts-red, #e51400); }
+    /* Grey until warnAtPct, amber to compactAtPct, red past it (#conversation-chrome). */
+    .ctx-arc { stroke: var(--vscode-descriptionForeground); transition: stroke-dasharray 0.2s ease, stroke 0.2s ease; }
+    .ctx-arc.amber { stroke: var(--vscode-charts-yellow, #d7a600); }
+    .ctx-arc.red { stroke: var(--vscode-charts-red, #e51400); }
     .ctx-pct {
       font-size: 0.8em;
       color: var(--vscode-descriptionForeground);
@@ -1086,10 +1124,22 @@ export function buildHtml(
     .plan-list li.plan-pending .plan-mark { color: var(--plan-faint); }
     .plan-list li.plan-in_progress { font-weight: 600; }
     .plan-list li.plan-in_progress .plan-mark { color: var(--plan-accent); }
-    .plan-list li.plan-completed { color: var(--plan-muted); text-decoration: line-through; }
-    .plan-list li.plan-completed .plan-mark { color: var(--plan-accent); text-decoration: none; }
+    /* Completed steps: muted, NO strikethrough (#conversation-chrome — struck
+       rows read as "cancelled", not "done"). Only shown when the summary is
+       expanded, indented as sub-rows. */
+    .plan-list li.plan-completed { color: var(--plan-muted); }
+    .plan-list li.plan-completed .plan-mark { color: var(--plan-accent); }
+    .plan-list li.plan-sub { padding-left: 18px; opacity: 0.85; }
     .plan-list li.plan-failed { color: var(--plan-error); }
     .plan-list li.plan-failed .plan-mark { color: var(--plan-error); }
+    /* Collapsed "✓ N done" summary + the "+N more" upcoming toggle — both
+       clickable, with a faint chevron pushed to the right on the summary. */
+    .plan-list li.plan-donesum { cursor: pointer; color: var(--plan-muted); display: flex; align-items: baseline; column-gap: 0.4em; }
+    .plan-list li.plan-donesum .plan-mark { color: var(--plan-accent); min-width: 1.3em; text-align: center; }
+    .plan-list li.plan-donesum:hover { color: var(--plan-accent); }
+    .plan-list li.plan-donesum .plan-chev { margin-left: auto; color: var(--plan-faint); font-size: 0.85em; }
+    .plan-list li.plan-more { cursor: pointer; color: var(--plan-faint); }
+    .plan-list li.plan-more:hover { color: var(--plan-muted); }
     .seg.question {
       border-left: 3px solid var(--vscode-editorWarning-foreground);
       padding: 4px 0 4px 10px;
@@ -1305,7 +1355,10 @@ export function buildHtml(
     #input {
       width: 100%;
       resize: none;
-      min-height: 22px;
+      /* Default to ~3 lines of breathing room (auto-grows beyond via autoGrow);
+         min-height is the floor even when the inline height goes smaller
+         (#conversation-chrome). */
+      min-height: 4.2em;
       max-height: 200px;
       overflow-y: auto;
       padding: 0;
@@ -1325,7 +1378,12 @@ export function buildHtml(
       gap: 8px;
       font-size: 0.85em;
       color: var(--paper-45);
+      /* Clear the in-field send/stop button parked at the composer's bottom-right. */
+      padding-right: 40px;
     }
+    /* Quiet keyboard hint (#conversation-chrome). */
+    .send-hint { color: var(--paper-45); opacity: 0.75; white-space: nowrap; font-size: 0.95em; }
+    #composer.disabled .send-hint { display: none; }
     /* Which agent/model will answer belongs where you type, not only in the
        header — so the header no longer repeats it. */
     #composer-meta {
@@ -1380,6 +1438,9 @@ export function buildHtml(
       color: var(--vscode-errorForeground);
     }
     /* The submit key. Stays quiet until there is actually something to send. */
+    /* Send/Stop live at the field's bottom-right corner, inside the box
+       (#conversation-chrome), rather than trailing the chip row. */
+    #send, #stop { position: absolute; right: 8px; bottom: 7px; z-index: 2; }
     #send {
       flex: 0 0 auto;
       min-width: 26px;
@@ -1736,16 +1797,20 @@ export function buildHtml(
   <div id="header">
     <div id="header-left">
       <span id="header-icon" title="" aria-hidden="true"></span>
+      <span id="title-status" class="tstatus" title=""></span>
       <div id="header-title-block">
         <div id="header-title" title="Click to rename this session"></div>
         <div id="header-subtitle" title=""></div>
       </div>
     </div>
     <div id="header-actions">
-      <button id="book-toggle" class="term-btn" type="button" hidden
-        title="Switch between the book and the raw transcript"></button>
-      <div class="header-action">
+      <div id="view-toggle" class="segmented" role="group" aria-label="View" hidden>
+        <button type="button" data-view="book" title="Read as a book">Book</button>
+        <button type="button" data-view="transcript" title="Read the raw transcript">Transcript</button>
+      </div>
+      <div class="header-action metrics-pill">
         <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <span class="metrics-sep" aria-hidden="true">·</span>
         <div id="cost-popover" class="popover" hidden>
           <div class="popover-row"><span class="popover-label">Tokens in</span><span id="popover-tokens-in"></span></div>
           <div class="popover-row"><span class="popover-label">Tokens out</span><span id="popover-tokens-out"></span></div>
@@ -1753,8 +1818,6 @@ export function buildHtml(
           <div class="popover-row"><span class="popover-label">Harness</span><span id="popover-harness"></span></div>
           <div class="popover-row"><span class="popover-label">Access</span><span id="popover-auth"></span></div>
         </div>
-      </div>
-      <div class="header-action">
         <button id="context-btn" class="header-btn ctx-gauge" type="button" aria-haspopup="true" title="Context window usage" hidden>
           <svg class="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <circle class="ctx-track" cx="8" cy="8" r="6" fill="none" stroke-width="2"></circle>
@@ -1805,6 +1868,7 @@ export function buildHtml(
           <button id="composer-posture" class="composer-chip composer-chip-btn" type="button" title="Switch mode / posture"></button>
           <button id="composer-auth" class="composer-chip composer-chip-btn" type="button" title="Switch access profile"></button>
         </span>
+        <span id="send-hint" class="send-hint">⏎ send · ⇧⏎ newline</span>
         <span id="send-status"></span>
         <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
         <button id="restart-btn" hidden title="Restart this session — resumes the conversation in a new session">↻ Restart</button>
@@ -1835,6 +1899,7 @@ export function buildHtml(
       // Injected by value from the tested logic modules — see buildHtml.
       ${injectedHelpers}
       const headerIcon = document.getElementById('header-icon');
+      const titleStatus = document.getElementById('title-status');
       const headerTitle = document.getElementById('header-title');
       const headerSubtitle = document.getElementById('header-subtitle');
       const openTerminalBtn = document.getElementById('open-terminal-btn');
@@ -1854,7 +1919,7 @@ export function buildHtml(
       const blockedNote = document.getElementById('blocked-note');
       const transcript = document.getElementById('transcript');
       const book = document.getElementById('book');
-      const bookToggle = document.getElementById('book-toggle');
+      const viewToggle = document.getElementById('view-toggle');
       const working = document.getElementById('working');
       const workingText = document.getElementById('working-text');
       const composer = document.getElementById('composer');
@@ -1968,6 +2033,11 @@ export function buildHtml(
       // Chapter ids whose ask card the user expanded ("$ full message") — so a
       // live re-render doesn't re-clamp a message they chose to read in full.
       const bookAskExpanded = new Set();
+      // Plan-block expansion state (#conversation-chrome), keyed by plan segment
+      // id so a live re-render keeps whatever the user opened: the collapsed
+      // "✓ N done" summary and the "+N more" upcoming tail.
+      const planDoneOpen = new Set();
+      const planMoreOpen = new Set();
       let bookScrolledUp = false;
       // Book is the default view for a structured session; persisted per panel
       // (webview state is already scoped to this session) so the choice sticks.
@@ -2250,10 +2320,20 @@ export function buildHtml(
         // decides the rate (model/harness/auth) lives one click away, in the
         // popover, rather than crowding the header with numbers nobody acts
         // on at a glance.
-        costBtn.textContent = typeof session.costUsd === 'number'
-          ? '$' + session.costUsd.toFixed(4)
-          : '—';
+        // Merged metrics pill (#conversation-chrome): two decimals on the face,
+        // full precision on hover.
+        costBtn.textContent = formatCostShort(session.costUsd);
+        costBtn.title = typeof session.costUsd === 'number' ? '$' + session.costUsd.toFixed(4) : 'No cost recorded yet';
         renderCostPopover(session);
+        // Title status dot — the visibility state at a glance.
+        if (titleStatus) {
+          const st = titleStatusState(session);
+          titleStatus.className = 'tstatus ' + st;
+          titleStatus.title = st === 'delegating' ? 'Delegating — waiting on its busy subtree'
+            : st === 'parked' ? 'Parked — supervised, will be re-prompted'
+            : st === 'awaiting' ? 'Awaiting your input'
+            : st === 'busy' ? 'Working' : 'Quiet';
+        }
       }
 
       function appendLines(lines) {
@@ -2286,6 +2366,69 @@ export function buildHtml(
         if (className) e.className = className;
         if (text !== undefined) e.textContent = text;
         return e;
+      }
+
+      // Minimalist plan block (#conversation-chrome). Rebuilds the node in place
+      // from the injected, tested projectPlan: done steps collapse to one
+      // "✓ N done" summary (click to expand the completed list); failed steps
+      // stay individually visible; upcoming = the current step (bold) + the next
+      // few pending, with the rest behind a "+N more". No strikethrough rows.
+      function planRow(cls, mark, text) {
+        const li = el('li', cls);
+        li.appendChild(el('span', 'plan-mark', mark));
+        li.appendChild(el('span', 'plan-text', text));
+        return li;
+      }
+      function buildPlan(node, seg) {
+        node.innerHTML = '';
+        const proj = projectPlan(seg.entries || []);
+        node.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
+        const track = el('div', 'plan-progress');
+        const fill = el('div', 'plan-progress-fill');
+        const pct = seg.total > 0 ? Math.round((seg.done / seg.total) * 100) : 0;
+        fill.style.width = pct + '%';
+        track.appendChild(fill);
+        node.appendChild(track);
+        const ul = el('ul', 'plan-list');
+
+        // Done → one collapsible summary line.
+        if (proj.doneCount > 0) {
+          const open = planDoneOpen.has(seg.id);
+          const sum = el('li', 'plan-donesum');
+          sum.appendChild(el('span', 'plan-mark', '✓'));
+          sum.appendChild(el('span', 'plan-text', proj.doneCount + ' done'));
+          sum.appendChild(el('span', 'plan-chev', open ? '▾' : '▸'));
+          sum.addEventListener('click', function() {
+            if (open) planDoneOpen.delete(seg.id); else planDoneOpen.add(seg.id);
+            buildPlan(node, seg);
+          });
+          ul.appendChild(sum);
+          if (open) for (const d of proj.doneItems) ul.appendChild(planRow('plan-completed plan-sub', '✓', d.content));
+        }
+        // Failed → always visible, individually.
+        for (const f of proj.failed) ul.appendChild(planRow('plan-failed', '✗', f.content));
+        // Current step (bold).
+        if (proj.current) ul.appendChild(planRow('plan-in_progress', '●', proj.current.content));
+        // Next few pending.
+        for (const p of proj.upcoming) ul.appendChild(planRow('plan-pending', '○', p.content));
+        // The rest of the queue, behind a "+N more" toggle.
+        if (proj.moreCount > 0) {
+          if (planMoreOpen.has(seg.id)) {
+            const restPending = (seg.entries || []).filter(function(e) {
+              return e.status !== 'completed' && e.status !== 'failed' && e.status !== 'in_progress';
+            }).slice(proj.upcoming.length);
+            for (const p of restPending) ul.appendChild(planRow('plan-pending', '○', p.content));
+          }
+          const more = el('li', 'plan-more');
+          more.appendChild(el('span', 'plan-mark', ''));
+          more.appendChild(el('span', 'plan-text', planMoreOpen.has(seg.id) ? 'show fewer' : ('+' + proj.moreCount + ' more')));
+          more.addEventListener('click', function() {
+            if (planMoreOpen.has(seg.id)) planMoreOpen.delete(seg.id); else planMoreOpen.add(seg.id);
+            buildPlan(node, seg);
+          });
+          ul.appendChild(more);
+        }
+        node.appendChild(ul);
       }
 
       // Lay out one disclosure row: status on the LEFT, the open/close
@@ -2424,31 +2567,7 @@ export function buildHtml(
           }
           case 'plan': {
             node.className = 'seg plan';
-            node.innerHTML = '';
-            node.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
-            // Thin progress track under the head — width = done/total.
-            const track = el('div', 'plan-progress');
-            const fill = el('div', 'plan-progress-fill');
-            const pct = seg.total > 0 ? Math.round((seg.done / seg.total) * 100) : 0;
-            fill.style.width = pct + '%';
-            track.appendChild(fill);
-            node.appendChild(track);
-            const ul = el('ul', 'plan-list');
-            for (const entry of seg.entries || []) {
-              // Steady text glyphs (not emoji-variant): crisp in a monospace
-              // column and colour-controlled per state via the .plan-mark span.
-              const mark = entry.status === 'completed' ? '✓'      // ✓
-                : entry.status === 'in_progress' ? '●'            // ●
-                : entry.status === 'failed' ? '✗'                 // ✗
-                : '○';                                            // ○ pending
-              const li = el('li', 'plan-' + entry.status);
-              // Marker is its OWN element, never a text prefix — that is what
-              // lets wrapped lines hang-indent to the text column.
-              li.appendChild(el('span', 'plan-mark', mark));
-              li.appendChild(el('span', 'plan-text', entry.content));
-              ul.appendChild(li);
-            }
-            node.appendChild(ul);
+            buildPlan(node, seg);
             return;
           }
           case 'agent-question': {
@@ -2666,8 +2785,13 @@ export function buildHtml(
         if (gauge) {
           const circumference = 2 * Math.PI * 6; // r=6 in the 16×16 viewBox
           ctxArc.setAttribute('stroke-dasharray', (gauge.ratio * circumference) + ' ' + circumference);
-          ctxArc.classList.remove('mid', 'high');
-          if (gauge.level !== 'low') ctxArc.classList.add(gauge.level);
+          // Colour the ring by the session's contextContinuity thresholds
+          // (#conversation-chrome): grey → amber at warnAtPct → red at
+          // compactAtPct, rather than the old fixed 70/90 cutoffs.
+          const cc = lastSession && lastSession.contextContinuity;
+          const level = contextRingLevel(gauge.pct, cc && cc.warnAtPct, cc && cc.compactAtPct);
+          ctxArc.classList.remove('amber', 'red');
+          if (level !== 'grey') ctxArc.classList.add(level);
           ctxPct.textContent = gauge.pct + '%';
         }
         popoverContextUsed.textContent = typeof used === 'number' ? String(used) : '—';
@@ -2734,10 +2858,16 @@ export function buildHtml(
       // placeholder in sync with the mode + the user's book/transcript choice.
       function applyViewVisibility() {
         const applies = bookApplies();
-        bookToggle.hidden = !applies;
+        viewToggle.hidden = !applies;
         if (applies) {
-          bookToggle.textContent = bookView ? 'Transcript' : 'Book';
-          bookToggle.title = bookView ? 'Switch to the raw transcript' : 'Switch to the book';
+          // Segmented control: the active view is highlighted, not the target —
+          // it shows WHERE YOU ARE, and each segment switches to its own view.
+          const seg = viewToggle.querySelectorAll('button');
+          for (const b of seg) {
+            const on = (b.getAttribute('data-view') === 'book') === bookView;
+            b.classList.toggle('on', on);
+            b.setAttribute('aria-pressed', String(on));
+          }
           book.hidden = !bookView;
           transcript.hidden = bookView;
           input.placeholder = bookView ? BOOK_PLACEHOLDER : DEFAULT_PLACEHOLDER;
@@ -2751,8 +2881,9 @@ export function buildHtml(
         refreshWorking();
       }
 
-      function toggleBookView() {
-        bookView = !bookView;
+      function setBookView(next) {
+        if (bookView === next) return;
+        bookView = next;
         try {
           const prev = (vscode.getState && vscode.getState()) || {};
           if (vscode.setState) vscode.setState(Object.assign({}, prev, { bookView: bookView }));
@@ -3166,7 +3297,10 @@ export function buildHtml(
         const threshold = 20;
         bookScrolledUp = book.scrollHeight - book.clientHeight - book.scrollTop > threshold;
       });
-      bookToggle.addEventListener('click', toggleBookView);
+      viewToggle.addEventListener('click', function(e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button[data-view]') : null;
+        if (btn) setBookView(btn.getAttribute('data-view') === 'book');
+      });
 
       // One delegated listener for every clickable link (.tlink) in the prose —
       // book narration, ask cards, and the raw transcript all share it. Reading
