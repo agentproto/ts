@@ -221,6 +221,15 @@ describe("sessions webview — render", () => {
     expect(el(panel, "list").querySelector('[data-id="s1"] .eye')).toBeNull()
   })
 
+  it("renders the delegating '⟳ N children' badge with an active dot (#session-visibility)", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, status: "delegating", childrenBusy: 3 }])] }))
+    const row = el(panel, "list").querySelector('[data-id="s1"]')!
+    const deleg = row.querySelector(".deleg")!
+    expect(deleg.textContent).toContain("3 children")
+    expect(row.querySelector(".dot.delegating")).toBeTruthy()
+  })
+
   it("marks the row whose transcript tab is open with .open", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, open: true }])] }))
