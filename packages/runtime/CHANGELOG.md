@@ -1,5 +1,19 @@
 # @agentproto/runtime
 
+## 2.3.0
+
+### Minor Changes
+
+- 29acda3: Add optional `encoding` parameter to `file_read` MCP tool to support base64 encoding for binary files, fixing corruption of binary content (PNGs, audio, video, etc.) that was caused by UTF-8 decoding. Default behavior unchanged — existing callers continue to receive UTF-8 text as before.
+- 5f2ebb8: Add prompt provenance tracking to transcript records and webview, enabling accurate attribution of supervisor-orchestrated turns. When one agent session prompts another (via `agent_prompt` or spawn with `initialPrompt`), the originating session ID is now recorded as the turn's source and displayed in the conversation UI as "SUPERVISOR ASKED" instead of "YOU ASKED". The feature is backward-compatible: existing transcripts and API call sites are unaffected, and source fields are optional everywhere.
+
+### Patch Changes
+
+- a26d527: Add child→parent report-back communication channel: new `message_parent` MCP tool for child sessions to send messages/status updates to their parent supervisors, plus `AGENTPROTO_PARENT_SESSION_ID` environment variable for lineage discovery. Includes automatic scope injection for gateway-less children and comprehensive test coverage.
+- 1bce78e: Persist permission resolution in the durable transcript so the conversation UI can display resolved permissions and clear the "Awaiting your decision" state. Permission-resolved events are keyed by toolCallId to correlate with their originating agent-prompt asks.
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
 ## 2.2.0
 
 ### Minor Changes

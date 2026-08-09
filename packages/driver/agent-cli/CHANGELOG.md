@@ -1,5 +1,11 @@
 # @agentproto/driver-agent-cli
 
+## 2.2.1
+
+### Patch Changes
+
+- 08bcd4a: Fix: Always suppress attribution (PR footer / commit trailer) in isolated agent-cli spawns, preventing settings leakage from operator's global configuration. Isolated processes now receive an explicit empty `attribution` configuration to close the ambient-leak surface.
+
 ## 2.2.0
 
 ### Minor Changes
