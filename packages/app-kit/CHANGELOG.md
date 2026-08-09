@@ -1,5 +1,12 @@
 # @agentproto/app-kit
 
+## 0.5.0
+
+### Minor Changes
+
+- 4b73e28: Add UI, artifacts, and dev-launch configuration support to app-kit. Apps can now declare HTML surfaces, artifact types, and dev-launch configurations that are carried through emit/load and integrated into the runtime app registry.
+- b098b52: Add UI, artifacts, and dev-launch configuration support to app-kit. Apps can now declare HTML surfaces, artifact types, and dev-launch configurations that are carried through emit/load and integrated into the runtime app registry.
+
 ## 0.4.0
 
 ### Minor Changes
