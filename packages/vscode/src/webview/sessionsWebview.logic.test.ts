@@ -459,15 +459,44 @@ describe("buildSessionsWebviewModel — filtering + totals", () => {
     expect(model.groups.flatMap(g => g.rows.map(r => r.id))).toEqual(["live"])
   })
 
-  it("keeps archived rows when includeArchived is set (item 4)", () => {
+  it("toggle ON shows ONLY archived rows — active sessions are excluded, not merged in", () => {
     const sessions = [
       session({ id: "live", cwd: "/Code/studio", busy: true }),
       session({ id: "arch", cwd: "/Code/studio", status: "exited", archived: true }),
     ]
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: true }))
     const rows = model.groups.flatMap(g => g.rows)
-    expect(rows.map(r => r.id).sort()).toEqual(["arch", "live"])
-    expect(rows.find(r => r.id === "arch")?.archived).toBe(true)
+    expect(rows.map(r => r.id)).toEqual(["arch"])
+    expect(rows[0]?.archived).toBe(true)
+  })
+
+  it("toggle OFF shows ONLY active rows — archived sessions are excluded", () => {
+    const sessions = [
+      session({ id: "live", cwd: "/Code/studio", busy: true }),
+      session({ id: "arch", cwd: "/Code/studio", status: "exited", archived: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: false }))
+    const rows = model.groups.flatMap(g => g.rows)
+    expect(rows.map(r => r.id)).toEqual(["live"])
+  })
+
+  it("an empty archived set renders no rows in the archived-only view", () => {
+    const sessions = [session({ id: "live", cwd: "/Code/studio", busy: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: true }))
+    expect(model.groups.flatMap(g => g.rows)).toEqual([])
+    expect(model.shownCount).toBe(0)
+  })
+
+  it("a live continuation of an archived predecessor doesn't leak into the wrong view", () => {
+    const sessions = [
+      session({ id: "old", cwd: "/Code/studio", status: "exited", archived: true }),
+      session({ id: "new", cwd: "/Code/studio", busy: true, continuedFrom: "old" }),
+    ]
+    const archivedOnly = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: true }))
+    expect(archivedOnly.groups.flatMap(g => g.rows.map(r => r.id))).toEqual(["old"])
+
+    const activeOnly = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: false }))
+    expect(activeOnly.groups.flatMap(g => g.rows.map(r => r.id))).toEqual(["new"])
   })
 
   it("honors an explicit loadedCount for the footer (item 2 pinned extras)", () => {
