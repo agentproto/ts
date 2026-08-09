@@ -25,6 +25,7 @@ import type {
   CatalogModelsResponse,
   ProviderPresetEntry,
 } from "../client/types.js"
+import { accessKind, type AccessKind } from "./authModelMindmap.logic.js"
 
 export interface PresetRow {
   slug: string
@@ -43,6 +44,10 @@ export interface WalletRow {
   id: string
   endpoint: string
   label?: string
+  /** Wallet-first access-kind classification (method × source), computed by
+   *  the Auth & Model Map's {@link accessKind} — never redecided here, so this
+   *  panel and the map always agree on what kind of wallet a profile is. */
+  accessKind: AccessKind
   /** Models this profile is currently configured to bill (allowed by curation
    *  and eligible by endpoint/method). These are the "active" pills. */
   models: ServicedModel[]
@@ -185,6 +190,7 @@ export function buildAuthSettingsModel(
         id: p.id,
         endpoint: p.endpoint,
         ...(p.label ? { label: p.label } : {}),
+        accessKind: accessKind(p),
         models,
         enabled,
         ...(keyLabel ? { keyLabel } : {}),
@@ -256,6 +262,15 @@ function emptyMessage(w: WalletRow): string {
   return "Bills no catalog model yet."
 }
 
+/** Chip label/class for the wallet-first access kind — mirrors the Auth &
+ *  Model Map's own chip wording so the two surfaces read identically. */
+function accessKindChip(kind: AccessKind): string {
+  const cls = kind === "api-key" ? "key" : "sub"
+  const label =
+    kind === "subscription-refreshing" ? "SUB · SELF-REFRESH" : kind === "subscription-stored" ? "SUB · STORED" : "API KEY"
+  return `<span class="badge kind-${cls}">${label}</span>`
+}
+
 function walletCard(w: WalletRow): string {
   const allowedPills = w.models.map(modelPill).join("")
   const unavailablePills = w.unavailable.map(unavailablePill).join("")
@@ -295,6 +310,7 @@ function walletCard(w: WalletRow): string {
   return `<div class="card">
     <div class="row">
       <span class="title">${esc(w.id)}</span>
+      ${accessKindChip(w.accessKind)}
       ${stateBadge}
       ${originBadge}
       <span class="badge">${catalogSummary(w)}</span>
@@ -357,6 +373,8 @@ export function buildAuthSettingsHtml(model: AuthSettingsModel, nonce: string): 
     .badge { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--vscode-panel-border); opacity: .85; }
     .badge.ok { color: var(--vscode-testing-iconPassed, #3fb950); border-color: currentColor; }
     .badge.warn { color: var(--vscode-editorWarning-foreground, #d29922); border-color: currentColor; }
+    .badge.kind-sub { color: var(--vscode-charts-green, #3fb950); border-color: currentColor; }
+    .badge.kind-key { color: var(--vscode-charts-blue, #3794ff); border-color: currentColor; }
     .act { margin-left: auto; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 3px 10px; border-radius: 4px; cursor: pointer; }
     .act:hover { background: var(--vscode-button-hoverBackground); }
     .act.danger { background: transparent; color: var(--vscode-errorForeground); border: 1px solid var(--vscode-panel-border); }

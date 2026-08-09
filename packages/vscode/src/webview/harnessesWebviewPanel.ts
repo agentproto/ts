@@ -11,12 +11,14 @@ import { randomBytes } from "node:crypto"
 
 import * as vscode from "vscode"
 
-import type { AdapterInfo } from "../client/types.js"
+import type { AdapterInfo, AuthProfileSummary, HarnessCapabilities } from "../client/types.js"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { HarnessNode } from "../views/harnessesTree.logic.js"
 import type { HarnessesTreeProvider } from "../views/harnessesTree.js"
 import {
   buildHarnessesWebviewModel,
+  type HarnessManifestFacts,
+  type HarnessReachEntry,
   type HarnessWebviewRow,
   type HarnessesWebviewModel,
 } from "./harnessesWebview.logic.js"
@@ -35,6 +37,9 @@ interface RenderRow {
   installable: boolean
   action: HarnessWebviewRow["action"]
   logo: RenderLogo
+  manifest: HarnessManifestFacts
+  reach: HarnessReachEntry[]
+  hiddenReachCount: number
 }
 
 interface ModelMessage {
@@ -52,6 +57,7 @@ type WebviewToHostMessage =
   | { type: "filter"; search: string }
   | { type: "install"; slug: string }
   | { type: "spawn"; slug: string }
+  | { type: "openMap" }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   if (typeof value !== "object" || value === null) return false
@@ -63,6 +69,8 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
   private search = ""
   private adapters: AdapterInfo[] = []
+  private capabilities: HarnessCapabilities[] = []
+  private profiles: AuthProfileSummary[] = []
   // Optimistic "Installing…" state set the moment the click fires. Cleared in
   // bulk on the next adapters refresh (see fetch()) — that refresh is the
   // authoritative signal that an install attempt has settled, whether it
@@ -103,11 +111,14 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private async fetch(): Promise<void> {
-    try {
-      this.adapters = await this.client.listAdapters()
-    } catch {
-      this.adapters = []
-    }
+    const [adapters, capabilities, profiles] = await Promise.all([
+      this.client.listAdapters().catch((): AdapterInfo[] => []),
+      this.client.harnessCapabilities().catch((): HarnessCapabilities[] => []),
+      this.client.listAuthProfiles().catch((): AuthProfileSummary[] => []),
+    ])
+    this.adapters = adapters
+    this.capabilities = capabilities
+    this.profiles = profiles
     // Authoritative refresh lands — drop any optimistic "installing" flags
     // and let buildHarnessesWebviewModel derive the real action from the
     // fresh adapter statuses (ready → "start", still-installable → "install").
@@ -124,6 +135,10 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
         this.search = msg.search
         this.post()
         return
+      case "openMap": {
+        void vscode.commands.executeCommand("agentproto.openAuthModel")
+        return
+      }
       case "install": {
         const adapter = this.adapters.find(a => a.slug === msg.slug)
         if (adapter) {
@@ -150,7 +165,14 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
 
   private post(): void {
     if (!this.view) return
-    const model = buildHarnessesWebviewModel(this.adapters, this.search, this.installingSlugs)
+    const model = buildHarnessesWebviewModel(
+      this.adapters,
+      this.search,
+      this.installingSlugs,
+      this.capabilities,
+      this.profiles,
+      null,
+    )
     const message: ModelMessage = {
       type: "model",
       rows: model.rows.map(r => toRenderRow(r, this.view!.webview, this.extensionUri)),
@@ -209,6 +231,9 @@ function toRenderRow(row: HarnessWebviewRow, webview: vscode.Webview, extensionU
     installable: row.installable,
     action: row.action,
     logo: toRenderLogo(row.logo, webview, extensionUri),
+    manifest: row.manifest,
+    reach: row.reach,
+    hiddenReachCount: row.hiddenReachCount,
   }
 }
 
@@ -280,6 +305,19 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .name { font-size: 12.5px; font-weight: 550; letter-spacing: -0.01em; color: var(--vscode-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .desc { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
     .desc .pipe { opacity: 0.5; margin: 0 4px; }
+    .manifest { font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.7; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .reachstrip { display: flex; gap: 4px; margin-top: 3px; flex-wrap: wrap; }
+    .rchip { font-size: 8.5px; font-weight: 600; letter-spacing: 0.02em; padding: 1px 5px; border-radius: 99px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); color: var(--vscode-descriptionForeground); white-space: nowrap; }
+    .rchip.native { color: var(--vscode-charts-green, #2ea043); border-color: currentColor; }
+    .rchip.via-router { color: var(--vscode-editorWarning-foreground, #cca700); border-color: currentColor; }
+    .rchip.more { opacity: 0.6; }
+    .actions { display: flex; align-items: center; gap: 6px; }
+    .mapbtn {
+      width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--vscode-descriptionForeground);
+      background: transparent; color: var(--vscode-descriptionForeground); opacity: 0.6;
+      cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 11px;
+    }
+    .row:hover .mapbtn, .mapbtn:hover, .mapbtn:focus-visible { opacity: 1; color: var(--vscode-foreground); border-color: var(--vscode-foreground); }
     .act {
       font-family: var(--vscode-font-family); font-size: 11px; line-height: 1;
       padding: 3px 10px; border-radius: 4px; border: 1px solid var(--vscode-descriptionForeground);
@@ -347,6 +385,26 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return '<button class="act" data-act="install">Install</button>';
       }
 
+      function manifestHTML(r) {
+        var parts = ['speaks ' + r.manifest.speaks, 'route ' + r.manifest.route];
+        if (r.manifest.acceptsBaseUrl) parts.push('accepts custom base_url');
+        return '<div class="manifest">' + escapeHtml(parts.join(' · ')) + '</div>';
+      }
+
+      function reachStripHTML(r) {
+        if (!r.reach.length && !r.hiddenReachCount) return '';
+        var html = '<div class="reachstrip">';
+        for (var i = 0; i < r.reach.length; i++) {
+          var entry = r.reach[i];
+          html += '<span class="rchip ' + entry.state + '">' + escapeHtml(entry.endpoint) + '</span>';
+        }
+        if (r.hiddenReachCount > 0) {
+          html += '<span class="rchip more">+' + r.hiddenReachCount + '</span>';
+        }
+        html += '</div>';
+        return html;
+      }
+
       function rowHTML(r) {
         return '<div class="row" tabindex="0" data-slug="' + escapeHtml(r.slug) + '" data-act="' + escapeHtml(r.action) + '">' +
           '<span class="dot ' + r.status + '"></span>' +
@@ -354,8 +412,13 @@ export function buildHtml(nonce: string, cspSource: string): string {
           '<div class="mid">' +
             '<div class="name">' + escapeHtml(r.name) + '</div>' +
             '<div class="desc">' + escapeHtml(r.description).replace(/ · /g, '<span class="pipe">·</span>') + '</div>' +
+            manifestHTML(r) +
+            reachStripHTML(r) +
           '</div>' +
-          actionHTML(r) +
+          '<div class="actions">' +
+            '<button class="mapbtn" title="Open in Auth &amp; Model Map">↗</button>' +
+            actionHTML(r) +
+          '</div>' +
         '</div>';
       }
 
@@ -406,6 +469,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
       }
 
       listEl.addEventListener('click', function (e) {
+        var mapBtn = e.target.closest('.mapbtn');
+        if (mapBtn) {
+          vscode.postMessage({ type: 'openMap' });
+          return;
+        }
         fireRow(e.target.closest('.row'));
       });
       listEl.addEventListener('keydown', function (e) {

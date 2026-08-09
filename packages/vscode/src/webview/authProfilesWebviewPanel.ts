@@ -1,9 +1,11 @@
 /**
- * Auth Profiles webview panel — the opt-in WebviewView alternative to the Auth
- * Profiles TreeView (`agentproto.authProfilesView === "webview"`). Mirrors the
- * Sessions webview's postMessage protocol and row grammar, with three
- * collapsible sections (Provider Presets / Model Profiles / Local Router),
- * real provider logos, and expandable model-profile children.
+ * Wallets webview panel — the opt-in WebviewView alternative to the Auth
+ * Profiles TreeView (`agentproto.authProfilesView === "webview"`). Groups auth
+ * profiles into provider columns (wallet-first, same model as the Auth &
+ * Model Map): a provider header with subscription/API-key summary pills, then
+ * one card per wallet, folding long-tail providers behind "more" at
+ * `DEFAULT_PROVIDER_COUNT`. Providers with no wallet yet surface separately
+ * with a one-click Connect.
  */
 
 import { randomBytes } from "node:crypto"
@@ -13,7 +15,6 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type {
   AuthProfileSummary,
-  CatalogModelsResponse,
   LlmEndpointStatusResult,
   ProviderPresetEntry,
 } from "../client/types.js"
@@ -23,9 +24,9 @@ import {
   buildAuthProfilesWebviewModel,
   type AuthProfilesExpandedState,
   type AuthProfilesWebviewModel,
-  type PresetWebviewRow,
-  type ProfileWebviewRow,
+  type ProviderWebviewRow,
   type RouterWebviewRow,
+  type UnconnectedProviderRow,
 } from "./authProfilesWebview.logic.js"
 import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
 import {
@@ -44,7 +45,7 @@ const VIEW_TYPE = "agentproto.authProfilesWebview"
 
 interface ModelMessage {
   type: "model"
-  model: AuthProfilesWebviewModel
+  model: RenderModel
   search: string
 }
 
@@ -66,8 +67,8 @@ type HostMessage = ModelMessage | SetModelsDialogMessage | ConnectDialogMessage
 type WebviewToHostMessage =
   | { type: "ready" }
   | { type: "filter"; search: string }
-  | { type: "toggleSection"; section: "presets" | "profiles" | "router" }
-  | { type: "toggleProfile"; profileId: string }
+  | { type: "toggleSection"; section: "providers" | "router" }
+  | { type: "toggleMoreProviders" }
   | { type: "connect"; slug: string; id: string; label?: string }
   | { type: "requestConnect"; slug: string }
   | { type: "enable"; profileId: string }
@@ -75,6 +76,7 @@ type WebviewToHostMessage =
   | { type: "delete"; profileId: string }
   | { type: "setModels"; profileId: string; ids: string[] }
   | { type: "requestSetModels"; profileId: string }
+  | { type: "openMap" }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   if (typeof value !== "object" || value === null) return false
@@ -86,15 +88,13 @@ type RenderLogo =
   | { kind: "icon"; file: string; uri: string }
   | { kind: "lettermark"; text: string }
 
-interface RenderPreset extends PresetWebviewRow {
+interface RenderProvider extends Omit<ProviderWebviewRow, "logo"> {
   logo: RenderLogo
 }
 
-interface RenderProfile extends ProfileWebviewRow {
+interface RenderUnconnected extends Omit<UnconnectedProviderRow, "logo"> {
   logo: RenderLogo
 }
-
-interface RenderRouter extends RouterWebviewRow {}
 
 interface RenderSection<T, K extends string> {
   kind: K
@@ -104,15 +104,11 @@ interface RenderSection<T, K extends string> {
   rows: T[]
 }
 
-type RenderPresetSection = RenderSection<RenderPreset, "presets">
-type RenderProfileSection = RenderSection<RenderProfile, "profiles">
-type RenderRouterSection = RenderSection<RenderRouter, "router">
-
 interface RenderModel {
-  kind: "model"
-  product: string
-  description: string
-  runnable: boolean
+  providers: RenderSection<RenderProvider, "providers">
+  unconnected: RenderUnconnected[]
+  moreCount: number
+  router: RenderSection<RouterWebviewRow, "router">
 }
 
 class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
@@ -120,10 +116,9 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
   private search = ""
   private presets: ProviderPresetEntry[] = []
   private profiles: AuthProfileSummary[] = []
-  private catalog: CatalogModelsResponse = { vendors: [] }
   private routerStatus: LlmEndpointStatusResult | null = null
-  private expanded: AuthProfilesExpandedState = { presets: true, profiles: true, router: false }
-  private expandedProfiles = new Set<string>()
+  private expanded: AuthProfilesExpandedState = { providers: true, router: false }
+  private showAllProviders = false
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -158,13 +153,11 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private async fetch(): Promise<void> {
-    const [presets, catalog, profiles] = await Promise.all([
+    const [presets, profiles] = await Promise.all([
       this.client.listProviderPresets().catch((): ProviderPresetEntry[] => []),
-      this.client.catalogModels().catch((): CatalogModelsResponse => ({ vendors: [] })),
       this.client.listAuthProfiles().catch((): AuthProfileSummary[] => []),
     ])
     this.presets = presets
-    this.catalog = catalog
     this.profiles = profiles
     this.routerStatus = await this.client.llmEndpointStatus().catch(() => null)
     this.post()
@@ -183,13 +176,12 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
         this.expanded[msg.section] = !this.expanded[msg.section]
         this.post()
         return
-      case "toggleProfile": {
-        if (this.expandedProfiles.has(msg.profileId)) {
-          this.expandedProfiles.delete(msg.profileId)
-        } else {
-          this.expandedProfiles.add(msg.profileId)
-        }
+      case "toggleMoreProviders":
+        this.showAllProviders = !this.showAllProviders
         this.post()
+        return
+      case "openMap": {
+        void vscode.commands.executeCommand("agentproto.openAuthModel")
         return
       }
       case "requestConnect": {
@@ -231,11 +223,10 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
     const model = buildAuthProfilesWebviewModel(
       this.presets,
       this.profiles,
-      this.catalog,
       this.routerStatus,
       this.search,
       this.expanded,
-      this.expandedProfiles,
+      this.showAllProviders,
     )
     const message: ModelMessage = {
       type: "model",
@@ -358,26 +349,17 @@ function toRenderModel(
   model: AuthProfilesWebviewModel,
   webview: vscode.Webview,
   extensionUri: vscode.Uri,
-): { presets: RenderPresetSection; profiles: RenderProfileSection; router: RenderRouterSection } {
+): RenderModel {
   return {
-    presets: {
-      kind: "presets",
-      label: model.presets.label,
-      count: model.presets.count,
-      expanded: model.presets.expanded,
-      rows: model.presets.rows.map(r => ({ ...r, logo: toRenderLogo(r.logo, webview, extensionUri) })),
+    providers: {
+      kind: "providers",
+      label: model.providers.label,
+      count: model.providers.count,
+      expanded: model.providers.expanded,
+      rows: model.providers.rows.map(r => toRenderProvider(r, webview, extensionUri)),
     },
-    profiles: {
-      kind: "profiles",
-      label: model.profiles.label,
-      count: model.profiles.count,
-      expanded: model.profiles.expanded,
-      rows: model.profiles.rows.map(r => ({
-        ...r,
-        logo: toRenderLogo(r.logo, webview, extensionUri),
-        children: r.children.map(toRenderModelRow),
-      })),
-    },
+    unconnected: model.unconnected.map(u => ({ ...u, logo: toRenderLogo(u.logo, webview, extensionUri) })),
+    moreCount: model.moreCount,
     router: {
       kind: "router",
       label: model.router.label,
@@ -388,8 +370,8 @@ function toRenderModel(
   }
 }
 
-function toRenderModelRow(model: { product: string; description: string; runnable: boolean }): RenderModel {
-  return { kind: "model", product: model.product, description: model.description, runnable: model.runnable }
+function toRenderProvider(row: ProviderWebviewRow, webview: vscode.Webview, extensionUri: vscode.Uri): RenderProvider {
+  return { ...row, logo: toRenderLogo(row.logo, webview, extensionUri) }
 }
 
 function escapeHtml(text: string): string {
@@ -413,7 +395,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="${csp}">
-  <title>agentproto auth profiles</title>
+  <title>agentproto wallets</title>
   <style>
     :root {
       color: var(--vscode-foreground);
@@ -444,6 +426,13 @@ export function buildHtml(nonce: string, cspSource: string): string {
     }
     #clear.show { display: block; }
     #summary { flex: 0 0 auto; padding: 6px 12px 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
+    #maplink {
+      display: block; width: calc(100% - 24px); margin: 8px 12px 0; text-align: left;
+      background: transparent; border: 1px dashed var(--vscode-panel-border, rgba(128,128,128,0.35));
+      color: var(--vscode-textLink-foreground, #8fc2ff); font-family: inherit; font-size: 11px;
+      padding: 5px 8px; border-radius: 4px; cursor: pointer;
+    }
+    #maplink:hover { border-color: var(--vscode-textLink-foreground, #8fc2ff); }
     #list { flex: 1 1 auto; overflow-y: auto; }
     .section { border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); }
     .section:last-child { border-bottom: none; }
@@ -460,47 +449,63 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .section-header .chev { font-size: 9px; opacity: 0.7; transform: rotate(90deg); display: inline-block; width: 10px; }
     .section-header.collapsed .chev { transform: rotate(0deg); }
     .section-header .c { font-weight: 400; color: var(--vscode-descriptionForeground); opacity: 0.75; font-size: 10px; }
+    .provider-group { padding: 6px 0; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.18)); }
+    .provider-group:last-child { border-bottom: none; }
+    .provider-header { display: flex; align-items: center; gap: 8px; padding: 3px 12px; }
+    .provider-header .pname { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+    .provider-header .native { font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.8; margin-left: 2px; }
+    .provider-pills { margin-left: auto; display: flex; gap: 4px; }
+    .ppill { font-size: 9px; font-weight: 600; letter-spacing: 0.02em; padding: 1px 6px; border-radius: 99px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); color: var(--vscode-descriptionForeground); white-space: nowrap; }
+    .ppill.sub { color: var(--vscode-charts-green, #2ea043); border-color: currentColor; }
+    .ppill.key { color: var(--vscode-charts-blue, #3794ff); border-color: currentColor; }
+    .logo { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; color: var(--vscode-foreground); flex: 0 0 auto; }
+    .logo.svg svg { width: 14px; height: 14px; display: block; }
+    .logo.img img { width: 15px; height: 15px; object-fit: contain; border-radius: 3px; }
+    .logo.mono {
+      width: 16px; height: 16px; border-radius: 50%; background: rgba(255,255,255,0.08);
+      font-size: 9px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; justify-content: center;
+    }
+    .wcard { margin: 4px 12px 0 34px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); border-radius: 6px; position: relative; }
+    .wcard:hover { background: var(--vscode-list-hoverBackground); }
+    .wtop { display: flex; align-items: center; gap: 6px; }
+    .wtop .dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+    .wtop .dot.self-refreshing { background: var(--vscode-charts-green, #2ea043); }
+    .wtop .dot.stored { background: var(--vscode-editorWarning-foreground, #cca700); }
+    .wtop .dot.unavailable { background: var(--vscode-errorForeground, #f14c4c); }
+    .wname { font-size: 12px; font-weight: 550; color: var(--vscode-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .kchip { margin-left: auto; font-size: 8.5px; font-weight: 700; letter-spacing: 0.03em; padding: 1px 6px; border-radius: 99px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); white-space: nowrap; }
+    .kchip.sub { color: var(--vscode-charts-green, #2ea043); border-color: currentColor; }
+    .kchip.key { color: var(--vscode-charts-blue, #3794ff); border-color: currentColor; }
+    .wmeta { font-size: 10.5px; color: var(--vscode-descriptionForeground); margin-top: 3px; }
+    .wactions { display: none; gap: 6px; position: absolute; top: 6px; right: 8px; }
+    .wcard:hover .wactions { display: flex; }
+    .wactions span { cursor: pointer; color: var(--vscode-descriptionForeground); }
+    .wactions span:hover { color: var(--vscode-foreground); }
+    .grouplabel { font-size: 9.5px; font-weight: 600; letter-spacing: 0.08em; color: var(--vscode-descriptionForeground); opacity: 0.75; text-transform: uppercase; padding: 8px 12px 2px; }
+    .morebtn { width: calc(100% - 24px); margin: 6px 12px 0; font: 600 10px var(--vscode-font-family); padding: 6px; border-radius: 6px; border: 1px dashed var(--vscode-panel-border, rgba(128,128,128,0.35)); background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
+    .morebtn:hover { color: var(--vscode-foreground); border-color: var(--vscode-descriptionForeground); }
+    .connect-row {
+      position: relative; padding: 6px 12px; cursor: pointer; display: grid;
+      grid-template-columns: 20px 1fr auto; column-gap: 8px; align-items: center;
+    }
+    .connect-row:hover { background: var(--vscode-list-hoverBackground); }
+    .connect-row .cname { font-size: 12px; color: var(--vscode-foreground); }
+    .connect-row .caction { font-size: 10px; color: var(--vscode-textLink-foreground, #8fc2ff); border: 1px solid rgba(143,194,255,0.35); padding: 1px 6px; border-radius: 3px; opacity: 0.9; }
     .row {
       position: relative; padding: 7px 12px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25));
-      cursor: default; display: grid; grid-template-columns: 10px 20px 1fr auto; column-gap: 8px; align-items: center;
+      cursor: default; display: grid; grid-template-columns: 10px 1fr; column-gap: 8px; align-items: center;
     }
     .row:last-child { border-bottom: none; }
-    .row:hover { background: var(--vscode-list-hoverBackground); }
-    .row.sub {
-      padding-left: 34px; grid-template-columns: 8px 18px 1fr auto;
-      border-bottom: 1px solid transparent;
-    }
-    .row.sub .name { font-size: 12px; color: var(--vscode-descriptionForeground); }
-    .row.sub .dot { width: 5px; height: 5px; opacity: 0.7; }
     .dot { width: 7px; height: 7px; border-radius: 50%; justify-self: center; }
     .dot.ready { background: var(--vscode-charts-green, #2ea043); }
     .dot.available { background: var(--vscode-editorWarning-foreground, #cca700); opacity: 0.9; }
     .dot.unconnected { width: 6px; height: 6px; border: 1.5px solid var(--vscode-descriptionForeground); background: transparent; opacity: 0.8; }
     .dot.dim { background: var(--vscode-descriptionForeground); opacity: 0.45; }
-    .logo { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; color: var(--vscode-foreground); }
-    .logo.svg svg { width: 14px; height: 14px; display: block; }
-    .logo.img img { width: 15px; height: 15px; object-fit: contain; border-radius: 3px; }
-    .logo.mono {
-      width: 16px; height: 16px; border-radius: 50%; background: rgba(255,255,255,0.08);
-      font-size: 9px; font-weight: 700; letter-spacing: -0.02em;
-    }
-    .logo.check { width: 14px; height: 14px; border-radius: 50%; background: rgba(255,255,255,0.08); font-size: 8px; display: flex; align-items: center; justify-content: center; }
     .mid { min-width: 0; }
     .name { font-size: 12.5px; font-weight: 550; letter-spacing: -0.01em; color: var(--vscode-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .desc { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
-    .desc .pipe { opacity: 0.5; margin: 0 4px; }
-    .right { font-size: 10.5px; color: var(--vscode-descriptionForeground); text-align: right; white-space: nowrap; }
-    .right.install {
-      font-size: 10px; color: var(--vscode-textLink-foreground, #8fc2ff); border: 1px solid rgba(143,194,255,0.35);
-      padding: 1px 6px; border-radius: 3px; opacity: 0.9; cursor: pointer;
-    }
-    .row:not(:hover) .right.install { opacity: 0.55; }
     #empty { padding: 32px 16px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; }
     #empty[hidden] { display: none; }
-    .profile-actions { display: none; gap: 4px; }
-    .row:hover .profile-actions { display: flex; }
-    .profile-actions span { cursor: pointer; color: var(--vscode-descriptionForeground); }
-    .profile-actions span:hover { color: var(--vscode-foreground); }
     .dialog-backdrop {
       position: absolute; inset: 0; z-index: 20;
       background: var(--vscode-editor-background, var(--vscode-sideBar-background));
@@ -532,10 +537,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
 <body>
   <div id="search">
     <span class="mag" aria-hidden="true">⌕</span>
-    <input id="q" placeholder="Filter profiles / providers…" autocomplete="off" />
+    <input id="q" placeholder="Filter wallets / providers…" autocomplete="off" />
     <span id="clear" title="Clear filter">✕</span>
   </div>
   <div id="summary"></div>
+  <button id="maplink" title="Open the full auth &amp; model configuration map">↗ open Auth &amp; Model Map</button>
   <div id="list"></div>
   <div id="empty" hidden>Nothing matches.</div>
   <div id="dialog-backdrop" class="dialog-backdrop">
@@ -556,6 +562,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
       const listEl = document.getElementById('list');
       const emptyEl = document.getElementById('empty');
       const summaryEl = document.getElementById('summary');
+      const mapEl = document.getElementById('maplink');
       const dialogBackdrop = document.getElementById('dialog-backdrop');
       const dialogTitle = document.getElementById('dialog-title');
       const dialogBody = document.getElementById('dialog-body');
@@ -597,73 +604,78 @@ export function buildHtml(nonce: string, cspSource: string): string {
           .catch(function () {});
       }
 
-      function descHtml(text) {
-        return escapeHtml(text).replace(/ · /g, '<span class="pipe">·</span>');
+      function kindClass(k) { return k === 'api-key' ? 'key' : 'sub'; }
+      function kindLabel(k) {
+        return k === 'subscription-refreshing' ? 'SUB · SELF-REFRESH' : k === 'subscription-stored' ? 'SUB · STORED' : 'API KEY';
       }
 
-      function presetRowHTML(r) {
-        return '<div class="row" data-slug="' + escapeHtml(r.slug) + '" data-kind="preset">' +
-          '<span class="dot ' + (r.connected ? 'ready' : 'unconnected') + '"></span>' +
-          logoHtml(r.logo) +
-          '<div class="mid">' +
-            '<div class="name">' + escapeHtml(r.name) + '</div>' +
-            '<div class="desc">' + descHtml(r.description) + '</div>' +
-          '</div>' +
-        '</div>';
-      }
-
-      function modelRowHTML(r) {
-        return '<div class="row sub">' +
-          '<span class="dot"></span>' +
-          '<span class="logo check">' + (r.runnable ? '✓' : '') + '</span>' +
-          '<div class="mid">' +
-            '<div class="name">' + escapeHtml(r.product) + '</div>' +
-          '</div>' +
-          '<span class="right">' + descHtml(r.description) + '</span>' +
-        '</div>';
-      }
-
-      function profileRowHTML(r) {
-        var actions = '<span class="profile-actions">' +
-          '<span title="Set allowed models" data-set-models="' + escapeHtml(r.profileId) + '">+</span>' +
-          '<span title="' + (r.enabled ? 'Disable' : 'Enable') + '" data-toggle="' + escapeHtml(r.profileId) + '">' + (r.enabled ? '⊘' : '✓') + '</span>' +
-          '<span title="Delete" data-delete="' + escapeHtml(r.profileId) + '">🗑</span>' +
+      function walletCardHTML(w) {
+        var actions = '<span class="wactions">' +
+          '<span title="Set allowed models" data-set-models="' + escapeHtml(w.id) + '">+</span>' +
+          '<span title="' + (w.enabled ? 'Disable' : 'Enable') + '" data-toggle="' + escapeHtml(w.id) + '">' + (w.enabled ? '⊘' : '✓') + '</span>' +
+          '<span title="Delete" data-delete="' + escapeHtml(w.id) + '">🗑</span>' +
           '</span>';
-        return '<div class="row" data-profile-id="' + escapeHtml(r.profileId) + '" data-kind="profile" data-enabled="' + r.enabled + '">' +
-          '<span class="dot ' + (r.enabled ? 'ready' : 'dim') + '"></span>' +
-          logoHtml(r.logo) +
-          '<div class="mid">' +
-            '<div class="name">' + escapeHtml(r.name) + '</div>' +
-            '<div class="desc">' + descHtml(r.description) + '</div>' +
+        return '<div class="wcard" data-profile-id="' + escapeHtml(w.id) + '" data-enabled="' + w.enabled + '">' +
+          '<div class="wtop">' +
+            '<span class="dot ' + escapeHtml(w.keyStatus || 'stored') + '"></span>' +
+            '<span class="wname">' + escapeHtml(w.label) + '</span>' +
+            '<span class="kchip ' + kindClass(w.accessKind) + '">' + kindLabel(w.accessKind) + '</span>' +
           '</div>' +
-          '<div class="right">' + actions + '</div>' +
-        '</div>' +
-        (r.expanded ? r.children.map(modelRowHTML).join('') : '');
+          '<div class="wmeta">' + escapeHtml(w.credential) + ' · ' + escapeHtml(w.models) + (w.enabled ? '' : ' · disabled') + '</div>' +
+          actions +
+        '</div>';
+      }
+
+      function providerGroupHTML(p) {
+        var pills = '';
+        if (p.subscriptionCount) pills += '<span class="ppill sub">SUBSCRIPTION ×' + p.subscriptionCount + '</span>';
+        if (p.apiKeyCount) pills += '<span class="ppill key">API KEY ×' + p.apiKeyCount + '</span>';
+        var html = '<div class="provider-group">' +
+          '<div class="provider-header">' +
+            logoHtml(p.logo) +
+            '<span class="pname">' + escapeHtml(p.endpoint) + '</span>' +
+            '<span class="native">' + escapeHtml(p.native) + '</span>' +
+            '<span class="provider-pills">' + pills + '</span>' +
+          '</div>';
+        for (var i = 0; i < p.wallets.length; i++) html += walletCardHTML(p.wallets[i]);
+        html += '</div>';
+        return html;
+      }
+
+      function connectRowHTML(u) {
+        return '<div class="connect-row" data-slug="' + escapeHtml(u.slug) + '">' +
+          logoHtml(u.logo) +
+          '<span class="cname">' + escapeHtml(u.name) + '</span>' +
+          '<span class="caction">Connect</span>' +
+        '</div>';
       }
 
       function routerRowHTML(r) {
         return '<div class="row" data-kind="router">' +
           '<span class="dot ' + r.status + '"></span>' +
-          '<div class="mid" style="grid-column: 3 / 5;">' +
+          '<div class="mid">' +
             '<div class="name">' + escapeHtml(r.name) + '</div>' +
             (r.description ? '<div class="desc">' + escapeHtml(r.description) + '</div>' : '') +
           '</div>' +
         '</div>';
       }
 
-      function sectionHTML(section) {
+      function providersSectionHTML(section, unconnected, moreCount) {
         var headerClass = 'section-header' + (section.expanded ? '' : ' collapsed');
-        var html = '<div class="section" data-section="' + section.kind + '">' +
+        var html = '<div class="section" data-section="providers">' +
           '<div class="' + headerClass + '">' +
             '<span class="htitle"><span class="chev">›</span>' + escapeHtml(section.label) + '</span>' +
             '<span class="c">' + escapeHtml(String(section.count)) + '</span>' +
           '</div>';
         if (section.expanded) {
-          html += '<div class="list" data-list="' + section.kind + '" style="display:flex;flex-direction:column;">';
-          for (var i = 0; i < section.rows.length; i++) {
-            if (section.kind === 'presets') html += presetRowHTML(section.rows[i]);
-            else if (section.kind === 'profiles') html += profileRowHTML(section.rows[i]);
-            else html += routerRowHTML(section.rows[i]);
+          html += '<div class="list" data-list="providers">';
+          for (var i = 0; i < section.rows.length; i++) html += providerGroupHTML(section.rows[i]);
+          if (moreCount > 0) {
+            html += '<button class="morebtn" data-action="toggleMoreProviders">▾ ' + moreCount + ' more provider' + (moreCount === 1 ? '' : 's') + '</button>';
+          }
+          if (unconnected.length > 0) {
+            html += '<div class="grouplabel">Connect a provider</div>';
+            for (var j = 0; j < unconnected.length; j++) html += connectRowHTML(unconnected[j]);
           }
           html += '</div>';
         }
@@ -671,14 +683,29 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return html;
       }
 
+      function routerSectionHTML(section) {
+        var headerClass = 'section-header' + (section.expanded ? '' : ' collapsed');
+        var html = '<div class="section" data-section="router">' +
+          '<div class="' + headerClass + '">' +
+            '<span class="htitle"><span class="chev">›</span>' + escapeHtml(section.label) + '</span>' +
+            '<span class="c">' + escapeHtml(String(section.count)) + '</span>' +
+          '</div>';
+        if (section.expanded) {
+          html += '<div class="list" data-list="router">';
+          for (var i = 0; i < section.rows.length; i++) html += routerRowHTML(section.rows[i]);
+          html += '</div>';
+        }
+        html += '</div>';
+        return html;
+      }
+
       function render(payload) {
-        var html = sectionHTML(payload.model.presets) + sectionHTML(payload.model.profiles) + sectionHTML(payload.model.router);
+        var m = payload.model;
+        var html = providersSectionHTML(m.providers, m.unconnected, m.moreCount) + routerSectionHTML(m.router);
         listEl.innerHTML = html;
-        var totalRows = payload.model.presets.rows.length + payload.model.profiles.rows.length + payload.model.router.rows.length;
+        var totalRows = m.providers.rows.length + m.unconnected.length + m.router.rows.length;
         emptyEl.hidden = totalRows !== 0;
-        summaryEl.textContent = payload.search.trim().length > 0
-          ? totalRows + ' shown'
-          : '';
+        summaryEl.textContent = payload.search.trim().length > 0 ? totalRows + ' shown' : '';
         var svgs = listEl.querySelectorAll('.logo.svg');
         for (var j = 0; j < svgs.length; j++) loadSvg(svgs[j]);
       }
@@ -741,6 +768,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
         }
       });
 
+      mapEl.addEventListener('click', function () {
+        vscode.postMessage({ type: 'openMap' });
+      });
+
       listEl.addEventListener('click', function (e) {
         var sectionHeader = e.target.closest('.section-header');
         if (sectionHeader) {
@@ -748,8 +779,13 @@ export function buildHtml(nonce: string, cspSource: string): string {
           vscode.postMessage({ type: 'toggleSection', section: section });
           return;
         }
-        var profileRow = e.target.closest('[data-kind="profile"]');
-        if (profileRow) {
+        var moreBtn = e.target.closest('[data-action="toggleMoreProviders"]');
+        if (moreBtn) {
+          vscode.postMessage({ type: 'toggleMoreProviders' });
+          return;
+        }
+        var wcard = e.target.closest('[data-profile-id]');
+        if (wcard) {
           var setModelsBtn = e.target.closest('[data-set-models]');
           if (setModelsBtn) {
             vscode.postMessage({ type: 'requestSetModels', profileId: setModelsBtn.getAttribute('data-set-models') });
@@ -757,8 +793,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           }
           var toggleBtn = e.target.closest('[data-toggle]');
           if (toggleBtn) {
-            var row = toggleBtn.closest('[data-kind="profile"]');
-            var enabled = row.getAttribute('data-enabled') === 'true';
+            var enabled = wcard.getAttribute('data-enabled') === 'true';
             vscode.postMessage({ type: enabled ? 'disable' : 'enable', profileId: toggleBtn.getAttribute('data-toggle') });
             return;
           }
@@ -767,12 +802,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
             vscode.postMessage({ type: 'delete', profileId: deleteBtn.getAttribute('data-delete') });
             return;
           }
-          vscode.postMessage({ type: 'toggleProfile', profileId: profileRow.getAttribute('data-profile-id') });
           return;
         }
-        var presetRow = e.target.closest('[data-kind="preset"]');
-        if (presetRow) {
-          vscode.postMessage({ type: 'requestConnect', slug: presetRow.getAttribute('data-slug') });
+        var connectRow = e.target.closest('.connect-row');
+        if (connectRow) {
+          vscode.postMessage({ type: 'requestConnect', slug: connectRow.getAttribute('data-slug') });
           return;
         }
       });

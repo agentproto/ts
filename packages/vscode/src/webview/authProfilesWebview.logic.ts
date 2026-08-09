@@ -1,25 +1,22 @@
 /**
- * Pure Auth Profiles webview model — no vscode import so it's unit-testable
- * under plain vitest. Reshapes provider presets, model profiles, and the Local
- * Router status into the collapsible-section row model the webview paints.
+ * Pure "Wallets" webview model — no vscode import so it's unit-testable under
+ * plain vitest. Groups auth profiles into provider columns via the mind map's
+ * {@link buildProviders}/{@link accessKind} (authModelMindmap.logic.ts), so
+ * this sidebar and the Auth & Model Map agree on what a wallet is by
+ * construction, not by convention. Presets with no wallet yet surface as a
+ * separate "connect a provider" list.
  */
 
 import type {
   AuthProfileSummary,
-  CatalogModelsResponse,
   LlmEndpointStatusResult,
   ProviderPresetEntry,
 } from "../client/types.js"
 import {
-  buildPresetNodes,
-  buildProfileNodesWithProfiles,
-  presetConnected,
-  presetRowDescription,
-  profileEnabled,
-  profileRowDescription,
-  servicedModelsByProfile,
-  type ServicedModel,
-} from "../views/authProfilesTree.logic.js"
+  buildProviders,
+  type ProviderView,
+  type WalletView,
+} from "./authModelMindmap.logic.js"
 import {
   routerDescription,
   routerLabel,
@@ -30,31 +27,28 @@ import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
 
 export type AuthProfileStatus = "ready" | "available" | "dim" | "unconnected"
 
-export interface PresetWebviewRow {
-  kind: "preset"
+export interface WalletWebviewRow extends WalletView {
+  /** Convenience mirror of `!disabled`, so the panel toggles without
+   *  re-deriving it from the wallet's `disabled` flag every time. */
+  enabled: boolean
+}
+
+export interface ProviderWebviewRow {
+  endpoint: string
+  native: string
+  logo: AdapterLogo
+  wallets: WalletWebviewRow[]
+  subscriptionCount: number
+  apiKeyCount: number
+  /** True for the default-visible providers; false ⇒ behind "more", same
+   *  {@link DEFAULT_PROVIDER_COUNT} fold rule as the Auth & Model Map. */
+  primary: boolean
+}
+
+export interface UnconnectedProviderRow {
   slug: string
   name: string
-  description: string
-  connected: boolean
   logo: AdapterLogo
-}
-
-export interface ModelWebviewRow {
-  kind: "model"
-  product: string
-  description: string
-  runnable: boolean
-}
-
-export interface ProfileWebviewRow {
-  kind: "profile"
-  profileId: string
-  name: string
-  description: string
-  enabled: boolean
-  logo: AdapterLogo
-  expanded: boolean
-  children: ModelWebviewRow[]
 }
 
 export interface RouterWebviewRow {
@@ -65,7 +59,7 @@ export interface RouterWebviewRow {
 }
 
 export interface AuthProfilesSection<T> {
-  kind: "presets" | "profiles" | "router"
+  kind: "providers" | "router"
   label: string
   count: number | string
   expanded: boolean
@@ -73,14 +67,18 @@ export interface AuthProfilesSection<T> {
 }
 
 export interface AuthProfilesWebviewModel {
-  presets: AuthProfilesSection<PresetWebviewRow>
-  profiles: AuthProfilesSection<ProfileWebviewRow>
+  providers: AuthProfilesSection<ProviderWebviewRow>
+  /** Providers with zero wallets — surfaced separately with a Connect
+   *  affordance rather than folded into the wallet-card grid. */
+  unconnected: UnconnectedProviderRow[]
+  /** How many primary-fold providers are hidden behind "more" right now
+   *  (0 while searching or once expanded). */
+  moreCount: number
   router: AuthProfilesSection<RouterWebviewRow>
 }
 
 export interface AuthProfilesExpandedState {
-  presets: boolean
-  profiles: boolean
+  providers: boolean
   router: boolean
 }
 
@@ -92,59 +90,6 @@ export function routerStatusFor(status: LlmEndpointStatusResult | null): AuthPro
   return "dim"
 }
 
-function toPresetRow(
-  preset: ProviderPresetEntry,
-  profiles: readonly AuthProfileSummary[],
-): PresetWebviewRow {
-  const connected = presetConnected(preset, profiles)
-  return {
-    kind: "preset",
-    slug: preset.slug,
-    name: preset.name?.trim() || preset.slug,
-    description: presetRowDescription(preset, connected),
-    connected,
-    logo: adapterLogoFor(preset.slug),
-  }
-}
-
-function toModelRow(model: ServicedModel): ModelWebviewRow {
-  return {
-    kind: "model",
-    product: model.product,
-    description: `${model.route} · ${model.runnable ? "active" : "inactive"}`,
-    runnable: model.runnable,
-  }
-}
-
-function toProfileRow(
-  profileId: string,
-  routesCount: number,
-  summaries: ReadonlyMap<string, AuthProfileSummary>,
-  serviced: ReadonlyMap<string, ServicedModel[]>,
-  expandedProfiles: ReadonlySet<string>,
-): ProfileWebviewRow {
-  const summary = summaries.get(profileId)
-  const enabled = profileEnabled(summary)
-  return {
-    kind: "profile",
-    profileId,
-    name: profileId,
-    description: profileRowDescription(routesCount, summary),
-    enabled,
-    logo: adapterLogoFor(summary?.endpoint ?? profileId),
-    expanded: expandedProfiles.has(profileId),
-    children: expandedProfiles.has(profileId)
-      ? (serviced.get(profileId) ?? []).map(toModelRow)
-      : [],
-  }
-}
-
-function rowMatchesSearch(row: { name: string; description: string }, search: string): boolean {
-  if (search.length === 0) return true
-  const term = search.toLowerCase()
-  return row.name.toLowerCase().includes(term) || row.description.toLowerCase().includes(term)
-}
-
 function routerCountLabel(status: LlmEndpointStatusResult | null): string {
   if (!status) return "stopped"
   if (status.status === "never-started") return "stopped"
@@ -152,26 +97,62 @@ function routerCountLabel(status: LlmEndpointStatusResult | null): string {
   return status.status
 }
 
+function toWalletRow(w: WalletView): WalletWebviewRow {
+  return { ...w, enabled: !w.disabled }
+}
+
+function toProviderRow(p: ProviderView): ProviderWebviewRow {
+  return {
+    endpoint: p.endpoint,
+    native: p.native,
+    logo: adapterLogoFor(p.endpoint),
+    wallets: p.wallets.map(toWalletRow),
+    subscriptionCount: p.subscriptionCount,
+    apiKeyCount: p.apiKeyCount,
+    primary: p.primary,
+  }
+}
+
+function providerMatchesSearch(row: ProviderWebviewRow, term: string): boolean {
+  if (row.endpoint.toLowerCase().includes(term)) return true
+  if (row.native.toLowerCase().includes(term)) return true
+  return row.wallets.some(w => w.label.toLowerCase().includes(term) || w.id.toLowerCase().includes(term))
+}
+
+function presetMatchesSearch(row: UnconnectedProviderRow, term: string): boolean {
+  return row.slug.toLowerCase().includes(term) || row.name.toLowerCase().includes(term)
+}
+
+/**
+ * Build the "Wallets" webview model: provider groups (with wallet cards)
+ * folded at {@link DEFAULT_PROVIDER_COUNT}, unconnected presets, and the
+ * Local Router status — all from the daemon's live auth profiles + presets.
+ */
 export function buildAuthProfilesWebviewModel(
   presets: readonly ProviderPresetEntry[],
   profiles: readonly AuthProfileSummary[],
-  catalog: CatalogModelsResponse,
   routerStatus: LlmEndpointStatusResult | null,
   search: string,
   expanded: AuthProfilesExpandedState,
-  expandedProfiles: ReadonlySet<string>,
+  showAllProviders: boolean,
 ): AuthProfilesWebviewModel {
-  const summaries = new Map(profiles.map(p => [p.id, p]))
-  const serviced = servicedModelsByProfile(catalog)
+  const allProviders = buildProviders([...profiles], new Map()).map(toProviderRow)
 
-  const presetRows = buildPresetNodes([...presets], profiles)
-    .filter(n => n.kind === "preset")
-    .map(n => toPresetRow(n.preset, profiles))
+  const trimmed = search.trim().toLowerCase()
+  const filteredProviders = trimmed.length === 0 ? allProviders : allProviders.filter(p => providerMatchesSearch(p, trimmed))
+  const visibleProviders =
+    showAllProviders || trimmed.length > 0 ? filteredProviders : filteredProviders.filter(p => p.primary)
+  const moreCount = showAllProviders || trimmed.length > 0 ? 0 : filteredProviders.length - visibleProviders.length
 
-  const profileNodes = buildProfileNodesWithProfiles(catalog, profiles)
-  const profileRows = profileNodes.map(n =>
-    toProfileRow(n.profileId, n.routesCount, summaries, serviced, expandedProfiles),
-  )
+  const connectedEndpoints = new Set(profiles.map(p => p.endpoint))
+  const unconnectedAll: UnconnectedProviderRow[] = [...presets]
+    .filter(preset => !connectedEndpoints.has(preset.slug))
+    .map(preset => ({
+      slug: preset.slug,
+      name: preset.name?.trim() || preset.slug,
+      logo: adapterLogoFor(preset.slug),
+    }))
+  const unconnected = trimmed.length === 0 ? unconnectedAll : unconnectedAll.filter(u => presetMatchesSearch(u, trimmed))
 
   const routerRows: RouterWebviewRow[] = [
     {
@@ -181,27 +162,20 @@ export function buildAuthProfilesWebviewModel(
       status: routerStatusFor(routerStatus),
     },
   ]
+  const visibleRouter = trimmed.length === 0 ? routerRows : routerRows.filter(r => r.name.toLowerCase().includes(trimmed))
 
-  const trimmed = search.trim()
-  const visiblePresets = trimmed.length === 0 ? presetRows : presetRows.filter(r => rowMatchesSearch(r, trimmed))
-  const visibleProfiles = trimmed.length === 0 ? profileRows : profileRows.filter(r => rowMatchesSearch(r, trimmed))
-  const visibleRouter = trimmed.length === 0 ? routerRows : routerRows.filter(r => rowMatchesSearch(r, trimmed))
+  const totalWallets = filteredProviders.reduce((n, p) => n + p.wallets.length, 0)
 
   return {
-    presets: {
-      kind: "presets",
-      label: "Provider Presets",
-      count: visiblePresets.length,
-      expanded: expanded.presets,
-      rows: visiblePresets,
+    providers: {
+      kind: "providers",
+      label: "Wallets",
+      count: totalWallets,
+      expanded: expanded.providers,
+      rows: visibleProviders,
     },
-    profiles: {
-      kind: "profiles",
-      label: "Model Profiles",
-      count: visibleProfiles.length,
-      expanded: expanded.profiles,
-      rows: visibleProfiles,
-    },
+    unconnected,
+    moreCount,
     router: {
       kind: "router",
       label: "Local Router",

@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest"
 
 import type {
   AuthProfileSummary,
-  CatalogModelsResponse,
   LlmEndpointStatusResult,
   ProviderPresetEntry,
 } from "../client/types.js"
+import { accessKind } from "./authModelMindmap.logic.js"
 import {
   buildAuthProfilesWebviewModel,
   routerStatusFor,
@@ -28,35 +28,7 @@ function profile(over: Partial<AuthProfileSummary> = {}): AuthProfileSummary {
   return { id: "anthropic-local", endpoint: "anthropic", method: "oauth-bearer", ...over }
 }
 
-function catalog(): CatalogModelsResponse {
-  return {
-    vendors: [
-      {
-        vendor: "anthropic",
-        products: [
-          {
-            product: "claude-fable-5",
-            routes: [
-              {
-                route: "anthropic",
-                ref: "anthropic/claude-fable-5",
-                baseUrl: null,
-                pricing: null,
-                runnable: true,
-                eligibleProfiles: ["anthropic-local"],
-                adapterModes: [],
-                adapters: [],
-                curated: true,
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  }
-}
-
-const ALL_EXPANDED: AuthProfilesExpandedState = { presets: true, profiles: true, router: true }
+const ALL_EXPANDED: AuthProfilesExpandedState = { providers: true, router: true }
 
 const STOPPED_ROUTER: LlmEndpointStatusResult | null = {
   running: false,
@@ -95,125 +67,92 @@ describe("routerStatusFor", () => {
 })
 
 describe("buildAuthProfilesWebviewModel", () => {
-  it("renders preset rows with connection state and logos", () => {
-    const model = buildAuthProfilesWebviewModel(
-      [preset({ slug: "anthropic" }), preset({ slug: "openai" })],
-      [profile({ id: "anthropic-local", endpoint: "anthropic" })],
-      { vendors: [] },
-      STOPPED_ROUTER,
-      "",
-      ALL_EXPANDED,
-      new Set(),
-    )
-    const anthropic = model.presets.rows.find(r => r.slug === "anthropic")!
-    expect(anthropic.connected).toBe(true)
-    expect(anthropic.logo).toEqual({ kind: "icon", file: "anthropic.svg" })
-    const openai = model.presets.rows.find(r => r.slug === "openai")!
-    expect(openai.connected).toBe(false)
-    expect(openai.logo).toEqual({ kind: "icon", file: "openai.svg" })
-  })
-
-  it("renders profile rows with route counts and logos", () => {
+  it("groups profiles into provider columns with the mind map's accessKind, single-source-of-truth", () => {
+    const anthropicSub = profile({ id: "anthropic-sub", endpoint: "anthropic", method: "oauth-bearer", source: "claude-code-oauth" })
+    const anthropicKey = profile({ id: "anthropic-key", endpoint: "anthropic", method: "api-key" })
     const model = buildAuthProfilesWebviewModel(
       [],
-      [profile({ id: "anthropic-local" }), profile({ id: "unused", endpoint: "openai" })],
-      catalog(),
+      [anthropicSub, anthropicKey],
       STOPPED_ROUTER,
       "",
       ALL_EXPANDED,
-      new Set(),
+      false,
     )
-    expect(model.profiles.rows.map(r => r.profileId)).toEqual(["anthropic-local", "unused"])
-    expect(model.profiles.rows[0]?.description).toContain("1 route")
-    expect(model.profiles.rows[0]?.logo).toEqual({ kind: "icon", file: "anthropic.svg" })
-    expect(model.profiles.rows[1]?.description).toContain("0 routes")
+    const anthropic = model.providers.rows.find(p => p.endpoint === "anthropic")!
+    expect(anthropic.subscriptionCount).toBe(1)
+    expect(anthropic.apiKeyCount).toBe(1)
+    const sub = anthropic.wallets.find(w => w.id === "anthropic-sub")!
+    const key = anthropic.wallets.find(w => w.id === "anthropic-key")!
+    // The webview's per-wallet access kind must equal what the mind map's
+    // accessKind() computes directly — no duplicated classification.
+    expect(sub.accessKind).toBe(accessKind(anthropicSub))
+    expect(key.accessKind).toBe(accessKind(anthropicKey))
   })
 
-  it("includes serviced model children when a profile is expanded", () => {
-    const model = buildAuthProfilesWebviewModel(
-      [],
-      [profile({ id: "anthropic-local" })],
-      catalog(),
-      STOPPED_ROUTER,
-      "",
-      ALL_EXPANDED,
-      new Set(["anthropic-local"]),
-    )
-    const profileRow = model.profiles.rows[0]!
-    expect(profileRow.expanded).toBe(true)
-    expect(profileRow.children).toHaveLength(1)
-    expect(profileRow.children[0]?.product).toBe("claude-fable-5")
-    expect(profileRow.children[0]?.runnable).toBe(true)
-  })
-
-  it("excludes children when a profile is collapsed", () => {
-    const model = buildAuthProfilesWebviewModel(
-      [],
-      [profile({ id: "anthropic-local" })],
-      catalog(),
-      STOPPED_ROUTER,
-      "",
-      ALL_EXPANDED,
-      new Set(),
-    )
-    expect(model.profiles.rows[0]?.children).toHaveLength(0)
-  })
-
-  it("marks disabled profiles dim", () => {
+  it("marks a disabled wallet's enabled flag false", () => {
     const model = buildAuthProfilesWebviewModel(
       [],
       [profile({ id: "disabled", disabled: true })],
-      { vendors: [] },
       STOPPED_ROUTER,
       "",
       ALL_EXPANDED,
-      new Set(),
+      false,
     )
-    expect(model.profiles.rows[0]?.enabled).toBe(false)
+    const wallet = model.providers.rows[0]!.wallets[0]!
+    expect(wallet.enabled).toBe(false)
+  })
+
+  it("folds long-tail providers behind 'more' at the same count as the map", () => {
+    const profiles = Array.from({ length: 8 }, (_, i) => profile({ id: `p${i}`, endpoint: `endpoint${i}` }))
+    const model = buildAuthProfilesWebviewModel([], profiles, STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    expect(model.providers.rows).toHaveLength(6)
+    expect(model.moreCount).toBe(2)
+  })
+
+  it("shows every provider once showAllProviders is set", () => {
+    const profiles = Array.from({ length: 8 }, (_, i) => profile({ id: `p${i}`, endpoint: `endpoint${i}` }))
+    const model = buildAuthProfilesWebviewModel([], profiles, STOPPED_ROUTER, "", ALL_EXPANDED, true)
+    expect(model.providers.rows).toHaveLength(8)
+    expect(model.moreCount).toBe(0)
+  })
+
+  it("lists presets with no wallet yet as unconnected", () => {
+    const model = buildAuthProfilesWebviewModel(
+      [preset({ slug: "anthropic" }), preset({ slug: "openai", name: "OpenAI" })],
+      [profile({ id: "anthropic-local", endpoint: "anthropic" })],
+      STOPPED_ROUTER,
+      "",
+      ALL_EXPANDED,
+      false,
+    )
+    expect(model.unconnected.map(u => u.slug)).toEqual(["openai"])
+    expect(model.providers.rows.map(p => p.endpoint)).toEqual(["anthropic"])
   })
 
   it("renders router status in its own section", () => {
-    const model = buildAuthProfilesWebviewModel(
-      [],
-      [],
-      { vendors: [] },
-      RUNNING_ROUTER,
-      "",
-      ALL_EXPANDED,
-      new Set(),
-    )
+    const model = buildAuthProfilesWebviewModel([], [], RUNNING_ROUTER, "", ALL_EXPANDED, false)
     expect(model.router.rows[0]?.status).toBe("ready")
     expect(model.router.rows[0]?.name).toContain("running")
     expect(String(model.router.count)).toBe("healthy")
   })
 
-  it("filters rows by search", () => {
+  it("filters providers and unconnected presets by search", () => {
     const model = buildAuthProfilesWebviewModel(
-      [preset({ slug: "openai", info: { schemaFlavor: "openai", baseUrl: "https://api.openai.com", keyEnv: "OPENAI_API_KEY" } })],
-      [profile({ id: "anthropic-local" })],
-      catalog(),
+      [preset({ slug: "openai", name: "OpenAI" })],
+      [profile({ id: "anthropic-local", endpoint: "anthropic" })],
       STOPPED_ROUTER,
       "anthropic",
       ALL_EXPANDED,
-      new Set(),
+      false,
     )
-    expect(model.presets.rows).toHaveLength(0)
-    expect(model.profiles.rows).toHaveLength(1)
+    expect(model.providers.rows.map(p => p.endpoint)).toEqual(["anthropic"])
+    expect(model.unconnected).toHaveLength(0)
   })
 
   it("honors expanded state per section", () => {
-    const collapsed: AuthProfilesExpandedState = { presets: false, profiles: true, router: false }
-    const model = buildAuthProfilesWebviewModel(
-      [preset()],
-      [],
-      { vendors: [] },
-      STOPPED_ROUTER,
-      "",
-      collapsed,
-      new Set(),
-    )
-    expect(model.presets.expanded).toBe(false)
-    expect(model.profiles.expanded).toBe(true)
+    const collapsed: AuthProfilesExpandedState = { providers: false, router: false }
+    const model = buildAuthProfilesWebviewModel([], [], STOPPED_ROUTER, "", collapsed, false)
+    expect(model.providers.expanded).toBe(false)
     expect(model.router.expanded).toBe(false)
   })
 })

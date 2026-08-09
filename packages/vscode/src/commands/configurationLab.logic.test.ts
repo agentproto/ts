@@ -163,8 +163,8 @@ describe("buildConfigurationLabSnapshot", () => {
     expect(byKey["Posture"]?.source).toBe("explicit")
     expect(byKey["Route / gateway"]?.source).toBe("default")
     expect(byKey["Route / gateway"]?.value).toBe("anthropic")
-    expect(byKey["Auth profile"]?.source).toBe("default")
-    expect(byKey["Auth profile"]?.value).toBe("anthropic-sub")
+    expect(byKey["Wallet"]?.source).toBe("default")
+    expect(byKey["Wallet"]?.value).toBe("anthropic-sub")
   })
 
   it("marks route rows runnable based on eligible profiles", () => {
@@ -309,8 +309,8 @@ describe("buildConfigurationLabSnapshot", () => {
     const byKey = Object.fromEntries(snapshot.effective.map((f) => [f.key, f]))
     expect(byKey["Route / gateway"]?.source).toBe("default")
     expect(byKey["Route / gateway"]?.value).toBe("openai")
-    expect(byKey["Auth profile"]?.source).toBe("default")
-    expect(byKey["Auth profile"]?.value).toBe("openai-api")
+    expect(byKey["Wallet"]?.source).toBe("default")
+    expect(byKey["Wallet"]?.value).toBe("openai-api")
   })
 
   it("synthesizes a native OpenAI route for Codex when the catalog is sparse", () => {
@@ -555,9 +555,9 @@ describe("buildConfigurationLabSnapshot", () => {
     expect(snapshot.selection.profile).toBe("anthropic-api")
     const byKey = Object.fromEntries(snapshot.effective.map((f) => [f.key, f]))
     expect(byKey["Route / gateway"]?.source).toBe("default")
-    expect(byKey["Auth profile"]?.source).toBe("default")
+    expect(byKey["Wallet"]?.source).toBe("default")
     expect(byKey["Route / gateway"]?.detail).not.toContain("unset")
-    expect(byKey["Auth profile"]?.detail).not.toContain("unset")
+    expect(byKey["Wallet"]?.detail).not.toContain("unset")
   })
 
   it("mastracode does not default to an Anthropic subscription profile", () => {

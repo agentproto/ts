@@ -5,6 +5,7 @@ import {
   buildAuthSettingsModel,
   esc,
 } from "./authSettingsPanel.logic.js"
+import { accessKind } from "./authModelMindmap.logic.js"
 import type {
   AuthProfileSummary,
   CatalogModelsResponse,
@@ -89,6 +90,19 @@ function xaiCatalog(opts: { allowedIds?: string[] } = {}): CatalogModelsResponse
 }
 
 describe("buildAuthSettingsModel", () => {
+  it("carries the mind map's accessKind per wallet — single source of truth", () => {
+    const subProfile: AuthProfileSummary = {
+      id: "anthropic-refresh",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+    }
+    const model = buildAuthSettingsModel(presets, catalog, [...profiles, subProfile])
+    const wallet = model.wallets.find(w => w.id === "anthropic-refresh")!
+    expect(wallet.accessKind).toBe(accessKind(subProfile))
+    expect(wallet.accessKind).toBe("subscription-refreshing")
+  })
+
   it("marks presets connected and sorts unconnected first", () => {
     const model = buildAuthSettingsModel(presets, catalog, profiles)
     expect(model.presets.map(p => [p.slug, p.connected])).toEqual([
@@ -187,6 +201,16 @@ describe("buildAuthSettingsModel", () => {
 })
 
 describe("buildAuthSettingsHtml", () => {
+  it("renders an access-kind chip per wallet, matching the mind map's vocabulary", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "anthropic-sub", endpoint: "anthropic", method: "oauth-bearer", source: "claude-code-oauth" },
+      { id: "openrouter-api", endpoint: "openrouter", method: "api-key" },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain('class="badge kind-sub">SUB · SELF-REFRESH')
+    expect(html).toContain('class="badge kind-key">API KEY')
+  })
+
   it("renders a Connect button only for unconnected presets and echoes the nonce", () => {
     const model = buildAuthSettingsModel(presets, catalog, profiles)
     const html = buildAuthSettingsHtml(model, "NONCE123")
