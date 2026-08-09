@@ -1,5 +1,19 @@
 # @agentproto/apps
 
+## 0.5.0
+
+### Minor Changes
+
+- 1d3cbc2: Add stable id/name/version identity to bundled apps; fix app-registry persistence
+- 4c91a47: Add UI panels for mail-triage and media-viewer apps with self-contained HTML dashboards using the McpApp bridge protocol. Introduce `agentproto-apps-sync` CLI utility to emit bundled apps to disk with catalog generation.
+
+### Patch Changes
+
+- b7171eb: Documentation update: add media-viewer app to package README
+- Updated dependencies [4b73e28]
+- Updated dependencies [b098b52]
+  - @agentproto/app-kit@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes

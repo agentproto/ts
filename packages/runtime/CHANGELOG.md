@@ -1,5 +1,26 @@
 # @agentproto/runtime
 
+## 2.4.0
+
+### Minor Changes
+
+- 7f98884: Add session visibility tracking: ephemeral watcher counters surface how many supervisors are actively monitoring a session, and lineage carry-forward ensures sessions maintain their source channel through restarts.
+- c58b9fe: Implement turn-liveness watchdog: detect mid-turn agent-cli sessions with dead adapter streams.
+
+  The daemon periodically sweeps every BUSY agent-cli session and, for one that is mid-turn, NOT legitimately blockedOn a subagent/command, and has had no adapter activity for longer than the configured threshold (default: 5 minutes), stamps `stalledSinceMs` on the descriptor and emits `session:stalled` — surfacing a dead adapter stream (network drop, hung child) that would otherwise sit indistinguishable from healthy long work. Detection and observability only; never auto-kills or restarts. Threshold configurable via `daemon.turnStallAfterMs` config or `AGENTPROTO_TURN_STALL_AFTER_MS` env var (DEFAULT ON, opt-in-to-disable). VS Code displays the stall flag (⚠ badge) when the daemon confirms, with a tooltip showing the silent duration.
+
+- 4b73e28: Add UI, artifacts, and dev-launch configuration support to app-kit. Apps can now declare HTML surfaces, artifact types, and dev-launch configurations that are carried through emit/load and integrated into the runtime app registry.
+- b098b52: Add UI, artifacts, and dev-launch configuration support to app-kit. Apps can now declare HTML surfaces, artifact types, and dev-launch configurations that are carried through emit/load and integrated into the runtime app registry.
+
+### Patch Changes
+
+- 1d3cbc2: Add stable id/name/version identity to bundled apps; fix app-registry persistence
+- 2d9befc: Add session visibility features for parent-child session hierarchies: `childrenBusy` field counts descendant sessions mid-turn, enabling UI to show idle parents as "delegating" rather than truly idle; also adds "parked" state for idle sessions with watchers.
+- c48defd: Allow subscription profiles (oauth-bearer) on modelDerivedApiKey adapters (mastracode, opencode). These adapters now correctly expose oauth-bearer as an eligible auth method and support subscription mode by injecting the token via the model-derived provider env var.
+- Updated dependencies [4b73e28]
+- Updated dependencies [b098b52]
+  - @agentproto/app-kit@0.5.0
+
 ## 2.3.0
 
 ### Minor Changes

@@ -1,5 +1,33 @@
 # agentproto-vscode
 
+## 0.6.0
+
+### Minor Changes
+
+- a2ed47d: Add live auth & model configuration map visualization to VS Code extension. New webview shows harnesses, their reach to providers, and wallet/endpoint relationships with computed edge classification (native/via-router). Includes new type fields on HarnessProviderCapability and HarnessCapabilities for billing endpoint and API mode information.
+- 7f98884: Add session visibility tracking: ephemeral watcher counters surface how many supervisors are actively monitoring a session, and lineage carry-forward ensures sessions maintain their source channel through restarts.
+- a836e66: Wallet-first revamp of auth-related UI surfaces. Auth Profiles webview renamed to "Wallets" and refactored to group profiles by provider via the Auth & Model Map's single-source-of-truth `buildProviders()`/`accessKind()` logic — eliminating duplicate classification across four surfaces. Harnesses webview now displays manifest facts (interface spoken, route, base_url acceptance) and per-provider reach via `buildAuthModel()`, ensuring parity with the map. Auth Settings consolidated into Wallets view for curation editing and model removal, leaving Auth Settings as a redirector to the two surfaces that replaced it. All mutation flows (connect, enable, disable, delete, set models) use only existing DaemonClient endpoints.
+- c58b9fe: Implement turn-liveness watchdog: detect mid-turn agent-cli sessions with dead adapter streams.
+
+  The daemon periodically sweeps every BUSY agent-cli session and, for one that is mid-turn, NOT legitimately blockedOn a subagent/command, and has had no adapter activity for longer than the configured threshold (default: 5 minutes), stamps `stalledSinceMs` on the descriptor and emits `session:stalled` — surfacing a dead adapter stream (network drop, hung child) that would otherwise sit indistinguishable from healthy long work. Detection and observability only; never auto-kills or restarts. Threshold configurable via `daemon.turnStallAfterMs` config or `AGENTPROTO_TURN_STALL_AFTER_MS` env var (DEFAULT ON, opt-in-to-disable). VS Code displays the stall flag (⚠ badge) when the daemon confirms, with a tooltip showing the silent duration.
+
+- 542f7c4: Add chip-pickers support for session effort switching and restart-with-overrides. Introduces three new daemon client methods: `setSessionEffort()` for live effort changes, `setSessionPosture()` for live posture/mode changes, and `restartSessionWithOverride()` for restart-bound axis switches (wallet, harness, route). Includes pure-logic module (`chipPickers.logic.ts`) for testable decision-making on which axes switch in-place vs require restart. Adds effort chip to composer bar with proper conditional display and comprehensive test coverage.
+- a7f897a: Dim the route chip when only one gateway is valid, preventing no-op clicks. Adds `isRouteSwitchable()` utility function (reuses `resolveRouteRows` for consistency) and UI-computed `routeSwitchable` flag to `SessionDescriptor`. The controller caches the model catalog and stamps the flag before posting session updates, allowing the composer's route chip to settle into its dimmed/active state. Backward compatible (routeSwitchable is optional); catalog fetch is defensive fire-and-forget.
+
+### Patch Changes
+
+- f5a3584: Enhanced file link resolution with robust fallback strategies: sanitization of decorated paths, multi-stage resolution (direct → sanitized → suffix matching → basename), and QuickPick for multiple matches. Adds graceful binary file handling via vscode.open fallback. Fixes working row visibility in book view to avoid duplication with live chapter status. Improves empty conversation display with session identity hero showing harness, model, mode, and wallet. Includes post-layout re-measure for message clamping to avoid spurious expanders on first paint.
+- 2d9befc: Add session visibility features for parent-child session hierarchies: `childrenBusy` field counts descendant sessions mid-turn, enabling UI to show idle parents as "delegating" rather than truly idle; also adds "parked" state for idle sessions with watchers.
+- a0bba97: Refactor conversation chrome with new pure helpers for webview injection. Add `formatCostShort`, `contextRingLevel`, `titleStatusState`, and `projectPlan` functions to support improved plan rendering (collapsible done summary, failed visibility, upcoming windowing), threshold-based context ring coloring, title status dot visibility states, and two-decimal cost display with hover precision.
+- Updated dependencies [1d3cbc2]
+- Updated dependencies [7f98884]
+- Updated dependencies [2d9befc]
+- Updated dependencies [c58b9fe]
+- Updated dependencies [4b73e28]
+- Updated dependencies [b098b52]
+- Updated dependencies [c48defd]
+  - @agentproto/runtime@2.4.0
+
 ## 0.5.0
 
 ### Minor Changes
