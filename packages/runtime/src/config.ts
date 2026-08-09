@@ -108,6 +108,26 @@ export interface DaemonConfig {
    *  `agentproto config set daemon.restartSweepIntervalMs <ms>`. Surfaced in
    *  `daemon_health` / `GET /health`. */
   restartSweepIntervalMs?: number
+  /** Turn-liveness watchdog threshold in ms (turn-liveness-watchdog
+   *  chantier). Same shape as `crashDetectIntervalMs`: DEFAULT ON
+   *  (non-destructive observability). The daemon periodically sweeps every
+   *  BUSY agent-cli session and, for one that is mid-turn, NOT legitimately
+   *  `blockedOn` a subagent/command, and has had no adapter activity
+   *  (`lastActivityAt`) for longer than this threshold, stamps
+   *  `stalledSinceMs` on the descriptor and emits `session:stalled` —
+   *  surfacing a dead adapter stream (network drop, hung child — zero
+   *  frames mid-turn) that would otherwise sit indistinguishable from
+   *  healthy long work: `status:"running"`, `lastError:null`, no other
+   *  signal. Conservative by design: a session legitimately blocked on a
+   *  long tool call is NEVER a candidate, no matter how long it's silent —
+   *  see `stall-watchdog.ts`'s docblock for why. Detects only; never kills
+   *  or restarts (this is a later concern, if ever). Set to a non-positive
+   *  value to disable the sweep entirely. Resolution order mirrors
+   *  `idleReapAfterMs`: `AGENTPROTO_TURN_STALL_AFTER_MS` env > this field >
+   *  the hardcoded default (5 min). Set via `agentproto config set
+   *  daemon.turnStallAfterMs <ms>`. Surfaced in `daemon_health` /
+   *  `GET /health`. */
+  turnStallAfterMs?: number
 }
 
 export interface TunnelConfig {

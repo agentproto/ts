@@ -685,6 +685,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // resolution order mirrors idleReapAfterMs's comment above (env >
         // config field > off).
         restartSweepIntervalMs: resolveRestartSweepIntervalMs(cfgDaemon.restartSweepIntervalMs),
+        // Turn-liveness watchdog (turn-liveness-watchdog chantier). DEFAULT
+        // ON: resolution order mirrors crashDetectIntervalMs's comment above
+        // — an unset value here passes `undefined` through so createGateway
+        // applies its own sane default rather than reading "unset" as off.
+        turnStallAfterMs: resolveTurnStallAfterMs(cfgDaemon.turnStallAfterMs),
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
@@ -1266,6 +1271,26 @@ function resolveIdleReapAfterMs(configured: number | undefined): number {
  */
 function resolveCrashDetectIntervalMs(configured: number | undefined): number | undefined {
   const raw = process.env.AGENTPROTO_CRASH_DETECT_INTERVAL_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed)) return parsed > 0 ? parsed : 0
+    return undefined
+  }
+  return configured
+}
+
+/**
+ * Resolve the effective turn-liveness watchdog threshold (turn-liveness-
+ * watchdog chantier): `AGENTPROTO_TURN_STALL_AFTER_MS` env > the
+ * `daemon.turnStallAfterMs` config field > `undefined` (letting
+ * `createGateway` apply its own DEFAULT-ON fallback). Same shape as
+ * `resolveCrashDetectIntervalMs`: an unset/malformed value does NOT mean
+ * "off" — detection is non-destructive observability, opt-in-to-DISABLE
+ * rather than opt-in-to-enable. An explicit non-positive value at either
+ * layer DOES disable it.
+ */
+function resolveTurnStallAfterMs(configured: number | undefined): number | undefined {
+  const raw = process.env.AGENTPROTO_TURN_STALL_AFTER_MS
   if (raw !== undefined && raw.trim() !== "") {
     const parsed = Number.parseInt(raw, 10)
     if (Number.isFinite(parsed)) return parsed > 0 ? parsed : 0

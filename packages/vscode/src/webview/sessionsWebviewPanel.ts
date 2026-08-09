@@ -119,6 +119,7 @@ interface RenderRow {
   watcherCount: number
   childrenBusy: number
   originLabel: string | undefined
+  stallTooltip: string | undefined
   depth: number
   action: RowAction | undefined
   workspace: (WebviewWorkspace & { css: string }) | undefined
@@ -205,6 +206,7 @@ function toRenderRow(
     watcherCount: row.watcherCount,
     childrenBusy: row.childrenBusy,
     originLabel: row.originLabel,
+    stallTooltip: row.stallTooltip,
     depth: row.depth,
     action: row.action,
     workspace: row.workspace
@@ -728,6 +730,12 @@ export function buildHtml(nonce: string): string {
        long-poll / session_monitor is actively blocked on this session. Same
        calm register as .watch; it's an informational tell, not an alarm. */
     .name .eye { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
+    /* Server-confirmed stall badge (turn-liveness watchdog) — a mid-turn
+       session whose adapter stream has gone silent past the daemon's
+       threshold with no legitimate blockedOn excuse. Ochre, like the
+       "needs you" register: unlike the client-heuristic stalled DOT (a
+       silence guess), this is a daemon-verified "this may be dead". */
+    .name .stall { color: var(--awaiting); font-weight: 400; font-size: 11px; opacity: 0.95; }
     /* Delegating (#session-visibility) — "⟳ N children": this idle session is
        really waiting on its own busy subtree. Working-coloured so it reads as
        active work happening below it. */
@@ -887,6 +895,7 @@ export function buildHtml(nonce: string): string {
           (r.watched ? '<span class="watch" title="Kept alive — watched">◉ watched</span>' : '') +
           (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on its own busy subtree">⟳ ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '</span>' : '') +
           (r.watcherCount > 0 ? '<span class="eye" title="' + (r.status === 'parked' ? 'supervised — will be re-prompted' : 'supervised — notify on turn-end') + ' (' + r.watcherCount + ' waiting)">👁 ' + r.watcherCount + '</span>' : '') +
+          (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠ stalled</span>' : '') +
           (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
           (r.approved ? '<span class="ok">✓ approved</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + ' runs</span>' : '');

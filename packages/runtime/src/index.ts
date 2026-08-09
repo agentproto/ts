@@ -78,6 +78,7 @@ import {
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
+import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { loadConfig } from "./config.js"
 import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
@@ -312,6 +313,11 @@ export {
   type CrashDetectSummary,
   type CrashReaperRegistry,
 } from "./crash-reaper.js"
+export {
+  runStallWatchdogPass,
+  type StallWatchdogSummary,
+  type StallWatchdogRegistry,
+} from "./stall-watchdog.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
 export {
@@ -627,6 +633,17 @@ export interface CreateGatewayOptions {
    *  the sweep never runs, so a scheduled `nextRestartAt` sits inert.
    *  Surfaced in `daemon_health` / `GET /health`. */
   restartSweepIntervalMs?: number
+  /** Turn-liveness watchdog threshold in ms (turn-liveness-watchdog
+   *  chantier). Mirrors the `daemon.turnStallAfterMs` config knob; the CLI
+   *  resolves it (env > config > a sane default — DEFAULT ON, same shape as
+   *  `crashDetectIntervalMs`) and passes it here. The gateway starts a
+   *  periodic sweep that flags a BUSY agent-cli session mid-turn, not
+   *  legitimately `blockedOn` a subagent/command, and silent past this
+   *  threshold: stamps `stalledSinceMs` and emits `session:stalled`
+   *  (`registry.markStalled`, driven by `runStallWatchdogPass`). Non-positive
+   *  ⇒ the sweep never runs. Detects only; never kills or restarts. Surfaced
+   *  in `daemon_health` / `GET /health`. */
+  turnStallAfterMs?: number
   /**
    * Resolves a heartbeat-runnable agent from its workspace id.
    * Required for HEARTBEAT.md to do anything; without it ticks emit
@@ -818,6 +835,14 @@ export interface CreateGatewayOptions {
  *  session promptly without meaningfully taxing an idle daemon. */
 const DEFAULT_CRASH_DETECT_INTERVAL_MS = 30_000
 
+/** Default turn-liveness watchdog threshold (turn-liveness-watchdog
+ *  chantier) when `turnStallAfterMs` is left unset — detection is
+ *  default-on, same reasoning as `DEFAULT_CRASH_DETECT_INTERVAL_MS`. 5
+ *  minutes is generous enough that a slow-starting turn or a burst of
+ *  legitimate thinking time never trips it, while still catching a dead
+ *  stream long before the 36-minute silence that motivated this chantier. */
+const DEFAULT_TURN_STALL_AFTER_MS = 5 * 60_000
+
 const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "daemon_health",
   "agent_start",
@@ -921,6 +946,16 @@ export async function createGateway(
     typeof opts.restartSweepIntervalMs === "number" && opts.restartSweepIntervalMs > 0
       ? opts.restartSweepIntervalMs
       : 0
+  // Effective turn-stall threshold (turn-liveness-watchdog chantier):
+  // DEFAULT ON, same shape as crashDetectIntervalMs — an unset knob still
+  // gets a sane default since this is non-destructive observability. A
+  // caller must pass an explicit non-positive value to disable the sweep.
+  const turnStallAfterMs =
+    typeof opts.turnStallAfterMs === "number"
+      ? opts.turnStallAfterMs > 0
+        ? opts.turnStallAfterMs
+        : 0
+      : DEFAULT_TURN_STALL_AFTER_MS
   const workspace = resolve(opts.workspace)
   if (!existsSync(workspace)) {
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
@@ -1555,6 +1590,7 @@ export async function createGateway(
       idleReapAfterMs,
       crashDetectIntervalMs,
       restartSweepIntervalMs,
+      turnStallAfterMs,
     })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
@@ -1963,6 +1999,7 @@ export async function createGateway(
       idleReapAfterMs,
       crashDetectIntervalMs,
       restartSweepIntervalMs,
+      turnStallAfterMs,
     },
     cronScheduler,
     routineRegistrar,
@@ -2033,6 +2070,46 @@ export async function createGateway(
       }
     }, crashDetectIntervalMs)
     crashDetectTimer.unref?.()
+  }
+
+  // Turn-liveness watchdog sweep (turn-liveness-watchdog chantier). DEFAULT
+  // ON — armed whenever `turnStallAfterMs > 0`, which it is unless a caller
+  // explicitly disabled it (see the normalization above). Flags a mid-turn
+  // agent-cli session whose adapter stream has gone silent past the
+  // threshold — a dead stream that would otherwise sit indistinguishable
+  // from healthy long work. Never kills or restarts — detection only.
+  // Sweeps on a fixed cadence — min(threshold, 60s), same reasoning as
+  // idle-reap's ticker — so a short threshold still gets a timely sweep and
+  // the default 5-minute one doesn't spin needlessly, overridable via
+  // AGENTPROTO_TURN_STALL_INTERVAL_MS. `.unref()` so the ticker never keeps
+  // the process alive on its own.
+  let turnStallTimer: ReturnType<typeof setInterval> | null = null
+  if (turnStallAfterMs > 0) {
+    const rawInterval = process.env.AGENTPROTO_TURN_STALL_INTERVAL_MS
+    const parsedInterval = rawInterval ? Number.parseInt(rawInterval, 10) : NaN
+    const intervalMs =
+      Number.isFinite(parsedInterval) && parsedInterval > 0
+        ? parsedInterval
+        : Math.min(turnStallAfterMs, 60_000)
+    turnStallTimer = setInterval(() => {
+      try {
+        const summary = runStallWatchdogPass({ registry: sessions, turnStallAfterMs })
+        if (summary.stalled > 0) {
+          // One line per sweep that actually flagged something (silent
+          // otherwise so a quiet daemon doesn't log every tick).
+          console.log(
+            `[stall-watchdog] flagged ${summary.stalled}/${summary.candidates} ` +
+              `stalled agent session(s): ${summary.ids.join(", ")}`,
+          )
+        }
+      } catch (err) {
+        // A sweep must never crash the daemon — log and let the next tick retry.
+        console.warn(
+          `[stall-watchdog] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }, intervalMs)
+    turnStallTimer.unref?.()
   }
 
   // Restart-sweep tick (restart-scheduler PR-2). OFF by default — only armed
@@ -2121,6 +2198,9 @@ export async function createGateway(
       if (idleReapTimer) clearInterval(idleReapTimer)
       // Stop the crash-detect sweep before sessions shut down (crash-detect PR-1).
       if (crashDetectTimer) clearInterval(crashDetectTimer)
+      // Stop the turn-liveness watchdog sweep before sessions shut down
+      // (turn-liveness-watchdog chantier).
+      if (turnStallTimer) clearInterval(turnStallTimer)
       // Stop the restart-sweep tick before sessions shut down (restart-scheduler PR-2).
       if (restartSweepTimer) clearInterval(restartSweepTimer)
       // Detach the restart-scheduler's session:exited subscription.
