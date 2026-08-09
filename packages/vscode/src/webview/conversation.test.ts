@@ -230,6 +230,29 @@ describe("reduceConversation", () => {
     expect(conv.turns[0]!.segments[1]).toMatchObject({ message: "kaput" })
   })
 
+  it("marks a question resolved once a matching permission-resolved record arrives", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "agent-prompt", toolCallId: "p1", options: [{ optionId: "a", name: "Allow" }, "Deny"] }),
+      rec({ kind: "permission-resolved", toolCallId: "p1", decision: "approve", optionId: "a" }),
+    ])
+    const question = conv.turns[0]!.segments.find(s => s.kind === "agent-question")
+    expect(question).toMatchObject({
+      toolCallId: "p1",
+      resolved: { decision: "approve", optionId: "a" },
+    })
+  })
+
+  it("ignores a permission-resolved record with no matching pending question", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "permission-resolved", toolCallId: "unknown", decision: "deny" }),
+    ])
+    // No agent-prompt was ever seen for "unknown" — nothing to resolve, and no
+    // segment gets synthesized out of thin air.
+    expect(conv.turns.flatMap(t => t.segments)).toHaveLength(0)
+  })
+
   // ── Idempotency / incremental replay ──────────────────────────────────
 
   it("is idempotent: duplicate and out-of-order seqs never duplicate segments", () => {
