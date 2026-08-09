@@ -11,10 +11,14 @@ import {
   harnessGlyphFor,
   HARNESS_GLYPHS,
   HARNESS_GLYPH_FALLBACK,
+  isSystemPreviewLine,
   laneOf,
+  nestByLineage,
+  previewTextFor,
   relativeLuminance,
   rowActionFor,
   sectionFor,
+  stripMarkdownToText,
   summaryTextFor,
   UNASSIGNED_SLUG,
   webviewRowStatus,
@@ -81,6 +85,90 @@ describe("formatCost", () => {
     expect(formatCost(0)).toBeUndefined()
     expect(formatCost(-1)).toBeUndefined()
     expect(formatCost(undefined)).toBeUndefined()
+  })
+})
+
+describe("previewTextFor (item 1: genuine, single-line, markdown-free preview)", () => {
+  it("skips the daemon's context-continuity / system bookkeeping line", () => {
+    expect(
+      previewTextFor({
+        activitySummary: {
+          text: "[context] context at 69% — waiting for user decision (continue fresh…)",
+          state: "en attente",
+          at: "",
+        },
+      }),
+    ).toBeUndefined()
+    // Un-tagged continuity phrasing is caught too.
+    expect(
+      previewTextFor({ activitySummary: { text: "context at 88% — waiting for user decision", state: "", at: "" } }),
+    ).toBeUndefined()
+  })
+
+  it("strips markdown to a single plain line", () => {
+    expect(
+      previewTextFor({
+        activitySummary: { text: "Edited **sessionsWebviewPanel.ts** and ran `pnpm test`", state: "", at: "" },
+      }),
+    ).toBe("Edited sessionsWebviewPanel.ts and ran pnpm test")
+    expect(
+      previewTextFor({ activitySummary: { text: "Opened [the PR](https://x/y)\n\nnext step", state: "", at: "" } }),
+    ).toBe("Opened the PR next step")
+  })
+
+  it("truncates a long preview to one clamped line", () => {
+    const long = "a".repeat(200)
+    const preview = previewTextFor({ activitySummary: { text: long, state: "", at: "" } })!
+    expect(preview.length).toBeLessThanOrEqual(72)
+    expect(preview.endsWith("…")).toBe(true)
+  })
+
+  it("returns undefined when there is no activity summary at all", () => {
+    expect(previewTextFor({})).toBeUndefined()
+    expect(previewTextFor({ activitySummary: { text: "   ", state: "", at: "" } })).toBeUndefined()
+  })
+
+  it("does not swallow a genuine message that merely mentions context", () => {
+    expect(
+      previewTextFor({ activitySummary: { text: "Refactored the context provider hook", state: "", at: "" } }),
+    ).toBe("Refactored the context provider hook")
+  })
+})
+
+describe("isSystemPreviewLine / stripMarkdownToText", () => {
+  it("flags tagged and continuity lines only", () => {
+    expect(isSystemPreviewLine("[system] booting adapter")).toBe(true)
+    expect(isSystemPreviewLine("[continuity] checkpoint saved")).toBe(true)
+    expect(isSystemPreviewLine("continue fresh in a new session")).toBe(true)
+    expect(isSystemPreviewLine("Wrote the report")).toBe(false)
+  })
+  it("flattens emphasis, code, headings and lists", () => {
+    expect(stripMarkdownToText("# Title\n- **one**\n- `two`")).toBe("Title one two")
+  })
+})
+
+describe("nestByLineage (item 6: subagents under their spawner)", () => {
+  const row = (id: string, parentSessionId?: string): WebviewRow =>
+    ({ id, depth: 0, session: session({ id, parentSessionId }) }) as unknown as WebviewRow
+
+  it("stacks children under their parent with increasing depth", () => {
+    const rows = [row("root"), row("child-a", "root"), row("grandchild", "child-a"), row("child-b", "root")]
+    const nested = nestByLineage(rows)
+    expect(nested.map(r => [r.id, r.depth])).toEqual([
+      ["root", 0],
+      ["child-a", 1],
+      ["grandchild", 2],
+      ["child-b", 1],
+    ])
+  })
+
+  it("treats a child whose parent is absent from the bucket as a root", () => {
+    const rows = [row("orphan", "missing-parent"), row("plain")]
+    const nested = nestByLineage(rows)
+    expect(nested.map(r => [r.id, r.depth])).toEqual([
+      ["orphan", 0],
+      ["plain", 0],
+    ])
   })
 })
 
@@ -362,13 +450,53 @@ describe("buildSessionsWebviewModel — project rail", () => {
 })
 
 describe("buildSessionsWebviewModel — filtering + totals", () => {
-  it("hides archived sessions entirely (no archived view in Design B)", () => {
+  it("hides archived sessions entirely by default", () => {
     const sessions = [
       session({ id: "live", cwd: "/Code/studio", busy: true }),
       session({ id: "arch", cwd: "/Code/studio", status: "exited", archived: true }),
     ]
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
     expect(model.groups.flatMap(g => g.rows.map(r => r.id))).toEqual(["live"])
+  })
+
+  it("keeps archived rows when includeArchived is set (item 4)", () => {
+    const sessions = [
+      session({ id: "live", cwd: "/Code/studio", busy: true }),
+      session({ id: "arch", cwd: "/Code/studio", status: "exited", archived: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: true }))
+    const rows = model.groups.flatMap(g => g.rows)
+    expect(rows.map(r => r.id).sort()).toEqual(["arch", "live"])
+    expect(rows.find(r => r.id === "arch")?.archived).toBe(true)
+  })
+
+  it("honors an explicit loadedCount for the footer (item 2 pinned extras)", () => {
+    const sessions = [session({ id: "a", busy: true }), session({ id: "b", busy: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ loadedCount: 1, serverTotal: 50 }))
+    expect(model.loadedCount).toBe(1)
+  })
+
+  it("marks a kept-alive session as watched (item 5)", () => {
+    const model = buildSessionsWebviewModel(
+      [session({ id: "w", cwd: "/Code/studio", busy: true, keepAlive: true })],
+      studioConfig,
+      opts(),
+    )
+    expect(model.groups[0]!.rows[0]!.watched).toBe(true)
+  })
+
+  it("nests a subagent under its spawner in the same section (item 6)", () => {
+    const sessions = [
+      session({ id: "parent", cwd: "/Code/studio", busy: true }),
+      session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "parent" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const running = model.groups.find(g => g.key === "running")!
+    const parent = running.rows.find(r => r.id === "parent")!
+    const child = running.rows.find(r => r.id === "child")!
+    expect(parent.depth).toBe(0)
+    expect(child.depth).toBe(1)
+    expect(running.rows.indexOf(parent)).toBeLessThan(running.rows.indexOf(child))
   })
 
   it("filters by the pinned search input via the reused predicate", () => {

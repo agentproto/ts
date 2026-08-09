@@ -52,6 +52,15 @@ import type { TranscriptPanels } from "./transcriptPanel.js"
 
 const VIEW_TYPE = "agentproto.sessionsWebview"
 const PAGE_SIZE = 50
+/**
+ * How often the panel repaints itself with no daemon input. Status here is a
+ * function of `now` (stall detection past STALL_AFTER_MS, relative times), and
+ * the store only fires onDidChange when a session's FIELDS change — so a
+ * session that simply goes quiet is exactly the one that never gets
+ * re-rendered. Ticking well below STALL_AFTER_MS (10 min) keeps a stalled
+ * session from lingering in "Running" and keeps "2 mins ago" from drifting.
+ */
+const REPAINT_INTERVAL_MS = 15_000
 const SETUP_DOCS_URL = "https://agentproto.sh/docs"
 const CLAUDE_SETUP_PROMPT =
   "Set up Agentproto for this VS Code workspace. Install the Agentproto CLI, start its local daemon, register this workspace, connect Claude Code through the Agentproto MCP bridge, and verify that the Agentproto Sessions panel is live. Explain each command before I run it."
@@ -73,6 +82,8 @@ interface RenderRow {
   unread: boolean
   runs: number | undefined
   approved: boolean
+  watched: boolean
+  depth: number
   action: RowAction | undefined
   workspace: (WebviewWorkspace & { css: string }) | undefined
   archived: boolean
@@ -97,6 +108,7 @@ interface ModelMessage {
   loading: boolean
   hasMore: boolean
   loadError: string | undefined
+  showArchived: boolean
 }
 
 type HostMessage = ModelMessage
@@ -114,6 +126,7 @@ type WebviewToHostMessage =
   | { type: "archive"; id: string }
   | { type: "unarchive"; id: string }
   | { type: "loadMore" }
+  | { type: "toggleArchived" }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   return (
@@ -141,6 +154,8 @@ function toRenderRow(row: WebviewRow, activeSessionId: string | undefined, seen:
     unread: seen.isUnread(row.session),
     runs: row.runs,
     approved: row.approved,
+    watched: row.watched,
+    depth: row.depth,
     action: row.action,
     workspace: row.workspace ? { ...row.workspace, css: workspaceColorFor(row.workspace.slug).css } : undefined,
     archived: row.archived,
@@ -166,6 +181,13 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private serverTotal = 0
   private loading = false
   private loadError: string | undefined
+  /** "Show archived" affordance — when on, the summary fetch and the model
+   *  keep archived rows (item 4). Off by default (Design B's default view). */
+  private showArchived = false
+  /** Clock-driven repaint so `now`-derived status (stall detection) and
+   *  relative times stay honest with no daemon event to trigger a render —
+   *  the webview's equivalent of the tree's TREE_REPAINT_INTERVAL_MS. */
+  private repaintTimer: ReturnType<typeof setInterval> | undefined
 
   constructor(
     private readonly client: DaemonClient,
@@ -192,11 +214,22 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       if (webviewView.visible) this.post()
     })
 
+    // Clock-driven repaint: recomputes `now`-derived status (stall) and
+    // relative times even when no daemon event arrives. `post()` is cheap
+    // (pure model rebuild off the already-loaded slice), so no network churn.
+    this.repaintTimer = setInterval(() => this.post(), REPAINT_INTERVAL_MS)
+
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) this.view = undefined
+      if (this.repaintTimer) {
+        clearInterval(this.repaintTimer)
+        this.repaintTimer = undefined
+      }
     })
 
-    // Design B has no archived view — keep the store's archived slice off.
+    // The webview owns its own archived visibility (the "show archived"
+    // affordance re-fetches summaries with includeArchived); the store's tree
+    // slice stays off.
     if (this.store.showArchived) this.store.setShowArchived(false)
 
     // Initial bounded load: first page only. The list renders immediately
@@ -249,6 +282,10 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         return
       case "loadMore":
         void this.loadMore()
+        return
+      case "toggleArchived":
+        this.showArchived = !this.showArchived
+        void this.loadInitial()
         return
     }
   }
@@ -346,7 +383,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     this.post()
     try {
       const result = await this.client.listSessionSummaries({
-        includeArchived: false,
+        includeArchived: this.showArchived,
         limit: PAGE_SIZE,
         offset,
       })
@@ -371,7 +408,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     this.loading = true
     try {
       const result = await this.client.listSessionSummaries({
-        includeArchived: false,
+        includeArchived: this.showArchived,
         limit: this.summaries.length,
         offset: 0,
       })
@@ -389,13 +426,30 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private post(): void {
     if (!this.view) return
     const pendingRows = this.store.sessions.filter(isPendingSession)
-    const model = buildSessionsWebviewModel([...pendingRows, ...this.summaries], this.filter.workspaces, {
-      lane: this.lane,
-      project: this.project,
-      search: this.search,
-      now: Date.now(),
-      serverTotal: this.serverTotal,
-    })
+    // Pin live sessions the paginated summary slice hasn't reached yet. The
+    // store holds the FULL non-archived snapshot, so a long-running session
+    // (e.g. the conductor) that sorts past the first page is still surfaced —
+    // it lands in Needs you / Running at the top, never buried behind "Load
+    // more". Deduped against the loaded summaries + pending rows by id.
+    const known = new Set<string>([...pendingRows, ...this.summaries].map(s => s.id))
+    const liveExtras = this.store.sessions.filter(
+      s => !isPendingSession(s) && isLiveSession(s) && !known.has(s.id),
+    )
+    const model = buildSessionsWebviewModel(
+      [...pendingRows, ...liveExtras, ...this.summaries],
+      this.filter.workspaces,
+      {
+        lane: this.lane,
+        project: this.project,
+        search: this.search,
+        now: Date.now(),
+        serverTotal: this.serverTotal,
+        includeArchived: this.showArchived,
+        // Footer counts server-paged rows only — pending + pinned live rows are
+        // live extras, not paged results.
+        loadedCount: this.summaries.length,
+      },
+    )
     const activeSessionId = this.transcriptPanels.activeSessionId()
     const filterActive = this.search.trim().length > 0 || this.project !== null
     const hasMore = this.summaries.length < this.serverTotal
@@ -411,6 +465,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       loading: this.loading,
       hasMore,
       loadError: this.loadError,
+      showArchived: this.showArchived,
     }
     void this.view.webview.postMessage(message satisfies HostMessage)
   }
@@ -530,6 +585,9 @@ export function buildHtml(nonce: string): string {
     .segb .n { color: var(--faint); margin-left: 4px; font-size: 10.5px; }
     #q { flex: 1; background: transparent; border: none; outline: none; color: var(--fg); font-size: 12px; min-width: 40px; font-family: inherit; }
     #q::placeholder { color: var(--faint); }
+    .icon-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; font-family: inherit; padding: 0; }
+    .icon-btn:hover { background: var(--hover); color: var(--fg); }
+    .icon-btn.on { background: var(--panel-2); color: var(--fg); border-color: #3d3d40; }
 
     /* ── List ──────────────────────────────────────────────────────── */
     #list { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
@@ -566,6 +624,13 @@ export function buildHtml(nonce: string): string {
     .name .id { font-weight: 400; color: var(--dim); }
     .name .ok { color: var(--working); font-weight: 400; font-size: 12px; }
     .name .runs { color: var(--faint); font-weight: 400; font-size: 11px; }
+    /* "Watched" (keepAlive) — a calm, monochrome tell that someone is keeping
+       this session alive/monitored; deliberately NOT the ochre "needs you". */
+    .name .watch { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.85; }
+    /* Nested subagent lineage — a faint connector before the child's name and a
+       quiet left guide, so the parent→child stack reads without shouting. */
+    .name .lineage { color: var(--faint); font-weight: 400; }
+    .row.nested { border-left: 1px solid var(--border); }
     .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .meta { display: flex; gap: 8px; margin-top: 3px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
     .meta .proj { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); }
@@ -624,6 +689,7 @@ export function buildHtml(nonce: string): string {
       <button class="segb" type="button" data-lane="auto" role="tab">Auto<span class="n"></span></button>
     </div>
     <input id="q" placeholder="⌕ Filter…" autocomplete="off" aria-label="Filter sessions" />
+    <button id="arch-toggle" class="icon-btn" type="button" title="Show archived sessions" aria-label="Show archived sessions" aria-pressed="false">▣</button>
   </div>
   <div id="list"></div>
   <div id="empty" hidden>No sessions match.</div>
@@ -643,6 +709,7 @@ export function buildHtml(nonce: string): string {
       const emptyEl = document.getElementById('empty');
       const summaryEl = document.getElementById('summary');
       const loadMoreEl = document.getElementById('load-more');
+      const archToggleEl = document.getElementById('arch-toggle');
       const spinnerEl = document.getElementById('spinner');
       const footerErrorEl = document.getElementById('footer-error');
       const daemonStateEl = document.getElementById('daemon-state');
@@ -693,14 +760,20 @@ export function buildHtml(nonce: string): string {
       }
 
       function rowHTML(r) {
-        var classes = 'row' + (r.open ? ' open' : '') + (r.archived ? ' archived' : '');
+        var depth = typeof r.depth === 'number' && r.depth > 0 ? r.depth : 0;
+        var classes = 'row' + (r.open ? ' open' : '') + (r.archived ? ' archived' : '') + (depth > 0 ? ' nested' : '');
         var dotClasses = 'dot ' + r.status + (r.status === 'done' && r.unread ? ' unread' : '');
-        var nameLine = '<span>' + escapeHtml(r.name) + '</span>' +
+        var nameLine =
+          (depth > 0 ? '<span class="lineage" aria-hidden="true">↳</span>' : '') +
+          '<span>' + escapeHtml(r.name) + '</span>' +
           (r.idMono ? '<span class="id mono">· ' + escapeHtml(r.idMono) + '</span>' : '') +
+          (r.watched ? '<span class="watch" title="Kept alive — watched">◉ watched</span>' : '') +
           (r.approved ? '<span class="ok">✓ approved</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + ' runs</span>' : '');
         var acts = actionButton(r);
-        return '<div class="' + classes + '" data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '" role="listitem" tabindex="0">' +
+        // Indent nested subagents; base padding-left is 12px (see .row CSS).
+        var indent = depth > 0 ? ' style="padding-left:' + (12 + depth * 16) + 'px"' : '';
+        return '<div class="' + classes + '"' + indent + ' data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '" role="listitem" tabindex="0">' +
           '<span class="' + dotClasses + '"></span>' +
           '<div class="mid">' +
             '<div class="name">' + nameLine + '</div>' +
@@ -769,6 +842,10 @@ export function buildHtml(nonce: string): string {
         listEl.innerHTML = groups.map(groupHTML).join('');
         emptyEl.hidden = shown !== 0;
         summaryEl.textContent = payload.summary;
+        var showArchived = payload.showArchived === true;
+        archToggleEl.classList.toggle('on', showArchived);
+        archToggleEl.setAttribute('aria-pressed', showArchived ? 'true' : 'false');
+        archToggleEl.title = showArchived ? 'Hide archived sessions' : 'Show archived sessions';
         loadMoreEl.hidden = !payload.hasMore;
         loadMoreEl.disabled = payload.loading;
         spinnerEl.hidden = !payload.loading;
@@ -840,6 +917,10 @@ export function buildHtml(nonce: string): string {
 
       loadMoreEl.addEventListener('click', function () {
         vscode.postMessage({ type: 'loadMore' });
+      });
+
+      archToggleEl.addEventListener('click', function () {
+        vscode.postMessage({ type: 'toggleArchived' });
       });
 
       var filterTimer = null;

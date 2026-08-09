@@ -375,4 +375,33 @@ describe("sessions webview — interactions", () => {
     click(panel, el(panel, "load-more"))
     expect(panel.posted).toEqual([{ type: "loadMore" }])
   })
+
+  it("clicking the archived toggle posts toggleArchived and reflects showArchived (item 4)", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    panel.posted.length = 0
+    click(panel, el(panel, "arch-toggle"))
+    expect(panel.posted).toEqual([{ type: "toggleArchived" }])
+    send(panel, { ...modelMessage(), showArchived: true })
+    expect(el(panel, "arch-toggle").classList.contains("on")).toBe(true)
+    expect(htmlEl(el(panel, "arch-toggle")).getAttribute("aria-pressed")).toBe("true")
+  })
+})
+
+describe("sessions webview — watched + nesting (items 5, 6)", () => {
+  it("renders a watched indicator for a kept-alive row", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, watched: true }])] }))
+    expect(el(panel, "list").querySelector(".name .watch")).not.toBeNull()
+  })
+
+  it("indents a nested subagent row by its depth", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [ROW_A, { ...ROW_DONE, depth: 1 }])] }))
+    const rows = [...el(panel, "list").querySelectorAll(".row")]
+    const nested = rows.find(r => htmlEl(r).classList.contains("nested"))!
+    expect(nested).toBeTruthy()
+    expect(htmlEl(nested).getAttribute("style")).toContain("padding-left")
+    expect(htmlEl(nested).querySelector(".lineage")).not.toBeNull()
+  })
 })
