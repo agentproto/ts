@@ -8,7 +8,7 @@ one's work — with your tests or a reviewer model — before anything is
 committed. No more babysitting terminal windows.
 
 - **Run them all the same way.** Start, message, watch, and stop any agent
-  with the same commands. Eleven adapters today.
+  with the same commands. Twelve adapters today.
 - **Work checked before it lands.** Attach a check — your tests, or a stronger
   model reviewing the change — and it runs each time the agent finishes.
   Commits wait for the check and your OK, even after you close your laptop.
@@ -26,7 +26,7 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 0.11.2-alpha.** APIs are stabilising; expect minor breaking changes
+> **Status: 0.11.3-alpha.** APIs are stabilising; expect minor breaking changes
 > between alpha releases.
 
 ## Quick start
@@ -121,6 +121,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | Tool | Purpose |
 |---|---|
 | `agent_start` / `agent_prompt` / `agent_output` / `agent_kill` / `agent_interrupt` | Spawn, drive, interrupt, and stop long-lived agent-CLI sessions |
+| `message_parent` | Child session reports a result, progress update, or blocker up to its parent supervisor (resolved from the child's recorded `parentSessionId`; no session id argument) |
 | `agent_set_model` / `agent_set_effort` / `agent_set_posture` | Best-effort live switches for a session's config axes (return `{applied:false, reason}` when the running adapter can't apply them live) |
 | `agent_sessions_list` / `agent_export` | List agent sessions; export a clean transcript |
 | `conversation_read` | Read the provider-native conversation behind any session (agent-cli or PTY) |
@@ -164,6 +165,7 @@ adapters/gemini/              @agentproto/adapter-gemini        AIP-45 adapter f
 adapters/hermes/              @agentproto/adapter-hermes         AIP-45 adapter for Hermes
 adapters/opencode/            @agentproto/adapter-opencode       AIP-45 adapter for OpenCode
 adapters/openclaw/            @agentproto/adapter-openclaw       AIP-45 adapter for Openclaw
+adapters/antigravity/         @agentproto/adapter-antigravity    AIP-45 adapter for Google Antigravity
 adapters/mastra-agent/        @agentproto/adapter-mastra-agent   First-party agent — AIP-42 AGENT.md run as a live Mastra agent behind ACP
 adapters/browser/             @agentproto/adapter-browser        Browser / CDP session adapter
 ```

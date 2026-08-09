@@ -172,20 +172,22 @@ body. See [`concepts/roles.md`](../concepts/roles.md).
 
 Every process the daemon spawns on a session's behalf — an agent-CLI adapter
 (this verb), a `terminal -- <argv...>` PTY, or a `command_execute` /
-cron `kind:"command"` shell command — gets two env vars set into its own
-process environment:
+cron `kind:"command"` shell command — gets these identity env vars set into
+its own process environment. The first two are always present; the third is
+added only for agent-CLI children that resolved a `parentSessionId`:
 
 | Var | Value |
 |---|---|
 | `AGENTPROTO_SESSION_ID` | The spawned session's own id (`sess_…`) — the same id `session_list`/`agent_sessions_list` show for it. |
 | `AGENTPROTO_WORKSPACE_SLUG` | The workspace slug the session resolved to (`"default"` when none). |
+| `AGENTPROTO_PARENT_SESSION_ID` | The id of the session that spawned this one. Present only for nested agent-CLI children; lets a child report back via the `message_parent` MCP tool without a registry round-trip. |
 
 A hook, script, or tool a session shells out to can read these to report
 back, tag telemetry, or spawn a further child with `parentSessionId` set to
 its own id — closing the loop for e.g. a `git push` hook that spawns a
 reviewer session and wants it nested under the session that triggered it.
 
-Both are set **last**, after any other env the spawn composes (manifest
+These are set **last**, after any other env the spawn composes (manifest
 defaults, billing-auth, a caller-supplied `env` on `POST /sessions` or
 `POST /sessions/terminal`) — a caller can never override or forge them, and
 a session never inherits a value from the daemon's own process env. Every
