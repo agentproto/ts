@@ -230,3 +230,122 @@ describe("renderMarkdown pipe tables", () => {
     expect(html).not.toContain("<table>")
   })
 })
+
+describe("renderMarkdown autolinking", () => {
+  it("renders a markdown link to an external URL", () => {
+    const html = renderMarkdown("see [the docs](https://example.com/x) here")
+    expect(html).toContain(
+      '<a class="tlink" data-open="external" data-target="https://example.com/x">the docs<span class="tlink-open" aria-hidden="true">↗</span></a>',
+    )
+  })
+
+  it("renders a markdown link to a file path with a line", () => {
+    const html = renderMarkdown("look at [it](src/foo.ts:12)")
+    expect(html).toContain(
+      '<a class="tlink" data-open="file" data-target="src/foo.ts" data-line="12">it<span class="tlink-open" aria-hidden="true">⎘</span></a>',
+    )
+  })
+
+  it("autolinks a bare URL", () => {
+    const html = renderMarkdown("visit https://example.com/a for more")
+    expect(html).toContain('data-open="external"')
+    expect(html).toContain('data-target="https://example.com/a"')
+    expect(html).toContain('class="tlink"')
+  })
+
+  it("trims trailing sentence punctuation off a bare URL", () => {
+    const html = renderMarkdown("go to https://example.com/a.")
+    expect(html).toContain('data-target="https://example.com/a"')
+    // The period stays as text, outside the anchor.
+    expect(html).toContain("</a>.")
+  })
+
+  it("keeps a balanced trailing paren inside a wrapped bare URL", () => {
+    const html = renderMarkdown("(https://example.com/a)")
+    expect(html).toContain('data-target="https://example.com/a"')
+    expect(html).toContain("(<a")
+    expect(html).toContain("</a>)")
+  })
+
+  it("autolinks a file path with a :line citation", () => {
+    const html = renderMarkdown("see supervisor.ts:1028 for the poll")
+    expect(html).toContain('data-open="file"')
+    expect(html).toContain('data-target="supervisor.ts"')
+    expect(html).toContain('data-line="1028"')
+  })
+
+  it("autolinks a file path with a :line-range citation using the first line", () => {
+    const html = renderMarkdown("packages/runtime/src/supervisor.ts:1028-1061")
+    expect(html).toContain('data-target="packages/runtime/src/supervisor.ts"')
+    expect(html).toContain('data-line="1028"')
+  })
+
+  it("autolinks an absolute path with no extension", () => {
+    const html = renderMarkdown("cd /Volumes/Code/project then build")
+    expect(html).toContain('data-open="file"')
+    expect(html).toContain('data-target="/Volumes/Code/project"')
+  })
+
+  it("autolinks a home-relative path", () => {
+    const html = renderMarkdown("edit ~/.config/app.toml now")
+    expect(html).toContain('data-target="~/.config/app.toml"')
+  })
+
+  it("rejects a javascript: markdown-link scheme, leaving it plain text", () => {
+    const html = renderMarkdown("[click](javascript:alert(1))")
+    // No anchor emitted at all — the whole thing degrades to literal text.
+    expect(html).not.toContain("<a ")
+    expect(html).not.toContain("data-target")
+    expect(html).toContain("[click](javascript:alert(1))")
+  })
+
+  // ── Precision negatives: these must stay plain text ──────────────────────
+  it("does not linkify and/or", () => {
+    const html = renderMarkdown("this and/or that")
+    expect(html).not.toContain("<a ")
+    expect(html).toContain("and/or")
+  })
+
+  it("does not linkify a version string", () => {
+    const html = renderMarkdown("bump to 1.2.3 today")
+    expect(html).not.toContain("<a ")
+    expect(html).toContain("1.2.3")
+  })
+
+  it("does not linkify a date", () => {
+    const html = renderMarkdown("dated 2026/08/09 here")
+    expect(html).not.toContain("<a ")
+    expect(html).toContain("2026/08/09")
+  })
+
+  it("does not linkify a bare word", () => {
+    const html = renderMarkdown("just README please")
+    expect(html).not.toContain("<a ")
+    expect(html).toContain("README")
+  })
+
+  it("does not linkify a URL inside a code span", () => {
+    const html = renderMarkdown("`https://example.com/a`")
+    expect(html).toContain("<code>https://example.com/a</code>")
+    expect(html).not.toContain("<a ")
+  })
+
+  it("does not linkify a file path inside a code span", () => {
+    const html = renderMarkdown("`src/foo.ts:12`")
+    expect(html).toContain("<code>src/foo.ts:12</code>")
+    expect(html).not.toContain("<a ")
+  })
+
+  it("autolinks a URL inside a bold span", () => {
+    const html = renderMarkdown("**see https://example.com/a now**")
+    expect(html).toContain("<strong>see <a")
+    expect(html).toContain('data-target="https://example.com/a"')
+  })
+
+  it("keeps a query-string URL's ampersand escaped in the target", () => {
+    const html = renderMarkdown("open https://example.com/a?x=1&y=2 please")
+    // Escaped once (attribute-safe), not double-escaped.
+    expect(html).toContain('data-target="https://example.com/a?x=1&amp;y=2"')
+    expect(html).not.toContain("&amp;amp;")
+  })
+})
