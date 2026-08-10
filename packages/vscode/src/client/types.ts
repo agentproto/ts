@@ -539,7 +539,6 @@ export interface AdapterInstallResult {
   ok: boolean
   method:
     | "npm-global"
-    | "shell-hint"
     | "agentproto-install"
     | "already-installed"
     | "unsupported"
