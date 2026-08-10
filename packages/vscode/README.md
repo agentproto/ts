@@ -66,6 +66,8 @@ The extension adds two Activity Bar containers.
   place**; rename, favorite, archive; open the **transcript**, **story**
   (readable timeline), or a live **terminal**; filter, search, and group. Also
   imports a Claude Code conversation and cleans up ended sessions / worktrees.
+  A session with a dead adapter stream mid-turn shows a **⚠ stall badge** with
+  the silent duration.
 - **Permissions** — when a session runs in **permission-hold** mode, every tool
   request (Write, Bash, …) is parked here for you to **Approve** or **Deny**.
   Turn holds on globally with `agentproto.holdPermissions`, or per session.

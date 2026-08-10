@@ -39,6 +39,20 @@ team's `index.ts`. A new team is a sibling folder + a re-export.
 - **On disk** — `await team.emit(dir)` writes the AGENT.md / WORKFLOW.md
   manifests for a runtime that loads a workspace from disk. No Mastra needed.
 
+## Emitting the whole catalog
+
+`@agentproto/apps` also ships an `agentproto-apps-sync` binary that emits every
+bundled app to disk and writes a flat catalog:
+
+```bash
+npx agentproto-apps-sync [--base-dir <dir>]
+```
+
+The default base directory is `~/.agentproto/apps`. It writes each app's
+manifests under `<baseDir>/<slug>/` and a summary catalog to
+`<baseDir>/../app-catalog.json` (so `~/.agentproto/app-catalog.json` by
+default).
+
 ## Generic by design
 
 Team ids are `@agentproto/…` and depend on **no** product package (the
