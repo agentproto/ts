@@ -20,11 +20,47 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { listModels } from "@agentproto/model-catalog"
 import {
   deriveDeclaredCapabilities,
   type CapabilityStrategy,
   type ProviderCapability,
 } from "@agentproto/provider-kit"
+
+/**
+ * Build mastracode's model menu from the shared provider catalog. Mastra Code
+ * routes by the model id's own `<provider>/<id>` prefix, so every entry
+ * carries the billing provider.
+ *
+ * Providers: Anthropic, OpenAI, OpenRouter, Google — matching models.env.
+ */
+function buildMastracodeModelMenu(): Array<{ id: string; provider: string }> {
+  const supported = [
+    { provider: "anthropic", prefix: "anthropic" },
+    { provider: "openai", prefix: "openai" },
+    { provider: "openrouter", prefix: "openrouter" },
+    { provider: "google", prefix: "google" },
+  ] as const
+
+  const seen = new Set<string>()
+  const out: Array<{ id: string; provider: string }> = []
+
+  for (const { provider, prefix } of supported) {
+    for (const model of listModels({ kind: "llm", provider })) {
+      const bareId = model.id
+      const canonicalId = bareId.includes("/") ? bareId : `${prefix}/${bareId}`
+      const id = provider === "openrouter" ? `openrouter/${bareId}` : canonicalId
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push({ id, provider })
+    }
+  }
+
+  return out.sort((a, b) => {
+    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider)
+    return a.id.localeCompare(b.id)
+  })
+}
 
 export const mastracode: AgentCliHandle = defineAgentCli({
   name: "mastracode",
@@ -85,19 +121,10 @@ export const mastracode: AgentCliHandle = defineAgentCli({
   routeSelection: "derived-from-model",
   models: {
     default: "anthropic/claude-sonnet-4-5",
-    // Anthropic is no longer advertised as a pickable escalation — only the
-    // adapter's own default Claude model stays listed (repointing the default
-    // is out of scope). The extra Sonnet + gateway dupe are dropped from the
-    // menu; the free-form `model` option still accepts any id.
-    // `provider` is read straight off each id's own prefix — Mastra's model
-    // router resolves a bare `provider/model` string itself, no adapter mode
-    // needed.
-    allowed: [
-      { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
-      { id: "openai/gpt-5.1", provider: "openai" },
-      { id: "openai/gpt-5.1-mini", provider: "openai" },
-      { id: "google/gemini-2.5-flash", provider: "google" },
-    ],
+    // Generated from the shared provider catalog so the Configuration Lab /
+    // harness picker shows genuinely reachable Anthropic / OpenAI / OpenRouter
+    // / Google models. The free-form `model` option still accepts any id.
+    allowed: buildMastracodeModelMenu(),
     env: {
       anthropic: "ANTHROPIC_API_KEY",
       openai: "OPENAI_API_KEY",

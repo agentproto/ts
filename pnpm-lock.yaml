@@ -494,6 +494,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../../packages/driver/agent-cli
+      '@agentproto/model-catalog':
+        specifier: workspace:*
+        version: link:../../packages/model-catalog
       '@agentproto/provider-kit':
         specifier: workspace:*
         version: link:../../packages/provider-kit
@@ -597,6 +600,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../../packages/driver/agent-cli
+      '@agentproto/model-catalog':
+        specifier: workspace:*
+        version: link:../../packages/model-catalog
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.4.3)
