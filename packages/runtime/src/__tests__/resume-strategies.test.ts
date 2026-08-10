@@ -501,6 +501,31 @@ describe("augmentWithFsResume", () => {
     expect(result.resumeMetadata).toEqual({ claudeResumeId: uuid })
   })
 
+  it("backfills adapterSessionId from fsProbe when it was never captured", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const uuid = "ffffffff-0000-0000-0000-000000000099"
+    writeFileSync(join(sessionsDir, `${uuid}.jsonl`), "")
+    const prev: FsProbeCandidate = { adapterSlug: "claude-code", cwd, startedAt: "1970-01-01T00:00:00Z" }
+    const result = await augmentWithFsResume(prev)
+    expect(result.adapterSessionId).toBe(uuid)
+  })
+
+  it("does not overwrite an existing adapterSessionId with the fsProbe result", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000001"
+    writeFileSync(join(sessionsDir, `${own}.jsonl`), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterSessionId: own,
+    }
+    const result = await augmentWithFsResume(prev)
+    expect(result.adapterSessionId).toBe(own)
+  })
+
   it("returns the same object when the probe finds nothing eligible", async () => {
     const cwd = "/my/proj"
     setupFakeHome(cwd)
