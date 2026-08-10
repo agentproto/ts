@@ -27,19 +27,92 @@ interface UiHtmlCache {
   get(path: string, version: string): Promise<string>
 }
 
+/**
+ * The MCP Apps wire (spec `2026-01-26`) over `postMessage` JSON-RPC, exposed
+ * as `window.McpApp.connect() -> Promise<{ callTool, sendMessage }>`. No host
+ * in this stack injects an SDK global into the app iframe, so every UI panel
+ * that talks through `window.McpApp` (all of them — see each app's `ui.ts`
+ * under `packages/apps/src`) would otherwise throw `Cannot read properties
+ * of undefined (reading 'connect')` at boot. Injected here, at serve time, so
+ * every installed app's panel is covered without each app shipping its own
+ * copy of the bridge.
+ */
+const MCP_APP_BRIDGE_SCRIPT = `<script>
+(function () {
+  if (window.McpApp) return;
+  var nextId = 1, pending = {};
+  function post(m) { window.parent.postMessage(m, "*"); }
+  window.addEventListener("message", function (e) {
+    var m = e.data;
+    if (typeof m === "string") { try { m = JSON.parse(m); } catch (_) { return; } }
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id != null && pending[m.id]) { var cb = pending[m.id]; delete pending[m.id]; cb(m.result, m.error); }
+  });
+  function request(method, params) {
+    return new Promise(function (resolve, reject) {
+      var id = nextId++;
+      pending[id] = function (r, err) { if (err) reject(new Error((err && err.message) || String(err))); else resolve(r); };
+      post({ jsonrpc: "2.0", id: id, method: method, params: params });
+    });
+  }
+  window.McpApp = {
+    connect: function () {
+      if (window.parent === window) return Promise.reject(new Error("no host (standalone)"));
+      return request("ui/initialize", {
+        appInfo: { name: "agentproto-app", version: "1.0" },
+        appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+        protocolVersion: "2026-01-26"
+      }).then(function () {
+        post({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
+        return {
+          callTool: function (name, args) { return request("tools/call", { name: name, arguments: args || {} }); },
+          sendMessage: function (p) {
+            var params = typeof p === "string" ? { content: p } : (p || {});
+            var content = typeof params.content === "string" ? [{ type: "text", text: params.content }] : (params.content || []);
+            return request("ui/message", { role: "user", content: content });
+          }
+        };
+      });
+    }
+  };
+})();
+</script>
+`
+
+/** Inject `MCP_APP_BRIDGE_SCRIPT` right after the earliest structural
+ *  opening tag the document has (`<head>`, else `<body>`, else `<html>`,
+ *  else prepend), so the bridge is defined before any app script runs.
+ *  Idempotent: a no-op if the document already defines `window.McpApp`
+ *  (e.g. an app that inlines its own shim, or html already injected by an
+ *  earlier pass through this same cache). */
+export function injectMcpAppBridge(html: string): string {
+  if (/window\.McpApp\b/.test(html)) return html
+  for (const tag of ["head", "body", "html"]) {
+    const match = html.match(new RegExp(`<${tag}[^>]*>`, "i"))
+    if (match?.index !== undefined) {
+      const insertAt = match.index + match[0].length
+      return html.slice(0, insertAt) + MCP_APP_BRIDGE_SCRIPT + html.slice(insertAt)
+    }
+  }
+  return MCP_APP_BRIDGE_SCRIPT + html
+}
+
 /** Per-path HTML cache keyed by `(path, version)` — a request rebuilds the
  *  McpServer every time, but re-reading an installed app's `ui.path` off
  *  disk on every `/mcp` call would be wasteful when nothing changed. The
  *  cache lives at gateway scope (created once in index.ts, outside
  *  `mcpServerFactory`) so it actually persists across requests; `version`
- *  (the app's `updatedAt`) invalidates a stale entry after a re-install. */
+ *  (the app's `updatedAt`) invalidates a stale entry after a re-install.
+ *  The cached value is post-bridge-injection, so injection only runs once
+ *  per (path, version) rather than on every served request. */
 export function createUiHtmlCache(): UiHtmlCache {
   const cache = new Map<string, { version: string; html: string }>()
   return {
     async get(path, version) {
       const cached = cache.get(path)
       if (cached && cached.version === version) return cached.html
-      const html = await readFile(path, "utf8")
+      const raw = await readFile(path, "utf8")
+      const html = injectMcpAppBridge(raw)
       cache.set(path, { version, html })
       return html
     },

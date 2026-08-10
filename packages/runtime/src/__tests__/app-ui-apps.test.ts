@@ -9,7 +9,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { appUiToolId, createUiHtmlCache, makeInstalledAppUiApps } from "../app-ui-apps.js"
+import {
+  appUiToolId,
+  createUiHtmlCache,
+  injectMcpAppBridge,
+  makeInstalledAppUiApps,
+} from "../app-ui-apps.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 
 describe("appUiToolId", () => {
@@ -60,7 +65,10 @@ describe("makeInstalledAppUiApps", () => {
     expect(apps).toHaveLength(1)
     expect(apps[0]!.id).toBe("app_ui_ui_app")
     expect(apps[0]!.title).toBe("Panel")
-    expect(apps[0]!.html).toBe("<html><body>Panel</body></html>")
+    // Served html is the source plus the injected McpApp bridge — not a
+    // byte-for-byte passthrough of what's on disk.
+    expect(apps[0]!.html).toContain("Panel")
+    expect(apps[0]!.html).toContain("window.McpApp")
     const initData = await apps[0]!.execute!({})
     expect(initData).toEqual({ appId: "@test/ui-app", tools: ["read_file"] })
   })
@@ -111,17 +119,54 @@ describe("makeInstalledAppUiApps", () => {
     warnSpy.mockRestore()
   })
 
-  it("caches HTML by (path, version) and re-reads only on a version change", async () => {
+  it("caches HTML (post bridge-injection) by (path, version) and re-reads only on a version change", async () => {
     const uiPath = join(dir, "index.html")
     await writeFile(uiPath, "v1", "utf8")
 
     const cache = createUiHtmlCache()
-    expect(await cache.get(uiPath, "2026-01-01T00:00:00.000Z")).toBe("v1")
+    const first = await cache.get(uiPath, "2026-01-01T00:00:00.000Z")
+    expect(first).toContain("v1")
+    expect(first).toContain("window.McpApp")
 
     await writeFile(uiPath, "v2", "utf8")
     // Same version — still cached, doesn't pick up the on-disk change.
-    expect(await cache.get(uiPath, "2026-01-01T00:00:00.000Z")).toBe("v1")
+    expect(await cache.get(uiPath, "2026-01-01T00:00:00.000Z")).toBe(first)
     // New version — re-reads.
-    expect(await cache.get(uiPath, "2026-01-02T00:00:00.000Z")).toBe("v2")
+    const second = await cache.get(uiPath, "2026-01-02T00:00:00.000Z")
+    expect(second).toContain("v2")
+    expect(second).toContain("window.McpApp")
+  })
+})
+
+describe("injectMcpAppBridge", () => {
+  it("injects the bridge right after <head> when present", () => {
+    const html = "<html><head><title>t</title></head><body>Panel</body></html>"
+    const out = injectMcpAppBridge(html)
+    expect(out).toContain("window.McpApp")
+    expect(out.indexOf("window.McpApp")).toBeLessThan(out.indexOf("<title>"))
+  })
+
+  it("falls back to <body> when there is no <head>", () => {
+    const html = "<html><body>Panel</body></html>"
+    const out = injectMcpAppBridge(html)
+    expect(out.indexOf("window.McpApp")).toBeLessThan(out.indexOf("Panel"))
+  })
+
+  it("falls back to prepending when there is no structural tag at all", () => {
+    const html = "Panel"
+    const out = injectMcpAppBridge(html)
+    expect(out.indexOf("window.McpApp")).toBeLessThan(out.indexOf("Panel"))
+  })
+
+  it("is idempotent: a no-op when the html already defines window.McpApp", () => {
+    const html = "<html><head><script>window.McpApp = {};</script></head><body>Panel</body></html>"
+    expect(injectMcpAppBridge(html)).toBe(html)
+  })
+
+  it("only injects the bridge once even if run twice", () => {
+    const html = "<html><body>Panel</body></html>"
+    const once = injectMcpAppBridge(html)
+    const twice = injectMcpAppBridge(once)
+    expect(twice).toBe(once)
   })
 })
