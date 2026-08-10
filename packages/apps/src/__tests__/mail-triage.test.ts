@@ -78,6 +78,37 @@ describe("mail-triage app", () => {
     expect(mailTriage.ui!.html).toContain(JSON.stringify([...MAIL_TRIAGE_MCP_ALIASES]))
   })
 
+  it("propagates app_tool_call errors instead of swallowing them", () => {
+    const html = mailTriage.ui!.html
+    expect(html).toContain("throw new Error(value.error)")
+    expect(html).toContain("Not connected to host bridge")
+  })
+
+  it("shows a dedicated empty-state panel when no alias is reachable", () => {
+    const html = mailTriage.ui!.html
+    expect(html).toContain("connect-hint")
+    expect(html).toContain("connect-retry-btn")
+    expect(html).toContain("mailbox_request_elevation")
+  })
+
+  it("guards double-submit with a busy-button helper", () => {
+    expect(mailTriage.ui!.html).toContain("function setBusy(")
+  })
+
+  it("arms and clears a plan-expiry timer off the plan's expires_at", () => {
+    const html = mailTriage.ui!.html
+    expect(html).toContain("function armPlanExpiry(")
+    expect(html).toContain("function clearPlanExpiry(")
+    expect(html).toContain("Plan expired")
+  })
+
+  it("caps agent-run polling and stops without duplicating the log tail", () => {
+    const html = mailTriage.ui!.html
+    expect(html).toContain("POLL_TIMEOUT_MS")
+    expect(html).toContain("Still running")
+    expect(html).toContain("function renderLogTail(")
+  })
+
   it("round-trips emit → loadAppHandle preserving identity", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mail-triage-roundtrip-"))
     try {

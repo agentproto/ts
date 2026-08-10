@@ -94,7 +94,7 @@ section h3{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spa
 .tile.needs-reply .count{color:var(--yellow)}
 .tile.newsletter .count{color:var(--blue)}
 .tile.notification .count{color:var(--purple)}
-#plan-list,#search-results,#log,#runs-list{max-height:260px;overflow-y:auto;font-size:12px}
+#plan-list,#search-results,#log-events,#runs-list,#connect-hint-list{max-height:260px;overflow-y:auto;font-size:12px}
 .plan-item{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)}
 .plan-item .subj{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .plan-item .tag{color:var(--text2);font-size:11px;white-space:nowrap}
@@ -105,13 +105,15 @@ section h3{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spa
 .runs-item .st.running{color:var(--yellow)}
 .runs-item .st.ended{color:var(--green)}
 .runs-item .meta{color:var(--text2);font-size:11px;white-space:nowrap}
-#log{font-family:Menlo,Monaco,monospace;white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px}
+#log-tail{font-family:Menlo,Monaco,monospace;white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;max-height:260px;overflow-y:auto}
 .searchbar{display:flex;gap:8px;margin-bottom:8px}
 .searchbar input{flex:1}
 .actions{display:flex;gap:8px;margin-top:10px}
 #status{padding:6px 14px;font-size:11px;color:var(--text2);border-top:1px solid var(--border);background:var(--bg2);flex-shrink:0}
 .empty{color:var(--text2);padding:8px 0}
 .mini{font-size:10px;text-transform:none;letter-spacing:0;cursor:pointer;color:var(--blue);background:none;border:none;font-family:inherit}
+.caps-hint{font-size:11px;color:var(--yellow)}
+.snippet{color:var(--text2);font-size:11px;margin-top:2px}
 </style>
 </head>
 <body>
@@ -124,6 +126,15 @@ section h3{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spa
   </div>
   <div id="caps" style="display:none"></div>
   <div id="content">
+    <section id="connect-hint" style="display:none">
+      <h3>Connect a mailbox</h3>
+      <div id="connect-hint-list"></div>
+      <div class="empty">Import/start an agentpush MCP server and connect a Gmail account in agentpush, then retry.</div>
+      <div class="actions">
+        <button class="abtn primary" id="connect-retry-btn">Retry</button>
+      </div>
+    </section>
+
     <section>
       <h3>Inbox summary</h3>
       <div id="summary"></div>
@@ -162,7 +173,8 @@ section h3{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spa
       <div class="actions">
         <button class="abtn" id="run-agent-btn">Run Triager Agent</button>
       </div>
-      <div id="log" style="margin-top:10px"><div class="empty">Agent has not run yet.</div></div>
+      <div id="log-events" style="margin-top:10px"><div class="empty">Agent has not run yet.</div></div>
+      <div id="log-tail" style="margin-top:6px"></div>
     </section>
 
     <section>
@@ -177,13 +189,16 @@ var APP_ID = ${JSON.stringify(APP_ID)};
 var AGENT_ID = ${JSON.stringify(AGENT_ID)};
 var CATEGORIES = ${JSON.stringify(CATEGORIES)};
 var ALIASES = ${JSON.stringify(MAIL_TRIAGE_MCP_ALIASES)};
+var POLL_TIMEOUT_MS = 10 * 60 * 1000;
 var callTool = null;
 var currentPlan = null;
 var pollHandle = null;
+var planExpiryHandle = null;
 var activeAlias = ALIASES[0];
 var currentMailboxes = [];
 var categoryCounts = null;
 var unreadCount = null;
+var aliasStates = {};
 
 function setStatus(msg) {
   document.getElementById("status").textContent = msg;
@@ -213,11 +228,62 @@ function unwrapText(result) {
 }
 
 function callApp(tool, args) {
-  return callTool("app_tool_call", { appId: APP_ID, tool: tool, args: args || {} }).then(unwrapText);
+  if (!callTool) {
+    return Promise.reject(new Error("Not connected to host bridge (standalone mode)."));
+  }
+  return callTool("app_tool_call", { appId: APP_ID, tool: tool, args: args || {} }).then(function (result) {
+    var value = unwrapText(result);
+    if (value && typeof value === "object" && !Array.isArray(value) && typeof value.error === "string") {
+      throw new Error(value.error);
+    }
+    return value;
+  });
 }
 
 function aliasTool(name) {
   return "imported:" + activeAlias + "/" + name;
+}
+
+// Disables a button and swaps its label to an ellipsis while a call is in
+// flight, so double-submit is impossible; restores the original label after.
+function setBusy(btn, busy) {
+  if (busy) {
+    if (btn.getAttribute("data-label") === null) btn.setAttribute("data-label", btn.textContent);
+    btn.disabled = true;
+    btn.textContent = "\\u2026";
+  } else {
+    btn.disabled = false;
+    var label = btn.getAttribute("data-label");
+    if (label !== null) btn.textContent = label;
+  }
+}
+
+function clearPlanExpiry() {
+  if (planExpiryHandle) {
+    clearTimeout(planExpiryHandle);
+    planExpiryHandle = null;
+  }
+}
+
+function onPlanExpired() {
+  planExpiryHandle = null;
+  currentPlan = null;
+  document.getElementById("apply-btn").disabled = true;
+  setStatus("Plan expired \\u2014 rebuild it.");
+}
+
+// Arms a timeout that invalidates the plan at its server-declared expires_at
+// (plans expire after 15 minutes) so Apply never fires against a stale plan.
+function armPlanExpiry(expiresAt) {
+  clearPlanExpiry();
+  if (!expiresAt) return;
+  var ms = new Date(expiresAt).getTime() - Date.now();
+  if (isNaN(ms)) return;
+  if (ms <= 0) {
+    onPlanExpired();
+    return;
+  }
+  planExpiryHandle = setTimeout(onPlanExpired, ms);
 }
 
 function asList(value, keys) {
@@ -286,6 +352,12 @@ function renderCaps(mb) {
     b.textContent = cap;
     el.appendChild(b);
   });
+  if (!caps.triage) {
+    var hint = document.createElement("span");
+    hint.className = "caps-hint";
+    hint.textContent = "triage scope missing \\u2014 grant it via agentpush (mailbox_request_elevation)";
+    el.appendChild(hint);
+  }
 }
 
 // Gmail category labels -> the dashboard's triage buckets. IMPORTANT wins,
@@ -299,12 +371,16 @@ function categoryOf(labelIds) {
 }
 
 function onMailboxChange() {
+  clearPlanExpiry();
   var mb = selectedMailbox();
   renderCaps(mb);
   var caps = mb && typeof mb === "object" ? mb.capabilities : null;
   var noTriage = !!(caps && typeof caps === "object" && !caps.triage);
+  var scopeHint = noTriage ? "Mailbox lacks triage capability \\u2014 grant it via agentpush (mailbox_request_elevation)" : "";
   document.getElementById("triage-btn").disabled = noTriage;
+  document.getElementById("triage-btn").title = scopeHint;
   document.getElementById("apply-btn").disabled = true;
+  document.getElementById("apply-btn").title = scopeHint;
   currentPlan = null;
   categoryCounts = null;
   unreadCount = null;
@@ -378,15 +454,45 @@ function loadMailboxes() {
     });
 }
 
+function renderConnectHint() {
+  var el = document.getElementById("connect-hint");
+  var anyLive = false;
+  for (var i = 0; i < ALIASES.length; i++) {
+    if (aliasStates[ALIASES[i]] && aliasStates[ALIASES[i]].state === "live") anyLive = true;
+  }
+  if (anyLive) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "";
+  var list = document.getElementById("connect-hint-list");
+  list.innerHTML = "";
+  ALIASES.forEach(function (alias) {
+    var st = aliasStates[alias];
+    var row = document.createElement("div");
+    row.className = "plan-item";
+    var text;
+    if (!st) text = alias + " \\u2014 not probed yet";
+    else if (st.state === "unreachable") text = alias + " \\u2014 unreachable: " + st.message;
+    else if (st.state === "empty") text = alias + " \\u2014 connected, no mailboxes";
+    else text = alias + " \\u2014 live";
+    row.textContent = text;
+    list.appendChild(row);
+  });
+}
+
 function probeAliases() {
   setStatus("Detecting mail servers\\u2026");
   return Promise.all(
     ALIASES.map(function (alias) {
       return callApp("imported:" + alias + "/mailbox_list", {})
         .then(function (result) {
-          return { alias: alias, mailboxes: asList(result, ["mailboxes", "items"]) };
+          var mailboxes = asList(result, ["mailboxes", "items"]);
+          aliasStates[alias] = { state: mailboxes.length > 0 ? "live" : "empty" };
+          return { alias: alias, mailboxes: mailboxes };
         })
-        .catch(function () {
+        .catch(function (err) {
+          aliasStates[alias] = { state: "unreachable", message: err && err.message ? err.message : String(err) };
           return { alias: alias, mailboxes: [] };
         });
     })
@@ -396,30 +502,55 @@ function probeAliases() {
       activeAlias = live[0].alias;
       renderAliasSelect(live.map(function (r) { return r.alias; }));
       renderMailboxes(live[0].mailboxes);
+      renderConnectHint();
       setStatus("Ready \\u2014 " + activeAlias + (live.length > 1 ? " (" + live.length + " servers available)" : ""));
     } else {
       renderAliasSelect([]);
       renderMailboxes([]);
-      setStatus("No mailboxes on any server (" + ALIASES.join(", ") + ").");
+      renderConnectHint();
+      setStatus("No mailboxes reachable \\u2014 see connection panel below.");
     }
   });
 }
 
-function renderSearchResults(items) {
+function renderSearchResults(items, raw) {
   var el = document.getElementById("search-results");
   el.innerHTML = "";
+  if (raw && typeof raw === "object" && typeof raw.resultSizeEstimate === "number") {
+    var count = document.createElement("div");
+    count.className = "empty";
+    count.textContent = items.length + " shown \\u00b7 ~" + raw.resultSizeEstimate + " total";
+    el.appendChild(count);
+  }
   if (items.length === 0) {
-    el.innerHTML = '<div class="empty">No results.</div>';
+    var none = document.createElement("div");
+    none.className = "empty";
+    none.textContent = "No results.";
+    el.appendChild(none);
     return;
   }
   items.forEach(function (item) {
     var row = document.createElement("div");
     row.className = "plan-item";
+    row.style.flexDirection = "column";
+    row.style.alignItems = "stretch";
     var subj = typeof item === "string" ? item : item.subject || item.title || JSON.stringify(item);
     var from = item && item.from ? item.from : "";
-    row.innerHTML = '<span class="subj"></span><span class="tag"></span>';
-    row.querySelector(".subj").textContent = subj;
-    row.querySelector(".tag").textContent = from;
+    var snippet = item && item.snippet ? item.snippet : "";
+    var top = document.createElement("div");
+    top.style.display = "flex";
+    top.style.justifyContent = "space-between";
+    top.style.gap = "10px";
+    top.innerHTML = '<span class="subj"></span><span class="tag"></span>';
+    top.querySelector(".subj").textContent = subj;
+    top.querySelector(".tag").textContent = from;
+    row.appendChild(top);
+    if (snippet) {
+      var sn = document.createElement("div");
+      sn.className = "snippet";
+      sn.textContent = snippet;
+      row.appendChild(sn);
+    }
     el.appendChild(row);
   });
 }
@@ -470,7 +601,8 @@ function renderRuns(runs) {
     el.innerHTML = '<div class="empty">No runs yet.</div>';
     return;
   }
-  runs.forEach(function (run) {
+  var shown = runs.slice(0, 20);
+  shown.forEach(function (run) {
     var row = document.createElement("div");
     row.className = "runs-item";
     row.title = "Show sessions + output for " + run.appRunId;
@@ -480,10 +612,16 @@ function renderRuns(runs) {
     st.className = "st " + (run.status || "");
     row.querySelector(".rid").textContent = run.appRunId;
     row.querySelector(".meta").textContent =
-      fmtDate(run.startedAt) + " \\u00b7 " + (run.sessions || 0) + " session" + (run.sessions === 1 ? "" : "s");
+      fmtDate(run.startedAt) + (run.endedAt ? " \\u2192 " + fmtDate(run.endedAt) : "") + " \\u00b7 " + (run.sessions || 0) + " session" + (run.sessions === 1 ? "" : "s");
     row.addEventListener("click", function () { viewRun(run.appRunId); });
     el.appendChild(row);
   });
+  if (runs.length > 20) {
+    var more = document.createElement("div");
+    more.className = "empty";
+    more.textContent = "showing 20 of " + runs.length;
+    el.appendChild(more);
+  }
 }
 
 function loadRuns() {
@@ -530,12 +668,20 @@ function viewRun(appRunId) {
 }
 
 document.getElementById("refresh-btn").addEventListener("click", function () {
-  loadMailboxes();
+  probeAliases();
+  loadRuns();
+});
+
+document.getElementById("connect-retry-btn").addEventListener("click", function () {
+  probeAliases();
   loadRuns();
 });
 
 document.getElementById("alias-select").addEventListener("change", function () {
   activeAlias = this.value;
+  clearPlanExpiry();
+  currentPlan = null;
+  document.getElementById("apply-btn").disabled = true;
   loadMailboxes();
 });
 
@@ -544,15 +690,19 @@ document.getElementById("mailbox-select").addEventListener("change", onMailboxCh
 document.getElementById("runs-refresh-btn").addEventListener("click", loadRuns);
 
 document.getElementById("search-btn").addEventListener("click", function () {
-  var query = document.getElementById("search-input").value;
+  var btn = this;
+  var query = document.getElementById("search-input").value.trim() || "is:unread";
   var mailbox = document.getElementById("mailbox-select").value;
+  setBusy(btn, true);
   setStatus("Searching\\u2026");
   callApp(aliasTool("mailbox_search"), { mailbox: mailbox, query: query })
     .then(function (result) {
-      renderSearchResults(asList(result, ["items", "messages", "results"]));
+      renderSearchResults(asList(result, ["items", "messages", "results"]), result);
+      setBusy(btn, false);
       setStatus("Ready \\u2014 " + activeAlias);
     })
     .catch(function (err) {
+      setBusy(btn, false);
       setStatus("Search failed: " + err.message);
     });
 });
@@ -562,6 +712,7 @@ document.getElementById("plan-action").addEventListener("change", function () {
 });
 
 document.getElementById("triage-btn").addEventListener("click", function () {
+  var btn = this;
   var mailbox = document.getElementById("mailbox-select").value;
   var query = document.getElementById("plan-query").value.trim() || "is:unread";
   var actionType = document.getElementById("plan-action").value;
@@ -574,15 +725,19 @@ document.getElementById("triage-btn").addEventListener("click", function () {
     }
     action.addLabelIds = [label];
   }
+  setBusy(btn, true);
   setStatus("Building triage plan\\u2026");
   document.getElementById("apply-btn").disabled = true;
+  clearPlanExpiry();
   currentPlan = null;
   callApp(aliasTool("mailbox_triage_plan"), { mailbox: mailbox, criteria: { query: query }, action: action })
     .then(function (plan) {
+      setBusy(btn, false);
       currentPlan = plan && plan.plan_id ? plan : null;
       renderPlan(plan);
       if (currentPlan && plan.count > 0) {
         document.getElementById("apply-btn").disabled = false;
+        armPlanExpiry(plan.expires_at);
         setStatus("Plan ready (" + plan.count + " messages) \\u2014 review, then Apply.");
       } else if (currentPlan) {
         setStatus("Plan matches no messages \\u2014 nothing to apply.");
@@ -591,34 +746,73 @@ document.getElementById("triage-btn").addEventListener("click", function () {
       }
     })
     .catch(function (err) {
-      setStatus("Triage plan failed: " + err.message);
+      setBusy(btn, false);
+      var msg = err && err.message ? err.message : String(err);
+      if (msg.indexOf("mailbox_scope_missing") !== -1) {
+        setStatus("Triage scope missing \\u2014 grant it via agentpush (mailbox_request_elevation).");
+      } else {
+        setStatus("Triage plan failed: " + msg);
+      }
     });
 });
 
 document.getElementById("apply-btn").addEventListener("click", function () {
+  var btn = this;
   if (!currentPlan || !currentPlan.plan_id) return;
+  setBusy(btn, true);
   setStatus("Applying triage plan\\u2026");
   callApp(aliasTool("mailbox_triage_apply"), { plan_id: currentPlan.plan_id, confirm: true })
-    .then(function () {
-      setStatus("Plan applied (" + currentPlan.count + " messages).");
+    .then(function (result) {
+      setBusy(btn, false);
+      var count = currentPlan.count;
+      var extra = [];
+      if (result && typeof result === "object") {
+        ["applied", "modified", "count"].forEach(function (key) {
+          if (typeof result[key] === "number") extra.push(key + ": " + result[key]);
+        });
+      }
+      setStatus(
+        extra.length > 0
+          ? "Plan applied \\u2014 " + extra.join(", ") + "."
+          : "Plan applied (" + count + " message" + (count === 1 ? "" : "s") + ")."
+      );
       document.getElementById("apply-btn").disabled = true;
+      clearPlanExpiry();
       currentPlan = null;
       onMailboxChange();
     })
     .catch(function (err) {
+      setBusy(btn, false);
       setStatus("Apply failed: " + err.message);
     });
 });
 
 function appendLog(text) {
-  var el = document.getElementById("log");
+  var el = document.getElementById("log-events");
   if (el.querySelector(".empty")) el.innerHTML = "";
-  el.textContent += (el.textContent ? "\\n" : "") + text;
+  var line = document.createElement("div");
+  line.textContent = text;
+  el.appendChild(line);
   el.scrollTop = el.scrollHeight;
 }
 
-function pollAgentRun(appRunId) {
-  if (pollHandle) clearTimeout(pollHandle);
+// Replaces the whole tail on every poll tick (the daemon returns the last
+// N lines, not a delta) — appending it instead would duplicate the log.
+function renderLogTail(text) {
+  var el = document.getElementById("log-tail");
+  el.textContent = text || "";
+  el.scrollTop = el.scrollHeight;
+}
+
+function pollAgentRun(appRunId, startedAt) {
+  if (pollHandle) {
+    clearTimeout(pollHandle);
+    pollHandle = null;
+  }
+  if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+    setStatus("Still running \\u2014 check Past runs later.");
+    return;
+  }
   callApp("app_status", { appRunId: appRunId })
     .then(function (status) {
       var sessions = (status && status.sessions) || [];
@@ -627,11 +821,12 @@ function pollAgentRun(appRunId) {
         ? callApp("agent_output", { sessionId: sessionId, lastN: 200, clean: true })
         : Promise.resolve("");
       return tail.then(function (output) {
-        if (output) appendLog(typeof output === "string" ? output : JSON.stringify(output));
+        renderLogTail(typeof output === "string" ? output : output ? JSON.stringify(output, null, 2) : "");
         var done = status && (status.status === "ended" || status.status === "done" || status.endedAt);
         if (!done) {
-          pollHandle = setTimeout(function () { pollAgentRun(appRunId); }, 2000);
+          pollHandle = setTimeout(function () { pollAgentRun(appRunId, startedAt); }, 2000);
         } else {
+          pollHandle = null;
           setStatus("Agent run finished.");
           loadRuns();
         }
@@ -643,15 +838,34 @@ function pollAgentRun(appRunId) {
 }
 
 document.getElementById("run-agent-btn").addEventListener("click", function () {
-  document.getElementById("log").innerHTML = "";
+  var btn = this;
+  if (pollHandle) {
+    clearTimeout(pollHandle);
+    pollHandle = null;
+  }
+  document.getElementById("log-events").innerHTML = "";
+  document.getElementById("log-tail").textContent = "";
+  setBusy(btn, true);
   setStatus("Starting triager agent\\u2026");
   callApp("app_run", { appId: APP_ID, agents: [AGENT_ID], prompt: "Triage my inbox." })
     .then(function (run) {
+      setBusy(btn, false);
+      var sessions = (run && run.sessions) || [];
+      var errors = (run && run.errors) || [];
+      if (sessions.length === 0 && errors.length > 0) {
+        appendLog(
+          "Run failed to start: " +
+            errors.map(function (e) { return (e.agentId || "?") + ": " + e.error; }).join("; ")
+        );
+        setStatus("Run failed to start.");
+        return;
+      }
       appendLog("Started app run " + (run && run.appRunId));
       loadRuns();
-      pollAgentRun(run.appRunId);
+      pollAgentRun(run.appRunId, Date.now());
     })
     .catch(function (err) {
+      setBusy(btn, false);
       setStatus("Run failed: " + err.message);
     });
 });
