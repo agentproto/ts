@@ -227,7 +227,7 @@ describe("sessions webview — render", () => {
     send(panel, modelMessage({ groups: [group("attention", "Attention", [{ ...ROW_A, stallTooltip }])] }))
     const row = el(panel, "list").querySelector('[data-id="s1"]')!
     const badge = row.querySelector(".stall")!
-    expect(badge.textContent).toContain("stalled")
+    expect(badge.textContent).toContain("⚠")
     expect(htmlEl(badge).getAttribute("title")).toBe(stallTooltip)
   })
 
@@ -242,7 +242,7 @@ describe("sessions webview — render", () => {
     send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, status: "delegating", childrenBusy: 3 }])] }))
     const row = el(panel, "list").querySelector('[data-id="s1"]')!
     const deleg = row.querySelector(".deleg")!
-    expect(deleg.textContent).toContain("3 children")
+    expect(deleg.textContent).toContain("3")
     expect(row.querySelector(".dot.delegating")).toBeTruthy()
   })
 
@@ -277,19 +277,19 @@ describe("sessions webview — render", () => {
     expect(el(panel, "summary").textContent).toBe("3 of 20 shown")
   })
 
-  it("renders the workspace color square + label in the meta row", () => {
+  it("renders the workspace color on the dot via --ws CSS variable", () => {
     const panel = renderPanel()
     send(panel, modelMessage())
-    const proj = el(panel, "list").querySelector('[data-id="s1"] .meta .proj')
-    expect(proj?.textContent).toContain("Agentik Studio")
-    expect(htmlEl(proj!.querySelector(".psq")).getAttribute("style")).toContain("#c45c26")
+    const dot = htmlEl(el(panel, "list").querySelector('[data-id="s1"] .dot'))
+    expect(dot.getAttribute("style")).toContain("--ws")
+    expect(dot.getAttribute("style")).toContain("#c45c26")
   })
 
-  it("renders an unassigned meta label when no workspace is attached", () => {
+  it("omits --ws on the dot when no workspace is attached", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ groups: [group("earlier", "Earlier", [ROW_DONE])] }))
-    const proj = el(panel, "list").querySelector('[data-id="s2"] .meta .proj')
-    expect(proj?.textContent).toContain("unassigned")
+    const dot = htmlEl(el(panel, "list").querySelector('[data-id="s2"] .dot'))
+    expect(dot.getAttribute("style")).toBeNull()
   })
 
   it("renders a collapsed cron row's split id and run count", () => {
@@ -297,7 +297,7 @@ describe("sessions webview — render", () => {
     send(panel, modelMessage({ lane: "auto", groups: [group("cron", "Crons", [CRON_ROW])] }))
     const row = el(panel, "list").querySelector('[data-id="c1"]')!
     expect(row.querySelector(".name .id")?.textContent).toBe("· d8ee2e36")
-    expect(row.querySelector(".name .runs")?.textContent).toBe("×3 runs")
+    expect(row.querySelector(".name .runs")?.textContent).toBe("×3")
   })
 
   it("styles archived rows with reduced opacity", () => {
