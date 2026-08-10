@@ -10,6 +10,7 @@
 "@agentproto/rendezvous": patch
 "@agentproto/sandbox-e2b": patch
 "@agentproto/workflow-mastra": patch
+"@agentproto/llm-endpoint": patch
 ---
 
 Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
