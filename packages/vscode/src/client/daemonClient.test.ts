@@ -140,6 +140,19 @@ describe("DaemonClient — URL + auth header mapping", () => {
           const a = rpc.params.arguments as { provider: string; profileId: string | null }
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ ok: true, provider: a.provider, profileId: a.profileId, applied: false, restartRequired: true }) }] } } }
         }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_list") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", ui: { path: "/apps/mail/ui.html", title: "Mail Triage", tools: ["mail_list"] } }]) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_tool_call") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ echoed: rpc.params.arguments }) }] } } }
+        }
+        if (rpc.method === "resources/read") {
+          const params = (req.body as { params: { uri: string } }).params
+          if (params.uri === "ui://app_ui_mail_triage/view") {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { contents: [{ uri: params.uri, mimeType: "text/html;profile=mcp-app", text: "<html><body>panel</body></html>" }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, error: { code: -32002, message: "resource not found" } } }
+        }
         return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "{}" }] } } }
       }
       return { status: 404, body: { error: "not_found" } }
@@ -369,6 +382,38 @@ describe("DaemonClient — URL + auth header mapping", () => {
   it("listAdapters() routes through mcpCall adapter_list", async () => {
     const adapters = await client().listAdapters()
     expect(adapters[0]?.slug).toBe("claude-code")
+  })
+
+  it("listApps() routes through mcpCall app_list", async () => {
+    const apps = await client().listApps()
+    expect(apps).toHaveLength(1)
+    expect(apps[0]?.appId).toBe("mail-triage")
+    expect(apps[0]?.ui?.title).toBe("Mail Triage")
+  })
+
+  it("appToolCall() posts app_tool_call with appId/tool/args", async () => {
+    const result = await client().appToolCall("mail-triage", "mail_list", { folder: "inbox" })
+    expect(result).toEqual({
+      echoed: { appId: "mail-triage", tool: "mail_list", args: { folder: "inbox" } },
+    })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ method: "tools/call", params: { name: "app_tool_call" } })
+  })
+
+  it("readResource posts a JSON-RPC resources/read envelope and returns the first contents text", async () => {
+    const html = await client().readResource("ui://app_ui_mail_triage/view")
+    expect(html).toBe("<html><body>panel</body></html>")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url?.split("?")[0]).toBe("/mcp")
+    expect(last.body).toMatchObject({
+      jsonrpc: "2.0",
+      method: "resources/read",
+      params: { uri: "ui://app_ui_mail_triage/view" },
+    })
+  })
+
+  it("readResource throws on a JSON-RPC error envelope", async () => {
+    await expect(client().readResource("ui://app_ui_ghost/view")).rejects.toThrow(/resource not found/)
   })
 
   it("harnessCapabilities() routes through mcpCall harness_capabilities", async () => {

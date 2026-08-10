@@ -104,6 +104,10 @@
           "name": "Wallets",
           "type": "webview",
           "when": "config.agentproto.authProfilesView == 'webview'"
+        },
+        {
+          "id": "agentproto.apps",
+          "name": "Apps"
         }
       ],
       "agentprotoConfig": [
@@ -375,6 +379,18 @@
         "icon": "$(play)"
       },
       {
+        "command": "agentproto.refreshApps",
+        "title": "agentproto: Refresh Apps",
+        "category": "agentproto",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentproto.openAppPanel",
+        "title": "agentproto: Open App Panel",
+        "category": "agentproto",
+        "icon": "$(window)"
+      },
+      {
         "command": "agentproto.refreshAuthProfiles",
         "title": "agentproto: Refresh Auth Profiles",
         "category": "agentproto",
@@ -475,6 +491,11 @@
         {
           "command": "agentproto.refreshHarnesses",
           "when": "view == 'agentproto.harnesses'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.refreshApps",
+          "when": "view == 'agentproto.apps'",
           "group": "navigation"
         },
         {
