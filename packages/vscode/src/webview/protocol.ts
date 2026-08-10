@@ -191,6 +191,7 @@ export type ExtMessage =
    * own arm rather than overloading one that means something else.
    */
   | { type: "stopError"; title: string; message: string }
+  | { type: "restartFailed"; title: string; message: string }
   /**
    * PTY mode: base64-encoded raw bytes from the daemon's PTY WebSocket.
    * The webview decodes to a Uint8Array and hands it to xterm.js — never to
