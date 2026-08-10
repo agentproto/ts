@@ -14,9 +14,11 @@ export const triageInbox = defineWorkflow({
       kind: "agent",
       agent: { ref: "@agentproto/triager" },
       prompt:
-        "Scan the inbox for unread messages. Categorize them (urgent, needs-reply, " +
-        "newsletter, notification, spam). Create a triage plan: label each category, " +
-        "archive newsletters+notifications, keep urgent+needs-reply in inbox. " +
+        "Call mailbox_list to discover connected mailboxes, then scan the " +
+        "selected mailbox for unread messages using mailbox_search with " +
+        'query="is:unread". Categorize them (urgent, needs-reply, newsletter, ' +
+        "notification, spam). Create a triage plan: label each category, archive " +
+        "newsletters+notifications, keep urgent+needs-reply in inbox. " +
         "Show me the plan before applying.",
     },
   ],

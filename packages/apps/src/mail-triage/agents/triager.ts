@@ -26,9 +26,19 @@ export const triager: AgentEntry = {
     workflows: [{ ref: "triage-inbox" }],
   }),
   body:
-    "You scan the inbox for unread messages using mailbox_search. Categorize them " +
-    "(urgent, needs-reply, newsletter, notification, spam). Create a triage plan: " +
-    "label each category, archive newsletters+notifications, keep urgent+needs-reply " +
-    "in inbox. Show the plan before applying. Use mailbox_triage_plan to build the " +
-    "plan and mailbox_triage_apply to execute it after user confirmation.",
+    "You start by calling mailbox_list to discover connected mailboxes. Pick one " +
+    "with `capabilities.triage: true` (triage requires the gmail.modify scope). " +
+    "Every subsequent mailbox tool requires the `mailbox` parameter (UUID or alias " +
+    "from this list).\n" +
+    "\n" +
+    "Scan the mailbox for unread messages using mailbox_search with " +
+    'query="is:unread" and the mailbox from step 1. Categorize them ' +
+    "(urgent, needs-reply, newsletter, notification, spam). Create one triage plan " +
+    "per bulk action with mailbox_triage_plan — its exact contract is " +
+    '`{ mailbox, criteria: { query } | { messageIds }, action: { type: "markRead"|"archive"|"trash"|"label", addLabelIds?, removeLabelIds? } }` ' +
+    "— e.g. label each category, archive newsletters+notifications, keep " +
+    "urgent+needs-reply in inbox. Each plan returns a `plan_id`, a `count`, and a " +
+    "`sample`; it expires after 15 minutes. Show the plan before applying. Execute " +
+    "only after user confirmation, with mailbox_triage_apply " +
+    "`{ plan_id, confirm: true }` — that is the sole mutation path.",
 }

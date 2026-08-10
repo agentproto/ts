@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { mailTriage } from "../mail-triage/index.js"
+import { MAIL_TRIAGE_MCP_ALIASES } from "../mail-triage/ui.js"
 
 const fakeModel = { provider: "test", id: "test-model" }
 
@@ -53,15 +54,28 @@ describe("mail-triage app", () => {
     expect(mailTriage.ui).toBeDefined()
     expect(mailTriage.ui!.title).toBe("Mail Triage")
     expect(mailTriage.ui!.tools).toEqual([
-      "imported:agentpush/mailbox_list",
-      "imported:agentpush/mailbox_search",
-      "imported:agentpush/mailbox_triage_plan",
-      "imported:agentpush/mailbox_triage_apply",
+      ...MAIL_TRIAGE_MCP_ALIASES.flatMap((alias) => [
+        `imported:${alias}/mailbox_list`,
+        `imported:${alias}/mailbox_search`,
+        `imported:${alias}/mailbox_triage_plan`,
+        `imported:${alias}/mailbox_triage_apply`,
+      ]),
       "app_run",
       "app_status",
       "agent_output",
+      "app_list",
     ])
     expect(mailTriage.ui!.html.length).toBeGreaterThan(0)
+  })
+
+  it("allowlists the mailbox tools on every candidate agentpush alias (prod first)", () => {
+    expect(MAIL_TRIAGE_MCP_ALIASES).toEqual(["agentpush-prod", "agentpush"])
+    for (const alias of MAIL_TRIAGE_MCP_ALIASES) {
+      expect(mailTriage.ui!.tools).toContain(`imported:${alias}/mailbox_list`)
+      expect(mailTriage.ui!.tools).toContain(`imported:${alias}/mailbox_triage_apply`)
+    }
+    // The panel embeds the candidate list so it can probe at runtime.
+    expect(mailTriage.ui!.html).toContain(JSON.stringify([...MAIL_TRIAGE_MCP_ALIASES]))
   })
 
   it("round-trips emit → loadAppHandle preserving identity", async () => {

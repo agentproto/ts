@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { MEDIA_VIEWER_HTML, MEDIA_VIEWER_TOOLS } from "../media-viewer/ui.js"
-import { MAIL_TRIAGE_HTML, MAIL_TRIAGE_TOOLS } from "../mail-triage/ui.js"
+import { MAIL_TRIAGE_HTML, MAIL_TRIAGE_TOOLS, MAIL_TRIAGE_MCP_ALIASES } from "../mail-triage/ui.js"
 
 describe("media-viewer UI panel", () => {
   it("is a non-empty self-contained HTML document using the McpApp bridge", () => {
@@ -26,15 +26,21 @@ describe("mail-triage UI panel", () => {
 
   it("declares the imported mailbox tools plus the agent-run tools it dispatches", () => {
     expect(MAIL_TRIAGE_TOOLS).toEqual([
-      "imported:agentpush/mailbox_list",
-      "imported:agentpush/mailbox_search",
-      "imported:agentpush/mailbox_triage_plan",
-      "imported:agentpush/mailbox_triage_apply",
+      ...MAIL_TRIAGE_MCP_ALIASES.flatMap((alias) => [
+        `imported:${alias}/mailbox_list`,
+        `imported:${alias}/mailbox_search`,
+        `imported:${alias}/mailbox_triage_plan`,
+        `imported:${alias}/mailbox_triage_apply`,
+      ]),
       "app_run",
       "app_status",
       "agent_output",
+      "app_list",
     ])
-    for (const tool of MAIL_TRIAGE_TOOLS) {
+    // The panel builds `imported:<alias>/<tool>` ids at runtime from the
+    // embedded alias list — assert the parts it composes them from.
+    expect(MAIL_TRIAGE_HTML).toContain(JSON.stringify([...MAIL_TRIAGE_MCP_ALIASES]))
+    for (const tool of ["mailbox_list", "mailbox_search", "mailbox_triage_plan", "mailbox_triage_apply", "app_run", "app_status", "agent_output", "app_list"]) {
       expect(MAIL_TRIAGE_HTML).toContain(tool)
     }
   })
