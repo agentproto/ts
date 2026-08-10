@@ -142,7 +142,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "croner": "^9.0.0",
     "gray-matter": "^4.0.3",
-    "ws": "^8.21.1",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "optionalDependencies": {

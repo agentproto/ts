@@ -58,7 +58,7 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@mastra/core": "1.55.0",
+    "@mastra/core": "1.57.0",
     "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
