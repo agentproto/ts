@@ -21,10 +21,105 @@ on:
 #   - pr-fix / auto-merge queue behind pr-review's group
 
 jobs:
+  # On `synchronize` pushes only: skip the ~15min Build+test job when the
+  # increment since the last push is 100% chore (a changeset and/or docs)
+  # AND the pre-push commit already has a green "Build + test" — e.g. PR #884's
+  # changeset-only push (0080b5b8) re-ran the full build for a diff that
+  # could not possibly break it. Conservative by construction: any
+  # uncertainty (non-`synchronize` action, unresolvable `before` sha, a
+  # single non-chore file, no green prior run) falls through to
+  # skip_build=false so Build+test runs as normal. Agentic review is NOT
+  # gated by this job — it always runs (see pr-review's `if`, below).
+  increment-guard:
+    name: Increment guard
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 5
+    outputs:
+      skip_build: ${{ steps.decide.outputs.skip_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # Need history back through `before` to diff the increment and to
+          # resolve `before` as a commit at all.
+          fetch-depth: 0
+
+      - name: Decide whether Build+test can be skipped
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_ACTION: ${{ github.event.action }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          skip=false
+
+          # is_chore FILE — conservative allowlist. `.github/**` is excluded
+          # outright (checked first) even though some of it is `*.md` —
+          # CI-adjacent docs still count as "could plausibly affect CI" for
+          # the purpose of this guard.
+          is_chore() {
+            case "$1" in
+              .github/*) return 1 ;;
+              .changeset/*) return 0 ;;
+              *.md) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          if [ "$EVENT_ACTION" != "synchronize" ]; then
+            echo "action=$EVENT_ACTION (not a synchronize push) — running Build+test."
+          elif [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "No usable 'before' sha — running Build+test."
+          elif ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            echo "'before' sha $BEFORE_SHA not resolvable in this checkout — running Build+test."
+          else
+            CHANGED=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")
+            if [ -z "$CHANGED" ]; then
+              echo "No file changes between $BEFORE_SHA..$AFTER_SHA — running Build+test (unexpected; be conservative)."
+            else
+              NON_CHORE=()
+              while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                is_chore "$f" || NON_CHORE+=("$f")
+              done <<< "$CHANGED"
+
+              if [ "${#NON_CHORE[@]}" -gt 0 ]; then
+                echo "Non-chore file(s) in the increment — running Build+test:"
+                printf '  %s\n' "${NON_CHORE[@]}"
+              else
+                echo "Increment is 100% chore (changesets/docs):"
+                while IFS= read -r f; do printf '  %s\n' "$f"; done <<< "$CHANGED"
+                echo "Checking whether $BEFORE_SHA already has a green 'Build + test' check-run…"
+                LAST_CONCLUSION=$(gh api --paginate "repos/${{ github.repository }}/commits/$BEFORE_SHA/check-runs" \
+                  | jq -r -s '[.[].check_runs[]] | map(select(.name == "Build + test")) | sort_by(.started_at) | last | .conclusion // "none"')
+                if [ "$LAST_CONCLUSION" = "success" ]; then
+                  echo "Prior commit $BEFORE_SHA already has a green Build + test — skipping the rebuild."
+                  skip=true
+                else
+                  echo "Prior commit $BEFORE_SHA has no green Build + test (conclusion=$LAST_CONCLUSION) — running Build+test."
+                fi
+              fi
+            fi
+          fi
+
+          echo "skip_build=$skip" >> "$GITHUB_OUTPUT"
+
   build-and-test:
     name: Build + test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [increment-guard]
+    # `always()` so a `push` event (increment-guard's `if` is false there,
+    # so it's `skipped`, not `success`) doesn't fall through GitHub's default
+    # needs-propagation and skip the build too. The real gate is the output
+    # check: only a literal skip_build=='true' (set on `pull_request` by
+    # increment-guard above) skips this job; anything else — push events,
+    # increment-guard itself failing — runs the build as before.
+    if: |
+      always() &&
+      needs.increment-guard.outputs.skip_build != 'true'
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -407,7 +502,15 @@ jobs:
     name: Agentic review
     runs-on: ubuntu-latest
     needs: [build-and-test]
+    # `always()` + an explicit success-or-skipped check on build-and-test —
+    # not just the implicit `success()` GitHub would otherwise inject.
+    # increment-guard can leave build-and-test `skipped` (chore-only
+    # increment on top of an already-green build); the review must still
+    # run in that case, so `skipped` counts alongside `success`. A genuinely
+    # red build-and-test still holds the review, unchanged from before.
     if: |
+      always() &&
+      (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped') &&
       github.event_name == 'pull_request' &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
     # Own concurrency group — must NOT cancel-in-progress.
@@ -1094,9 +1197,13 @@ jobs:
     # took the Release job down with it. Name the dependency here instead of
     # inferring it from pr-review's own needs — pr-review skips for reasons of
     # its own, and a skip must not read as a pass.
+    # `needs.build-and-test.result == 'success'` also covers the case where
+    # increment-guard left build-and-test `skipped` (chore-only increment on
+    # an already-green build) — a skip must arm exactly like a pass, not
+    # block auto-merge on a rebuild that was never going to happen.
     if: |
       always() &&
-      needs.build-and-test.result == 'success' &&
+      (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped') &&
       github.event_name == 'pull_request' &&
       !github.event.pull_request.draft &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
