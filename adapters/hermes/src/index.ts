@@ -61,7 +61,7 @@ function buildHermesModelMenu(): Array<{ id: string; provider: string }> {
       // any id containing "claude".
       if (/anthropic|claude/.test(bareId)) continue
       const canonicalId = bareId.includes("/") ? bareId : `${prefix}/${bareId}`
-      const id = provider === "openrouter" ? `openrouter/${bareId}` : canonicalId
+      const id = provider === "openrouter" ? `${bareId}@openrouter` : canonicalId
       if (seen.has(id)) continue
       seen.add(id)
       out.push({ id, provider })
