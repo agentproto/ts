@@ -18,7 +18,6 @@ export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {
   "canopylabs/orpheus-v1-english": { contextWindow: 4000, maxOutput: 50000, provider: "groq" },
   "claude-fable-5": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Fable 5", provider: "anthropic" },
   "claude-haiku-4-5-20251001": { contextWindow: 200000, maxOutput: 64000, displayName: "Claude Haiku 4.5", provider: "anthropic" },
-  "claude-opus-4-1-20250805": { contextWindow: 200000, maxOutput: 32000, displayName: "Claude Opus 4.1", provider: "anthropic" },
   "claude-opus-4-5-20251101": { contextWindow: 200000, maxOutput: 64000, displayName: "Claude Opus 4.5", provider: "anthropic" },
   "claude-opus-4-6": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Opus 4.6", provider: "anthropic" },
   "claude-opus-4-7": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Opus 4.7", provider: "anthropic" },
