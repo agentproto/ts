@@ -869,7 +869,12 @@ export class TranscriptPanelController {
    * `showErrorMessage` — nothing further to do here.
    */
   async onRestart(): Promise<void> {
-    await vscode.commands.executeCommand("agentproto.restartSession", this.sessionId)
+    try {
+      await vscode.commands.executeCommand("agentproto.restartSession", this.sessionId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.messenger.postMessage({ type: "restartFailed", title: "Restart failed", message })
+    }
   }
 
   /**

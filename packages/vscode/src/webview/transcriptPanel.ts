@@ -2030,6 +2030,7 @@ export function buildHtml(
        *  false) or a stopError comes back — guards against a double-click
        *  firing a second interrupt at an already-cancelling turn. */
       let isStopping = false;
+      let isRestarting = false;
       let mode = 'raw';
       // Cached copy of the current session's resume chain (oldest-first, see
       // protocol.ts's init.resumeChain doc) so a full-transcript reset
@@ -2115,6 +2116,9 @@ export function buildHtml(
         // beside the now-disabled input rather than replacing it, so the
         // last message typed (if any) stays visible instead of vanishing.
         restartBtn.hidden = !exited;
+        restartBtn.disabled = isRestarting;
+        if (isRestarting) restartBtn.textContent = 'Restarting\\u2026';
+        else restartBtn.textContent = '\\u21bb Restart';
         composer.classList.toggle('disabled', exited);
         renderQueued();
       }
@@ -3882,7 +3886,11 @@ export function buildHtml(
       interruptBtn.addEventListener('click', function() { flushQueued(true); });
       // The host resolves which session to restart from the CONTROLLER, not
       // from anything this message carries — see protocol.ts's restart doc.
-      restartBtn.addEventListener('click', function() { vscode.postMessage({ type: 'restart' }); });
+      restartBtn.addEventListener('click', function() {
+        isRestarting = true;
+        refreshComposer();
+        vscode.postMessage({ type: 'restart' });
+      });
       queuedCancel.addEventListener('click', function() {
         queuedText = null;
         refreshComposer();
@@ -4079,6 +4087,11 @@ export function buildHtml(
             isStopping = false;
             refreshComposer();
             showError(msg.title || 'Stop failed', msg.message || '');
+            break;
+          case 'restartFailed':
+            isRestarting = false;
+            refreshComposer();
+            showError(msg.title || 'Restart failed', msg.message || '');
             break;
           case 'ptyData':
             if (ptyTerm) ptyTerm.write(decodeB64(msg.b64));
