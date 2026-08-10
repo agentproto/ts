@@ -3307,6 +3307,12 @@ export function buildHtml(
           return;
         }
 
+        // The chapter reconcile below inserts around existing children, so a
+        // hero left over from the empty state would survive it — drop it the
+        // moment real content exists.
+        const staleHero = page.querySelector(':scope > .book-hero');
+        if (staleHero) staleHero.remove();
+
         const live = !exited && busy;
         const seen = {};
         let anchor = null;
