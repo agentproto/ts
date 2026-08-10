@@ -42,6 +42,7 @@ import type {
   DiscoveredCredential,
   HarnessCapabilities,
   ImportCredentialRequest,
+  InstalledAppInfo,
   LlmEndpointDescriptorResult,
   LlmEndpointLinksResult,
   LlmEndpointReloadPacksResult,
@@ -580,6 +581,44 @@ export class DaemonClient {
   }
 
   /**
+   * Read an MCP resource over the same stateless /mcp endpoint (JSON-RPC
+   * `resources/read`). Returns the first contents entry's text — the shape
+   * every `ui://` panel resource serves (mcp-apps-adapter.ts registers one
+   * text/html content item per read).
+   */
+  async readResource(uri: string): Promise<string> {
+    const token = await this.resolveToken()
+    const res = await this.fetchImpl(`${this.url}/mcp?origin=vscode`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // Streamable-HTTP MCP servers 406 unless the client accepts BOTH.
+        accept: "application/json, text/event-stream",
+        ...buildAuthHeaders(this.config.authHeaders, token),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "resources/read",
+        params: { uri },
+      }),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) {
+      throw new Error(`MCP resources/read failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const envelope = await parseMcpBody<{ contents?: Array<{ text?: string }> }>(res)
+    if (envelope.error) {
+      throw new Error(`MCP resources/read error: ${JSON.stringify(envelope.error)}`)
+    }
+    const text = envelope.result?.contents?.[0]?.text
+    if (typeof text !== "string") {
+      throw new Error(`MCP resource ${uri} returned no text content`)
+    }
+    return text
+  }
+
+  /**
    * adapter_list is an MCP-only tool — fetch the daemon's installed
    * adapter registry via mcpCall("adapter_list").
    */
@@ -600,6 +639,29 @@ export class DaemonClient {
    */
   async installAdapter(slug: string): Promise<AdapterInstallResult> {
     return this.mcpCall<AdapterInstallResult>("adapter_install", { slug })
+  }
+
+  /**
+   * `app_list` is an MCP-only tool — fetch the daemon's installed-app
+   * registry (each record carries the `ui` block when the app ships a
+   * panel).
+   */
+  async listApps(): Promise<InstalledAppInfo[]> {
+    const result = await this.mcpCall<InstalledAppInfo[]>("app_list")
+    return Array.isArray(result) ? result : []
+  }
+
+  /**
+   * `app_tool_call` — call one of an installed app's UI-exposed tools
+   * (the `ui.tools` allowlist the daemon enforces). Returns the dispatched
+   * tool's own result, unwrapped from the MCP content envelope.
+   */
+  async appToolCall(
+    appId: string,
+    tool: string,
+    args?: Record<string, unknown>,
+  ): Promise<unknown> {
+    return this.mcpCall("app_tool_call", { appId, tool, ...(args ? { args } : {}) })
   }
 
   /**
@@ -1223,10 +1285,10 @@ interface McpResult {
   isError?: boolean
 }
 
-interface McpResponse {
+interface McpResponse<R = McpResult> {
   jsonrpc: "2.0"
   id: number
-  result?: McpResult
+  result?: R
   error?: { code: number; message: string; data?: unknown }
 }
 
@@ -1235,17 +1297,17 @@ interface McpResponse {
  * (content-type text/event-stream) even for a single request/response —
  * in the SSE case the JSON-RPC envelope is the first `data:` frame.
  */
-async function parseMcpBody(res: Response): Promise<McpResponse> {
+async function parseMcpBody<R = McpResult>(res: Response): Promise<McpResponse<R>> {
   const contentType = res.headers.get("content-type") ?? ""
   if (!contentType.includes("text/event-stream")) {
-    return (await res.json()) as McpResponse
+    return (await res.json()) as McpResponse<R>
   }
   const text = await res.text()
   for (const line of text.split("\n")) {
     if (!line.startsWith("data:")) continue
     const payload = line.slice(5).trim()
     if (!payload) continue
-    const parsed = JSON.parse(payload) as McpResponse
+    const parsed = JSON.parse(payload) as McpResponse<R>
     if (parsed.result !== undefined || parsed.error !== undefined) return parsed
   }
   throw new Error("MCP SSE response contained no JSON-RPC envelope")

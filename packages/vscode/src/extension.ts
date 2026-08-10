@@ -11,6 +11,7 @@
 import * as vscode from "vscode"
 
 import { createDaemonClient, type DaemonClient } from "./client/daemonClient.js"
+import { registerAppCommands } from "./commands/apps.js"
 import { registerHarnessCommands } from "./commands/harnesses.js"
 import { registerAuthProfileCommands } from "./commands/authProfiles.js"
 import { registerLocalRouterCommands } from "./commands/localRouter.js"
@@ -43,6 +44,7 @@ import { getConfig, onDidChangeConfig } from "./config.js"
 import { SeenTracker } from "./services/seen.js"
 import { SessionStore } from "./services/sessionStore.js"
 import { WorkspacePinStore } from "./services/workspacePin.js"
+import { registerAppsView } from "./views/appsTree.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
 import { registerHarnessesView } from "./views/harnessesTree.js"
@@ -55,6 +57,7 @@ import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
+import { registerAppPanels } from "./webview/appPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
 import { registerConfigurationLabWebview } from "./webview/configurationLabPanel.js"
 import { registerAuthModelMindmap } from "./webview/authModelMindmapPanel.js"
@@ -88,6 +91,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerPermissionsView(ctx, store)
   const harnessesProvider = registerHarnessesView(ctx, client)
   const authProfilesProvider = registerAuthProfilesView(ctx, client)
+  const appsProvider = registerAppsView(ctx, client)
   registerStatusBar(ctx, store)
 
   // Per-window "target workspace" pin — client-side only, never the daemon's
@@ -138,6 +142,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerAuthProfilesWebview(ctx, client, authProfilesProvider)
   registerConfigurationLabWebview(ctx, client)
   const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
+  const appPanels = registerAppPanels(ctx, client) // agentproto.openAppPanel (installed app UI panels)
+  registerAppCommands(ctx, client, appPanels, appsProvider) // agentproto.openAppPanel / refreshApps
   const authModelMindmap = registerAuthModelMindmap(ctx, client) // agentproto.openAuthModel (auth/model config map)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())

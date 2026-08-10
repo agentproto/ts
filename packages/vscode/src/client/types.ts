@@ -537,6 +537,31 @@ export interface AdapterInstallResult {
   status?: "supported" | "available" | "ready" | "unresolvable"
 }
 
+/** An installed app's UI panel declaration (`defineApp({ ui })` →
+ *  app_install's `record.ui`). `tools` is the allowlist `app_tool_call`
+ *  enforces. */
+export interface InstalledAppUi {
+  path: string
+  title?: string
+  description?: string
+  tools?: string[]
+  csp?: {
+    connectDomains?: string[]
+    resourceDomains?: string[]
+  }
+}
+
+/** One entry in the daemon's installed-app registry (MCP-only:
+ *  mcpCall("app_list"), no HTTP route). Only the fields the extension
+ *  reads — the daemon record carries more (agents, workflows, runs). */
+export interface InstalledAppInfo {
+  appId: string
+  name?: string
+  description?: string
+  version?: string
+  ui?: InstalledAppUi
+}
+
 /** /health probe result. */
 export interface DaemonHealth {
   status: string
