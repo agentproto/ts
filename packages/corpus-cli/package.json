@@ -61,7 +61,7 @@
     "@agentproto/corpus": "workspace:*",
     "@agentproto/corpus-presets": "workspace:*",
     "gray-matter": "^4.0.3",
-    "unpdf": "~1.7.0",
+    "unpdf": "~1.8.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
