@@ -2331,6 +2331,22 @@ describe("transcriptPanel webview — book view", () => {
     expect(text).toContain("Claude Subs Agentik")
   })
 
+  it("removes the hero once the first real turns arrive — 'Ready when you are' must not outlive the blank state", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+    expect(panel.book.querySelector(".book-hero")).not.toBeNull()
+
+    panel.send({ type: "patch", upsertTurns: askConv().turns, removeTurnIds: [] })
+    expect(chapters(panel)).toHaveLength(1)
+    expect(panel.book.querySelector(".book-hero")).toBeNull()
+  })
+
   it("hides the book and its toggle for a raw (non-structured) session", () => {
     const panel = renderPanel()
     panel.send({ type: "init", session: session(), nonce: "n", mode: "raw", initialHtml: "<div>raw</div>" })
