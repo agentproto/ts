@@ -196,6 +196,13 @@ export interface SessionDescriptor {
    *  of supervisors blocked waiting on this session (#session-visibility).
    *  Ephemeral, stamped at read time; 0/absent ⇒ nothing is watching. */
   watchers?: number
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.pendingBgTasks — how many
+   *  background tool starts were counted in the session's last turn; the
+   *  session ended its turn with them likely still pending. Ephemeral, stamped
+   *  at read time; 0/absent ⇒ none outstanding. Drives the tree's `parked-bg`
+   *  activity (a silent dead end unless someone re-prompts) and the webview's
+   *  bg chip. */
+  pendingBgTasks?: number
   /** Mirrors `@agentproto/runtime` SessionDescriptor.childrenBusy — how many
    *  descendant sessions are currently mid-turn (subtree rollup,
    *  #session-visibility). Drives the "delegating" row state for an idle parent
@@ -391,6 +398,10 @@ export interface SessionSummary {
    *  blocked on this session right now. Ephemeral, stamped at read time by the
    *  daemon; 0/absent ⇒ nothing is watching. */
   watchers?: number
+  /** Background tool starts counted in the session's last turn that are likely
+   *  still pending — the session parked itself with work outstanding. Ephemeral,
+   *  stamped at read time; 0/absent ⇒ none. Drives the webview's `⏳ N bg` chip. */
+  pendingBgTasks?: number
   /** Busy-descendant count (#session-visibility, subtree rollup) — drives the
    *  "delegating" state for an idle parent waiting on its busy subtree. */
   childrenBusy?: number
@@ -528,6 +539,7 @@ export interface AdapterInstallResult {
   ok: boolean
   method:
     | "npm-global"
+    | "shell-hint"
     | "agentproto-install"
     | "already-installed"
     | "unsupported"

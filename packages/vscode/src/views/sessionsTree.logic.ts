@@ -207,6 +207,10 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
   if (ctx.childCount && ctx.childCount > 0) {
     parts.push(`${ctx.childCount} subagent${ctx.childCount === 1 ? "" : "s"}`)
   }
+  // Parked with background tasks still outstanding — say so on the row, or
+  // the session reads as quietly idle while its work sits unfinished.
+  const bg = session.pendingBgTasks ?? 0
+  if (bg > 0) parts.push(`${bg} bg task${bg === 1 ? "" : "s"} pending`)
   return parts.join(" · ")
 }
 
@@ -270,11 +274,12 @@ export function isStalled(session: SessionDescriptor, now: number): boolean {
  *
  * Ordered by urgency, because every consumer resolves the same way — the most
  * demanding true state wins:
- *   needs-you > stalled > working > idle > failed > stopped > done
+ *   needs-you > stalled > parked-bg > working > idle > failed > stopped > done
  */
 export type SessionActivity =
   | "needs-you" // awaiting input or a permission decision — blocked ON THE HUMAN
   | "stalled" // mid-turn but silent past STALL_AFTER_MS — busy in name only
+  | "parked-bg" // ended its turn with background tasks still pending — a silent dead end unless someone re-prompts
   | "working" // a turn is in flight (model generating, or a tool running)
   | "idle" // alive, no turn — parked, ready for a prompt
   | "failed" // ended badly: status "error", or a non-zero exit it wasn't asked for
@@ -339,6 +344,11 @@ export function activityFor(session: SessionDescriptor, now?: number): SessionAc
   // — in flight, leave it alone — and a 16px glyph is the wrong place to
   // spend a distinction nobody acts on.
   if (session.busy) return "working"
+  // Alive, no turn in flight, but background tasks from the last turn are
+  // still outstanding — parked with work pending, a silent dead end unless
+  // someone re-prompts. Checked AFTER busy so a session that IS still working
+  // never reads as parked.
+  if ((session.pendingBgTasks ?? 0) > 0) return "parked-bg"
   return "idle"
 }
 
@@ -376,6 +386,7 @@ export function statusCategoryFor(session: SessionDescriptor, now?: number): Sta
     case "working":
     case "idle":
     case "stalled":
+    case "parked-bg":
       return "live"
     case "failed":
       return "failed"
@@ -402,6 +413,9 @@ export function statusCategoryFor(session: SessionDescriptor, now?: number): Sta
 const ACTIVITY_ICONS: Record<SessionActivity, SessionIcon> = {
   "needs-you": { id: "question", color: "warning" },
   stalled: { id: "warning", color: "warning" },
+  // Parked with background tasks still pending — a clock glyph in the warning
+  // colour: time is passing and nobody will notice unless they look.
+  "parked-bg": { id: "clock", color: "warning" },
   // The outline spinner, not `sync~spin`'s two chasing arrows: this is one
   // agent thinking, not two things being reconciled.
   working: { id: "loading~spin" },
@@ -451,9 +465,10 @@ export function iconFor(session: SessionDescriptor, now?: number, unread?: boole
  * anywhere below) outranks `needs-you`; terminal states rank lowest.
  */
 const ACTIVITY_RANK: Readonly<Record<SessionActivity, number>> = {
-  working: 6,
-  "needs-you": 5,
-  stalled: 4,
+  working: 7,
+  "needs-you": 6,
+  stalled: 5,
+  "parked-bg": 4,
   idle: 3,
   failed: 2,
   stopped: 1,
@@ -528,9 +543,16 @@ export function contextValueFor(session: SessionDescriptor): SessionContextValue
  * archived row — only `agentproto.archiveSession` (exact `session-done`)
  * and `agentproto.unarchiveSession` (exact `session-done-archived`) care
  * about the distinction.
+ *
+ * A watched session additionally gets `-watched` appended (after any
+ * `-archived`), so the view/item/context menu can offer Watch only on rows
+ * that aren't watched yet and Unwatch only on rows that are. The existing
+ * `/^session-/` prefixes still match — the suffix only ever ADDS.
  */
-export function treeContextValueFor(session: SessionDescriptor): string {
-  return contextValueFor(session) + (session.archived ? "-archived" : "")
+export function treeContextValueFor(session: SessionDescriptor, watched?: boolean): string {
+  return (
+    contextValueFor(session) + (session.archived ? "-archived" : "") + (watched ? "-watched" : "")
+  )
 }
 
 /** Appends an "archived" tag to a description string, e.g. "ws · 2h ago" →
@@ -579,6 +601,11 @@ export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
   }
   if (typeof session.turnsCompleted === "number") {
     fields.push({ label: "turns", value: String(session.turnsCompleted) })
+  }
+  // Parked with background tasks outstanding — the tooltip carries the count
+  // the row's suffix summarizes.
+  if ((session.pendingBgTasks ?? 0) > 0) {
+    fields.push({ label: "bg tasks pending", value: String(session.pendingBgTasks) })
   }
   if (typeof session.costUsd === "number") {
     fields.push({ label: "cost", value: `$${session.costUsd.toFixed(4)}` })

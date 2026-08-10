@@ -43,6 +43,7 @@ const TAB_ICONS: Record<SessionActivity, TabIconPaths> = {
   stopped: { light: "stopped-light.svg", dark: "stopped-dark.svg" },
   "needs-you": { light: "needs-you.svg", dark: "needs-you.svg" },
   stalled: { light: "stalled.svg", dark: "stalled.svg" },
+  "parked-bg": { light: "parked-bg.svg", dark: "parked-bg.svg" },
   failed: { light: "failed.svg", dark: "failed.svg" },
 }
 

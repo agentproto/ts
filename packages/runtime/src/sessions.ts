@@ -322,6 +322,24 @@ export interface AgentStreamEvent {
 }
 
 /**
+ * Defensively narrow a tool-call's `arguments` (typed `unknown` — see
+ * `AgentStreamEvent.arguments`) to answer ONE question: did this call start
+ * a background task? True only when arguments is a plain object carrying
+ * `run_in_background: true` — how Claude Code's Bash announces a
+ * `run_in_background` invocation. Matched generically on the property, not
+ * the tool name, so any adapter/tool that adopts the same convention is
+ * counted. Anything else (non-object, missing the key, a non-`true` value)
+ * is an ordinary foreground call.
+ */
+function isBackgroundToolCallArguments(args: unknown): boolean {
+  return (
+    typeof args === "object" &&
+    args !== null &&
+    (args as Record<string, unknown>).run_in_background === true
+  )
+}
+
+/**
  * Defensively narrow an "agent-prompt" event's `options` (typed `unknown`
  * — see `AgentStreamEvent.options`) into a flat label list. Accepts plain
  * strings, or objects exposing `label`/`name`/`id`/`optionId` (covers both
@@ -684,6 +702,20 @@ export interface SessionDescriptor {
    *  stalled. Detection + signal only — nothing here kills or restarts the
    *  session. */
   stalledSinceMs?: number
+  /** Counted background tool starts in the last turn; the session ended its
+   *  turn without a wake-up path — likely parked. Stamped at turn-end when
+   *  the turn observed one or more tool-calls whose `arguments` object
+   *  carries `run_in_background: true` (how Claude Code's Bash announces a
+   *  background task — matched generically on the property, not the tool
+   *  name) AND the session is not `awaitingInput`. The harness's own
+   *  task-completion notification does NOT trigger a new turn, so the
+   *  session sits `busy:false`, `awaitingInput:false`, background tasks
+   *  pending — a silent dead end. Detection + signal ONLY (same doctrine
+   *  as `stalledSinceMs`): nothing here re-prompts or wakes the session.
+   *  Cleared (deleted, never a stale value) on the next turn start and on
+   *  session exit. Emits `session:bg-tasks-parked` /
+   *  `session:bg-tasks-cleared`. */
+  pendingBgTasks?: number
   /** DERIVED, read-time only (never persisted — stripped by `snapshotRows`,
    *  stamped by `stampInterrupted` in list()/get()/findByIdOrName). True when
    *  this session died with a turn in flight under a daemon restart —
@@ -1239,6 +1271,10 @@ export interface SessionSummary {
   busy?: boolean
   blockedOn?: "subagent" | "command"
   stalledSinceMs?: number
+  /** Parked-with-background-tasks marker — see
+   *  `SessionDescriptor.pendingBgTasks`. Stamped at turn-end, cleared on the
+   *  next turn start / exit. */
+  pendingBgTasks?: number
   origin?: string
   parentSessionId?: string
   depth?: number
@@ -1301,6 +1337,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     busy: desc.busy,
     blockedOn: desc.blockedOn,
     stalledSinceMs: desc.stalledSinceMs,
+    pendingBgTasks: desc.pendingBgTasks,
     origin: desc.origin,
     parentSessionId: desc.parentSessionId,
     depth: desc.depth,
@@ -1320,6 +1357,22 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
 
 interface SessionRuntime {
   desc: SessionDescriptor
+  /** Per-turn counter of tool-calls started with `run_in_background: true`
+   *  (see `SessionDescriptor.pendingBgTasks`). Reset at each turn start by
+   *  `runAgentTurn`; read at turn-end to decide whether the session parked
+   *  with background work pending. NOT persisted — lives on the runtime
+   *  entry, not the descriptor. */
+  bgTaskStarts?: number
+  /** Per-turn dedup set backing `bgTaskStarts`: toolCallIds already counted
+   *  this turn. A tool-call can be announced once and then re-announced by
+   *  one or more `isUpdate` enrichments under the SAME toolCallId — and the
+   *  `run_in_background: true` flag can arrive on EITHER the first announce
+   *  OR a later enrichment (transcript-writer merges late-arriving arguments
+   *  for exactly this reason). Keying dedup on the toolCallId — not on
+   *  `isUpdate` — counts BOTH flows exactly once: first-announce-with-
+   *  arguments (enrichment deduped by id) and announce-then-enrich (counted
+   *  when the arguments finally show the flag). Reset with the counter. */
+  bgTaskCountedIds?: Set<string>
   /** Set when the session is a raw spawn (`kind: "command"|"terminal"`).
    *  Agent sessions don't expose the underlying process — the
    *  driver-agent-cli runtime owns it. */
@@ -4248,6 +4301,23 @@ export function createSessionsRegistry(opts?: {
     rt.desc.awaitingQuestion = undefined
     releaseBlockedOn(rt.desc)      // clear stale blocked-on from prior turn
     clearStalledFlag(rt)           // clear stale stall flag from prior turn
+    // Clear a stale parked-with-background-tasks flag from the prior turn —
+    // the session was re-prompted, so it is by definition no longer parked:
+    // this turn will see whatever its background tasks produced. Counter
+    // resets for the new turn either way; the descriptor flag + bus event
+    // only fire when the flag was actually set (mirrors clearStalledFlag's
+    // no-op-when-clean shape).
+    rt.bgTaskStarts = 0
+    rt.bgTaskCountedIds = new Set()
+    if (rt.desc.pendingBgTasks !== undefined) {
+      delete rt.desc.pendingBgTasks
+      sessionEvents?.emit({
+        type: "session:bg-tasks-cleared",
+        sessionId: rt.desc.id,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    }
     let turnCompleted = false
     // Whether the adapter itself emitted a `turn-end` during this turn.
     // Drives the P5 guarantee: when the event stream ends WITHOUT one
@@ -4302,6 +4372,29 @@ export function createSessionsRegistry(opts?: {
         else if (evt.kind === "tool-call") {
           sawToolCall = true
           if (evt.toolCallId) pendingToolCallIds.add(evt.toolCallId)
+          // Count background task starts for the turn-end "parked" heuristic
+          // (`SessionDescriptor.pendingBgTasks`). Claude Code's Bash announces
+          // a background task as a tool-call whose arguments object carries
+          // `run_in_background: true` — matched generically on the property,
+          // not the tool name, so any adapter/tool with the same convention
+          // counts. Dedup is keyed on the toolCallId, NOT on `isUpdate`: an
+          // announce can arrive argument-less with a later isUpdate
+          // enrichment filling in the arguments (transcript-writer merges
+          // late arguments for exactly this flow), so the flag can show up on
+          // ANY announcement of the call — count the first one that carries
+          // it, dedupe the rest by id. A call with no toolCallId (defensive)
+          // falls back to counting once per bg-arguments event.
+          if (isBackgroundToolCallArguments(evt.arguments)) {
+            const alreadyCounted =
+              evt.toolCallId !== undefined && rt.bgTaskCountedIds?.has(evt.toolCallId) === true
+            if (!alreadyCounted) {
+              rt.bgTaskStarts = (rt.bgTaskStarts ?? 0) + 1
+              if (evt.toolCallId !== undefined) {
+                if (!rt.bgTaskCountedIds) rt.bgTaskCountedIds = new Set()
+                rt.bgTaskCountedIds.add(evt.toolCallId)
+              }
+            }
+          }
         }
         if (evt.kind === "tool-result" && evt.toolCallId) {
           pendingToolCallIds.delete(evt.toolCallId)
@@ -4568,6 +4661,27 @@ export function createSessionsRegistry(opts?: {
               ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
             })
           }
+        }
+
+        // ── Parked-with-background-tasks (turn-END twin of session:stalled)
+        // The turn just ended having started one or more background tool
+        // calls and is NOT awaiting input — the harness's task-completion
+        // notification does NOT wake it, so the session is about to sit
+        // busy:false / awaitingInput:false with work pending: a silent dead
+        // end. Flag the descriptor (session_list consumers see it even with
+        // no bus wired) and announce on the bus. Detection + signal ONLY —
+        // no auto-wake (what to say is the supervisor's call, not the
+        // daemon's). Cleared on the next turn start / on session exit.
+        if ((rt.bgTaskStarts ?? 0) > 0 && !rt.desc.awaitingInput) {
+          rt.desc.pendingBgTasks = rt.bgTaskStarts
+          schedulePersist()
+          sessionEvents?.emit({
+            type: "session:bg-tasks-parked",
+            sessionId: rt.desc.id,
+            count: rt.bgTaskStarts ?? 0,
+            ...(rt.desc.label ? { label: rt.desc.label } : {}),
+            ts: new Date().toISOString(),
+          })
         }
         if (overBudget) emitExited(rt)
       } else {
@@ -5750,6 +5864,10 @@ export function createSessionsRegistry(opts?: {
       rt.desc.killedMidTurn = rt.desc.busy === true
       rt.desc.status = "killed"
       rt.desc.endedAt = new Date().toISOString()
+      // A dead row carries no live parked-with-background-tasks flag. kill()
+      // doesn't run clearInFlightFlags (an idle kill has no in-flight turn to
+      // unwind), so drop it here — same "no dangling flag on a dead row" rule.
+      delete rt.desc.pendingBgTasks
       // Close agent session first (graceful protocol shutdown), then
       // SIGTERM the underlying child/pty if any. Either branch is a
       // best-effort — the descriptor flip is what the UI surfaces.
@@ -6204,6 +6322,12 @@ function clearInFlightFlags(desc: SessionDescriptor): void {
   delete desc.awaitingPermission
   desc.blockedOn = undefined
   desc.pendingToolCallId = undefined
+  // A dead row carries no live parked-with-background-tasks flag — the
+  // "ended its turn with work pending" heuristic is meaningless once the
+  // session is gone. No bus event here: this runs on forced-termination
+  // paths (kill/shutdown/boot-reclassify) where session:exited is the
+  // signal consumers key on; a bg-tasks-cleared would be noise.
+  delete desc.pendingBgTasks
 }
 
 /**

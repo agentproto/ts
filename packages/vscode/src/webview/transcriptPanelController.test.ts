@@ -137,6 +137,8 @@ function make(
     initialSession: SessionDescriptor
     autoPoll: boolean
     ptyBridgeFactory: TranscriptPanelControllerOptions["ptyBridgeFactory"]
+    sendRetryDelayMs: number
+    infoBannerAutoDismissMs: number
   }> = {},
 ): { controller: TranscriptPanelController; messenger: ReturnType<typeof createMockMessenger>; store: ReturnType<typeof createMockStore> } {
   const messenger = createMockMessenger()
@@ -149,6 +151,8 @@ function make(
     messenger,
     autoPoll: opts.autoPoll ?? false,
     ptyBridgeFactory: opts.ptyBridgeFactory,
+    sendRetryDelayMs: opts.sendRetryDelayMs,
+    infoBannerAutoDismissMs: opts.infoBannerAutoDismissMs,
   })
   return { controller, messenger, store }
 }
@@ -897,6 +901,131 @@ describe("TranscriptPanelController — ready & send safety", () => {
   })
 })
 
+describe("TranscriptPanelController — send timeout retry", () => {
+  const TIMEOUT_MSG = "The operation was aborted due to timeout"
+
+  it("retries a timeout exactly once, then acks — never an error the user has to act on", async () => {
+    const client = createMockClient({
+      prompt: vi.fn().mockRejectedValueOnce(new Error(TIMEOUT_MSG)).mockResolvedValueOnce(undefined),
+    })
+    const { controller, messenger } = make(client, { sendRetryDelayMs: 0 })
+
+    await controller.onSend("hello", false)
+
+    expect(client.prompt).toHaveBeenCalledTimes(2)
+    expect(client.prompt).toHaveBeenLastCalledWith("s1", "hello", { interrupt: false, wait: false })
+    const types = messenger.messages.map(m => m.type)
+    expect(types).toEqual(["sending", "sending", "sendAck"])
+    expect(messenger.messages[0]).toEqual({ type: "sending" })
+    // The retry is announced — the user is never staring at silence.
+    expect(messenger.messages[1]).toMatchObject({
+      type: "sending",
+      note: "Session is slow to respond — retrying…",
+    })
+    expect(messenger.messages.some(m => m.type === "sendError")).toBe(false)
+  })
+
+  it("two timeouts in a row surface sendError kind timeout with the original text", async () => {
+    const client = createMockClient({
+      prompt: vi.fn().mockRejectedValue(new Error(TIMEOUT_MSG)),
+    })
+    const { controller, messenger } = make(client, { sendRetryDelayMs: 0 })
+
+    await controller.onSend("keep me", false)
+
+    expect(client.prompt).toHaveBeenCalledTimes(2)
+    const err = messenger.messages.find(m => m.type === "sendError")
+    expect(err).toBeDefined()
+    if (err && err.type === "sendError") {
+      expect(err.kind).toBe("timeout")
+      expect(err.title).toBe("Session is slow to respond")
+      expect(err.text).toBe("keep me")
+      expect(err.message).toBe(TIMEOUT_MSG)
+    }
+  })
+
+  it("does NOT retry a genuine refusal — only a timeout earns the second attempt", async () => {
+    const client = createMockClient({
+      prompt: vi.fn().mockRejectedValue(
+        new Error('POST /sessions/s1/prompt?wait=false failed: HTTP 409 enqueuePrompt: session "s1" is mid-turn'),
+      ),
+    })
+    const { controller, messenger } = make(client, { sendRetryDelayMs: 0 })
+
+    await controller.onSend("hello", false)
+
+    expect(client.prompt).toHaveBeenCalledTimes(1)
+    const err = messenger.messages.find(m => m.type === "sendError")
+    expect(err).toBeDefined()
+    if (err && err.type === "sendError") expect(err.kind).toBe("busy")
+  })
+
+  it("acks instead of queueing when the retry lands mid-turn — the first (timed-out) send was almost certainly delivered", async () => {
+    // Attempt 1 times out client-side while the daemon keeps going; attempt 2
+    // is refused 409 because the daemon IS mid-turn on our own prompt. A busy
+    // sendError here would queue the text and run it TWICE at turn-end.
+    const client = createMockClient({
+      prompt: vi
+        .fn()
+        .mockRejectedValueOnce(new Error(TIMEOUT_MSG))
+        .mockRejectedValueOnce(
+          new Error(
+            'POST /sessions/s1/prompt?wait=false failed: HTTP 409 enqueuePrompt: session "s1" is mid-turn — wait for it to finish or cancel',
+          ),
+        ),
+    })
+    const { controller, messenger } = make(client, { sendRetryDelayMs: 0 })
+
+    await controller.onSend("hello", false)
+
+    expect(client.prompt).toHaveBeenCalledTimes(2)
+    const types = messenger.messages.map(m => m.type)
+    expect(types).toEqual(["sending", "sending", "sendAck"])
+    expect(messenger.messages.some(m => m.type === "sendError")).toBe(false)
+  })
+
+  it("suppresses a second onSend during the retry window — isSending spans the whole arc", async () => {
+    vi.useFakeTimers()
+    try {
+      const client = createMockClient({
+        prompt: vi.fn().mockRejectedValueOnce(new Error(TIMEOUT_MSG)).mockResolvedValueOnce(undefined),
+      })
+      const { controller, messenger } = make(client, { sendRetryDelayMs: 3000 })
+
+      const send1 = controller.onSend("first", false)
+      // Let the first attempt's rejection land; the controller is now parked
+      // in the retry delay with isSending still true.
+      await vi.advanceTimersByTimeAsync(0)
+      const send2 = controller.onSend("second", false)
+
+      await vi.advanceTimersByTimeAsync(3000)
+      await send1
+      await send2
+
+      // The second send never reached the daemon — only the original text's
+      // two attempts did.
+      expect(client.prompt).toHaveBeenCalledTimes(2)
+      expect(client.prompt).toHaveBeenLastCalledWith("s1", "first", { interrupt: false, wait: false })
+      expect(messenger.messages.filter(m => m.type === "sendAck")).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("announces a lazy resume up front when the session is in a terminal status", async () => {
+    const client = createMockClient()
+    const { controller, messenger } = make(client, {
+      initialSession: session({ status: "exited" }),
+      sendRetryDelayMs: 0,
+    })
+
+    await controller.onSend("hello", false)
+
+    expect(messenger.messages[0]).toEqual({ type: "sending", note: "Waking session…" })
+    expect(messenger.messages.some(m => m.type === "sendAck")).toBe(true)
+  })
+})
+
 describe("TranscriptPanelController — stop", () => {
   it("calls interrupt and posts nothing on success", async () => {
     const client = createMockClient()
@@ -1098,5 +1227,96 @@ describe("TranscriptPanelController — onSend routing (FIX 1)", () => {
       expect(err.text).toBe("hello")
       expect(err.message).toContain("boom")
     }
+  })
+})
+
+describe("TranscriptPanelController — cross-session info banners (E3)", () => {
+  it("posts a watcher-attached banner when the descriptor's watcher count rises", async () => {
+    const client = createMockClient()
+    const { controller, messenger } = make(client)
+    await controller.onReady()
+    messenger.messages.length = 0
+
+    controller.onSessionUpdate(session({ watchers: 2 }))
+
+    expect(messenger.messages).toContainEqual({
+      type: "infoBanner",
+      id: "watcher",
+      text: "A watcher attached — 2 waiting on this session",
+    })
+  })
+
+  it("does not re-announce an unchanged watcher count", async () => {
+    const client = createMockClient()
+    const { controller, messenger } = make(client)
+    await controller.onReady()
+    controller.onSessionUpdate(session({ watchers: 2 }))
+    messenger.messages.length = 0
+
+    controller.onSessionUpdate(session({ watchers: 2 }))
+
+    expect(messenger.messages.find(m => m.type === "infoBanner")).toBeUndefined()
+  })
+
+  it("auto-dismisses the watcher-detached banner after the injected delay", async () => {
+    vi.useFakeTimers()
+    try {
+      const client = createMockClient()
+      const { controller, messenger } = make(client, { infoBannerAutoDismissMs: 50 })
+      controller.onSessionUpdate(session({ watchers: 1 }))
+      messenger.messages.length = 0
+
+      controller.onSessionUpdate(session({ watchers: 0 }))
+      expect(messenger.messages).toContainEqual({
+        type: "infoBanner",
+        id: "watcher",
+        text: "Watcher detached",
+      })
+
+      vi.advanceTimersByTime(60)
+      expect(messenger.messages).toContainEqual({ type: "dismissInfoBanner", id: "watcher" })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("banners a live agent-sourced prompt, but never one replayed at hydration", async () => {
+    // Hydration carries an agent-injected prompt from history: the turn badge
+    // (E2) is its permanent record; re-announcing it on every panel open would
+    // be noise, so NO banner.
+    const historical = ev({ kind: "user-prompt", text: "do the thing", source: "agent:sess_boss" })
+    const client = createMockClient({
+      getSessionEvents: vi.fn().mockResolvedValue(page([historical])),
+    })
+    const { controller, messenger } = make(client)
+    await controller.onReady()
+    expect(messenger.messages.find(m => m.type === "infoBanner")).toBeUndefined()
+
+    // The SAME kind of record arriving on the live feed IS the "something
+    // just happened" ping.
+    const live = ev({ kind: "user-prompt", text: "and another", source: "agent:sess_boss" })
+    client.getSessionEvents.mockResolvedValue(page([live]))
+    await controller.pollOnce()
+
+    expect(messenger.messages).toContainEqual({
+      type: "infoBanner",
+      id: `agent-msg:${live.seq}`,
+      text: "Message from sess_boss",
+    })
+  })
+
+  it("never banners a live prompt without an agent source (the human's own send)", async () => {
+    const client = createMockClient({
+      getSessionEvents: vi.fn().mockResolvedValue(page([])),
+    })
+    const { controller, messenger } = make(client)
+    await controller.onReady()
+    messenger.messages.length = 0
+
+    const live = ev({ kind: "user-prompt", text: "typed by the user" })
+    client.getSessionEvents.mockResolvedValue(page([live]))
+    await controller.pollOnce()
+
+    expect(messenger.messages.find(m => m.type === "infoBanner")).toBeUndefined()
   })
 })

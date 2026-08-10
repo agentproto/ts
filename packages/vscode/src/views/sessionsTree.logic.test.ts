@@ -133,6 +133,18 @@ describe("descriptionFor", () => {
       const s = session({ startedAt: "2026-01-01T00:00:00Z" })
       expect(descriptionFor(s, { now })).toBe("in-place · 5 days ago")
     })
+
+    it("appends a bg-tasks-pending suffix when the session parked with work outstanding", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z", pendingBgTasks: 2 })
+      expect(descriptionFor(s, { now })).toBe("in-place · 5 days ago · 2 bg tasks pending")
+      // Singular grammar, and absent/zero pendingBgTasks add nothing.
+      expect(
+        descriptionFor(session({ startedAt: "2026-01-01T00:00:00Z", pendingBgTasks: 1 }), { now }),
+      ).toContain("1 bg task pending")
+      expect(descriptionFor(session({ startedAt: "2026-01-01T00:00:00Z" }), { now })).not.toContain(
+        "bg task",
+      )
+    })
   })
 })
 
@@ -352,6 +364,33 @@ describe("activityFor", () => {
   it("ranks what needs a human above everything else", () => {
     expect(activityFor(session({ busy: true, awaitingInput: true }))).toBe("needs-you")
   })
+
+  it("an alive, idle session with background tasks pending reads as parked-bg", () => {
+    // The session ended its turn with work outstanding — a silent dead end
+    // unless someone re-prompts. It must NOT read as plain idle.
+    expect(activityFor(session({ pendingBgTasks: 2 }))).toBe("parked-bg")
+    expect(activityFor(session({ pendingBgTasks: 1 }))).toBe("parked-bg")
+  })
+
+  it("a busy session with pendingBgTasks is working, never parked-bg", () => {
+    // The bg check sits AFTER busy: a turn in flight outranks leftover
+    // background work from the previous one.
+    expect(activityFor(session({ busy: true, pendingBgTasks: 3 }))).toBe("working")
+    // A starting session hasn't finished a turn yet either.
+    expect(activityFor(session({ status: "starting", pendingBgTasks: 1 }))).toBe("working")
+    // needs-you outranks parked-bg too.
+    expect(activityFor(session({ awaitingInput: true, pendingBgTasks: 1 }))).toBe("needs-you")
+  })
+
+  it("parked-bg tolerates the field's absence (older daemon) and zero", () => {
+    expect(activityFor(session())).toBe("idle")
+    expect(activityFor(session({ pendingBgTasks: 0 }))).toBe("idle")
+  })
+
+  it("parked-bg never applies to a terminal session", () => {
+    expect(activityFor(session({ status: "exited", exitCode: 0, pendingBgTasks: 2 }))).toBe("done")
+    expect(activityFor(session({ status: "killed", pendingBgTasks: 2 }))).toBe("stopped")
+  })
 })
 
 describe("iconFor", () => {
@@ -506,6 +545,17 @@ describe("treeContextValueFor", () => {
       "session-done-archived",
     )
   })
+  it("appends -watched AFTER any -archived suffix when watched", () => {
+    expect(treeContextValueFor(session({ status: "running" }), true)).toBe("session-live-watched")
+    expect(treeContextValueFor(session({ awaitingInput: true }), true)).toBe(
+      "session-awaiting-watched",
+    )
+    expect(treeContextValueFor(session({ status: "exited", archived: true }), true)).toBe(
+      "session-done-archived-watched",
+    )
+    // Unwatched (or unspecified) rows are byte-identical to before.
+    expect(treeContextValueFor(session({ status: "running" }), false)).toBe("session-live")
+  })
 })
 
 describe("withArchivedTag", () => {
@@ -571,6 +621,18 @@ describe("tooltipFieldsFor", () => {
   })
   it("formats cost to 4 decimal places", () => {
     expect(tooltipFieldsFor(session({ costUsd: 0.1 }))).toContainEqual({ label: "cost", value: "$0.1000" })
+  })
+  it("carries a bg-tasks-pending row only when background work is outstanding", () => {
+    expect(tooltipFieldsFor(session({ pendingBgTasks: 2 }))).toContainEqual({
+      label: "bg tasks pending",
+      value: "2",
+    })
+    expect(tooltipFieldsFor(session({ pendingBgTasks: 0 }))).not.toContainEqual(
+      expect.objectContaining({ label: "bg tasks pending" }),
+    )
+    expect(tooltipFieldsFor(session())).not.toContainEqual(
+      expect.objectContaining({ label: "bg tasks pending" }),
+    )
   })
   it("formats tokens in/out together, defaulting missing side to 0", () => {
     expect(tooltipFieldsFor(session({ tokensIn: 10 }))).toContainEqual({
@@ -918,5 +980,21 @@ describe("subtreeBusiestActivity — collapsed parent inherits busiest descendan
 
   it("a leaf keeps its own activity", () => {
     expect(subtreeBusiestActivity(node({ id: "solo", busy: false }))).toBe("idle")
+  })
+
+  it("parked-bg outranks idle but loses to working/stalled/needs-you", () => {
+    // A collapsed parent whose loudest descendant parked with bg tasks pending
+    // must surface that, not plain idle.
+    const parkedLeaf = node({ id: "root", busy: false }, [
+      node({ id: "a", busy: false, pendingBgTasks: 1 }),
+      node({ id: "b", busy: false }),
+    ])
+    expect(subtreeBusiestActivity(parkedLeaf)).toBe("parked-bg")
+    // …but a working child still wins.
+    const workingChild = node({ id: "root", busy: false }, [
+      node({ id: "a", busy: false, pendingBgTasks: 1 }),
+      node({ id: "b", busy: true }),
+    ])
+    expect(subtreeBusiestActivity(workingChild)).toBe("working")
   })
 })

@@ -164,7 +164,13 @@ export const hermes: AgentCliHandle = defineAgentCli({
     // `hermes --resume <SESSION> --tui`. This lets the daemon offer
     // provider-native terminal restart for Hermes sessions, distinct from
     // its ACP-level `resumable: false` honesty.
-    nativeTerminalResume: true,
+    // Gated on Node ≥22.5: hermes TUI uses node:sqlite which is
+    // unavailable on older runtimes — attempting pty-native restart on
+    // Node <22.5 errors at startup, not at resume.
+    nativeTerminalResume: (() => {
+      const [major, minor] = process.versions.node.split(".").map(Number)
+      return (major ?? 0) > 22 || ((major ?? 0) === 22 && (minor ?? 0) >= 5)
+    })(),
   },
   modes: [
     {

@@ -202,6 +202,17 @@ describe("webviewRowStatus", () => {
     // A busy subtree wins over a mere waiter.
     expect(webviewRowStatus(session({ busy: false, childrenBusy: 1, watchers: 1 }))).toBe("delegating")
   })
+
+  it("renders a session parked with background tasks pending as 'parked' (warning styling)", () => {
+    // parked-bg folds into the existing parked row status — the warning chip
+    // carries the distinction, the dot stays the same quiet-but-watched tell.
+    expect(webviewRowStatus(session({ busy: false, pendingBgTasks: 2 }))).toBe("parked")
+    // A busy session with leftover bg tasks is still working.
+    expect(webviewRowStatus(session({ busy: true, pendingBgTasks: 2 }))).toBe("working")
+    // Absent/zero tolerate the older daemon.
+    expect(webviewRowStatus(session({ busy: false }))).toBe("idle")
+    expect(webviewRowStatus(session({ busy: false, pendingBgTasks: 0 }))).toBe("idle")
+  })
 })
 
 describe("rowActionFor", () => {
@@ -360,6 +371,33 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     expect(row.ctxPercent).toBe(33)
     expect(row.tag).toBe("in-place")
     expect(row.workspace?.slug).toBe("studio")
+  })
+
+  it("carries pendingBgTasks onto the row for the ⏳ N bg chip", () => {
+    const sessions = [
+      session({ id: "a", cwd: "/Code/studio", busy: false, pendingBgTasks: 3 }),
+      session({ id: "b", cwd: "/Code/studio", busy: false }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const rows = model.groups.flatMap(g => g.rows)
+    const a = rows.find(r => r.id === "a")!
+    const b = rows.find(r => r.id === "b")!
+    expect(a.pendingBgTasks).toBe(3)
+    // The row status reflects the parked-bg fold (parked chip styling).
+    expect(a.status).toBe("parked")
+    // Absent field → 0 (older daemon tolerated), so no chip renders.
+    expect(b.pendingBgTasks).toBe(0)
+  })
+
+  it("marks a locally-watched row for the plain-👁 chip (same glyph as the tree)", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio" }), session({ id: "b", cwd: "/Code/studio" })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ watchedIds: new Set(["a"]) }))
+    const rows = model.groups.flatMap(g => g.rows)
+    expect(rows.find(r => r.id === "a")!.locallyWatched).toBe(true)
+    expect(rows.find(r => r.id === "b")!.locallyWatched).toBe(false)
+    // No watchedIds (service unwired) → nobody is locally watched.
+    const bare = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(bare.groups.flatMap(g => g.rows).every(r => !r.locallyWatched)).toBe(true)
   })
 })
 

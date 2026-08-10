@@ -37,6 +37,7 @@ import { canArchive, canUnarchive } from "../commands/sessionArchive.logic.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import type { SeenTracker } from "../services/seen.js"
 import type { DaemonConnectionState, SessionStore } from "../services/sessionStore.js"
+import type { WatchedSessions } from "../services/watchedSessions.js"
 import {
   buildSessionsWebviewModel,
   isValidColorIndex,
@@ -116,7 +117,9 @@ interface RenderRow {
   runs: number | undefined
   approved: boolean
   watched: boolean
+  locallyWatched: boolean
   watcherCount: number
+  pendingBgTasks: number
   childrenBusy: number
   originLabel: string | undefined
   stallTooltip: string | undefined
@@ -203,7 +206,9 @@ function toRenderRow(
     runs: row.runs,
     approved: row.approved,
     watched: row.watched,
+    locallyWatched: row.locallyWatched,
     watcherCount: row.watcherCount,
+    pendingBgTasks: row.pendingBgTasks,
     childrenBusy: row.childrenBusy,
     originLabel: row.originLabel,
     stallTooltip: row.stallTooltip,
@@ -258,6 +263,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     private readonly transcriptPanels: TranscriptPanels,
     private readonly seen: SeenTracker,
     private readonly globalState: vscode.Memento,
+    private readonly watched: WatchedSessions | undefined,
   ) {
     this.colorOverrides = readColorOverrides(globalState)
   }
@@ -525,6 +531,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         // live extras, not paged results.
         loadedCount: this.summaries.length,
         colorOverrides: this.colorOverrides,
+        watchedIds: this.watched?.watchedIds,
       },
     )
     const activeSessionId = this.transcriptPanels.activeSessionId()
@@ -564,14 +571,17 @@ export function registerSessionsWebview(
   filter: SessionFilterController,
   transcriptPanels: TranscriptPanels,
   seen: SeenTracker,
+  watched?: WatchedSessions,
 ): void {
-  const provider = new SessionsWebviewProvider(client, store, filter, transcriptPanels, seen, ctx.globalState)
+  const provider = new SessionsWebviewProvider(client, store, filter, transcriptPanels, seen, ctx.globalState, watched)
   ctx.subscriptions.push(
     vscode.window.registerWebviewViewProvider(VIEW_TYPE, provider),
     store.onDidChange(() => provider.refresh()),
     filter.onDidChange(() => provider.refresh()),
     seen.onDidChange(() => provider.refresh()),
     vscode.window.tabGroups.onDidChangeTabs(() => provider.refresh()),
+    // A watch/unwatch toggle repaints the eye chip without waiting for the daemon.
+    ...(watched ? [watched.onDidChange(() => provider.refresh())] : []),
   )
 }
 
@@ -730,6 +740,10 @@ export function buildHtml(nonce: string): string {
        long-poll / session_monitor is actively blocked on this session. Same
        calm register as .watch; it's an informational tell, not an alarm. */
     .name .eye { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
+    /* Background-tasks-pending chip — the session ended its turn with work
+       still outstanding (parked-bg). Warning register (ochre), like the stall
+       badge: this is a dead end unless someone re-prompts. */
+    .name .bgtasks { color: var(--awaiting); font-weight: 400; font-size: 11px; opacity: 0.95; }
     /* Server-confirmed stall badge (turn-liveness watchdog) — a mid-turn
        session whose adapter stream has gone silent past the daemon's
        threshold with no legitimate blockedOn excuse. Ochre, like the
@@ -892,9 +906,11 @@ export function buildHtml(nonce: string): string {
           (depth > 0 ? '<span class="lineage" aria-hidden="true">↳</span>' : '') +
           '<span>' + escapeHtml(r.name) + '</span>' +
           (r.idMono ? '<span class="id mono">· ' + escapeHtml(r.idMono) + '</span>' : '') +
-          (r.watched ? '<span class="watch" title="Kept alive — watched">◉ watched</span>' : '') +
+          (r.watched ? '<span class="watch" title="Kept alive — the idle-reaper never retires this session">◉ kept alive</span>' : '') +
+          (r.locallyWatched ? '<span class="eye" title="watched — you get a notification when this session changes state">👁</span>' : '') +
           (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on its own busy subtree">⟳ ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '</span>' : '') +
-          (r.watcherCount > 0 ? '<span class="eye" title="' + (r.status === 'parked' ? 'supervised — will be re-prompted' : 'supervised — notify on turn-end') + ' (' + r.watcherCount + ' waiting)">👁 ' + r.watcherCount + '</span>' : '') +
+          (r.watcherCount > 0 ? '<span class="eye" title="' + r.watcherCount + ' waiter' + (r.watcherCount === 1 ? '' : 's') + ' attached via the daemon — they are notified at turn-end">👁 ' + r.watcherCount + '</span>' : '') +
+          (r.pendingBgTasks > 0 ? '<span class="bgtasks" title="parked with ' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending — send a message to wake it">⏳ ' + r.pendingBgTasks + ' bg task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending</span>' : '') +
           (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠ stalled</span>' : '') +
           (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
           (r.approved ? '<span class="ok">✓ approved</span>' : '') +
