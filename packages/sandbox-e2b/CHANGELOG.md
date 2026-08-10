@@ -1,5 +1,11 @@
 # @agentproto/sandbox-e2b
 
+## 0.3.3
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+
 ## 0.3.2
 
 ### Patch Changes

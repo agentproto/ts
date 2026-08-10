@@ -1,5 +1,11 @@
 # @agentproto/workflow-mastra
 
+## 0.1.3
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+
 ## 0.1.2
 
 ### Patch Changes

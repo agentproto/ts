@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/model-catalog",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Unified, dependency-light model catalog: LLM, image, video, audio entries + cost dispatcher + picker. Zod-only; the OSS core that @agstudio/model-catalog layers billing/access/BYOK on top of.",
   "keywords": [
     "agentproto",

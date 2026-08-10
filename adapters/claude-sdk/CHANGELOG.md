@@ -1,5 +1,11 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.5.4
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+
 ## 0.5.3
 
 ### Patch Changes

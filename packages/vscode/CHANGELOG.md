@@ -1,5 +1,20 @@
 # agentproto-vscode
 
+## 0.7.0
+
+### Minor Changes
+
+- c4102d1: Add installed app UI panel support: new tree view for discovering daemon-installed apps that ship a UI, webview panels to host app UIs (via MCP resources/read), and commands to open/refresh apps. Introduces DaemonClient methods listApps(), appToolCall(), and readResource() to support MCP-Apps protocol.
+
+### Patch Changes
+
+- 69e97d9: Documentation sync: version bumps, turn-liveness watchdog config details, UI surfaces/artifacts/dev-launch config examples, and agentproto-apps-sync binary documentation.
+- 0dea138: Remove stale hero element from empty state when real conversation turns arrive. Fixes a bug where the "Ready when you are" message persisted after the first message.
+- Updated dependencies [36e19c3]
+- Updated dependencies [f8b9c73]
+- Updated dependencies [6e1fcf3]
+  - @agentproto/runtime@2.5.0
+
 ## 0.6.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @agentproto/corpus-cli
 
+## 0.7.2
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+
 ## 0.7.1
 
 ### Patch Changes

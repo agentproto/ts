@@ -1,5 +1,22 @@
 # @agentproto/runtime
 
+## 2.5.0
+
+### Minor Changes
+
+- 36e19c3: Add `injectMcpAppBridge()` function to inject MCP Apps wire protocol bridge into UI app HTML at serve time. The bridge enables all app panels to communicate with the host via postMessage JSON-RPC without requiring each app to ship its own shim. Cache integration ensures injection runs once per (path, version) rather than on every request.
+- f8b9c73: Add standalone HTTP routes for app UI hosting: `GET /apps/:appId/ui` serves installed apps' HTML with a REST bridge injected, and `POST /apps/:appId/tool-call` is the REST twin of the MCP `app_tool_call` gateway. Exports `performAppToolCall` and `injectStandaloneAppBridge` for shared use between MCP and HTTP surfaces.
+
+### Patch Changes
+
+- 6e1fcf3: Remove tilde-prefixed OpenRouter aliases and use non-throwing route resolution in widening
+- Updated dependencies [2b58616]
+- Updated dependencies [69e97d9]
+- Updated dependencies [6e1fcf3]
+  - @agentproto/model-catalog@0.8.2
+  - @agentproto/app-kit@0.5.1
+  - @agentproto/providers-store@0.3.5
+
 ## 2.4.0
 
 ### Minor Changes

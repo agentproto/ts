@@ -1,5 +1,13 @@
 # @agentproto/app-kit
 
+## 0.5.1
+
+### Patch Changes
+
+- 69e97d9: Documentation sync: version bumps, turn-liveness watchdog config details, UI surfaces/artifacts/dev-launch config examples, and agentproto-apps-sync binary documentation.
+- Updated dependencies [e68c999]
+  - @agentproto/mastra@0.2.6
+
 ## 0.5.0
 
 ### Minor Changes

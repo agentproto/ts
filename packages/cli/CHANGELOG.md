@@ -1,5 +1,18 @@
 # @agentproto/cli
 
+## 0.11.5
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+- 69e97d9: Documentation sync: version bumps, turn-liveness watchdog config details, UI surfaces/artifacts/dev-launch config examples, and agentproto-apps-sync binary documentation.
+- Updated dependencies [2b58616]
+- Updated dependencies [e68c999]
+- Updated dependencies [6e1fcf3]
+  - @agentproto/model-catalog@0.8.2
+  - @agentproto/rendezvous@0.2.2
+  - @agentproto/sandbox-e2b@0.3.3
+
 ## 0.11.4
 
 ### Patch Changes
