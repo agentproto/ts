@@ -667,17 +667,17 @@ export async function restartAgentSession(
       method: profile.method,
     }
   } else if (resolved.authDescriptor) {
-    // Base mode path (no `access` override): re-resolve billing-auth from the
-    // prior descriptor's `auth.mode` echo through the shared helper the lazy
-    // in-place resume hook also uses. `accessProfileRef` is intentionally NOT
-    // passed here — this branch's job is the base mode re-resolution ONLY (the
-    // `access` OVERRIDE is the `if` branch above), so passing no profileRef
-    // keeps this byte-identical to the pre-extraction inline block. `prefix:
-    // "restart"` preserves the exact model↔wallet ineligibility wording.
+    // Base mode path (no explicit `access` override): re-resolve billing-auth.
+    // When the prior session was pinned to a named profile, pass its profileRef
+    // so `resolveResumeAuth` re-reads the CURRENT credential from the keychain
+    // rather than falling through to the stale mode-based path.
     const resumeAuth = await resolveResumeAuth(prev, resolved, {
       adapterSlug,
       ...(effModel ? { model: effModel } : {}),
       ...(effRoute ? { route: effRoute } : {}),
+      ...(prev.accessProfile?.profileRef
+        ? { accessProfileRef: prev.accessProfile.profileRef }
+        : {}),
       prefix: "restart",
       ...(opts.loadDefaultsConfig ? { loadDefaultsConfig: opts.loadDefaultsConfig } : {}),
     })

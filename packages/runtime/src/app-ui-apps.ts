@@ -94,11 +94,14 @@ function injectAfterStructuralTag(html: string, script: string): string {
 }
 
 /** Inject `MCP_APP_BRIDGE_SCRIPT` (see `injectAfterStructuralTag` for the
- *  placement rule). Idempotent: a no-op if the document already defines
+ *  placement rule). Idempotent: a no-op if the document already DEFINES
  *  `window.McpApp` (e.g. an app that inlines its own shim, or html already
- *  injected by an earlier pass through this same cache). */
+ *  injected by an earlier pass through this same cache). The guard matches
+ *  an assignment only — every app panel CONSUMES `window.McpApp.connect()`,
+ *  so matching any mention would skip injection for exactly the documents
+ *  that need it, leaving `window.McpApp` undefined in the host iframe. */
 export function injectMcpAppBridge(html: string): string {
-  if (/window\.McpApp\b/.test(html)) return html
+  if (/window\.McpApp\s*=/.test(html)) return html
   return injectAfterStructuralTag(html, MCP_APP_BRIDGE_SCRIPT)
 }
 

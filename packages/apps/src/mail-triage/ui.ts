@@ -873,7 +873,11 @@ document.getElementById("run-agent-btn").addEventListener("click", function () {
     });
 });
 
-window.McpApp.connect()
+// window.McpApp is normally injected by the serving layer (postMessage bridge
+// on the MCP resource path, REST bridge on GET /apps/:id/ui). Guard anyway:
+// without it a missing bridge throws here and the panel dies silently on
+// "Connecting…" instead of reporting itself.
+(window.McpApp ? window.McpApp.connect() : Promise.reject(new Error("window.McpApp bridge missing")))
   .then(function (bridge) {
     callTool = bridge.callTool;
     return Promise.all([probeAliases(), loadRuns()]);
