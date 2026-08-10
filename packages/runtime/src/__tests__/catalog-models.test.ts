@@ -1001,7 +1001,7 @@ describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", asyn
   // `<vendor>/<product>@llm-endpoint` row to carry a baseUrl to spawn against.
   // `registerBuiltinRoutes` writes it into the (module-global, idempotent)
   // custom-route map — the same call `createGateway` makes at daemon boot.
-  await registerBuiltinRoutes()
+  await registerBuiltinRoutes({ llmEndpoint: true })
 
   // claude-code curates a native id, an @openrouter id, and an @llm-endpoint id
   // — mirroring the real adapter allowlist, so the same fixture proves the new
@@ -1103,7 +1103,7 @@ describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", asyn
 describe("buildCatalogModels — xAI native + Anthropic-compatible routes", async () => {
   // xai-anthropic is a built-in custom route; ensure it is registered the same
   // way createGateway does at daemon boot.
-  await registerBuiltinRoutes()
+  await registerBuiltinRoutes({ llmEndpoint: true })
 
   const xaiApiKey: AuthProfile = {
     id: "personal-xai",
