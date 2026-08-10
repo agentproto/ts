@@ -171,6 +171,7 @@ const ACTIVITY_TO_ROW_STATUS: Readonly<Record<SessionActivity, WebviewRowStatus>
   working: "working",
   idle: "idle",
   stalled: "stalled",
+  "parked-bg": "parked",
   failed: "failed",
   stopped: "stopped",
   done: "done",
@@ -434,14 +435,21 @@ export interface WebviewRow {
   runs: number | undefined
   /** True when this gate-review row records an approval. */
   approved: boolean
-  /** True when the session is kept alive / watched (idle-reaper exempt) — the
-   *  one "someone is monitoring this" signal the summary carries (keepAlive). */
+  /** True when the session is kept alive (idle-reaper exempt) — the daemon's
+   *  own keepAlive flag. Distinct from BOTH watch signals: not the local eye. */
   watched: boolean
+  /** True when the operator pinned the LOCAL watch eye on this session
+   *  (WatchedSessions service) — renders the plain 👁 (no count), with the
+   *  "you get a notification" tooltip. Same glyph as the tree's watched prefix. */
+  locallyWatched: boolean
   /** Count of live supervisors blocked waiting on this session right now
    *  (#session-visibility) — distinct from `watched` (keepAlive): this is the
    *  real "is anything watching it" signal (wait long-polls / session_monitor).
    *  Drives the eye badge when > 0. */
   watcherCount: number
+  /** Background tool starts from the last turn still pending — the session
+   *  parked itself with work outstanding. Drives the `⏳ N bg` chip when > 0. */
+  pendingBgTasks: number
   /** Descendant sessions currently mid-turn (#session-visibility) — drives the
    *  "⟳ N children" delegating badge. */
   childrenBusy: number
@@ -570,6 +578,9 @@ export interface BuildSessionsWebviewModelOptions {
   loadedCount?: number
   /** Per-slug workspace color overrides (host-persisted via globalState) — see {@link workspaceColorFor}. */
   colorOverrides?: WorkspaceColorOverrides
+  /** Locally-watched session ids (WatchedSessions service) — drives the plain
+   *  👁 (no count) chip, the same watch glyph the tree renders. */
+  watchedIds?: ReadonlySet<string>
 }
 
 /** Resolve a session's workspace to a stable slug/label, or undefined when unassigned. */
@@ -598,6 +609,7 @@ function toRow(
   now: number,
   config: WorkspacesConfig,
   colorOverrides: WorkspaceColorOverrides | undefined,
+  watchedIds: ReadonlySet<string> | undefined,
 ): WebviewRow {
   const pctStr = contextPercent(session.contextUsed, session.contextSize)
   const ws = workspaceFor(config, session)
@@ -619,7 +631,9 @@ function toRow(
     runs: undefined,
     approved: gateApproved(session),
     watched: session.keepAlive === true,
+    locallyWatched: watchedIds?.has(session.id) === true,
     watcherCount: session.watchers ?? 0,
+    pendingBgTasks: session.pendingBgTasks ?? 0,
     childrenBusy: session.childrenBusy ?? 0,
     originLabel: session.origin,
     stallTooltip: stallTooltipFor(session, now),
@@ -707,7 +721,7 @@ export function buildSessionsWebviewModel(
     .filter(s => laneOf(s) === opts.lane)
     .slice()
     .sort((a, b) => compareSessions(a, b))
-  const rows = scope.map(s => toRow(s, opts.now, workspaces, opts.colorOverrides))
+  const rows = scope.map(s => toRow(s, opts.now, workspaces, opts.colorOverrides, opts.watchedIds))
 
   const groups = opts.lane === "agents" ? buildSections(rows) : buildAutoGroups(rows)
   const shownCount = groups.reduce((n, g) => n + g.rows.length, 0)

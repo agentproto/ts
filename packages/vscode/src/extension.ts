@@ -40,9 +40,11 @@ import { registerSessionContinuityCommands } from "./commands/sessionContinuity.
 import { registerDaemonConfig } from "./commands/daemonConfig.js"
 import { registerSpawnCommand } from "./commands/spawn.js"
 import { registerTranscript } from "./commands/transcript.js"
+import { registerWatchSessionCommands } from "./commands/watchSession.js"
 import { getConfig, onDidChangeConfig } from "./config.js"
 import { SeenTracker } from "./services/seen.js"
 import { SessionStore } from "./services/sessionStore.js"
+import { WatchedSessions } from "./services/watchedSessions.js"
 import { WorkspacePinStore } from "./services/workspacePin.js"
 import { registerAppsView } from "./views/appsTree.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
@@ -87,7 +89,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // have looked at is a property of your working context, not of the daemon.
   const seen = new SeenTracker(ctx.workspaceState)
   ctx.subscriptions.push(seen)
-  registerSessionsView(ctx, store, filter, seen)
+  // Watched sessions — same per-workspace persistence: which sessions you
+  // pinned an eye on is a property of your working context. attach() raises
+  // the transition toasts off the store's onDidChange.
+  const watched = new WatchedSessions(ctx.workspaceState)
+  ctx.subscriptions.push(watched, watched.attach(store))
+  registerSessionsView(ctx, store, filter, seen, watched)
   registerPermissionsView(ctx, store)
   const harnessesProvider = registerHarnessesView(ctx, client)
   const authProfilesProvider = registerAuthProfilesView(ctx, client)
@@ -118,6 +125,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerWorktreeCleanup(ctx, client) // agentproto.cleanWorktrees
   registerSessionRename(ctx, client, store) // agentproto.renameSession
   registerSaveFavorite(ctx, client, store) // agentproto.saveFavorite
+  registerWatchSessionCommands(ctx, store, watched) // agentproto.watchSession / unwatchSession
   registerImportConversationCommand(ctx, client, store) // agentproto.importConversation
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
   registerHarnessCommands(ctx, client, harnessesProvider)
@@ -135,7 +143,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // package.json's `when` clauses make the two mutually exclusive in the
   // sidebar). Uses its own lightweight summary endpoint for progressive loading
   // while sharing the store's live-update signal and the transcriptPanels path.
-  registerSessionsWebview(ctx, client, store, filter, transcriptPanels, seen)
+  registerSessionsWebview(ctx, client, store, filter, transcriptPanels, seen, watched)
   // Opt-in webview alternatives for Harnesses and Auth Profiles, gated by
   // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
   registerHarnessesWebview(ctx, client, harnessesProvider)

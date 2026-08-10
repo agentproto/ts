@@ -23,6 +23,10 @@ export type SessionEventType =
   | "session:reaped"
   | "session:stalled"
   | "session:stall-cleared"
+  | "session:watcher-attached"
+  | "session:watcher-detached"
+  | "session:bg-tasks-parked"
+  | "session:bg-tasks-cleared"
   | "session:resumed"
   | "session:spawned"
   | "session:command-done"
@@ -233,6 +237,97 @@ export interface SessionStalledEvent {
  */
 export interface SessionStallClearedEvent {
   type: "session:stall-cleared"
+  sessionId: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted by the wait long-poll helper (`monitorSessionWait`) the moment a
+ * blocking wait actually SUBSCRIBES to this session — a `/sessions/:id/wait`
+ * long-poll or a `session_monitor` call that has to park. This is the bus
+ * twin of the ephemeral `watchers` descriptor counter (`incWatchers`,
+ * #session-visibility): where the counter lets `session_list` surface "N
+ * supervisors are blocked on this session", the event lets a LIVE consumer
+ * (the transcript panel inside the WATCHED session) react the instant a
+ * watcher appears rather than on its next descriptor poll. Detection +
+ * signal ONLY — nothing here changes the wait's own semantics. `watchers`
+ * is the counter AFTER the attach (read back from the registry, so a
+ * concurrent waiter is already reflected). `watcherSessionId` names the
+ * supervising session when the wait was initiated by one (the scoped
+ * orchestrator's `callerScope.ownerSessionId`); absent for an anonymous
+ * CLI/HTTP waiter. Same bus distribution as every other lifecycle event
+ * (`session_events_poll`, the webhook notifier, the routine engine,
+ * `session_monitor`). Paired with `session:watcher-detached` when the wait
+ * resolves or times out.
+ */
+export interface SessionWatcherAttachedEvent {
+  type: "session:watcher-attached"
+  sessionId: string
+  watchers: number
+  watcherSessionId?: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a blocking wait on this session releases its watcher — the
+ * wait resolved (a matching lifecycle event landed) or timed out; see
+ * {@link SessionWatcherAttachedEvent}. `watchers` is the counter AFTER the
+ * detach, so a consumer can tell "the last watcher left" (`0`) from "one of
+ * several left". Detection + signal only — a zero count does NOT imply the
+ * session is unsupervised in every sense (a completion policy watches via
+ * its own mechanism, not this counter); it only means no `monitorSessionWait`
+ * long-poll is currently parked on it. Same bus distribution as every other
+ * lifecycle event.
+ */
+export interface SessionWatcherDetachedEvent {
+  type: "session:watcher-detached"
+  sessionId: string
+  watchers: number
+  watcherSessionId?: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted at turn-end when the turn that just finished started one or more
+ * BACKGROUND tool calls (a tool-call whose `arguments` object carries
+ * `run_in_background: true` — how Claude Code's Bash announces a
+ * `run_in_background` task; matched generically on the property, not the
+ * tool name) AND the session is NOT `awaitingInput`. The target failure
+ * mode is the turn-END twin of `session:stalled`: the harness's own
+ * task-completion notification does NOT trigger a new turn, so the session
+ * sits `busy:false`, `awaitingInput:false`, background tasks pending — a
+ * silent dead end that looks exactly like a session idle and waiting to be
+ * re-prompted. Detection + signal ONLY: nothing here re-prompts or wakes
+ * the session (no auto-wake — a wake-up path would have to decide what to
+ * say, and that policy belongs to the supervisor, not the daemon). `count`
+ * is how many background tool starts the turn observed. Same bus
+ * distribution as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, the routine engine, `session_monitor`). Paired with
+ * `session:bg-tasks-cleared` when the flag is later cleared.
+ */
+export interface SessionBgTasksParkedEvent {
+  type: "session:bg-tasks-parked"
+  sessionId: string
+  count: number
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a session's `pendingBgTasks` flag (see {@link
+ * SessionBgTasksParkedEvent}) is cleared — by the next turn starting (the
+ * session was re-prompted, so it is no longer parked: its new turn will see
+ * whatever the background tasks produced) or by the session exiting (a dead
+ * row carries no live flag). Does NOT imply the background tasks finished
+ * or their output was consumed — only that the "ended its turn with
+ * background work pending and no wake-up path" condition no longer holds.
+ * Same bus distribution as every other lifecycle event.
+ */
+export interface SessionBgTasksClearedEvent {
+  type: "session:bg-tasks-cleared"
   sessionId: string
   label?: string
   ts: string
@@ -513,6 +608,10 @@ export type SessionEvent =
   | SessionReapedEvent
   | SessionStalledEvent
   | SessionStallClearedEvent
+  | SessionWatcherAttachedEvent
+  | SessionWatcherDetachedEvent
+  | SessionBgTasksParkedEvent
+  | SessionBgTasksClearedEvent
   | SessionResumedEvent
   | SessionSpawnedEvent
   | SessionCommandDoneEvent

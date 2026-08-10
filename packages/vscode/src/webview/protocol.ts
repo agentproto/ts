@@ -154,7 +154,17 @@ export type ExtMessage =
       /** Latest session descriptor (cost, status, tokens, etc.). */
       session: SessionDescriptor
     }
-  | { type: "sending" }
+  | {
+      type: "sending"
+      /**
+       * Optional status line shown in place of the bare "Sending…" — e.g.
+       * "Waking session…" when the send will trigger a lazy resume, or
+       * "Session is slow to respond — retrying…" during the one automatic
+       * retry after a prompt timeout (see TranscriptPanelController.onSend).
+       * Absent for an ordinary send.
+       */
+      note?: string
+    }
   | { type: "sendAck" }
   /**
    * A prompt POST was refused. `kind` decides the panel's reaction: "busy"
@@ -215,6 +225,18 @@ export type ExtMessage =
       delayMs?: number
       detail?: string
     }
+  /**
+   * A transient INFORMATIONAL banner above the composer (E3) — visually the
+   * error banner's informational variant, with a dismiss X. Used for
+   * cross-session visibility: "a watcher attached", "a message arrived from
+   * another session". `id` dedupes: a second `infoBanner` with the SAME id
+   * replaces the current one (no stacking), and a dismissed id may reappear
+   * on a NEW occurrence. `tooltip` rides the banner's `title` attribute.
+   */
+  | { type: "infoBanner"; id: string; text: string; tooltip?: string }
+  /** Hide the info banner with this `id` (its auto-dismiss timer fired, or
+   *  the condition it reported cleared). A no-op when that id isn't up. */
+  | { type: "dismissInfoBanner"; id: string }
 
 /**
  * Messages sent from the webview to the extension host.

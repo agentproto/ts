@@ -1288,7 +1288,9 @@ describe("transcriptPanel webview — blocked-on note", () => {
 
     vi.advanceTimersByTime(1_000) // total 20s
     expect(el(panel, "blocked-note").hidden).toBe(false)
-    expect(el(panel, "blocked-note").textContent).toBe("blocked on command · toolu_01")
+    // The note text lives in its own span since the dismissable-✕ split —
+    // asserting the container would drag the button's glyph into the string.
+    expect(el(panel, "blocked-note-text").textContent).toBe("blocked on command · toolu_01")
   })
 
   it("clears the instant the tool returns, without waiting", () => {
@@ -1310,7 +1312,7 @@ describe("transcriptPanel webview — blocked-on note", () => {
     init(panel, { status: "killed", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
     vi.advanceTimersByTime(30_000)
     expect(el(panel, "blocked-note").hidden).toBe(true)
-    expect(el(panel, "blocked-note").textContent).toBe("")
+    expect(el(panel, "blocked-note-text").textContent).toBe("")
   })
 })
 
@@ -2667,5 +2669,106 @@ describe("transcriptPanel webview — book view", () => {
     ;(more as unknown as { dispatchEvent(e: unknown): void }).dispatchEvent(new panel.window.Event("click"))
     const pendingTexts = [...planNode.querySelectorAll(".plan-pending .plan-text")].map(n => n.textContent)
     expect(pendingTexts).toContain("p4")
+  })
+})
+
+describe("transcriptPanel webview — cross-session visibility (E2/E3/E4)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}, turns: PresentedTurn[] = []): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns },
+    })
+  }
+  const click = (panel: Panel, id: string): void => {
+    el(panel, id).dispatchEvent(new panel.window.Event("click"))
+  }
+
+  it("badges an agent-injected user turn with its source and the accent class (E2)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running" }, [
+      {
+        id: "turn-1",
+        role: "user",
+        promptSource: "agent:sess_b0b0b0",
+        segments: [{ kind: "user", id: "seg-1", html: "do the thing" }],
+      },
+      { id: "turn-2", role: "user", segments: [{ kind: "user", id: "seg-2", html: "typed by me" }] },
+    ])
+
+    const nodes = turnNodes(panel).filter(n => n.classList.contains("turn-user"))
+    expect(nodes).toHaveLength(2)
+    const [injected, human] = nodes as [DomElement, DomElement]
+    expect(injected.classList.contains("turn-agent-sourced")).toBe(true)
+    const badge = injected.querySelector(".prompt-source-badge")
+    // The label carries the id's discriminating TAIL (shortSessionId rule);
+    // the full id rides the tooltip.
+    expect(badge?.textContent).toBe("⇄ from b0b0b0")
+    expect((badge as DomElement | null)?.title).toBe("Injected by session sess_b0b0b0 via agent_prompt")
+    // The human's own turn carries neither the class nor the badge.
+    expect(human.classList.contains("turn-agent-sourced")).toBe(false)
+    expect(human.querySelector(".prompt-source-badge")).toBeNull()
+  })
+
+  it("shows an info banner, and its ✕ dismisses by user choice (E3)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running" })
+    panel.send({ type: "infoBanner", id: "watcher", text: "A watcher attached — 1 waiting on this session" })
+
+    const banner = el(panel, "info-banner")
+    expect(banner.hidden).toBe(false)
+    expect(el(panel, "ib-text").textContent).toBe("A watcher attached — 1 waiting on this session")
+
+    click(panel, "ib-dismiss")
+    expect(banner.hidden).toBe(true)
+    // A same-id re-post respects the user's dismissal…
+    panel.send({ type: "infoBanner", id: "watcher", text: "A watcher attached — 1 waiting on this session" })
+    expect(banner.hidden).toBe(true)
+    // …while a NEW id (a new occurrence) shows again.
+    panel.send({ type: "infoBanner", id: "agent-msg:7", text: "Message from sess_boss" })
+    expect(banner.hidden).toBe(false)
+  })
+
+  it("hides the info banner on a matching dismissInfoBanner (auto-dismiss path)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running" })
+    panel.send({ type: "infoBanner", id: "agent-msg:9", text: "Message from sess_boss" })
+    expect(el(panel, "info-banner").hidden).toBe(false)
+
+    // A non-matching id is a stale timer for a banner already replaced — no-op.
+    panel.send({ type: "dismissInfoBanner", id: "agent-msg:8" })
+    expect(el(panel, "info-banner").hidden).toBe(false)
+
+    panel.send({ type: "dismissInfoBanner", id: "agent-msg:9" })
+    expect(el(panel, "info-banner").hidden).toBe(true)
+  })
+
+  it("blocked-note ✕ dismisses THIS block only — a new toolCallId shows the note again (E4)", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    init(panel, { status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    vi.advanceTimersByTime(20_000)
+    expect(el(panel, "blocked-note").hidden).toBe(false)
+
+    click(panel, "blocked-note-dismiss")
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+    // Same block re-announced → stays dismissed.
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" }) })
+    vi.advanceTimersByTime(1_000)
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+
+    // A DIFFERENT tool call is a new block worth showing — the 20s patience
+    // window already elapsed for this turn, so it appears on the next repaint.
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_99ZZZZZZ" }) })
+    vi.advanceTimersByTime(21_000)
+    expect(el(panel, "blocked-note").hidden).toBe(false)
+    expect(el(panel, "blocked-note-text").textContent).toBe("blocked on command · toolu_99")
   })
 })

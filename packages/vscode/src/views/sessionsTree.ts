@@ -51,6 +51,7 @@ import type { SessionDescriptor } from "../client/types.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import type { SeenTracker } from "../services/seen.js"
 import type { SessionStore } from "../services/sessionStore.js"
+import type { WatchedSessions } from "../services/watchedSessions.js"
 import { filterSessions, filterSummary, isFilterActive } from "./sessionFilter.logic.js"
 import {
   buildSessionsRoots,
@@ -119,6 +120,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   private readonly store: SessionStore
   private readonly filter: SessionFilterController
   private readonly seen: SeenTracker
+  private readonly watched: WatchedSessions | undefined
   private readonly _onDidChange = new vscode.EventEmitter<void>()
   readonly onDidChangeTreeData = this._onDidChange.event
   private nodes: RootNode[] = []
@@ -130,10 +132,16 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   private _hidingMachineDefault = false
   private readonly repaintTimer: ReturnType<typeof setInterval>
 
-  constructor(store: SessionStore, filter: SessionFilterController, seen: SeenTracker) {
+  constructor(
+    store: SessionStore,
+    filter: SessionFilterController,
+    seen: SeenTracker,
+    watched?: WatchedSessions,
+  ) {
     this.store = store
     this.filter = filter
     this.seen = seen
+    this.watched = watched
     this.rebuild()
     this.store.onDidChange(() => this.rebuild())
     this.filter.onDidChange(() => this.rebuild())
@@ -141,6 +149,10 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     // the session, and the row must say so without waiting for the daemon to
     // happen to emit something.
     this.seen.onDidChange(() => this.rebuild())
+    // A watched/unwatched toggle changes the row's contextValue (`-watched`
+    // suffix → the Watch/Unwatch menu swap) and its 👁 prefix, so it is a
+    // state change like any other.
+    this.watched?.onDidChange(() => this.rebuild())
     // Rebuild on a clock as well as on change. Every row is rendered against
     // `now`, so the passage of time is itself a state change — one the store
     // can never report, because nothing happened. See TREE_REPAINT_INTERVAL_MS.
@@ -241,6 +253,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
         : vscode.TreeItemCollapsibleState.None
     const item = new vscode.TreeItem(labelFor(session), collapsibleState)
     item.id = session.id
+    const isWatched = this.watched?.isWatched(session.id) === true
     const baseDescription = descriptionFor(session, {
       now: this.now,
       childCount: element.children.length,
@@ -248,10 +261,12 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     // Archived rows only ever reach the tree when the "show archived"
     // toggle is on (the daemon's default list() already excludes them) —
     // visually distinct so they read as "kept around, not currently in
-    // view" rather than a normal terminal session.
-    item.description = withArchivedTag(baseDescription, session.archived)
-    item.contextValue = treeContextValueFor(session)
-    item.tooltip = buildTooltip(session, this.now)
+    // view" rather than a normal terminal session. A watched row leads its
+    // description with the 👁 prefix so the eye is visible at a glance.
+    const withWatch = isWatched ? `👁 ${baseDescription}` : baseDescription
+    item.description = withArchivedTag(withWatch, session.archived)
+    item.contextValue = treeContextValueFor(session, isWatched)
+    item.tooltip = buildTooltip(session, this.now, isWatched)
     // A parent node inherits the busiest state in its subtree (#session-
     // visibility), so a collapsed orchestrator whose children are mid-turn
     // doesn't sit there reading "idle". A leaf uses its own activity.
@@ -366,9 +381,14 @@ function toThemeIcon(icon: ReturnType<typeof iconFor>): vscode.ThemeIcon {
   return new vscode.ThemeIcon(icon.id, new vscode.ThemeColor(themeColorId))
 }
 
-function buildTooltip(session: SessionDescriptor, now: number): vscode.MarkdownString {
+function buildTooltip(session: SessionDescriptor, now: number, watched?: boolean): vscode.MarkdownString {
   const md = new vscode.MarkdownString()
   md.appendMarkdown(`**${labelFor(session)}**\n\n`)
+  if (watched) {
+    // Same vocabulary as the webview's plain-👁 chip — one watch pattern
+    // across both surfaces.
+    md.appendMarkdown(`👁 watched — you get a notification when this session changes state\n\n`)
+  }
   for (const field of tooltipFieldsFor(session)) {
     md.appendMarkdown(`- **${field.label}:** ${field.value}\n`)
   }
@@ -386,8 +406,9 @@ export function registerSessionsView(
   store: SessionStore,
   filter: SessionFilterController,
   seen: SeenTracker,
+  watched?: WatchedSessions,
 ): void {
-  const provider = new SessionsTreeProvider(store, filter, seen)
+  const provider = new SessionsTreeProvider(store, filter, seen, watched)
   const view = vscode.window.createTreeView("agentproto.sessions", {
     treeDataProvider: provider,
     showCollapseAll: true,

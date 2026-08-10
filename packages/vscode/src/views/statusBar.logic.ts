@@ -79,6 +79,10 @@ export function summarizeLive(
         summary.needsYou++
         break
       case "stalled":
+      // Parked with background tasks pending is the same KIND of attention as
+      // a stall — a live session that will never finish on its own — so the
+      // bar counts it in the same bucket rather than inventing a sixth number.
+      case "parked-bg":
         summary.stalled++
         break
       case "working":
