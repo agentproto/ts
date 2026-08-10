@@ -3,7 +3,9 @@
 "@agentproto/runtime": minor
 ---
 
-Extend MCP app bridge wire (spec 2026-01-26) with three new methods and enhance mail-triage UI:
+Extend the MCP app bridge wire (spec 2026-01-26) with three new methods and integrate them into the mail-triage UI:
 
-- **Bridge extension** (`@agentproto/runtime`): Add `updateModelContext`, `openLink`, and `onTeardown` methods to the `window.McpApp.connect()` promise surface. `updateModelContext` sends contextual information to the host (replaces previous context); `openLink` opens URLs; `onTeardown` registers cleanup callbacks invoked on `ui/resource-teardown`.
-- **Mail-triage UI** (`@agentproto/apps`): Add email selection via checkboxes, "Send selection to Claude" button to call `updateModelContext` with selected email metadata, and "Open" links to open threads directly in Gmail via `openLink`. Register teardown handler to clear polling timers.
+- **`updateModelContext`** (`@agentproto/runtime`): lets an app push updated context back to the model over the bridge; marshaled through JSON-RPC on the postMessage bridge, rejected with a clear error on the standalone bridge.
+- **`openLink`** (`@agentproto/runtime`): lets an app request the host open a URL; the postMessage bridge marshals the request through JSON-RPC, the standalone bridge falls back to `window.open`.
+- **`onTeardown`** (`@agentproto/runtime`): registers a callback invoked when the host sends `ui/resource-teardown`; the bridge replies with `{result:{}}` after running registered callbacks synchronously.
+- **Mail-triage UI** (`@agentproto/apps`): adds email selection via checkboxes, a "send selection" action that pushes selected emails to the model via `updateModelContext`, and "open in Gmail" links wired through `openLink`.
