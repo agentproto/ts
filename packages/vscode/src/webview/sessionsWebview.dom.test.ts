@@ -280,7 +280,7 @@ describe("sessions webview — render", () => {
   it("renders the workspace color on the dot via --ws CSS variable", () => {
     const panel = renderPanel()
     send(panel, modelMessage())
-    const dot = el(panel, "list").querySelector('[data-id="s1"] .dot') as HTMLElement
+    const dot = htmlEl(el(panel, "list").querySelector('[data-id="s1"] .dot'))
     expect(dot.getAttribute("style")).toContain("--ws")
     expect(dot.getAttribute("style")).toContain("#c45c26")
   })
@@ -288,7 +288,7 @@ describe("sessions webview — render", () => {
   it("omits --ws on the dot when no workspace is attached", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ groups: [group("earlier", "Earlier", [ROW_DONE])] }))
-    const dot = el(panel, "list").querySelector('[data-id="s2"] .dot') as HTMLElement
+    const dot = htmlEl(el(panel, "list").querySelector('[data-id="s2"] .dot'))
     expect(dot.getAttribute("style")).toBeNull()
   })
 
