@@ -2,15 +2,16 @@
  * `installAdapter(slug)` — install an agent CLI adapter (harness) by slug,
  * the mutation companion to `listAdaptersWithAcp`.
  *
- * Two install classes, decided purely by `planAdapterInstall` (below):
+ * Three install classes, decided purely by `planAdapterInstall` (below):
  *
- *   - **acp-catalog / acp-config** — a generic ACP CLI with no
- *     `@agentproto/adapter-*` package (gemini-cli, qwen-code, iflow-cli, or a
- *     user's `config.acpAgents` entry). Its harness lives in an npm package
- *     named only in the entry's `install_hint` ("npm install -g …"); we parse
- *     that and run `npm i -g <package>` directly. `agentproto install <slug>`
- *     can't do this — a generic ACP handle's only install step is
- *     `{method:"vendored"}`, which the install runner treats as BYO-binary.
+ *   - **acp-catalog / acp-config (npm)** — a generic ACP CLI whose
+ *     `install_hint` is an `npm install -g` line (gemini-cli, qwen-code,
+ *     iflow-cli). We parse the package name and run `npm i -g <package>`.
+ *
+ *   - **acp-catalog / acp-config (shell-hint)** — a generic ACP CLI whose
+ *     `install_hint` uses a recognized non-npm package manager (uv, pip,
+ *     brew, cargo, go, pipx — e.g. `uv tool install mistral-vibe`). We run
+ *     the hint command directly.
  *
  *   - **first-party** — a native `@agentproto/adapter-*` adapter in the
  *     catalog (claude-code, opencode, …). Driven through the existing
@@ -24,7 +25,7 @@
  * clean result rather than a 500.
  */
 
-import { spawn } from "node:child_process"
+import { spawn, execFileSync } from "node:child_process"
 import type { AdapterInstallResult } from "@agentproto/runtime"
 import { listAdaptersWithAcp, type AdapterListing } from "./resolve.js"
 import { CATALOG } from "./catalog.js"
@@ -56,6 +57,11 @@ export type AdapterInstallPlan =
       args: string[]
     }
   | {
+      kind: "shell-hint"
+      command: string
+      args: string[]
+    }
+  | {
       kind: "agentproto-install"
       slug: string
       command: "agentproto"
@@ -77,6 +83,33 @@ export function parseNpmPackageFromHint(hint?: string): string | undefined {
   return m?.[1]
 }
 
+const KNOWN_INSTALL_COMMANDS: Record<string, string> = {
+  npm: "https://nodejs.org/",
+  uv: "curl -LsSf https://astral.sh/uv/install.sh | sh",
+  pip: "comes with Python — https://www.python.org/downloads/",
+  pip3: "comes with Python 3 — https://www.python.org/downloads/",
+  pipx: "pip install pipx — https://pipx.pypa.io",
+  brew: "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
+  cargo: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+  go: "https://go.dev/dl/",
+}
+
+/**
+ * Parse a non-npm install hint into command + args when the command is a
+ * recognized package manager. Returns `undefined` for unknown commands so the
+ * caller can fall through to `unsupported` rather than blindly executing
+ * arbitrary shell lines.
+ */
+export function parseShellHint(
+  hint?: string,
+): { command: string; args: string[] } | undefined {
+  if (!hint) return undefined
+  const parts = hint.trim().split(/\s+/)
+  const cmd = parts[0]
+  if (!cmd || cmd === "npm" || !(cmd in KNOWN_INSTALL_COMMANDS)) return undefined
+  return { command: cmd, args: parts.slice(1) }
+}
+
 /**
  * Decide how to install `entry` — pure, so it's the unit-tested heart of the
  * install flow. See the module header for the two classes.
@@ -90,20 +123,25 @@ export function planAdapterInstall(
   // only install path is npm-global from its hint.
   if (entry.source === "acp-catalog" || entry.source === "acp-config") {
     const pkg = parseNpmPackageFromHint(entry.hint)
-    if (!pkg) {
+    if (pkg) {
       return {
-        kind: "unsupported",
-        reason:
-          entry.hint
-            ? `no npm package found in install hint "${entry.hint}" — install ${entry.slug} manually.`
-            : `'${entry.slug}' is a bring-your-own-binary ACP agent with no install hint — install it manually.`,
+        kind: "npm-global",
+        packageName: pkg,
+        command: "npm",
+        args: ["install", "-g", pkg],
       }
     }
+
+    const shell = parseShellHint(entry.hint)
+    if (shell) {
+      return { kind: "shell-hint", command: shell.command, args: shell.args }
+    }
+
     return {
-      kind: "npm-global",
-      packageName: pkg,
-      command: "npm",
-      args: ["install", "-g", pkg],
+      kind: "unsupported",
+      reason: entry.hint
+        ? `unrecognized install hint "${entry.hint}" — install ${entry.slug} manually.`
+        : `'${entry.slug}' is a bring-your-own-binary ACP agent with no install hint — install it manually.`,
     }
   }
 
@@ -127,6 +165,17 @@ export function planAdapterInstall(
     slug: entry.slug,
     command: "agentproto",
     args: ["install", entry.slug, "--allow-unverified"],
+  }
+}
+
+function commandOnPath(cmd: string): boolean {
+  try {
+    execFileSync(process.platform === "win32" ? "where" : "which", [cmd], {
+      stdio: "ignore",
+    })
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -274,7 +323,17 @@ export async function installAdapter(
   let exitCode: number
   let failureDetail = ""
 
-  if (plan.kind === "npm-global") {
+  if (plan.kind === "npm-global" || plan.kind === "shell-hint") {
+    if (!commandOnPath(plan.command)) {
+      const howTo = KNOWN_INSTALL_COMMANDS[plan.command]
+      return {
+        slug,
+        ok: false,
+        method: plan.kind,
+        command,
+        message: `'${plan.command}' is not installed. ${slug} requires it.\nInstall ${plan.command} first: ${howTo}`,
+      }
+    }
     const res = await runCommand(plan.command, plan.args)
     ok = res.code === 0
     exitCode = res.code
