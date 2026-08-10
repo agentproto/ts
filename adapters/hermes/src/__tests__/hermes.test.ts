@@ -36,7 +36,9 @@ describe("@agentproto/adapter-hermes", () => {
   it("generates OpenRouter model ids in canonical `vendor/product@route` format", () => {
     // Regression test for a format bug: generated OpenRouter entries must use
     // the `@openrouter` suffix (route-identity canonical form), NOT an
-    // `openrouter/<vendor>/<id>` prefix — the latter fails route parsing.
+    // `openrouter/<vendor>/<id>` 3-segment prefix — the latter fails route
+    // parsing. Note: `openrouter/auto@openrouter` is valid — the vendor name
+    // IS "openrouter" there, so a bare startsWith check would false-positive.
     const allowed = hermes.models?.allowed ?? []
     const openrouterEntries = allowed.filter(
       (entry): entry is { id: string; provider: string } =>
@@ -45,7 +47,11 @@ describe("@agentproto/adapter-hermes", () => {
     expect(openrouterEntries.length).toBeGreaterThan(0)
     for (const entry of openrouterEntries) {
       expect(entry.id).toMatch(/@openrouter$/)
-      expect(entry.id.startsWith("openrouter/")).toBe(false)
+      // Must be `vendor/product@openrouter` (2 segments before @), never
+      // `openrouter/vendor/product` (3-segment prefix without @route suffix).
+      const beforeRoute = entry.id.replace(/@openrouter$/, "")
+      const segments = beforeRoute.split("/")
+      expect(segments.length).toBeLessThanOrEqual(2)
     }
   })
 
