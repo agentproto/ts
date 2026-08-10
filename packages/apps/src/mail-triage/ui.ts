@@ -404,7 +404,10 @@ function onMailboxChange() {
       categoryCounts = items.length > 0 ? counts : null;
       renderSummary();
     })
-    .catch(function () { /* KPI is best-effort — leave the dash */ });
+    .catch(function (err) {
+      // KPI is best-effort: keep the dashes, but say why instead of silence.
+      setStatus("Inbox summary unavailable: " + err.message);
+    });
 }
 
 function renderMailboxes(mailboxes) {
