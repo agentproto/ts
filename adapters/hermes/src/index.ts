@@ -56,10 +56,10 @@ function buildHermesModelMenu(): Array<{ id: string; provider: string }> {
   for (const { provider, prefix } of supported) {
     for (const model of listModels({ kind: "llm", provider })) {
       const bareId = model.id
-      // Skip anthropic models — reserved for claude-code adapter.
-      // Catches direct vendor prefix, OpenRouter ~anthropic aliases, and
-      // any id containing "claude".
-      if (/anthropic|claude/.test(bareId)) continue
+      // Skip anthropic models (reserved for claude-code adapter) and
+      // tilde-prefixed OpenRouter provider aliases (~deepseek, ~google, …)
+      // which aren't real vendor names and break the route-identity parser.
+      if (/anthropic|claude|^~/.test(bareId)) continue
       const canonicalId = bareId.includes("/") ? bareId : `${prefix}/${bareId}`
       const id = provider === "openrouter" ? `${bareId}@openrouter` : canonicalId
       if (seen.has(id)) continue
