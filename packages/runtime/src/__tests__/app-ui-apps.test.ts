@@ -164,6 +164,18 @@ describe("injectMcpAppBridge", () => {
     expect(injectMcpAppBridge(html)).toBe(html)
   })
 
+  it("still injects when the html only CONSUMES window.McpApp.connect()", () => {
+    // Every bundled app panel calls window.McpApp.connect() — a guard that
+    // matches any mention of window.McpApp would skip injection for exactly
+    // the documents that need the bridge, leaving connect() to throw in the
+    // host iframe (mail-triage's "Not connected to host bridge" symptom).
+    const html =
+      "<html><head><title>t</title></head><body><script>window.McpApp.connect();</script></body></html>"
+    const out = injectMcpAppBridge(html)
+    expect(out).toContain("ui/initialize")
+    expect(out.indexOf("ui/initialize")).toBeLessThan(out.indexOf("window.McpApp.connect()"))
+  })
+
   it("only injects the bridge once even if run twice", () => {
     const html = "<html><body>Panel</body></html>"
     const once = injectMcpAppBridge(html)
