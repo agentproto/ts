@@ -22,7 +22,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
-import { mkdir, stat, writeFile } from "node:fs/promises"
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { basename, isAbsolute, join, resolve as resolvePath } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
@@ -39,6 +39,8 @@ import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
+import { performAppToolCall, type AppToolCallDeps } from "./app-tools.js"
+import { injectStandaloneAppBridge } from "./app-ui-apps.js"
 import {
   loadWorkspacesConfig,
   saveWorkspacesConfig,
@@ -731,6 +733,15 @@ export interface RuntimeHttpServerOptions {
   ) => Promise<{ ok: true; record: any } | { ok: false; error: string }>
   /** Optional — required when `appRegistry` is wired, for tool validation during install. */
   listRegisteredToolIds?: () => Promise<string[]>
+  /** Optional — when wired alongside `appRegistry`, backs the standalone app
+   *  host routes: `GET /apps/:appId/ui` (an installed app's html with a REST
+   *  `window.McpApp` bridge injected, so the same UI runs in a plain browser
+   *  tab) and `POST /apps/:appId/tool-call` (the REST twin of the MCP
+   *  `app_tool_call` gateway — same `ui.tools` allowlist, same dispatch
+   *  chain, via `performAppToolCall`). `dispatchTool`/`callImportedTool` are
+   *  the same functions index.ts hands `registerAppTools`; omitted ⇒
+   *  tool-call dispatch reports "not enabled", the UI route still serves. */
+  appToolCallDeps?: AppToolCallDeps
   /** Optional — when wired, enables `POST /inbound`, the push-ingress
    *  counterpart to `inbound-watcher.ts`'s poll loop. A human reply
    *  (e.g. from agentpush's Telegram webhook) routes into the session
@@ -2532,6 +2543,39 @@ export async function startHttpServer(
         if (opts.routineRegistrar && path.startsWith("/routine-defs/")) {
           const handled = await handleRoutineDefs(req, res, path, opts.routineRegistrar)
           if (handled) return
+        }
+
+        // Standalone app UI host — GET /apps/:appId/ui serves an installed
+        // app's html with a REST `window.McpApp` bridge injected (the same
+        // UI that renders in an MCP-Apps iframe works in a plain browser
+        // tab), POST /apps/:appId/tool-call is the REST twin of the MCP
+        // app_tool_call gateway. `(.+)` (not `[^/]+`): appIds are
+        // `@scope/name`, so both the literal-slash and the %2F-encoded
+        // spelling of the id must route. Gated like the other browser-
+        // reachable routes: guardBrowserOrigin blocks a non-allowlisted
+        // page's drive-by (the served UI itself is same-origin ⇒ loopback
+        // ⇒ allowlisted), authorize() gates the tunnel path by bearer.
+        if (opts.appRegistry && path.startsWith("/apps/")) {
+          const uiMatch = path.match(/^\/apps\/(.+)\/ui$/)
+          if (uiMatch && req.method === "GET") {
+            if (guardBrowserOrigin(req, res)) return
+            if (!authorize(req, res)) return
+            await handleAppUiPage(res, decodeURIComponent(uiMatch[1]!), opts.appRegistry)
+            return
+          }
+          const toolCallMatch = path.match(/^\/apps\/(.+)\/tool-call$/)
+          if (toolCallMatch && req.method === "POST") {
+            if (guardBrowserOrigin(req, res)) return
+            if (!authorize(req, res)) return
+            await handleAppUiToolCall(
+              req,
+              res,
+              decodeURIComponent(toolCallMatch[1]!),
+              opts.appRegistry,
+              opts.appToolCallDeps ?? {},
+            )
+            return
+          }
         }
 
         // App routes — POST /apps/:appId/apply, DELETE /apps/:appId/apply,
@@ -5829,6 +5873,101 @@ async function handleProviderInbound(
     ...endpoint,
     lastSeenTs: Date.now(),
   })
+  res.writeHead(200, { "content-type": "application/json" })
+  res.end(JSON.stringify(result))
+}
+
+/** `GET /apps/:appId/ui` — an installed app's `ui.path` html, with the
+ *  standalone REST bridge injected so `window.McpApp.connect()` works with
+ *  no host iframe (callTool POSTs to the sibling `./tool-call` route —
+ *  `./` resolves against the document URL, so the appId segment carries
+ *  over whichever spelling it used). `frame-ancestors 'none'`: standalone
+ *  means a top-level tab — refusing embedding closes the drive-by where a
+ *  hostile page iframes the UI and lets the app's own boot sequence fire
+ *  allowlisted tools. */
+async function handleAppUiPage(
+  res: ServerResponse,
+  appId: string,
+  appRegistry: AppRegistry,
+): Promise<void> {
+  const app = appRegistry.getApp(appId)
+  if (!app?.ui) {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
+    return
+  }
+  let raw: string
+  try {
+    raw = await readFile(app.ui.path, "utf8")
+  } catch (err) {
+    res.writeHead(500, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        error: `could not read app "${appId}"'s ui html at "${app.ui.path}": ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    )
+    return
+  }
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "x-frame-options": "DENY",
+    "content-security-policy": "frame-ancestors 'none'",
+  })
+  res.end(injectStandaloneAppBridge(raw))
+}
+
+/** `POST /apps/:appId/tool-call` `{ tool, args? }` — the REST twin of the
+ *  MCP `app_tool_call` gateway, sharing its exact allowlist + dispatch via
+ *  `performAppToolCall`. Replies 200 with the MCP result envelope (isError
+ *  ones included — a postMessage host's `tools/call` reply RESOLVES with
+ *  those, so the REST bridge must too); only a malformed body is a 400.
+ *
+ *  The bundled UIs address the daemon-level gateway through their bridge
+ *  (`callTool("app_tool_call", { appId, tool, args })` — see media-viewer's
+ *  `callApp`), so that meta-call is unwrapped here: the inner tool runs
+ *  against THIS route's app, and an inner appId naming a different app is
+ *  refused rather than silently re-scoped. */
+async function handleAppUiToolCall(
+  req: IncomingMessage,
+  res: ServerResponse,
+  appId: string,
+  appRegistry: AppRegistry,
+  deps: AppToolCallDeps,
+): Promise<void> {
+  const body = (await readJsonBody(req)) as { tool?: unknown; args?: unknown } | null
+  const badRequest = (message: string): void => {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "bad_request", message }))
+  }
+  if (!body || typeof body.tool !== "string") {
+    badRequest('body must be `{ "tool": string, "args"?: object }`.')
+    return
+  }
+  let tool = body.tool
+  let args =
+    body.args && typeof body.args === "object" && !Array.isArray(body.args)
+      ? (body.args as Record<string, unknown>)
+      : {}
+  if (tool === "app_tool_call") {
+    const inner = args as { appId?: unknown; tool?: unknown; args?: unknown }
+    if (typeof inner.tool !== "string") {
+      badRequest('an "app_tool_call" meta-call needs `args.tool` (string).')
+      return
+    }
+    if (typeof inner.appId === "string" && inner.appId !== appId) {
+      badRequest(
+        `an "app_tool_call" meta-call must target this route's app ("${appId}"), got "${inner.appId}".`,
+      )
+      return
+    }
+    tool = inner.tool
+    args =
+      inner.args && typeof inner.args === "object" && !Array.isArray(inner.args)
+        ? (inner.args as Record<string, unknown>)
+        : {}
+  }
+  const result = await performAppToolCall(appRegistry, { appId, tool, args }, deps)
   res.writeHead(200, { "content-type": "application/json" })
   res.end(JSON.stringify(result))
 }
