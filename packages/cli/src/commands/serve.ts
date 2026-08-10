@@ -247,6 +247,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   const cfgDaemon = { ...(cfg.daemon ?? {}), ...(profile?.daemon ?? {}) }
   const cfgTunnel = { ...(cfg.tunnel ?? {}), ...(profile?.tunnel ?? {}) }
+  const cfgFeatures = { ...(cfg.features ?? {}), ...(profile?.features ?? {}) }
 
   // Workspace defaults: --workspace > config.json > cwd. Validated
   // below — must exist + be a directory.
@@ -690,6 +691,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // — an unset value here passes `undefined` through so createGateway
         // applies its own sane default rather than reading "unset" as off.
         turnStallAfterMs: resolveTurnStallAfterMs(cfgDaemon.turnStallAfterMs),
+        llmEndpoint: cfgFeatures.llmEndpoint === true,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the

@@ -820,6 +820,11 @@ export interface CreateGatewayOptions {
    * returns) so the injected `serve` can capture the finished gateway.
    */
   pairingRegistry?: PairingRegistry
+  /** Enable the local LLM Endpoint proxy sidecar (route registration,
+   *  MCP tools, child-process lifecycle). Default false — the endpoint is
+   *  an opt-in feature; when off, the `llm-endpoint` custom route is not
+   *  registered and the `llm_endpoint_*` MCP tools are not exposed. */
+  llmEndpoint?: boolean
 }
 
 /**
@@ -923,7 +928,7 @@ export async function createGateway(
   // anything resolves a model ref or builds the catalog — `resolveLlmModelRoute`
   // reads the custom-route map at call time, so a curated `@llm-endpoint` row is
   // only priced + reachable once this has run (`builtin-routes.ts`). Idempotent.
-  await registerBuiltinRoutes()
+  await registerBuiltinRoutes({ llmEndpoint: opts.llmEndpoint === true })
   // Effective idle-reap threshold (PR-6): a positive ms value enables the
   // periodic reaper, anything else (unset / 0 / negative) keeps it off. Kept as
   // a plain `0`-means-off number so `daemon_health` / `GET /health` can surface
@@ -1046,21 +1051,21 @@ export async function createGateway(
     // restoreOnBoot already logs per-tunnel failures via onLog.
   })
 
-  // Single-sidecar registry for the @agentproto/llm-endpoint proxy — the
-  // daemon spawns its built bin as a child (like cloudflared, never an
-  // in-process import) and manages its start/stop/status lifecycle
-  // (llm_endpoint_start / llm_endpoint_stop / llm_endpoint_status MCP tools).
-  // Logs flow through the same events stream as tunnels. Created idle — the
-  // child is only spawned on an explicit `llm_endpoint_start`.
-  const llmEndpoint = new LlmEndpointRegistry({
-    workspace,
-    onLog: line =>
-      events.emit({
-        type: "remote-log",
-        at: new Date().toISOString(),
-        line,
-      }),
-  })
+  // Single-sidecar registry for the @agentproto/llm-endpoint proxy — gated
+  // behind `opts.llmEndpoint` (default false). When off, no registry is
+  // created, no MCP tools are registered, and the route is absent too
+  // (`registerBuiltinRoutes` above already skipped it).
+  const llmEndpoint = opts.llmEndpoint
+    ? new LlmEndpointRegistry({
+        workspace,
+        onLog: line =>
+          events.emit({
+            type: "remote-log",
+            at: new Date().toISOString(),
+            line,
+          }),
+      })
+    : undefined
 
   // Build a server once eagerly so we can capture `registered` for
   // `/health`. The server is NOT used for serving — every `/mcp`
@@ -1839,8 +1844,8 @@ export async function createGateway(
     registerConversationReadTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
-    // llm-endpoint proxy sidecar lifecycle — same closure-rebind pattern.
-    registerLlmEndpointTools(server, { registry: llmEndpoint })
+    // llm-endpoint proxy sidecar lifecycle — only when the feature is on.
+    if (llmEndpoint) registerLlmEndpointTools(server, { registry: llmEndpoint })
     // Tunnel adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
@@ -2285,7 +2290,7 @@ export async function createGateway(
       // cloudflared doesn't briefly proxy to a dead port.
       await tunnels.shutdown()
       // Stop the llm-endpoint proxy child (if running) before HTTP tears down.
-      await llmEndpoint.shutdown()
+      await llmEndpoint?.shutdown()
       await remote.shutdown()
       await http.stop()
     },

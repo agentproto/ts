@@ -159,6 +159,11 @@ export interface FeaturesConfig {
   /** Hint that PTY is desired — informational; the daemon still
    *  detects node-pty's presence at runtime. */
   pty?: boolean
+  /** Enable the local LLM Endpoint proxy sidecar (route registration,
+   *  MCP tools, child-process lifecycle). Default false — the endpoint is
+   *  an opt-in feature; when off, the `llm-endpoint` custom route is not
+   *  registered and the `llm_endpoint_*` MCP tools are not exposed. */
+  llmEndpoint?: boolean
 }
 
 /**
