@@ -1,6 +1,7 @@
 ---
 "@agentproto/cli": minor
 "@agentproto/runtime": minor
+"agentproto-vscode": patch
 ---
 
 **Support shell-based package managers (uv, pip, brew, cargo, go, pipx)** — expand adapter installation beyond npm to handle package managers commonly used in AI/ML workflows. New `parseShellHint` function parses and validates non-npm install commands; only recognized package managers are executed to prevent blind shell injection.
