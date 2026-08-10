@@ -46,7 +46,7 @@ describe("llm:context-windows generator", () => {
     // it has to be bumped on each catalog sync — see the count-drift note on
     // the sync PR.
     const entryCount = (src.match(/contextWindow: \d+/g) ?? []).length
-    expect(entryCount).toBe(48)
+    expect(entryCount).toBe(47)
 
     // Spot-check one real entry per provider.
     expect(src).toContain('"claude-opus-4-8": { contextWindow: 1000000, maxOutput: 128000')

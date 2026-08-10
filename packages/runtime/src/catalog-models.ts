@@ -406,7 +406,7 @@ function widenedContributions(
     const [vendor, product] = key.split("/", 2) as [string, string]
     for (const router of WIDENING_ROUTES) {
       if (existingRoutes.has(router)) continue
-      const resolved = resolveLlmModelRoute(`${vendor}/${product}@${router}`)
+      const resolved = tryResolveLlmModelRoute(`${vendor}/${product}@${router}`)
       if (!resolved) continue
       for (const adapterSlug of freeAdapters) {
         out.push({
