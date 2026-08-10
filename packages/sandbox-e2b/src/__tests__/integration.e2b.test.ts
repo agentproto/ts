@@ -21,7 +21,7 @@ describe.skipIf(!process.env.E2B_API_KEY)("e2b sandbox agent host (integration)"
         secrets: { slugs: ["OPENROUTER_API_KEY"] },
       })
       try {
-        const sessionId = await host.spawn("hermes", {})
+        const sessionId = await host.spawn("hermes", { cwd: "/home/user" })
         await host.sendPromptAndWait(sessionId, "Reply with the single word OK. Nothing else.")
         if (host.readFinalMessage) {
           const message = await host.readFinalMessage(sessionId)
