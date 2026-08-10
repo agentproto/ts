@@ -1,5 +1,13 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.4.2
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+- Updated dependencies [e68c999]
+  - @agentproto/mastra@0.2.6
+
 ## 0.4.1
 
 ### Patch Changes

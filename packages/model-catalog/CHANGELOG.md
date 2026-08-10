@@ -1,5 +1,12 @@
 # @agentproto/model-catalog
 
+## 0.8.2
+
+### Patch Changes
+
+- 2b58616: Sync generated catalog data from the pinned provider sources.
+- 6e1fcf3: Remove tilde-prefixed OpenRouter aliases and use non-throwing route resolution in widening
+
 ## 0.8.1
 
 ### Patch Changes

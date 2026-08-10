@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-mastra-agent",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "@agentproto/adapter-mastra-agent — first-party agentproto agent. An AIP-42 AGENT.md run as a live Mastra agent behind an AIP-44 ACP server, spawnable by the daemon like any other AGENT-CLI arm AND launchable standalone via `agentproto-mastra acp`. Our own loop, our own models — no external CLI.",
   "keywords": [
     "agentproto",

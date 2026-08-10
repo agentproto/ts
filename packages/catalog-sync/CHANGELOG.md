@@ -1,5 +1,14 @@
 # @agentproto/catalog-sync
 
+## 0.5.5
+
+### Patch Changes
+
+- 6e1fcf3: Remove tilde-prefixed OpenRouter aliases and use non-throwing route resolution in widening
+- Updated dependencies [2b58616]
+- Updated dependencies [6e1fcf3]
+  - @agentproto/model-catalog@0.8.2
+
 ## 0.5.4
 
 ### Patch Changes
