@@ -182,6 +182,29 @@ describe("injectMcpAppBridge", () => {
     const twice = injectMcpAppBridge(once)
     expect(twice).toBe(once)
   })
+
+  it("injects the bridge with updateModelContext, openLink, and onTeardown methods", () => {
+    const html = "<html><body>Panel</body></html>"
+    const out = injectMcpAppBridge(html)
+    expect(out).toContain("updateModelContext")
+    expect(out).toContain("openLink")
+    expect(out).toContain("onTeardown")
+    expect(out).toContain("ui/update-model-context")
+    expect(out).toContain("ui/open-link")
+    expect(out).toContain("ui/resource-teardown")
+  })
+
+  it("bridge handles ui/resource-teardown by responding with result and calling registered callbacks", () => {
+    // Simulate: the script defines teardownCbs array, onTeardown pushes,
+    // and the message listener calls them + posts response.
+    const html = "<html><body>Panel</body></html>"
+    const out = injectMcpAppBridge(html)
+    // The handler should post back {jsonrpc:"2.0", id, result:{}} for teardown
+    expect(out).toContain('result: {}')
+    expect(out).toContain("teardownCbs")
+    expect(out).toContain("teardownCbs.push")
+    expect(out).toContain("teardownCbs[i]()")
+  })
 })
 
 describe("injectStandaloneAppBridge", () => {
@@ -200,5 +223,14 @@ describe("injectStandaloneAppBridge", () => {
   it("falls back to prepending when there is no structural tag at all", () => {
     const out = injectStandaloneAppBridge("Panel")
     expect(out.indexOf('fetch("./tool-call"')).toBeLessThan(out.indexOf("Panel"))
+  })
+
+  it("injects standalone bridge with updateModelContext, openLink, and onTeardown", () => {
+    const html = "<html><body>Panel</body></html>"
+    const out = injectStandaloneAppBridge(html)
+    expect(out).toContain("updateModelContext")
+    expect(out).toContain("openLink")
+    expect(out).toContain("onTeardown")
+    expect(out).toContain("window.open")
   })
 })

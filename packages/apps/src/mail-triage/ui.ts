@@ -114,6 +114,11 @@ section h3{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spa
 .mini{font-size:10px;text-transform:none;letter-spacing:0;cursor:pointer;color:var(--blue);background:none;border:none;font-family:inherit}
 .caps-hint{font-size:11px;color:var(--yellow)}
 .snippet{color:var(--text2);font-size:11px;margin-top:2px}
+.mail-checkbox{accent-color:var(--blue);cursor:pointer;flex-shrink:0;margin-top:1px}
+.mail-open{font-size:10px;cursor:pointer;color:var(--blue);background:none;border:none;font-family:inherit;white-space:nowrap;padding:0;flex-shrink:0}
+.mail-open:hover{text-decoration:underline}
+#selection-bar{display:none;margin-bottom:8px;gap:8px;align-items:center}
+#selection-bar.show{display:flex}
 </style>
 </head>
 <body>
@@ -145,6 +150,10 @@ section h3{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spa
       <div class="searchbar">
         <input type="text" id="search-input" placeholder="e.g. is:unread">
         <button class="abtn" id="search-btn">Search</button>
+      </div>
+      <div id="selection-bar">
+        <span id="sel-count" style="font-size:12px;color:var(--text2)">0 selected</span>
+        <button class="abtn primary" data-action="send-selection">Send selection to Claude</button>
       </div>
       <div id="search-results"><div class="empty">No search run yet.</div></div>
     </section>
@@ -191,6 +200,9 @@ var CATEGORIES = ${JSON.stringify(CATEGORIES)};
 var ALIASES = ${JSON.stringify(MAIL_TRIAGE_MCP_ALIASES)};
 var POLL_TIMEOUT_MS = 10 * 60 * 1000;
 var callTool = null;
+var updateModelContext = null;
+var openLink = null;
+var onTeardown = null;
 var currentPlan = null;
 var pollHandle = null;
 var planExpiryHandle = null;
@@ -199,6 +211,7 @@ var currentMailboxes = [];
 var categoryCounts = null;
 var unreadCount = null;
 var aliasStates = {};
+var selectedMessages = {};
 
 function setStatus(msg) {
   document.getElementById("status").textContent = msg;
@@ -256,6 +269,69 @@ function setBusy(btn, busy) {
     var label = btn.getAttribute("data-label");
     if (label !== null) btn.textContent = label;
   }
+}
+
+function isSelected(id) {
+  return selectedMessages[id] ? true : false;
+}
+
+function toggleSelection(id, item) {
+  if (selectedMessages[id]) {
+    delete selectedMessages[id];
+  } else {
+    selectedMessages[id] = item;
+  }
+  updateSelectionBar();
+}
+
+function updateSelectionBar() {
+  var bar = document.getElementById("selection-bar");
+  var countEl = document.getElementById("sel-count");
+  var count = 0;
+  for (var k in selectedMessages) { if (selectedMessages.hasOwnProperty(k)) count++; }
+  countEl.textContent = count + " selected";
+  bar.className = count > 0 ? "show" : "";
+  // Sync checkboxes
+  var cbs = document.querySelectorAll("#search-results .mail-checkbox");
+  for (var i = 0; i < cbs.length; i++) {
+    var mid = cbs[i].getAttribute("data-message-id");
+    cbs[i].checked = mid ? isSelected(mid) : false;
+  }
+}
+
+function sendSelectionToClaude() {
+  if (!updateModelContext) {
+    setStatus("Host does not support updateModelContext.");
+    return;
+  }
+  var items = [];
+  var names = [];
+  for (var k in selectedMessages) {
+    if (!selectedMessages.hasOwnProperty(k)) continue;
+    var msg = selectedMessages[k];
+    items.push({
+      id: msg.id || k,
+      threadId: msg.threadId || "",
+      from: msg.from || "",
+      subject: msg.subject || "",
+      timestamp: msg.internalDate || msg.date || ""
+    });
+    if (msg.subject) names.push(msg.subject);
+  }
+  if (items.length === 0) {
+    setStatus("No messages selected.");
+    return;
+  }
+  var summary = items.length + " emails selected for triage: " + names.join(", ");
+  setStatus("Sending selection to Claude\\u2026");
+  updateModelContext({
+    content: [{ type: "text", text: summary }],
+    structuredContent: { selection: items }
+  }).then(function () {
+    setStatus("Selection sent to Claude (" + items.length + " emails).");
+  }).catch(function (err) {
+    setStatus("Failed to send selection: " + (err && err.message ? err.message : String(err)));
+  });
 }
 
 function clearPlanExpiry() {
@@ -537,16 +613,39 @@ function renderSearchResults(items, raw) {
     row.className = "plan-item";
     row.style.flexDirection = "column";
     row.style.alignItems = "stretch";
+    var msgId = item && (item.id || item.messageId || "");
+    var threadId = item && (item.threadId || "");
     var subj = typeof item === "string" ? item : item.subject || item.title || JSON.stringify(item);
     var from = item && item.from ? item.from : "";
     var snippet = item && item.snippet ? item.snippet : "";
     var top = document.createElement("div");
     top.style.display = "flex";
-    top.style.justifyContent = "space-between";
-    top.style.gap = "10px";
-    top.innerHTML = '<span class="subj"></span><span class="tag"></span>';
-    top.querySelector(".subj").textContent = subj;
-    top.querySelector(".tag").textContent = from;
+    top.style.alignItems = "flex-start";
+    top.style.gap = "6px";
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "mail-checkbox";
+    cb.setAttribute("data-action", "toggle-select");
+    if (msgId) cb.setAttribute("data-message-id", msgId);
+    if (isSelected(msgId)) cb.checked = true;
+    top.appendChild(cb);
+    var subjSpan = document.createElement("span");
+    subjSpan.className = "subj";
+    subjSpan.style.flex = "1";
+    subjSpan.textContent = subj;
+    top.appendChild(subjSpan);
+    var tagSpan = document.createElement("span");
+    tagSpan.className = "tag";
+    tagSpan.textContent = from;
+    top.appendChild(tagSpan);
+    if (threadId) {
+      var openBtn = document.createElement("button");
+      openBtn.className = "mail-open";
+      openBtn.textContent = "Open";
+      openBtn.setAttribute("data-action", "open-gmail");
+      openBtn.setAttribute("data-thread-id", threadId);
+      top.appendChild(openBtn);
+    }
     row.appendChild(top);
     if (snippet) {
       var sn = document.createElement("div");
@@ -669,6 +768,50 @@ function viewRun(appRunId) {
       setStatus("Run status failed: " + err.message);
     });
 }
+
+// Event delegation: search-results (checkboxes + open buttons)
+document.getElementById("search-results").addEventListener("change", function (e) {
+  var target = e.target;
+  if (target.getAttribute("data-action") === "toggle-select") {
+    var mid = target.getAttribute("data-message-id");
+    if (mid) {
+      var item = null;
+      var el = target.parentNode;
+      while (el && el.parentNode && el !== document) {
+        if (el.tagName === "DIV" && el.className.indexOf("plan-item") !== -1) {
+          var subjEl = el.querySelector(".subj");
+          var tagEl = el.querySelector(".tag");
+          var subjText = subjEl ? subjEl.textContent : "";
+          var tagText = tagEl ? tagEl.textContent : "";
+          // Reconstruct a minimal item from the DOM
+          item = { id: mid, threadId: "", subject: subjText, from: tagText };
+          break;
+        }
+        el = el.parentNode;
+      }
+      toggleSelection(mid, item || { id: mid });
+    }
+  }
+});
+document.getElementById("search-results").addEventListener("click", function (e) {
+  var target = e.target;
+  if (target.getAttribute("data-action") === "open-gmail") {
+    var tid = target.getAttribute("data-thread-id");
+    if (tid && openLink) {
+      openLink("https://mail.google.com/mail/u/0/#inbox/" + tid).catch(function (err) {
+        setStatus("Failed to open link: " + (err && err.message ? err.message : String(err)));
+      });
+    } else if (tid) {
+      setStatus("Host does not support openLink.");
+    }
+  }
+});
+// Event delegation: selection-bar (send-selection)
+document.getElementById("selection-bar").addEventListener("click", function (e) {
+  if (e.target.getAttribute("data-action") === "send-selection") {
+    sendSelectionToClaude();
+  }
+});
 
 document.getElementById("refresh-btn").addEventListener("click", function () {
   probeAliases();
@@ -880,6 +1023,15 @@ document.getElementById("run-agent-btn").addEventListener("click", function () {
 (window.McpApp ? window.McpApp.connect() : Promise.reject(new Error("window.McpApp bridge missing")))
   .then(function (bridge) {
     callTool = bridge.callTool;
+    updateModelContext = bridge.updateModelContext;
+    openLink = bridge.openLink;
+    onTeardown = bridge.onTeardown;
+    if (onTeardown) {
+      onTeardown(function () {
+        if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
+        if (planExpiryHandle) { clearTimeout(planExpiryHandle); planExpiryHandle = null; }
+      });
+    }
     return Promise.all([probeAliases(), loadRuns()]);
   })
   .catch(function (err) {
