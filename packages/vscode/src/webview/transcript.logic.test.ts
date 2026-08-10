@@ -7,12 +7,14 @@ import {
   applySessionUpdate,
   classifySendFailure,
   createTranscriptModel,
+  describePromptSource,
   formatCostLine,
   formatSubtitle,
   formatTitle,
   isExited,
   sendFailureTitle,
   toolIoDocumentName,
+  watcherBannerFor,
 } from "./transcript.logic.js"
 
 function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
@@ -240,5 +242,57 @@ describe("toolIoDocumentName", () => {
     expect(long.length).toBeLessThan(70)
     expect(toolIoDocumentName(undefined, "input", "seg-1", false)).toBe("tool input (seg1).log")
     expect(toolIoDocumentName("///", "input", "seg-1", false)).toBe("tool input (seg1).log")
+  })
+})
+
+describe("describePromptSource", () => {
+  it("returns undefined for a missing/empty source (the human case)", () => {
+    expect(describePromptSource(undefined)).toBeUndefined()
+    expect(describePromptSource("")).toBeUndefined()
+  })
+
+  it("describes an agent:<sessionId> source with a short id badge + full-id tooltip", () => {
+    const d = describePromptSource("agent:sess_b248ee25")
+    expect(d?.label).toBe("⇄ from 48ee25")
+    expect(d?.tooltip).toBe("Injected by session sess_b248ee25 via agent_prompt")
+  })
+
+  it("keeps a short session id whole in the badge", () => {
+    const d = describePromptSource("agent:abc123")
+    expect(d?.label).toBe("⇄ from abc123")
+    expect(d?.tooltip).toContain("abc123")
+  })
+
+  it("renders any OTHER non-empty source raw rather than dropping it", () => {
+    const d = describePromptSource("cron:daily-digest")
+    expect(d?.label).toBe("⇄ cron:daily-digest")
+    expect(d?.tooltip).toBe("Prompt source: cron:daily-digest")
+  })
+})
+
+describe("watcherBannerFor", () => {
+  it("announces an increase with the post-change count", () => {
+    expect(watcherBannerFor(0, 1)).toBe("A watcher attached — 1 waiting on this session")
+    expect(watcherBannerFor(1, 3)).toBe("A watcher attached — 3 waiting on this session")
+  })
+
+  it("treats an absent previous count as 0", () => {
+    expect(watcherBannerFor(undefined, 2)).toBe("A watcher attached — 2 waiting on this session")
+  })
+
+  it("announces the last watcher leaving (decrease to 0)", () => {
+    expect(watcherBannerFor(1, 0)).toBe("Watcher detached")
+    expect(watcherBannerFor(4, 0)).toBe("Watcher detached")
+  })
+
+  it("stays silent on a partial decrease (one of several watchers left)", () => {
+    expect(watcherBannerFor(3, 1)).toBeUndefined()
+    expect(watcherBannerFor(2, 1)).toBeUndefined()
+  })
+
+  it("stays silent when nothing changed", () => {
+    expect(watcherBannerFor(0, 0)).toBeUndefined()
+    expect(watcherBannerFor(2, 2)).toBeUndefined()
+    expect(watcherBannerFor(undefined, undefined)).toBeUndefined()
   })
 })

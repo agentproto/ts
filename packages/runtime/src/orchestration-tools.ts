@@ -166,6 +166,14 @@ export async function monitorSessionWait(opts: {
   event?: SessionWaitEvent
   timeoutMs?: number
   since?: number
+  /**
+   * The calling orchestrator's scope, when this wait was initiated by an
+   * agent session (the scoped orchestrator sub-gateway stamps
+   * `ownerSessionId`). Used ONLY to attribute the watcher attach/detach bus
+   * events this wait emits while blocked — an anonymous CLI/HTTP waiter
+   * leaves it absent. Never changes the wait's own semantics.
+   */
+  callerScope?: { ownerSessionId?: string }
 }): Promise<SessionWaitResult> {
   const {
     registry,
@@ -173,6 +181,7 @@ export async function monitorSessionWait(opts: {
     eventRing,
     sessionIds,
     timeoutMs = 25_000,
+    callerScope,
   } = opts
   const targetEvent: SessionWaitEvent = opts.event ?? "any"
 
@@ -284,14 +293,43 @@ export async function monitorSessionWait(opts: {
     // watcher for the life of this wait so `session_list`/`GET /sessions`
     // surface "someone is supervising this" (#session-visibility). Balanced in
     // `finish()`, which fires on both a match and the timeout.
-    for (const id of resolvedIds) registry.incWatchers(id)
+    //
+    // Each attach/detach also rides the session event bus so a live UI (the
+    // transcript panel) can surface "a watcher attached/detached" inside the
+    // WATCHED session — not just in the supervisor's own view. `watchers` is
+    // the count AFTER the change, read back from the registry (a concurrent
+    // waiter may have moved it); `watcherSessionId` names the supervising
+    // session when this wait was initiated by one (absent for an anonymous
+    // CLI/HTTP waiter). Detection + signal only — the wait itself is
+    // unchanged.
+    for (const id of resolvedIds) {
+      registry.incWatchers(id)
+      const watchers = registry.get(id)?.watchers ?? 0
+      sessionEvents.emit({
+        type: "session:watcher-attached",
+        sessionId: id,
+        watchers,
+        ...(callerScope?.ownerSessionId ? { watcherSessionId: callerScope.ownerSessionId } : {}),
+        ts: new Date().toISOString(),
+      })
+    }
 
     const finish = (result: SessionWaitResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       for (const u of unsubs) u()
-      for (const id of resolvedIds) registry.decWatchers(id)
+      for (const id of resolvedIds) {
+        registry.decWatchers(id)
+        const watchers = registry.get(id)?.watchers ?? 0
+        sessionEvents.emit({
+          type: "session:watcher-detached",
+          sessionId: id,
+          watchers,
+          ...(callerScope?.ownerSessionId ? { watcherSessionId: callerScope.ownerSessionId } : {}),
+          ts: new Date().toISOString(),
+        })
+      }
       resolve(result)
     }
 
@@ -1413,6 +1451,7 @@ export function registerOrchestrationTools(
         event: targetEvent,
         timeoutMs: timeout,
         ...(input.since !== undefined ? { since: input.since } : {}),
+        ...(callerScope ? { callerScope } : {}),
       })
 
       // The MCP tool's contract: a ring-replay hit echoes back the cursor

@@ -55,7 +55,7 @@ import {
   pad2,
 } from "./conversationBook.logic.js"
 import type { SeenTracker } from "../services/seen.js"
-import { formatTitle } from "./transcript.logic.js"
+import { formatTitle, describePromptSource } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
 import { TranscriptPanelController } from "./transcriptPanelController.js"
 import { runChangeModelFlow } from "../commands/changeModel.js"
@@ -622,6 +622,10 @@ export function buildHtml(
     chapterDurationMs,
     formatChapterDuration,
     pad2,
+    // Cross-session visibility (E2): describePromptSource formats the "⇄ from
+    // <id>" badge on an agent-injected user turn — injected by value so the
+    // webview runs the tested source, same as the helpers above.
+    describePromptSource,
   ]
     .map(fn => fn.toString())
     .join("\n      ")
@@ -852,10 +856,26 @@ export function buildHtml(
        that deserve a permanent glyph. */
     #blocked-note {
       flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       padding: 4px 14px 0;
       font-size: 0.85em;
       color: var(--vscode-editorWarning-foreground);
     }
+    #blocked-note-text { flex: 1 1 auto; min-width: 0; }
+    /* The dismiss X is deliberately low-key — the note is itself low-key. */
+    #blocked-note-dismiss {
+      flex: 0 0 auto;
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: inherit;
+      opacity: 0.7;
+    }
+    #blocked-note-dismiss:hover { opacity: 1; }
     #blocked-note[hidden] { display: none; }
     /* Resume-chain history — a restarted session's ancestor transcripts,
        rendered ONCE at init as the FIRST content INSIDE #transcript (see the
@@ -1269,6 +1289,48 @@ export function buildHtml(
       user-select: text;
     }
     #eb-dismiss { flex: 0 0 auto; }
+    /* ── Info banner (E3) ─────────────────────────────────────────────
+       The error banner's informational variant: cross-session "something
+       just happened" pings (a watcher attached/detached, a message arrived
+       from another session). Same flex/dismiss shape, informational colour. */
+    #info-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 12px;
+      border: 1px solid var(--vscode-inputValidation-infoBorder, var(--vscode-focusBorder, var(--vscode-panel-border)));
+      background: var(--vscode-inputValidation-infoBackground, var(--vscode-editorWidget-background, transparent));
+      border-radius: 6px;
+    }
+    #info-banner[hidden] { display: none; }
+    #ib-icon { flex: 0 0 auto; color: var(--vscode-inputValidation-infoForeground, var(--vscode-descriptionForeground)); }
+    #ib-body { flex: 1 1 auto; min-width: 0; }
+    #ib-text {
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+    }
+    #ib-dismiss { flex: 0 0 auto; }
+    /* ── Agent-sourced turn (E2) ──────────────────────────────────────
+       A user turn another session injected (agent_prompt) is visibly not
+       "you": a left accent + faint tint using theme variables, plus a
+       "⇄ from <id>" badge on the header. No hardcoded hex. */
+    .turn-agent-sourced .bubble {
+      border-left: 3px solid var(--vscode-charts-purple, var(--vscode-focusBorder, var(--vscode-panel-border)));
+      background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+    }
+    .prompt-source-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 0 6px;
+      font-size: 0.78em;
+      border-radius: 8px;
+      vertical-align: middle;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+    }
     /* ── Queued message ───────────────────────────────────────────────
        A prompt typed mid-turn is held here rather than rejected. */
     #queued {
@@ -1867,7 +1929,7 @@ export function buildHtml(
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
   <div id="book" hidden></div>
   <div id="pty-view"></div>
-  <div id="blocked-note" hidden></div>
+  <div id="blocked-note" hidden><span id="blocked-note-text"></span><button id="blocked-note-dismiss" title="Dismiss">✕</button></div>
   <div id="working" hidden>
     <span id="working-glyph">✳</span>
     <span id="working-text"></span>
@@ -1880,6 +1942,13 @@ export function buildHtml(
         <div id="eb-message"></div>
       </div>
       <button id="eb-dismiss" title="Dismiss">✕</button>
+    </div>
+    <div id="info-banner" hidden>
+      <span id="ib-icon">&#9432;</span>
+      <div id="ib-body">
+        <div id="ib-text"></div>
+      </div>
+      <button id="ib-dismiss" title="Dismiss">✕</button>
     </div>
     <div id="queued" hidden>
       <span id="queued-icon">&#9203;</span>
@@ -1970,6 +2039,11 @@ export function buildHtml(
       const ebTitle = document.getElementById('eb-title');
       const ebMessage = document.getElementById('eb-message');
       const ebDismiss = document.getElementById('eb-dismiss');
+      const infoBanner = document.getElementById('info-banner');
+      const ibText = document.getElementById('ib-text');
+      const ibDismiss = document.getElementById('ib-dismiss');
+      const blockedNoteText = document.getElementById('blocked-note-text');
+      const blockedNoteDismiss = document.getElementById('blocked-note-dismiss');
       const queuedRow = document.getElementById('queued');
       const queuedLabel = document.getElementById('queued-label');
       const queuedCancel = document.getElementById('queued-cancel');
@@ -1991,6 +2065,9 @@ export function buildHtml(
       /** Wall-clock ms when the current turn's blockedOn note started being
        *  true (0 when not currently blocked) — see refreshBlockedNote. */
       let blockedSince = 0;
+      /** The (blockedOn, toolCallId) pair the user dismissed — hidden until a
+       *  DIFFERENT pair arrives. Cleared when the block clears. */
+      let dismissedBlockedKey = null;
       /** Wall-clock ms when the current turn started (0 when idle). */
       let busySince = 0;
       let lastTokensOut;
@@ -2142,6 +2219,33 @@ export function buildHtml(
         ebMessage.textContent = '';
       }
 
+      // ── Cross-session info banner (E3) ─────────────────────────────
+      // The transient informational twin of the error banner. One slot:
+      // currentInfoBannerId tracks what's up so a same-id message replaces
+      // (never stacks) and a dismissInfoBanner only hides a matching id.
+      // User-dismissed ids are remembered so a re-post of the SAME id (a
+      // still-true state re-announced) doesn't fight the user's choice — but
+      // a NEW occurrence carries a new id (the controller mints one per
+      // event), which shows again.
+      let currentInfoBannerId = null;
+      const dismissedInfoBannerIds = new Set();
+
+      function showInfoBanner(id, text, tooltip) {
+        if (dismissedInfoBannerIds.has(id) && currentInfoBannerId !== id) return;
+        currentInfoBannerId = id;
+        ibText.textContent = text;
+        if (tooltip) infoBanner.title = tooltip; else infoBanner.removeAttribute('title');
+        infoBanner.hidden = false;
+      }
+
+      function dismissInfoBanner(id, byUser) {
+        if (currentInfoBannerId !== id) return;
+        currentInfoBannerId = null;
+        infoBanner.hidden = true;
+        ibText.textContent = '';
+        if (byUser) dismissedInfoBannerIds.add(id);
+      }
+
       /** Hand the queued text to the agent, optionally cutting its turn short. */
       function flushQueued(interrupt) {
         if (queuedText === null) return;
@@ -2263,9 +2367,12 @@ export function buildHtml(
         const session = lastSession;
         const live = Boolean(session) && !isTerminal(session) && Boolean(session.busy) && Boolean(session.blockedOn);
         if (!live) {
+          // The block cleared (or the session exited) — the note hides AND the
+          // user's dismissal resets, so the NEXT block shows again.
           blockedSince = 0;
+          dismissedBlockedKey = null;
           blockedNote.hidden = true;
-          blockedNote.textContent = '';
+          blockedNoteText.textContent = '';
           return;
         }
         if (!blockedSince) blockedSince = Date.now();
@@ -2274,11 +2381,19 @@ export function buildHtml(
         // delay is worth a note, and it clears the instant live goes false.
         if (Date.now() - blockedSince < BLOCKED_NOTE_DELAY_MS) {
           blockedNote.hidden = true;
-          blockedNote.textContent = '';
+          blockedNoteText.textContent = '';
+          return;
+        }
+        // Dismissal is keyed on the (kind, toolCallId) pair: dismissing hides
+        // the note for THIS block, but a different toolCallId (or a different
+        // kind) is a new block worth showing again.
+        const key = session.blockedOn + ' · ' + (session.pendingToolCallId || '');
+        if (dismissedBlockedKey === key) {
+          blockedNote.hidden = true;
           return;
         }
         blockedNote.hidden = false;
-        blockedNote.textContent = 'blocked on ' + session.blockedOn +
+        blockedNoteText.textContent = 'blocked on ' + session.blockedOn +
           (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '');
       }
 
@@ -2786,8 +2901,21 @@ export function buildHtml(
         node.dataset.turnId = turn.id;
         // "You" labels a user turn; an unlabeled bubble (transparent
         // background, see CSS) reads as the assistant without repeating it
-        // on every single turn.
-        if (turn.role === 'user') node.appendChild(el('div', 'role', 'You'));
+        // on every single turn. A turn another session injected
+        // (agent_prompt) additionally carries the "⇄ from <id>" badge and
+        // the agent-sourced accent (E2) — same rendering as
+        // renderStaticTurn's frozen-history path.
+        if (turn.role === 'user') {
+          const role = el('div', 'role', 'You');
+          const source = describePromptSource(turn.promptSource);
+          if (source) {
+            node.classList.add('turn-agent-sourced');
+            const badge = el('span', 'prompt-source-badge', source.label);
+            badge.title = source.tooltip;
+            role.appendChild(badge);
+          }
+          node.appendChild(role);
+        }
         const bubble = el('div', 'bubble');
         node.appendChild(bubble);
         reconcileSegments(bubble, turn.segments || []);
@@ -3383,7 +3511,19 @@ export function buildHtml(
       // folded activity runs, plans, …) applies to frozen history for free.
       function renderStaticTurn(turn) {
         const node = el('div', 'turn turn-' + turn.role);
-        if (turn.role === 'user') node.appendChild(el('div', 'role', 'You'));
+        // Same agent-attribution badge as the live upsertTurn path (E2) — an
+        // ancestor turn another session injected is still agent-sourced.
+        if (turn.role === 'user') {
+          const role = el('div', 'role', 'You');
+          const source = describePromptSource(turn.promptSource);
+          if (source) {
+            node.classList.add('turn-agent-sourced');
+            const badge = el('span', 'prompt-source-badge', source.label);
+            badge.title = source.tooltip;
+            role.appendChild(badge);
+          }
+          node.appendChild(role);
+        }
         const bubble = el('div', 'bubble');
         node.appendChild(bubble);
         for (const seg of turn.segments || []) {
@@ -3888,6 +4028,20 @@ export function buildHtml(
         refreshComposer();
       });
       ebDismiss.addEventListener('click', clearError);
+      // The info banner's X dismisses by user choice (remembered so a same-id
+      // re-announce stays hidden — see dismissInfoBanner's byUser arm).
+      ibDismiss.addEventListener('click', function() {
+        if (currentInfoBannerId !== null) dismissInfoBanner(currentInfoBannerId, true);
+      });
+      // The blocked-note's X hides the note for the CURRENT (kind, toolCallId)
+      // pair only; a different pair re-shows it (see refreshBlockedNote).
+      blockedNoteDismiss.addEventListener('click', function() {
+        const session = lastSession;
+        if (session && session.blockedOn) {
+          dismissedBlockedKey = session.blockedOn + ' · ' + (session.pendingToolCallId || '');
+        }
+        blockedNote.hidden = true;
+      });
 
       // ── Header popovers ─────────────────────────────────────────────
       // A webview has no VS Code popover API, so this is plain DOM: toggle
@@ -4047,6 +4201,12 @@ export function buildHtml(
             break;
           case 'sendAck':
             setSending(false);
+            break;
+          case 'infoBanner':
+            showInfoBanner(msg.id, msg.text, msg.tooltip);
+            break;
+          case 'dismissInfoBanner':
+            dismissInfoBanner(msg.id, false);
             break;
           case 'attachmentUploaded':
             addAttachment(msg.path);

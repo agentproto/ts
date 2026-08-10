@@ -61,6 +61,7 @@ import {
   isExited,
   sendFailureTitle,
   toolIoDocumentName,
+  watcherBannerFor,
 } from "./transcript.logic.js"
 import { walkResumeChain } from "./resumeChain.logic.js"
 import type { ExtMessage, PresentedLine, ResumeChainEntry } from "./protocol.js"
@@ -111,6 +112,15 @@ export interface TranscriptPanelControllerOptions {
    * gesture. Tests inject 0 so they don't sleep.
    */
   sendRetryDelayMs?: number
+  /**
+   * Auto-dismiss delay (ms) for a TRANSIENT cross-session info banner (E3) —
+   * the "watcher detached" / "message from another session" ping clears
+   * itself after this long (the permanent affordance is the turn badge /
+   * watcher count; the banner is only the "something just happened" ping).
+   * Defaults to 10 000; tests inject a large value (or drive the timer) so
+   * they never wait on it.
+   */
+  infoBannerAutoDismissMs?: number
 }
 
 /**
@@ -259,6 +269,7 @@ export class TranscriptPanelController {
   private readonly fetchImpl: typeof fetch
   private readonly ptyBridgeFactory: NonNullable<TranscriptPanelControllerOptions["ptyBridgeFactory"]>
   private readonly sendRetryDelayMs: number
+  private readonly infoBannerAutoDismissMs: number
 
   private initSent = false
   private initPromise: Promise<void> | undefined
@@ -302,6 +313,14 @@ export class TranscriptPanelController {
   private catalog: CatalogModelsResponse | undefined
   private catalogRequested = false
 
+  // ── Cross-session info banners (E3) ─────────────────────────────────
+  /** `watchers` count on the PREVIOUS descriptor — the diff base for the
+   *  "a watcher attached/detached" banner. Seeded from the initial
+   *  descriptor so hydration doesn't announce a count the panel opened with. */
+  private prevWatchers: number
+  /** Live auto-dismiss timer for the transient info banner, if one's up. */
+  private infoBannerTimer: ReturnType<typeof setTimeout> | undefined
+
   private readonly renderers = { renderMarkdown, escapeHtml }
 
   constructor(opts: TranscriptPanelControllerOptions) {
@@ -315,6 +334,8 @@ export class TranscriptPanelController {
     this.fetchImpl = opts.fetchImpl ?? fetch
     this.ptyBridgeFactory = opts.ptyBridgeFactory ?? bridgePtyToWebview
     this.sendRetryDelayMs = opts.sendRetryDelayMs ?? 3000
+    this.infoBannerAutoDismissMs = opts.infoBannerAutoDismissMs ?? 10_000
+    this.prevWatchers = opts.initialSession.watchers ?? 0
     this.exited = isExited(opts.initialSession.status)
     // Open the raw stream up front so pre-ready lines are buffered for the
     // raw fallback. In structured mode these are ignored (see onLine).
@@ -333,6 +354,18 @@ export class TranscriptPanelController {
   onSessionUpdate(session: SessionDescriptor): void {
     this.exited = isExited(session.status)
     this.currentSession = session
+    // Cross-session visibility (E3): the watcher-count diff rides the
+    // descriptor the panel already receives — the bus attach/detach events
+    // never reach the structured record feed, so the panel diffs the count.
+    // Identity is NOT available here (count-only wording); see
+    // watcherBannerFor. Runs even pre-init so the diff base advances (an
+    // update that lands before init just folds into `pendingSessionUpdate`;
+    // a banner fired pre-init is still posted — the webview holds it).
+    const watcherText = watcherBannerFor(this.prevWatchers, session.watchers)
+    this.prevWatchers = session.watchers ?? 0
+    if (watcherText !== undefined) {
+      this.postInfoBanner("watcher", watcherText, { autoDismiss: watcherText === "Watcher detached" })
+    }
     // Fetch the catalog once (fire-and-forget); until it lands, routeSwitchable
     // is left undefined (chip stays active). Once cached, we re-post so the
     // route chip can settle into its dimmed/active state.
@@ -635,7 +668,47 @@ export class TranscriptPanelController {
   /** Fold newly-fetched records in and post a patch if the presented timeline changed. */
   private applyRecords(records: readonly SessionEventRecord[]): void {
     const added = this.appendRecords(records)
+    // Cross-session visibility (E3): a NEW agent-injected user-prompt is the
+    // "something just happened" ping. This path only runs on the LIVE feed /
+    // post-hydration poll — hydration folds records via `appendRecords`
+    // directly, so a historical agent prompt never re-announces on load.
+    // The permanent attribution is the turn badge (E2); this banner is the
+    // transient complement.
+    if (added) {
+      for (const rec of records) {
+        if (rec.kind !== "user-prompt" || !rec.source) continue
+        const match = /^agent:(.+)$/.exec(rec.source)
+        if (match) {
+          this.postInfoBanner(`agent-msg:${rec.seq}`, `Message from ${match[1]}`, {
+            autoDismiss: true,
+          })
+        }
+      }
+    }
     if (added && !this.disposed) this.postPatch()
+  }
+
+  /**
+   * Post a cross-session INFO banner (E3). Same `id` replaces the current
+   * banner (no stacking); a dismissed id may reappear on a new occurrence.
+   * `autoDismiss` arms a timer that sends `dismissInfoBanner` after
+   * `infoBannerAutoDismissMs` — for the transient "watcher detached" /
+   * "message arrived" pings; a "watcher attached" banner stays until the
+   * count changes (it describes an ongoing state, not a momentary event).
+   */
+  private postInfoBanner(id: string, text: string, opts: { autoDismiss?: boolean } = {}): void {
+    if (this.disposed) return
+    if (this.infoBannerTimer) {
+      clearTimeout(this.infoBannerTimer)
+      this.infoBannerTimer = undefined
+    }
+    this.messenger.postMessage({ type: "infoBanner", id, text })
+    if (opts.autoDismiss) {
+      this.infoBannerTimer = setTimeout(() => {
+        this.infoBannerTimer = undefined
+        if (!this.disposed) this.messenger.postMessage({ type: "dismissInfoBanner", id })
+      }, this.infoBannerAutoDismissMs)
+    }
   }
 
   /** Diff against the last posted snapshot and post ONLY when something changed. */
@@ -999,6 +1072,10 @@ export class TranscriptPanelController {
 
   dispose(): void {
     this.disposed = true
+    if (this.infoBannerTimer) {
+      clearTimeout(this.infoBannerTimer)
+      this.infoBannerTimer = undefined
+    }
     this.feed?.dispose()
     this.ptyHandle?.dispose()
     this.focusDisposable.dispose()

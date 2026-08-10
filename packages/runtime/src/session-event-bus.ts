@@ -23,6 +23,8 @@ export type SessionEventType =
   | "session:reaped"
   | "session:stalled"
   | "session:stall-cleared"
+  | "session:watcher-attached"
+  | "session:watcher-detached"
   | "session:bg-tasks-parked"
   | "session:bg-tasks-cleared"
   | "session:resumed"
@@ -236,6 +238,54 @@ export interface SessionStalledEvent {
 export interface SessionStallClearedEvent {
   type: "session:stall-cleared"
   sessionId: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted by the wait long-poll helper (`monitorSessionWait`) the moment a
+ * blocking wait actually SUBSCRIBES to this session — a `/sessions/:id/wait`
+ * long-poll or a `session_monitor` call that has to park. This is the bus
+ * twin of the ephemeral `watchers` descriptor counter (`incWatchers`,
+ * #session-visibility): where the counter lets `session_list` surface "N
+ * supervisors are blocked on this session", the event lets a LIVE consumer
+ * (the transcript panel inside the WATCHED session) react the instant a
+ * watcher appears rather than on its next descriptor poll. Detection +
+ * signal ONLY — nothing here changes the wait's own semantics. `watchers`
+ * is the counter AFTER the attach (read back from the registry, so a
+ * concurrent waiter is already reflected). `watcherSessionId` names the
+ * supervising session when the wait was initiated by one (the scoped
+ * orchestrator's `callerScope.ownerSessionId`); absent for an anonymous
+ * CLI/HTTP waiter. Same bus distribution as every other lifecycle event
+ * (`session_events_poll`, the webhook notifier, the routine engine,
+ * `session_monitor`). Paired with `session:watcher-detached` when the wait
+ * resolves or times out.
+ */
+export interface SessionWatcherAttachedEvent {
+  type: "session:watcher-attached"
+  sessionId: string
+  watchers: number
+  watcherSessionId?: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a blocking wait on this session releases its watcher — the
+ * wait resolved (a matching lifecycle event landed) or timed out; see
+ * {@link SessionWatcherAttachedEvent}. `watchers` is the counter AFTER the
+ * detach, so a consumer can tell "the last watcher left" (`0`) from "one of
+ * several left". Detection + signal only — a zero count does NOT imply the
+ * session is unsupervised in every sense (a completion policy watches via
+ * its own mechanism, not this counter); it only means no `monitorSessionWait`
+ * long-poll is currently parked on it. Same bus distribution as every other
+ * lifecycle event.
+ */
+export interface SessionWatcherDetachedEvent {
+  type: "session:watcher-detached"
+  sessionId: string
+  watchers: number
+  watcherSessionId?: string
   label?: string
   ts: string
 }
@@ -558,6 +608,8 @@ export type SessionEvent =
   | SessionReapedEvent
   | SessionStalledEvent
   | SessionStallClearedEvent
+  | SessionWatcherAttachedEvent
+  | SessionWatcherDetachedEvent
   | SessionBgTasksParkedEvent
   | SessionBgTasksClearedEvent
   | SessionResumedEvent

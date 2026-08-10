@@ -180,3 +180,75 @@ export function toolIoDocumentName(
   const short = segmentId.replace(/\W+/g, "").slice(-6) || "value"
   return `${safe} ${field} (${short}).${json ? "json" : "log"}`
 }
+
+/**
+ * Describe a user-prompt turn's provenance (`PresentedTurn.promptSource`,
+ * carried from the daemon's `user-prompt` record `source`) for the turn
+ * header badge. The daemon stamps `agent:<sessionId>` when another session
+ * injected the prompt (a supervisor's `agent_prompt`, a parent's spawn
+ * prompt); an unattributed human call has NO source at all — the caller
+ * renders nothing in that case, so this helper is only consulted with a
+ * non-empty string.
+ *
+ * Returns `undefined` for an empty/missing source (defensive — mirrors the
+ * human case). For the known `agent:<id>` shape the badge is the compact
+ * `⇄ from <shortId>` and the tooltip names the mechanism; ANY OTHER
+ * non-empty source (a future provenance vocabulary the panel doesn't know
+ * yet) still earns a badge, showing the raw string rather than dropping the
+ * attribution on the floor.
+ *
+ * `shortId` keeps the full id's tail (session ids are `sess_<hex>` — the
+ * tail is the discriminating part, matching `shortSessionId` in
+ * transcriptPanel.ts / client/sessionName.ts); the FULL id rides the
+ * tooltip so the badge never has to choose between compactness and
+ * precision.
+ */
+export function describePromptSource(
+  source: string | undefined,
+): { label: string; tooltip: string } | undefined {
+  if (!source) return undefined
+  const agentMatch = /^agent:(.+)$/.exec(source)
+  if (agentMatch) {
+    const id = agentMatch[1]!
+    const shortId = id.length > 8 ? id.slice(-6) : id
+    return {
+      label: `⇄ from ${shortId}`,
+      tooltip: `Injected by session ${id} via agent_prompt`,
+    }
+  }
+  return {
+    label: `⇄ ${source}`,
+    tooltip: `Prompt source: ${source}`,
+  }
+}
+
+/**
+ * Decide the cross-session info banner for a watcher-count change between
+ * two successive session descriptors (`onSessionUpdate`). The daemon's
+ * `session:watcher-attached`/`-detached` bus events do NOT reach the panel
+ * (they never flow through the structured events.jsonl record feed), so the
+ * panel diffs the ephemeral `watchers` counter it already receives and
+ * words the banner count-only — the attaching session's identity is
+ * generally not available panel-side.
+ *
+ * Returns the banner text to show, or `undefined` when the change isn't
+ * worth a ping: an increase announces the NEW watcher (`N waiting on this
+ * session`); a decrease only earns a banner when it reaches ZERO (the last
+ * watcher leaving is the notable transition — one of several detaching is
+ * noise). No change, a 0→0, or a partial decrease all return `undefined`.
+ */
+export function watcherBannerFor(
+  prev: number | undefined,
+  next: number | undefined,
+): string | undefined {
+  const before = prev ?? 0
+  const after = next ?? 0
+  if (after > before) {
+    return `A watcher attached — ${after} waiting on this session`
+  }
+  if (after < before && after === 0) {
+    return "Watcher detached"
+  }
+  return undefined
+}
+

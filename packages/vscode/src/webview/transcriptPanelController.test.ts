@@ -138,6 +138,7 @@ function make(
     autoPoll: boolean
     ptyBridgeFactory: TranscriptPanelControllerOptions["ptyBridgeFactory"]
     sendRetryDelayMs: number
+    infoBannerAutoDismissMs: number
   }> = {},
 ): { controller: TranscriptPanelController; messenger: ReturnType<typeof createMockMessenger>; store: ReturnType<typeof createMockStore> } {
   const messenger = createMockMessenger()
@@ -151,6 +152,7 @@ function make(
     autoPoll: opts.autoPoll ?? false,
     ptyBridgeFactory: opts.ptyBridgeFactory,
     sendRetryDelayMs: opts.sendRetryDelayMs,
+    infoBannerAutoDismissMs: opts.infoBannerAutoDismissMs,
   })
   return { controller, messenger, store }
 }
@@ -1225,5 +1227,96 @@ describe("TranscriptPanelController — onSend routing (FIX 1)", () => {
       expect(err.text).toBe("hello")
       expect(err.message).toContain("boom")
     }
+  })
+})
+
+describe("TranscriptPanelController — cross-session info banners (E3)", () => {
+  it("posts a watcher-attached banner when the descriptor's watcher count rises", async () => {
+    const client = createMockClient()
+    const { controller, messenger } = make(client)
+    await controller.onReady()
+    messenger.messages.length = 0
+
+    controller.onSessionUpdate(session({ watchers: 2 }))
+
+    expect(messenger.messages).toContainEqual({
+      type: "infoBanner",
+      id: "watcher",
+      text: "A watcher attached — 2 waiting on this session",
+    })
+  })
+
+  it("does not re-announce an unchanged watcher count", async () => {
+    const client = createMockClient()
+    const { controller, messenger } = make(client)
+    await controller.onReady()
+    controller.onSessionUpdate(session({ watchers: 2 }))
+    messenger.messages.length = 0
+
+    controller.onSessionUpdate(session({ watchers: 2 }))
+
+    expect(messenger.messages.find(m => m.type === "infoBanner")).toBeUndefined()
+  })
+
+  it("auto-dismisses the watcher-detached banner after the injected delay", async () => {
+    vi.useFakeTimers()
+    try {
+      const client = createMockClient()
+      const { controller, messenger } = make(client, { infoBannerAutoDismissMs: 50 })
+      controller.onSessionUpdate(session({ watchers: 1 }))
+      messenger.messages.length = 0
+
+      controller.onSessionUpdate(session({ watchers: 0 }))
+      expect(messenger.messages).toContainEqual({
+        type: "infoBanner",
+        id: "watcher",
+        text: "Watcher detached",
+      })
+
+      vi.advanceTimersByTime(60)
+      expect(messenger.messages).toContainEqual({ type: "dismissInfoBanner", id: "watcher" })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("banners a live agent-sourced prompt, but never one replayed at hydration", async () => {
+    // Hydration carries an agent-injected prompt from history: the turn badge
+    // (E2) is its permanent record; re-announcing it on every panel open would
+    // be noise, so NO banner.
+    const historical = ev({ kind: "user-prompt", text: "do the thing", source: "agent:sess_boss" })
+    const client = createMockClient({
+      getSessionEvents: vi.fn().mockResolvedValue(page([historical])),
+    })
+    const { controller, messenger } = make(client)
+    await controller.onReady()
+    expect(messenger.messages.find(m => m.type === "infoBanner")).toBeUndefined()
+
+    // The SAME kind of record arriving on the live feed IS the "something
+    // just happened" ping.
+    const live = ev({ kind: "user-prompt", text: "and another", source: "agent:sess_boss" })
+    client.getSessionEvents.mockResolvedValue(page([live]))
+    await controller.pollOnce()
+
+    expect(messenger.messages).toContainEqual({
+      type: "infoBanner",
+      id: `agent-msg:${live.seq}`,
+      text: "Message from sess_boss",
+    })
+  })
+
+  it("never banners a live prompt without an agent source (the human's own send)", async () => {
+    const client = createMockClient({
+      getSessionEvents: vi.fn().mockResolvedValue(page([])),
+    })
+    const { controller, messenger } = make(client)
+    await controller.onReady()
+    messenger.messages.length = 0
+
+    const live = ev({ kind: "user-prompt", text: "typed by the user" })
+    client.getSessionEvents.mockResolvedValue(page([live]))
+    await controller.pollOnce()
+
+    expect(messenger.messages.find(m => m.type === "infoBanner")).toBeUndefined()
   })
 })
