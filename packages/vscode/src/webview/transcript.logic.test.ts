@@ -188,6 +188,28 @@ describe("classifySendFailure", () => {
     expect(sendFailureTitle("other")).toBe("Send failed")
   })
 
+  it("classifies an AbortSignal.timeout TimeoutError as timeout", () => {
+    // What AbortSignal.timeout's TimeoutError DOMException actually says.
+    expect(classifySendFailure("The operation was aborted due to timeout")).toBe("timeout")
+    expect(classifySendFailure("The operation timed out")).toBe("timeout")
+    expect(sendFailureTitle("timeout")).toBe("Session is slow to respond")
+  })
+
+  it("classifies a plain abort as timeout — the client gave up, the daemon may still land the send", () => {
+    expect(classifySendFailure("This operation was aborted")).toBe("timeout")
+  })
+
+  it("keeps real daemon answers ahead of the timeout fallback", () => {
+    // A 409 mid-turn mentioning no timeout words still wins; a not-alive with
+    // 'aborted' in the payload still classifies as not-alive, never timeout.
+    expect(
+      classifySendFailure('HTTP 409 enqueuePrompt: session "s1" is mid-turn — wait for it to finish or cancel'),
+    ).toBe("busy")
+    expect(classifySendFailure('HTTP 409 {"error":"session_not_alive","detail":"turn aborted"}')).toBe(
+      "not-alive",
+    )
+  })
+
   it("does not mistake a session id containing 409 for a busy rejection", () => {
     expect(classifySendFailure("POST /sessions/sess_409abc/prompt failed: HTTP 500 boom")).toBe("other")
   })

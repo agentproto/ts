@@ -104,6 +104,13 @@ export interface TranscriptPanelControllerOptions {
     messenger: PanelMessenger,
     initialDims: { cols: number; rows: number },
   ) => { sendInput(text: string): void; resize(cols: number, rows: number): void; dispose(): void }
+  /**
+   * Delay (ms) before the ONE automatic retry of a send whose prompt POST
+   * timed out (see {@link onSend}). Defaults to 3000 — long enough for the
+   * daemon's lazy resume to settle, short enough to feel like the same
+   * gesture. Tests inject 0 so they don't sleep.
+   */
+  sendRetryDelayMs?: number
 }
 
 /**
@@ -251,6 +258,7 @@ export class TranscriptPanelController {
   private readonly autoPoll: boolean
   private readonly fetchImpl: typeof fetch
   private readonly ptyBridgeFactory: NonNullable<TranscriptPanelControllerOptions["ptyBridgeFactory"]>
+  private readonly sendRetryDelayMs: number
 
   private initSent = false
   private initPromise: Promise<void> | undefined
@@ -306,6 +314,7 @@ export class TranscriptPanelController {
     this.autoPoll = opts.autoPoll ?? true
     this.fetchImpl = opts.fetchImpl ?? fetch
     this.ptyBridgeFactory = opts.ptyBridgeFactory ?? bridgePtyToWebview
+    this.sendRetryDelayMs = opts.sendRetryDelayMs ?? 3000
     this.exited = isExited(opts.initialSession.status)
     // Open the raw stream up front so pre-ready lines are buffered for the
     // raw fallback. In structured mode these are ignored (see onLine).
@@ -747,33 +756,82 @@ export class TranscriptPanelController {
   async onSend(text: string, interrupt: boolean): Promise<void> {
     if (this.isSending) return
     this.isSending = true
-    this.messenger.postMessage({ type: "sending" })
+    // Sending to a terminal-status session triggers the daemon's lazy resume
+    // (maybeResumeAgent respawns the adapter) — that can take far longer than
+    // an ordinary admission, so say so up front instead of letting the user
+    // stare at silence.
+    this.messenger.postMessage(
+      isExited(this.currentSession.status)
+        ? { type: "sending", note: "Waking session…" }
+        : { type: "sending" },
+    )
     try {
-      if (this.currentSession.kind === "terminal") {
-        // A PTY/terminal session has no agent `prompt` route (that 400s for
-        // kind=terminal) — reply flows through the terminal-input broker
-        // instead. A terminal has no mid-turn ACP queue, so `interrupt` is a
-        // no-op here and is ignored. The native autoPoll reflects the reply
-        // back on its own (see pollOnce/fetchNewNativeRecords) — nothing else
-        // to do.
-        await this.client.writeTerminalInput(this.sessionId, text)
-      } else {
-        await this.client.prompt(this.sessionId, text, { interrupt, wait: false })
+      // The prompt route awaits admission even in fire-and-forget mode, so a
+      // resume/slow adapter can push the POST past the client timeout — the
+      // daemon often completes the send a beat later, which is exactly why a
+      // manual retry "worked". Automate that ONE retry on a timeout
+      // classification; a genuine refusal (busy/not-alive/other) never
+      // retries. isSending stays true for the whole arc so a concurrent
+      // onSend is still suppressed during the wait.
+      const maxAttempts = 2
+      for (let attempt = 1; ; attempt++) {
+        try {
+          if (this.currentSession.kind === "terminal") {
+            // A PTY/terminal session has no agent `prompt` route (that 400s
+            // for kind=terminal) — reply flows through the terminal-input
+            // broker instead. A terminal has no mid-turn ACP queue, so
+            // `interrupt` is a no-op here and is ignored. The native autoPoll
+            // reflects the reply back on its own (see
+            // pollOnce/fetchNewNativeRecords) — nothing else to do.
+            await this.client.writeTerminalInput(this.sessionId, text)
+          } else {
+            await this.client.prompt(this.sessionId, text, { interrupt, wait: false })
+          }
+          this.messenger.postMessage({ type: "sendAck" })
+          return
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          // Echo the text back alongside a classification: a mid-turn
+          // rejection is not an error the user should see, it's a cue to
+          // queue the text and send it when the turn ends (see
+          // classifySendFailure).
+          const kind = classifySendFailure(message)
+          if (kind === "timeout" && attempt < maxAttempts) {
+            // First timeout: never leave the user staring at silence — say
+            // we're retrying, wait for the daemon's work to land, then resend
+            // the SAME text exactly once.
+            this.messenger.postMessage({
+              type: "sending",
+              note: "Session is slow to respond — retrying…",
+            })
+            await new Promise(resolve => setTimeout(resolve, this.sendRetryDelayMs))
+            continue
+          }
+          if (kind === "busy" && attempt > 1) {
+            // The retry landed mid-turn. Given the first attempt TIMED OUT
+            // client-side while the daemon's route handler kept running, the
+            // overwhelmingly likely story is: the daemon dispatched our first
+            // prompt anyway (that's the mechanism behind the timeout), and
+            // this retry is what got refused. Treating the 409 as proof the
+            // text was delivered — ack and stop here. Posting the busy
+            // sendError instead would make the webview QUEUE the same text
+            // and re-send it at turn-end, executing the instruction TWICE.
+            // Trade-off: in the rare case the turn belongs to a concurrent
+            // third-party prompt, the user sees no reply and resends —
+            // strictly better than a silent double execution.
+            this.messenger.postMessage({ type: "sendAck" })
+            return
+          }
+          this.messenger.postMessage({
+            type: "sendError",
+            message,
+            kind,
+            title: sendFailureTitle(kind),
+            text,
+          })
+          return
+        }
       }
-      this.messenger.postMessage({ type: "sendAck" })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      // Echo the text back alongside a classification: a mid-turn rejection is
-      // not an error the user should see, it's a cue to queue the text and
-      // send it when the turn ends (see classifySendFailure).
-      const kind = classifySendFailure(message)
-      this.messenger.postMessage({
-        type: "sendError",
-        message,
-        kind,
-        title: sendFailureTitle(kind),
-        text,
-      })
     } finally {
       this.isSending = false
     }

@@ -121,13 +121,20 @@ export function formatSubtitle(session: Pick<SessionDescriptor, "adapterSlug" | 
  * normal, so the panel holds the message and sends it when the turn ends —
  * this classification is what tells it to queue instead of shouting.
  */
-export type SendFailureKind = "busy" | "not-alive" | "other"
+export type SendFailureKind = "busy" | "not-alive" | "timeout" | "other"
 
 export function classifySendFailure(message: string): SendFailureKind {
   // Match the daemon's own wording/status rather than a substring of the URL,
   // which carries a session id and would false-positive on any 409.
   if (/\b409\b/.test(message) && /mid-turn/i.test(message)) return "busy"
   if (/session_not_alive/i.test(message) || /not alive/i.test(message)) return "not-alive"
+  // AbortSignal.timeout throws a TimeoutError DOMException ("The operation was
+  // aborted due to timeout"); a plain AbortController abort says "This
+  // operation was aborted". Both surface here as the client giving up on a
+  // send the daemon may still complete — distinct from a real refusal, and
+  // worth one automatic retry (see TranscriptPanelController.onSend). Checked
+  // AFTER the 409/not-alive arms so a real daemon answer never misclassifies.
+  if (/abort|timed?[ -]?out/i.test(message)) return "timeout"
   return "other"
 }
 
@@ -138,6 +145,8 @@ export function sendFailureTitle(kind: SendFailureKind): string {
       return "Agent is mid-turn"
     case "not-alive":
       return "Session is no longer running"
+    case "timeout":
+      return "Session is slow to respond"
     case "other":
       return "Send failed"
   }

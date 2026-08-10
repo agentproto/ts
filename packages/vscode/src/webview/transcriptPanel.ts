@@ -2220,10 +2220,10 @@ export function buildHtml(
         renderBook();
       }
 
-      function setSending(sending) {
+      function setSending(sending, note) {
         isSending = sending;
         refreshComposer();
-        sendStatus.textContent = sending ? 'Sending…' : '';
+        sendStatus.textContent = sending ? (note || 'Sending…') : '';
       }
 
       // A terminal session is over: whatever busy/blockedOn still say about an
@@ -4043,7 +4043,7 @@ export function buildHtml(
             if (mode !== 'structured') appendLines(msg.lines);
             break;
           case 'sending':
-            setSending(true);
+            setSending(true, msg.note);
             break;
           case 'sendAck':
             setSending(false);

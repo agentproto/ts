@@ -154,7 +154,17 @@ export type ExtMessage =
       /** Latest session descriptor (cost, status, tokens, etc.). */
       session: SessionDescriptor
     }
-  | { type: "sending" }
+  | {
+      type: "sending"
+      /**
+       * Optional status line shown in place of the bare "Sending…" — e.g.
+       * "Waking session…" when the send will trigger a lazy resume, or
+       * "Session is slow to respond — retrying…" during the one automatic
+       * retry after a prompt timeout (see TranscriptPanelController.onSend).
+       * Absent for an ordinary send.
+       */
+      note?: string
+    }
   | { type: "sendAck" }
   /**
    * A prompt POST was refused. `kind` decides the panel's reaction: "busy"

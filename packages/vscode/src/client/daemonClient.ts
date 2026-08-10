@@ -316,10 +316,22 @@ export class DaemonClient {
   ): Promise<unknown> {
     const wait = opts.wait ?? true
     const url = `/sessions/${encodeURIComponent(id)}/prompt?wait=${wait ? "true" : "false"}`
-    return this.postJson<unknown>(url, {
-      prompt,
-      ...(opts.interrupt ? { interrupt: true } : {}),
-    })
+    return this.postJson<unknown>(
+      url,
+      {
+        prompt,
+        ...(opts.interrupt ? { interrupt: true } : {}),
+      },
+      // The prompt route AWAITS registry.enqueuePrompt even in wait=false
+      // (fire-and-forget) mode, because admission includes the lazy resume
+      // attempt (maybeResumeAgent respawns a dead/reaped adapter) plus the
+      // admission checks. A resume — or a slow adapter — can blow well past
+      // the blanket 30s, so the client aborted with a TimeoutError while the
+      // daemon finished the work anyway (which is why the instant retry
+      // "worked"). Give the prompt POST enough room for a cold resume; every
+      // other route keeps the 30s default.
+      { timeoutMs: 120_000 },
+    )
   }
 
   /**
@@ -1128,8 +1140,8 @@ export class DaemonClient {
     return this.request<T>("GET", path)
   }
 
-  private async postJson<T>(path: string, body: unknown): Promise<T> {
-    return this.request<T>("POST", path, body)
+  private async postJson<T>(path: string, body: unknown, opts: { timeoutMs?: number } = {}): Promise<T> {
+    return this.request<T>("POST", path, body, opts)
   }
 
   private async deleteJson<T>(path: string): Promise<T> {
@@ -1177,12 +1189,13 @@ export class DaemonClient {
     method: string,
     path: string,
     body?: unknown,
+    opts: { timeoutMs?: number } = {},
   ): Promise<T> {
     const res = await this.authedFetch(path, {
       method,
       headers: { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      timeoutMs: 30_000,
+      timeoutMs: opts.timeoutMs ?? 30_000,
     })
     if (!res.ok) {
       throw new Error(`${method} ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
