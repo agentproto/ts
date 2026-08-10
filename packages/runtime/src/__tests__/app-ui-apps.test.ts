@@ -13,6 +13,7 @@ import {
   appUiToolId,
   createUiHtmlCache,
   injectMcpAppBridge,
+  injectStandaloneAppBridge,
   makeInstalledAppUiApps,
 } from "../app-ui-apps.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
@@ -168,5 +169,24 @@ describe("injectMcpAppBridge", () => {
     const once = injectMcpAppBridge(html)
     const twice = injectMcpAppBridge(once)
     expect(twice).toBe(once)
+  })
+})
+
+describe("injectStandaloneAppBridge", () => {
+  it("injects the REST bridge after <head>, before the app's own scripts", () => {
+    const html =
+      "<html><head><title>t</title></head><body><script>window.McpApp.connect();</script></body></html>"
+    const out = injectStandaloneAppBridge(html)
+    expect(out).toContain('fetch("./tool-call"')
+    // The app html referencing window.McpApp must NOT suppress injection
+    // (unlike injectMcpAppBridge's idempotence check) — every bundled UI
+    // calls window.McpApp.connect(), and standalone serving still needs
+    // the bridge defined first.
+    expect(out.indexOf('fetch("./tool-call"')).toBeLessThan(out.indexOf("window.McpApp.connect()"))
+  })
+
+  it("falls back to prepending when there is no structural tag at all", () => {
+    const out = injectStandaloneAppBridge("Panel")
+    expect(out.indexOf('fetch("./tool-call"')).toBeLessThan(out.indexOf("Panel"))
   })
 })

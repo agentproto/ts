@@ -1406,6 +1406,21 @@ export async function createGateway(
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
 
+  // Same proxy `mcp_imported_call` (session-tools.ts) dispatches through —
+  // unwraps `{ok,result}|{ok:false,error}` into a plain return-or-throw for
+  // `app_tool_call`'s `imported:<alias>/<toolName>` ids. Hoisted so the MCP
+  // verb (registerAppTools below) and the REST twin (startHttpServer's
+  // `appToolCallDeps`) share one definition.
+  const callImportedAppTool = async (
+    alias: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const out = await mcpProxy.callTool(alias, tool, args)
+    if (!out.ok) throw new Error(`app_tool_call: imported "${alias}".${tool}: ${out.error}`)
+    return out.result
+  }
+
   // Transmitter binding store — single shared instance mapping an
   // agentpush (alias, source, contactRef) triple to the agentproto
   // session its replies should route into. Shared by the inbound
@@ -1713,15 +1728,7 @@ export async function createGateway(
       listRegisteredToolIds,
       appRegistry,
       dispatchTool,
-      // Same proxy `mcp_imported_call` (session-tools.ts) dispatches
-      // through — unwraps `{ok,result}|{ok:false,error}` into a plain
-      // return-or-throw for `app_tool_call`'s `imported:<alias>/<toolName>`
-      // ids.
-      callImportedTool: async (alias, tool, args) => {
-        const out = await mcpProxy.callTool(alias, tool, args)
-        if (!out.ok) throw new Error(`app_tool_call: imported "${alias}".${tool}: ${out.error}`)
-        return out.result
-      },
+      callImportedTool: callImportedAppTool,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
@@ -1965,6 +1972,10 @@ export async function createGateway(
     appRegistry,
     performAppInstall: performInstall,
     listRegisteredToolIds,
+    // Same dispatch pair registerAppTools gets above — the REST
+    // /apps/:appId/tool-call twin must run the exact chain the MCP
+    // app_tool_call verb runs.
+    appToolCallDeps: { dispatchTool, callImportedTool: callImportedAppTool },
     // POST /inbound push ingress — same shared transmitterBindings store
     // and liveness/restart adapters the inbound watcher's "route"/
     // "route-or-spawn" modes use above. No `spawnForContact`: an

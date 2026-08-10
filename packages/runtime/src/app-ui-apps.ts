@@ -79,22 +79,81 @@ const MCP_APP_BRIDGE_SCRIPT = `<script>
 </script>
 `
 
-/** Inject `MCP_APP_BRIDGE_SCRIPT` right after the earliest structural
- *  opening tag the document has (`<head>`, else `<body>`, else `<html>`,
- *  else prepend), so the bridge is defined before any app script runs.
- *  Idempotent: a no-op if the document already defines `window.McpApp`
- *  (e.g. an app that inlines its own shim, or html already injected by an
- *  earlier pass through this same cache). */
-export function injectMcpAppBridge(html: string): string {
-  if (/window\.McpApp\b/.test(html)) return html
+/** Insert `script` right after the earliest structural opening tag the
+ *  document has (`<head>`, else `<body>`, else `<html>`, else prepend), so
+ *  the injected bridge is defined before any app script runs. */
+function injectAfterStructuralTag(html: string, script: string): string {
   for (const tag of ["head", "body", "html"]) {
     const match = html.match(new RegExp(`<${tag}[^>]*>`, "i"))
     if (match?.index !== undefined) {
       const insertAt = match.index + match[0].length
-      return html.slice(0, insertAt) + MCP_APP_BRIDGE_SCRIPT + html.slice(insertAt)
+      return html.slice(0, insertAt) + script + html.slice(insertAt)
     }
   }
-  return MCP_APP_BRIDGE_SCRIPT + html
+  return script + html
+}
+
+/** Inject `MCP_APP_BRIDGE_SCRIPT` (see `injectAfterStructuralTag` for the
+ *  placement rule). Idempotent: a no-op if the document already defines
+ *  `window.McpApp` (e.g. an app that inlines its own shim, or html already
+ *  injected by an earlier pass through this same cache). */
+export function injectMcpAppBridge(html: string): string {
+  if (/window\.McpApp\b/.test(html)) return html
+  return injectAfterStructuralTag(html, MCP_APP_BRIDGE_SCRIPT)
+}
+
+/**
+ * The standalone-browser-tab twin of `MCP_APP_BRIDGE_SCRIPT` — same
+ * `window.McpApp.connect() -> Promise<{ callTool, sendMessage }>` surface,
+ * but `callTool` POSTs to the sibling `./tool-call` route (http-server.ts's
+ * `POST /apps/:appId/tool-call`) instead of JSON-RPC over `postMessage`,
+ * so `GET /apps/:appId/ui` renders a working app with no host iframe at
+ * all. `callTool` resolves with the route's body — the same MCP result
+ * envelope a postMessage host's `tools/call` reply carries — so an app's
+ * unwrapping code (see media-viewer's `unwrapText`) behaves identically in
+ * both modes. There is no chat host to receive `ui/message`, so
+ * `sendMessage` rejects.
+ *
+ * Injected INSTEAD OF (not on top of) the postMessage bridge: that bridge's
+ * `connect()` rejects when `window.parent === window`, which is exactly the
+ * standalone case this one exists for.
+ */
+const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
+(function () {
+  if (window.McpApp) return;
+  window.McpApp = {
+    connect: function () {
+      return Promise.resolve({
+        callTool: function (name, args) {
+          return fetch("./tool-call", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ tool: name, args: args || {} })
+          }).then(function (res) {
+            return res.json().catch(function () {
+              throw new Error("tool-call failed: HTTP " + res.status);
+            }).then(function (body) {
+              if (!res.ok) throw new Error((body && body.error) || ("tool-call failed: HTTP " + res.status));
+              return body;
+            });
+          });
+        },
+        sendMessage: function () {
+          return Promise.reject(new Error("sendMessage: no chat host (standalone mode)"));
+        }
+      });
+    }
+  };
+})();
+</script>
+`
+
+/** Inject the standalone REST bridge (placement rule shared with
+ *  `injectMcpAppBridge`). Meant for raw `ui.path` html — the script guards
+ *  on an existing `window.McpApp` at runtime, so an app shipping its own
+ *  shim keeps it. */
+export function injectStandaloneAppBridge(html: string): string {
+  return injectAfterStructuralTag(html, STANDALONE_REST_BRIDGE_SCRIPT)
 }
 
 /** Per-path HTML cache keyed by `(path, version)` — a request rebuilds the

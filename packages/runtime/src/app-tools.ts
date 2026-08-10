@@ -70,6 +70,65 @@ function errorResult(text: string): {
   return { content: [{ type: "text", text: JSON.stringify({ error: text }) }], isError: true }
 }
 
+function notEnabled(tool: string): ReturnType<typeof errorResult> {
+  return errorResult(
+    `${tool} is not enabled — the daemon was started without an adapter resolver. ` +
+      "Re-run the daemon with the `@agentproto/cli` shim wired (see playground/scripts/gateway.ts).",
+  )
+}
+
+export interface AppToolCallDeps {
+  dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
+  callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
+}
+
+/**
+ * The `app_tool_call` gateway's whole behaviour — allowlist enforcement
+ * against the installed app's `ui.tools`, then dispatch through the daemon's
+ * own tools or an imported MCP server — shared verbatim between the MCP verb
+ * below and the HTTP twin (`POST /apps/:appId/tool-call`, http-server.ts) so
+ * the two surfaces can never drift. Returns the MCP result envelope both
+ * callers hand back untouched.
+ */
+export async function performAppToolCall(
+  appRegistry: AppRegistry,
+  input: { appId: string; tool: string; args?: Record<string, unknown> },
+  deps: AppToolCallDeps,
+): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
+  const installed = appRegistry.getApp(input.appId)
+  if (!installed || !installed.ui) {
+    return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
+  }
+  const allowlist = installed.ui.tools ?? []
+  if (!allowlist.includes(input.tool)) {
+    return errorResult(
+      `app_tool_call: tool "${input.tool}" is not in app "${input.appId}"'s ui.tools allowlist: ` +
+        `${allowlist.length > 0 ? allowlist.join(", ") : "(empty)"}`,
+    )
+  }
+
+  const args = input.args ?? {}
+  try {
+    if (input.tool.startsWith("imported:")) {
+      if (!deps.callImportedTool) return notEnabled("app_tool_call")
+      const rest = input.tool.slice("imported:".length)
+      const slash = rest.indexOf("/")
+      if (slash === -1) {
+        return errorResult(
+          `app_tool_call: malformed imported tool id "${input.tool}" — expected "imported:<alias>/<toolName>".`,
+        )
+      }
+      const result = await deps.callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), args)
+      return textResult(result)
+    }
+    if (!deps.dispatchTool) return notEnabled("app_tool_call")
+    const result = await deps.dispatchTool(input.tool, args)
+    return textResult(result)
+  } catch (err) {
+    return errorResult(`app_tool_call: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 function refIdOf(ref: AnyRef): string {
   if (typeof ref === "string") return ref
   return ref.ref ?? ref.file ?? "inline"
@@ -250,12 +309,6 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     ...(opts.persistPath !== undefined ? { persistPath: opts.persistPath } : {}),
     ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
   })
-
-  const notEnabled = (tool: string) =>
-    errorResult(
-      `${tool} is not enabled — the daemon was started without an adapter resolver. ` +
-        "Re-run the daemon with the `@agentproto/cli` shim wired (see playground/scripts/gateway.ts).",
-    )
 
   server.tool(
     "app_install",
@@ -566,40 +619,11 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       tool: z.string().describe("A tool id from the app's `ui.tools` allowlist."),
       args: z.record(z.string(), z.unknown()).optional().describe("Tool arguments. Default: empty object."),
     },
-    async input => {
-      const installed = appRegistry.getApp(input.appId)
-      if (!installed || !installed.ui) {
-        return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
-      }
-      const allowlist = installed.ui.tools ?? []
-      if (!allowlist.includes(input.tool)) {
-        return errorResult(
-          `app_tool_call: tool "${input.tool}" is not in app "${input.appId}"'s ui.tools allowlist: ` +
-            `${allowlist.length > 0 ? allowlist.join(", ") : "(empty)"}`,
-        )
-      }
-
-      const args = input.args ?? {}
-      try {
-        if (input.tool.startsWith("imported:")) {
-          if (!callImportedTool) return notEnabled("app_tool_call")
-          const rest = input.tool.slice("imported:".length)
-          const slash = rest.indexOf("/")
-          if (slash === -1) {
-            return errorResult(
-              `app_tool_call: malformed imported tool id "${input.tool}" — expected "imported:<alias>/<toolName>".`,
-            )
-          }
-          const result = await callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), args)
-          return textResult(result)
-        }
-        if (!dispatchTool) return notEnabled("app_tool_call")
-        const result = await dispatchTool(input.tool, args)
-        return textResult(result)
-      } catch (err) {
-        return errorResult(`app_tool_call: ${err instanceof Error ? err.message : String(err)}`)
-      }
-    },
+    async input =>
+      performAppToolCall(appRegistry, input, {
+        ...(dispatchTool ? { dispatchTool } : {}),
+        ...(callImportedTool ? { callImportedTool } : {}),
+      }),
   )
 
   server.tool(
