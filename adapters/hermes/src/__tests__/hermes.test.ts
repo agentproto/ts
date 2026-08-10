@@ -33,6 +33,28 @@ describe("@agentproto/adapter-hermes", () => {
     expect(hermes.models?.deny).toContain("claude-*")
   })
 
+  it("generates OpenRouter model ids in canonical `vendor/product@route` format", () => {
+    // Regression test for a format bug: generated OpenRouter entries must use
+    // the `@openrouter` suffix (route-identity canonical form), NOT an
+    // `openrouter/<vendor>/<id>` 3-segment prefix — the latter fails route
+    // parsing. Note: `openrouter/auto@openrouter` is valid — the vendor name
+    // IS "openrouter" there, so a bare startsWith check would false-positive.
+    const allowed = hermes.models?.allowed ?? []
+    const openrouterEntries = allowed.filter(
+      (entry): entry is { id: string; provider: string } =>
+        typeof entry !== "string" && entry.provider === "openrouter",
+    )
+    expect(openrouterEntries.length).toBeGreaterThan(0)
+    for (const entry of openrouterEntries) {
+      expect(entry.id).toMatch(/@openrouter$/)
+      // Must be `vendor/product@openrouter` (2 segments before @), never
+      // `openrouter/vendor/product` (3-segment prefix without @route suffix).
+      const beforeRoute = entry.id.replace(/@openrouter$/, "")
+      const segments = beforeRoute.split("/")
+      expect(segments.length).toBeLessThanOrEqual(2)
+    }
+  })
+
   it("declares persistent session policy", () => {
     expect(hermes.session?.mode).toBe("persistent")
     expect(hermes.session?.idle_timeout_ms).toBe(1_800_000)

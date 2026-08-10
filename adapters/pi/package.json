@@ -59,6 +59,7 @@
   },
   "dependencies": {
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/model-catalog": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
