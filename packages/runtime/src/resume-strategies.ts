@@ -287,6 +287,13 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
   if (!id) return prev
   return {
     ...prev,
+    // When `adapterSessionId` was never captured (session killed before
+    // the ACP handshake completed), backfill it from the fsProbe result
+    // so the agent restart path can attempt ACP-level resume too — not
+    // just the PTY-native path. For claude-code (and most adapters) the
+    // on-disk conversation id IS the ACP session id, so the values are
+    // interchangeable. Only backfills; never overwrites an existing id.
+    ...(!prev.adapterSessionId ? { adapterSessionId: id } : {}),
     resumeMetadata: {
       ...(prev.resumeMetadata ?? {}),
       [strategy.storeAs]: id,

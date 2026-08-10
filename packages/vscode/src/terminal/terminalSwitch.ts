@@ -170,6 +170,8 @@ export function registerTerminalSwitch(
           vscode.window.showWarningMessage(
             `agentproto: restart of ${describeSession(session)} did not become a terminal — the daemon fell back to ACP resume because the provider transcript could not be recovered.`,
           )
+          await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
+          return
         }
         await vscode.commands.executeCommand("agentproto.openTerminal", result.id)
       } catch (err) {
