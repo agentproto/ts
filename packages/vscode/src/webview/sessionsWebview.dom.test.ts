@@ -210,7 +210,7 @@ describe("sessions webview — render", () => {
     const row = el(panel, "list").querySelector('[data-id="s1"]')!
     const eye = row.querySelector(".eye")!
     expect(eye.textContent).toContain("2")
-    expect(htmlEl(eye).getAttribute("title")).toContain("supervised — notify on turn-end")
+    expect(htmlEl(eye).getAttribute("title")).toContain("waiters attached via the daemon")
     const origin = row.querySelector(".origin")!
     expect(origin.textContent).toBe("vscode")
   })

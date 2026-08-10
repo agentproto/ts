@@ -18,6 +18,7 @@ const iconPath = (file: string): string => join(process.cwd(), ...TAB_ICON_DIR, 
 const ALL_ACTIVITIES: SessionActivity[] = [
   "needs-you",
   "stalled",
+  "parked-bg",
   "working",
   "idle",
   "failed",
@@ -60,7 +61,7 @@ describe("tabIconFor", () => {
     }
     // Warning/error read on either theme — a second file would be a second
     // thing to keep in sync for no gain.
-    for (const activity of ["needs-you", "stalled", "failed"] as const) {
+    for (const activity of ["needs-you", "stalled", "parked-bg", "failed"] as const) {
       const icon = tabIconFor(activity)
       expect(icon.light, activity).toBe(icon.dark)
     }
@@ -94,7 +95,7 @@ describe("tabIconFor", () => {
   })
 
   it("keeps unread off every other state, exactly as the tree does", () => {
-    for (const activity of ["working", "done", "stopped", "needs-you", "stalled", "failed"] as const) {
+    for (const activity of ["working", "done", "stopped", "needs-you", "stalled", "parked-bg", "failed"] as const) {
       expect(tabIconFor(activity, true), activity).toEqual(tabIconFor(activity, false))
     }
   })

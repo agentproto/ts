@@ -54,7 +54,7 @@ const STATUS_TO_ACTIVITIES: Record<
   SessionFilterState["status"][number],
   readonly SessionActivity[]
 > = {
-  live: ["working", "idle", "stalled"],
+  live: ["working", "idle", "stalled", "parked-bg"],
   awaiting: ["needs-you"],
   done: ["done"],
   stopped: ["stopped"],
