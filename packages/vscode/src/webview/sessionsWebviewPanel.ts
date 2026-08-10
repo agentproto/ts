@@ -713,19 +713,14 @@ export function buildHtml(nonce: string): string {
     .row.archived { opacity: 0.6; }
     .row.gone { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; transition: all 0.25s ease; }
     .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
-    .dot.working { background: var(--working); animation: agentproto-pulse 2s infinite; }
-    /* Delegating — active through its subtree: the working colour (so it reads
-       live) but a steady ring, not the pulsing fill, since this session itself
-       isn't the one generating. */
-    .dot.delegating { background: transparent; border: 2px solid var(--working); }
+    .dot.working { background: var(--ws, var(--working)); animation: agentproto-pulse 2s infinite; }
+    .dot.delegating { background: transparent; border: 2px solid var(--ws, var(--working)); }
     .dot.awaiting { background: var(--awaiting); }
     .dot.stalled, .dot.failed { background: var(--stalled); }
-    /* Parked — quiet but supervised: a faint filled dot, distinct from a bare
-       idle ring, so "someone will re-prompt this" reads without shouting. */
-    .dot.parked { background: var(--faint); }
-    .dot.idle, .dot.stopped { background: transparent; border: 1px solid var(--faint); }
-    .dot.done { background: var(--faint); }
-    .dot.done.unread { background: var(--working); border-color: var(--working); }
+    .dot.parked { background: var(--ws, var(--faint)); opacity: 0.5; }
+    .dot.idle, .dot.stopped { background: transparent; border: 1px solid var(--ws, var(--faint)); opacity: 0.7; }
+    .dot.done { background: var(--ws, var(--faint)); opacity: 0.55; }
+    .dot.done.unread { background: var(--ws, var(--working)); opacity: 1; border-color: var(--ws, var(--working)); }
     @keyframes agentproto-pulse { 50% { opacity: 0.4; } }
     @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .spin { animation: none !important; } }
     .mid { flex: 1; min-width: 0; }
@@ -762,9 +757,8 @@ export function buildHtml(nonce: string): string {
     .name .lineage { color: var(--faint); font-weight: 400; }
     .row.nested { border-left: 1px solid var(--border); }
     .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .meta { display: flex; gap: 8px; margin-top: 3px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
-    .meta .proj { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); }
-    .meta .psq { width: 6px; height: 6px; border-radius: 2px; display: inline-block; }
+    .meta-loc { margin-top: 3px; font-size: 11px; color: var(--faint); }
+    .meta { display: flex; gap: 8px; margin-top: 1px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
     .meta .harness { display: inline-flex; align-items: center; gap: 4px; }
     .meta .model { color: var(--dim); }
     .ctxbar { display: inline-flex; align-items: center; gap: 5px; }
@@ -882,15 +876,14 @@ export function buildHtml(nonce: string): string {
         return '';
       }
 
+      function metaLocHTML(r) {
+        return escapeHtml(r.tag);
+      }
+
       function metaHTML(r) {
         var parts = [];
-        if (r.workspace) {
-          parts.push('<span class="proj"><span class="psq" style="background:' + escapeHtml(r.workspace.css || '#808080') + '"></span>' + escapeHtml(r.workspace.label) + '</span>');
-        } else {
-          parts.push('<span class="proj"><span class="psq" style="background:#808080"></span>unassigned</span>');
-        }
-        parts.push('<span>' + escapeHtml(r.tag) + '</span>');
-        parts.push('<span class="harness"><span class="g">' + escapeHtml(r.harnessGlyph) + '</span>' + (r.model ? '<span class="model">' + escapeHtml(r.model) + '</span>' : '') + '</span>');
+        var shortModel = r.model ? r.model.split('/').pop() : '';
+        parts.push('<span class="harness"><span class="g">' + escapeHtml(r.harnessGlyph) + '</span>' + (r.model ? '<span class="model" title="' + escapeHtml(r.model) + '">' + escapeHtml(shortModel) + '</span>' : '') + '</span>');
         if (typeof r.ctxPercent === 'number') {
           parts.push('<span class="ctxbar"><span class="track"><span class="fill" style="width:' + r.ctxPercent + '%"></span></span>' + r.ctxPercent + '%</span>');
         }
@@ -906,23 +899,25 @@ export function buildHtml(nonce: string): string {
           (depth > 0 ? '<span class="lineage" aria-hidden="true">↳</span>' : '') +
           '<span>' + escapeHtml(r.name) + '</span>' +
           (r.idMono ? '<span class="id mono">· ' + escapeHtml(r.idMono) + '</span>' : '') +
-          (r.watched ? '<span class="watch" title="Kept alive — the idle-reaper never retires this session">◉ kept alive</span>' : '') +
+          (r.watched ? '<span class="watch" title="Kept alive — the idle-reaper never retires this session">◉</span>' : '') +
           (r.locallyWatched ? '<span class="eye" title="watched — you get a notification when this session changes state">👁</span>' : '') +
-          (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on its own busy subtree">⟳ ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '</span>' : '') +
-          (r.watcherCount > 0 ? '<span class="eye" title="' + r.watcherCount + ' waiter' + (r.watcherCount === 1 ? '' : 's') + ' attached via the daemon — they are notified at turn-end">👁 ' + r.watcherCount + '</span>' : '') +
-          (r.pendingBgTasks > 0 ? '<span class="bgtasks" title="parked with ' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending — send a message to wake it">⏳ ' + r.pendingBgTasks + ' bg task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending</span>' : '') +
-          (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠ stalled</span>' : '') +
+          (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '">⟳' + r.childrenBusy + '</span>' : '') +
+          (r.watcherCount > 0 ? '<span class="eye" title="' + r.watcherCount + ' waiter' + (r.watcherCount === 1 ? '' : 's') + ' attached via the daemon">👁' + r.watcherCount + '</span>' : '') +
+          (r.pendingBgTasks > 0 ? '<span class="bgtasks" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending — send a message to wake it">⏳' + r.pendingBgTasks + '</span>' : '') +
+          (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠</span>' : '') +
           (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
-          (r.approved ? '<span class="ok">✓ approved</span>' : '') +
-          (r.runs ? '<span class="runs">×' + r.runs + ' runs</span>' : '');
+          (r.approved ? '<span class="ok">✓</span>' : '') +
+          (r.runs ? '<span class="runs">×' + r.runs + '</span>' : '');
         var acts = actionButton(r);
         // Indent nested subagents; base padding-left is 12px (see .row CSS).
         var indent = depth > 0 ? ' style="padding-left:' + (12 + depth * 16) + 'px"' : '';
+        var wsStyle = r.workspace ? ' style="--ws:' + escapeHtml(r.workspace.css) + '"' : '';
         return '<div class="' + classes + '"' + indent + ' data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '" role="listitem" tabindex="0">' +
-          '<span class="' + dotClasses + '"></span>' +
+          '<span class="' + dotClasses + '"' + wsStyle + '></span>' +
           '<div class="mid">' +
             '<div class="name">' + nameLine + '</div>' +
             (r.message ? '<div class="msg">' + escapeHtml(r.message) + '</div>' : '') +
+            '<div class="meta-loc">' + metaLocHTML(r) + '</div>' +
             '<div class="meta">' + metaHTML(r) + '</div>' +
           '</div>' +
           '<div class="right"><span class="time">' + escapeHtml(r.time) + '</span><span class="acts">' + acts + '</span></div>' +
