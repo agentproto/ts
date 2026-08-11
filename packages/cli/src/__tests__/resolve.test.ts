@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { createRequire } from "node:module"
 import { promises as fs } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   resolveAdapter,
   listInstalledAdapters,
@@ -8,6 +10,7 @@ import {
   toAuthDescriptor,
   _resetLastKnownGoodForTests,
   _setLastKnownGoodTtlMsForTests,
+  _setWorkspaceRootForTests,
 } from "../registry/resolve.js"
 import { CATALOG } from "../registry/catalog.js"
 
@@ -299,6 +302,101 @@ describe("resolveAdapter — the error text for a transient failure doesn't send
         expect(message).not.toMatch(/npm i -g/i)
       }
     })
+  })
+})
+
+// jcode is built locally (adapters/jcode/dist/index.mjs exists in this
+// checkout) but is deliberately NOT listed as a dependency of packages/cli
+// and is not published to npm (confirmed via `npm view` returning E404) —
+// the real-world "adapter under active development" scenario workspace-local
+// resolution exists for. This is a smoke test only: it doesn't assert
+// `resolved.source`, because vitest's own module runner can see pnpm's
+// `.pnpm/node_modules` virtual store (which holds a symlink for every
+// workspace package, dependency-declared or not) in a way a real production
+// Node process launched by the daemon does not — so whether THIS resolution
+// happens to land on the npm branch or the workspace-local branch is an
+// artifact of the test runner, not something worth pinning. The deterministic
+// coverage of the workspace-local branch itself lives in the fixture-based
+// suite below, which forces the npm miss so there's no ambiguity about which
+// branch ran.
+describe("resolveAdapter — workspace-local resolution, real-world smoke test", () => {
+  it("resolves jcode (built locally, not an npm/declared-dependency package) without throwing", async () => {
+    const resolved = await resolveAdapter("jcode")
+    expect(resolved.handle.name).toBe("jcode")
+    expect(resolved.handle.protocol).toBe("print")
+  })
+})
+
+// Deterministic coverage: a scratch `<tmp>/adapters/<slug>/dist/index.mjs`
+// fixture under a slug that can never resolve via npm/node_modules (it's
+// not a real package name anywhere), with `_setWorkspaceRootForTests`
+// forcing `findWorkspaceRoot()` to point at the scratch dir instead of
+// walking this repo's own tree. This removes the real-world smoke test's
+// ambiguity about which branch actually ran.
+async function withFixtureWorkspaceAdapter<T>(
+  slug: string,
+  handleSource: string,
+  fn: (root: string) => Promise<T>
+): Promise<T> {
+  const root = await fs.mkdtemp(join(tmpdir(), "agentproto-workspace-local-"))
+  const restoreRoot = _setWorkspaceRootForTests(root)
+  try {
+    const distDir = join(root, "adapters", slug, "dist")
+    await fs.mkdir(distDir, { recursive: true })
+    await fs.writeFile(join(distDir, "index.mjs"), handleSource)
+    return await fn(root)
+  } finally {
+    restoreRoot()
+    await fs.rm(root, { recursive: true, force: true })
+  }
+}
+
+describe("resolveAdapter — workspace-local resolution (fixture, deterministic)", () => {
+  it("falls back to a workspace-local build when npm/node_modules resolution misses", async () => {
+    _resetLastKnownGoodForTests()
+    await withFixtureWorkspaceAdapter(
+      "fixture-workspace-adapter",
+      `export const fixtureWorkspaceAdapter = { name: "fixture-workspace-adapter", protocol: "print", version: "0.0.1" };\n`,
+      async () => {
+        const resolved = await resolveAdapter("fixture-workspace-adapter")
+        expect(resolved.source).toBe("file")
+        expect(resolved.packageName).toBe("@agentproto/adapter-fixture-workspace-adapter")
+        expect(resolved.handle.name).toBe("fixture-workspace-adapter")
+        expect(resolved.handle.protocol).toBe("print")
+      }
+    )
+  })
+
+  it("listInstalledAdapters() surfaces the workspace-local fixture alongside npm-resolved ones", async () => {
+    await withFixtureWorkspaceAdapter(
+      "fixture-workspace-adapter",
+      `export const fixtureWorkspaceAdapter = { name: "fixture-workspace-adapter", protocol: "print", version: "0.0.1" };\n`,
+      async () => {
+        const adapters = await listInstalledAdapters()
+        const fixture = adapters.find((a) => a.slug === "fixture-workspace-adapter")
+        expect(fixture).toBeDefined()
+        expect(fixture?.packageName).toBe("@agentproto/adapter-fixture-workspace-adapter")
+
+        // Sanity: a normal npm-resolved adapter is still present in the same list.
+        expect(adapters.find((a) => a.slug === "claude-code")).toBeDefined()
+      }
+    )
+  })
+
+  it("does not shadow an adapter that already resolves via npm/node_modules", async () => {
+    // claude-code has a local dist build in this checkout too (every
+    // first-party adapter does), but it's already resolvable via its
+    // `workspace:*` dependency in packages/cli/package.json — that npm/
+    // node_modules path must keep winning, unaffected by the workspace-root
+    // override, since npm resolution is only bypassed on an actual miss.
+    await withFixtureWorkspaceAdapter(
+      "fixture-workspace-adapter",
+      `export const fixtureWorkspaceAdapter = { name: "fixture-workspace-adapter", protocol: "print", version: "0.0.1" };\n`,
+      async () => {
+        const resolved = await resolveAdapter("claude-code")
+        expect(resolved.source).toBe("npm")
+      }
+    )
   })
 })
 
