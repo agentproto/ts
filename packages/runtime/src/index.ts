@@ -34,6 +34,9 @@ import {
   registerConversationLocateTool,
   registerConversationExportTool,
 } from "./session-tools.js"
+import { registerBrainTools } from "./brain-tools.js"
+import { createWorkspaceBrains } from "./workspace-brains.js"
+import { createWorkspaceBrainSubscriber } from "./workspace-brain-subscriber.js"
 import {
   registerBrowserTools,
   type BrowserAdapterResolver,
@@ -186,6 +189,16 @@ export type {
   ActivityWorkflowLister,
   PrStateResolver,
 } from "./activities.js"
+export { registerBrainTools } from "./brain-tools.js"
+export type { RegisterBrainToolsOptions } from "./brain-tools.js"
+export { createWorkspaceBrains, readSessionForBrain } from "./workspace-brains.js"
+export type { WorkspaceBrains } from "./workspace-brains.js"
+export {
+  createWorkspaceBrainSubscriber,
+  type WorkspaceBrainSubscriber,
+  type WorkspaceBrainSubscriberOptions,
+} from "./workspace-brain-subscriber.js"
+export type { BrainManager, BrainStats, IngestResult, IngestReport } from "@agentproto/workspace-brain"
 export {
   policyToActivities,
   turnToActivities,
@@ -1115,6 +1128,17 @@ export async function createGateway(
     webhookNotifier.unregister(ev.sessionId)
   })
 
+  // Per-workspace brain: auto-ingest a workspace's conversations when its
+  // sessions exit (debounced, fire-and-forget), and expose them queryably
+  // via the workspace_brain_* MCP tools. Same wiring discipline as the
+  // webhook notifier — a brain failure never throws into the exit path.
+  const workspaceBrains = createWorkspaceBrains()
+  const brainSubscriber = createWorkspaceBrainSubscriber({
+    bus: sessionEvents,
+    brains: workspaceBrains,
+  })
+  brainSubscriber.start()
+
   // Opt-in Langfuse session tracer — built once here (shared, pure) from the
   // eval-reporter's stored langfuse creds, same store `setup_eval_reporter`
   // writes to. Absent creds ⇒ undefined, and the registry never gates
@@ -1708,6 +1732,13 @@ export async function createGateway(
         ? { listWorktreeStatuses: opts.listWorktreeStatuses }
         : {}),
       ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
+    })
+    // Per-workspace brain — query/status/ingest over the shared brain
+    // registry declared at gateway boot (workspaceBrains).
+    registerBrainTools(server, {
+      brains: workspaceBrains,
+      registry: sessions,
+      ...(callerSessionId ? { callerSessionId } : {}),
     })
     // Named auth-profile lifecycle (auth_profile_create/delete/list). No
     // host wiring — `@agentproto/auth` reads/writes the fixed
