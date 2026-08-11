@@ -1,5 +1,11 @@
 # agentproto-desktop
 
+## 0.2.3
+
+### Patch Changes
+
+- 41e36f4: Settle orphaned tool calls at turn-end. Adapters like Hermes can end a turn while omitting tool-result events for nested/parallel calls, leaving them stuck in "pending" state in UI consumers. This change synthesizes tool-result events with null values before the turn-end is recorded, ensuring transcript replay sees completed tool cards.
+
 ## 0.2.2
 
 ### Patch Changes

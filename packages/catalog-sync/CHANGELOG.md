@@ -1,5 +1,12 @@
 # @agentproto/catalog-sync
 
+## 0.5.6
+
+### Patch Changes
+
+- Updated dependencies [415044d]
+  - @agentproto/model-catalog@0.8.3
+
 ## 0.5.5
 
 ### Patch Changes

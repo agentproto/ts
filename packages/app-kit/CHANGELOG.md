@@ -1,5 +1,18 @@
 # @agentproto/app-kit
 
+## 0.6.0
+
+### Minor Changes
+
+- 33e97d3: Add skill surface to defineApp/emit and app_skill_get validation
+- d22fec5: Add artifact surface to defineApp/emit for Cowork artifact registration
+
+### Patch Changes
+
+- 3d54f15: Add `agentproto app serve` command for serving app UIs as standalone webapps with MCP connectivity. Introduces optional `ui.port` field to AppUiDefinition, implements a static HTTP server with bridge script injection, and establishes MCP client proxying through a reserved `/__agentproto/tool-call` endpoint.
+- Updated dependencies [bd5faae]
+  - @agentproto/mastra@0.2.7
+
 ## 0.5.1
 
 ### Patch Changes

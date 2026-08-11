@@ -1,5 +1,72 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.5.0
+
+### Minor Changes
+
+- 75e47e2: Major architectural refactor: shift from raw stream-based event handling to Mastra's `AgentController` event subscription model. Adds comprehensive support for plan/build/review modes, tool approvals, daemon integration (sub-agent spawning, session notifications, state signals), and session resume. New public APIs: `promptContent` (multimodal prompt parsing), modes parsing and configuration, daemon client, signal provider, tool-approval and suspension bridges.
+
+### Patch Changes
+
+- 790f351: Send Anthropic OAuth access tokens as Bearer auth instead of x-api-key
+- c1e1807: Fix tool resolution failures in mastra-agent adapter: introduce fail-fast stubs for declared-but-unwired tools (preventing hangs), wrap all tools with timeout guards (preventing unbounded blocking), add daemon-style tool ID aliases (fixing vocabulary mismatches in AGENT.md files), and properly handle tool-error chunks from Mastra (preventing tool calls from appearing stuck). Extract shared command-allowlist logic to runtime package for reuse.
+- a6b06b2: Three adapter infrastructure fixes:
+  1. Codex model list expanded from 8 to ~40 models — covers GPT-5 family
+     (5/5.1/5.2/5.4/5.5), GPT-5.6 (luna/sol/terra), GPT-4.1/4o, and
+     o-series reasoning models (o1/o3/o4-mini).
+  2. CLI `agentproto install <slug>` now drives a generic ACP agent's
+     `install_hint` through the shared hint parser (new `install-hint.ts`
+     module, extracted from `install-driver.ts` to break a circular dep).
+     The `vendored` install step checks if the binary is already on PATH,
+     runs npm/uv/pip/brew/cargo/go hints when recognized, and fails loud
+     with an actionable message otherwise.
+  3. `binOnPath` in `acp-generic.ts` now checks well-known package-manager
+     install directories (`~/.local/bin`, `~/.cargo/bin`, `~/go/bin`,
+     `/opt/homebrew/bin`, `/usr/local/bin`) as a fallback when PATH hasn't
+     picked them up yet — fixes adapters installed via `uv tool install`
+     not showing as "available" until the daemon restarts.
+
+  Also: modelDerivedApiKey provider resolution for adapters like mastra-agent.
+
+- 1523879: Improve error messages in ACP error responses by extracting nested error causes, handling generic error messages, and appending stack frames for traceability.
+- 89d5102: Fix a timing race condition in MastraAcpAgent.prompt() where Session.sendMessage may resolve before agent_end events are emitted on follow-up turns. The fix keeps the event subscription alive by waiting for agent_end explicitly, ensuring all events are captured.
+- bd5faae: Fix Anthropic API crashes on trailing reasoning blocks by wiring ProviderHistoryCompat input processor to strip reasoning-type content from assistant messages before sending to the model provider.
+- Updated dependencies [996ec8e]
+- Updated dependencies [c17620e]
+- Updated dependencies [33e97d3]
+- Updated dependencies [d22fec5]
+- Updated dependencies [af936f8]
+- Updated dependencies [59bc722]
+- Updated dependencies [337cbfd]
+- Updated dependencies [ec9efa3]
+- Updated dependencies [b51b58e]
+- Updated dependencies [2375019]
+- Updated dependencies [6fba2b9]
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+- Updated dependencies [c1e1807]
+- Updated dependencies [2c24d6f]
+- Updated dependencies [ce6352b]
+- Updated dependencies [57dec3b]
+- Updated dependencies [1cb2093]
+- Updated dependencies [a6b06b2]
+- Updated dependencies [be06061]
+- Updated dependencies [bd990d1]
+- Updated dependencies [dde641e]
+- Updated dependencies [66a6446]
+- Updated dependencies [4b20f1e]
+- Updated dependencies [bd5faae]
+- Updated dependencies [c3dbdc4]
+- Updated dependencies [435a6f2]
+- Updated dependencies [b5ec52b]
+- Updated dependencies [41e36f4]
+- Updated dependencies [9d76f08]
+- Updated dependencies [16e4304]
+- Updated dependencies [16e4304]
+  - @agentproto/runtime@2.6.0
+  - @agentproto/driver-agent-cli@2.2.2
+  - @agentproto/mastra@0.2.7
+
 ## 0.4.2
 
 ### Patch Changes

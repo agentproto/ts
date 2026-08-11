@@ -1,5 +1,83 @@
 # agentproto-vscode
 
+## 0.8.0
+
+### Minor Changes
+
+- 337cbfd: Parked-background-task detection, watch/unwatch sessions, watcher visibility.
+
+  **Runtime** (`@agentproto/runtime`, patch):
+  - Detect sessions parked with pending background tasks (run_in_background tool calls that end a turn without triggering a wake-up). Emit session:bg-tasks-parked / session:bg-tasks-cleared events; stamp pendingBgTasks count on descriptor.
+  - Watcher attach/detach events: emit session:watcher-attached / session:watcher-detached when a blocking wait subscribes/unsubscribes, reporting the watcher count and supervising session id (when the wait came through the scoped orchestrator).
+
+  **VS Code** (`agentproto-vscode`, minor):
+  - Watch/unwatch commands: pin an eye on sessions so transitions into needs-you / stalled / parked-bg / failed / done raise toasts (debounced per state). Persisted per workspace; toggleable from tree and command palette.
+  - Parked-bg activity state (needs-you > stalled > parked-bg > working > idle) with clock/warning icon, bg-task count in tree description + tooltip, '⏳ N bg tasks' webview chip.
+  - Watcher visibility: info banner when a watcher attaches to the session you're watching, user-prompt badges when another session injected the message, and attributed history in the transcript.
+
+- 6565428: Implement functional model restart modal and refactor sessions webview UI for compactness. The model switch now performs an actual session restart with the new model instead of just showing an informational message. Workspace color has been moved to the dot indicator via CSS variable for cleaner layout. Status indicators are condensed to icons and numbers to improve space efficiency while preserving full context via tooltips.
+- f1f0866: Add background task UX: mark pending tool calls with `run_in_background: true` as background in the presentation layer, show an amber/brown dot indicator in the sessions panel, render a fixed chip strip in the transcript panel for quick navigation to still-running background tasks, and add a dimmed harness watermark in the bottom-left corner.
+- 6e403f8: Add support for task/child sessions in webview grouping. Sessions with `parentSessionId` are now routed to a new "Tasks" subgroup in the auto lane. Also improve SVG rendering for adapter icons in the composer.
+- 199324e: Enhance VS Code webview's long-running tool call handling with progressive elapsed time display, smooth label fade animations, intelligent fallback labels for stale tools, and de-alarming of the blocked note. The "$ now:" line now shows contextual information (Watching executor, activity summary, or Working) for steps older than 30 seconds, improving UX for supervision workflows. The blocked note is hidden when the live "$ now:" line already narrates the in-flight step, reducing redundancy. The live "$ now:" line's fade and debounce state is carefully shielded from past chapters, so the animation still fires correctly in multi-chapter books.
+
+### Patch Changes
+
+- 9943466: Fix SVG icon flashing on sessions panel re-render by caching fetched SVG content in memory.
+- 59bc722: Three fixes around MCP app panels and session restart:
+  - **MCP bridge injection** (`@agentproto/runtime`, `@agentproto/apps`): fix the idempotency check that incorrectly skipped injection for documents consuming `window.McpApp.connect()` — regex narrowed from `/window\.McpApp\b/` (any mention) to `/window\.McpApp\s*=/` (assignments only). Defensive guard in mail-triage UI when the bridge is missing.
+  - **Credential re-resolution on restart** (`@agentproto/runtime`): pass `accessProfileRef` to `resolveResumeAuth` so restarting a session that used a named auth profile re-reads the current credential from the keychain instead of falling back to a stale mode-based path.
+  - **Restart loading state** (`agentproto-vscode`): show a loading state and disable the restart button while a session restart is in flight; new `restartFailed` webview message resets the state on error.
+
+- ec9efa3: **Hermes nativeTerminalResume gated on Node ≥22.5** — hermes TUI uses node:sqlite which is unavailable on older runtimes; the capability is now computed at import time so restart falls back to ACP agent-cli instead of crashing.
+
+  **augmentWithFsResume backfills adapterSessionId** — when never captured (session killed before ACP handshake), backfill it from filesystem probe so agent restart can attempt ACP-level resume in addition to PTY-native restart.
+
+  **restartAsTerminal opens transcript on fallback** — when restart falls back to agent-cli (no PTY available), open the conversation transcript view instead of the agent-mirror pseudo-terminal.
+
+- b51b58e: **Support shell-based package managers (uv, pip, brew, cargo, go, pipx)** — expand adapter installation beyond npm to handle package managers commonly used in AI/ML workflows. New `parseShellHint` function parses and validates non-npm install commands; only recognized package managers are executed to prevent blind shell injection.
+
+  **ACP adapters can now use `uv tool install`, `pip install`, etc.** — planner detects hint type (npm → shell → unsupported) and adapter install routes handle shell commands with the same safety/timeout guards as npm-global installs.
+
+- c625db3: Refactor webview logo rendering: replace `harnessGlyph` string with structured `AdapterLogo` type supporting both icon files and lettermark fallbacks, enabling richer visual branding for different adapter providers.
+- 2c24d6f: Fix by-model-router adapters (hermes, pi, opencode) to stamp the resolved billing gateway onto the session descriptor's `route` field, preventing false "restart required" alerts in the VS Code change-model picker.
+- 9943466: Fix SVG icon flashing on sessions panel re-render by caching fetched SVG content in memory.
+- 1cb2093: Enhance session resumption transparency by distinguishing "no context available" from "partial context recovered from daemon transcript". The new `ResumeContextDigestResult` interface provides explicit context-availability tracking, enabling callers to display honest restart banners about what was actually recovered.
+- 2a124b7: Route child sessions (with parentSessionId) to the auto lane's Tasks group instead of nesting them under their parent. Display adapter SVG icons instead of text slugs in the composer bar for improved UX.
+- b5ec52b: Add optional title field to plan events, displayed in VS Code conversation UI. Titles are safely threaded through ACP client translation, runtime event stream, and conversation presenter, supporting both immediate titles and late-binding (title added in subsequent plan updates).
+- 41e36f4: Settle orphaned tool calls at turn-end. Adapters like Hermes can end a turn while omitting tool-result events for nested/parallel calls, leaving them stuck in "pending" state in UI consumers. This change synthesizes tool-result events with null values before the turn-end is recorded, ensuring transcript replay sees completed tool cards.
+- e2dd0e4: Preserve rendered Markdown structure in the VS Code webview pause card, allowing rich formatting like code blocks, lists, and links to remain visible and interactive instead of being flattened to plain text.
+- Updated dependencies [996ec8e]
+- Updated dependencies [c17620e]
+- Updated dependencies [33e97d3]
+- Updated dependencies [d22fec5]
+- Updated dependencies [af936f8]
+- Updated dependencies [59bc722]
+- Updated dependencies [337cbfd]
+- Updated dependencies [ec9efa3]
+- Updated dependencies [b51b58e]
+- Updated dependencies [2375019]
+- Updated dependencies [6fba2b9]
+- Updated dependencies [82ca9e6]
+- Updated dependencies [c1e1807]
+- Updated dependencies [2c24d6f]
+- Updated dependencies [ce6352b]
+- Updated dependencies [57dec3b]
+- Updated dependencies [1cb2093]
+- Updated dependencies [a6b06b2]
+- Updated dependencies [be06061]
+- Updated dependencies [bd990d1]
+- Updated dependencies [dde641e]
+- Updated dependencies [66a6446]
+- Updated dependencies [4b20f1e]
+- Updated dependencies [c3dbdc4]
+- Updated dependencies [435a6f2]
+- Updated dependencies [b5ec52b]
+- Updated dependencies [41e36f4]
+- Updated dependencies [9d76f08]
+- Updated dependencies [16e4304]
+- Updated dependencies [16e4304]
+  - @agentproto/runtime@2.6.0
+
 ## 0.7.0
 
 ### Minor Changes

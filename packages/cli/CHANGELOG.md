@@ -1,5 +1,71 @@
 # @agentproto/cli
 
+## 0.12.0
+
+### Minor Changes
+
+- b51b58e: **Support shell-based package managers (uv, pip, brew, cargo, go, pipx)** — expand adapter installation beyond npm to handle package managers commonly used in AI/ML workflows. New `parseShellHint` function parses and validates non-npm install commands; only recognized package managers are executed to prevent blind shell injection.
+
+  **ACP adapters can now use `uv tool install`, `pip install`, etc.** — planner detects hint type (npm → shell → unsupported) and adapter install routes handle shell commands with the same safety/timeout guards as npm-global installs.
+
+- 6fba2b9: Feature-flag the LLM Endpoint proxy sidecar behind `features.llmEndpoint` (default false). When disabled, the route is not registered, the registry is not created, and MCP tools are not exposed.
+- 3d193b5: **`agentproto app pack/unpack`**: bundle and unbundle agentproto apps as self-contained `.agentapp` tar.gz archives with SHA-256 integrity verification.
+
+  New subcommands:
+  - `agentproto app pack <appDir> [--out <path.agentapp>] [--json]` — walks an app folder (must have `.agentproto/APP.md`), computes an aggregate SHA-256 over every file, writes a manifest.json, and tars the contents into a `.agentapp` bundle.
+  - `agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]` — extracts and verifies the bundle's SHA-256 before restoring, fails if corrupted.
+
+  Bundles include the entire app tree (agents, workflows, optional UI, loose files). Extraction yields `manifest.json`, `.agentproto/`, and relative paths identical to the original—round-trip stable for `readAppRefs` / `app_install`.
+
+- 3d54f15: Add `agentproto app serve` command for serving app UIs as standalone webapps with MCP connectivity. Introduces optional `ui.port` field to AppUiDefinition, implements a static HTTP server with bridge script injection, and establishes MCP client proxying through a reserved `/__agentproto/tool-call` endpoint.
+
+### Patch Changes
+
+- bf3407e: Fix unhandled ChildProcess 'error' events that crash the daemon on spawn failures (e.g., bad binary, missing PATH entry). Resolve "node" binary to process.execPath to sidestep PATH lookup issues in minimal launchd environments. Convert spawn errors to rejected promises instead of unhandled exceptions.
+- 82ca9e6: Fix daemon crash from unhandled spawn errors and PATH-based node resolution issues:
+  - Add error event listeners to spawn processes to prevent unhandled exceptions from crashing the daemon
+  - Resolve `bin: "node"` in agent CLI definitions to `process.execPath` instead of relying on PATH lookup, preventing failures in launchd environments with minimal PATH
+  - Fix auth method availability detection for models with `modelDerivedApiKey` by checking both `authSubscription` and `modelDerivedApiKey` for oauth-bearer eligibility
+  - Improve test mocks to properly emit spawn events, enabling proper coverage of spawn failure scenarios
+
+- 5798b49: Add AIP-45 adapter for 1jehuang/jcode — a RAM-efficient Rust coding agent with semantic memory, multi-agent swarm coordination, and multi-provider support (Claude, OpenAI, Gemini, OpenRouter, DeepSeek, Groq, Mistral, Ollama).
+
+  Adapter uses `print` protocol (headless mode): spawns `jcode run "<prompt>"` per turn and captures stdout. No ACP mode is currently documented; swarm coordination not yet wired.
+
+- a6b06b2: Three adapter infrastructure fixes:
+  1. Codex model list expanded from 8 to ~40 models — covers GPT-5 family
+     (5/5.1/5.2/5.4/5.5), GPT-5.6 (luna/sol/terra), GPT-4.1/4o, and
+     o-series reasoning models (o1/o3/o4-mini).
+  2. CLI `agentproto install <slug>` now drives a generic ACP agent's
+     `install_hint` through the shared hint parser (new `install-hint.ts`
+     module, extracted from `install-driver.ts` to break a circular dep).
+     The `vendored` install step checks if the binary is already on PATH,
+     runs npm/uv/pip/brew/cargo/go hints when recognized, and fails loud
+     with an actionable message otherwise.
+  3. `binOnPath` in `acp-generic.ts` now checks well-known package-manager
+     install directories (`~/.local/bin`, `~/.cargo/bin`, `~/go/bin`,
+     `/opt/homebrew/bin`, `/usr/local/bin`) as a fallback when PATH hasn't
+     picked them up yet — fixes adapters installed via `uv tool install`
+     not showing as "available" until the daemon restarts.
+
+  Also: modelDerivedApiKey provider resolution for adapters like mastra-agent.
+
+- 54d9620: Add workspace-local adapter resolution as a fallback when npm/node_modules resolution fails. Enables adapters under active development to resolve from `adapters/<slug>/dist/index.mjs` before they're added as dependencies or published to npm, improving the adapter authoring workflow.
+- 873e10a: Reload newly installed CLI adapters during first-run bootstrap instead of requiring a second invocation.
+- Updated dependencies [415044d]
+- Updated dependencies [5f5b1bc]
+- Updated dependencies [6e403f8]
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+- Updated dependencies [c4ca23a]
+- Updated dependencies [b5ec52b]
+  - @agentproto/model-catalog@0.8.3
+  - @agentproto/worktree@0.5.2
+  - @agentproto/sandbox-e2b@0.3.4
+  - @agentproto/driver-agent-cli@2.2.2
+  - @agentproto/acp@0.7.1
+  - @agentproto/sandbox-box@0.2.3
+
 ## 0.11.5
 
 ### Patch Changes
