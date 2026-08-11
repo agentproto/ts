@@ -278,7 +278,7 @@ function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key"
 
 function directAuthMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
   const methods: AuthMethod[] = []
-  if (descriptor?.authSubscription) methods.push("oauth-bearer")
+  if (descriptor?.authSubscription || descriptor?.modelDerivedApiKey) methods.push("oauth-bearer")
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
