@@ -3551,7 +3551,18 @@ export function buildHtml(
         const info = isLive ? currentStepInfo(ch.steps.segments) : undefined;
         const since = info && info.since ? Date.parse(info.since) : NaN;
         if (!info || isNaN(since)) {
-          hideNowLine(under);
+          under.hidden = true;
+          under.removeAttribute('data-since');
+          under.removeAttribute('data-label');
+          under.removeAttribute('data-dotting');
+          // Only the LIVE line owns the fade/debounce state. A kept-closed past
+          // chapter painting its (empty) line every renderBook must not clobber
+          // the live line's pending/fade tracking — that would snap every label
+          // change in any multi-chapter book.
+          if (isLive) {
+            nowSwapToken++;
+            shownNowLabel = pendingNowLabel = null;
+          }
           return;
         }
         under.hidden = false;
@@ -3565,17 +3576,6 @@ export function buildHtml(
         under.dataset.label =
           Date.now() - since > NOW_STALE_MS ? nowStaleLabel() : info.label;
         renderNow(under);
-      }
-
-      function hideNowLine(under) {
-        under.hidden = true;
-        under.removeAttribute('data-since');
-        under.removeAttribute('data-label');
-        under.removeAttribute('data-dotting');
-        // A relabel after a pause must fade in cleanly rather than snap — and
-        // any pending swap into the now-hidden line is cancelled.
-        nowSwapToken++;
-        shownNowLabel = pendingNowLabel = null;
       }
 
       // What a >30s-old unresolved step is really doing: supervising a child,
