@@ -54,6 +54,8 @@ import {
 import { makeBureauSessionsApp } from "./bureau-sessions-app.js"
 import { makeSessionStoryPanelApp } from "./session-story-panel-app.js"
 import { makeTerminalPanelApp } from "./terminal-panel-app.js"
+import { makeLiveSessionApp } from "./live-session-app.js"
+import { registerAppPullTools } from "./app-pull-tools.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -1808,12 +1810,23 @@ export async function createGateway(
       }
       return rows
     }
+    // App-only pull tools (visibility:["app"]) the live-session widget calls
+    // over the postMessage bridge to refresh WITHOUT hitting the model:
+    // `app_session_tree` (left pane) + `app_session_events` (right-pane poll
+    // fallback). Registered THROUGH `server` so the subset/exclusion proxies
+    // (tool-subset.ts, now registerTool-aware) can drop them on scoped/child
+    // gateways — they belong only on the full /mcp surface a host connects to.
+    registerAppPullTools(server, { registry: sessions })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const builtinPanelApps: AgnoMcpApp<any, any>[] = [
       makeSessionsPanelApp({ listSessions: listSessionsFiltered }),
       makeAgentsOverviewApp({ listSessions: listSessionsFiltered }),
       makeBureauSessionsApp({ listSessions: listSessionsFiltered }),
       makeSessionStoryPanelApp({ listSessions: listSessionsFiltered }),
+      // Live-session widget — resource ui://live_session/view, also bound to
+      // `agent_start` via _meta.ui.resourceUri so a launch auto-renders it.
+      // httpBaseUrl = this daemon's own origin (SSE stream + bridge fallback).
+      makeLiveSessionApp({ httpBaseUrl: `http://127.0.0.1:${port}` }),
       // Same ptyEnabled gate as terminal_start/terminal_input/… in
       // session-tools.ts — the panel would be able to open the WS but
       // every spawn/attach would fail once node-pty isn't available, so
