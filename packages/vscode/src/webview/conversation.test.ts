@@ -199,6 +199,44 @@ describe("reduceConversation", () => {
     expect(plans[0]).toMatchObject({ done: 1, total: 2 })
   })
 
+  it("preserves plan title through reducer and presenter", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "plan it" }),
+      rec({
+        kind: "plan",
+        title: "Multi-provider workspace-brain",
+        entries: [
+          { content: "step 1", priority: "high", status: "pending" },
+          { content: "step 2", priority: "medium", status: "pending" },
+        ],
+      }),
+    ])
+    const plan = conv.turns[1]!.segments.find(s => s.kind === "plan")!
+    expect(plan).toMatchObject({ title: "Multi-provider workspace-brain", done: 0, total: 2 })
+  })
+
+  it("adopts title from a later plan update if the first had none", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "plan it" }),
+      rec({
+        kind: "plan",
+        entries: [{ content: "step 1", priority: "high", status: "pending" }],
+      }),
+      rec({
+        kind: "plan",
+        title: "Late title",
+        entries: [
+          { content: "step 1", priority: "high", status: "completed" },
+          { content: "step 2", priority: "medium", status: "pending" },
+        ],
+      }),
+    ])
+    const plan = conv.turns[1]!.segments.find(s => s.kind === "plan")!
+    expect(plan).toMatchObject({ title: "Late title", done: 1, total: 2 })
+  })
+
   it("folds usage_update and usage_snapshot into merged conversation metadata", () => {
     freshSeq()
     const conv = reduceConversation("s1", [

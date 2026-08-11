@@ -197,6 +197,7 @@ export type StreamEvent =
   | {
       kind: "plan"
       sessionId: string
+      title?: string
       entries: Array<{
         content: string
         priority: "high" | "medium" | "low"

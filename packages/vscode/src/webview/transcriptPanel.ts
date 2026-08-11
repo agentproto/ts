@@ -2621,7 +2621,10 @@ export function buildHtml(
       function buildPlan(node, seg) {
         node.innerHTML = '';
         const proj = projectPlan(seg.entries || []);
-        node.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
+        const headText = seg.title
+          ? 'Plan ' + seg.done + '/' + seg.total + ' — ' + seg.title
+          : 'Plan ' + seg.done + '/' + seg.total;
+        node.appendChild(el('div', 'plan-head', headText));
         const track = el('div', 'plan-progress');
         const fill = el('div', 'plan-progress-fill');
         const pct = seg.total > 0 ? Math.round((seg.done / seg.total) * 100) : 0;
