@@ -14,11 +14,23 @@
  * The registry itself is keyed by bucket slug and creates each `BrainManager`
  * lazily, so a workspace that never produces a session pays nothing until its
  * first exit does.
+ *
+ * A workspace's knowledge backends are configured per-workspace by a
+ * `knowledge.json` file at `<bucket>/knowledge.json` (see
+ * {@link loadKnowledgeConfigForWorkspace}). No file → the brain's default
+ * single `files` provider (identical to pre-config behavior); an invalid
+ * file → warn + fall back to that default; never throws either way.
  */
 
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { createBrainManager, type BrainManager } from "@agentproto/workspace-brain"
-import type { ExportedSessionLike } from "@agentproto/workspace-brain"
+import {
+  createBrainManager,
+  parseKnowledgeConfig,
+  type BrainManager,
+  type ExportedSessionLike,
+  type KnowledgeConfig,
+} from "@agentproto/workspace-brain"
 import {
   findConversationRecord,
   locateConversationBySessionId,
@@ -88,12 +100,18 @@ export function createWorkspaceBrains(): WorkspaceBrains {
         // to "default" for anything unregistered — same membership rule as
         // the bucket resolver.
         const brainDir = join(BUCKETS_ROOT(), slug, "brain")
+        const knowledge = loadKnowledgeConfigForWorkspace(slug)
         brain = createBrainManager({
           workspace: slug,
           brainDir,
           readSession: readSessionForBrain,
           listSessionRefs: async () =>
             (await readConversationIndex(BUCKETS_ROOT(), slug)).map(r => r.sessionId),
+          // Optional per-workspace knowledge.json — the brain defaults to a
+          // single `files` provider when unset (identical to today). Invalid
+          // file → warn + fall back, never throw (brain creation stays
+          // resilient, so the subscriber + tools never degrade).
+          ...(knowledge ? { knowledge } : {}),
         })
         brains.set(slug, brain)
       }
@@ -119,4 +137,38 @@ export function createWorkspaceBrains(): WorkspaceBrains {
  *  string can never aim a brain at a path it doesn't own. */
 function readRegisteredSlugOr(slug: string): string {
   return readRegisteredSlugs().has(slug) ? slug : DEFAULT_BUCKET
+}
+
+/**
+ * Load a workspace's `knowledge.json` (`<bucket>/knowledge.json`) as a
+ * {@link KnowledgeConfig}. Never throws: a missing file → `undefined` (the
+ * brain's default single `files` provider); an unreadable/invalid/schema-
+ * failing file → warn (with the slug + reason) and fall back to `undefined`.
+ *
+ * Read synchronously on purpose: `getBrain` constructs the brain lazily in a
+ * synchronous registry lookup (mirroring `readRegisteredSlugs`), and the file
+ * is tiny — the resilient fallback matters more than async here.
+ */
+function loadKnowledgeConfigForWorkspace(slug: string): KnowledgeConfig | undefined {
+  const file = join(BUCKETS_ROOT(), slug, "knowledge.json")
+  let raw: string
+  try {
+    raw = readFileSync(file, "utf8")
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    console.warn(
+      `[workspace-brains] ${slug}: failed to read knowledge.json — falling back to the default files provider: ${(err as Error).message}`,
+    )
+    return undefined
+  }
+  try {
+    return parseKnowledgeConfig(JSON.parse(raw))
+  } catch (err) {
+    console.warn(
+      `[workspace-brains] ${slug}: invalid knowledge.json — falling back to the default files provider: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+    return undefined
+  }
 }

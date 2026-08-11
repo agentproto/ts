@@ -49,6 +49,7 @@ interface AppFrontmatterUi {
   readonly title?: string
   readonly description?: string
   readonly tools?: readonly string[]
+  readonly port?: number
   readonly csp?: {
     readonly connectDomains?: readonly string[]
     readonly resourceDomains?: readonly string[]
@@ -226,6 +227,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       ...(fm.ui.title !== undefined ? { title: fm.ui.title } : {}),
       ...(fm.ui.description !== undefined ? { description: fm.ui.description } : {}),
       ...(fm.ui.tools !== undefined ? { tools: fm.ui.tools } : {}),
+      ...(fm.ui.port !== undefined ? { port: fm.ui.port } : {}),
       ...(fm.ui.csp !== undefined ? { csp: fm.ui.csp } : {}),
     }
   }

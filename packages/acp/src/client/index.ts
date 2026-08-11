@@ -1072,9 +1072,11 @@ function translateSessionUpdate(
     }
     case "plan": {
       const entries = (update.entries as Array<Record<string, unknown>>) ?? []
+      const title = typeof update.title === "string" ? update.title : undefined
       return {
         kind: "plan",
         sessionId,
+        ...(title ? { title } : {}),
         entries: entries.map((entry) => ({
           content: (entry.content as string) ?? "",
           priority: (entry.priority as "high" | "medium" | "low") ?? "medium",

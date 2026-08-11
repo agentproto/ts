@@ -410,7 +410,12 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           break
         case "plan":
           flushBuffers(sessionId, state)
-          writeRecord(sessionId, state, { kind: "plan", sessionId, entries: evt.entries ?? [] })
+          writeRecord(sessionId, state, {
+            kind: "plan",
+            sessionId,
+            ...(evt.title ? { title: evt.title } : {}),
+            entries: evt.entries ?? [],
+          })
           break
         case "usage_update":
           flushBuffers(sessionId, state)

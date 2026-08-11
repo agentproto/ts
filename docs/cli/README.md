@@ -35,6 +35,7 @@ Pick whichever matches what you're trying to do:
 
 ### Verbs
 
+- [`agentproto app`](./verbs/app.md) — bundle / unbundle an app folder as a self-contained `.agentapp`
 - [`agentproto acp`](./verbs/acp.md) — manage generic ACP agents (zero-code ACP CLIs)
 - [`agentproto auth`](./verbs/auth.md) — log in to a host (RFC 8628 device flow)
 - [`agentproto browser`](./verbs/browser.md) — manage browser service sessions (Camofox, Bureau, Chromium)

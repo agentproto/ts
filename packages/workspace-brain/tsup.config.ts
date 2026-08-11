@@ -4,7 +4,9 @@ export default createTsupConfig({
   banner: `/**
  * @agentproto/workspace-brain v0.1.0
  * Per-workspace brain: indexes workspace session conversations into a
- * queryable BM25 knowledge store via IKnowledgeProvider + corpus importer.
+ * queryable knowledge store via IKnowledgeProvider + corpus importer.
+ * Queryable over any of the knowledge adapters (files / gbrain-doc / qdrant),
+ * federated and merged by the provider resolver.
  */`,
   entry: {
     index: "src/index.ts",
@@ -18,8 +20,11 @@ export default createTsupConfig({
   },
   external: [
     "@agentproto/adapter-knowledge-files",
+    "@agentproto/adapter-knowledge-gbrain-doc",
+    "@agentproto/adapter-knowledge-qdrant",
     "@agentproto/corpus",
     "@agentproto/knowledge-engine",
+    "zod",
   ],
   noExternal: [],
 })

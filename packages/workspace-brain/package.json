@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/workspace-brain",
   "version": "0.1.0",
-  "description": "A per-workspace 'brain': indexes the conversations of a workspace's agent sessions into a queryable knowledge store (BM25) so downstream agents can recall what a workspace's sessions did. Reuses the IKnowledgeProvider contract, the corpus ConversationImporter, and the zero-dep adapter-knowledge-files engine.",
+  "description": "A per-workspace 'brain': indexes the conversations of a workspace's agent sessions into a queryable knowledge store (BM25 by default, or any federated combination of the knowledge adapters) so downstream agents can recall what a workspace's sessions did. Reuses the IKnowledgeProvider contract, the corpus ConversationImporter, and the knowledge adapter family.",
   "keywords": [
     "agentproto",
     "workspace",
@@ -52,8 +52,11 @@
   },
   "dependencies": {
     "@agentproto/adapter-knowledge-files": "workspace:*",
+    "@agentproto/adapter-knowledge-gbrain-doc": "workspace:*",
+    "@agentproto/adapter-knowledge-qdrant": "workspace:*",
     "@agentproto/corpus": "workspace:*",
-    "@agentproto/knowledge-engine": "workspace:*"
+    "@agentproto/knowledge-engine": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

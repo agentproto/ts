@@ -296,6 +296,8 @@ export interface AgentStreamEvent {
    *  @agentproto/acp's `StreamEvent`'s `agent-prompt` kind. Harness-shaped
    *  and untyped; don't assume a stable schema across adapters. */
   rawInput?: unknown
+  /** "plan" event title — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
+  title?: string
   /** "plan" event entries — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
   entries?: Array<{ content: string; priority: string; status: string }>
   /** "usage_update" context-window size (tokens). */
@@ -528,6 +530,14 @@ export type SessionStatus =
   | "exited"
   | "killed"
   | "error"
+export type SessionCurrentPhase =
+  | "thinking"
+  | `tool-call:${string}`
+  | "awaiting-input"
+  | "awaiting-permission"
+  | "idle"
+  | "completed"
+  | "killed"
 
 /**
  * Thrown by `sendPrompt` / `enqueuePrompt` when the target agent-cli
@@ -652,6 +662,18 @@ export interface SessionDescriptor {
    *  `lastOutputAt` goes stale. Updated on incoming session/update
    *  notifications AND on outbound RPC calls. ISO 8601. */
   lastActivityAt?: string
+  /** Read-time projection of what the session is doing now. Tool-call phases
+   *  carry the adapter-reported tool name (for example
+   *  `tool-call:file_read`). Ephemeral: recomputed by list()/get() and never
+   *  persisted. */
+  currentPhase?: SessionCurrentPhase
+  /** Whole seconds since `lastActivityAt`, computed at read time. Absent until
+   *  the adapter has reported activity; never persisted. */
+  secondsSinceLastActivity?: number
+  /** Number of distinct tool calls observed in the current (or most recently
+   *  completed) turn. Reset when the next turn starts. Tool-call enrichment
+   *  events sharing an id count only once. Ephemeral and never persisted. */
+  toolCallsThisTurn?: number
   /** Whether the underlying OS process is still alive. Computed via
    *  `process.kill(pid, 0)` at read time (list()/get()) — cheap,
    *  zero-overhead, standard POSIX check. Absent when `pid` is null
@@ -1236,6 +1258,9 @@ export interface SessionSummary {
   killedMidTurn?: boolean
   lastOutputAt?: string
   lastActivityAt?: string
+  currentPhase?: SessionCurrentPhase
+  secondsSinceLastActivity?: number
+  toolCallsThisTurn?: number
   processAlive?: boolean
   /** Live supervisor waiter count (#session-visibility) — see
    *  `SessionDescriptor.watchers`. Ephemeral, stamped at read time. */
@@ -1306,6 +1331,9 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     killedMidTurn: desc.killedMidTurn,
     lastOutputAt: desc.lastOutputAt,
     lastActivityAt: desc.lastActivityAt,
+    currentPhase: desc.currentPhase,
+    secondsSinceLastActivity: desc.secondsSinceLastActivity,
+    toolCallsThisTurn: desc.toolCallsThisTurn,
     processAlive: desc.processAlive,
     watchers: desc.watchers,
     childrenBusy: desc.childrenBusy,
@@ -1357,6 +1385,13 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
 
 interface SessionRuntime {
   desc: SessionDescriptor
+  /** Active tool calls in announcement order. Multiple calls can overlap;
+   *  removing the latest one falls back to the previous still-active call. */
+  activeToolCalls?: Map<string, string>
+  /** Distinct tool-call ids seen during this turn, for enrichment de-dup. */
+  toolCallIdsThisTurn?: Set<string>
+  /** Per-turn tool-call count surfaced by the read-time status projection. */
+  toolCallsThisTurn?: number
   /** Per-turn counter of tool-calls started with `run_in_background: true`
    *  (see `SessionDescriptor.pendingBgTasks`). Reset at each turn start by
    *  `runAgentTurn`; read at turn-end to decide whether the session parked
@@ -2812,6 +2847,52 @@ export function createSessionsRegistry(opts?: {
   const sessionEvents = opts?.sessionEvents
   const resolveAgentAdapter = opts?.resolveAgentAdapter
   const sessions = new Map<string, SessionRuntime>()
+  /** Stamp the fields callers use for a quick status read. These are kept off
+   *  disk because phase and elapsed time are meaningful only against the live
+   *  runtime and current clock. */
+  const stampCurrentStatus = (rt: SessionRuntime): void => {
+    const desc = rt.desc
+    desc.toolCallsThisTurn = rt.toolCallsThisTurn ?? 0
+
+    if (desc.lastActivityAt) {
+      const lastActivityMs = Date.parse(desc.lastActivityAt)
+      if (Number.isFinite(lastActivityMs)) {
+        desc.secondsSinceLastActivity = Math.floor(
+          (Date.now() - lastActivityMs) / 1_000,
+        )
+      } else {
+        delete desc.secondsSinceLastActivity
+      }
+    } else {
+      delete desc.secondsSinceLastActivity
+    }
+
+    if (desc.status === "killed") {
+      desc.currentPhase = "killed"
+      return
+    }
+    if (desc.status === "exited" || desc.status === "error") {
+      desc.currentPhase = "completed"
+      return
+    }
+    if (desc.awaitingPermission) {
+      desc.currentPhase = "awaiting-permission"
+      return
+    }
+    if (desc.awaitingInput) {
+      desc.currentPhase = "awaiting-input"
+      return
+    }
+    const activeToolNames = rt.activeToolCalls
+      ? Array.from(rt.activeToolCalls.values())
+      : []
+    const activeToolName = activeToolNames.at(-1)
+    if (activeToolName) {
+      desc.currentPhase = `tool-call:${activeToolName}`
+      return
+    }
+    desc.currentPhase = desc.busy ? "thinking" : "idle"
+  }
   // Ephemeral per-session waiter counter (#session-visibility) — how many live
   // supervisors are blocked on this id via `monitorSessionWait`. Kept off the
   // persisted SessionRuntime rows (a waiter can't survive a restart) and
@@ -3293,15 +3374,19 @@ export function createSessionsRegistry(opts?: {
     }, PERSIST_DEBOUNCE_MS)
   }
 
-  /** Descriptors as they go to disk. `processAlive` and `interrupted` are
-   *  DERIVED, read-time fields (see stampProcessAlive / stampInterrupted) —
-   *  strip them before writing so a restored descriptor is never seen with a
-   *  stale value before the next list()/get() recomputes it fresh
-   *  (`interrupted` re-derives from the persisted `killedMidTurn`/
-   *  `endedReason`, so nothing is lost by not persisting it). */
+  /** Descriptors as they go to disk. Read-time projections are stripped so a
+   *  restored descriptor is never seen with a stale value before the next
+   *  list()/get() recomputes it. */
   const snapshotRows = (): SessionDescriptor[] =>
     Array.from(sessions.values()).map(s => {
-      const { processAlive: _processAlive, interrupted: _interrupted, ...rest } = s.desc
+      const {
+        processAlive: _processAlive,
+        interrupted: _interrupted,
+        currentPhase: _currentPhase,
+        secondsSinceLastActivity: _secondsSinceLastActivity,
+        toolCallsThisTurn: _toolCallsThisTurn,
+        ...rest
+      } = s.desc
       return rest
     })
 
@@ -3486,6 +3571,44 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /** Record one tool-call announcement in the live phase state. ACP may emit
+   *  later enrichment events for the same id; those refresh the name/order but
+   *  do not increment the per-turn count. */
+  const trackToolCall = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
+    if (!rt.activeToolCalls) rt.activeToolCalls = new Map()
+    if (!rt.toolCallIdsThisTurn) rt.toolCallIdsThisTurn = new Set()
+
+    let key: string
+    if (evt.toolCallId) {
+      key = evt.toolCallId
+      if (!rt.toolCallIdsThisTurn.has(key)) {
+        rt.toolCallIdsThisTurn.add(key)
+        rt.toolCallsThisTurn = (rt.toolCallsThisTurn ?? 0) + 1
+      }
+    } else if (evt.isUpdate && rt.activeToolCalls.size > 0) {
+      key = Array.from(rt.activeToolCalls.keys()).at(-1)!
+    } else {
+      rt.toolCallsThisTurn = (rt.toolCallsThisTurn ?? 0) + 1
+      key = `anonymous:${rt.toolCallsThisTurn}`
+    }
+
+    const toolName = evt.toolName ?? rt.activeToolCalls.get(key) ?? "unknown"
+    // Re-insert so the most recently announced/enriched active call is the
+    // phase shown when calls overlap.
+    rt.activeToolCalls.delete(key)
+    rt.activeToolCalls.set(key, toolName)
+  }
+
+  const resolveToolCall = (rt: SessionRuntime, toolCallId?: string): void => {
+    if (!rt.activeToolCalls || rt.activeToolCalls.size === 0) return
+    if (toolCallId) {
+      rt.activeToolCalls.delete(toolCallId)
+      return
+    }
+    const latest = Array.from(rt.activeToolCalls.keys()).at(-1)
+    if (latest) rt.activeToolCalls.delete(latest)
+  }
+
   /**
    * Project ACP-style stream events into ring-buffer lines. Keeps
    * the line shape simple so the existing /stream SSE consumer
@@ -3499,6 +3622,7 @@ export function createSessionsRegistry(opts?: {
         // (whether or not the adapter bothered to emit one; several don't).
         // This is the catch-all behind the explicit releases below.
         releaseBlockedOn(rt.desc)
+        rt.activeToolCalls?.clear()
         if (evt.text) {
           // text-delta is a stream of chunks — split on newlines so
           // each line lands in the ring buffer separately. Coalesce
@@ -3510,6 +3634,9 @@ export function createSessionsRegistry(opts?: {
         }
         break
       case "thought":
+        // Thinking means the model has the floor again, just like assistant
+        // text, even when an adapter omitted the preceding tool-result.
+        rt.activeToolCalls?.clear()
         if (evt.text) {
           // Same coalescing as text-delta — some adapters stream
           // chain-of-thought one token at a time, which would
@@ -3525,6 +3652,7 @@ export function createSessionsRegistry(opts?: {
         }
         break
       case "tool-call": {
+        trackToolCall(rt, evt)
         // Surface what the turn is now blocked on (sub-agent / command) when
         // the tool name classifies. The toolCallId is remembered so a nested
         // tool's result can't clear an outer tool's block — but a matching
@@ -3549,6 +3677,7 @@ export function createSessionsRegistry(opts?: {
         break
       }
       case "tool-result": {
+        resolveToolCall(rt, evt.toolCallId)
         if (rt.desc.blockedOn && evt.toolCallId === rt.desc.pendingToolCallId) {
           releaseBlockedOn(rt.desc)
         }
@@ -3648,6 +3777,7 @@ export function createSessionsRegistry(opts?: {
         break
       }
       case "turn-end": {
+        rt.activeToolCalls?.clear()
         if (evt.reason === "awaiting-input") rt.desc.awaitingInput = true
         // Flush any buffered text/thought fragments as final lines.
         if (rt.thoughtBuf.trim()) {
@@ -3675,6 +3805,7 @@ export function createSessionsRegistry(opts?: {
         // release the flag survived the failure and the session advertised
         // "blocked on command · <toolCallId>" while the agent worked on.
         releaseBlockedOn(rt.desc)
+        rt.activeToolCalls?.clear()
         const code =
           typeof evt.error?.code === "number" ? ` (code ${evt.error.code})` : ""
         appendLine(
@@ -3699,9 +3830,10 @@ export function createSessionsRegistry(opts?: {
       case "plan": {
         const entries = evt.entries ?? []
         const done = entries.filter(e => e.status === "completed").length
+        const label = evt.title ? `[plan] ${evt.title} ${done}/${entries.length}` : `[plan] ${done}/${entries.length}`
         appendLine(
           rt,
-          `\x1b[35m[plan] ${done}/${entries.length} ${entries.map(e => e.content).join("; ")}\x1b[0m`,
+          `\x1b[35m${label} ${entries.map(e => e.content).join("; ")}\x1b[0m`,
           "stdout"
         )
         break
@@ -4308,6 +4440,9 @@ export function createSessionsRegistry(opts?: {
     rt.desc.awaitingQuestion = undefined
     releaseBlockedOn(rt.desc)      // clear stale blocked-on from prior turn
     clearStalledFlag(rt)           // clear stale stall flag from prior turn
+    rt.activeToolCalls = new Map()
+    rt.toolCallIdsThisTurn = new Set()
+    rt.toolCallsThisTurn = 0
     // Clear a stale parked-with-background-tasks flag from the prior turn —
     // the session was re-prompted, so it is by definition no longer parked:
     // this turn will see whatever its background tasks produced. Counter
@@ -4465,6 +4600,7 @@ export function createSessionsRegistry(opts?: {
       // crashed, stream ended early) must not leave the session flagged
       // blocked forever — the turn is over, nothing is pending anymore.
       releaseBlockedOn(rt.desc)
+      rt.activeToolCalls?.clear()
       // The turn is over either way — "mid-turn and silent" can no longer
       // hold, so any stall flag from this turn is stale.
       clearStalledFlag(rt)
@@ -5725,12 +5861,13 @@ export function createSessionsRegistry(opts?: {
       const includeArchived = opts?.includeArchived ?? false
       const childrenBusy = childrenBusyCounts()
       return Array.from(sessions.values())
-        .map(s => s.desc)
-        .filter(desc => includeArchived || !desc.archived)
-        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
-        .map(desc => {
+        .filter(rt => includeArchived || !rt.desc.archived)
+        .sort((a, b) => b.desc.startedAt.localeCompare(a.desc.startedAt))
+        .map(rt => {
+          const desc = rt.desc
           stampProcessAlive(desc)
           stampInterrupted(desc)
+          stampCurrentStatus(rt)
           stampWatchers(desc)
           desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
           return desc
@@ -5742,13 +5879,14 @@ export function createSessionsRegistry(opts?: {
       const offset = Math.max(0, opts?.offset ?? 0)
       const childrenBusy = childrenBusyCounts()
       const all = Array.from(sessions.values())
-        .map(s => s.desc)
-        .filter(desc => includeArchived || !desc.archived)
-        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .filter(rt => includeArchived || !rt.desc.archived)
+        .sort((a, b) => b.desc.startedAt.localeCompare(a.desc.startedAt))
       const slice = all.slice(offset, offset + limit)
-      const summaries = slice.map(desc => {
+      const summaries = slice.map(rt => {
+        const desc = rt.desc
         stampProcessAlive(desc)
         stampInterrupted(desc)
+        stampCurrentStatus(rt)
         stampWatchers(desc)
         desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
         return toSessionSummary(desc)
@@ -5756,10 +5894,12 @@ export function createSessionsRegistry(opts?: {
       return { summaries, total: all.length }
     },
     get(id) {
-      const desc = sessions.get(id)?.desc
-      if (desc) {
+      const rt = sessions.get(id)
+      const desc = rt?.desc
+      if (rt && desc) {
         stampProcessAlive(desc)
         stampInterrupted(desc)
+        stampCurrentStatus(rt)
         stampWatchers(desc)
         desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
       }
@@ -5835,12 +5975,14 @@ export function createSessionsRegistry(opts?: {
       if (direct) {
         stampProcessAlive(direct.desc)
         stampInterrupted(direct.desc)
+        stampCurrentStatus(direct)
         return direct.desc
       }
       for (const rt of sessions.values()) {
         if (rt.desc.name === query) {
           stampProcessAlive(rt.desc)
           stampInterrupted(rt.desc)
+          stampCurrentStatus(rt)
           return rt.desc
         }
       }
