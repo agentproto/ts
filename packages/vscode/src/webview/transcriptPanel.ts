@@ -1917,10 +1917,20 @@ export function buildHtml(
       animation: agentproto-blink 1.1s steps(1) infinite;
     }
     @keyframes agentproto-blink { 50% { opacity: 0; } }
-    @media (prefers-reduced-motion: reduce) { #book .cursor { animation: none; } }
-    #book .under { font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px; }
+    @media (prefers-reduced-motion: reduce) {
+      #book .cursor { animation: none; }
+      #book .under { transition: none; }
+    }
+    #book .under {
+      font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px;
+      /* Label swaps fade old -> new instead of snapping (NOW_FADE_MS in the
+         script drives the classes; the ticker never re-fades a same label). */
+      transition: opacity 220ms ease;
+    }
     #book .under::before { content: "$ "; color: var(--phosphor); }
     #book .under b { color: var(--paper-72); font-weight: 500; }
+    #book .under.fading-out { opacity: 0; }
+    #book .under.fading-in { opacity: 1; }
 
     /* The pause: the inverted PAPER card when the agent stops to ask. */
     #book .pause {
@@ -2127,6 +2137,22 @@ export function buildHtml(
       const NOW_SECONDS_MS = 60 * 1000;
       const NOW_LONG_RUNNING_MS = 90 * 1000;
       const NOW_DOT_CYCLE_MS = 600; // "Still working…" dot cycle
+      // "$ now:" fade-out/in length — see the .under CSS transition.
+      const NOW_FADE_MS = 220;
+      // Minimum time a given label stays on screen. Rapid sequential tool
+      // calls would otherwise strobe the line; this holds the previous label
+      // in place until it has been up at least this long.
+      const NOW_MIN_DISPLAY_MS = 500;
+
+      // "$ now:" fade/debounce state — see renderNow. shownNowLabel is the
+      // label currently ON SCREEN; pendingNowLabel is one whose swap is already
+      // scheduled (a mid-window re-render coalesces into it instead of stacking
+      // timers); nowSwapToken invalidates stale timers when a "Still working…"
+      // state or a hide cancels a pending fade.
+      let shownNowLabel = null;
+      let shownNowSwapAt = 0;
+      let pendingNowLabel = null;
+      let nowSwapToken = 0;
 
       let exited = false;
       let busy = false;
@@ -3523,6 +3549,11 @@ export function buildHtml(
         under.hidden = true;
         under.removeAttribute('data-since');
         under.removeAttribute('data-label');
+        under.removeAttribute('data-dotting');
+        // A relabel after a pause must fade in cleanly rather than snap — and
+        // any pending swap into the now-hidden line is cancelled.
+        nowSwapToken++;
+        shownNowLabel = pendingNowLabel = null;
       }
 
       // What a >30s-old unresolved step is really doing: supervising a child,
@@ -3544,12 +3575,16 @@ export function buildHtml(
 
       function renderNow(under) {
         const since = Number(under.dataset.since);
+        const label = under.dataset.label || '';
         const elapsed = Math.max(0, Date.now() - since);
         // > 90s: a counter that climbs into many minutes is exactly the stale
-        // look this line exists to avoid — drop the number, replace the whole
-        // line with a "Still working…" dot-cycle. Reschedule only while no dot
-        // tick is already pending so the 1s quiet-poll ticker doesn't stack.
+        // look this line exists to avoid — drop the number and the "now:"
+        // prefix, replace the whole line with a "Still working…" dot-cycle.
+        // Reschedule only while no dot tick is already pending so the 1s
+        // quiet-poll ticker doesn't stack. Any pending label fade is moot here.
         if (elapsed > NOW_LONG_RUNNING_MS) {
+          nowSwapToken++;
+          shownNowLabel = pendingNowLabel = null;
           if (under.dataset.dotting !== '1') {
             under.dataset.dotting = '1';
             window.setTimeout(function () {
@@ -3563,10 +3598,58 @@ export function buildHtml(
           return;
         }
         under.removeAttribute('data-dotting');
+
+        const suffix = nowSuffix(elapsed);
+        // First paint for this node: there is no older label to hold against,
+        // so paint right away — the line must never sit blank.
+        if (shownNowLabel === null && pendingNowLabel === null) {
+          shownNowLabel = label;
+          paintNowText(under, label, suffix);
+          return;
+        }
+        // Same label already on screen → the seconds ticker just re-paints
+        // (no fade). Same label mid-swap → leave the old text in place; the
+        // scheduled fade will land it.
+        if (label === shownNowLabel) {
+          if (under.classList.contains('fading-out')) return;
+          paintNowText(under, label, suffix);
+          return;
+        }
+        if (label === pendingNowLabel) return;
+        if (pendingNowLabel !== null) {
+          // A newer label arrived inside the debounce window — coalesce into
+          // the scheduled swap, which reads dataset.label at fire time.
+          pendingNowLabel = label;
+          return;
+        }
+        // A real label change: hold the current text >= NOW_MIN_DISPLAY_MS,
+        // then fade old -> new.
+        pendingNowLabel = label;
+        shownNowSwapAt = Math.max(Date.now(), shownNowSwapAt + NOW_MIN_DISPLAY_MS);
+        const token = ++nowSwapToken;
+        window.setTimeout(function () {
+          if (nowSwapToken !== token || pendingNowLabel === null) return;
+          under.classList.add('fading-out');
+          window.setTimeout(function () {
+            if (nowSwapToken !== token || pendingNowLabel === null) return;
+            under.classList.remove('fading-out');
+            const cur = under.dataset.label || '';
+            const curSince = Number(under.dataset.since);
+            paintNowText(under, cur, nowSuffix(Math.max(0, Date.now() - curSince)));
+            shownNowLabel = cur;
+            pendingNowLabel = null;
+            under.classList.add('fading-in');
+            window.setTimeout(function () {
+              if (nowSwapToken === token) under.classList.remove('fading-in');
+            }, NOW_FADE_MS);
+          }, NOW_FADE_MS);
+        }, Math.max(0, shownNowSwapAt - Date.now()));
+      }
+
+      function paintNowText(under, label, suffix) {
         under.textContent = '';
         under.appendChild(document.createTextNode('now: '));
-        under.appendChild(el('b', undefined, under.dataset.label || ''));
-        const suffix = nowSuffix(elapsed);
+        under.appendChild(el('b', undefined, label));
         if (suffix) under.appendChild(document.createTextNode(suffix));
       }
 

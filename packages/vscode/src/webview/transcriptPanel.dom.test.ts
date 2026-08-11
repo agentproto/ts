@@ -2694,6 +2694,47 @@ describe("transcriptPanel webview — book view", () => {
     expect(under.textContent).not.toContain("read")
   })
 
+  // The fade/debounce below runs on the webview's real setTimeout, so these
+  // tests wait out the windows in real time (see renderPanel's fakeTimers ->
+  // the shipped script's setTimeout is not vetted, only its setInterval).
+  const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+  it("ticks seconds on the same label WITHOUT re-fading", async () => {
+    const panel = renderPanel()
+    const seg = { kind: "tool", id: "t1", toolName: "bash", isError: false, status: "pending", ts: new Date(Date.now() - 6_000).toISOString() } as PresentedToolSegment
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [seg] }] } })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    await sleep(350) // first label paints synchronously — no fade classes
+    expect(under.textContent).toMatch(/^now: bash · \d+s$/)
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+    // Let the 1s quiet-poll tick — the counter moves, the label is unchanged,
+    // so no fade classes may appear.
+    await sleep(1100)
+    expect(under.textContent).toMatch(/^now: bash · \d+s$/)
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+  })
+
+  it("fades a label change old -> new and clears the fade classes", async () => {
+    const panel = renderPanel()
+    const seg = (name: string, id: string) => ({ kind: "tool", id, toolName: name, isError: false, status: "pending", ts: new Date(Date.now() - 2_000).toISOString() }) as PresentedToolSegment
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [seg("bash", "t1")] }] } })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    await sleep(350)
+    expect(under.textContent).toBe("now: bash")
+
+    // Change the pending step's tool. The target label is set synchronously;
+    // the swap lands async (min-display debounce + 220ms fade).
+    panel.send({ type: "patch", upsertTurns: [{ id: "turn-2", role: "assistant", segments: [seg("read", "t2")] }], removeTurnIds: [] })
+    expect(under.dataset.label).toBe("read")
+    await sleep(900) // past min-display (500ms) + fade (220ms)
+    expect(under.textContent).toBe("now: read")
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+    expect(under.textContent).not.toContain("bash")
+  })
+
   it("renders the minimalist plan: done collapses to a summary, failed stay visible, current + next up (#conversation-chrome)", () => {
     const panel = renderPanel()
     const plan: PresentedPlanSegment = {
