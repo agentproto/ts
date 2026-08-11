@@ -1541,6 +1541,7 @@ export function buildHtml(
     /* A non-switchable axis (e.g. harness on a live session) reads as present
        but inert — dimmed, with a tooltip explaining why (chip-pickers WP). */
     .composer-chip.dimmed { opacity: 0.5; cursor: default; }
+    #composer-harness svg { display: inline-block; color: inherit; }
     /* The model chip is the one clickable chip (click → switch model) — reset
        the generic button rule's chrome so it still reads as plain chip text,
        only gaining an underline + link color on hover as the click affordance. */
@@ -2528,7 +2529,14 @@ export function buildHtml(
         composerPosture.hidden = isPlainPty;
         composerAuth.hidden = isPlainPty;
         if (!isPlainPty) {
-          composerHarness.textContent = session.adapterSlug || '';
+          if (session.adapterSlug && INITIAL_ICON_SVG) {
+            composerHarness.innerHTML = INITIAL_ICON_SVG;
+            var cSvg = composerHarness.querySelector('svg');
+            if (cSvg) { cSvg.setAttribute('width', '12'); cSvg.setAttribute('height', '12'); cSvg.style.verticalAlign = 'middle'; }
+          } else {
+            composerHarness.textContent = session.adapterSlug || '';
+          }
+          composerHarness.title = session.adapterSlug || '';
           composerModel.textContent = session.model || 'model?';
           // The effort chip only shows when the session carries one — an adapter
           // that has no effort axis leaves the chip empty (:empty hides it).
