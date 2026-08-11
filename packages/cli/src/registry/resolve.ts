@@ -293,6 +293,156 @@ export class AdapterImportFailedError extends Error {
 }
 
 /**
+ * Pick an importable entry target out of a package.json `exports` value —
+ * a plain string target, or a conditions object searched `import` → `node`
+ * → `default` (recursing into nested condition objects; `types` and
+ * `require` are deliberately not candidates for a dynamic `import()`).
+ * Returns undefined when nothing importable is declared.
+ */
+function pickExportTarget(value: unknown): string | undefined {
+  if (typeof value === "string") return value
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      const picked = pickExportTarget(candidate)
+      if (picked !== undefined) return picked
+    }
+    return undefined
+  }
+  if (typeof value !== "object" || value === null) return undefined
+  const record = value as Record<string, unknown>
+  for (const condition of ["import", "node", "default"]) {
+    const picked = pickExportTarget(record[condition])
+    if (picked !== undefined) return picked
+  }
+  return undefined
+}
+
+/** The subset of a package.json `importPackageManually` reads to find the
+ *  package's entry file. */
+interface ManifestEntryFields {
+  exports?: unknown
+  module?: unknown
+  main?: unknown
+}
+
+/**
+ * Resolve a package.json to the relative path of its import entry:
+ * `exports` (root subpath `"."` in a subpath map, or the whole value when
+ * it's a bare target / conditions object), then `module`, then `main`,
+ * then the `index.js` legacy default. Exported for tests only — production
+ * callers go through `importPackageManually`.
+ */
+export function _pickPackageEntryForTests(pkg: ManifestEntryFields): string {
+  return pickPackageEntry(pkg)
+}
+
+function pickPackageEntry(pkg: ManifestEntryFields): string {
+  if (pkg.exports !== undefined) {
+    const isSubpathMap =
+      typeof pkg.exports === "object" &&
+      pkg.exports !== null &&
+      "." in (pkg.exports as Record<string, unknown>)
+    const root = isSubpathMap
+      ? (pkg.exports as Record<string, unknown>)["."]
+      : pkg.exports
+    const target = pickExportTarget(root)
+    if (target !== undefined) return target
+  }
+  if (typeof pkg.module === "string") return pkg.module
+  if (typeof pkg.main === "string") return pkg.main
+  return "index.js"
+}
+
+/**
+ * Import a bare `@agentproto/*` specifier by hand: walk the same
+ * `node_modules/@agentproto` roots the adapter lister already walks, read
+ * the first matching package.json with plain (uncached) `fs`, compute its
+ * entry file, and import it by absolute file URL with the usual
+ * `?v=<mtime>` cache-buster. This bypasses Node's specifier resolution —
+ * and therefore its package.json read cache — completely; see the call
+ * site in `importFresh` for the negative-cache incident this exists for.
+ * Returns undefined when the package genuinely isn't on disk (caller
+ * rethrows the original resolver error, keeping the honest "not
+ * installed" message). `rootsOverride` is for tests.
+ */
+async function importPackageManually(
+  specifier: string,
+  rootsOverride?: readonly string[]
+): Promise<Record<string, unknown> | undefined> {
+  if (!specifier.startsWith("@agentproto/")) return undefined
+  const packageDirName = specifier.slice("@agentproto/".length)
+  const roots = rootsOverride ?? (await collectAgentprotoNamespaceRoots())
+  for (const root of roots) {
+    const packageDir = join(root, packageDirName)
+    let raw: string
+    try {
+      raw = await fs.readFile(join(packageDir, "package.json"), "utf8")
+    } catch {
+      continue /* no package here — try the next root */
+    }
+    let entryRelative: string
+    try {
+      entryRelative = pickPackageEntry(JSON.parse(raw) as ManifestEntryFields)
+    } catch {
+      continue /* unparseable package.json — try the next root */
+    }
+    const entryPath = join(packageDir, entryRelative)
+    try {
+      await fs.stat(entryPath)
+    } catch {
+      continue /* declared entry missing on disk — try the next root */
+    }
+    return importFreshFromResolvedPath(entryPath, specifier)
+  }
+  return undefined
+}
+
+/** Test-only: run the manual walk against explicit roots. */
+export function _importPackageManuallyForTests(
+  specifier: string,
+  roots: readonly string[]
+): Promise<Record<string, unknown> | undefined> {
+  return importPackageManually(specifier, roots)
+}
+
+/**
+ * True only for the stale-negative-package.json-cache failure shape: the
+ * resolver found the package DIRECTORY (it exists on disk) but reused a
+ * cached "no package.json" read, so it fell back to the CJS-era guess of
+ * `<packageDir>/index.js` and failed on that path. The two failures this
+ * must NOT match: a genuinely-absent package (bare-specifier message,
+ * "Cannot find package '@agentproto/adapter-x'"), and a mid-rebuild
+ * package (package.json read fine — the message names the real entry,
+ * e.g. `…/dist/index.mjs`, and the last-known-good fallback owns that
+ * case). Gating the manual walk on this signature keeps it from ever
+ * shadow-loading a second on-disk copy of a package in the healthy paths
+ * (a pnpm workspace can hold both the workspace package and a
+ * registry-published copy).
+ */
+function looksLikeStaleNegativePackageJsonCache(
+  err: unknown,
+  specifier: string
+): boolean {
+  if (!(err instanceof Error)) return false
+  const code = (err as NodeJS.ErrnoException).code
+  if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false
+  const packageDirName = specifier.split("/").pop() ?? specifier
+  return (
+    err.message.includes(`${packageDirName}/index.js`) ||
+    err.message.includes(`${packageDirName}\\index.js`)
+  )
+}
+
+/** Test-only: classify an import failure the way `importFresh`'s manual-
+ *  walk gate does. */
+export function _looksLikeStaleNegativePackageJsonCacheForTests(
+  err: unknown,
+  specifier: string
+): boolean {
+  return looksLikeStaleNegativePackageJsonCache(err, specifier)
+}
+
+/**
  * Dynamic-`import()` a bare specifier without inheriting Node's process-
  * lifetime ESM module cache. In a long-running daemon, `resolveAdapter`
  * calls stack up over hours/days — a plain `import(packageName)` returns
@@ -353,7 +503,33 @@ async function importFresh(specifier: string): Promise<Record<string, unknown>> 
     // Not resolvable to a file on disk from here (e.g. an export condition
     // the CJS resolver can't see) — fall back to a plain import; there's
     // no local file to bust a cache against.
-    return (await import(specifier)) as Record<string, unknown>
+    try {
+      return (await import(specifier)) as Record<string, unknown>
+    } catch (importErr) {
+      // Last resort: resolve the package BY HAND, without Node's resolver.
+      // Node ≥23 caches a failed package.json read process-wide (the C++
+      // package-json reader keeps negative entries), so a package installed
+      // AFTER this process first probed for it stays invisible to BOTH the
+      // CJS resolve above and the bare `import()` here for the rest of the
+      // process lifetime — the resolver stats the now-existing package dir
+      // but reuses the cached "no package.json" and dies guessing at
+      // `<pkg>/index.js`. That is exactly the cold-install bootstrap flow:
+      // `agentproto install <slug>` fails resolution once (populating the
+      // negative cache), runs `npm i -g`, then retries in-process — and the
+      // retry failed on the first invocation, demanding a rerun. A manual
+      // walk with plain `fs` reads sees the fresh package.json, and importing
+      // the entry by absolute file URL sidesteps bare-specifier resolution
+      // entirely. (Node 22 doesn't cache the negative, which is why this
+      // only bit some machines.) Gated on the poisoned-cache failure shape
+      // so the walk never shadow-loads a second on-disk copy in the
+      // genuinely-absent or mid-rebuild paths — see
+      // `looksLikeStaleNegativePackageJsonCache`.
+      if (looksLikeStaleNegativePackageJsonCache(importErr, specifier)) {
+        const manual = await importPackageManually(specifier)
+        if (manual) return manual
+      }
+      throw importErr
+    }
   }
   return importFreshFromResolvedPath(resolvedPath, specifier)
 }

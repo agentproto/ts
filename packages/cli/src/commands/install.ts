@@ -132,12 +132,11 @@ export async function runInstall(args: readonly string[]): Promise<number> {
       )
       return code
     }
-    // Re-resolve. A failed dynamic `import()` is not cached by Node, so
-    // the second call re-resolves from disk and picks up the freshly-
-    // installed global package (the global node_modules is an ancestor of
-    // a globally-installed CLI's location). Falling through to the
-    // original `resolveAdapter` keeps the proprietary-adapter path-rewrite
-    // and every other resolution nicety in one place.
+    // Re-resolve in the same process. Node ≥23 can retain a negative
+    // package.json lookup after the first miss, so `resolveAdapter` has a
+    // narrow filesystem fallback for that poisoned-cache signature. Keeping
+    // the retry here still centralizes the proprietary-adapter path rewrite
+    // and every other resolution nicety in `resolveAdapter`.
     try {
       adapter = await resolveAdapter(slug)
     } catch (retryErr) {
@@ -145,7 +144,7 @@ export async function runInstall(args: readonly string[]): Promise<number> {
         retryErr instanceof Error ? retryErr.message : String(retryErr)
       process.stderr.write(
         `agentproto install: ${pkg} installed but could not be loaded: ${cause}\n` +
-          `Re-run \`agentproto install ${slug}\` from a fresh shell, or install manually: npm i -g ${pkg}\n`
+          `Verify ${pkg} has a valid package.json export under \`npm root -g\`, then retry.\n`
       )
       return 1
     }
