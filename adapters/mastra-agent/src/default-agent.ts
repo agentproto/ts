@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent"
 import { buildMastraAgent } from "@agentproto/mastra"
 import type { MastraToolLike } from "@agentproto/mastra"
+import { ProviderHistoryCompat } from "@mastra/core/processors"
 import { AgentController } from "@mastra/core/agent-controller"
 import type {
   AgentControllerConfig,
@@ -203,7 +204,27 @@ export function makeAgentFactory(
     const store = buildSqliteStore()
     let memory: MastraMemoryLike | undefined
 
+    const historyCompat = new ProviderHistoryCompat({
+      additionalRules: [{
+        name: "strip-trailing-reasoning-from-assistant",
+        applyToPrompt({ prompt }) {
+          let mutated = false
+          const next = prompt.map((message) => {
+            if (message.role !== "assistant" || !Array.isArray(message.content)) return message
+            const content = message.content as Array<{ type: string }>
+            const last = content[content.length - 1]
+            if (!last || last.type !== "reasoning") return message
+            const filtered = content.filter((p) => p.type !== "reasoning")
+            mutated = true
+            return { ...message, content: filtered.length > 0 ? filtered : [{ type: "text" as const, text: "" }] }
+          })
+          return mutated ? (next as typeof prompt) : undefined
+        },
+      }],
+    })
+
     const { agent } = await buildMastraAgent(handle, {
+      inputProcessors: [historyCompat],
       resolveModel: (ref) => resolveMastraModel(ref),
       // Match each declared tool ref against the workspace toolset by id. A
       // ref with no matching executor still resolves — to a stub that fails
