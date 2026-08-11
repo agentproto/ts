@@ -2122,6 +2122,11 @@ export function buildHtml(
       // the line stops trusting the transcript's frozen last action and leans
       // on the daemon's own activitySummary (or an explicit supervision label).
       const NOW_STALE_MS = 30 * 1000;
+      // Progressive "$ now:" timer thresholds — see nowSuffix/renderNow.
+      const NOW_NO_TIME_MS = 5 * 1000;
+      const NOW_SECONDS_MS = 60 * 1000;
+      const NOW_LONG_RUNNING_MS = 90 * 1000;
+      const NOW_DOT_CYCLE_MS = 600; // "Still working…" dot cycle
 
       let exited = false;
       let busy = false;
@@ -3539,11 +3544,41 @@ export function buildHtml(
 
       function renderNow(under) {
         const since = Number(under.dataset.since);
-        const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
+        const elapsed = Math.max(0, Date.now() - since);
+        // > 90s: a counter that climbs into many minutes is exactly the stale
+        // look this line exists to avoid — drop the number, replace the whole
+        // line with a "Still working…" dot-cycle. Reschedule only while no dot
+        // tick is already pending so the 1s quiet-poll ticker doesn't stack.
+        if (elapsed > NOW_LONG_RUNNING_MS) {
+          if (under.dataset.dotting !== '1') {
+            under.dataset.dotting = '1';
+            window.setTimeout(function () {
+              under.removeAttribute('data-dotting');
+              renderNow(under);
+            }, NOW_DOT_CYCLE_MS);
+          }
+          const dots = '.'.repeat(1 + Math.floor(Date.now() / NOW_DOT_CYCLE_MS) % 3);
+          under.textContent = '';
+          under.appendChild(document.createTextNode('Still working' + dots));
+          return;
+        }
+        under.removeAttribute('data-dotting');
         under.textContent = '';
         under.appendChild(document.createTextNode('now: '));
         under.appendChild(el('b', undefined, under.dataset.label || ''));
-        under.appendChild(document.createTextNode(' · ' + secs + 's'));
+        const suffix = nowSuffix(elapsed);
+        if (suffix) under.appendChild(document.createTextNode(suffix));
+      }
+
+      // Progressive elapsed display for the "$ now:" line.
+      //   <5s      — nothing at all ("now" is current; a '· 0s' is noise)
+      //   5–60s    — seconds (· 12s)
+      //   60–90s   — minutes (· 1 min)
+      //   >90s     — handled by renderNow's "Still working…" branch
+      function nowSuffix(elapsedMs) {
+        if (elapsedMs < NOW_NO_TIME_MS) return '';
+        if (elapsedMs < NOW_SECONDS_MS) return ' · ' + Math.round(elapsedMs / 1000) + 's';
+        return ' · ' + Math.floor(elapsedMs / 60000) + ' min';
       }
 
       function pauseQuestion(chapters) {

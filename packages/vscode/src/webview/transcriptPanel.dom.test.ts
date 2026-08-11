@@ -2664,6 +2664,36 @@ describe("transcriptPanel webview — book view", () => {
     expect(under.textContent).not.toContain("Watching executor")
   })
 
+  it("omits the elapsed suffix for a step under 5s ('now' is current — '· 0s' is noise)", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(2_000) })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toBe("now: read")
+  })
+
+  it("shows seconds for a 5–60s step, minutes for a 60–90s step", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(12_000) })
+    const seconds = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(seconds.textContent).toMatch(/^now: read · \d+s$/)
+
+    const panel2 = renderPanel()
+    // 70s is past the staleness cutoff too, so the label flips to the
+    // supervision/Working fallback — assert the MINUTES suffix regardless.
+    panel2.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(70_000) })
+    const minutes = chapters(panel2)[0]!.querySelector(".under") as DomElement
+    expect(minutes.textContent).toMatch(/^now: .* · 1 min$/)
+  })
+
+  it("replaces the whole line with an animated 'Still working…' past 90s — no counter", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(120_000) })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toMatch(/^Still working\.{1,3}$/)
+    expect(under.textContent).not.toContain("now:")
+    expect(under.textContent).not.toContain("read")
+  })
+
   it("renders the minimalist plan: done collapses to a summary, failed stay visible, current + next up (#conversation-chrome)", () => {
     const panel = renderPanel()
     const plan: PresentedPlanSegment = {
