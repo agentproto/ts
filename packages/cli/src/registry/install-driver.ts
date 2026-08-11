@@ -25,11 +25,24 @@
  * clean result rather than a 500.
  */
 
-import { spawn, execFileSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import type { AdapterInstallResult } from "@agentproto/runtime"
 import { listAdaptersWithAcp, type AdapterListing } from "./resolve.js"
 import { CATALOG } from "./catalog.js"
 import { runInstall } from "../commands/install.js"
+import {
+  KNOWN_INSTALL_COMMANDS,
+  parseNpmPackageFromHint,
+  parseShellHint,
+  commandOnPath,
+} from "./install-hint.js"
+
+// Re-exported for back-compat — these used to be defined in this module;
+// they now live in `install-hint.js` so `commands/install.ts`'s CLI-direct
+// `vendored` install step can share the same hint parsing (see its module
+// header) without a circular import (that module is what THIS one calls
+// into for the first-party install pipeline).
+export { KNOWN_INSTALL_COMMANDS, parseNpmPackageFromHint, parseShellHint }
 
 /** The minimal slice of an adapter listing `planAdapterInstall` reads —
  *  a structural subset of {@link AdapterListing} so the planner stays pure
@@ -68,47 +81,6 @@ export type AdapterInstallPlan =
       args: string[]
     }
   | { kind: "unsupported"; reason: string }
-
-/**
- * Pull the npm package out of an acp entry's `install_hint`
- * (`"npm install -g @google/gemini-cli"` → `"@google/gemini-cli"`). Accepts
- * both `install`/`i` and `-g`/`--global` spellings. Returns `undefined` when
- * the hint isn't an npm-global install line (a BYO-binary agent, a `brew`
- * hint, etc.) — the caller then reports it as unsupported rather than
- * guessing a package.
- */
-export function parseNpmPackageFromHint(hint?: string): string | undefined {
-  if (!hint) return undefined
-  const m = hint.match(/npm\s+(?:i|install)\s+(?:-g|--global)\s+(\S+)/)
-  return m?.[1]
-}
-
-const KNOWN_INSTALL_COMMANDS: Record<string, string> = {
-  npm: "https://nodejs.org/",
-  uv: "curl -LsSf https://astral.sh/uv/install.sh | sh",
-  pip: "comes with Python — https://www.python.org/downloads/",
-  pip3: "comes with Python 3 — https://www.python.org/downloads/",
-  pipx: "pip install pipx — https://pipx.pypa.io",
-  brew: "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
-  cargo: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
-  go: "https://go.dev/dl/",
-}
-
-/**
- * Parse a non-npm install hint into command + args when the command is a
- * recognized package manager. Returns `undefined` for unknown commands so the
- * caller can fall through to `unsupported` rather than blindly executing
- * arbitrary shell lines.
- */
-export function parseShellHint(
-  hint?: string,
-): { command: string; args: string[] } | undefined {
-  if (!hint) return undefined
-  const parts = hint.trim().split(/\s+/)
-  const cmd = parts[0]
-  if (!cmd || cmd === "npm" || !(cmd in KNOWN_INSTALL_COMMANDS)) return undefined
-  return { command: cmd, args: parts.slice(1) }
-}
 
 /**
  * Decide how to install `entry` — pure, so it's the unit-tested heart of the
@@ -165,17 +137,6 @@ export function planAdapterInstall(
     slug: entry.slug,
     command: "agentproto",
     args: ["install", entry.slug, "--allow-unverified"],
-  }
-}
-
-function commandOnPath(cmd: string): boolean {
-  try {
-    execFileSync(process.platform === "win32" ? "where" : "which", [cmd], {
-      stdio: "ignore",
-    })
-    return true
-  } catch {
-    return false
   }
 }
 

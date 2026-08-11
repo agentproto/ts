@@ -431,6 +431,11 @@ export interface ResolveAuthSpecInput {
  * apply (it engages then throws `missing_auth_credential`), so the `explicit`
  * / `enforce` signals are carried through on the spec.
  */
+export function modelIdPrefixProvider(modelId: string): string | undefined {
+  const slash = modelId.indexOf("/")
+  return slash > 0 ? modelId.slice(0, slash) : undefined
+}
+
 export function resolveAuthSpec(
   input: ResolveAuthSpecInput,
 ): { spec: ResolvedAuthSpec; echo: AuthEcho } | undefined {
@@ -493,6 +498,9 @@ export function resolveAuthSpec(
       input.requestedProvider ??
       input.descriptor.provider ??
       (input.model ? input.descriptor.modelProviders?.[input.model] : undefined) ??
+      (input.model && input.descriptor.modelDerivedApiKey
+        ? modelIdPrefixProvider(input.model)
+        : undefined) ??
       (input.model ? getModelProvider(input.model) : undefined)
     if (!provider) return undefined
     apiKeyEnv = providerEnvVar(provider)
@@ -664,6 +672,22 @@ export function resolveAuthSpec(
 export const CLAUDE_CODE_OAUTH_SOURCE = "claude-code-oauth"
 
 /**
+ * `auth.source`/profile-`source` values that are RECOGNIZED elsewhere in the
+ * system (the codex/gemini adapters' own `authSubscription: { external: true
+ * }` file-based login, and the "Use my existing Codex/Gemini login" profile
+ * flow — see `verifyLocalLoginPresent`) but can never be satisfied by {@link
+ * resolveSubscriptionCredential}: they name a FILE the target CLI reads
+ * itself, not an extractable bearer, so there is nothing this Mode-3 resolver
+ * could ever fetch for them. Used only to sharpen the `unsupported_auth_source`
+ * error for THESE specific values (e.g. spawning `pi` — which has no
+ * `authSubscription.external` — with `auth.source: "codex"`, likely inherited
+ * from a codex-flavored parent session or auth profile) instead of the
+ * generic "only claude-code-oauth is supported" message, which doesn't
+ * explain why a seemingly-valid value (codex IS a real source elsewhere)
+ * failed here. Does NOT change behavior — still fails loud either way. */
+export const FILE_BASED_AUTH_SOURCES: ReadonlySet<string> = new Set(["codex", "gemini"])
+
+/**
  * Raised when `auth.source` is configured but cannot yield a credential — an
  * unknown source value (`unsupported_auth_source`) or the recipe resolving to
  * nothing / not-logged-in (`auth_source_unresolved`). A LOUD, actionable
@@ -730,11 +754,21 @@ export async function resolveSubscriptionCredential(
   // (b) Opt-in self-refreshing source.
   if (input.source !== undefined) {
     if (input.source !== CLAUDE_CODE_OAUTH_SOURCE) {
-      throw new SubscriptionSourceError(
-        "unsupported_auth_source",
-        `auth.source: "${input.source}" is not supported — the only supported ` +
-          `value is "${CLAUDE_CODE_OAUTH_SOURCE}".`,
-      )
+      // A file-based source (codex/gemini) is a real value elsewhere in the
+      // system — just not one this bearer-fetch resolver can ever satisfy.
+      // Name that explicitly so the caller understands WHY a seemingly-valid
+      // source failed here, instead of implying "claude-code-oauth" is the
+      // only auth concept that exists.
+      const message = FILE_BASED_AUTH_SOURCES.has(input.source)
+        ? `auth.source: "${input.source}" is a file-based (external) login — only ` +
+          `adapters that declare "authSubscription.external" (e.g. codex, gemini ` +
+          `themselves) can use it, and this adapter isn't one of them, so there is ` +
+          `no bearer to inject. Use auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" for ` +
+          `a Claude subscription, or configure a real API key for this adapter's ` +
+          `target provider instead.`
+        : `auth.source: "${input.source}" is not supported — the only supported ` +
+          `value is "${CLAUDE_CODE_OAUTH_SOURCE}".`
+      throw new SubscriptionSourceError("unsupported_auth_source", message)
     }
     let token: string
     try {

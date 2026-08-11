@@ -13,11 +13,14 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
-const { resolveAdapterMock, spawnMock, runSetupMock } = vi.hoisted(() => ({
-  resolveAdapterMock: vi.fn(),
-  spawnMock: vi.fn(),
-  runSetupMock: vi.fn(),
-}))
+const { resolveAdapterMock, spawnMock, runSetupMock, binOnPathMock, commandOnPathMock } =
+  vi.hoisted(() => ({
+    resolveAdapterMock: vi.fn(),
+    spawnMock: vi.fn(),
+    runSetupMock: vi.fn(),
+    binOnPathMock: vi.fn(),
+    commandOnPathMock: vi.fn(),
+  }))
 
 vi.mock("../registry/resolve.js", () => ({
   resolveAdapter: resolveAdapterMock,
@@ -33,6 +36,18 @@ vi.mock("node:child_process", async importOriginal => {
 vi.mock("../commands/setup.js", () => ({
   runSetup: runSetupMock,
 }))
+// The `vendored` install step (generic ACP agents) checks whether the bin is
+// already on PATH before running its hint, and — for a shell-hint (uv/pip/…)
+// — whether that package manager itself is on PATH. Mocked so these tests
+// never depend on what's actually installed on the machine running them.
+vi.mock("../registry/acp-generic.js", () => ({
+  binOnPath: binOnPathMock,
+}))
+vi.mock("../registry/install-hint.js", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../registry/install-hint.js")>()
+  return { ...actual, commandOnPath: commandOnPathMock }
+})
 
 import { runInstall } from "../commands/install.js"
 
@@ -111,6 +126,10 @@ beforeEach(() => {
   spawnMock.mockReset()
   runSetupMock.mockReset()
   runSetupMock.mockResolvedValue(0)
+  binOnPathMock.mockReset()
+  binOnPathMock.mockResolvedValue(false)
+  commandOnPathMock.mockReset()
+  commandOnPathMock.mockReturnValue(true)
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -193,6 +212,113 @@ describe("agentproto install — adapter package bootstrap", () => {
 
     await expect(runInstall(["bogus"])).rejects.toThrow(/invalid adapter slug/)
     expect(spawnMock).not.toHaveBeenCalled()
+    io.restore()
+  })
+})
+
+/** A resolved generic-ACP handle (acp-generic.ts's `acpHandleFromSpec`
+ *  shape) — a single `vendored` install step + the hint stashed at
+ *  `metadata.acpGeneric.install_hint`, matching mistral-vibe/kimi-cli/etc. */
+function fakeGenericAcpHandle(slug: string, bin: string, hint: string) {
+  return {
+    slug,
+    handle: {
+      name: slug,
+      install: [{ method: "vendored" as const, path: bin }],
+      version_check: undefined,
+      metadata: { acpGeneric: { install_hint: hint } },
+    },
+    source: "acp-catalog" as const,
+  }
+}
+
+describe("agentproto install — vendored (generic ACP) step", () => {
+  it("already on PATH ⇒ no-op success, no hint command run", async () => {
+    resolveAdapterMock.mockResolvedValue(
+      fakeGenericAcpHandle("mistral-vibe", "vibe-acp", "uv tool install mistral-vibe")
+    )
+    binOnPathMock.mockResolvedValue(true)
+    const io = captureStdio()
+
+    const code = await runInstall(["mistral-vibe"])
+
+    expect(code).toBe(0)
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(io.out.join("")).toMatch(/already on PATH/)
+    io.restore()
+  })
+
+  it("not on PATH ⇒ runs the shell-hint's package manager (this is the mistral-vibe fix)", async () => {
+    resolveAdapterMock.mockResolvedValue(
+      fakeGenericAcpHandle("mistral-vibe", "vibe-acp", "uv tool install mistral-vibe")
+    )
+    binOnPathMock.mockResolvedValue(false)
+    commandOnPathMock.mockReturnValue(true)
+    spawnExits(0)
+    const io = captureStdio()
+
+    const code = await runInstall(["mistral-vibe"])
+
+    expect(code).toBe(0)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [cmd, argv] = spawnMock.mock.calls[0]!
+    expect(cmd).toBe("uv")
+    expect(argv).toEqual(["tool", "install", "mistral-vibe"])
+    io.restore()
+  })
+
+  it("not on PATH ⇒ npm-hint runs `npm install -g`", async () => {
+    resolveAdapterMock.mockResolvedValue(
+      fakeGenericAcpHandle("gemini-cli", "gemini", "npm install -g @google/gemini-cli")
+    )
+    binOnPathMock.mockResolvedValue(false)
+    spawnExits(0)
+    const io = captureStdio()
+
+    const code = await runInstall(["gemini-cli"])
+
+    expect(code).toBe(0)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [cmd, argv] = spawnMock.mock.calls[0]!
+    expect(cmd).toBe("npm")
+    expect(argv).toEqual(["install", "-g", "@google/gemini-cli"])
+    io.restore()
+  })
+
+  it("hint's package manager itself missing ⇒ clear failure, no spawn attempted", async () => {
+    resolveAdapterMock.mockResolvedValue(
+      fakeGenericAcpHandle("mistral-vibe", "vibe-acp", "uv tool install mistral-vibe")
+    )
+    binOnPathMock.mockResolvedValue(false)
+    commandOnPathMock.mockReturnValue(false)
+    const io = captureStdio()
+
+    const code = await runInstall(["mistral-vibe"])
+
+    expect(code).not.toBe(0)
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(io.err.join("")).toMatch(/'uv' is not installed/)
+    io.restore()
+  })
+
+  it("no install_hint and not on PATH ⇒ 'install manually' failure (true BYO binary)", async () => {
+    resolveAdapterMock.mockResolvedValue({
+      slug: "some-byo-cli",
+      handle: {
+        name: "some-byo-cli",
+        install: [{ method: "vendored" as const, path: "some-byo-cli" }],
+        version_check: undefined,
+      },
+      source: "acp-catalog" as const,
+    })
+    binOnPathMock.mockResolvedValue(false)
+    const io = captureStdio()
+
+    const code = await runInstall(["some-byo-cli"])
+
+    expect(code).not.toBe(0)
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(io.err.join("")).toMatch(/bring-your-own/)
     io.restore()
   })
 })

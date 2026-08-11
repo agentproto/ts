@@ -26,6 +26,7 @@ import {
   AuthResolutionError,
   resolveSubscriptionCredential,
   SubscriptionSourceError,
+  modelIdPrefixProvider,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -308,6 +309,9 @@ function spawnEligibilityManifest(
   const directEndpoint =
     descriptor?.provider ??
     (model ? descriptor?.modelProviders?.[model] : undefined) ??
+    (model && descriptor?.modelDerivedApiKey
+      ? modelIdPrefixProvider(model)
+      : undefined) ??
     (model ? getModelProvider(model) : undefined)
   const routeId = route?.gateway ?? directEndpoint
   if (!routeId) return undefined
@@ -1659,6 +1663,9 @@ export async function spawnAgentSession(
     const resolvedProvider =
       pinnedProvider ??
       resolved.authDescriptor.provider ??
+      (authModel && resolved.authDescriptor.modelDerivedApiKey
+        ? modelIdPrefixProvider(authModel)
+        : undefined) ??
       (authModel ? getModelProvider(authModel) : undefined)
     if (resolved.authDescriptor.provider === undefined && resolvedProvider !== undefined) {
       resolvedRouteGateway = resolvedProvider
@@ -1794,7 +1801,8 @@ export async function spawnAgentSession(
     if (
       input.route?.gateway === undefined &&
       authModel !== undefined &&
-      resolvedProvider !== undefined
+      resolvedProvider !== undefined &&
+      !resolved.authDescriptor?.modelDerivedApiKey
     ) {
       const verdict = checkModelWalletEligibility(authModel, resolvedProvider)
       if (!verdict.ok) {
