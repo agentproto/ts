@@ -26,7 +26,7 @@ afterEach(() => {
   if (originalHome === undefined) {
     delete process.env.HOME
   } else {
-    originalHome = undefined
+    process.env.HOME = originalHome
   }
 })
 
