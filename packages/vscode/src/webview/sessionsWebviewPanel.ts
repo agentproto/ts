@@ -931,22 +931,26 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return '<span class="logo img"><img src="' + escapeHtml(logo.uri) + '" alt="" /></span>';
       }
 
+      var svgCache = {};
+      function applySvg(el, svg) {
+        el.innerHTML = svg;
+        el.dataset.loaded = '1';
+        var svgEl = el.querySelector('svg');
+        if (svgEl) {
+          svgEl.setAttribute('width', '12');
+          svgEl.setAttribute('height', '12');
+          if (el.dataset.file !== 'claude.svg' && el.dataset.file !== 'openclaw.png') {
+            svgEl.style.color = 'var(--fg)';
+          }
+        }
+      }
       function loadSvg(el) {
         if (!el || el.dataset.loaded) return;
-        fetch(el.dataset.src)
+        var src = el.dataset.src;
+        if (svgCache[src]) { applySvg(el, svgCache[src]); return; }
+        fetch(src)
           .then(function (res) { return res.text(); })
-          .then(function (svg) {
-            el.innerHTML = svg;
-            el.dataset.loaded = '1';
-            var svgEl = el.querySelector('svg');
-            if (svgEl) {
-              svgEl.setAttribute('width', '12');
-              svgEl.setAttribute('height', '12');
-              if (el.dataset.file !== 'claude.svg' && el.dataset.file !== 'openclaw.png') {
-                svgEl.style.color = 'var(--fg)';
-              }
-            }
-          })
+          .then(function (svg) { svgCache[src] = svg; applySvg(el, svg); })
           .catch(function () {});
       }
 
