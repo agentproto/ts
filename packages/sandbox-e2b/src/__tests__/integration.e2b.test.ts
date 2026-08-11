@@ -17,7 +17,10 @@ describe.skipIf(!process.env.E2B_API_KEY)("e2b sandbox agent host (integration)"
     async () => {
       const host = await createSandboxAgentSessionHost({
         provider: e2bSandboxProvider,
-        spec: { provider: "e2b", config: {} },
+        spec: {
+          provider: "e2b",
+          config: { installPackages: ["@agentproto/adapter-hermes"] },
+        },
         secrets: { slugs: ["OPENROUTER_API_KEY"] },
       })
       try {
