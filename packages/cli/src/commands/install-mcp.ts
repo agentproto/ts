@@ -735,6 +735,12 @@ async function ensureDaemon(yes: boolean): Promise<number | null> {
       stdio: "ignore",
       detached: true,
     })
+    // A detached fire-and-forget spawn still throws an unhandled
+    // exception on a bare 'error' event (e.g. "agentproto" not on PATH) —
+    // the `waitForHealth` timeout below already reports the failure
+    // (returns null), so this only needs to keep the event from going
+    // unhandled.
+    child.once("error", () => {})
     child.unref()
 
     if (await waitForHealth(port, 10_000)) {

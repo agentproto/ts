@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PassThrough } from "node:stream"
+import { EventEmitter } from "node:events"
 import { spawn } from "node:child_process"
 import type { AgentCliClient, AgentCliConnectOptions, AgentCliDefinition } from "../types.js"
 
@@ -12,18 +13,20 @@ import type { AgentCliClient, AgentCliConnectOptions, AgentCliDefinition } from 
 
 const FAKE_PID = 54321
 
+// A real EventEmitter (not a plain object) so `spawned.once("spawn"|"error", ...)`
+// in define-agent-cli.ts's spawn guard works — emits "spawn" on the next
+// microtask, mirroring a real ChildProcess's async success signal.
 function fakeChild() {
-  const stdin = new PassThrough()
-  const stdout = new PassThrough()
-  const stderr = new PassThrough()
-  return {
+  const child = Object.assign(new EventEmitter(), {
     pid: FAKE_PID,
-    stdin,
-    stdout,
-    stderr,
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
     killed: false,
     kill: vi.fn(),
-  }
+  })
+  queueMicrotask(() => child.emit("spawn"))
+  return child
 }
 
 vi.mock("node:child_process", () => ({

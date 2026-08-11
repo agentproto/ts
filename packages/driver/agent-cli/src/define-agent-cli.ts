@@ -83,6 +83,20 @@ export const defineAgentCli = createDoctype<AgentCliDefinition, AgentCliHandle>(
   },
 )
 
+/**
+ * A manifest `bin: "node"` means "run with the node that's driving THIS
+ * process" (the daemon's own `process.execPath`), not "look up `node` on
+ * the child's PATH". A bare `spawn("node", ...)` depends on PATH containing
+ * a `node` entry — true in an interactive shell (nvm etc.) but NOT
+ * guaranteed under launchd, which starts the daemon with a minimal PATH.
+ * Resolving to `process.execPath` sidesteps PATH entirely for the one bin
+ * value that always means "this runtime". Every other bin (npx, hermes,
+ * gemini, …) is left untouched — those are meant to be resolved off PATH.
+ */
+function resolveSpawnBin(bin: string): string {
+  return bin === "node" ? process.execPath : bin
+}
+
 export function createAgentCliRuntime(
   definition: AgentCliHandle,
 ): AgentCliRuntime {
@@ -90,6 +104,7 @@ export function createAgentCliRuntime(
     definition,
     async start(opts?: AgentCliStartOptions): Promise<AgentCliRuntimeSession> {
       const cwd = opts?.cwd ?? process.cwd()
+      const resolvedBin = resolveSpawnBin(definition.bin)
       // Compose final argv + env from the manifest + per-call config.
       // Mode patches and option patches land BEFORE the host-provided
       // env so an operator-set option can be observed by the CLI even
@@ -336,7 +351,7 @@ export function createAgentCliRuntime(
       // Short-circuit here so buildProtocolArm is never called for it.
       if (definition.protocol === "print") {
         return createPrintSession({
-          bin: definition.bin,
+          bin: resolvedBin,
           baseArgs: composed.binArgs,
           cwd,
           env,
@@ -364,7 +379,7 @@ export function createAgentCliRuntime(
         // calls — is denied out-of-workspace reads/writes. Off by default;
         // see `wrapAgentCliSpawn`'s doc for the fail-closed contract.
         const [execBin, execArgs] = await wrapAgentCliSpawn(
-          definition.bin,
+          resolvedBin,
           composed.binArgs,
           {
             mode: opts?.commandSandbox,
@@ -373,11 +388,45 @@ export function createAgentCliRuntime(
             label: definition.id,
           },
         )
-        child = spawn(execBin, execArgs, {
+        const spawned = spawn(execBin, execArgs, {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
           signal: opts?.signal,
+        })
+        child = spawned
+
+        // Attached synchronously, before any `await` below, so a spawn
+        // failure (bad binary, PATH missing the target under a minimal
+        // launchd env, …) is always observed by a listener. Node throws
+        // an UNHANDLED exception — crashing this ENTIRE process, every
+        // session on the box, not just this spawn — when a ChildProcess
+        // emits 'error' with nobody listening. Confirmed live 2026-08-11:
+        // a launchd-started daemon (PATH without the interactive shell's
+        // nvm setup) hit `spawn('node') ENOENT` from an `app_run` →
+        // mastra-agent spawn with no 'error' listener anywhere on the
+        // chain, taking down every running session. Race 'spawn' vs
+        // 'error' and turn a failure into a normal rejection instead —
+        // the caller (`session-spawn.ts` / `app_run`) already turns a
+        // rejected `start()` into a clean `{ok:false, message}` result.
+        let spawnFailure: Error | undefined
+        await new Promise<void>(resolve => {
+          spawned.once("spawn", () => resolve())
+          spawned.once("error", err => {
+            spawnFailure = err
+            resolve()
+          })
+        })
+        if (spawnFailure) {
+          throw new Error(
+            `agent-cli '${definition.id}': failed to spawn '${execBin} ${execArgs.join(" ")}': ${spawnFailure.message}`,
+          )
+        }
+        // The spawn itself succeeded — keep a listener attached for the
+        // rest of the child's life so a LATER 'error' (e.g. a broken
+        // pipe) never goes unhandled either.
+        spawned.on("error", err => {
+          stderrBuf.push(`[spawn error] ${err.message}`)
         })
 
         // Drain child.stderr — without this the kernel pipe buffer

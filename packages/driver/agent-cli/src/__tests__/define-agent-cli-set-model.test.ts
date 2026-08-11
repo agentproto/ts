@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PassThrough } from "node:stream"
+import { EventEmitter } from "node:events"
 import { spawn } from "node:child_process"
 import type {
   AgentCliClient,
@@ -22,11 +23,20 @@ import type {
  * the returned session object at all before this change.
  */
 
+// A real EventEmitter (not a plain object) so `spawned.once("spawn"|"error", ...)`
+// in define-agent-cli.ts's spawn guard works — emits "spawn" on the next
+// microtask, mirroring a real ChildProcess's async success signal.
 function fakeChild() {
-  const stdin = new PassThrough()
-  const stdout = new PassThrough()
-  const stderr = new PassThrough()
-  return { pid: 1234, stdin, stdout, stderr, killed: false, kill: vi.fn() }
+  const child = Object.assign(new EventEmitter(), {
+    pid: 1234,
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    killed: false,
+    kill: vi.fn(),
+  })
+  queueMicrotask(() => child.emit("spawn"))
+  return child
 }
 
 const spawnCalls: Array<{ bin: string; args: string[] }> = []
