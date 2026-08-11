@@ -1997,13 +1997,14 @@ export async function spawnAgentSession(
     // `lastError` so a spawn that can never run ends VISIBLY instead of
     // sitting in "starting" forever.
     if (worktreeRequest?.async && provisionWorktree) {
+      const defaultModel = resolved?.defaultModel
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
         harness: input.harness ?? input.adapter,
-        ...(input.model ? { model: input.model } : {}),
+        ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
@@ -2282,6 +2283,7 @@ export async function spawnAgentSession(
       }
     }
 
+    const defaultModel = resolved?.defaultModel
     const desc = registry.spawnAgent({
       id: mintedSessionId,
       workspaceSlug: resolvedSlug,
@@ -2293,7 +2295,7 @@ export async function spawnAgentSession(
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
         : {}),
       harness: input.harness ?? input.adapter,
-      ...(input.model ? { model: input.model } : {}),
+      ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
       ...(input.posture !== undefined ? { posture: input.posture } : {}),
