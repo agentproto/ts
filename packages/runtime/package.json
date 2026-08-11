@@ -144,6 +144,7 @@
     "@agentproto/workflow": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
+    "@agentproto/workspace-brain": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "croner": "^9.0.0",
     "gray-matter": "^4.0.3",
