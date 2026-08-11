@@ -8,9 +8,6 @@ import {
   cronJobIdOf,
   formatCost,
   gateApproved,
-  harnessGlyphFor,
-  HARNESS_GLYPHS,
-  HARNESS_GLYPH_FALLBACK,
   isSystemPreviewLine,
   laneOf,
   nestByLineage,
@@ -61,22 +58,6 @@ const NOW = Date.parse("2026-01-02T00:00:00Z")
 function opts(over: Partial<Parameters<typeof buildSessionsWebviewModel>[2]> = {}) {
   return { lane: "agents" as const, project: null, search: "", now: NOW, ...over }
 }
-
-describe("harnessGlyphFor", () => {
-  it("maps every locked harness to its glyph", () => {
-    expect(harnessGlyphFor("claude-code")).toBe("✳")
-    expect(harnessGlyphFor("hermes")).toBe("☿")
-    expect(harnessGlyphFor("codex")).toBe("◈")
-    expect(harnessGlyphFor("gemini-cli")).toBe("✦")
-  })
-  it("falls back to • for an unrecognized or absent slug", () => {
-    expect(harnessGlyphFor("some-future-harness")).toBe(HARNESS_GLYPH_FALLBACK)
-    expect(harnessGlyphFor(undefined)).toBe(HARNESS_GLYPH_FALLBACK)
-  })
-  it("HARNESS_GLYPHS carries exactly the four locked entries", () => {
-    expect(Object.keys(HARNESS_GLYPHS).sort()).toEqual(["claude-code", "codex", "gemini-cli", "hermes"])
-  })
-})
 
 describe("formatCost", () => {
   it("formats a positive cost to two decimals with a leading $", () => {
@@ -365,12 +346,19 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
     const row = model.groups[0]!.rows[0]! as WebviewRow
     expect(row.name).toBe("exec · canvakit-extract")
-    expect(row.harnessGlyph).toBe("☿")
+    expect(row.logo).toEqual({ kind: "icon", file: "hermes.svg" })
     expect(row.model).toBe("glm-5.2")
     expect(row.cost).toBe("$0.42")
     expect(row.ctxPercent).toBe(33)
     expect(row.tag).toBe("in-place")
     expect(row.workspace?.slug).toBe("studio")
+  })
+
+  it("falls back to session.kind for the logo when adapterSlug is absent", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", kind: "browser" })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const row = model.groups[0]!.rows[0]! as WebviewRow
+    expect(row.logo).toEqual({ kind: "icon", file: "browser.svg" })
   })
 
   it("carries pendingBgTasks onto the row for the ⏳ N bg chip", () => {

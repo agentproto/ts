@@ -38,6 +38,7 @@ import { isPendingSession } from "../services/pending.logic.js"
 import type { SeenTracker } from "../services/seen.js"
 import type { DaemonConnectionState, SessionStore } from "../services/sessionStore.js"
 import type { WatchedSessions } from "../services/watchedSessions.js"
+import type { AdapterLogo } from "./adapterIcon.logic.js"
 import {
   buildSessionsWebviewModel,
   isValidColorIndex,
@@ -99,6 +100,9 @@ export function nextColorOverrides(
 const CLAUDE_SETUP_PROMPT =
   "Set up Agentproto for this VS Code workspace. Install the Agentproto CLI, start its local daemon, register this workspace, connect Claude Code through the Agentproto MCP bridge, and verify that the Agentproto Sessions panel is live. Explain each command before I run it."
 
+/** Adapter logo resolved to a webview-loadable form — an icon file's `asWebviewUri`, or a lettermark. */
+type RenderLogo = { kind: "icon"; file: string; uri: string } | { kind: "lettermark"; text: string }
+
 /** Row shape actually POSTed to the webview — `session` is stripped (the host resolves clicks by id) and `open` is computed fresh from `TranscriptPanels.activeSessionId()` on every render. */
 interface RenderRow {
   id: string
@@ -108,7 +112,7 @@ interface RenderRow {
   idMono: string | undefined
   message: string | undefined
   tag: string
-  harnessGlyph: string
+  logo: RenderLogo
   model: string | undefined
   ctxPercent: number | undefined
   cost: string | undefined
@@ -183,11 +187,19 @@ function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   )
 }
 
+function toRenderLogo(logo: AdapterLogo, webview: vscode.Webview, extensionUri: vscode.Uri): RenderLogo {
+  if (logo.kind === "lettermark") return logo
+  const uri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "icons", "adapters", logo.file))
+  return { kind: "icon", file: logo.file, uri: uri.toString() }
+}
+
 function toRenderRow(
   row: WebviewRow,
   activeSessionId: string | undefined,
   seen: SeenTracker,
   colorOverrides: WorkspaceColorOverrides,
+  webview: vscode.Webview,
+  extensionUri: vscode.Uri,
 ): RenderRow {
   return {
     id: row.id,
@@ -197,7 +209,7 @@ function toRenderRow(
     idMono: row.idMono,
     message: row.message,
     tag: row.tag,
-    harnessGlyph: row.harnessGlyph,
+    logo: toRenderLogo(row.logo, webview, extensionUri),
     model: row.model,
     ctxPercent: row.ctxPercent,
     cost: row.cost,
@@ -226,12 +238,14 @@ function toRenderGroup(
   activeSessionId: string | undefined,
   seen: SeenTracker,
   colorOverrides: WorkspaceColorOverrides,
+  webview: vscode.Webview,
+  extensionUri: vscode.Uri,
 ): RenderGroup {
   return {
     key: group.key,
     label: group.label,
     hint: group.hint,
-    rows: group.rows.map(r => toRenderRow(r, activeSessionId, seen, colorOverrides)),
+    rows: group.rows.map(r => toRenderRow(r, activeSessionId, seen, colorOverrides, webview, extensionUri)),
   }
 }
 
@@ -257,6 +271,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private colorOverrides: Record<string, number>
 
   constructor(
+    private readonly extensionUri: vscode.Uri,
     private readonly client: DaemonClient,
     private readonly store: SessionStore,
     private readonly filter: SessionFilterController,
@@ -270,8 +285,8 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView
-    webviewView.webview.options = { enableScripts: true }
-    webviewView.webview.html = buildHtml(randomNonce())
+    webviewView.webview.options = { enableScripts: true, localResourceRoots: [this.extensionUri] }
+    webviewView.webview.html = buildHtml(randomNonce(), webviewView.webview.cspSource)
 
     webviewView.webview.onDidReceiveMessage((raw: unknown) => {
       if (!isWebviewToHostMessage(raw)) return
@@ -544,7 +559,9 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       project: this.project,
       rail: model.rail,
       laneCounts: model.laneCounts,
-      groups: model.groups.map(g => toRenderGroup(g, activeSessionId, this.seen, this.colorOverrides)),
+      groups: model.groups.map(g =>
+        toRenderGroup(g, activeSessionId, this.seen, this.colorOverrides, this.view!.webview, this.extensionUri),
+      ),
       summary: summaryTextFor(model, filterActive),
       loading: this.loading,
       hasMore,
@@ -573,7 +590,16 @@ export function registerSessionsWebview(
   seen: SeenTracker,
   watched?: WatchedSessions,
 ): void {
-  const provider = new SessionsWebviewProvider(client, store, filter, transcriptPanels, seen, ctx.globalState, watched)
+  const provider = new SessionsWebviewProvider(
+    ctx.extensionUri,
+    client,
+    store,
+    filter,
+    transcriptPanels,
+    seen,
+    ctx.globalState,
+    watched,
+  )
   ctx.subscriptions.push(
     vscode.window.registerWebviewViewProvider(VIEW_TYPE, provider),
     store.onDidChange(() => provider.refresh()),
@@ -594,8 +620,14 @@ function describeError(err: unknown): string {
 }
 
 /** Exported so sessionsWebview.dom.test.ts can execute the exact shipped HTML/script in jsdom. */
-export function buildHtml(nonce: string): string {
-  const csp = ["default-src 'none'", "style-src 'unsafe-inline'", `script-src 'nonce-${nonce}'`].join("; ")
+export function buildHtml(nonce: string, cspSource: string): string {
+  const csp = [
+    "default-src 'none'",
+    "style-src 'unsafe-inline'",
+    `img-src ${cspSource}`,
+    `connect-src ${cspSource}`,
+    `script-src 'nonce-${nonce}'`,
+  ].join("; ")
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -769,6 +801,10 @@ export function buildHtml(nonce: string): string {
     .meta-loc { margin-top: 3px; font-size: 11px; color: var(--faint); }
     .meta { display: flex; gap: 8px; margin-top: 1px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
     .meta .harness { display: inline-flex; align-items: center; gap: 4px; }
+    .meta .logo { width: 12px; height: 12px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; color: var(--dim); }
+    .meta .logo.svg svg { width: 12px; height: 12px; display: block; }
+    .meta .logo.img img { width: 12px; height: 12px; object-fit: contain; border-radius: 2px; }
+    .meta .logo.mono { width: 12px; height: 12px; border-radius: 50%; background: rgba(255, 255, 255, 0.08); font-size: 8px; font-weight: 700; line-height: 12px; text-align: center; letter-spacing: -0.02em; }
     .meta .model { color: var(--dim); }
     .ctxbar { display: inline-flex; align-items: center; gap: 5px; }
     .ctxbar .track { width: 22px; height: 2px; background: var(--border); position: relative; }
@@ -885,6 +921,35 @@ export function buildHtml(nonce: string): string {
         return '';
       }
 
+      function logoHtml(logo) {
+        if (logo.kind === 'lettermark') {
+          return '<span class="logo mono">' + escapeHtml(logo.text) + '</span>';
+        }
+        if (logo.file.endsWith('.svg')) {
+          return '<span class="logo svg" data-src="' + escapeHtml(logo.uri) + '" data-file="' + escapeHtml(logo.file) + '"></span>';
+        }
+        return '<span class="logo img"><img src="' + escapeHtml(logo.uri) + '" alt="" /></span>';
+      }
+
+      function loadSvg(el) {
+        if (!el || el.dataset.loaded) return;
+        fetch(el.dataset.src)
+          .then(function (res) { return res.text(); })
+          .then(function (svg) {
+            el.innerHTML = svg;
+            el.dataset.loaded = '1';
+            var svgEl = el.querySelector('svg');
+            if (svgEl) {
+              svgEl.setAttribute('width', '12');
+              svgEl.setAttribute('height', '12');
+              if (el.dataset.file !== 'claude.svg' && el.dataset.file !== 'openclaw.png') {
+                svgEl.style.color = 'var(--fg)';
+              }
+            }
+          })
+          .catch(function () {});
+      }
+
       function metaLocHTML(r) {
         return escapeHtml(r.tag);
       }
@@ -892,7 +957,7 @@ export function buildHtml(nonce: string): string {
       function metaHTML(r) {
         var parts = [];
         var shortModel = r.model ? r.model.split('/').pop() : '';
-        parts.push('<span class="harness"><span class="g">' + escapeHtml(r.harnessGlyph) + '</span>' + (r.model ? '<span class="model" title="' + escapeHtml(r.model) + '">' + escapeHtml(shortModel) + '</span>' : '') + '</span>');
+        parts.push('<span class="harness">' + logoHtml(r.logo) + (r.model ? '<span class="model" title="' + escapeHtml(r.model) + '">' + escapeHtml(shortModel) + '</span>' : '') + '</span>');
         if (typeof r.ctxPercent === 'number') {
           parts.push('<span class="ctxbar"><span class="track"><span class="fill" style="width:' + r.ctxPercent + '%"></span></span>' + r.ctxPercent + '%</span>');
         }
@@ -1045,6 +1110,8 @@ export function buildHtml(nonce: string): string {
         var shown = 0;
         for (var g = 0; g < groups.length; g++) shown += groups[g].rows.length;
         listEl.innerHTML = groups.map(groupHTML).join('');
+        var svgs = listEl.querySelectorAll('.logo.svg');
+        for (var s = 0; s < svgs.length; s++) loadSvg(svgs[s]);
         emptyEl.hidden = shown !== 0;
         emptyEl.textContent = showArchived ? 'No archived sessions.' : 'No sessions match.';
         summaryEl.textContent = payload.summary;
