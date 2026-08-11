@@ -54,6 +54,15 @@ export interface StampPrInput {
   exitCode: number
   stdout: string
   registry: StampRegistry
+  /** The session that actually issued this `command_execute` call, when the
+   *  daemon genuinely knows it (`RegisterCommandToolsOptions.callerSessionId`
+   *  — PR 7 / Gap 7 provenance, threaded from the request's own
+   *  `?callerSessionId=`). When present this is the authoritative
+   *  attribution and wins over the {@link pickExecutorSession} guess below —
+   *  it names the exact session, not a same-cwd sibling. Absent for a call
+   *  arriving through the shared daemon-wide `/mcp` mount (no per-caller
+   *  binding), in which case the heuristic is the only option. */
+  callerSessionId?: string
   /** Injected `gh` runner; defaults to a real subprocess spawn. */
   run?: GhRunner
   /** Host label for the footer; defaults to `os.hostname()`. */
@@ -76,7 +85,14 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
     const created = parseGhPrCreate(input.command, input.args, input.stdout)
     if (!created) return { stamped: false, reason: "not a gh pr create" }
 
-    const session = pickExecutorSession(input.registry.list(), input.cwd)
+    // Prefer the exact calling session over the cwd-guess: a `callerSessionId`
+    // names the session that issued THIS command_execute call, so it can't be
+    // fooled by an unrelated sibling session that merely happens to share (or
+    // contain) the same cwd — the failure mode that misattributed a PR to a
+    // live-but-unrelated benchmark session sharing the workspace root.
+    const session =
+      (input.callerSessionId ? input.registry.get(input.callerSessionId) : undefined) ??
+      pickExecutorSession(input.registry.list(), input.cwd)
     if (!session) return { stamped: false, reason: "no executor session to attribute" }
 
     const supervisor =

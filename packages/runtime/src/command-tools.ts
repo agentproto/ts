@@ -380,6 +380,10 @@ export function registerCommandTools(
         exitCode: result.exitCode,
         stdout: result.stdout,
         registry: opts.registry,
+        // Same per-request identity as `callerSessionId` recorded on the
+        // command session above — the authoritative attribution when present,
+        // see `StampPrInput.callerSessionId`.
+        ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
       })
       if (stamp.stamped) {
         console.error(

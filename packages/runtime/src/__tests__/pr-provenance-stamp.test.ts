@@ -136,6 +136,75 @@ describe("stampPrProvenance", () => {
     expect(outcome).toEqual({ stamped: false, reason: "command failed" })
   })
 
+  it("prefers callerSessionId over the cwd-guess heuristic — an unrelated live session sharing the cwd must not win", async () => {
+    // Reproduces the mis-attribution incident: a live, unrelated session
+    // (BENCH) shares the exact same cwd as the real executor (EXECUTOR), and
+    // is newer/alive — pickExecutorSession's heuristic alone would pick it.
+    // callerSessionId names EXECUTOR directly and must win instead.
+    const BENCH: FooterSession = {
+      id: "sess_bench",
+      kind: "agent-cli",
+      status: "running",
+      startedAt: "2026-07-21T12:00:00.000Z",
+      cwd: "/work/wt",
+    }
+    const reg = fakeRegistry([EXECUTOR, SUPER, BENCH])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 0, stdout: "Original body.\n" } : { exitCode: 0, stdout: "" },
+    )
+
+    const outcome = await stampPrProvenance({
+      command: "gh",
+      args: CREATE_ARGS,
+      cwd: "/work/wt",
+      exitCode: 0,
+      stdout: `${PR_URL}\n`,
+      registry: reg,
+      run,
+      callerSessionId: "sess_exec",
+    })
+
+    expect(outcome).toMatchObject({ stamped: true, sessionId: "sess_exec" })
+    expect(reg.recorded).toEqual([
+      { sessionId: "sess_exec", adapter: "claude-code", number: 601, url: PR_URL },
+    ])
+  })
+
+  it("falls back to the cwd-guess heuristic when callerSessionId is absent (shared /mcp mount)", async () => {
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 0, stdout: "Original body.\n" } : { exitCode: 0, stdout: "" },
+    )
+    const outcome = await stampPrProvenance({
+      command: "gh",
+      args: CREATE_ARGS,
+      cwd: "/work/wt",
+      exitCode: 0,
+      stdout: `${PR_URL}\n`,
+      registry: reg,
+      run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, sessionId: "sess_exec" })
+  })
+
+  it("falls back to the cwd-guess heuristic when callerSessionId doesn't resolve in the registry", async () => {
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 0, stdout: "Original body.\n" } : { exitCode: 0, stdout: "" },
+    )
+    const outcome = await stampPrProvenance({
+      command: "gh",
+      args: CREATE_ARGS,
+      cwd: "/work/wt",
+      exitCode: 0,
+      stdout: `${PR_URL}\n`,
+      registry: reg,
+      run,
+      callerSessionId: "sess_gone",
+    })
+    expect(outcome).toMatchObject({ stamped: true, sessionId: "sess_exec" })
+  })
+
   it("skips when no executor session can be attributed", async () => {
     const outcome = await stampPrProvenance({
       command: "gh",
