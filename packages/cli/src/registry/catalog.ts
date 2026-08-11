@@ -141,6 +141,16 @@ export const CATALOG: readonly CatalogEntry[] = [
     packageName: "@agentproto/adapter-claude-sdk",
     hint: "anthropic · first-party · ACP · resumable",
   },
+  {
+    type: "agent-cli",
+    slug: "jcode",
+    name: "jcode",
+    description:
+      "1jehuang/jcode — RAM-efficient Rust coding agent with semantic memory and multi-agent swarm. " +
+      "Multi-provider (Claude, OpenAI, Gemini, OpenRouter, DeepSeek, Groq, Mistral, Ollama). Print/headless arm.",
+    packageName: "@agentproto/adapter-jcode",
+    hint: "rust · headless · multi-provider · swarm",
+  },
 ] as const
 
 /** Filter the catalog by entry type. */
