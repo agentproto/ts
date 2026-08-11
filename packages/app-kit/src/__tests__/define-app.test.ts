@@ -177,7 +177,7 @@ describe("defineApp — multi-agent + attachment invariant", () => {
     expect(() => defineApp({ agents: [agent("solo", [])], id: "  " })).toThrow(AppDefinitionError)
   })
 
-  it("carries ui/artifacts/dev through to the handle, frozen", () => {
+  it("carries ui/artifact/artifacts/dev through to the handle, frozen", () => {
     const app = defineApp({
       agents: [agent("solo", [])],
       ui: {
@@ -186,6 +186,7 @@ describe("defineApp — multi-agent + attachment invariant", () => {
         tools: ["read_file"],
         csp: { connectDomains: ["api.example.com"] },
       },
+      artifact: { path: "/tmp/artifact.html", title: "Dashboard", description: "A dashboard." },
       artifacts: [{ type: "report", description: "A generated report." }],
       dev: {
         launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 }],
@@ -194,11 +195,15 @@ describe("defineApp — multi-agent + attachment invariant", () => {
     expect(app.ui?.title).toBe("Solo Panel")
     expect(app.ui?.tools).toEqual(["read_file"])
     expect(app.ui?.csp).toEqual({ connectDomains: ["api.example.com"] })
+    expect(app.artifact?.path).toBe("/tmp/artifact.html")
+    expect(app.artifact?.title).toBe("Dashboard")
+    expect(app.artifact?.description).toBe("A dashboard.")
     expect(app.artifacts).toEqual([{ type: "report", description: "A generated report." }])
     expect(app.dev?.launch).toEqual([
       { name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 },
     ])
     expect(Object.isFrozen(app.ui)).toBe(true)
+    expect(Object.isFrozen(app.artifact)).toBe(true)
     expect(Object.isFrozen(app.artifacts)).toBe(true)
     expect(Object.isFrozen(app.artifacts![0])).toBe(true)
     expect(Object.isFrozen(app.dev)).toBe(true)
@@ -221,9 +226,19 @@ describe("defineApp — multi-agent + attachment invariant", () => {
     ).toThrow(/dev\.launch/)
   })
 
-  it("leaves ui/artifacts/dev undefined when none given", () => {
+  it("throws when artifact.path is missing or empty", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], artifact: { path: "" } }),
+    ).toThrow(/artifact\.path/)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], artifact: { path: "   " } }),
+    ).toThrow(/artifact\.path/)
+  })
+
+  it("leaves ui/artifact/artifacts/dev undefined when none given", () => {
     const app = defineApp({ agents: [agent("solo", [])] })
     expect(app.ui).toBeUndefined()
+    expect(app.artifact).toBeUndefined()
     expect(app.artifacts).toBeUndefined()
     expect(app.dev).toBeUndefined()
   })

@@ -49,6 +49,7 @@ export type {
   WorkspaceShorthand,
   WorkspaceInput,
   AppUiDefinition,
+  AppArtifactSurface,
   AppArtifactDecl,
   AppDevLaunchConfig,
   AppDevDefinition,

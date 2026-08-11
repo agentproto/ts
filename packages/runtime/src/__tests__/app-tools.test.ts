@@ -245,6 +245,41 @@ describe("app_* verbs", () => {
     expect(record.dev).toEqual({ launch: [{ name: "dev", runtimeExecutable: "node", port: 3000 }] })
   })
 
+  it("app_install persists artifact with an absolute path", async () => {
+    const artifactHtml = "<html><body><h1>Dashboard</h1></body></html>"
+    const artifactSrc = join(dir, "source-artifact.html")
+    await writeFile(artifactSrc, artifactHtml, "utf8")
+
+    const app = defineApp({
+      id: "@test/artifact-app",
+      name: "Artifact App",
+      description: "An app with an artifact.",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      artifact: { path: artifactSrc, title: "Dashboard", description: "A dashboard." },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(false)
+    const record = parseToolJson(res)
+
+    expect(record.artifact.path).toBe(join(dir, ".agentproto", "artifact", "index.html"))
+    expect(isAbsolute(record.artifact.path)).toBe(true)
+    expect(record.artifact.title).toBe("Dashboard")
+    expect(record.artifact.description).toBe("A dashboard.")
+  })
+
   it("app_run rejects an unknown agent id", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
     const { client } = await setup()
@@ -257,6 +292,96 @@ describe("app_* verbs", () => {
     expect(isError(res)).toBe(true)
     const body = parseToolJson(res)
     expect(body.error).toContain("nope")
+  })
+
+  it("app_artifact_get returns the artifact html for an installed app", async () => {
+    const artifactHtml = "<html><body><h1>Dashboard</h1></body></html>"
+    const artifactSrc = join(dir, "source-artifact.html")
+    await writeFile(artifactSrc, artifactHtml, "utf8")
+
+    const app = defineApp({
+      id: "@test/artifact-get-app",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      artifact: { path: artifactSrc, title: "Dashboard", description: "A dashboard." },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const res = await client.callTool({ name: "app_artifact_get", arguments: { appId: "@test/artifact-get-app" } })
+    expect(isError(res)).toBe(false)
+    const body = parseToolJson(res)
+    expect(body.appId).toBe("@test/artifact-get-app")
+    expect(body.title).toBe("Dashboard")
+    expect(body.description).toBe("A dashboard.")
+    expect(body.html).toBe(artifactHtml)
+  })
+
+  it("app_artifact_get reads the file at call time, not from cache", async () => {
+    const artifactSrc = join(dir, "source-artifact.html")
+    await writeFile(artifactSrc, "<html>v1</html>", "utf8")
+
+    const app = defineApp({
+      id: "@test/artifact-live-app",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      artifact: { path: artifactSrc },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const first = parseToolJson(
+      await client.callTool({ name: "app_artifact_get", arguments: { appId: "@test/artifact-live-app" } }),
+    )
+    expect(first.html).toBe("<html>v1</html>")
+
+    await writeFile(join(dir, ".agentproto", "artifact", "index.html"), "<html>v2</html>", "utf8")
+
+    const second = parseToolJson(
+      await client.callTool({ name: "app_artifact_get", arguments: { appId: "@test/artifact-live-app" } }),
+    )
+    expect(second.html).toBe("<html>v2</html>")
+  })
+
+  it("app_artifact_get errors for an app with no artifact", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const res = await client.callTool({ name: "app_artifact_get", arguments: { appId: "@test/fixture-app" } })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("has no artifact")
+  })
+
+  it("app_artifact_get errors for an unknown appId", async () => {
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_artifact_get", arguments: { appId: "@test/does-not-exist" } })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("no installed app")
   })
 })
 
@@ -867,10 +992,12 @@ describe("app_catalog", () => {
     const fixture = entries.find((e: any) => e.appId === "@test/fixture-app")
     expect(fixture.installed).toBe(true)
     expect(fixture.hasUi).toBe(false)
+    expect(fixture.hasArtifact).toBe(false)
 
     const notInstalled = entries.find((e: any) => e.appId === "@test/not-installed")
     expect(notInstalled.installed).toBe(false)
     expect(notInstalled.hasUi).toBe(false)
+    expect(notInstalled.hasArtifact).toBe(false)
   })
 
   it("tolerates a missing catalog file, still lists installed apps", async () => {
@@ -888,6 +1015,37 @@ describe("app_catalog", () => {
     const { client } = await setup({ catalogPath: join(catalogDir, "does-not-exist.json") })
     const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
     expect(entries).toEqual([])
+  })
+
+  it("reports hasArtifact=true for an installed app with an artifact", async () => {
+    const artifactHtml = "<html><body>Artifact</body></html>"
+    const artifactSrc = join(dir, "source-artifact.html")
+    await writeFile(artifactSrc, artifactHtml, "utf8")
+
+    const app = defineApp({
+      id: "@test/artifact-catalog-app",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      artifact: { path: artifactSrc, title: "Dashboard" },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
+    const entry = entries.find((e: any) => e.appId === "@test/artifact-catalog-app")
+    expect(entry.installed).toBe(true)
+    expect(entry.hasArtifact).toBe(true)
   })
 })
 
