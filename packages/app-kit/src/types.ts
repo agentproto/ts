@@ -81,6 +81,12 @@ export interface AppUiDefinition {
   readonly title?: string
   readonly description?: string
   readonly tools?: readonly string[]
+  /**
+   * Preferred local port when this app's UI is served standalone
+   * (`agentproto app serve`). A declared port is a hint only — it falls
+   * back to auto-assignment when taken or when no port is given.
+   */
+  readonly port?: number
   readonly csp?: {
     readonly connectDomains?: readonly string[]
     readonly resourceDomains?: readonly string[]

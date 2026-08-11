@@ -134,6 +134,8 @@ Usage:
   agentproto sandbox   attach <provider> <sandboxId> [--config-json <json>] [--json]
   agentproto app       pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app       unpack <file.agentapp> [--dir <outDir>] [--json]
+  agentproto app       serve [appDir] [--port <n>] [--json]
+                     serve an app's .agentproto/ui/ with an MCP bridge
   agentproto --help
   agentproto --version
 

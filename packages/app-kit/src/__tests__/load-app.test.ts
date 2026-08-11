@@ -286,6 +286,7 @@ describe("loadAppHandle — the inverse of emit", () => {
         title: "Solo Panel",
         description: "A panel.",
         tools: ["read_file"],
+        port: 8123,
         csp: { connectDomains: ["api.example.com"], resourceDomains: ["cdn.example.com"] },
       },
     })
@@ -296,6 +297,7 @@ describe("loadAppHandle — the inverse of emit", () => {
     expect(loaded.ui?.title).toBe("Solo Panel")
     expect(loaded.ui?.description).toBe("A panel.")
     expect(loaded.ui?.tools).toEqual(["read_file"])
+    expect(loaded.ui?.port).toBe(8123)
     expect(loaded.ui?.csp).toEqual({
       connectDomains: ["api.example.com"],
       resourceDomains: ["cdn.example.com"],
