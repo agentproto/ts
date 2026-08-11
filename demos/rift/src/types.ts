@@ -106,6 +106,8 @@ export interface RecommendationRationale {
   recommendation: Recommendation
   /** Ordered reasons supporting the recommendation. */
   reasons: string[]
+  /** Claim IDs backing `reasons` — required for the rationale to pass the source-quality gate. */
+  claimIds?: string[]
 }
 
 // ─── Generated drafts (placeholder slots) ───────────────────────────

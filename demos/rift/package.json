@@ -7,6 +7,7 @@
   "type": "module",
   "scripts": {
     "dev": "node --import tsx src/run.ts",
+    "dev:ui": "node --import tsx src/server.ts",
     "build": "tsc --noEmit",
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
