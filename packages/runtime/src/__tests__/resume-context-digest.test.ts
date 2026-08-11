@@ -42,15 +42,17 @@ describe("buildResumeContextDigest", () => {
     )
   }
 
-  it("returns undefined when events.jsonl is absent", async () => {
-    const digest = await buildResumeContextDigest(SESSION_ID)
-    expect(digest).toBeUndefined()
+  it("returns { hasContent: false } when events.jsonl is absent", async () => {
+    const result = await buildResumeContextDigest(SESSION_ID)
+    expect(result.digest).toBeUndefined()
+    expect(result.hasContent).toBe(false)
   })
 
-  it("returns undefined when events.jsonl exists but has no reconstructable messages", async () => {
+  it("returns { hasContent: false } when events.jsonl exists but has no reconstructable messages", async () => {
     writeEvents([{ kind: "turn-end", reason: "completed" }])
-    const digest = await buildResumeContextDigest(SESSION_ID)
-    expect(digest).toBeUndefined()
+    const result = await buildResumeContextDigest(SESSION_ID)
+    expect(result.digest).toBeUndefined()
+    expect(result.hasContent).toBe(false)
   })
 
   it("frames the digest as an explicit best-effort summary, not full context", async () => {
@@ -59,13 +61,14 @@ describe("buildResumeContextDigest", () => {
       { kind: "text-delta", text: "Hi! How can I help?" },
       { kind: "turn-end", reason: "completed" },
     ])
-    const digest = await buildResumeContextDigest(SESSION_ID)
-    expect(digest).toBeDefined()
-    expect(digest).toMatch(/^\[resumed session — prior conversation could not be natively restored/)
-    expect(digest).toContain("best-effort summary")
-    expect(digest).toContain("not full context")
-    expect(digest).toContain("Hello there.")
-    expect(digest).toContain("Hi! How can I help?")
+    const result = await buildResumeContextDigest(SESSION_ID)
+    expect(result.digest).toBeDefined()
+    expect(result.hasContent).toBe(true)
+    expect(result.digest).toMatch(/^\[resumed session — prior conversation could not be natively restored/)
+    expect(result.digest).toContain("best-effort summary")
+    expect(result.digest).toContain("not full context")
+    expect(result.digest).toContain("Hello there.")
+    expect(result.digest).toContain("Hi! How can I help?")
   })
 
   it("hard-truncates a single oversized tool-result body instead of blowing the budget", async () => {
@@ -77,12 +80,13 @@ describe("buildResumeContextDigest", () => {
       { kind: "text-delta", text: "Done." },
       { kind: "turn-end", reason: "completed" },
     ])
-    const digest = await buildResumeContextDigest(SESSION_ID)
-    expect(digest).toBeDefined()
+    const result = await buildResumeContextDigest(SESSION_ID)
+    expect(result.digest).toBeDefined()
+    expect(result.hasContent).toBe(true)
     // The framed digest as a whole stays well under the raw 50k tool body —
     // both the per-tool-message cap and the overall budget backstop apply.
-    expect((digest ?? "").length).toBeLessThan(10_000)
-    expect(digest).not.toContain(hugeResult)
+    expect((result.digest ?? "").length).toBeLessThan(10_000)
+    expect(result.digest).not.toContain(hugeResult)
   })
 
   it("keeps the most recent turns and drops the oldest when the transcript exceeds the digest budget", async () => {
@@ -94,9 +98,10 @@ describe("buildResumeContextDigest", () => {
       lines.push({ kind: "text-delta", text: `turn-${i} assistant reply ${"y".repeat(1000)}` })
     }
     writeEvents(lines)
-    const digest = await buildResumeContextDigest(SESSION_ID)
-    expect(digest).toBeDefined()
-    const body = digest ?? ""
+    const result = await buildResumeContextDigest(SESSION_ID)
+    expect(result.digest).toBeDefined()
+    expect(result.hasContent).toBe(true)
+    const body = result.digest ?? ""
     expect(body.length).toBeLessThan(9000)
     // The very last turn must be present (most recent kept)...
     expect(body).toContain("marker-19")
