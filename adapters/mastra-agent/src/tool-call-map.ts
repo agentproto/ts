@@ -75,8 +75,9 @@ function errorMessage(error: unknown): string {
 }
 
 /** Concatenate a message's plain-text parts (assistant prose; reasoning and
- *  tool-invocation parts are not ACP message text). */
-function messageText(message: { content?: { parts?: unknown[] } }): string {
+ *  tool-invocation parts are not ACP message text). Also used by the host's
+ *  `session/load` replay to render prior thread messages. */
+export function messageText(message: { content?: { parts?: unknown[] } }): string {
   const parts = message.content?.parts
   if (!Array.isArray(parts)) return ""
   let text = ""

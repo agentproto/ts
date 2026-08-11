@@ -14,4 +14,15 @@ describe("mastra-agent manifest options", () => {
     const modelOpt = mastraAgent.options?.find((o) => o.id === "model")
     expect(modelOpt?.bin_args_template).toEqual(["--model", "{value}"])
   })
+
+  it("advertises the WP-2 bridge capabilities", () => {
+    expect(mastraAgent.capabilities).toMatchObject({
+      resumable: true,
+      file_io: true,
+      multimodal: true,
+      // Not until WP-5.
+      sub_agents: false,
+    })
+    expect(mastraAgent.session?.context_carryover).toBe(true)
+  })
 })

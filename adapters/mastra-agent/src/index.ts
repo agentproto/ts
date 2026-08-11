@@ -97,9 +97,14 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
     // toolset (read/edit/run), so this is on.
     tool_calls: true,
     sub_agents: false,
-    file_io: false,
-    multimodal: false,
-    resumable: false,
+    // The workspace toolset reads/writes files inside the spawn cwd.
+    file_io: true,
+    // Image/audio/embedded-resource prompt blocks are passed to the agent as
+    // file attachments (see promptContent in acp-host.ts).
+    multimodal: true,
+    // session/load reconnects the Mastra thread keyed by the ACP session id
+    // and replays its history.
+    resumable: true,
     bidirectional: true,
   },
   options: [
@@ -146,9 +151,13 @@ export {
 export {
   MastraAcpAgent,
   promptText,
+  promptContent,
+  DEFAULT_MODEL_CATALOG,
   type ControllerFactory,
   type ControllerLike,
   type ControllerSessionLike,
+  type PromptFile,
+  type ThreadMessageLike,
 } from "./acp-host.js"
 export { resolveMastraModel, modelRefToString, providerOf } from "./model-resolver.js"
 export { makeWorkspaceTools, resolveInCwd } from "./workspace-tools.js"
@@ -157,6 +166,7 @@ export {
   createEventMapper,
   toolKindFor,
   toolCallTitle,
+  messageText,
 } from "./tool-call-map.js"
 export { runAcpOverStdio } from "./run.js"
 export type { AgentCliHandle, AgentCliRuntime }
