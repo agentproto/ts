@@ -7,6 +7,7 @@ import type { AgentControllerEvent } from "@mastra/core/agent-controller"
 import { describe, expect, it } from "vitest"
 import {
   MastraAcpAgent,
+  describeError,
   promptContent,
   type ControllerLike,
   type ControllerSessionLike,
@@ -845,5 +846,39 @@ describe("MastraAcpAgent — model + mode switching", () => {
     expect(
       (updates[1] as { configOptions: Array<{ currentValue: string }> }).configOptions[0],
     ).toMatchObject({ currentValue: "openai/gpt-5" })
+  })
+})
+
+describe("describeError", () => {
+  it("returns the message for a normal Error", () => {
+    expect(describeError(new Error("model exploded"))).toContain("model exploded")
+  })
+
+  it("digs into .cause when the top-level message is generic", () => {
+    const inner = new Error("API rate limit exceeded")
+    const outer = new Error("Error", { cause: inner })
+    const detail = describeError(outer)
+    expect(detail).toContain("API rate limit exceeded")
+  })
+
+  it("digs into .cause when the top-level message is empty", () => {
+    const inner = new Error("connection refused")
+    const outer = new Error("", { cause: inner })
+    expect(describeError(outer)).toContain("connection refused")
+  })
+
+  it("falls back to the generic message when no cause exists", () => {
+    expect(describeError(new Error())).toContain("unknown error")
+  })
+
+  it("stringifies non-Error values", () => {
+    expect(describeError("string failure")).toBe("string failure")
+    expect(describeError(42)).toBe("42")
+  })
+
+  it("appends stack frames for traceability", () => {
+    const err = new Error("boom")
+    const detail = describeError(err)
+    expect(detail).toMatch(/boom \[at /)
   })
 })
