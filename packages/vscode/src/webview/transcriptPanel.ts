@@ -778,6 +778,53 @@ export function buildHtml(
       fill: currentColor;
     }
     #header-icon:empty { display: none; }
+    /* Dimmed harness watermark, bottom-left of the panel — a subtle,
+       always-visible reminder of which harness runs this session, distinct
+       from the crisp #header-icon. Fixed to the viewport (not the scrolling
+       transcript) so it never drifts with scroll; the composer's own z-index
+       keeps it from ever painting over the input box. Empty (lettermark-only
+       adapter, no SVG asset) collapses to nothing — no glyph fallback here,
+       a watermark is decoration, not information. */
+    #harness-watermark {
+      position: fixed;
+      left: 14px;
+      bottom: 14px;
+      width: 30px;
+      height: 30px;
+      opacity: 0.35;
+      pointer-events: none;
+      z-index: 1;
+      color: var(--vscode-descriptionForeground);
+    }
+    #harness-watermark svg { width: 100%; height: 100%; fill: currentColor; }
+    #harness-watermark:empty { display: none; }
+    /* Background-task chip strip (#background-tasks-ux) — one small rounded
+       chip per still-running run_in_background tool call, click to jump to
+       its card. Amber/brown, matching the sessions panel's bg-task tell. */
+    #bg-chips {
+      flex: 0 0 auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 6px 14px 0;
+    }
+    #bg-chips[hidden] { display: none; }
+    .bgchip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border: 1px solid rgba(181, 133, 75, 0.4);
+      border-radius: 10px;
+      background: rgba(181, 133, 75, 0.14);
+      color: #b5854b;
+      font: inherit;
+      font-size: 0.82em;
+      cursor: pointer;
+    }
+    .bgchip:hover { background: rgba(181, 133, 75, 0.26); }
+    /* Brief highlight on the segment a chip click scrolled to, so "click to
+       view" has an obvious landing even in a long transcript. */
+    .seg-flash { outline: 2px solid #b5854b; outline-offset: 2px; transition: outline-color 1.1s ease; }
     /* A single Terminal button that opens the terminal view (FIX 2) — replaces
        the old Conversation⇄Terminal segmented control, which was too heavy for
        what is a one-way jump to the raw view. Reuses the openTerminal command.
@@ -1260,6 +1307,10 @@ export function buildHtml(
       padding: 10px 14px 12px;
       background-color: var(--ink);
       color: var(--paper);
+      /* Above #harness-watermark (z-index: 1) so the composer's opaque
+         background always wins where the two would otherwise overlap. */
+      position: relative;
+      z-index: 2;
     }
     /* ── Error banner ─────────────────────────────────────────────────
        Errors used to be one line of red text wedged under the buttons,
@@ -1885,6 +1936,7 @@ export function buildHtml(
   ${bundles.xtermCss ? `<style>${bundles.xtermCss}</style>` : ""}
 </head>
 <body>
+  <span id="harness-watermark" aria-hidden="true"></span>
   <div id="header">
     <div id="header-left">
       <span id="header-icon" title="" aria-hidden="true"></span>
@@ -1926,6 +1978,7 @@ export function buildHtml(
       </button>
     </div>
   </div>
+  <div id="bg-chips" hidden></div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
   <div id="book" hidden></div>
   <div id="pty-view"></div>
@@ -1999,6 +2052,7 @@ export function buildHtml(
       // Injected by value from the tested logic modules — see buildHtml.
       ${injectedHelpers}
       const headerIcon = document.getElementById('header-icon');
+      const harnessWatermark = document.getElementById('harness-watermark');
       const titleStatus = document.getElementById('title-status');
       const headerTitle = document.getElementById('header-title');
       const headerSubtitle = document.getElementById('header-subtitle');
@@ -2017,6 +2071,7 @@ export function buildHtml(
       const popoverContextUsed = document.getElementById('popover-context-used');
       const popoverContextSize = document.getElementById('popover-context-size');
       const blockedNote = document.getElementById('blocked-note');
+      const bgChips = document.getElementById('bg-chips');
       const transcript = document.getElementById('transcript');
       const book = document.getElementById('book');
       const viewToggle = document.getElementById('view-toggle');
@@ -2127,6 +2182,12 @@ export function buildHtml(
       // its own label — a seg-id key would let one view clobber the other's
       // ticker. Value: { startedMs, label, node }.
       const pendingTools = new Map();
+      // Still-running run_in_background tool calls (#background-tasks-ux) —
+      // segId -> { toolName }. Keyed by seg id (not DOM node, unlike
+      // pendingTools above) because the chip strip shows ONE chip per
+      // background task regardless of whether its segment is currently
+      // painted in the transcript, the book's step drawer, or both.
+      const bgTasks = new Map();
 
       // ── Book (chapter) view state ──────────────────────────────────
       // The book is a fold ABOVE the turn/segment timeline: it reuses the
@@ -2448,10 +2509,14 @@ export function buildHtml(
         if (session.adapterSlug && INITIAL_ICON_SVG) {
           headerIcon.innerHTML = INITIAL_ICON_SVG;
           headerIcon.title = session.adapterSlug;
+          harnessWatermark.innerHTML = INITIAL_ICON_SVG;
+          harnessWatermark.title = session.adapterSlug;
         } else {
           const mark = harnessGlyph(session.adapterSlug);
           headerIcon.textContent = session.adapterSlug ? mark.glyph : '';
           headerIcon.title = session.adapterSlug ? mark.label : '';
+          harnessWatermark.innerHTML = '';
+          harnessWatermark.title = '';
         }
         // Plain PTY sessions have no agent model/posture/wallet to configure —
         // hide the composer chips entirely instead of showing "model?" placeholders.
@@ -2679,6 +2744,60 @@ export function buildHtml(
         entry.node.classList.toggle('tool-still-running', stillRunning);
       }
 
+      // Rebuilds the bg-task chip strip from the bgTasks map (#background-tasks-ux).
+      // Cheap and called on every 'tool' segment repaint, not just the ones that
+      // actually change bgTasks — the map is small (a handful of entries at
+      // most) so a full rebuild is simpler than diffing it.
+      function renderBgChips() {
+        bgChips.innerHTML = '';
+        bgChips.hidden = bgTasks.size === 0;
+        if (bgTasks.size === 0) return;
+        const nameCounts = {};
+        bgTasks.forEach(entry => {
+          nameCounts[entry.toolName] = (nameCounts[entry.toolName] || 0) + 1;
+        });
+        const seenCounts = {};
+        bgTasks.forEach((entry, segId) => {
+          let label = entry.toolName;
+          if (nameCounts[entry.toolName] > 1) {
+            seenCounts[entry.toolName] = (seenCounts[entry.toolName] || 0) + 1;
+            label = entry.toolName + ' #' + seenCounts[entry.toolName];
+          }
+          const chip = el('button', 'bgchip', label);
+          chip.type = 'button';
+          chip.title = 'Background task running — click to view';
+          // Deliberately NOT data-seg-id — that attribute means "I am a
+          // segment card" to reconcileSegments/scrollToSegment, and this
+          // button is neither; a shared name would make it match its own
+          // "find the live segment" query.
+          chip.dataset.targetSegId = segId;
+          bgChips.appendChild(chip);
+        });
+      }
+
+      // Scrolls to (and briefly highlights) the live segment node for segId —
+      // preferring a currently-visible one (transcript vs. book, whichever
+      // view is active) over an off-screen duplicate that shares the id.
+      function scrollToSegment(segId) {
+        const nodes = document.querySelectorAll('[data-seg-id]');
+        let target;
+        for (const node of nodes) {
+          if (node.dataset.segId !== segId) continue;
+          if (node.offsetParent !== null) { target = node; break; }
+          if (!target) target = node;
+        }
+        if (!target) return;
+        if (target.tagName === 'DETAILS') target.open = true;
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('seg-flash');
+        setTimeout(() => target.classList.remove('seg-flash'), 1200);
+      }
+
+      bgChips.addEventListener('click', e => {
+        const chip = e.target.closest('.bgchip');
+        if (chip) scrollToSegment(chip.dataset.targetSegId);
+      });
+
       // Paint a segment's content into an EXISTING shell node. Called both
       // right after buildSegmentShell (new segment) and whenever an existing
       // segment's signature changes (updated segment) — the shell itself is
@@ -2729,6 +2848,9 @@ export function buildHtml(
               node.appendChild(el('div', 'tool-field-label', 'output'));
               appendToolIo(node, seg, 'output', 'tool-result', seg.resultText, seg.resultClamped, seg.resultLines);
             }
+            if (seg.background) bgTasks.set(seg.id, { toolName: seg.toolName || 'task' });
+            else bgTasks.delete(seg.id);
+            renderBgChips();
             return;
           }
           case 'plan': {
@@ -2799,6 +2921,21 @@ export function buildHtml(
         for (const [key, entry] of pendingTools) {
           if (!entry.node.isConnected) { pendingTools.delete(key); continue; }
           paintElapsed(entry);
+        }
+        // A bg task's segment can vanish from the DOM (turn dropped, resync)
+        // without ever repainting through the 'tool' branch above — prune any
+        // chip whose backing segment is no longer live, the same safety net
+        // pendingTools gets via node.isConnected above.
+        if (bgTasks.size > 0) {
+          const liveSegIds = new Set();
+          document.querySelectorAll('[data-seg-id]').forEach(node => {
+            if (node.isConnected) liveSegIds.add(node.dataset.segId);
+          });
+          let pruned = false;
+          for (const segId of bgTasks.keys()) {
+            if (!liveSegIds.has(segId)) { bgTasks.delete(segId); pruned = true; }
+          }
+          if (pruned) renderBgChips();
         }
         // The working row's elapsed must keep moving on a quiet poll too — a
         // frozen counter is exactly what "is it stuck?" looks like.
@@ -2997,6 +3134,7 @@ export function buildHtml(
         const atBottom = !isScrolledUp;
         clearTranscript();
         pendingTools.clear();
+        bgTasks.clear();
         const nodes = {};
         if (conv && conv.turns) {
           for (const turn of conv.turns) upsertTurn(turn, nodes);

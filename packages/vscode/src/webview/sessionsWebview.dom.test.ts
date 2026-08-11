@@ -244,6 +244,45 @@ describe("sessions webview — render", () => {
     const deleg = row.querySelector(".deleg")!
     expect(deleg.textContent).toContain("3")
     expect(row.querySelector(".dot.delegating")).toBeTruthy()
+    // Background work (childrenBusy) colors the dot amber via the .bg modifier.
+    expect(row.querySelector(".dot.bg")).toBeTruthy()
+  })
+
+  it("renders a clickable '2 bg' text chip for pending background tasks, colors the dot amber", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("quiet", "Quiet", [{ ...ROW_A, status: "parked", pendingBgTasks: 2 }])] }))
+    const row = el(panel, "list").querySelector('[data-id="s1"]')!
+    const chip = row.querySelector(".bgtasks")!
+    expect(chip.textContent).toBe("2 bg")
+    expect(chip.querySelector("img, svg")).toBeNull()
+    expect(row.querySelector(".dot.bg")).toBeTruthy()
+
+    click(panel, chip)
+    expect(panel.posted).toContainEqual({ type: "open", id: "s1" })
+  })
+
+  it("leaves the dot alone (no .bg) when the row is actively working or awaiting, even with bg work pending", () => {
+    const panel = renderPanel()
+    send(
+      panel,
+      modelMessage({
+        groups: [
+          group("running", "Running", [
+            { ...ROW_A, id: "s1", status: "working", pendingBgTasks: 2 },
+            { ...ROW_A, id: "s3", status: "awaiting", childrenBusy: 1 },
+          ]),
+        ],
+      }),
+    )
+    const list = el(panel, "list")
+    expect(list.querySelector('[data-id="s1"] .dot.bg')).toBeNull()
+    expect(list.querySelector('[data-id="s3"] .dot.bg')).toBeNull()
+  })
+
+  it("omits the bg chip when no background tasks are pending", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [ROW_A])] }))
+    expect(el(panel, "list").querySelector('[data-id="s1"] .bgtasks')).toBeNull()
   })
 
   it("marks the row whose transcript tab is open with .open", () => {

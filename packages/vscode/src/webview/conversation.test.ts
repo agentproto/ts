@@ -431,6 +431,18 @@ describe("provider-family reasoning normalization → one collapsed segment", ()
   })
 })
 
+// Recurses into activity-group children (groupActivity folds ≥2 consecutive
+// tool/reasoning segments into one 'activity' wrapper) — a test asserting on
+// "all tool segments" must look inside, or a fold silently drops coverage.
+function allToolSegments(segments: readonly PresentedSegment[]): PresentedToolSegment[] {
+  const out: PresentedToolSegment[] = []
+  for (const seg of segments) {
+    if (seg.kind === "tool") out.push(seg)
+    else if (seg.kind === "activity") out.push(...allToolSegments(seg.children))
+  }
+  return out
+}
+
 describe("presentConversation", () => {
   const renderers = {
     // Stub renderers whose output makes escaping/markdown observable.
@@ -501,6 +513,46 @@ describe("presentConversation", () => {
     // cross the boundary at all — the host re-derives it on demand instead.
     expect(tool.resultText).not.toContain("SECRET_TAIL")
     expect(JSON.stringify(tool)).not.toContain("SECRET_TAIL")
+  })
+
+  it("flags a still-running run_in_background tool call as background", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "bash",
+        arguments: { command: "pnpm dev", run_in_background: true },
+      }),
+    ])
+    const tool = presentConversation(conv, renderers).turns[0]!.segments.find(
+      s => s.kind === "tool",
+    ) as PresentedToolSegment
+    expect(tool.status).toBe("pending")
+    expect(tool.background).toBe(true)
+  })
+
+  it("does not flag a settled run_in_background call, or a foreground call, as background", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "bash",
+        arguments: { command: "pnpm dev", run_in_background: true },
+      }),
+      rec({ kind: "tool-result", toolCallId: "t1", result: "done", isError: false }),
+      rec({ kind: "tool-call", toolCallId: "t2", toolName: "bash", arguments: { command: "ls" } }),
+    ])
+    // Two consecutive tool segments fold into one activity group (groupActivity,
+    // MIN_ACTIVITY_GROUP = 2) — recurse into `children` to find both underneath.
+    const tools = allToolSegments(presentConversation(conv, renderers).turns.flatMap(t => t.segments))
+    expect(tools).toHaveLength(2)
+    // Settled — the background window has closed even though it started as one.
+    expect(tools[0]!.background).toBeUndefined()
+    // Never backgrounded to begin with, and still pending.
+    expect(tools[1]!.status).toBe("pending")
+    expect(tools[1]!.background).toBeUndefined()
   })
 
   it("preserves segment ids and usage metadata through presentation", () => {

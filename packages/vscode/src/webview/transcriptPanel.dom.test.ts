@@ -56,10 +56,14 @@ interface RenderOptions {
   /** Backing store for the webview's persisted state (getState/setState) —
    *  lets a test seed a prior choice and observe what the panel persists. */
   state?: { value: Record<string, unknown> | undefined }
+  /** The inline adapter-icon SVG baked into the shipped HTML — mirrors
+   *  readAdapterIconSvg's output, empty by default (no icon asset). */
+  headerIconSvg?: string
 }
 
 function renderPanel(opts: RenderOptions = {}): Panel {
-  const dom = new JSDOM(buildHtml("test-nonce", { xtermJs: "", xtermCss: "", headerIconSvg: "" }), {
+  const html = buildHtml("test-nonce", { xtermJs: "", xtermCss: "", headerIconSvg: opts.headerIconSvg ?? "" })
+  const dom = new JSDOM(html, {
     runScripts: "dangerously",
     url: "https://example.test/",
     beforeParse(window) {
@@ -2770,5 +2774,149 @@ describe("transcriptPanel webview — cross-session visibility (E2/E3/E4)", () =
     vi.advanceTimersByTime(21_000)
     expect(el(panel, "blocked-note").hidden).toBe(false)
     expect(el(panel, "blocked-note-text").textContent).toBe("blocked on command · toolu_99")
+  })
+})
+
+describe("transcriptPanel webview — dimmed harness watermark (bottom-left)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("mirrors the baked adapter-icon SVG into the watermark, same source as the crisp header icon", () => {
+    const panel = renderPanel({ headerIconSvg: '<svg viewBox="0 0 16 16"><path d="M0 0"/></svg>' })
+    init(panel, { adapterSlug: "claude-code" })
+    const watermark = el(panel, "harness-watermark")
+    expect(watermark.innerHTML).toContain("<svg")
+    expect(watermark.title).toBe("claude-code")
+    expect(watermark.innerHTML).toBe(el(panel, "header-icon").innerHTML)
+    // Text-free image mark — no glyph fallback text sitting inside it.
+    expect(watermark.querySelector("svg")).not.toBeNull()
+  })
+
+  it("stays empty (and so CSS-hidden) when no icon asset was baked in for this adapter", () => {
+    const panel = renderPanel({ headerIconSvg: "" })
+    init(panel, { adapterSlug: "some-lettermark-only-adapter" })
+    expect(el(panel, "harness-watermark").innerHTML).toBe("")
+  })
+})
+
+describe("transcriptPanel webview — background task chips (#background-tasks-ux)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+
+  function bgToolSeg(over: Partial<PresentedToolSegment> = {}): PresentedToolSegment {
+    return {
+      kind: "tool",
+      id: "tool-bg1",
+      toolName: "bash",
+      argsText: "pnpm dev",
+      isError: false,
+      status: "pending",
+      ts: new Date().toISOString(),
+      background: true,
+      ...over,
+    }
+  }
+
+  it("shows one clickable text chip per still-running background tool call", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [bgToolSeg()] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const strip = el(panel, "bg-chips")
+    expect(strip.hidden).toBe(false)
+    const chips = [...strip.querySelectorAll(".bgchip")]
+    expect(chips).toHaveLength(1)
+    expect(chips[0]!.textContent).toBe("bash")
+    // Text only — never an image/icon for a bg-task indicator.
+    expect(chips[0]!.querySelector("img, svg")).toBeNull()
+  })
+
+  it("clicking a chip scrolls to (and flashes) its segment's card", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [bgToolSeg()] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const target = segNode(panel, "tool-bg1")
+    if (!target) throw new Error("unreachable")
+    const scrollSpy = vi.fn()
+    ;(target as unknown as { scrollIntoView: () => void }).scrollIntoView = scrollSpy
+
+    const chip = el(panel, "bg-chips").querySelector(".bgchip")
+    if (!chip) throw new Error("chip missing")
+    chip.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+
+    expect(scrollSpy).toHaveBeenCalled()
+    expect(target.className).toContain("seg-flash")
+  })
+
+  it("hides the strip once the background call settles, and omits it entirely for a plain (non-background) pending call", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [bgToolSeg()] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+    expect(el(panel, "bg-chips").hidden).toBe(false)
+
+    const settledTurn: PresentedTurn = {
+      id: "turn-1",
+      role: "assistant",
+      segments: [{ ...bgToolSeg(), status: "ok", resultText: "done", background: undefined }],
+    }
+    panel.send({ type: "patch", upsertTurns: [settledTurn], removeTurnIds: [] })
+    expect(el(panel, "bg-chips").hidden).toBe(true)
+    expect(el(panel, "bg-chips").querySelectorAll(".bgchip")).toHaveLength(0)
+
+    // A never-backgrounded pending call never lit the strip in the first place.
+    const panel2 = renderPanel()
+    const fgConv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [{ ...bgToolSeg(), background: undefined }] }],
+    }
+    panel2.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: fgConv })
+    expect(el(panel2, "bg-chips").hidden).toBe(true)
+  })
+
+  it("disambiguates same-named concurrent background tasks with a #N suffix", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        {
+          id: "turn-1",
+          role: "assistant",
+          segments: [bgToolSeg({ id: "tool-bg1" }), bgToolSeg({ id: "tool-bg2" })],
+        },
+      ],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+    const labels = [...el(panel, "bg-chips").querySelectorAll(".bgchip")].map(c => c.textContent)
+    expect(labels.sort()).toEqual(["bash #1", "bash #2"])
   })
 })
