@@ -57,6 +57,29 @@ export interface FooterProvenance {
   source?: string
   host?: string
   cwd?: string
+  /** The session's registered workspace slug (`SessionDescriptor.workspaceSlug`,
+   *  e.g. "ts", "default"). Rendered alongside `cwd`'s leaf directory name so
+   *  the footer identifies WHICH workspace ran the command, not just an
+   *  arbitrary trailing path segment — a bare `basename(cwd)` reads as
+   *  meaningless (or actively misleading) when the session's cwd is a
+   *  workspace root rather than a per-branch worktree. */
+  workspaceSlug?: string
+}
+
+/**
+ * Render the footer's `cwd` value. A bare `basename(cwd)` collapses to a
+ * meaningless (or actively misleading) fragment whenever the session's cwd IS
+ * the workspace root rather than a per-branch worktree dir — e.g. a checkout
+ * literally named `ts` renders as the opaque `cwd \`ts\`` with no indication
+ * that's a workspace name, not a worktree/branch leaf. Prefixing the
+ * registered workspace slug disambiguates it, and is dropped when it's
+ * identical to the leaf (the common per-worktree case) so the common case
+ * stays exactly as compact as before.
+ */
+function cwdLabel(cwd: string, workspaceSlug?: string): string {
+  const leaf = basename(cwd)
+  if (!workspaceSlug || workspaceSlug === leaf) return workspaceSlug ?? leaf
+  return `${workspaceSlug}/${leaf}`
 }
 
 export interface BuildFooterInput {
@@ -101,7 +124,7 @@ export const buildFooter = ({
   if (runId && !showLocalHostCwd) parts.push(`run [${runId}](${runUrl})`)
   if (showLocalHostCwd) {
     if (prov?.host) parts.push(`host \`${prov.host}\``)
-    if (prov?.cwd) parts.push(`cwd \`${basename(prov.cwd)}\``)
+    if (prov?.cwd) parts.push(`cwd \`${cwdLabel(prov.cwd, prov.workspaceSlug)}\``)
   }
   if (sha) parts.push(`sha \`${sha.slice(0, 7)}\``)
   return `\n\n---\n<sub>${parts.join(" · ")}</sub>`
@@ -117,6 +140,7 @@ export interface FooterSession {
   startedAt?: string
   label?: string
   cwd?: string
+  workspaceSlug?: string
   adapterSlug?: string
   harness?: string
   model?: string
@@ -159,6 +183,7 @@ export function sessionFooterProvenance(
     source: options.source ?? "daemon",
     host: options.host,
     cwd: session.cwd,
+    workspaceSlug: session.workspaceSlug,
   }
   return { prov, authMode: session.auth?.mode }
 }
