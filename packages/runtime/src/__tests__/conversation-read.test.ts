@@ -6,7 +6,7 @@
  * run for real, with a stub registry standing in for the daemon's.
  */
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,6 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { readConversation, registerConversationReadTool } from "../conversation-read.js"
+import { CONVERSATION_STORES } from "../conversation-store.js"
 import type { SessionDescriptor, SessionsRegistry } from "../sessions.js"
 
 // ── fixtures ──────────────────────────────────────────────────────────
@@ -456,5 +457,116 @@ describe("readConversation — daemon-events fallback when the native jsonl is m
     expect(result.reason).toBeUndefined()
     expect(result.conversation?.meta.source).not.toBe("daemon-events")
     expect(result.content).toContain("native only")
+  })
+})
+
+// ── daemon fallback when conversation-id resolution finds nothing ──────
+//
+// `resolveConversationId` returns `{ kind: "none" }` for a bare PTY with no
+// known agent binary and no `--resume` argv — previously a dead end,
+// now rescued by the same daemon-events fallback used for a native-read
+// failure. Keyed by `desc.id` (the agentproto session id), since there is
+// no native conversation id to key by.
+
+describe("readConversation — daemon fallback when id resolution fails entirely (resolved.kind === 'none')", () => {
+  it("falls back to events.jsonl for a PTY with no known agent binary and no --resume argv", async () => {
+    setupFakeHome()
+    const desc = makeDescriptor({
+      kind: "terminal",
+      pty: true,
+      argv: ["some-unknown-binary"],
+      cwd: "/home/user",
+    })
+    writeEventsJsonl(desc.id, [
+      { seq: 1, ts: "2026-05-13T10:00:00.000Z", kind: "user-prompt", text: "rescued unknown binary" },
+      { seq: 2, ts: "2026-05-13T10:00:01.000Z", kind: "turn-end" },
+    ])
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).not.toBeNull()
+    expect(result.conversation?.meta.source).toBe("daemon-events")
+    expect(result.conversationId).toBe(desc.id)
+    expect(result.adapter).toBe("daemon")
+    expect(result.reason).toBeUndefined()
+    expect(result.content).toContain("rescued unknown binary")
+  })
+
+  it("combines both messages when there's no known store AND no events.jsonl", async () => {
+    setupFakeHome()
+    const desc = makeDescriptor({
+      kind: "terminal",
+      pty: true,
+      argv: ["some-unknown-binary"],
+      cwd: "/home/user",
+    })
+    // Deliberately no events.jsonl written for desc.id.
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).toBeNull()
+    expect(result.reason).toBeTruthy()
+    expect(result.reason).toContain("daemon-events fallback also failed")
+  })
+})
+
+// ── daemon fallback when the resolved store is not registered ──────────
+//
+// `resolved.storeKey` is only ever produced from a key `CONVERSATION_STORES`
+// already has an entry for (see `knownStoreKey`), so this is a defensive
+// path guarding against the entry disappearing between resolution and the
+// read that follows it. Simulated here by having the store's own
+// `discover` — the last thing the ladder calls before returning
+// `{ kind: "found" }` — remove its own `CONVERSATION_STORES` entry as a
+// side effect, so it's gone by the time `readConversation` looks it up.
+
+describe("readConversation — daemon fallback when the conversation store is not registered", () => {
+  it("falls back to events.jsonl when CONVERSATION_STORES has no entry for the resolved store key", async () => {
+    setupFakeHome()
+    const cwd = "/vanishing/store"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "dddddddd-0000-0000-0000-000000000001"
+    writeJsonl(dir, uuid, [
+      {
+        type: "user",
+        timestamp: "2026-05-13T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "will vanish" }] },
+      },
+    ])
+    const desc = makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "2026-05-13T09:00:00.000Z",
+    })
+    writeEventsJsonl(desc.id, [
+      { seq: 1, ts: "2026-05-13T10:00:00.000Z", kind: "user-prompt", text: "daemon rescue" },
+      { seq: 2, ts: "2026-05-13T10:00:01.000Z", kind: "turn-end" },
+    ])
+
+    const store = CONVERSATION_STORES["claude-code"]!
+    const originalDiscover = store.discover.bind(store)
+    const spy = vi.spyOn(store, "discover").mockImplementation(async input => {
+      const result = await originalDiscover(input)
+      // Simulate the entry vanishing after the ladder already resolved
+      // this session to the "claude-code" store key but before
+      // readConversation's own lookup runs.
+      delete CONVERSATION_STORES["claude-code"]
+      return result
+    })
+
+    try {
+      const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+      expect(result.conversation).not.toBeNull()
+      expect(result.conversation?.meta.source).toBe("daemon-events")
+      expect(result.conversationId).toBe(uuid)
+      expect(result.adapter).toBe("claude-code")
+      expect(result.reason).toBeUndefined()
+      expect(result.content).toContain("daemon rescue")
+    } finally {
+      spy.mockRestore()
+      CONVERSATION_STORES["claude-code"] = store
+    }
   })
 })
