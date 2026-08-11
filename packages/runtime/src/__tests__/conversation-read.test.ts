@@ -368,3 +368,93 @@ describe("conversation_read tool — registration", () => {
     await client.close()
   })
 })
+
+// ── daemon-events fallback (readConversation) ────────────────────────────
+//
+// When the provider's native transcript is missing (e.g. a process killed
+// mid-turn before claude-code finalized its own jsonl), readConversation
+// falls back to the daemon's own capture in events.jsonl — keyed by the
+// agentproto session id (desc.id), NOT the native conversation id.
+
+function writeEventsJsonl(sessionId: string, lines: object[]): void {
+  const dir = join(fakeHome, ".agentproto", "sessions", sessionId)
+  mkdirSync(dir, { recursive: true })
+  const content = lines.map(l => JSON.stringify(l)).join("\n") + "\n"
+  writeFileSync(join(dir, "events.jsonl"), content)
+}
+
+describe("readConversation — daemon-events fallback when the native jsonl is missing", () => {
+  it("recovers from a missing native jsonl via events.jsonl, marking source daemon-events", async () => {
+    setupFakeHome()
+    const cwd = "/gone/transcript"
+    claudeProjectDir(cwd) // native dir exists but no jsonl written in it
+    const desc = makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      adapterSessionId: "missing-uuid-0000",
+      cwd,
+    })
+    writeEventsJsonl(desc.id, [
+      { seq: 1, ts: "2026-05-13T10:00:00.000Z", kind: "user-prompt", text: "hello daemon" },
+      { seq: 2, ts: "2026-05-13T10:00:01.000Z", kind: "text-delta", text: "hi from events\n" },
+      { seq: 3, ts: "2026-05-13T10:00:02.000Z", kind: "turn-end" },
+    ])
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).not.toBeNull()
+    expect(result.conversation?.meta.source).toBe("daemon-events")
+    expect(result.conversationId).toBe("missing-uuid-0000")
+    expect(result.reason).toBeUndefined()
+    // The daemon-events transcript should render as content (here a user
+    // prompt + an assistant text-delta).
+    expect(result.content).toContain("hello daemon")
+    expect(result.content).toContain("hi from events")
+  })
+
+  it("combines both failure messages when neither the native jsonl nor events.jsonl exists", async () => {
+    setupFakeHome()
+    const cwd = "/no/transcript/at/all"
+    claudeProjectDir(cwd) // no native jsonl, and NO events.jsonl
+    const desc = makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      adapterSessionId: "missing-uuid-9999",
+      cwd,
+    })
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).toBeNull()
+    expect(result.reason).toBeTruthy()
+    expect(result.reason).toContain("daemon-events fallback also failed")
+  })
+
+  it("reads the native jsonl with no events.jsonl present — the happy path is unchanged", async () => {
+    setupFakeHome()
+    const cwd = "/present/transcript"
+    const dir = claudeProjectDir(cwd)
+    const own = "cccccccc-0000-0000-0000-000000000001"
+    writeJsonl(dir, own, [
+      {
+        type: "user",
+        timestamp: "2026-05-13T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "native only" }] },
+      },
+    ])
+    // Deliberately NO events.jsonl — must not be required for the native path.
+    const desc = makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      adapterSessionId: own,
+      cwd,
+    })
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).not.toBeNull()
+    expect(result.reason).toBeUndefined()
+    expect(result.conversation?.meta.source).not.toBe("daemon-events")
+    expect(result.content).toContain("native only")
+  })
+})

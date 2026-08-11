@@ -2751,6 +2751,18 @@ export type { ExportSessionOps } from "./agent-tools.js"
  */
 export { registerConversationReadTool, readConversation } from "./conversation-read.js"
 export type { ConversationReadOps, ConversationReadInput, ConversationReadResult } from "./conversation-read.js"
+/**
+ * Re-exported from conversation-locate-tool.ts so index.ts has one import
+ * site with the other conversation tools. Canonical definition lives there.
+ */
+export {
+  registerConversationLocateTool,
+  locateConversation,
+} from "./conversation-locate-tool.js"
+export type {
+  ConversationLocateInput,
+  ConversationLocateResult,
+} from "./conversation-locate-tool.js"
 
 /**
  * Re-exported from conversation-export.ts so callers of session-tools.ts

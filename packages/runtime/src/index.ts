@@ -31,6 +31,7 @@ import {
   registerSessionTools,
   registerExportSessionTool,
   registerConversationReadTool,
+  registerConversationLocateTool,
   registerConversationExportTool,
 } from "./session-tools.js"
 import {
@@ -1865,6 +1866,10 @@ export async function createGateway(
     // of requiring one already recorded on the descriptor. Co-located with
     // the tools above; same registry-access pattern.
     registerConversationReadTool(server, { registry: sessions })
+    // Conversation locator — bidirectional session ↔ native-transcript
+    // lookup over the persisted per-workspace index. Stateless (bucketsRoot
+    // resolves straight off HOME), so it needs no injected deps.
+    registerConversationLocateTool(server)
     // Conversation exporter — WRITE side of the cross-adapter pivot above:
     // copies a daemon session's events.jsonl transcript into a target
     // adapter's native conversation store (today claude-code JSONL) and

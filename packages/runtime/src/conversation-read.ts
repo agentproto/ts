@@ -14,7 +14,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import { CONVERSATION_STORES, type ConversationCandidate } from "./conversation-store.js"
-import { renderMarkdown, renderJson, type ExportedSession } from "./transcript-export.js"
+import {
+  exportDaemonEventsSession,
+  renderMarkdown,
+  renderJson,
+  type ExportedSession,
+} from "./transcript-export.js"
 
 /** Binary (argv[0] basename) → `CONVERSATION_STORES` key. Only needed for
  *  PTY sessions with no `adapterSlug` recorded — an agent-cli session's
@@ -197,12 +202,32 @@ export async function readConversation(
       format,
       content,
     }
-  } catch (err) {
-    return {
-      conversation: null,
-      conversationId: resolved.conversationId,
-      adapter: resolved.storeKey,
-      reason: err instanceof Error ? err.message : String(err),
+  } catch (readErr) {
+    const nativeMsg = readErr instanceof Error ? readErr.message : String(readErr)
+    // Fallback: the provider's native transcript may be missing even though
+    // the conversation id resolved — e.g. a process killed mid-turn before
+    // claude-code ever finalized its own jsonl. The daemon ALWAYS has an
+    // independent capture in events.jsonl (written upstream, before the
+    // native write, by transcript-writer.ts — and it's universal across
+    // adapters). Reconstruct from that before giving up.
+    try {
+      const session = await exportDaemonEventsSession(desc.id, desc)
+      const content = format === "json" ? renderJson(session) : renderMarkdown(session)
+      return {
+        conversation: session,
+        conversationId: resolved.conversationId,
+        adapter: resolved.storeKey,
+        format,
+        content,
+      }
+    } catch (daemonErr) {
+      const daemonMsg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr)
+      return {
+        conversation: null,
+        conversationId: resolved.conversationId,
+        adapter: resolved.storeKey,
+        reason: `${nativeMsg}\n(daemon-events fallback also failed: ${daemonMsg})`,
+      }
     }
   }
 }
