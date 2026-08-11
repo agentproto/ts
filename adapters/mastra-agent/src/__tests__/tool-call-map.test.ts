@@ -95,12 +95,49 @@ describe("chunkToSessionUpdate", () => {
     ).toMatchObject({ sessionUpdate: "tool_call_update", status: "failed" })
   })
 
+  it("maps a tool-error chunk to a failed tool_call_update carrying the error message", () => {
+    expect(
+      chunkToSessionUpdate({
+        type: "tool-error",
+        payload: {
+          toolCallId: "tc1",
+          toolName: "command_execute",
+          error: new Error("tool 'command_execute' is declared in AGENT.md but not wired"),
+        },
+      }),
+    ).toEqual({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "tc1",
+      status: "failed",
+      rawOutput: { error: "tool 'command_execute' is declared in AGENT.md but not wired" },
+    })
+  })
+
+  it("stringifies a non-Error tool-error payload", () => {
+    expect(
+      chunkToSessionUpdate({
+        type: "tool-error",
+        payload: { toolCallId: "tc1", error: "plain string error" },
+      }),
+    ).toMatchObject({ rawOutput: { error: "plain string error" } })
+
+    expect(
+      chunkToSessionUpdate({
+        type: "tool-error",
+        payload: { toolCallId: "tc1", error: { code: "ENOENT" } },
+      }),
+    ).toMatchObject({ rawOutput: { error: '{"code":"ENOENT"}' } })
+  })
+
   it("drops tool chunks missing a toolCallId", () => {
     expect(
       chunkToSessionUpdate({ type: "tool-call", payload: { toolName: "x" } }),
     ).toBeNull()
     expect(
       chunkToSessionUpdate({ type: "tool-result", payload: {} }),
+    ).toBeNull()
+    expect(
+      chunkToSessionUpdate({ type: "tool-error", payload: {} }),
     ).toBeNull()
   })
 

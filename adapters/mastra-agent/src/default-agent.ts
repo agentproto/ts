@@ -11,7 +11,7 @@ import type { MastraToolLike } from "@agentproto/mastra"
 import type { MastraLike } from "./acp-host.js"
 import { buildSqliteMemory } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
-import { makeWorkspaceTools } from "./workspace-tools.js"
+import { makeUnwiredToolStub, makeWorkspaceTools } from "./workspace-tools.js"
 
 /** Cheap OpenRouter coder by default — this is the budget first-party arm,
  *  same rationale as the hermes default. Override with --model / env. */
@@ -107,11 +107,25 @@ export function makeAgentFactory(
 
     const { agent } = await buildMastraAgent(handle, {
       resolveModel: (ref) => resolveMastraModel(ref),
-      // Match each declared tool ref against the workspace toolset by id.
+      // Match each declared tool ref against the workspace toolset by id. A
+      // ref with no matching executor still resolves — to a stub that fails
+      // fast and clearly on call — rather than being dropped: a dropped ref
+      // leaves the model unable to see it at all, and (if the model still
+      // tries the name from AGENT.md prose) surfaces as an opaque provider
+      // NoSuchToolError this adapter's ACP layer silently swallows (see
+      // tool-call-map.ts), which is how a declared-but-unwired tool used to
+      // hang a turn with zero recorded tool calls instead of failing fast.
       resolveTool: (ref) => {
         const id = toolRefId(ref)
-        const tool = id ? workspaceTools[id] : undefined
-        return tool ? { name: id as string, tool } : undefined
+        if (!id) return undefined
+        const tool = workspaceTools[id]
+        if (tool) return { name: id, tool }
+        console.warn(
+          `[@agentproto/adapter-mastra-agent] agent '${handle.id}' declares tool '${id}' but no ` +
+            `executor is wired for it in this adapter's workspace toolset — calls to it will fail ` +
+            `immediately instead of hanging. Wire it in workspace-tools.ts or pass it via extraTools.`,
+        )
+        return { name: id, tool: makeUnwiredToolStub(id) }
       },
       buildMemory: (config) => buildSqliteMemory(config),
       // The markdown body is the agent's primary system prompt (AIP-42).
