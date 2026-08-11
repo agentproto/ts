@@ -675,7 +675,9 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     // A claude-code session that WOULD normally restart pty-native
     // (`claude --resume`) — but an override must take the agent path so the
     // axes actually apply.
-    const { client, registry, calls, close } = await buildHarness()
+    const { client, registry, calls, close } = await buildHarness({
+      routeSelection: "free",
+    })
     const prev = registry.spawnAgent({
       workspaceSlug: "default",
       cwd: process.cwd(),
@@ -707,6 +709,7 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     expect(desc.posture).toBe("plan")
     expect(desc.route).toEqual({ gateway: "moonshot" })
     expect(desc.contextProfile).toBe("lean")
+    expect(desc.routeSelection).toBe("free")
     expect(calls[0]).toMatchObject({ posture: "plan", contextProfile: "lean" })
 
     await close()

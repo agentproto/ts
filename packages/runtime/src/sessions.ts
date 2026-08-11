@@ -53,7 +53,7 @@ import type {
 } from "./session-event-bus.js"
 import { resolvePosture } from "./canonical-posture.js"
 import { resolveEffectiveRoute } from "./catalog-models.js"
-import { tryParseModelRef } from "@agentproto/model-catalog/route-identity"
+import { normalizeModelForWire } from "./model-wire.js"
 import {
   composeSessionObservers,
   filterSessionObserver,
@@ -935,6 +935,23 @@ export interface SessionDescriptor {
    *  `adapterSlug`, recorded under the canonical axis name. Falls back to
    *  `adapterSlug` when not explicitly set. Undefined for pty/command kinds. */
   harness?: string
+  /**
+   * How this adapter's spawn ROUTE relates to the chosen model (AIP-45
+   * launch-menu drill-down). `"derived-from-model"` means the endpoint falls
+   * out of the model id's own vendor prefix; `"free"`/omitted means the route
+   * is an independent choice. Recorded at spawn time so a live `setModel` can
+   * apply the same wire normalization the spawn path used.
+   */
+  routeSelection?: "free" | "derived-from-model"
+  /**
+   * The adapter manifest's provider (`authDescriptor.provider`) — e.g.
+   * `"anthropic"` for claude-code, `"openai"` for codex. Recorded at spawn
+   * time so a live `setModel` knows when it can safely bare a
+   * `vendor/product` direct ref; ignored for derived-from-model adapters.
+   * Distinct from `auth.provider`, which is the resolved billing wallet and
+   * may name a gateway route.
+   */
+  adapterProvider?: string
   /**
    * AIP-45 mode the session was spawned with (`AgentCliStartOptions.config.
    * mode` — e.g. claude-code's `plan`/`accept-edits`, a gateway preset mode
@@ -2467,6 +2484,14 @@ export interface SpawnAgentInput {
   nativeTerminalResume?: boolean
   /** Canonical harness slug — recorded on the descriptor; defaults to adapterSlug. */
   harness?: string
+  /** Manifest-declared `routeSelection` (AIP-45) — recorded verbatim onto
+   *  {@link SessionDescriptor.routeSelection} so live `setModel` can apply
+   *  the same wire normalization as spawn. */
+  routeSelection?: "free" | "derived-from-model"
+  /** Manifest-declared provider (`authDescriptor.provider`) — recorded onto
+   *  {@link SessionDescriptor.adapterProvider} so live `setModel` knows when
+   *  to bare a direct `vendor/product` ref; ignored for derived adapters. */
+  adapterProvider?: string
   /** Optional initial prompt to dispatch immediately. The promise
    *  the registry returns resolves AFTER the spawn — the prompt
    *  runs in the background, projecting events into the ring
@@ -5033,6 +5058,12 @@ export function createSessionsRegistry(opts?: {
           ? { nativeTerminalResume: input.nativeTerminalResume }
           : {}),
         harness: input.harness ?? input.adapterSlug,
+        ...(input.routeSelection !== undefined
+          ? { routeSelection: input.routeSelection }
+          : {}),
+        ...(input.adapterProvider !== undefined
+          ? { adapterProvider: input.adapterProvider }
+          : {}),
         // ACP-level session id — sticks across daemon restart so
         // `agentproto sessions restart <id>` can pass it as
         // `resumeSessionId` and the adapter reattaches to the prior
@@ -5164,6 +5195,12 @@ export function createSessionsRegistry(opts?: {
         ...worktreeFields(input.cwd),
         adapterSlug: input.adapterSlug,
         harness: input.harness ?? input.adapterSlug,
+        ...(input.routeSelection !== undefined
+          ? { routeSelection: input.routeSelection }
+          : {}),
+        ...(input.adapterProvider !== undefined
+          ? { adapterProvider: input.adapterProvider }
+          : {}),
         ...(input.label ? { label: input.label } : {}),
         ...(input.title ? { title: input.title } : {}),
         ...(input.label ? { renamedByUser: false } : {}),
@@ -5721,10 +5758,12 @@ export function createSessionsRegistry(opts?: {
       // endpoint (the "pick a gateway model live, keep the old billing rail"
       // hole), and hand back the override a restart-with-override should carry.
       // Lenient by construction: the guard fires ONLY when BOTH the current and
-      // target routes are known AND differ — bare/unparseable ids (no `@route`,
-      // no vendor slash) leave the route unknown and fall through to a normal
-      // live switch, so this never blocks a same-endpoint model change.
-      const targetRoute = tryParseModelRef(modelId)?.route
+      // target routes are known AND differ — bare/unparseable ids leave the
+      // route unknown and fall through to a normal live switch, so this never
+      // blocks a same-endpoint model change. Use the same effective-route
+      // resolver as the current descriptor so router-prefixed legacy ids are
+      // covered too.
+      const targetRoute = resolveEffectiveRoute(modelId, undefined)
       const currentRoute = currentRouteOf(rt.desc)
       if (targetRoute && currentRoute && targetRoute !== currentRoute) {
         return {
@@ -5736,9 +5775,57 @@ export function createSessionsRegistry(opts?: {
       if (!rt.agentSession.setModel) {
         return { applied: false, reason: "not-supported" }
       }
-      const result = await rt.agentSession.setModel(modelId)
+      // Descriptors persisted before wire-normalization metadata existed can
+      // still be revived in place after a daemon restart. Hydrate their
+      // adapter strategy lazily so the first subsequent live switch gets the
+      // same normalization as a newly spawned session. Resolution is best-
+      // effort for backward compatibility: an embedding without a resolver
+      // keeps the old suffix-only fallback rather than losing live switching.
+      let routeSelection = rt.desc.routeSelection
+      let adapterProvider = rt.desc.adapterProvider
+      const needsAdapterMetadata =
+        routeSelection === undefined ||
+        (routeSelection !== "derived-from-model" && adapterProvider === undefined)
+      const adapterSlug = rt.desc.adapterSlug ?? rt.adapterSlug
+      if (needsAdapterMetadata && resolveAgentAdapter && adapterSlug) {
+        try {
+          const resolved = await resolveAgentAdapter(adapterSlug)
+          let hydrated = false
+          if (routeSelection === undefined && resolved?.routeSelection !== undefined) {
+            routeSelection = resolved.routeSelection
+            rt.desc.routeSelection = routeSelection
+            hydrated = true
+          }
+          if (
+            adapterProvider === undefined &&
+            resolved?.authDescriptor?.provider !== undefined
+          ) {
+            adapterProvider = resolved.authDescriptor.provider
+            rt.desc.adapterProvider = adapterProvider
+            hydrated = true
+          }
+          if (hydrated) schedulePersist()
+        } catch {
+          // Preserve legacy best-effort behavior when an optional resolver is
+          // temporarily unavailable; the driver still receives a suffix-free id.
+        }
+      }
+      // Normalize the catalog model id to the adapter's wire form using the
+      // same helper the spawn path uses, so live switches cannot drift.
+      // Derived-from-model adapters (hermes, pi, opencode, …) keep the vendor
+      // prefix and only lose the `@route` suffix; fixed native adapters get
+      // the bare product id their manifest declares.
+      const wireModel = normalizeModelForWire(modelId, {
+        routeSelection,
+        gateway: rt.desc.route?.gateway,
+        fixedProvider: adapterProvider,
+      })
+      const result = await rt.agentSession.setModel(wireModel)
       if (result.applied) {
-        rt.desc.model = result.model ?? modelId
+        // Record the CATALOG id the caller requested, not the wire form the
+        // driver consumed — the descriptor echo and UI picker must stay in
+        // canonical model-identity terms.
+        rt.desc.model = modelId
         schedulePersist()
         if (sessionEvents) {
           const ts = new Date().toISOString()
@@ -5763,7 +5850,7 @@ export function createSessionsRegistry(opts?: {
           })
         }
       }
-      return result
+      return result.applied ? { ...result, model: modelId } : result
     },
     emitConfigChanged(ev) {
       // Best-effort forward — restart-with-override (session-restart-core.ts)

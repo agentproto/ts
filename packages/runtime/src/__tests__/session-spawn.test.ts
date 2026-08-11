@@ -456,6 +456,8 @@ describe("spawnAgentSession", () => {
     expect(result.descriptor).toMatchObject({
       model: "moonshot/kimi-k2.7-code",
       route: { gateway: "moonshot" },
+      routeSelection: "free",
+      adapterProvider: "anthropic",
     })
   })
 
@@ -496,9 +498,15 @@ describe("spawnAgentSession", () => {
       route: { gateway: "openrouter", baseUrl: "http://127.0.0.1:65535" },
     })
     expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
     expect(startSession).toHaveBeenCalledWith(
       expect.objectContaining({ model: "deepseek/deepseek-v4-pro" }),
     )
+    expect(result.descriptor).toMatchObject({
+      model: "deepseek/deepseek-v4-pro@openrouter",
+      routeSelection: "derived-from-model",
+      adapterProvider: "openrouter",
+    })
   })
 
   it("stamps `boardId` onto the spawned descriptor's meta — and omits meta without it", async () => {
@@ -2824,7 +2832,13 @@ describe("spawnAgentSession — async worktree provisioning (WP-F)", () => {
 
   it("returns a registered, starting session BEFORE the provisioner settles, then flips to running once it does", async () => {
     const startSession = vi.fn(async () => fakeAgentSession())
-    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      routeSelection: "derived-from-model",
+      authDescriptor: { provider: "openrouter" },
+    })
+    const { registry, deps } = baseDeps({ resolveAgentAdapter })
     const { provisionWorktree, calls, resolve } = deferredProvisioner()
 
     const result = await spawnAgentSession(
@@ -2839,7 +2853,11 @@ describe("spawnAgentSession — async worktree provisioning (WP-F)", () => {
     // …but `agent_start` did not wait for it.
     expect(startSession).not.toHaveBeenCalled()
     expect(result.descriptor.status).toBe("starting")
-    expect(registry.get(result.descriptor.id)?.status).toBe("starting")
+    expect(registry.get(result.descriptor.id)).toMatchObject({
+      status: "starting",
+      routeSelection: "derived-from-model",
+      adapterProvider: "openrouter",
+    })
 
     resolve(isolated)
     await vi.waitFor(() => {
