@@ -4038,10 +4038,14 @@ export function createSessionsRegistry(opts?: {
         // #721/#724. Best-effort: stashed for `runAgentTurn` to inject once;
         // absent when there's nothing to summarize (see
         // `buildResumeContextDigest`).
-        const digest = contextNotRestored
-          ? await buildResumeContextDigest(rt.desc.id)
-          : undefined
-        if (digest) rt.desc.pendingResumeContext = digest
+        let digestRecovered = false
+        if (contextNotRestored) {
+          const result = await buildResumeContextDigest(rt.desc.id)
+          if (result.digest) {
+            rt.desc.pendingResumeContext = result.digest
+            digestRecovered = result.hasContent
+          }
+        }
         if (interrupted) {
           const banner =
             "── resumed after daemon restart; previous turn was interrupted " +
@@ -4050,10 +4054,13 @@ export function createSessionsRegistry(opts?: {
           transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
         }
         if (contextNotRestored) {
-          const banner =
-            `── resumed WITHOUT prior context — adapter '${adapterSlug}' ` +
-            "does not support resume, this is a fresh session, not a " +
-            "continuation ──"
+          const banner = digestRecovered
+            ? `── resumed WITH PARTIAL context — adapter '${adapterSlug}' ` +
+              "does not support resume; context was recovered from the daemon " +
+              "transcript, not the adapter's native conversation ──"
+            : `── resumed WITHOUT prior context — adapter '${adapterSlug}' ` +
+              "does not support resume, this is a fresh session, not a " +
+              "continuation ──"
           appendLine(rt, banner, "stdout")
           transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
         }

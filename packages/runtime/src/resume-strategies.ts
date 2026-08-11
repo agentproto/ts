@@ -261,6 +261,14 @@ export const RESUME_ID_REJECTED_RE =
  * past the kill, …). Eligible only when the file is at-or-after the
  * session's `startedAt` (avoid resuming an unrelated prior session
  * in the same cwd — see ResumeStrategy.fsProbe comment).
+ *
+ * Fix: when NO `adapterSessionId` was ever captured (session killed
+ * before the ACP handshake), run a recency-window probe. When an
+ * `adapterSessionId` exists but points to a missing JSONL, the probe
+ * tries exact-bind and returns nothing — that's correct, we NEVER
+ * silently resume a sibling conversation (safety: prevents cross-
+ * session contamination). The adapter-level resume will fail with
+ * "not found", triggering the fresh-spawn fallback + digest injection.
  */
 export async function augmentWithFsResume<T extends FsProbeCandidate>(
   prev: T,
@@ -278,7 +286,9 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
   // uuid — acp-host.ts pins them equal) so the probe binds to THIS
   // session's transcript instead of the newest one in the cwd. Without
   // it, a restart of a session that shares a cwd with a concurrent one
-  // could silently resume the wrong conversation.
+  // could silently resume the wrong conversation. When the exact-bind
+  // finds nothing (the JSONL is gone), we deliberately do NOT fall
+  // through to a sibling — better to fail-fast and inject a digest.
   const id = await strategy.fsProbe(
     prev.cwd,
     prev.startedAt,

@@ -459,6 +459,13 @@ export interface RestartAgentSessionResult {
   resumedFrom: string
   resumeVia: string
   resumeFallback?: boolean
+  /** True when a fallback occurred AND the daemon transcript contained
+   *  actual conversation content that was injected as a digest. False
+   *  when no digest was available (daemon transcript empty/missing) or
+   *  when no fallback occurred (successful native/ACP resume). This
+   *  lets callers distinguish "fresh with zero context" from "fresh
+   *  with partial digest injected" for the restart banner. */
+  digestRecovered?: boolean
 }
 
 export interface RestartAgentSessionOptions {
@@ -836,9 +843,13 @@ export async function restartAgentSession(
   // `runAgentTurn` to inject once. Gated strictly on `resumeFallback` — a
   // successful resume (pty-native or a clean ACP resume) never reaches
   // here, so it's never double-fed its own context.
+  let digestRecovered = false
   if (resumeFallback) {
-    const digest = await buildResumeContextDigest(prev.id)
-    if (digest) desc.pendingResumeContext = digest
+    const result = await buildResumeContextDigest(prev.id)
+    if (result.digest) {
+      desc.pendingResumeContext = result.digest
+      digestRecovered = result.hasContent
+    }
   }
 
   // ── Announce the changed axes (SPEC §4.3) ────────────────────────
@@ -878,5 +889,6 @@ export async function restartAgentSession(
     // satisfying the optional field's type.
     resumeVia: desc.resumeVia ?? "",
     ...(resumeFallback ? { resumeFallback: true } : {}),
+    ...(digestRecovered ? { digestRecovered: true } : {}),
   }
 }
