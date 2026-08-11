@@ -18,7 +18,10 @@ import type {
   PermissionRules,
 } from "@mastra/core/agent-controller"
 import { Workspace } from "@mastra/core/workspace"
+import type { Agent } from "@mastra/core/agent"
+import { DaemonClient } from "./daemon-client.js"
 import { makeDaemonTools } from "./daemon-tools.js"
+import { AgentprotoSignalProvider } from "./signal-provider.js"
 import type { MastraMemoryLike } from "./memory.js"
 import { buildSqliteMemory, buildSqliteStore } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
@@ -232,13 +235,43 @@ export function makeAgentFactory(
       ? resolveModes(body)
       : { modes: [{ id: "main", metadata: { default: true } }], defaultModeId: "main" }
 
-    // Daemon sub-agent-spawning tools (WP-5) are additive, modes-on only —
-    // parity mode stays exactly the WP-1 raw-stream toolset. Built fresh per
-    // controller (each has its own `DaemonClient`, cheap: no network call
-    // happens until a tool actually executes and discovery runs lazily).
-    const tools = modesEnabled
-      ? { ...workspaceTools, ...makeDaemonTools({ clientOptions: { cwd } }) }
-      : workspaceTools
+    // Daemon sub-agent-spawning tools (WP-5) and the daemon signal provider
+    // (WP-6) are additive, modes-on only — parity mode stays exactly the
+    // WP-1 raw-stream toolset. One `DaemonClient` is shared between them
+    // (cheap to build: no network call happens until a tool executes or a
+    // watch exists, and discovery runs lazily).
+    let tools = workspaceTools
+    if (modesEnabled) {
+      const daemonClient = new DaemonClient({ cwd })
+      tools = { ...workspaceTools, ...makeDaemonTools({ client: daemonClient }) }
+
+      // WP-6: attach the AgentprotoSignalProvider MANUALLY. `buildMastraAgent`
+      // owns the `new Agent(...)` call and has no `signals` passthrough, so we
+      // replicate here exactly what `Agent`'s constructor does for
+      // `config.signals` (see @mastra/core dist, agent ctor):
+      //   1. `provider.connect(this)`      — done below.
+      //   2. `provider.startPolling()`     — done below (a no-op timer until a
+      //      subscription exists; the base class skips poll() with zero subs,
+      //      so an unwatched provider never even attempts daemon discovery —
+      //      no daemon just means the first real poll warns once and the
+      //      provider stays dormant).
+      //   3. `provider.start?.()`          — our provider defines none.
+      //   4. merge `getInputProcessors()`/`getOutputProcessors()` — our
+      //      provider exposes none, nothing to replicate.
+      //   5. merge `getTools()` into the agent's toolset — replicated by
+      //      merging into the CONTROLLER `tools` below instead, which is the
+      //      surface controller sessions actually execute against (agent-level
+      //      and controller-level tools overlap onto the same executors here,
+      //      same as the workspace toolset).
+      // One thing the constructor path would ALSO have done that we don't:
+      // `agent.__registerMastra` forwards the Mastra instance to providers in
+      // `config.signals`; a manually-connected provider never receives it.
+      // Ours never reads `this.mastra`, so nothing is lost.
+      const signalProvider = new AgentprotoSignalProvider({ client: daemonClient })
+      signalProvider.connect(agent as unknown as Agent)
+      signalProvider.startPolling()
+      tools = { ...tools, ...signalProvider.getTools() }
+    }
 
     const config: AgentControllerConfig<AdapterControllerState> = {
       id: "agentproto-native",

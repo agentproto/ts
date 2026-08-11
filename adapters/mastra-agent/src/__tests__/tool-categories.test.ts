@@ -23,6 +23,10 @@ describe("toolCategoryResolver", () => {
     expect(toolCategoryResolver("agent_output")).toBe("mcp")
     expect(toolCategoryResolver("session_list")).toBe("mcp")
   })
+  it("maps the signal-provider watch tools to read (subscription-only, no reach-out)", () => {
+    expect(toolCategoryResolver("watch_session")).toBe("read")
+    expect(toolCategoryResolver("unwatch_session")).toBe("read")
+  })
   it("maps submit_plan to other", () => {
     expect(toolCategoryResolver("submit_plan")).toBe("other")
   })

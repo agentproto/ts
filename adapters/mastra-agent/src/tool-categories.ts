@@ -37,6 +37,14 @@ const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
   // category keeps the two spawn surfaces — daemon vs. in-process — tunable
   // independently later without a behavior change now).
   subagent: "mcp",
+  // Signal-provider subscription tools (WP-6) — deliberately NOT `mcp` like
+  // the daemon verbs above: watching a session only registers an in-process
+  // subscription whose polling reads session metadata and transcript events,
+  // the same risk class as reading files. It can't spawn, prompt, or mutate
+  // anything outside this process, so it auto-allows as `read` instead of
+  // prompting on every watch.
+  watch_session: "read",
+  unwatch_session: "read",
   // `submit_plan` (WP-3) gates itself: calling it always suspends the run
   // for the user's approve/reject decision (see modes.ts's plan mode). It
   // has no "other"-category behavior worth asking about a second time before
