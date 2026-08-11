@@ -67,6 +67,7 @@ import {
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
 import type { UserPreset } from "./user-presets.js"
+import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -906,6 +907,25 @@ export async function spawnAgentSession(
       // caller-named (and the worktree guard sees a real repo, not a fallback).
       cwd: explicit.cwd ?? preset.cwd,
       skills: explicit.skills ?? preset.skills,
+    }
+  }
+
+  // Harness default preset (`harness-presets.json`): when NEITHER an explicit
+  // request NOR a user preset pinned a billing profile, fall back to the
+  // harness's persisted default preset — its `profileRef` + `defaultModel`
+  // replace the legacy "first eligible profile" ambient resolution below. This
+  // is the lowest-precedence layer: it fills `access.profileRef` only when
+  // unset, and `model` only when the caller named none. A harness with no
+  // default preset (the common case, and every test that doesn't provision one)
+  // reads an empty store and leaves the spawn untouched.
+  if (!input.access?.profileRef) {
+    const preset = await getDefaultHarnessPreset(input.harness ?? input.adapter)
+    if (preset) {
+      input = {
+        ...input,
+        access: { profileRef: preset.profileRef },
+        model: input.model ?? preset.defaultModel,
+      }
     }
   }
 
