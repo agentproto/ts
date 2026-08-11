@@ -68,6 +68,7 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
   // (`providerOf` in model-resolver.ts), no adapter mode — so the route falls
   // out of the chosen model → derived-from-model.
   routeSelection: "derived-from-model",
+  modelDerivedApiKey: true,
   models: {
     // Cheap OpenRouter coder by default — this is the budget first-party arm.
     // Anthropic models are not advertised here (this arm shouldn't be steered
