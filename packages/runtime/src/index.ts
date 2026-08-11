@@ -38,6 +38,7 @@ import {
   type BrowserAdapterLister,
 } from "./browser-tools.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
+import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeSessionsPanelApp } from "./sessions-panel-app.js"
@@ -235,6 +236,23 @@ export {
   deleteUserPreset,
 } from "./user-presets.js"
 export type { UserPreset, UserPresetsFile } from "./user-presets.js"
+export {
+  harnessPresetsPath,
+  loadHarnessPresets,
+  listHarnessPresets,
+  getHarnessPreset,
+  getDefaultHarnessPreset,
+  addHarnessPreset,
+  updateHarnessPreset,
+  removeHarnessPreset,
+  setDefaultPreset,
+  HarnessPresetValidationError,
+} from "./harness-preset-store.js"
+export type {
+  HarnessPreset,
+  HarnessPresetsFile,
+  HarnessPresetValidationDeps,
+} from "./harness-preset-store.js"
 export {
   buildCatalogModels,
   type CatalogAdapterInput,
@@ -1694,6 +1712,10 @@ export async function createGateway(
     // `~/.agentproto/auth-profiles.json` + keychain slots directly, same as
     // the profile readers already mounted in session-spawn.ts.
     registerAuthProfileTools(server)
+    // Persisted harness→profile bindings (harness_preset_list/create/delete/
+    // set_default). Same no-host-wiring stance as the auth-profile tools —
+    // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.
+    registerHarnessPresetTools(server)
     // Read-only scanner: report locally-present credentials (Claude Code /
     // Codex / Gemini logins, ~/.hermes/config.yaml, provider env keys) with
     // provenance, so onboarding can offer an import. Never returns a value.
