@@ -1595,6 +1595,19 @@ export async function spawnAgentSession(
   let accessProfileEcho:
     | { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
     | undefined
+  // Echo of the resolved billing route for a BY-MODEL ROUTER adapter (no
+  // fixed `authDescriptor.provider` — hermes, pi, opencode) when the caller
+  // named no explicit `route.gateway`. Without this, the descriptor's
+  // `route` field stays empty even though the spawn billed a real gateway
+  // (derived from the model id via `getModelProvider`), and a later
+  // `resolveEffectiveRoute(session.model, session.route?.gateway)` call
+  // (e.g. the VS Code change-model picker) falls back to treating the
+  // session as running the model's bare/direct route — a false "restart
+  // required" the moment the operator picks a row with an explicit
+  // `@route` suffix that happens to match the SAME gateway the session is
+  // already on. A fixed-provider adapter (claude-code) needs none of this:
+  // its `route` stays reserved for an operator-named gateway override.
+  let resolvedRouteGateway: string | undefined
   if (resolved && input.access?.profileRef) {
     const result = await resolveAccessProfileAuth({
       adapter: input.adapter,
@@ -1627,6 +1640,9 @@ export async function spawnAgentSession(
       pinnedProvider ??
       resolved.authDescriptor.provider ??
       (authModel ? getModelProvider(authModel) : undefined)
+    if (resolved.authDescriptor.provider === undefined && resolvedProvider !== undefined) {
+      resolvedRouteGateway = resolvedProvider
+    }
     // When an explicit gateway route is set, the provider-store key is looked
     // up under the gateway id (e.g. "moonshot") rather than the model-derived
     // vendor, because the gateway preset/custom route defines the credential
@@ -1802,6 +1818,11 @@ export async function spawnAgentSession(
       }
     }
   }
+  // The descriptor's `route` — the caller's explicit override, falling back
+  // to the by-model router echo above so a live gateway resolution is never
+  // silently dropped on the floor (see `resolvedRouteGateway`'s docblock).
+  const descriptorRoute: RouteSpec | undefined =
+    input.route ?? (resolvedRouteGateway ? { gateway: resolvedRouteGateway } : undefined)
   let launchConfig: RouteAwareLaunchConfig
   try {
     launchConfig = buildRouteAwareLaunchConfig({
@@ -1958,7 +1979,7 @@ export async function spawnAgentSession(
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
-        ...(input.route ? { route: input.route } : {}),
+        ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
         ...(input.label ? { label: input.label } : {}),
@@ -2169,7 +2190,7 @@ export async function spawnAgentSession(
         // Forward the already-resolved credential when the caller selected a
         // profile; raw explicit auth remains supported for existing callers.
         ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec) } : input.auth ? { auth: input.auth } : {}),
-        ...(input.route ? { route: input.route } : {}),
+        ...(descriptorRoute ? { route: descriptorRoute } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -2248,7 +2269,7 @@ export async function spawnAgentSession(
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
       ...(input.posture !== undefined ? { posture: input.posture } : {}),
-      ...(input.route ? { route: input.route } : {}),
+      ...(descriptorRoute ? { route: descriptorRoute } : {}),
       ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
