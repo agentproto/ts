@@ -6,7 +6,9 @@
  * Tools:
  *   app_install   loadAppHandle(dir) → validate → persist an installed-app record
  *   app_list      installed apps + a runs summary
- *   app_run       spawn a session per selected agent (mastra-agent adapter)
+ *   app_run       spawn a session per selected agent (default mastra-agent;
+ *                 adapter/harness/model are pass-through, optional `sequence`
+ *                 runs agents one-at-a-time under one appRunId)
  *   app_status    fan out an app_run's sessions + the app's workflow runs
  *   app_stop      kill an app_run's sessions
  *
@@ -36,6 +38,53 @@ import { loadAppCatalogFile } from "./app-catalog.js"
 /** The only agent adapter this WP knows how to run an emitted AGENT.md
  *  under — see `adapters/mastra-agent`'s `agent` option (`--agent <path>`). */
 export const DEFAULT_AGENT_ADAPTER = "mastra-agent"
+
+/** A spawned session descriptor's terminal statuses (see `SessionStatus` in
+ *  sessions.ts): clean exit, operator kill, or a crash/error. Any of these
+ *  means the session is no longer running and a sequential run can advance. */
+const TERMINAL_SESSION_STATUSES = new Set(["exited", "killed", "error"])
+
+function isSessionTerminal(status: string | undefined): boolean {
+  return status === undefined || TERMINAL_SESSION_STATUSES.has(status)
+}
+
+/** True when a stringified output carries no substantive content — guards the
+ *  empty-text-block case (`content: [{type:"text", text:""}]`) from surfacing
+ *  as a truthy-but-blank output downstream (D). */
+export function isBlankText(line: string): boolean {
+  return line === undefined || line.trim().length === 0
+}
+
+/** Drop `{type:"text"}` content blocks whose `text` is empty/whitespace so a
+ *  session ending with a blank block is never forwarded/echoed as truthy. */
+export function sanitizeOutputBlocks(
+  blocks: ReadonlyArray<{ type: string; text?: string }> | undefined,
+): Array<{ type: string; text: string }> {
+  if (!blocks) return []
+  return blocks.filter(b => !(b.type === "text" && isBlankText(b.text ?? ""))).map(b => ({
+    type: b.type,
+    text: b.text ?? "",
+  }))
+}
+
+/** Bounded poll for a single spawned session to reach a terminal descriptor
+ *  status (or disappear from the registry) — the sequential-orchestration
+ *  primitive. Sleeps between polls so it never blocks the daemon event loop,
+ *  and caps at `MAX_SEQUENTIAL_POLLS` so a hung session can't stall a run
+ *  forever (the run then falls back to app_status's lazy reconciliation). */
+const SEQUENTIAL_POLL_INTERVAL_MS = 2_000
+const MAX_SEQUENTIAL_POLLS = 60
+
+async function waitForSessionTerminal(
+  registry: SessionsRegistry,
+  sessionId: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < MAX_SEQUENTIAL_POLLS; attempt++) {
+    const status = registry.get(sessionId)?.status
+    if (isSessionTerminal(status)) return
+    await new Promise(resolve => setTimeout(resolve, SEQUENTIAL_POLL_INTERVAL_MS))
+  }
+}
 
 /**
  * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
@@ -228,6 +277,11 @@ export interface RegisterAppToolsOptions {
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
    *  explicitly supplied, `false` otherwise — mirrors workflow-runner.ts. */
   persist?: boolean
+  /** Sequential-run termination waiter — awaited after each `sequence` agent
+   *  spawn so the next agent only starts once the previous is done. Defaults
+   *  to `waitForSessionTerminal`'s bounded poll (up to 60 × 2s). Tests inject
+   *  a stub to drive session termination deterministically without sleeping. */
+  waitForSessionTerminal?: (sessionId: string) => Promise<void>
   /** Share an already-built `AppRegistry` instead of creating a private one
    *  — the host wires the same instance into `WorkflowRunner`'s
    *  `compileWorkflow` closure so `resolveAgentRefsForWorkflow` sees every
@@ -400,6 +454,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             status: r.status,
             startedAt: r.startedAt,
             ...(r.endedAt ? { endedAt: r.endedAt } : {}),
+            ...(r.adapter !== undefined ? { adapter: r.adapter } : {}),
+            ...(r.harness !== undefined ? { harness: r.harness } : {}),
+            ...(r.model !== undefined ? { model: r.model } : {}),
             sessions: r.sessions.length,
           })),
       }))
@@ -410,18 +467,34 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   server.tool(
     "app_run",
     "Run an installed app's agents as live sessions — one `agent_start`-equivalent " +
-      "spawn per selected agent (adapter `mastra-agent`, pointed at that agent's " +
+      "spawn per selected agent (default adapter `mastra-agent`, pointed at that agent's " +
       "emitted AGENT.md via the adapter's `agent` option), grouped under a fresh " +
       "appRunId. Re-reads the app's directory first, so a stale install record " +
       "(paths moved, a workflow renamed) is refreshed before spawning — the same " +
       "refreshed paths are what make `workflow_run_file` work against this app's " +
-      "WORKFLOW.md files. Poll with `app_status`, kill with `app_stop`.",
+      "WORKFLOW.md files. Poll with `app_status`, kill with `app_stop`.\n\n" +
+      "Orchestration: pass `sequence` to run agents ONE-AT-A-TIME in the given " +
+      "order (each waits for its predecessor's session to reach a terminal state, " +
+      "bounded ~60×2s, before the next spawns) — the scout→tailor workflow. " +
+      "Without `sequence`, `agents` spawn concurrently (legacy behaviour). When " +
+      "`sequence` is set every agent still lives under the SAME appRunId and is " +
+      "awaited; the run is marked `ended` once the last completes.\n\n" +
+      "Runner selection: `adapter`/`harness`/`model` are passed through to every " +
+      "spawn and mirrored onto the run record for observability. `harness` is the " +
+      "canonical slug and defaults `adapter` to itself when `adapter` is absent; " +
+      "a bare `adapter` sets `harness` to itself; both default to `mastra-agent`. " +
+      "An unresolvable adapter is collected as a per-agent error rather than " +
+      "failing the whole run.",
     {
       appId: z.string(),
       agents: z
         .array(z.string())
         .optional()
-        .describe("Agent ids to run. Omit to run every agent the app bundles."),
+        .describe("Agent ids to run concurrently. Omit to run every agent the app bundles. Ignored when `sequence` is set."),
+      sequence: z
+        .array(z.string())
+        .optional()
+        .describe("Agent ids to run ONE-AT-A-TIME in this order — each waits for the previous to finish before the next spawns."),
       prompt: z.string().optional().describe("Prompt to send to each spawned agent session."),
       cwd: z
         .string()
@@ -431,6 +504,18 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         .string()
         .optional()
         .describe("When passed, refuse to run if the app is not applied to this scope."),
+      adapter: z
+        .string()
+        .optional()
+        .describe("Agent adapter slug (default `mastra-agent`). Used for the spawn; sets `harness` when `harness` is absent."),
+      harness: z
+        .string()
+        .optional()
+        .describe("Canonical harness slug (defaults to `adapter`). Recorded on the run + each session; sets `adapter` when `adapter` is absent."),
+      model: z
+        .string()
+        .optional()
+        .describe("Model id passed through to each spawned session."),
       // follow-up: no sandbox support in this WP — the e2b image doesn't carry
       // the mastra-agent adapter yet (see output/phase-a-findings.md A3). Thread
       // a `sandbox` field through to `spawnAgentSession` here once an image
@@ -463,35 +548,103 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       }
       const app = appRegistry.upsertApp({ ...installed, agents: refs.agents, workflows: refs.workflows })
 
-      const selected = input.agents ?? app.agents.map(a => a.id)
-      const unknown = selected.filter(id => !app.agents.some(a => a.id === id))
+      // Resolve the runner (A). `harness` is canonical: it wins the harness
+      // slot and (when `adapter` absent) the adapter slot too. A bare `adapter`
+      // fills both. Neither → the long-standing default.
+      const adapter = input.adapter ?? input.harness ?? DEFAULT_AGENT_ADAPTER
+      const harness = input.harness ?? input.adapter ?? DEFAULT_AGENT_ADAPTER
+      const model = input.model
+
+      const ordered = input.sequence ?? input.agents ?? app.agents.map(a => a.id)
+      const unknown = ordered.filter(id => !app.agents.some(a => a.id === id))
       if (unknown.length > 0) {
         return errorResult(
-          `app_run: unknown agent id(s) for app "${input.appId}": ${unknown.join(", ")}`,
+          `app_run: unknown agent id(s) for app "${app.appId}": ${unknown.join(", ")}`,
         )
       }
 
       const sessions: { agentId: string; sessionId: string }[] = []
       const errors: { agentId: string; error: string }[] = []
-      for (const agentId of selected) {
+      const spawnOne = async (
+        agentId: string,
+      ): Promise<{ agentId: string; sessionId: string } | null> => {
         const agentPath = app.agents.find(a => a.id === agentId)!.path
         const result = await spawnAgentSession(
           { registry, resolveAgentAdapter },
           {
-            adapter: DEFAULT_AGENT_ADAPTER,
+            adapter,
+            ...(harness !== adapter ? { harness } : {}),
+            ...(model !== undefined ? { model } : {}),
             cwd: input.cwd ?? app.dir,
             ...(input.prompt ? { prompt: input.prompt } : {}),
             options: { agent: agentPath },
             label: `app:${app.appId}:${agentId}`,
           },
         )
-        if (result.ok) sessions.push({ agentId, sessionId: result.descriptor.id })
-        else errors.push({ agentId, error: result.message })
+        if (result.ok) {
+          const output = result.output ?? []
+          const meaningful = output.filter(l => !isBlankText(l))
+          // D — a session that ends with nothing but blank/empty text blocks is
+          // still a completed session (not an error); surface the fact so a
+          // downstream consumer (or a human reading the daemon log) never
+          // mistakes a blank block for missing output.
+          if (meaningful.length === 0) {
+            console.log(
+              `app_run: session "${result.descriptor.id}" (agent "${agentId}") completed with empty output`,
+            )
+          }
+          return { agentId, sessionId: result.descriptor.id }
+        }
+        errors.push({ agentId, error: result.message })
+        return null
       }
 
-      const run = appRegistry.createRun({ appId: app.appId, sessions })
+      const waitForTerminal = opts.waitForSessionTerminal ?? ((sessionId: string) =>
+        waitForSessionTerminal(registry, sessionId))
+
+      if (input.sequence !== undefined) {
+        // B — sequential orchestration: spawn one-at-a-time, each awaited to a
+        // terminal state before the next spawns, all under ONE appRunId.
+        for (const agentId of input.sequence) {
+          const spawned = await spawnOne(agentId)
+          if (!spawned) continue
+          sessions.push(spawned)
+          await waitForTerminal(spawned.sessionId)
+        }
+        const run = appRegistry.createRun({
+          appId: app.appId,
+          sessions,
+          adapter,
+          harness,
+          ...(model !== undefined ? { model } : {}),
+        })
+        appRegistry.endRun(run.appRunId, { status: "ended" })
+        return textResult({
+          appRunId: run.appRunId,
+          status: run.status,
+          ...(run.endedAt ? { endedAt: run.endedAt } : {}),
+          sessions,
+          ...(errors.length > 0 ? { errors } : {}),
+        })
+      }
+
+      for (const agentId of ordered) {
+        const spawned = await spawnOne(agentId)
+        if (spawned) sessions.push(spawned)
+      }
+
+      const run = appRegistry.createRun({
+        appId: app.appId,
+        sessions,
+        adapter,
+        harness,
+        ...(model !== undefined ? { model } : {}),
+      })
       return textResult({
         appRunId: run.appRunId,
+        adapter,
+        harness,
+        ...(model !== undefined ? { model } : {}),
         sessions,
         ...(errors.length > 0 ? { errors } : {}),
       })
@@ -513,6 +666,20 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         sessionId: s.sessionId,
         descriptor: registry.get(s.sessionId),
       }))
+      // C — truthful terminal state: a concurrent run's stored status is only
+      // ever flipped by app_stop, so a run whose underlying sessions have all
+      // ended would otherwise report "running" forever. Reconcile lazily (and
+      // non-mutating) against the live session descriptors: once every session
+      // is terminal, report `ended` with an `endedAt` even if the persisted
+      // status is still "running". A run already terminal keeps its stored
+      // status; a run with at least one live session reports "running".
+      const allSessionsTerminal = sessions.every(s => isSessionTerminal(s.descriptor?.status))
+      const storedTerminal = run.status !== "running"
+      const reconciledStatus = storedTerminal
+        ? run.status
+        : allSessionsTerminal
+          ? ("ended" as const)
+          : ("running" as const)
       const workflowRuns =
         workflowRunner && app
           ? workflowRunner.list().filter(r => app.workflows.some(w => w.id === r.workflowId))
@@ -520,9 +687,16 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       return textResult({
         appRunId: run.appRunId,
         appId: run.appId,
-        status: run.status,
+        status: reconciledStatus,
         startedAt: run.startedAt,
-        ...(run.endedAt ? { endedAt: run.endedAt } : {}),
+        ...(reconciledStatus !== "running" && run.endedAt
+          ? { endedAt: run.endedAt }
+          : reconciledStatus !== "running"
+            ? { endedAt: new Date().toISOString() }
+            : {}),
+        ...(run.adapter !== undefined ? { adapter: run.adapter } : {}),
+        ...(run.harness !== undefined ? { harness: run.harness } : {}),
+        ...(run.model !== undefined ? { model: run.model } : {}),
         sessions,
         workflowRuns,
       })

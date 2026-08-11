@@ -18,7 +18,7 @@ import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { compileWorkflow, type AgentStep } from "@agentproto/workflow-runtime"
-import { registerAppTools, resolveAgentRefsForWorkflow } from "../app-tools.js"
+import { registerAppTools, resolveAgentRefsForWorkflow, sanitizeOutputBlocks } from "../app-tools.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -84,6 +84,7 @@ async function setup(opts: {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
   callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
   catalogPath?: string
+  waitForSessionTerminal?: (sessionId: string) => Promise<void>
 } = {}) {
   const registry = createSessionsRegistry({ persist: false })
   const startSession = opts.startSession ?? fakeStartSession()
@@ -95,12 +96,22 @@ async function setup(opts: {
           slug === "mastra-agent" ? { startSession, commandPreview: "mock-adapter" } : null)
   const listRegisteredToolIds = opts.listRegisteredToolIds ?? (async () => ["known_tool"])
   const appRegistry = opts.appRegistry ?? createAppRegistry()
+  // Default sequential waiter: immediately flip the spawned session to a
+  // terminal state so the one-at-a-time poll resolves deterministically in
+  // tests without real sleeps. Only the `sequence` path consults this.
+  const waitForSessionTerminal =
+    opts.waitForSessionTerminal ??
+    (async (sessionId: string) => {
+      const desc = registry.get(sessionId)
+      if (desc) (desc as { status: string }).status = "exited"
+    })
 
   const server = new McpServer({ name: "app-tools-test-server", version: "0.0.0" })
   registerAppTools(server, {
     registry,
     listRegisteredToolIds,
     appRegistry,
+    waitForSessionTerminal,
     ...(resolveAgentAdapter ? { resolveAgentAdapter } : {}),
     ...(opts.dispatchTool ? { dispatchTool: opts.dispatchTool } : {}),
     ...(opts.callImportedTool ? { callImportedTool: opts.callImportedTool } : {}),
@@ -601,6 +612,201 @@ describe("app_* verbs", () => {
     expect(isError(res)).toBe(true)
     const body = parseToolJson(res)
     expect(body.error).toContain("no installed app")
+  })
+})
+
+describe("app_run runner pass-through + truthful terminal state (agentproto/ts A–E)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-runner-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  /** A fixture app bundling two agents so the sequential scout→tailor path
+   *  has two distinct targets to order. */
+  async function buildTwoAgentApp(dir: string) {
+    const app = defineApp({
+      id: "@test/seq-app",
+      name: "Seq App",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "job-scout",
+            description: "Scout agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You scout.",
+        },
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "job-tailor",
+            description: "Tailor agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You tailor.",
+        },
+      ],
+    })
+    await app.emit(dir)
+  }
+
+  it("app_run accepts harness/model and they flow to the recorded run + spawn", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const startSession = fakeStartSession()
+    // Resolve the canonical harness as an adapter too, so a harness-only call
+    // still spawns successfully (the adapter slot defaults to the harness).
+    const resolveAgentAdapter: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent" || slug === "harness-x" ? { startSession, commandPreview: "mock-adapter" } : null
+    const { client, appRegistry, registry } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: { appId: "@test/fixture-app", harness: "harness-x", model: "claude-sonnet-5" },
+      }),
+    )
+    expect(ran.adapter).toBe("harness-x") // harness absent adapter → adapter=harness
+    expect(ran.harness).toBe("harness-x")
+    expect(ran.model).toBe("claude-sonnet-5")
+
+    const run = appRegistry.getRun(ran.appRunId)!
+    expect(run.adapter).toBe("harness-x")
+    expect(run.harness).toBe("harness-x")
+    expect(run.model).toBe("claude-sonnet-5")
+
+    // The args reached the actual spawn — the session descriptor carries the
+    // adapter/ harness the runner resolved and the model it was told to use.
+    expect(startSession).toHaveBeenCalledTimes(1)
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.adapterSlug).toBe("harness-x")
+    expect(desc.harness).toBe("harness-x")
+    expect(desc.model).toBe("claude-sonnet-5")
+  })
+
+  it("app_run surfaces a bare adapter as both adapter and harness", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const startSession = fakeStartSession()
+    // Resolve the default adapter (required by app_install's validate step)
+    // AND the custom slug under test.
+    const resolveAgentAdapter: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent" || slug === "adapter-y"
+        ? { startSession, commandPreview: "mock-adapter" }
+        : null
+    const { client } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: { appId: "@test/fixture-app", adapter: "adapter-y" },
+      }),
+    )
+    expect(ran.adapter).toBe("adapter-y")
+    expect(ran.harness).toBe("adapter-y")
+  })
+
+  it("app_status reconciles a concurrent run whose sessions are all terminal into ended + endedAt", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client, registry } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } }),
+    )
+
+    let status = parseToolJson(
+      await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }),
+    )
+    expect(status.status).toBe("running")
+    expect(status.endedAt).toBeUndefined()
+
+    // Flip the underlying session descriptor to a terminal status — the stored
+    // run status stays "running" (a concurrent run is only ever flipped by
+    // app_stop), but app_status must now reconcile it to a truthful `ended`.
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    ;(desc as { status: string }).status = "exited"
+
+    status = parseToolJson(
+      await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }),
+    )
+    expect(status.status).toBe("ended")
+    expect(status.endedAt).toBeTruthy()
+  })
+
+  it("app_run with sequence spawns agents in order and reports ended once both are terminal", async () => {
+    await buildTwoAgentApp(dir)
+    const startSession = fakeStartSession()
+    const resolveAgentAdapter: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent" || slug === "harness-h"
+        ? { startSession, commandPreview: "mock-adapter" }
+        : null
+    const { client, appRegistry, registry } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: {
+          appId: "@test/seq-app",
+          sequence: ["job-scout", "job-tailor"],
+          harness: "harness-h",
+          model: "claude-sonnet-5",
+        },
+      }),
+    )
+    expect(ran.status).toBe("ended")
+    expect(ran.endedAt).toBeTruthy()
+    expect(ran.sessions.map((s: any) => s.agentId)).toEqual(["job-scout", "job-tailor"])
+    // One spawn per agent, in sequence order (run.sessions is built strictly
+    // inside the sequence loop), each behind harness-h + the model.
+    expect(startSession).toHaveBeenCalledTimes(2)
+    for (const s of ran.sessions) {
+      const desc = registry.get(s.sessionId)!
+      expect(desc.adapterSlug).toBe("harness-h")
+      expect(desc.harness).toBe("harness-h")
+      expect(desc.model).toBe("claude-sonnet-5")
+    }
+
+    const run = appRegistry.getRun(ran.appRunId)!
+    expect(run.status).toBe("ended")
+    expect(run.adapter).toBe("harness-h")
+    expect(run.harness).toBe("harness-h")
+    expect(run.model).toBe("claude-sonnet-5")
+  })
+
+  it("empty text blocks don't break sequential completion (sanitized, not an error)", async () => {
+    await buildTwoAgentApp(dir)
+    const { client, appRegistry } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: { appId: "@test/seq-app", sequence: ["job-scout", "job-tailor"] },
+      }),
+    )
+    // A session whose terminal output is blank still completes; the run lands
+    // on a truthful terminal `ended` rather than surfacing a blank block.
+    expect(ran.status).toBe("ended")
+    expect(appRegistry.getRun(ran.appRunId)!.status).toBe("ended")
+
+    // Unit-level guard: blank/whitespace text blocks are dropped; real text
+    // and non-text blocks survive.
+    expect(
+      sanitizeOutputBlocks([
+        { type: "text", text: "" },
+        { type: "text", text: "   " },
+        { type: "text", text: "real output" },
+        { type: "image", text: "not text" },
+      ]),
+    ).toEqual([
+      { type: "text", text: "real output" },
+      { type: "image", text: "not text" },
+    ])
   })
 })
 

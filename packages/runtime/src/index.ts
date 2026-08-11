@@ -100,6 +100,7 @@ import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { registerAppTools, resolveAgentRefsForWorkflow, performInstall } from "./app-tools.js"
+import { registerAppDataTools } from "./app-data.js"
 import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import type { AgnoMcpApp } from "./sessions-panel-app.js"
@@ -1795,6 +1796,9 @@ export async function createGateway(
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
+    // App-scoped durable data plane (app-data.ts) — app_data_read/write/list/
+    // migrate, anchored to each installed app's own dir with traversal guard.
+    registerAppDataTools(server, { appRegistry })
     registerTelegramBotTools(server, { telegramCreds: telegramBotCreds })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
