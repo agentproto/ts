@@ -264,4 +264,49 @@ describe("SessionDescriptor.blockedOn", () => {
 
     registry.shutdown()
   })
+
+  it("settles each nested orphan before an adapter-supplied turn-end", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: scriptedAgentSession([
+        { kind: "tool-call", toolName: "View Image", toolCallId: "outer", arguments: { path: "one.png" } },
+        { kind: "tool-call", toolName: "View Image", toolCallId: "inner", arguments: { path: "two.png" } },
+        { kind: "tool-result", toolName: "View Image", toolCallId: "inner", result: "rendered" },
+        // Hermes can finish a turn here without a completion for `outer`.
+        { kind: "turn-end", reason: "completed" },
+      ]),
+      adapterSlug: "hermes",
+    })
+
+    await registry.sendPrompt(desc.id, "go")
+    await new Promise(r => setTimeout(r, 50))
+
+    const lines = readFileSync(sessionEventsPath(desc.id, transcriptDir), "utf-8")
+      .trim()
+      .split("\n")
+      .map(line => JSON.parse(line) as AgentStreamEvent)
+    const results = lines.filter(
+      (event): event is AgentStreamEvent & { kind: "tool-result" } => event.kind === "tool-result",
+    )
+    expect(results).toMatchObject([
+      { toolCallId: "inner", result: "rendered" },
+      { toolCallId: "outer", result: null, isError: false },
+    ])
+    expect(results).toHaveLength(2)
+
+    // Settlement precedes the real adapter terminal record, so any replay
+    // (including a client that has not yet gained the legacy safety net) sees
+    // a closed outer call before it closes the turn.
+    const outerResultIndex = lines.findIndex(
+      event => event.kind === "tool-result" && event.toolCallId === "outer",
+    )
+    const turnEndIndex = lines.findIndex(event => event.kind === "turn-end")
+    expect(outerResultIndex).toBeGreaterThan(-1)
+    expect(outerResultIndex).toBeLessThan(turnEndIndex)
+    expect(lines.filter(event => event.kind === "turn-end")).toHaveLength(1)
+
+    registry.shutdown()
+  })
 })

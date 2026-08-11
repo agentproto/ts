@@ -282,6 +282,11 @@ export function reduceConversation(
         break
       }
       case "turn-end":
+        // A terminal event settles an adapter's orphaned tool starts. Hermes
+        // can omit completion frames for nested/parallel calls; a completed
+        // turn is the authoritative proof that these cards are no longer
+        // running. Existing explicit results retain their output/error state.
+        settlePendingTools(assistant)
         assistant = undefined
         break
       default:
@@ -290,6 +295,15 @@ export function reduceConversation(
   }
 
   return { version: CONVERSATION_SCHEMA_VERSION, sessionId, turns, usage, cursor }
+}
+
+function settlePendingTools(turn: ConversationTurn | undefined): void {
+  if (!turn) return
+  for (const segment of turn.segments) {
+    if (segment.kind === "tool" && segment.status === "pending") {
+      segment.status = "ok"
+    }
+  }
 }
 
 function mergeUsage(

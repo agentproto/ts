@@ -157,6 +157,38 @@ describe("reduceConversation", () => {
     expect(tools[0]).toMatchObject({ status: "ok", result: "contents", toolName: "read" })
   })
 
+  it("settles nested streaming calls at turn-end without overwriting an arrived result", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "tool-call", toolCallId: "outer", toolName: "View Image", arguments: { path: "one.png" } }),
+      rec({ kind: "tool-call", toolCallId: "inner", toolName: "View Image", arguments: { path: "two.png" } }),
+      // Streaming updates enrich the already-announced nested calls rather
+      // than creating cards of their own.
+      rec({ kind: "tool-call", toolCallId: "outer", toolName: "View Image /one.png", isUpdate: true }),
+      rec({ kind: "tool-call", toolCallId: "inner", toolName: "View Image /two.png", isUpdate: true }),
+      // The inner result arrived; Hermes omitted the outer completion.
+      rec({ kind: "tool-result", toolCallId: "inner", result: "rendered", isError: false }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+
+    const tools = conv.turns[0]!.segments.filter(s => s.kind === "tool")
+    expect(tools).toHaveLength(2)
+    expect(tools).toMatchObject([
+      { toolCallId: "outer", toolName: "View Image /one.png", status: "ok" },
+      { toolCallId: "inner", toolName: "View Image /two.png", status: "ok", result: "rendered" },
+    ])
+
+    // The presentation/activity layer receives no pending leaf, so it stops
+    // ticking and the closed row reports completed steps instead of running.
+    const presented = presentConversation(conv, {
+      renderMarkdown: text => text,
+      escapeHtml: text => text,
+    })
+    const activity = presented.turns[0]!.segments[0] as PresentedActivitySegment
+    expect(activity).toMatchObject({ kind: "activity", status: "ok", summary: "2 steps" })
+    expect(activity.pendingSince).toBeUndefined()
+  })
+
   it("marks a failed tool-result as error status", () => {
     freshSeq()
     const conv = reduceConversation("s1", [
