@@ -1318,6 +1318,26 @@ describe("transcriptPanel webview — blocked-on note", () => {
     expect(el(panel, "blocked-note").hidden).toBe(true)
     expect(el(panel, "blocked-note-text").textContent).toBe("")
   })
+
+  it("stays hidden while the live '$ now:' line already narrates the block", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    const pending: PresentedToolSegment = {
+      kind: "tool", id: "t1", toolName: "bash", isError: false, status: "pending", ts: new Date(Date.now() - 2_000).toISOString(),
+    }
+    panel.send({
+      type: "init",
+      session: session({ status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" }),
+      nonce: "n", mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [pending] }] },
+    })
+    // Past BLOCKED_NOTE_DELAY_MS — a long-running block.
+    vi.advanceTimersByTime(20_000)
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+    // The live "$ now:" line is what carries the story instead.
+    const under = panel.book.querySelector(".chapter.live .under") as DomElement
+    expect(under.hidden).toBe(false)
+  })
 })
 
 describe("transcriptPanel webview — typing mid-turn queues instead of erroring", () => {
@@ -2298,6 +2318,21 @@ describe("transcriptPanel webview — book view", () => {
     }
   }
 
+  // An assistant turn with ONE pending tool that opened `ms` before "now".
+  function staleToolConv(ms: number): PresentedConversation {
+    return {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [{ kind: "tool", id: "t1", toolName: "read", isError: false, status: "pending", ts: new Date(Date.now() - ms).toISOString() }],
+        },
+      ],
+    }
+  }
+
   it("defaults to the book view for a structured session — book shown, transcript hidden, Book segment active", () => {
     const panel = renderPanel()
     panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
@@ -2610,6 +2645,114 @@ describe("transcriptPanel webview — book view", () => {
     expect(under.hidden).toBe(false)
     expect(under.textContent).toContain("now:")
     expect(under.textContent).toContain("bash")
+  })
+
+  it("labels a >30s-old unresolved step 'Watching executor' when supervising a child", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true, blockedOn: "subagent" }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.hidden).toBe(false)
+    expect(under.textContent).toContain("Watching executor")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("uses the daemon activitySummary for a >30s-old step that isn't supervising", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true, activitySummary: { text: "Refactored the context provider hook", state: "au travail", at: "" } }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("Refactored the context provider hook")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("falls back to 'Working' for a >30s-old step with neither supervision nor a summary", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("Working")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("keeps the real tool name for a fresh (<30s) pending step even while supervising", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(3_000)
+    panel.send({ type: "init", session: session({ busy: true, blockedOn: "subagent" }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("read")
+    expect(under.textContent).not.toContain("Watching executor")
+  })
+
+  it("omits the elapsed suffix for a step under 5s ('now' is current — '· 0s' is noise)", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(2_000) })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toBe("now: read")
+  })
+
+  it("shows seconds for a 5–60s step, minutes for a 60–90s step", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(12_000) })
+    const seconds = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(seconds.textContent).toMatch(/^now: read · \d+s$/)
+
+    const panel2 = renderPanel()
+    // 70s is past the staleness cutoff too, so the label flips to the
+    // supervision/Working fallback — assert the MINUTES suffix regardless.
+    panel2.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(70_000) })
+    const minutes = chapters(panel2)[0]!.querySelector(".under") as DomElement
+    expect(minutes.textContent).toMatch(/^now: .* · 1 min$/)
+  })
+
+  it("replaces the whole line with an animated 'Still working…' past 90s — no counter", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(120_000) })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toMatch(/^Still working\.{1,3}$/)
+    expect(under.textContent).not.toContain("now:")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  // The fade/debounce below runs on the webview's real setTimeout, so these
+  // tests wait out the windows in real time (see renderPanel's fakeTimers ->
+  // the shipped script's setTimeout is not vetted, only its setInterval).
+  const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+  it("ticks seconds on the same label WITHOUT re-fading", async () => {
+    const panel = renderPanel()
+    const seg = { kind: "tool", id: "t1", toolName: "bash", isError: false, status: "pending", ts: new Date(Date.now() - 6_000).toISOString() } as PresentedToolSegment
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [seg] }] } })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    await sleep(350) // first label paints synchronously — no fade classes
+    expect(under.textContent).toMatch(/^now: bash · \d+s$/)
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+    // Let the 1s quiet-poll tick — the counter moves, the label is unchanged,
+    // so no fade classes may appear.
+    await sleep(1100)
+    expect(under.textContent).toMatch(/^now: bash · \d+s$/)
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+  })
+
+  it("fades a label change old -> new and clears the fade classes", async () => {
+    const panel = renderPanel()
+    const seg = (name: string, id: string) => ({ kind: "tool", id, toolName: name, isError: false, status: "pending", ts: new Date(Date.now() - 2_000).toISOString() }) as PresentedToolSegment
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [seg("bash", "t1")] }] } })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    await sleep(350)
+    expect(under.textContent).toBe("now: bash")
+
+    // Change the pending step's tool. The target label is set synchronously;
+    // the swap lands async (min-display debounce + 220ms fade).
+    panel.send({ type: "patch", upsertTurns: [{ id: "turn-2", role: "assistant", segments: [seg("read", "t2")] }], removeTurnIds: [] })
+    expect(under.dataset.label).toBe("read")
+    await sleep(900) // past min-display (500ms) + fade (220ms)
+    expect(under.textContent).toBe("now: read")
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+    expect(under.textContent).not.toContain("bash")
   })
 
   it("renders the minimalist plan: done collapses to a summary, failed stay visible, current + next up (#conversation-chrome)", () => {

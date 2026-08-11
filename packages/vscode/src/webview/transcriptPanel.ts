@@ -901,6 +901,9 @@ export function buildHtml(
        script. Sits in the conversation body, next to the tool call it
        describes, not the header: the tab icon already carries the states
        that deserve a permanent glyph. */
+    /* Neutral on purpose: a long-running block (usually "command") is normal
+       supervision behavior, not an error — warning-yellow reads as one. The
+       dismiss ✕ below stays low-key. */
     #blocked-note {
       flex: 0 0 auto;
       display: flex;
@@ -908,7 +911,8 @@ export function buildHtml(
       gap: 8px;
       padding: 4px 14px 0;
       font-size: 0.85em;
-      color: var(--vscode-editorWarning-foreground);
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.85;
     }
     #blocked-note-text { flex: 1 1 auto; min-width: 0; }
     /* The dismiss X is deliberately low-key — the note is itself low-key. */
@@ -1917,10 +1921,20 @@ export function buildHtml(
       animation: agentproto-blink 1.1s steps(1) infinite;
     }
     @keyframes agentproto-blink { 50% { opacity: 0; } }
-    @media (prefers-reduced-motion: reduce) { #book .cursor { animation: none; } }
-    #book .under { font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px; }
+    @media (prefers-reduced-motion: reduce) {
+      #book .cursor { animation: none; }
+      #book .under { transition: none; }
+    }
+    #book .under {
+      font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px;
+      /* Label swaps fade old -> new instead of snapping (NOW_FADE_MS in the
+         script drives the classes; the ticker never re-fades a same label). */
+      transition: opacity 220ms ease;
+    }
     #book .under::before { content: "$ "; color: var(--phosphor); }
     #book .under b { color: var(--paper-72); font-weight: 500; }
+    #book .under.fading-out { opacity: 0; }
+    #book .under.fading-in { opacity: 1; }
 
     /* The pause: the inverted PAPER card when the agent stops to ask. */
     #book .pause {
@@ -2115,6 +2129,34 @@ export function buildHtml(
       // two, so showing it instantly just flashes; only a block that outlasts
       // this delay is worth a note in the conversation body.
       const BLOCKED_NOTE_DELAY_MS = 20 * 1000;
+      // The "$ now:" line's staleness cutoff. A pending step that outlives
+      // this has almost certainly never resolved — the agent went quiet,
+      // usually because it handed off to a child session (supervising an
+      // executor) and stopped emitting its own [tool] markers. Past this age
+      // the line stops trusting the transcript's frozen last action and leans
+      // on the daemon's own activitySummary (or an explicit supervision label).
+      const NOW_STALE_MS = 30 * 1000;
+      // Progressive "$ now:" timer thresholds — see nowSuffix/renderNow.
+      const NOW_NO_TIME_MS = 5 * 1000;
+      const NOW_SECONDS_MS = 60 * 1000;
+      const NOW_LONG_RUNNING_MS = 90 * 1000;
+      const NOW_DOT_CYCLE_MS = 600; // "Still working…" dot cycle
+      // "$ now:" fade-out/in length — see the .under CSS transition.
+      const NOW_FADE_MS = 220;
+      // Minimum time a given label stays on screen. Rapid sequential tool
+      // calls would otherwise strobe the line; this holds the previous label
+      // in place until it has been up at least this long.
+      const NOW_MIN_DISPLAY_MS = 500;
+
+      // "$ now:" fade/debounce state — see renderNow. shownNowLabel is the
+      // label currently ON SCREEN; pendingNowLabel is one whose swap is already
+      // scheduled (a mid-window re-render coalesces into it instead of stacking
+      // timers); nowSwapToken invalidates stale timers when a "Still working…"
+      // state or a hide cancels a pending fade.
+      let shownNowLabel = null;
+      let shownNowSwapAt = 0;
+      let pendingNowLabel = null;
+      let nowSwapToken = 0;
 
       let exited = false;
       let busy = false;
@@ -2429,6 +2471,19 @@ export function buildHtml(
       // rendering that verbatim told the user a dead session was blocked on a
       // command. isTerminal already governs busy/exited elsewhere — this must
       // not contradict it.
+      // The book's live "$ now:" line already narrates the in-flight step (in
+      // the supervisor case, "Watching executor"), so a separate "blocked on
+      // …" note below it is redundant — and a warning-yellow banner for normal
+      // long-running command/supervision is exactly the false alarm this commit
+      // removes. Suppress the note while that line is visible; it returns when
+      // the book is left (raw transcript has no now-line, so the note earns its
+      // place there).
+      function liveNowLineVisible() {
+        if (!bookView || !bookApplies()) return false;
+        const live = book.querySelector('.chapter.live .under');
+        return Boolean(live && !live.hidden);
+      }
+
       function refreshBlockedNote() {
         const session = lastSession;
         const live = Boolean(session) && !isTerminal(session) && Boolean(session.busy) && Boolean(session.blockedOn);
@@ -2437,6 +2492,11 @@ export function buildHtml(
           // user's dismissal resets, so the NEXT block shows again.
           blockedSince = 0;
           dismissedBlockedKey = null;
+          blockedNote.hidden = true;
+          blockedNoteText.textContent = '';
+          return;
+        }
+        if (liveNowLineVisible()) {
           blockedNote.hidden = true;
           blockedNoteText.textContent = '';
           return;
@@ -3496,21 +3556,137 @@ export function buildHtml(
         if (!info || isNaN(since)) {
           under.hidden = true;
           under.removeAttribute('data-since');
+          under.removeAttribute('data-label');
+          under.removeAttribute('data-dotting');
+          // Only the LIVE line owns the fade/debounce state. A kept-closed past
+          // chapter painting its (empty) line every renderBook must not clobber
+          // the live line's pending/fade tracking — that would snap every label
+          // change in any multi-chapter book.
+          if (isLive) {
+            nowSwapToken++;
+            shownNowLabel = pendingNowLabel = null;
+          }
           return;
         }
         under.hidden = false;
         under.dataset.since = String(since);
-        under.dataset.label = info.label;
+        // A pending step that outlives NOW_STALE_MS has almost certainly never
+        // resolved — the agent went quiet, usually because it handed off to a
+        // child session (supervising an executor) and stopped emitting its own
+        // [tool] markers. The transcript's last action then freezes forever, so
+        // "now:" stops trusting it and falls back to the daemon's own
+        // activitySummary (or an explicit supervision label).
+        under.dataset.label =
+          Date.now() - since > NOW_STALE_MS ? nowStaleLabel() : info.label;
         renderNow(under);
+      }
+
+      // What a >30s-old unresolved step is really doing: supervising a child,
+      // or whatever the daemon's activitySummary says. Falls back to the
+      // trusty "Working" — never the stale tool name.
+      function nowStaleLabel() {
+        if (lastSession && lastSession.blockedOn === 'subagent') return 'Watching executor';
+        const text = lastSession && lastSession.activitySummary && lastSession.activitySummary.text;
+        return text ? clampNowLabel(text) : 'Working';
+      }
+
+      // activitySummary.text is a prose sentence, not a terse tool name —
+      // cap it so the "$ now:" line stays one short line.
+      function clampNowLabel(s) {
+        if (s.length <= 48) return s;
+        const cut = s.slice(0, 48).replace(/\s+\S*$/, '');
+        return (cut.length ? cut : s.slice(0, 48)) + '…';
       }
 
       function renderNow(under) {
         const since = Number(under.dataset.since);
-        const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
+        const label = under.dataset.label || '';
+        const elapsed = Math.max(0, Date.now() - since);
+        // > 90s: a counter that climbs into many minutes is exactly the stale
+        // look this line exists to avoid — drop the number and the "now:"
+        // prefix, replace the whole line with a "Still working…" dot-cycle.
+        // Reschedule only while no dot tick is already pending so the 1s
+        // quiet-poll ticker doesn't stack. Any pending label fade is moot here.
+        if (elapsed > NOW_LONG_RUNNING_MS) {
+          nowSwapToken++;
+          shownNowLabel = pendingNowLabel = null;
+          if (under.dataset.dotting !== '1') {
+            under.dataset.dotting = '1';
+            window.setTimeout(function () {
+              under.removeAttribute('data-dotting');
+              renderNow(under);
+            }, NOW_DOT_CYCLE_MS);
+          }
+          const dots = '.'.repeat(1 + Math.floor(Date.now() / NOW_DOT_CYCLE_MS) % 3);
+          under.textContent = '';
+          under.appendChild(document.createTextNode('Still working' + dots));
+          return;
+        }
+        under.removeAttribute('data-dotting');
+
+        const suffix = nowSuffix(elapsed);
+        // First paint for this node: there is no older label to hold against,
+        // so paint right away — the line must never sit blank.
+        if (shownNowLabel === null && pendingNowLabel === null) {
+          shownNowLabel = label;
+          paintNowText(under, label, suffix);
+          return;
+        }
+        // Same label already on screen → the seconds ticker just re-paints
+        // (no fade). Same label mid-swap → leave the old text in place; the
+        // scheduled fade will land it.
+        if (label === shownNowLabel) {
+          if (under.classList.contains('fading-out')) return;
+          paintNowText(under, label, suffix);
+          return;
+        }
+        if (label === pendingNowLabel) return;
+        if (pendingNowLabel !== null) {
+          // A newer label arrived inside the debounce window — coalesce into
+          // the scheduled swap, which reads dataset.label at fire time.
+          pendingNowLabel = label;
+          return;
+        }
+        // A real label change: hold the current text >= NOW_MIN_DISPLAY_MS,
+        // then fade old -> new.
+        pendingNowLabel = label;
+        shownNowSwapAt = Math.max(Date.now(), shownNowSwapAt + NOW_MIN_DISPLAY_MS);
+        const token = ++nowSwapToken;
+        window.setTimeout(function () {
+          if (nowSwapToken !== token || pendingNowLabel === null) return;
+          under.classList.add('fading-out');
+          window.setTimeout(function () {
+            if (nowSwapToken !== token || pendingNowLabel === null) return;
+            under.classList.remove('fading-out');
+            const cur = under.dataset.label || '';
+            const curSince = Number(under.dataset.since);
+            paintNowText(under, cur, nowSuffix(Math.max(0, Date.now() - curSince)));
+            shownNowLabel = cur;
+            pendingNowLabel = null;
+            under.classList.add('fading-in');
+            window.setTimeout(function () {
+              if (nowSwapToken === token) under.classList.remove('fading-in');
+            }, NOW_FADE_MS);
+          }, NOW_FADE_MS);
+        }, Math.max(0, shownNowSwapAt - Date.now()));
+      }
+
+      function paintNowText(under, label, suffix) {
         under.textContent = '';
         under.appendChild(document.createTextNode('now: '));
-        under.appendChild(el('b', undefined, under.dataset.label || ''));
-        under.appendChild(document.createTextNode(' · ' + secs + 's'));
+        under.appendChild(el('b', undefined, label));
+        if (suffix) under.appendChild(document.createTextNode(suffix));
+      }
+
+      // Progressive elapsed display for the "$ now:" line.
+      //   <5s      — nothing at all ("now" is current; a '· 0s' is noise)
+      //   5–60s    — seconds (· 12s)
+      //   60–90s   — minutes (· 1 min)
+      //   >90s     — handled by renderNow's "Still working…" branch
+      function nowSuffix(elapsedMs) {
+        if (elapsedMs < NOW_NO_TIME_MS) return '';
+        if (elapsedMs < NOW_SECONDS_MS) return ' · ' + Math.round(elapsedMs / 1000) + 's';
+        return ' · ' + Math.floor(elapsedMs / 60000) + ' min';
       }
 
       function pauseQuestion(chapters) {
