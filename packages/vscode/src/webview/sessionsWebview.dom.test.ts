@@ -26,7 +26,7 @@ const openWindows: DomWindow[] = []
 
 function renderPanel(): Panel {
   const posted: unknown[] = []
-  const dom = new JSDOM(buildHtml("test-nonce"), {
+  const dom = new JSDOM(buildHtml("test-nonce", "vscode-resource:"), {
     runScripts: "dangerously",
     url: "https://example.test/",
     beforeParse(window) {
@@ -71,7 +71,7 @@ const ROW_A = {
   idMono: undefined,
   message: "Fanned out 3 executors.",
   tag: "in-place",
-  harnessGlyph: "✳",
+  logo: { kind: "lettermark", text: "C" },
   model: "opus",
   ctxPercent: 71,
   cost: "$1.24",
@@ -92,7 +92,7 @@ const ROW_DONE = {
   idMono: undefined,
   message: undefined,
   tag: "in-place",
-  harnessGlyph: "✳",
+  logo: { kind: "lettermark", text: "C" },
   model: undefined,
   ctxPercent: undefined,
   cost: undefined,

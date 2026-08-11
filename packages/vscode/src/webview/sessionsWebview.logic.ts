@@ -35,6 +35,7 @@
 
 import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
 import { isLiveSession } from "../commands/sessionActions.logic.js"
+import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
 import { canArchive, canUnarchive } from "../commands/sessionArchive.logic.js"
 import { shortSessionId } from "../client/sessionName.js"
 import { isMachineOrigin } from "../views/sessionsGroups.logic.js"
@@ -57,27 +58,6 @@ import {
   relativeTime,
   type SessionActivity,
 } from "../views/sessionsTree.logic.js"
-
-/**
- * Harness → glyph, locked by the design mock: "a single monochrome glyph per
- * harness + the model token". Keyed on `adapterSlug` (the same field the
- * tree's harness commands and runtime `SessionDescriptor.adapterSlug` use).
- * Any other/unknown slug falls back to `•`.
- */
-export const HARNESS_GLYPHS: Readonly<Record<string, string>> = {
-  "claude-code": "✳",
-  hermes: "☿",
-  codex: "◈",
-  "gemini-cli": "✦",
-}
-
-export const HARNESS_GLYPH_FALLBACK = "•"
-
-/** The glyph for a session's harness — `HARNESS_GLYPHS[adapterSlug]`, or the fallback for anything unrecognized/absent. */
-export function harnessGlyphFor(adapterSlug: string | undefined): string {
-  if (!adapterSlug) return HARNESS_GLYPH_FALLBACK
-  return HARNESS_GLYPHS[adapterSlug] ?? HARNESS_GLYPH_FALLBACK
-}
 
 /**
  * Cost as the row's trailing money tag, e.g. "$1.24" — undefined (renders
@@ -425,7 +405,8 @@ export interface WebviewRow {
   message: string | undefined
   /** Line 3 lead segment — isolation posture ("⑂ <worktree>" or "in-place"). */
   tag: string
-  harnessGlyph: string
+  /** Adapter/harness logo — a brand icon file or a lettermark fallback, see {@link adapterLogoFor}. */
+  logo: AdapterLogo
   model: string | undefined
   /** 0–100, or undefined when the daemon hasn't reported a context window yet. */
   ctxPercent: number | undefined
@@ -623,7 +604,7 @@ function toRow(
     idMono: identity.idMono,
     message: previewTextFor(session),
     tag: isolationLabelFor(session),
-    harnessGlyph: harnessGlyphFor(session.adapterSlug ?? session.kind),
+    logo: adapterLogoFor(session.adapterSlug ?? session.kind),
     model: session.model,
     ctxPercent: pctStr ? Number(pctStr.slice(0, -1)) : undefined,
     cost: formatCost(session.costUsd),
