@@ -35,6 +35,11 @@
       "import": "./dist/catalog-models.mjs",
       "default": "./dist/catalog-models.mjs"
     },
+    "./command-allowlist": {
+      "types": "./dist/command-allowlist.d.ts",
+      "import": "./dist/command-allowlist.mjs",
+      "default": "./dist/command-allowlist.mjs"
+    },
     "./conversations": {
       "types": "./dist/conversations.d.ts",
       "import": "./dist/conversations.mjs",

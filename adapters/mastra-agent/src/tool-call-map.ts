@@ -5,11 +5,20 @@
  * the wire/IO and just forwards whatever this returns.
  *
  * Mastra emits a typed chunk union on `agent.stream(...).fullStream`. We care
- * about three kinds:
+ * about four kinds:
  *   - `text-delta`  → ACP `agent_message_chunk` (assistant prose)
  *   - `tool-call`   → ACP `tool_call`        (a tool started, status in_progress)
- *   - `tool-result` → ACP `tool_call_update` (that tool finished/failed)
+ *   - `tool-result` → ACP `tool_call_update` (that tool finished, status completed)
+ *   - `tool-error`  → ACP `tool_call_update` (that tool failed, status failed)
  * Everything else (reasoning, step boundaries, finish, …) is not surfaced.
+ *
+ * `tool-error` covers BOTH a tool's own `execute` throwing AND the AI SDK's
+ * `NoSuchToolError`/`InvalidToolInputError` for a call the model made against
+ * a tool ref that never resolved to a real executor — either way it's a
+ * distinct chunk from `tool-result`, so dropping it (as this file used to)
+ * left the matching `tool_call` stuck "in_progress" forever on the ACP wire:
+ * no error, no completion, a call that looks permanently hung even though
+ * the underlying turn moved on.
  */
 
 import type { SessionUpdate, ToolKind } from "@agentclientprotocol/sdk"
@@ -21,6 +30,7 @@ export type MastraStreamChunk =
   | { type: "text-delta"; payload?: { text?: string } }
   | { type: "tool-call"; payload?: { toolCallId?: string; toolName?: string; args?: unknown } }
   | { type: "tool-result"; payload?: { toolCallId?: string; result?: unknown; isError?: boolean } }
+  | { type: "tool-error"; payload?: { toolCallId?: string; toolName?: string; error?: unknown } }
 
 /** Map a workspace tool id to the ACP {@link ToolKind} that drives client
  *  icon/UI treatment. Unknown ids fall back to "other". */
@@ -52,6 +62,18 @@ export function toolCallTitle(toolName: string, args: unknown): string {
     if (hint) return `${toolName}: ${hint}`
   }
   return toolName
+}
+
+/** Render a `tool-error` chunk's `error` payload (an `Error`, a string, or
+ *  an arbitrary provider error shape) as a single human-readable line. */
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string") return error
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
 }
 
 /**
@@ -93,6 +115,16 @@ export function chunkToSessionUpdate(
         toolCallId,
         status: chunk.payload?.isError ? "failed" : "completed",
         rawOutput: chunk.payload?.result,
+      }
+    }
+    case "tool-error": {
+      const toolCallId = chunk.payload?.toolCallId
+      if (!toolCallId) return null
+      return {
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status: "failed",
+        rawOutput: { error: errorMessage(chunk.payload?.error) },
       }
     }
     default:
