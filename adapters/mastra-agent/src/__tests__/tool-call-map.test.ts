@@ -1,10 +1,26 @@
+import type { AgentControllerEvent } from "@mastra/core/agent-controller"
 import { describe, expect, it } from "vitest"
-import {
-  chunkToSessionUpdate,
-  toolCallTitle,
-  toolKindFor,
-  type MastraStreamChunk,
-} from "../tool-call-map.js"
+import { createEventMapper, toolCallTitle, toolKindFor } from "../tool-call-map.js"
+
+/** A minimal assistant `MastraDBMessage` for `message_update` events. */
+function assistantMessage(
+  id: string,
+  parts: unknown[],
+): Extract<AgentControllerEvent, { type: "message_update" }>["message"] {
+  return {
+    id,
+    role: "assistant",
+    createdAt: new Date(0),
+    content: { format: 2, parts },
+  } as Extract<AgentControllerEvent, { type: "message_update" }>["message"]
+}
+
+function update(
+  id: string,
+  parts: unknown[],
+): AgentControllerEvent {
+  return { type: "message_update", message: assistantMessage(id, parts) }
+}
 
 describe("toolKindFor", () => {
   it("maps the workspace toolset to ACP kinds", () => {
@@ -36,31 +52,75 @@ describe("toolCallTitle", () => {
   })
 })
 
-describe("chunkToSessionUpdate", () => {
-  it("maps text-delta to an agent_message_chunk", () => {
-    expect(
-      chunkToSessionUpdate({ type: "text-delta", payload: { text: "hi" } }),
-    ).toEqual({
+describe("createEventMapper — message_update text deltas", () => {
+  it("emits only the new text suffix as an agent_message_chunk", () => {
+    const map = createEventMapper()
+    expect(map(update("m1", [{ type: "text", text: "hel" }]))).toEqual({
       sessionUpdate: "agent_message_chunk",
-      content: { type: "text", text: "hi" },
+      content: { type: "text", text: "hel" },
+    })
+    expect(map(update("m1", [{ type: "text", text: "hello" }]))).toEqual({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "lo" },
     })
   })
 
-  it("drops an empty text-delta", () => {
-    expect(
-      chunkToSessionUpdate({ type: "text-delta", payload: { text: "" } }),
-    ).toBeNull()
+  it("drops an update carrying no new text", () => {
+    const map = createEventMapper()
+    expect(map(update("m1", [{ type: "text", text: "hi" }]))).not.toBeNull()
+    // Same accumulated text re-emitted (e.g. on a tool event) → no delta.
+    expect(map(update("m1", [{ type: "text", text: "hi" }]))).toBeNull()
+    expect(map(update("m1", []))).toBeNull()
   })
 
-  it("maps tool-call to a tool_call update with kind/title/status/rawInput", () => {
+  it("concatenates text across parts, ignoring non-text parts", () => {
+    const map = createEventMapper()
+    expect(map(update("m1", [{ type: "text", text: "before " }]))).not.toBeNull()
+    const mixed = [
+      { type: "text", text: "before " },
+      {
+        type: "tool-invocation",
+        toolInvocation: { state: "result", toolCallId: "tc1", toolName: "list_dir", args: {} },
+      },
+      { type: "reasoning", reasoning: "hmm", details: [] },
+      { type: "text", text: "after" },
+    ]
+    expect(map(update("m1", mixed))).toEqual({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "after" },
+    })
+  })
+
+  it("tracks each message id independently", () => {
+    const map = createEventMapper()
+    expect(map(update("m1", [{ type: "text", text: "one" }]))).not.toBeNull()
+    expect(map(update("m2", [{ type: "text", text: "two" }]))).toEqual({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "two" },
+    })
+  })
+
+  it("ignores non-assistant messages", () => {
+    const map = createEventMapper()
+    const message = {
+      ...assistantMessage("m1", [{ type: "text", text: "user text" }]),
+      role: "user",
+    }
     expect(
-      chunkToSessionUpdate({
-        type: "tool-call",
-        payload: {
-          toolCallId: "tc1",
-          toolName: "run_command",
-          args: { command: "echo hi" },
-        },
+      map({ type: "message_update", message } as AgentControllerEvent),
+    ).toBeNull()
+  })
+})
+
+describe("createEventMapper — tool events", () => {
+  it("maps tool_start to a tool_call with kind/title/status/rawInput", () => {
+    const map = createEventMapper()
+    expect(
+      map({
+        type: "tool_start",
+        toolCallId: "tc1",
+        toolName: "run_command",
+        args: { command: "echo hi" },
       }),
     ).toEqual({
       sessionUpdate: "tool_call",
@@ -72,11 +132,14 @@ describe("chunkToSessionUpdate", () => {
     })
   })
 
-  it("maps a successful tool-result to a completed tool_call_update", () => {
+  it("maps a successful tool_end to a completed tool_call_update", () => {
+    const map = createEventMapper()
     expect(
-      chunkToSessionUpdate({
-        type: "tool-result",
-        payload: { toolCallId: "tc1", result: { stdout: "hi" } },
+      map({
+        type: "tool_end",
+        toolCallId: "tc1",
+        result: { stdout: "hi" },
+        isError: false,
       }),
     ).toEqual({
       sessionUpdate: "tool_call_update",
@@ -86,24 +149,14 @@ describe("chunkToSessionUpdate", () => {
     })
   })
 
-  it("maps an errored tool-result to a failed tool_call_update", () => {
+  it("maps a failed tool_end to a failed tool_call_update carrying the error message", () => {
+    const map = createEventMapper()
     expect(
-      chunkToSessionUpdate({
-        type: "tool-result",
-        payload: { toolCallId: "tc1", result: "boom", isError: true },
-      }),
-    ).toMatchObject({ sessionUpdate: "tool_call_update", status: "failed" })
-  })
-
-  it("maps a tool-error chunk to a failed tool_call_update carrying the error message", () => {
-    expect(
-      chunkToSessionUpdate({
-        type: "tool-error",
-        payload: {
-          toolCallId: "tc1",
-          toolName: "command_execute",
-          error: new Error("tool 'command_execute' is declared in AGENT.md but not wired"),
-        },
+      map({
+        type: "tool_end",
+        toolCallId: "tc1",
+        result: new Error("tool 'command_execute' is declared in AGENT.md but not wired"),
+        isError: true,
       }),
     ).toEqual({
       sessionUpdate: "tool_call_update",
@@ -113,37 +166,41 @@ describe("chunkToSessionUpdate", () => {
     })
   })
 
-  it("stringifies a non-Error tool-error payload", () => {
+  it("stringifies a non-Error failed tool_end result", () => {
+    const map = createEventMapper()
     expect(
-      chunkToSessionUpdate({
-        type: "tool-error",
-        payload: { toolCallId: "tc1", error: "plain string error" },
-      }),
+      map({ type: "tool_end", toolCallId: "tc1", result: "plain string error", isError: true }),
     ).toMatchObject({ rawOutput: { error: "plain string error" } })
-
     expect(
-      chunkToSessionUpdate({
-        type: "tool-error",
-        payload: { toolCallId: "tc1", error: { code: "ENOENT" } },
-      }),
+      map({ type: "tool_end", toolCallId: "tc1", result: { code: "ENOENT" }, isError: true }),
     ).toMatchObject({ rawOutput: { error: '{"code":"ENOENT"}' } })
   })
 
-  it("drops tool chunks missing a toolCallId", () => {
+  it("drops tool events missing a toolCallId", () => {
+    const map = createEventMapper()
     expect(
-      chunkToSessionUpdate({ type: "tool-call", payload: { toolName: "x" } }),
+      map({ type: "tool_start", toolCallId: "", toolName: "x", args: {} }),
     ).toBeNull()
     expect(
-      chunkToSessionUpdate({ type: "tool-result", payload: {} }),
-    ).toBeNull()
-    expect(
-      chunkToSessionUpdate({ type: "tool-error", payload: {} }),
+      map({ type: "tool_end", toolCallId: "", result: null, isError: false }),
     ).toBeNull()
   })
+})
 
-  it("ignores chunk types with no ACP surface", () => {
-    expect(chunkToSessionUpdate({ type: "step-finish" } as unknown as MastraStreamChunk)).toBeNull()
-    expect(chunkToSessionUpdate({ type: "finish" } as unknown as MastraStreamChunk)).toBeNull()
-    expect(chunkToSessionUpdate({ type: "reasoning-delta" } as unknown as MastraStreamChunk)).toBeNull()
+describe("createEventMapper — events with no ACP surface", () => {
+  it("returns null for lifecycle/progress events", () => {
+    const map = createEventMapper()
+    const ignored: AgentControllerEvent[] = [
+      { type: "agent_start" },
+      { type: "agent_end", reason: "complete" },
+      { type: "message_start", message: assistantMessage("m1", []) },
+      { type: "message_end", message: assistantMessage("m1", []) },
+      { type: "tool_update", toolCallId: "tc1", partialResult: "..." },
+      { type: "tool_input_delta", toolCallId: "tc1", argsTextDelta: "{" },
+      { type: "usage_update", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } },
+      { type: "info", message: "hello" },
+      { type: "error", error: new Error("boom") },
+    ]
+    for (const event of ignored) expect(map(event)).toBeNull()
   })
 })

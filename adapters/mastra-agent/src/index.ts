@@ -96,10 +96,19 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
     // tool-call-map.ts). The built-in default agent ships the workspace
     // toolset (read/edit/run), so this is on.
     tool_calls: true,
-    sub_agents: false,
-    file_io: false,
-    multimodal: false,
-    resumable: false,
+    // Modes-on (default) grants both the daemon sub-agent-spawning tools
+    // (agent_start/agent_prompt/agent_output/session_list, daemon-tools.ts)
+    // and the in-process `reviewer` subagent (subagents config,
+    // default-agent.ts) — see WP-5.
+    sub_agents: true,
+    // The workspace toolset reads/writes files inside the spawn cwd.
+    file_io: true,
+    // Image/audio/embedded-resource prompt blocks are passed to the agent as
+    // file attachments (see promptContent in acp-host.ts).
+    multimodal: true,
+    // session/load reconnects the Mastra thread keyed by the ACP session id
+    // and replays its history.
+    resumable: true,
     bidirectional: true,
   },
   options: [
@@ -141,16 +150,36 @@ export {
   defaultAgentManifest,
   DEFAULT_MODEL,
   DEFAULT_TOOL_IDS,
+  DISABLED_BUILTIN_TOOL_IDS,
 } from "./default-agent.js"
-export { MastraAcpAgent, promptText, type MastraLike } from "./acp-host.js"
+export {
+  MastraAcpAgent,
+  promptText,
+  promptContent,
+  DEFAULT_MODEL_CATALOG,
+  type ControllerFactory,
+  type ControllerLike,
+  type ControllerSessionLike,
+  type PromptFile,
+  type ThreadMessageLike,
+} from "./acp-host.js"
 export { resolveMastraModel, modelRefToString, providerOf } from "./model-resolver.js"
 export { makeWorkspaceTools, resolveInCwd } from "./workspace-tools.js"
-export { buildSqliteMemory, resolveMemoryDbPath } from "./memory.js"
 export {
-  chunkToSessionUpdate,
+  DaemonClient,
+  DaemonNotFoundError,
+  DaemonHttpError,
+  discoverDaemonEndpoint,
+  type DaemonEndpoint,
+  type DaemonClientOptions,
+} from "./daemon-client.js"
+export { makeDaemonTools, type DaemonToolsOptions } from "./daemon-tools.js"
+export { buildSqliteMemory, buildSqliteStore, resolveMemoryDbPath } from "./memory.js"
+export {
+  createEventMapper,
   toolKindFor,
   toolCallTitle,
-  type MastraStreamChunk,
+  messageText,
 } from "./tool-call-map.js"
 export { runAcpOverStdio } from "./run.js"
 export type { AgentCliHandle, AgentCliRuntime }
