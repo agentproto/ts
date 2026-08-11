@@ -156,12 +156,18 @@ interface AppRefsUi {
   }
 }
 
+interface AppRefsArtifact {
+  readonly path: string
+  readonly title?: string
+  readonly description?: string
+}
+
 async function readAppRefs(
   dir: string,
-): Promise<{ agents: InstalledAppRef[]; workflows: InstalledAppRef[]; ui?: AppRefsUi }> {
+): Promise<{ agents: InstalledAppRef[]; workflows: InstalledAppRef[]; ui?: AppRefsUi; artifact?: AppRefsArtifact }> {
   const appPath = join(dir, ".agentproto", "APP.md")
   const source = await readFile(appPath, "utf8")
-  const { data } = matter(source) as { data: { agents?: unknown; workflows?: unknown; ui?: unknown } }
+  const { data } = matter(source) as { data: { agents?: unknown; workflows?: unknown; ui?: unknown; artifact?: unknown } }
   const toRefs = (v: unknown): InstalledAppRef[] =>
     Array.isArray(v)
       ? v
@@ -179,7 +185,12 @@ async function readAppRefs(
     const uiData = data.ui as AppRefsUi
     ui = { ...uiData, path: resolveRef(dir, uiData.path) }
   }
-  return { agents: toRefs(data.agents), workflows: toRefs(data.workflows), ...(ui ? { ui } : {}) }
+  let artifact: AppRefsArtifact | undefined
+  if (typeof data.artifact === "object" && data.artifact !== null && typeof (data.artifact as { path?: unknown }).path === "string") {
+    const artData = data.artifact as AppRefsArtifact
+    artifact = { ...artData, path: resolveRef(dir, artData.path) }
+  }
+  return { agents: toRefs(data.agents), workflows: toRefs(data.workflows), ...(ui ? { ui } : {}), ...(artifact ? { artifact } : {}) }
 }
 
 export interface RegisterAppToolsOptions {
@@ -284,6 +295,14 @@ export async function performInstall(
       }
     : undefined
 
+  const artifact = refs.artifact
+    ? {
+        path: refs.artifact.path,
+        ...(handle.artifact?.title !== undefined ? { title: handle.artifact.title } : {}),
+        ...(handle.artifact?.description !== undefined ? { description: handle.artifact.description } : {}),
+      }
+    : undefined
+
   const record = appRegistry.upsertApp({
     appId: handle.id,
     dir,
@@ -295,6 +314,7 @@ export async function performInstall(
     unvalidatedAgentTools,
     ...(handle.requires ? { requires: handle.requires } : {}),
     ...(ui ? { ui } : {}),
+    ...(artifact ? { artifact } : {}),
     ...(handle.artifacts ? { artifacts: handle.artifacts } : {}),
     ...(handle.dev ? { dev: handle.dev } : {}),
   })
@@ -662,7 +682,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     "app_catalog",
     "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
       "tolerates a missing file), merged with installed-app status — every entry reports " +
-      "`installed` and `hasUi`. Installed apps absent from the catalog file are included too.",
+      "`installed`, `hasUi`, and `hasArtifact`. Installed apps absent from the catalog file are included too.",
     {
       scopeId: z
         .string()
@@ -688,6 +708,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           ...(entry.category ? { category: entry.category } : {}),
           installed: installed !== undefined,
           hasUi: installed?.ui !== undefined,
+          hasArtifact: installed?.artifact !== undefined,
         }
       })
 
@@ -700,10 +721,44 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           dir: app.dir,
           installed: true,
           hasUi: app.ui !== undefined,
+          hasArtifact: app.artifact !== undefined,
         })
       }
 
       return textResult(entries)
+    },
+  )
+
+  server.tool(
+    "app_artifact_get",
+    "Return the artifact HTML content for an installed app. The host agent " +
+      "(Cowork) calls `create_artifact` with this content — the daemon exposes " +
+      "the content; it never writes the host manifest directly. Errors if the " +
+      "app has no artifact.",
+    { appId: z.string() },
+    async input => {
+      const installed = appRegistry.getApp(input.appId)
+      if (!installed) {
+        return errorResult(`app_artifact_get: no installed app "${input.appId}".`)
+      }
+      if (!installed.artifact) {
+        return errorResult(`app_artifact_get: app "${input.appId}" has no artifact.`)
+      }
+      let html: string
+      try {
+        html = await readFile(installed.artifact.path, "utf8")
+      } catch (err) {
+        return errorResult(
+          `app_artifact_get: could not read artifact "${installed.artifact.path}": ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      return textResult({
+        appId: installed.appId,
+        ...(installed.artifact.title ? { title: installed.artifact.title } : {}),
+        ...(installed.artifact.description ? { description: installed.artifact.description } : {}),
+        html,
+      })
     },
   )
 }

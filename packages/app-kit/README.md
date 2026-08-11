@@ -91,7 +91,7 @@ An app may also declare `requires: ["@acme/shared", ...]` — app ids that must 
 applied to the same scope before this one can run. The runtime validates the
 graph when mounting apps via `app_apply`.
 
-## UI surfaces, artifacts, and dev-launch config
+## UI surfaces, artifacts, dev-launch, and the artifact surface
 
 Beyond agents and workflows, an app can declare three optional surfaces that
 round-trip through `emit` and `loadAppHandle` and are integrated into the
@@ -100,10 +100,36 @@ runtime app registry:
 - **`ui`** — an HTML dashboard/panel. `html` is written to
   `.agentproto/ui/index.html`; `APP.md` frontmatter carries the relative path
   plus optional `title`, `description`, `tools`, and `csp`.
+- **`artifact`** — a persistent HTML dashboard (Cowork artifact). The app
+  provides a path to an HTML file on disk; `emit` copies it to
+  `.agentproto/artifact/index.html`. The daemon never writes the host manifest
+  — it exposes the content via `app_artifact_get`, and the host agent (Cowork)
+  calls its own `create_artifact` to register it.
 - **`artifacts`** — a list of artifact types the app's agents may produce,
   declared for discovery.
 - **`dev`** — one or more local launch recipes (`name`, `runtimeExecutable`,
   `runtimeArgs`, `port`, `url`) for running the app in development.
+
+The three surfaces form the app's public contract:
+
+| Surface   | Type            | Emitted path                    | Daemon tool                     | Host side                     |
+|-----------|-----------------|---------------------------------|---------------------------------|-------------------------------|
+| `ui`      | MCP App panel   | `.agentproto/ui/index.html`     | `app_ui_<slug>` (MCP tool)      | Renders the panel in-app      |
+| `artifact`| Cowork artifact | `.agentproto/artifact/index.html`| `app_artifact_get`              | `create_artifact` (Cowork)    |
+| `skill`   | AIP-42 skill     | (future)                        | (future)                        | (future)                      |
+
+### Artifact surface flow
+
+1. The app declares `artifact: { path: "/abs/path/to/dashboard.html", title?, description? }`
+   in `defineApp`. `emit` copies the file to `.agentproto/artifact/index.html`.
+2. `app_install` reads the `artifact` block from `APP.md` frontmatter, resolves
+   the path, and persists it in the app registry.
+3. The host agent (Cowork) calls **`app_artifact_get`** with the `appId` — the
+   daemon reads the HTML file from disk at call time and returns `{ appId,
+   title?, description?, html }`.
+4. The host agent then calls its own **`create_artifact`** (host API) with the
+   returned HTML, registering the artifact in Claude/Cowork. The daemon never
+   writes the host manifest directly.
 
 ```ts
 export const dashboardApp = defineApp({
@@ -115,6 +141,11 @@ export const dashboardApp = defineApp({
     html: "<!doctype html><html>…</html>",
     title: "Ops Dashboard",
     tools: ["terminal_start", "agent_start"],
+  },
+  artifact: {
+    path: "/path/to/dashboard.html",
+    title: "Ops Dashboard",
+    description: "Live operations dashboard.",
   },
   artifacts: [
     { type: "image/png", description: "Generated cover illustration" },
@@ -164,6 +195,7 @@ shared root `.agents/` convention:
 <dir>/.agentproto/agents/fixer/AGENT.md
 <dir>/.agentproto/workflows/review-and-fix/WORKFLOW.md   (shared — a workflow may be run by several agents)
 <dir>/.agentproto/ui/index.html                         (only when the app declares a `ui` surface)
+<dir>/.agentproto/artifact/index.html                     (only when the app declares an `artifact` surface)
 ```
 
 The daemon's state root is migrating toward a `tenants/<t>/…` segment

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { mkdtemp, rm, readFile } from "node:fs/promises"
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import matter from "gray-matter"
@@ -260,5 +260,43 @@ describe("emit — manifests round-trip through the loaders", () => {
     expect(parsed.data.dev).toEqual({
       launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 }],
     })
+  })
+
+  it("copies artifact/index.html from source and writes path into APP.md frontmatter", async () => {
+    const artifactHtml = "<html><body><h1>Dashboard</h1></body></html>"
+    const artifactSrc = join(dir, "source-artifact.html")
+    await writeFile(artifactSrc, artifactHtml, "utf8")
+
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent with artifact.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      artifact: { path: artifactSrc, title: "Dashboard", description: "A dashboard." },
+    })
+    const { artifactPath, appPath } = await app.emit(dir)
+
+    expect(artifactPath).toMatch(/\.agentproto\/artifact\/index\.html$/)
+    expect(await readFile(artifactPath!, "utf8")).toBe(artifactHtml)
+
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.artifact.path).toBe(".agentproto/artifact/index.html")
+    expect(parsed.data.artifact.title).toBe("Dashboard")
+    expect(parsed.data.artifact.description).toBe("A dashboard.")
+    expect(join(dir, parsed.data.artifact.path)).toBe(artifactPath)
+  })
+
+  it("omits artifactPath and artifact frontmatter when the app has no artifact", async () => {
+    const { artifactPath, appPath } = await buildApp().emit(dir)
+    expect(artifactPath).toBeUndefined()
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.artifact).toBeUndefined()
   })
 })

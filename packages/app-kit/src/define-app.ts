@@ -54,6 +54,9 @@ export function defineApp(def: AppDefinition): AppHandle {
   if (def.dev !== undefined && (!Array.isArray(def.dev.launch) || def.dev.launch.length === 0)) {
     throw new AppDefinitionError("`dev.launch` must be a non-empty array when `dev` is present.")
   }
+  if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.artifact.path.trim() === "")) {
+    throw new AppDefinitionError("`artifact.path` must be a non-empty string when `artifact` is present.")
+  }
 
   const agents = def.agents.map(normalizeEntry)
   const workflows = def.workflows ?? []
@@ -65,6 +68,7 @@ export function defineApp(def: AppDefinition): AppHandle {
   const description = def.description
   const requires = def.requires ? Object.freeze([...def.requires]) : undefined
   const ui = def.ui ? Object.freeze({ ...def.ui }) : undefined
+  const artifact = def.artifact ? Object.freeze({ ...def.artifact }) : undefined
   const artifacts = def.artifacts ? Object.freeze(def.artifacts.map(a => Object.freeze({ ...a }))) : undefined
   const dev = def.dev
     ? Object.freeze({ launch: Object.freeze(def.dev.launch.map(l => Object.freeze({ ...l }))) })
@@ -87,6 +91,7 @@ export function defineApp(def: AppDefinition): AppHandle {
     ...(description !== undefined ? { description } : {}),
     ...(requires !== undefined ? { requires } : {}),
     ...(ui !== undefined ? { ui } : {}),
+    ...(artifact !== undefined ? { artifact } : {}),
     ...(artifacts !== undefined ? { artifacts } : {}),
     ...(dev !== undefined ? { dev } : {}),
 
@@ -124,6 +129,7 @@ export function defineApp(def: AppDefinition): AppHandle {
           ...(description !== undefined ? { description } : {}),
           ...(requires !== undefined ? { requires } : {}),
           ...(ui !== undefined ? { ui } : {}),
+          ...(artifact !== undefined ? { artifact } : {}),
           ...(artifacts !== undefined ? { artifacts } : {}),
           ...(dev !== undefined ? { dev } : {}),
         },
