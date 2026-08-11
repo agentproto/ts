@@ -8,6 +8,9 @@ import {
   listInstalledAdapters,
   listAdaptersWithCatalog,
   toAuthDescriptor,
+  _importPackageManuallyForTests,
+  _looksLikeStaleNegativePackageJsonCacheForTests,
+  _pickPackageEntryForTests,
   _resetLastKnownGoodForTests,
   _setLastKnownGoodTtlMsForTests,
   _setWorkspaceRootForTests,
@@ -420,5 +423,251 @@ describe("resolveAdapter — last-known-good is bounded by a TTL, not disk exist
     } finally {
       restoreTtl()
     }
+  })
+})
+
+// ── manual package resolution (cold-install bootstrap fix) ──────────────────
+//
+// Regression coverage for the 2026-08-07 cold-install blocker: on Node ≥23
+// the module resolver caches a FAILED package.json read process-wide, so the
+// `agentproto install <slug>` bootstrap flow — resolve (fails, populating the
+// negative cache) → `npm i -g` → resolve again in the SAME process — died on
+// the first invocation with "Cannot find package '…/adapter-<slug>/index.js'"
+// and demanded a rerun. The fix (`importFresh`'s last-resort fallback) walks
+// the @agentproto namespace roots with plain fs reads — no resolver, no
+// cache — and imports the entry by absolute file URL. The cache itself can't
+// be poisoned deterministically from a test on Node 22 (it doesn't cache the
+// negative there), so these tests pin the fallback's own behavior: it must
+// find and import a package that Node's resolver never could.
+
+describe("_pickPackageEntryForTests — entry selection from a manifest", () => {
+  it("resolves the real adapter shape: exports subpath map with conditions", () => {
+    expect(
+      _pickPackageEntryForTests({
+        exports: {
+          ".": {
+            types: "./dist/index.d.ts",
+            import: "./dist/index.mjs",
+            default: "./dist/index.mjs",
+          },
+          "./package.json": "./package.json",
+        },
+        main: "dist/index.mjs",
+      }),
+    ).toBe("./dist/index.mjs")
+  })
+
+  it("accepts a bare-string exports target", () => {
+    expect(_pickPackageEntryForTests({ exports: "./lib/entry.js" })).toBe(
+      "./lib/entry.js",
+    )
+  })
+
+  it("accepts a conditions-only exports object (no '.' subpath)", () => {
+    expect(
+      _pickPackageEntryForTests({ exports: { import: "./esm.mjs", require: "./cjs.cjs" } }),
+    ).toBe("./esm.mjs")
+  })
+
+  it("accepts an exports fallback array", () => {
+    expect(
+      _pickPackageEntryForTests({
+        exports: [null, { import: "./dist/index.mjs" }],
+      }),
+    ).toBe("./dist/index.mjs")
+  })
+
+  it("skips a types-only exports entry and falls back to module, then main", () => {
+    expect(
+      _pickPackageEntryForTests({
+        exports: { ".": { types: "./dist/index.d.ts" } },
+        module: "./dist/index.mjs",
+      }),
+    ).toBe("./dist/index.mjs")
+    expect(
+      _pickPackageEntryForTests({
+        exports: { ".": { types: "./dist/index.d.ts" } },
+        main: "dist/index.js",
+      }),
+    ).toBe("dist/index.js")
+  })
+
+  it("defaults to index.js when nothing is declared", () => {
+    expect(_pickPackageEntryForTests({})).toBe("index.js")
+  })
+})
+
+describe("_importPackageManuallyForTests — uncached walk + file-URL import", () => {
+  async function makeFakeAdapterRoot(marker: string): Promise<string> {
+    // Mimics a global-install tree's node_modules/@agentproto root.
+    const root = await fs.mkdtemp(join(tmpdir(), "agp-manual-resolve-"))
+    const pkgDir = join(root, "adapter-cold-boot")
+    await fs.mkdir(join(pkgDir, "dist"), { recursive: true })
+    await fs.writeFile(
+      join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@agentproto/adapter-cold-boot",
+        type: "module",
+        exports: { ".": { import: "./dist/index.mjs", default: "./dist/index.mjs" } },
+      }),
+    )
+    await fs.writeFile(
+      join(pkgDir, "dist", "index.mjs"),
+      `export const coldBoot = { name: ${JSON.stringify(marker)}, protocol: "acp" }\n`,
+    )
+    return root
+  }
+
+  it("imports a package Node's resolver has never seen, via explicit roots", async () => {
+    const root = await makeFakeAdapterRoot("cold-boot-marker")
+    try {
+      const mod = await _importPackageManuallyForTests(
+        "@agentproto/adapter-cold-boot",
+        [root],
+      )
+      expect(mod).toBeDefined()
+      expect((mod?.coldBoot as { name?: string })?.name).toBe("cold-boot-marker")
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("returns undefined when the package is genuinely absent (caller keeps the honest error)", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "agp-manual-resolve-empty-"))
+    try {
+      await expect(
+        _importPackageManuallyForTests("@agentproto/adapter-cold-boot", [root]),
+      ).resolves.toBeUndefined()
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("skips a root whose declared entry file is missing and finds a later root", async () => {
+    const broken = await fs.mkdtemp(join(tmpdir(), "agp-manual-resolve-broken-"))
+    const brokenPkg = join(broken, "adapter-cold-boot")
+    await fs.mkdir(brokenPkg, { recursive: true })
+    await fs.writeFile(
+      join(brokenPkg, "package.json"),
+      JSON.stringify({ exports: "./dist/missing.mjs" }),
+    )
+    const good = await makeFakeAdapterRoot("second-root-wins")
+    try {
+      const mod = await _importPackageManuallyForTests(
+        "@agentproto/adapter-cold-boot",
+        [broken, good],
+      )
+      expect((mod?.coldBoot as { name?: string })?.name).toBe("second-root-wins")
+    } finally {
+      await fs.rm(broken, { recursive: true, force: true })
+      await fs.rm(good, { recursive: true, force: true })
+    }
+  })
+
+  it("ignores non-@agentproto specifiers", async () => {
+    await expect(
+      _importPackageManuallyForTests("some-other-package", ["/nonexistent"]),
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe("resolveAdapter — same-process cold-install retry", () => {
+  it("sees an adapter package created after the first resolution miss", async () => {
+    const slug = "cold-boot-fixture"
+    const packageDir = join(
+      process.cwd(),
+      "node_modules",
+      "@agentproto",
+      `adapter-${slug}`,
+    )
+    await fs.rm(packageDir, { recursive: true, force: true })
+    _resetLastKnownGoodForTests()
+
+    try {
+      await expect(resolveAdapter(slug)).rejects.toThrow(/could not load adapter/)
+
+      await fs.mkdir(join(packageDir, "dist"), { recursive: true })
+      await fs.writeFile(
+        join(packageDir, "package.json"),
+        JSON.stringify({
+          name: `@agentproto/adapter-${slug}`,
+          type: "module",
+          exports: { ".": { import: "./dist/index.mjs" } },
+        }),
+      )
+      await fs.writeFile(
+        join(packageDir, "dist", "index.mjs"),
+        'export const coldBootFixture = { name: "cold-boot-fixture", protocol: "acp" }\n',
+      )
+
+      const resolved = await resolveAdapter(slug)
+      expect(resolved.source).toBe("npm")
+      expect(resolved.handle.name).toBe(slug)
+    } finally {
+      await fs.rm(packageDir, { recursive: true, force: true })
+      _resetLastKnownGoodForTests()
+    }
+  })
+})
+
+describe("_looksLikeStaleNegativePackageJsonCacheForTests — manual-walk gate", () => {
+  const spec = "@agentproto/adapter-claude-code"
+  const esmNotFound = (message: string): Error => {
+    const err = new Error(message) as NodeJS.ErrnoException
+    err.code = "ERR_MODULE_NOT_FOUND"
+    return err
+  }
+
+  it("matches the poisoned-cache shape: index.js guessed under the package dir (Node ≥23 repro)", () => {
+    expect(
+      _looksLikeStaleNegativePackageJsonCacheForTests(
+        esmNotFound(
+          "Cannot find package '/tmp/prefix/lib/node_modules/@agentproto/adapter-claude-code/index.js' imported from /tmp/prefix/lib/node_modules/@agentproto/cli/dist/cli.mjs",
+        ),
+        spec,
+      ),
+    ).toBe(true)
+  })
+
+  it("matches the same poisoned-cache shape with Windows separators", () => {
+    expect(
+      _looksLikeStaleNegativePackageJsonCacheForTests(
+        esmNotFound(
+          "Cannot find package 'C:\\prefix\\node_modules\\@agentproto\\adapter-claude-code\\index.js' imported from C:\\prefix\\node_modules\\@agentproto\\cli\\dist\\cli.mjs",
+        ),
+        spec,
+      ),
+    ).toBe(true)
+  })
+
+  it("does NOT match a genuinely-absent package (bare-specifier message)", () => {
+    expect(
+      _looksLikeStaleNegativePackageJsonCacheForTests(
+        esmNotFound(
+          "Cannot find package '@agentproto/adapter-claude-code' imported from /x/cli.mjs",
+        ),
+        spec,
+      ),
+    ).toBe(false)
+  })
+
+  it("does NOT match a mid-rebuild failure (real entry path — last-known-good owns it)", () => {
+    expect(
+      _looksLikeStaleNegativePackageJsonCacheForTests(
+        esmNotFound(
+          "Cannot find module '/ws/adapters/claude-code/dist/index.mjs' imported from /x/cli.mjs",
+        ),
+        spec,
+      ),
+    ).toBe(false)
+  })
+
+  it("does NOT match a non-module error", () => {
+    expect(
+      _looksLikeStaleNegativePackageJsonCacheForTests(
+        new Error("adapter-claude-code/index.js exploded"),
+        spec,
+      ),
+    ).toBe(false)
   })
 })

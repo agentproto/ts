@@ -203,6 +203,23 @@ describe("agentproto install — adapter package bootstrap", () => {
     io.restore()
   })
 
+  it("reports a broken package when the post-install re-resolve still fails", async () => {
+    resolveAdapterMock
+      .mockRejectedValueOnce(missingPackageError("claude-code"))
+      .mockRejectedValueOnce(new Error("package export is invalid"))
+    spawnExits(0)
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code"])
+
+    expect(code).toBe(1)
+    const stderr = io.err.join("")
+    expect(stderr).toMatch(/installed but could not be loaded/)
+    expect(stderr).toMatch(/valid package\.json export/)
+    expect(stderr).not.toMatch(/install manually/)
+    io.restore()
+  })
+
   it("rethrows non-missing-package errors unchanged (no bootstrap attempt)", async () => {
     resolveAdapterMock.mockRejectedValue(
       new Error("agentproto: invalid adapter slug 'BadSlug'")
