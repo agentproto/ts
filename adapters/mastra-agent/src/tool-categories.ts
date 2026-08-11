@@ -28,6 +28,11 @@ const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
   agent_prompt: "mcp",
   agent_output: "mcp",
   session_list: "mcp",
+  // `submit_plan` (WP-3) gates itself: calling it always suspends the run
+  // for the user's approve/reject decision (see modes.ts's plan mode). It
+  // has no "other"-category behavior worth asking about a second time before
+  // that suspend even runs — see the per-tool "allow" override below.
+  submit_plan: "other",
 }
 
 /** Resolve a tool id to its Mastra {@link ToolCategory}, or `null` if unmapped
@@ -37,7 +42,13 @@ export function toolCategoryResolver(toolName: string): ToolCategory | null {
   return CATEGORY_BY_TOOL[toolName] ?? null
 }
 
-/** Default approval policy: reads are auto-allowed, everything else asks. */
+/**
+ * Default approval policy: reads are auto-allowed, everything else asks —
+ * except `submit_plan`, which is let through the generic tool-approval gate
+ * so its own suspend-based plan-approval flow (see modes.ts) is the only
+ * approval prompt the user sees for it, not a redundant "run submit_plan?"
+ * ask in front of it.
+ */
 export const DEFAULT_PERMISSION_RULES: PermissionRules = {
   categories: {
     read: "allow",
@@ -46,5 +57,7 @@ export const DEFAULT_PERMISSION_RULES: PermissionRules = {
     mcp: "ask",
     other: "ask",
   },
-  tools: {},
+  tools: {
+    submit_plan: "allow",
+  },
 }

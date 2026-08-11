@@ -14,10 +14,14 @@ import { AgentController } from "@mastra/core/agent-controller"
 import type {
   AgentControllerConfig,
   BuiltinToolId,
+  PermissionRules,
 } from "@mastra/core/agent-controller"
+import { Workspace } from "@mastra/core/workspace"
 import type { MastraMemoryLike } from "./memory.js"
 import { buildSqliteMemory, buildSqliteStore } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
+import { DEFAULT_PERMISSION_RULES, toolCategoryResolver } from "./tool-categories.js"
+import { resolveModes } from "./modes.js"
 import { makeUnwiredToolStub, makeWorkspaceTools } from "./workspace-tools.js"
 
 /** Cheap OpenRouter coder by default — this is the budget first-party arm,
@@ -48,6 +52,21 @@ export interface AgentSourceOptions {
    * wants to grant tools the built-in toolset doesn't cover. No CLI flag.
    */
   extraTools?: Record<string, MastraToolLike>
+  /**
+   * `false` runs WP-1 parity: a single mode, no tool approvals, yolo
+   * execution — exactly the old raw-stream behavior. Anything else (or
+   * omitted) runs the plan/build/review modes with real tool approvals
+   * (WP-3 default). The `AGENTPROTO_MASTRA_NO_MODES` env var is the
+   * spawn-time equivalent of passing `false` here, for hosts that can't pass
+   * this option directly (e.g. the CLI, which owns no `--no-modes` flag yet
+   * — see this WP's report).
+   */
+  modes?: false | "default"
+}
+
+/** Truthy env-var check matching this adapter's existing `AGENTPROTO_MASTRA_NO_EXEC` convention. */
+function envFlag(value: string | undefined): boolean {
+  return Boolean(value)
 }
 
 /** The built-in AGENT.md used when no file is supplied. */
@@ -91,9 +110,10 @@ export async function resolveAgentSource(
   return defaultAgentManifest(opts.model ?? DEFAULT_MODEL)
 }
 
-/** Every AgentController built-in tool id — WP-1 disables them ALL so the
- *  controller adds nothing the raw-stream agent didn't have. Later WPs
- *  selectively re-enable (submit_plan for modes, subagent for spawning, …). */
+/** Every AgentController built-in tool id — WP-1 parity mode disables them ALL
+ *  so the controller adds nothing the raw-stream agent didn't have. Modes-on
+ *  (the default, WP-3) re-enables `submit_plan` only — see `makeAgentFactory`.
+ *  Later WPs selectively re-enable more (`subagent` for spawning, …). */
 export const DISABLED_BUILTIN_TOOL_IDS: readonly BuiltinToolId[] = [
   "ask_user",
   "submit_plan",
@@ -106,7 +126,10 @@ export const DISABLED_BUILTIN_TOOL_IDS: readonly BuiltinToolId[] = [
 
 /** Session state the controller carries for us (see `initialState` below). */
 interface AdapterControllerState {
+  /** WP-1 parity mode only: skips tool approvals entirely. Unset when modes are on. */
   yolo?: boolean
+  /** Modes-on default: seeded from {@link DEFAULT_PERMISSION_RULES}, read by `session.permissions`. */
+  permissionRules?: PermissionRules
 }
 
 /**
@@ -162,12 +185,21 @@ export function makeAgentFactory(
       body,
     })
 
+    // `false` (or the env var) selects WP-1 parity; anything else keeps the
+    // WP-3 default of real plan/build/review modes with tool approvals.
+    const modesEnabled = opts.modes !== false && !envFlag(process.env.AGENTPROTO_MASTRA_NO_MODES)
+    const { modes, defaultModeId } = modesEnabled
+      ? resolveModes(body)
+      : { modes: [{ id: "main", metadata: { default: true } }], defaultModeId: "main" }
+
     const config: AgentControllerConfig<AdapterControllerState> = {
       id: "agentproto-native",
-      // The AGENT.md-built agent backs every mode; WP-1 has exactly one mode
-      // and layers no mode instructions, so runs behave as the raw agent did.
+      // The AGENT.md-built agent backs every mode; parity mode has exactly
+      // one mode and layers no mode instructions, so runs behave as the raw
+      // agent did.
       agent: agent as AgentControllerConfig["agent"],
-      modes: [{ id: "main", metadata: { default: true } }],
+      modes,
+      defaultModeId,
       // Thread rows + per-thread settings persist to the same SQLite file the
       // agent's Memory writes messages to.
       storage: store,
@@ -175,14 +207,25 @@ export function makeAgentFactory(
       // agent already carries the AGENT.md-declared subset; controller-level
       // tools are an additive toolset, so ids overlap onto the same executors.
       tools: workspaceTools as AgentControllerConfig["tools"],
-      // WP-1 is behavior parity: no built-in controller tools, and no tool
-      // approvals — `yolo: true` keeps `requireToolApproval` off so tools
-      // execute pass-through exactly as the raw stream did (approvals are
-      // WP-4; deliberately no `workspace` either, since a configured
-      // Workspace makes the Agent inject Mastra's own workspace file tools
-      // into every run).
-      disableBuiltinTools: [...DISABLED_BUILTIN_TOOL_IDS],
-      initialState: { yolo: true },
+      // Parity mode disables every built-in controller tool and skips tool
+      // approvals entirely (`yolo: true` keeps `requireToolApproval` off so
+      // tools execute pass-through exactly as the raw stream did). Modes-on
+      // re-enables `submit_plan` (the plan mode's approval gate) and seeds
+      // real per-category tool-approval policy instead.
+      disableBuiltinTools: modesEnabled
+        ? DISABLED_BUILTIN_TOOL_IDS.filter((id) => id !== "submit_plan")
+        : [...DISABLED_BUILTIN_TOOL_IDS],
+      toolCategoryResolver,
+      initialState: modesEnabled ? { permissionRules: DEFAULT_PERMISSION_RULES } : { yolo: true },
+      // `Session` construction hard-requires a `Workspace` instance
+      // (`createSession` throws "A session requires a valid workspace
+      // instance" without one) — but a *filesystem/sandbox*-backed Workspace
+      // makes Mastra auto-inject its own `mastra_workspace_*` file/exec tools
+      // into every run, duplicating our own hardened workspace toolset. A
+      // skills-only Workspace (no filesystem, no sandbox) satisfies the
+      // former without triggering the latter: `createWorkspaceTools` only
+      // adds filesystem/sandbox tools, so this config contributes none.
+      workspace: new Workspace({ skills: () => [] }),
     }
     if (memory) config.memory = memory
 

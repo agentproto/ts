@@ -23,6 +23,9 @@ describe("toolCategoryResolver", () => {
     expect(toolCategoryResolver("agent_output")).toBe("mcp")
     expect(toolCategoryResolver("session_list")).toBe("mcp")
   })
+  it("maps submit_plan to other", () => {
+    expect(toolCategoryResolver("submit_plan")).toBe("other")
+  })
   it("returns null for unknown tool ids", () => {
     expect(toolCategoryResolver("search_web")).toBeNull()
     expect(toolCategoryResolver("")).toBeNull()
@@ -37,7 +40,7 @@ describe("DEFAULT_PERMISSION_RULES", () => {
     expect(DEFAULT_PERMISSION_RULES.categories.mcp).toBe("ask")
     expect(DEFAULT_PERMISSION_RULES.categories.other).toBe("ask")
   })
-  it("declares no per-tool overrides", () => {
-    expect(DEFAULT_PERMISSION_RULES.tools).toEqual({})
+  it("allows submit_plan through the generic gate (it gates itself via suspend)", () => {
+    expect(DEFAULT_PERMISSION_RULES.tools).toEqual({ submit_plan: "allow" })
   })
 })
