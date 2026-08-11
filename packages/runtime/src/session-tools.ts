@@ -94,6 +94,9 @@ export interface SessionTreeNode {
   id: string
   label?: string
   status: string
+  currentPhase?: import("./sessions.js").SessionCurrentPhase
+  secondsSinceLastActivity?: number
+  toolCallsThisTurn?: number
   depth: number
   adapterSlug?: string
   parentSessionId?: string
@@ -178,6 +181,9 @@ export function buildSessionTree(
     id: s.id,
     ...(s.label ? { label: s.label } : {}),
     status: s.status,
+    currentPhase: s.currentPhase,
+    secondsSinceLastActivity: s.secondsSinceLastActivity,
+    toolCallsThisTurn: s.toolCallsThisTurn,
     depth: s.depth ?? 0,
     ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
@@ -2685,6 +2691,11 @@ export function registerSessionTools(
               {
                 sessionId: desc.id,
                 status: desc.status,
+                currentPhase: desc.currentPhase,
+                toolCallsThisTurn: desc.toolCallsThisTurn,
+                ...(desc.secondsSinceLastActivity !== undefined
+                  ? { secondsSinceLastActivity: desc.secondsSinceLastActivity }
+                  : {}),
                 bytes: buf.byteLength,
                 ...(input.clean
                   ? { text: stripAnsi(buf.toString("utf8")) }
