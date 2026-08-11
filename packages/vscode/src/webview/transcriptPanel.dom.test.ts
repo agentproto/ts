@@ -2605,6 +2605,36 @@ describe("transcriptPanel webview — book view", () => {
     expect(panel.document.activeElement).toBe(el(panel, "input"))
   })
 
+  it("preserves rendered Markdown in the pause card", () => {
+    const panel = renderPanel()
+    const questionHtml =
+      "<p><strong>Package:</strong> <code>@agentproto/cli</code></p>" +
+      '<ul><li><a class="tlink" data-open="external" data-target="https://github.com/agentproto/ts/pull/935">Pull request</a></li></ul>'
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "go" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: questionHtml }] },
+      ],
+    }
+    panel.send({
+      type: "init",
+      session: session({ awaitingInput: true }),
+      nonce: "n",
+      mode: "structured",
+      conversation: conv,
+    })
+
+    const question = panel.book.querySelector(".pause .pquestion")
+    expect(question?.querySelector("strong")?.textContent).toBe("Package:")
+    expect(question?.querySelector("code")?.textContent).toBe("@agentproto/cli")
+    expect(question?.querySelectorAll("ul li")).toHaveLength(1)
+    expect(question?.querySelector("a.tlink")?.getAttribute("data-target")).toBe(
+      "https://github.com/agentproto/ts/pull/935",
+    )
+  })
+
   it("does NOT render the pause card while the agent is actively working, even if awaitingInput lingers", () => {
     const panel = renderPanel()
     // A stale awaitingInput racing with a resumed turn (busy=true) must not

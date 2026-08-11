@@ -1947,6 +1947,45 @@ export function buildHtml(
     }
     #book .pause .phead .blk { width: 9px; height: 14px; border-radius: 2px; background: var(--phosphor); }
     #book .pause .pquestion { font: 14px/1.7 var(--serif); margin-top: 8px; }
+    /* The pause question is the last rendered assistant narration block.
+       Keep its Markdown structure (rather than flattening it to text) while
+       adapting the normal paper-surface prose treatment to this light card. */
+    #book .pause .pquestion > :first-child { margin-top: 0; }
+    #book .pause .pquestion > :last-child { margin-bottom: 0; }
+    #book .pause .pquestion p { margin: 0 0 8px; }
+    #book .pause .pquestion ul, #book .pause .pquestion ol { margin: 6px 0 8px; padding-left: 20px; }
+    #book .pause .pquestion li { margin: 3px 0; }
+    #book .pause .pquestion li::marker { color: var(--phosphor); }
+    #book .pause .pquestion strong, #book .pause .pquestion b { font-weight: 650; }
+    #book .pause .pquestion code {
+      font: 12px var(--bkmono); background: var(--ink-2); border: 1px solid var(--edge);
+      padding: 1px 5px; border-radius: 4px; color: var(--paper);
+    }
+    #book .pause .pquestion pre {
+      margin: 8px 0; padding: 10px 12px; border-radius: 6px;
+      background: var(--ink-2); border: 1px solid var(--edge);
+      overflow-x: auto; white-space: pre; font: 12px/1.55 var(--bkmono); color: var(--paper);
+    }
+    #book .pause .pquestion pre code {
+      background: none; border: 0; padding: 0; border-radius: 0; font: inherit; color: inherit;
+    }
+    #book .pause .pquestion blockquote {
+      margin: 8px 0; padding-left: 12px; color: rgba(27,27,28,.72); border-left: 2px solid var(--phosphor);
+    }
+    #book .pause .pquestion h1, #book .pause .pquestion h2, #book .pause .pquestion h3,
+    #book .pause .pquestion h4, #book .pause .pquestion h5, #book .pause .pquestion h6 {
+      font: 650 15px/1.35 var(--serif); margin: 12px 0 4px;
+    }
+    #book .pause .pquestion table {
+      display: block; width: max-content; max-width: 100%; overflow-x: auto;
+      border-collapse: collapse; margin: 10px 0; font: 13px/1.5 var(--bkmono);
+    }
+    #book .pause .pquestion th, #book .pause .pquestion td {
+      padding: 5px 16px 5px 0; text-align: left; vertical-align: top;
+      white-space: nowrap; border-bottom: 1px solid rgba(27,27,28,.16);
+    }
+    #book .pause .pquestion th { font-weight: 650; border-bottom-color: rgba(27,27,28,.32); }
+    #book .pause .pquestion tr:last-child td { border-bottom: none; }
   </style>
   ${bundles.xtermCss ? `<style>${bundles.xtermCss}</style>` : ""}
 </head>
@@ -3689,12 +3728,16 @@ export function buildHtml(
         return ' · ' + Math.floor(elapsedMs / 60000) + ' min';
       }
 
-      function pauseQuestion(chapters) {
+      // Narration is already safe, host-rendered Markdown HTML. Returning that
+      // HTML instead of flattening it keeps the agent's question readable:
+      // links remain actionable and headings, lists, code and tables retain
+      // their structure inside the pause card.
+      function pauseQuestionHtml(chapters) {
         const last = chapters[chapters.length - 1];
         if (last && last.narration.length) {
-          return htmlToText(last.narration[last.narration.length - 1].html);
+          return last.narration[last.narration.length - 1].html || '';
         }
-        return 'The agent is waiting for your input.';
+        return '<p>The agent is waiting for your input.</p>';
       }
 
       function renderPauseCard(page, awaiting, chapters) {
@@ -3714,7 +3757,9 @@ export function buildHtml(
         } else {
           page.appendChild(pause); // keep it last
         }
-        pause.querySelector('.pquestion').textContent = pauseQuestion(chapters);
+        const question = pause.querySelector('.pquestion');
+        question.innerHTML = pauseQuestionHtml(chapters);
+        enhanceBookBlocks(question);
       }
 
       // The blank-conversation view. Rather than a dead "No messages yet."
