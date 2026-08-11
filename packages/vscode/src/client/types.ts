@@ -951,6 +951,8 @@ export interface SessionEventRecord {
   /** "permission-resolved" chosen option id, when the driver's offered
    *  options included one. */
   optionId?: string
+  /** "plan" event title — displayed in the plan widget header alongside the done/total count. */
+  title?: string
   entries?: Array<{ content: string; priority: string; status: string }>
   size?: number
   used?: number

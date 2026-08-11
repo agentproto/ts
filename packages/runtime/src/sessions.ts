@@ -296,6 +296,8 @@ export interface AgentStreamEvent {
    *  @agentproto/acp's `StreamEvent`'s `agent-prompt` kind. Harness-shaped
    *  and untyped; don't assume a stable schema across adapters. */
   rawInput?: unknown
+  /** "plan" event title — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
+  title?: string
   /** "plan" event entries — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
   entries?: Array<{ content: string; priority: string; status: string }>
   /** "usage_update" context-window size (tokens). */
@@ -3828,9 +3830,10 @@ export function createSessionsRegistry(opts?: {
       case "plan": {
         const entries = evt.entries ?? []
         const done = entries.filter(e => e.status === "completed").length
+        const label = evt.title ? `[plan] ${evt.title} ${done}/${entries.length}` : `[plan] ${done}/${entries.length}`
         appendLine(
           rt,
-          `\x1b[35m[plan] ${done}/${entries.length} ${entries.map(e => e.content).join("; ")}\x1b[0m`,
+          `\x1b[35m${label} ${entries.map(e => e.content).join("; ")}\x1b[0m`,
           "stdout"
         )
         break

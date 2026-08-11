@@ -70,6 +70,7 @@ export interface PlanEntry {
 
 export interface PlanSegment extends SegmentBase {
   kind: "plan"
+  title?: string
   entries: PlanEntry[]
   done: number
   total: number
@@ -287,6 +288,7 @@ export function reduceConversation(
         const turn = openAssistant(rec)
         const entries = rec.entries ?? []
         const done = entries.filter(e => e.status === "completed").length
+        const title = rec.title || undefined
         // A plan streams updates — collapse them onto one segment per turn
         // (keeping the first segment's stable id) instead of stacking dupes.
         const prevPlan = turn.segments.find((s): s is PlanSegment => s.kind === "plan")
@@ -295,12 +297,14 @@ export function reduceConversation(
           prevPlan.done = done
           prevPlan.total = entries.length
           prevPlan.ts = rec.ts
+          if (title) prevPlan.title = title
         } else {
           turn.segments.push({
             kind: "plan",
             id: `seg-${rec.seq}`,
             seq: rec.seq,
             ts: rec.ts,
+            ...(title ? { title } : {}),
             entries,
             done,
             total: entries.length,
@@ -472,6 +476,7 @@ export interface PresentedToolSegment {
 export interface PresentedPlanSegment {
   kind: "plan"
   id: string
+  title?: string
   entries: PlanEntry[]
   done: number
   total: number
@@ -722,7 +727,7 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
       }
     }
     case "plan":
-      return { kind: "plan", id: seg.id, entries: seg.entries, done: seg.done, total: seg.total }
+      return { kind: "plan", id: seg.id, ...(seg.title ? { title: seg.title } : {}), entries: seg.entries, done: seg.done, total: seg.total }
     case "agent-question":
       return {
         kind: "agent-question",
