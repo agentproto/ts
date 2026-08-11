@@ -279,9 +279,11 @@ export function registerAgentTools(
   } = opts
 
   // ── agent_start ────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "agent_start",
-    "Spawn a long-running agent CLI (claude-code, hermes, …) on the host. " +
+    {
+      description:
+        "Spawn a long-running agent CLI (claude-code, hermes, …) on the host. " +
       "The session stays alive across multiple turns — call `agent_prompt` " +
       "to continue the conversation. Returns the session id + initial descriptor. " +
       "When `workspaceSlug` is set, resolves the cwd via " +
@@ -289,7 +291,7 @@ export function registerAgentTools(
       "fall back to the active workspace. " +
       "If you have shell access, `agentproto sessions start ...` is the CLI " +
       "equivalent. (No shell? Keep using this tool.)",
-    {
+      inputSchema: {
       adapter: z
         .string()
         .min(1)
@@ -922,6 +924,18 @@ export function registerAgentTools(
             "holds the agent's work; tear it down with `agentproto worktree " +
             "rm|archive|gc`."
         ),
+      },
+      // Live-session widget: rendering agent_start's result auto-mounts the
+      // live widget for the new session (ext-apps `_meta.ui.resourceUri` at
+      // the tool-definition level — same mechanism as the panel apps in
+      // mcp-apps-adapter.ts). `visibility:["model","app"]` keeps agent_start
+      // fully usable by the model AND lets the widget re-call it if needed.
+      _meta: {
+        ui: {
+          resourceUri: "ui://live_session/view",
+          visibility: ["model", "app"],
+        },
+      },
     },
     async input => {
       if (!resolveAgentAdapter) {

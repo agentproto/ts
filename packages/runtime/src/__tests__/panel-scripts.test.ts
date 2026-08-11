@@ -21,12 +21,20 @@ import { PANEL_HTML } from "../sessions-panel.js"
 import { SESSION_STORY_PANEL_HTML } from "../session-story-panel.js"
 import { BUREAU_SESSIONS_HTML } from "../bureau-sessions-app.js"
 import { AGENTS_OVERVIEW_HTML } from "../agents-overview-app.js"
+import { makeLiveSessionApp } from "../live-session-app.js"
+
+const liveSessionApp = makeLiveSessionApp()
+const liveSessionHtml =
+  typeof liveSessionApp.html === "string"
+    ? liveSessionApp.html
+    : liveSessionApp.html({ httpBaseUrl: "http://127.0.0.1:18790" })
 
 const PANELS: Record<string, string> = {
   "sessions-panel": PANEL_HTML,
   "session-story-panel": SESSION_STORY_PANEL_HTML,
   "bureau-sessions": BUREAU_SESSIONS_HTML,
   "agents-overview": AGENTS_OVERVIEW_HTML,
+  "live-session": liveSessionHtml,
 }
 
 function extractScript(html: string): string {
