@@ -355,6 +355,10 @@ export function reduceConversation(
         break
       }
       case "turn-end":
+        // A terminal event settles any legacy/orphaned tool starts that made
+        // it into the transcript without a matching result. This is not a
+        // timeout: the adapter has explicitly ended the turn.
+        settlePendingTools(assistant)
         assistant = undefined
         break
       default:
@@ -364,6 +368,22 @@ export function reduceConversation(
   }
 
   return { version: CONVERSATION_SCHEMA_VERSION, sessionId, turns, usage, cursor }
+}
+
+/**
+ * A terminal turn is conclusive even when an adapter omitted one or more
+ * `tool-result` frames. Hermes can do this for nested/parallel calls, and
+ * old durable transcripts cannot be repaired at the wire boundary. Settle
+ * only cards that are still pending; an actual result always wins and keeps
+ * its output/error state intact.
+ */
+function settlePendingTools(turn: ConversationTurn | undefined): void {
+  if (!turn) return
+  for (const segment of turn.segments) {
+    if (segment.kind === "tool" && segment.status === "pending") {
+      segment.status = "ok"
+    }
+  }
 }
 
 function mergeUsage(

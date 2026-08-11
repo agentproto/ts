@@ -4349,6 +4349,23 @@ export function createSessionsRegistry(opts?: {
     // Track tool-call IDs announced during this turn so the finally block can
     // emit synthetic tool-results for adapters that silently drop them.
     const pendingToolCallIds = new Set<string>()
+    // Settle missing adapter completions at the terminal boundary. This must
+    // run BEFORE a real turn-end is persisted: transcript consumers replay in
+    // sequence, and a terminal event is the last chance to close nested or
+    // parallel tool cards without making them look live forever.
+    const settlePendingToolCalls = (): void => {
+      for (const toolCallId of pendingToolCallIds) {
+        const synthetic: AgentStreamEvent = {
+          kind: "tool-result",
+          toolCallId,
+          result: null,
+          isError: false,
+        }
+        transcriptWriter.recordEvent(rt.desc.id, synthetic)
+        projectEvent(rt, synthetic)
+      }
+      pendingToolCallIds.clear()
+    }
     try {
       appendLine(
         rt,
@@ -4367,6 +4384,11 @@ export function createSessionsRegistry(opts?: {
       const wrapped =
         typeof message === "string" ? { type: "text", text: message } : message
       for await (const evt of rt.agentSession.send(wrapped)) {
+        // Hermes may end a turn with nested/parallel tool calls still lacking
+        // their terminal `tool_call_update`. Persist synthetic settlements
+        // first so durable replay observes result → turn-end, never the
+        // reverse. Real results already removed their ids from the set.
+        if (evt.kind === "turn-end") settlePendingToolCalls()
         // Capture the structured event to events.jsonl BEFORE
         // projectEvent flattens it into an ANSI ring-buffer line — the
         // only point downstream of the driver where the original
@@ -4452,19 +4474,7 @@ export function createSessionsRegistry(opts?: {
       // `tool_call_update status=completed` leave the tool card stuck
       // "pending" in every UI consumer. Emit a synthetic `tool-result`
       // before the turn-end so transcript reducers can resolve the segment.
-      if (pendingToolCallIds.size > 0) {
-        for (const toolCallId of pendingToolCallIds) {
-          const synthetic: AgentStreamEvent = {
-            kind: "tool-result",
-            toolCallId,
-            result: null,
-            isError: false,
-          }
-          transcriptWriter.recordEvent(rt.desc.id, synthetic)
-          projectEvent(rt, synthetic)
-        }
-        pendingToolCallIds.clear()
-      }
+      settlePendingToolCalls()
 
       // ── P5: guarantee exactly one terminal turn-end per turn ──────────
       // If the adapter's event stream ended without a turn-end (generator
