@@ -45,6 +45,12 @@ const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
   // prompting on every watch.
   watch_session: "read",
   unwatch_session: "read",
+  // Notification inbox (WP-7, Mastra's `createNotificationInboxTool`) —
+  // `read`: its mutating actions (markSeen/dismiss/archive) only flip inbox
+  // bookkeeping on the agent's OWN notifications, never workspace or daemon
+  // state. Prompting for approval on every inbox check would defeat the
+  // inbox (the agent is supposed to consult it freely each turn).
+  "notification-inbox": "read",
   // `submit_plan` (WP-3) gates itself: calling it always suspends the run
   // for the user's approve/reject decision (see modes.ts's plan mode). It
   // has no "other"-category behavior worth asking about a second time before

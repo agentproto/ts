@@ -27,6 +27,9 @@ describe("toolCategoryResolver", () => {
     expect(toolCategoryResolver("watch_session")).toBe("read")
     expect(toolCategoryResolver("unwatch_session")).toBe("read")
   })
+  it("maps the notification inbox to read (inbox bookkeeping only)", () => {
+    expect(toolCategoryResolver("notification-inbox")).toBe("read")
+  })
   it("maps submit_plan to other", () => {
     expect(toolCategoryResolver("submit_plan")).toBe("other")
   })

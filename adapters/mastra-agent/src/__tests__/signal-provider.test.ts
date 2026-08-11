@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Agent } from "@mastra/core/agent"
 import type { DaemonClient, PollEventsResult } from "../daemon-client.js"
 import { AgentprotoSignalProvider, EXIT_STATUSES, WATCHED_EVENT_KINDS } from "../signal-provider.js"
+import type { DaemonStateEmitter } from "../state-signals.js"
 
 interface NotifyCall {
   notification: Record<string, unknown>
@@ -273,6 +274,71 @@ describe("AgentprotoSignalProvider — error isolation", () => {
 
     await expect(provider.poll(provider.subs())).resolves.toBeUndefined()
     expect(notifyCalls).toHaveLength(1)
+  })
+})
+
+describe("AgentprotoSignalProvider — state-emitter integration (WP-7)", () => {
+  function makeProviderWithEmitter(fake: FakeDaemon) {
+    const emit = vi.fn(async () => "snapshot" as const)
+    const provider = new TestProvider({
+      client: fake.client,
+      stateEmitter: { emit } as unknown as DaemonStateEmitter,
+    })
+    const { agent, calls } = fakeAgent()
+    provider.connect(agent)
+    return { provider, emit, notifyCalls: calls }
+  }
+
+  it("emits one state signal per watching thread per cycle, with that thread's watched ids", async () => {
+    const fake = fakeDaemon()
+    const { provider, emit } = makeProviderWithEmitter(fake)
+    provider.watch({ threadId: "t1", resourceId: "r" }, "sess-a")
+    provider.watch({ threadId: "t1", resourceId: "r" }, "sess-b")
+    provider.watch({ threadId: "t2", resourceId: "r" }, "sess-c")
+
+    await provider.poll(provider.subs())
+
+    expect(emit).toHaveBeenCalledTimes(2)
+    const byThread = new Map(
+      emit.mock.calls.map((call) => {
+        const [, target, watched] = call as unknown as [unknown, { threadId: string }, string[]]
+        return [target.threadId, watched]
+      }),
+    )
+    expect(byThread.get("t1")).toEqual(["sess-a", "sess-b"])
+    expect(byThread.get("t2")).toEqual(["sess-c"])
+  })
+
+  it("an emitter failure warns once and never breaks the event poll", async () => {
+    const fake = fakeDaemon()
+    fake.eventBatches.set("sess-a", [
+      { sessionId: "sess-a", events: [{ seq: 1, kind: "turn-end" }], nextSeq: 1, complete: true },
+    ])
+    const emit = vi.fn(async () => {
+      throw new Error("state boom")
+    })
+    const provider = new TestProvider({
+      client: fake.client,
+      stateEmitter: { emit } as unknown as DaemonStateEmitter,
+    })
+    const { agent, calls } = fakeAgent()
+    provider.connect(agent)
+    provider.watch(TARGET, "sess-a")
+
+    await expect(provider.poll(provider.subs())).resolves.toBeUndefined()
+    await provider.poll(provider.subs())
+
+    expect(calls).toHaveLength(1) // the turn-end notification still went out
+    const warns = vi.mocked(console.warn).mock.calls.filter((c) => String(c[0]).includes("state signal"))
+    expect(warns).toHaveLength(1)
+  })
+
+  it("without a state emitter, poll never touches state signals (WP-6 behavior unchanged)", async () => {
+    const fake = fakeDaemon()
+    const { provider, notifyCalls } = makeProvider(fake)
+    provider.watch(TARGET, "sess-a")
+    await provider.poll(provider.subs())
+    expect(notifyCalls).toHaveLength(0)
   })
 })
 

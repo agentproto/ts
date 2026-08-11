@@ -57,6 +57,15 @@ describe("makeAgentFactory — modes on (default)", () => {
     expect(tools.agent_start).toBeDefined()
     expect(tools.read_file).toBeDefined()
   })
+
+  it("wires the notification inbox tool over the shared store (WP-7)", async () => {
+    const cwd = await makeTmpDir()
+    const factory = makeAgentFactory({ model: "mock/wp7-inbox", cwd })
+    await factory()
+
+    const tools = capturedConfigs[0]!.tools as Record<string, unknown>
+    expect(tools["notification-inbox"], "notification-inbox should be in modes-on config.tools").toBeDefined()
+  })
 })
 
 describe("makeAgentFactory — parity mode (modes: false)", () => {
@@ -71,5 +80,6 @@ describe("makeAgentFactory — parity mode (modes: false)", () => {
     const tools = capturedConfigs[0]!.tools as Record<string, unknown>
     expect(tools.watch_session).toBeUndefined()
     expect(tools.unwatch_session).toBeUndefined()
+    expect(tools["notification-inbox"]).toBeUndefined()
   })
 })

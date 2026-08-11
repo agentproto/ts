@@ -37,6 +37,7 @@ import { SignalProvider } from "@mastra/core/signals"
 import type { SignalProviderTarget, SignalSubscription } from "@mastra/core/signals"
 import { z } from "zod"
 import { DaemonClient, type DaemonClientOptions } from "./daemon-client.js"
+import type { DaemonStateEmitter, StateSignalAgentLike } from "./state-signals.js"
 
 /** Transcript-event kinds a watch subscribes to (see the daemon's
  *  `transcript-writer.ts` for the full kind set): turn boundaries, errors,
@@ -64,6 +65,15 @@ export interface AgentprotoSignalProviderOptions {
   clientOptions?: DaemonClientOptions
   /** Poll cadence in ms. Default 5_000. */
   pollInterval?: number
+  /**
+   * Daemon state-signal emitter (WP-7). When set, every poll cycle ALSO
+   * pushes a daemon-state snapshot/delta signal to each thread that watches
+   * at least one session — piggybacking on the same 5s cadence and the same
+   * error isolation instead of running a second timer. Threads watching
+   * nothing get no state signals (and cost no daemon calls), matching the
+   * provider's dormant-when-unwatched behavior.
+   */
+  stateEmitter?: DaemonStateEmitter
 }
 
 export class AgentprotoSignalProvider extends SignalProvider<"agentproto-daemon"> {
@@ -71,11 +81,13 @@ export class AgentprotoSignalProvider extends SignalProvider<"agentproto-daemon"
   readonly pollInterval: number
 
   readonly #client: DaemonClient
+  readonly #stateEmitter: DaemonStateEmitter | undefined
   readonly #warned = new Set<string>()
 
   constructor(opts: AgentprotoSignalProviderOptions = {}) {
     super()
     this.#client = opts.client ?? new DaemonClient(opts.clientOptions)
+    this.#stateEmitter = opts.stateEmitter
     this.pollInterval = opts.pollInterval ?? 5_000
   }
 
@@ -127,6 +139,34 @@ export class AgentprotoSignalProvider extends SignalProvider<"agentproto-daemon"
         await this.#pollSubscription(sub, sessionsById)
       } catch (err) {
         this.#warnOnce(`session ${sub.externalResourceId}: ${errorMessage(err)}`)
+      }
+    }
+
+    await this.#emitStateSignals(subscriptions)
+  }
+
+  /** WP-7: one daemon-state signal per watching thread per cycle (see
+   *  {@link AgentprotoSignalProviderOptions.stateEmitter}). Never throws. */
+  async #emitStateSignals(subscriptions: SignalSubscription[]): Promise<void> {
+    const emitter = this.#stateEmitter
+    const agent = this.agent
+    if (!emitter || !agent) return
+    const byTarget = new Map<string, { threadId: string; resourceId: string; watched: string[] }>()
+    for (const sub of subscriptions) {
+      const key = `${sub.resourceId}:${sub.threadId}`
+      const entry = byTarget.get(key) ?? {
+        threadId: sub.threadId,
+        resourceId: sub.resourceId,
+        watched: [],
+      }
+      entry.watched.push(sub.externalResourceId)
+      byTarget.set(key, entry)
+    }
+    for (const { threadId, resourceId, watched } of byTarget.values()) {
+      try {
+        await emitter.emit(agent as unknown as StateSignalAgentLike, { threadId, resourceId }, watched)
+      } catch (err) {
+        this.#warnOnce(`state signal for thread ${threadId}: ${errorMessage(err)}`)
       }
     }
   }

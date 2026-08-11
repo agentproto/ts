@@ -19,9 +19,11 @@ import type {
 } from "@mastra/core/agent-controller"
 import { Workspace } from "@mastra/core/workspace"
 import type { Agent } from "@mastra/core/agent"
+import { createNotificationInboxTool } from "@mastra/core/notifications"
 import { DaemonClient } from "./daemon-client.js"
 import { makeDaemonTools } from "./daemon-tools.js"
 import { AgentprotoSignalProvider } from "./signal-provider.js"
+import { DaemonStateEmitter } from "./state-signals.js"
 import type { MastraMemoryLike } from "./memory.js"
 import { buildSqliteMemory, buildSqliteStore } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
@@ -267,10 +269,33 @@ export function makeAgentFactory(
       // `agent.__registerMastra` forwards the Mastra instance to providers in
       // `config.signals`; a manually-connected provider never receives it.
       // Ours never reads `this.mastra`, so nothing is lost.
-      const signalProvider = new AgentprotoSignalProvider({ client: daemonClient })
+      //
+      // WP-7: the provider also carries the daemon state-signal emitter —
+      // each poll cycle pushes a session-tree + git-status snapshot/delta
+      // (cacheKey-deduped) to every thread watching at least one session.
+      const signalProvider = new AgentprotoSignalProvider({
+        client: daemonClient,
+        stateEmitter: new DaemonStateEmitter({ client: daemonClient, cwd }),
+      })
       signalProvider.connect(agent as unknown as Agent)
       signalProvider.startPolling()
       tools = { ...tools, ...signalProvider.getTools() }
+
+      // WP-7: notification inbox — lets the agent list/read/dismiss the
+      // notifications the signal provider (and any future provider) files.
+      // Backed by the SAME LibSQL store as memory + controller storage: its
+      // `notifications` domain is what `agent.sendNotificationSignal` writes
+      // through once `controller.init()` registers the agent on the internal
+      // Mastra (`mastra.addAgent(agent)`), so the tool reads exactly what
+      // `notify` wrote. `getStore` is a plain domain lookup (safe pre-init;
+      // table creation happens in `controller.init()` → `storage.init()`).
+      const notificationsStorage = await store.getStore("notifications")
+      if (notificationsStorage) {
+        tools = {
+          ...tools,
+          "notification-inbox": createNotificationInboxTool({ storage: notificationsStorage }),
+        }
+      }
     }
 
     const config: AgentControllerConfig<AdapterControllerState> = {
