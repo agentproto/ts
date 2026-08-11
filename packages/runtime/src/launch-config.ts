@@ -14,10 +14,7 @@
  * endpoint URL.
  */
 
-import {
-  stripFixedNativeVendor,
-  stripRouteSuffix,
-} from "@agentproto/model-catalog/route-identity"
+import { normalizeModelForWire } from "./model-wire.js"
 import type { RouteSpec } from "./session-config.js"
 import {
   normalizeSkillsOption,
@@ -151,14 +148,12 @@ export function buildRouteAwareLaunchConfig(
   // `route.gateway` → base_url above, and providers reject the suffixed literal.
   // For a fixed-provider, non-derived-from-model adapter, also strip the native
   // vendor prefix so the id matches what that adapter's own selector expects.
-  const nativeVendor =
-    input.routeSelection !== "derived-from-model"
-      ? input.route?.gateway ?? input.adapterProvider
-      : undefined
   const wireModel = input.model
-    ? nativeVendor
-      ? stripFixedNativeVendor(input.model, nativeVendor)
-      : stripRouteSuffix(input.model)
+    ? normalizeModelForWire(input.model, {
+        routeSelection: input.routeSelection,
+        gateway: input.route?.gateway,
+        fixedProvider: input.adapterProvider,
+      })
     : undefined
 
   const out: RouteAwareLaunchConfig = {}

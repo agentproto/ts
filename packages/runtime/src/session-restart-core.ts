@@ -772,6 +772,12 @@ export async function restartAgentSession(
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
         : {}),
       harness: effHarness,
+      ...(resolved.routeSelection !== undefined
+        ? { routeSelection: resolved.routeSelection }
+        : {}),
+      ...(resolved.authDescriptor?.provider !== undefined
+        ? { adapterProvider: resolved.authDescriptor.provider }
+        : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(effModel ? { model: effModel } : {}),

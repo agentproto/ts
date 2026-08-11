@@ -2004,6 +2004,12 @@ export async function spawnAgentSession(
         cwd,
         adapterSlug: input.adapter,
         harness: input.harness ?? input.adapter,
+        ...(resolved?.routeSelection !== undefined
+          ? { routeSelection: resolved.routeSelection }
+          : {}),
+        ...(resolved?.authDescriptor?.provider !== undefined
+          ? { adapterProvider: resolved.authDescriptor.provider }
+          : {}),
         ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
@@ -2295,6 +2301,12 @@ export async function spawnAgentSession(
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
         : {}),
       harness: input.harness ?? input.adapter,
+      ...(resolved?.routeSelection !== undefined
+        ? { routeSelection: resolved.routeSelection }
+        : {}),
+      ...(resolved?.authDescriptor?.provider !== undefined
+        ? { adapterProvider: resolved.authDescriptor.provider }
+        : {}),
       ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
