@@ -96,7 +96,11 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
     // tool-call-map.ts). The built-in default agent ships the workspace
     // toolset (read/edit/run), so this is on.
     tool_calls: true,
-    sub_agents: false,
+    // Modes-on (default) grants both the daemon sub-agent-spawning tools
+    // (agent_start/agent_prompt/agent_output/session_list, daemon-tools.ts)
+    // and the in-process `reviewer` subagent (subagents config,
+    // default-agent.ts) — see WP-5.
+    sub_agents: true,
     // The workspace toolset reads/writes files inside the spawn cwd.
     file_io: true,
     // Image/audio/embedded-resource prompt blocks are passed to the agent as
@@ -161,6 +165,15 @@ export {
 } from "./acp-host.js"
 export { resolveMastraModel, modelRefToString, providerOf } from "./model-resolver.js"
 export { makeWorkspaceTools, resolveInCwd } from "./workspace-tools.js"
+export {
+  DaemonClient,
+  DaemonNotFoundError,
+  DaemonHttpError,
+  discoverDaemonEndpoint,
+  type DaemonEndpoint,
+  type DaemonClientOptions,
+} from "./daemon-client.js"
+export { makeDaemonTools, type DaemonToolsOptions } from "./daemon-tools.js"
 export { buildSqliteMemory, buildSqliteStore, resolveMemoryDbPath } from "./memory.js"
 export {
   createEventMapper,

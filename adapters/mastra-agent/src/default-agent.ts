@@ -13,10 +13,12 @@ import type { MastraToolLike } from "@agentproto/mastra"
 import { AgentController } from "@mastra/core/agent-controller"
 import type {
   AgentControllerConfig,
+  AgentControllerSubagent,
   BuiltinToolId,
   PermissionRules,
 } from "@mastra/core/agent-controller"
 import { Workspace } from "@mastra/core/workspace"
+import { makeDaemonTools } from "./daemon-tools.js"
 import type { MastraMemoryLike } from "./memory.js"
 import { buildSqliteMemory, buildSqliteStore } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
@@ -112,8 +114,8 @@ export async function resolveAgentSource(
 
 /** Every AgentController built-in tool id — WP-1 parity mode disables them ALL
  *  so the controller adds nothing the raw-stream agent didn't have. Modes-on
- *  (the default, WP-3) re-enables `submit_plan` only — see `makeAgentFactory`.
- *  Later WPs selectively re-enable more (`subagent` for spawning, …). */
+ *  (the default, WP-3/WP-5) re-enables `submit_plan` and `subagent` — see
+ *  `makeAgentFactory`. */
 export const DISABLED_BUILTIN_TOOL_IDS: readonly BuiltinToolId[] = [
   "ask_user",
   "submit_plan",
@@ -123,6 +125,44 @@ export const DISABLED_BUILTIN_TOOL_IDS: readonly BuiltinToolId[] = [
   "task_check",
   "subagent",
 ] as const
+
+/** Built-in ids modes-on re-enables out of {@link DISABLED_BUILTIN_TOOL_IDS} —
+ *  `submit_plan` (WP-3's plan-approval gate) and `subagent` (WP-5's in-process
+ *  subagent spawner, backing {@link REVIEWER_SUBAGENT}). */
+const REENABLED_BUILTIN_TOOL_IDS: readonly BuiltinToolId[] = ["submit_plan", "subagent"]
+
+/** Read-only tool ids granted to the reviewer subagent — a reviewer that
+ *  can only read code/diffs/tests and run the suite, never edit. `read_diff`
+ *  and `run_tests` only exist in the controller's `tools` set when
+ *  `allowExec` is true (see `makeWorkspaceTools`); AgentController silently
+ *  has nothing to grant for an id absent from `tools` when exec is off, so
+ *  the reviewer's toolset shrinks to `list_dir`/`read_file` in that case. */
+const REVIEWER_ALLOWED_TOOL_IDS: readonly string[] = ["read_file", "read_diff", "run_tests", "list_dir"]
+
+/**
+ * In-process code-review subagent (WP-5), spawned via the `subagent` built-in
+ * tool. `forked: true` clones the parent thread onto the subagent run so the
+ * reviewer sees the same conversation context (what was asked, what changed,
+ * why) instead of reviewing a diff cold — the plan's own rationale for this
+ * subagent. Forked runs require the controller's `memory` to be configured;
+ * that's true for the built-in default agent (its manifest declares a
+ * `memory:` section — see `defaultAgentManifest`) but is only as true as
+ * whatever AGENT.md a caller supplies via `agentFile` — an AGENT.md with no
+ * `memory:` section leaves `config.memory` unset (see `makeAgentFactory`)
+ * and a forked reviewer run would then have nothing to fork.
+ */
+const REVIEWER_SUBAGENT: AgentControllerSubagent = {
+  id: "reviewer",
+  name: "Code reviewer",
+  description: "Reviews changes for correctness and reports findings.",
+  instructions:
+    "You are reviewing a change for correctness. Read the diff (`read_diff`) and the files it " +
+    "touches, run the test suite (`run_tests`) if one exists, and report concrete findings: bugs, " +
+    "missed edge cases, and test gaps. You cannot edit files — report findings back to the caller " +
+    "instead of trying to fix them yourself.",
+  allowedControllerTools: [...REVIEWER_ALLOWED_TOOL_IDS],
+  forked: true,
+}
 
 /** Session state the controller carries for us (see `initialState` below). */
 interface AdapterControllerState {
@@ -192,6 +232,14 @@ export function makeAgentFactory(
       ? resolveModes(body)
       : { modes: [{ id: "main", metadata: { default: true } }], defaultModeId: "main" }
 
+    // Daemon sub-agent-spawning tools (WP-5) are additive, modes-on only —
+    // parity mode stays exactly the WP-1 raw-stream toolset. Built fresh per
+    // controller (each has its own `DaemonClient`, cheap: no network call
+    // happens until a tool actually executes and discovery runs lazily).
+    const tools = modesEnabled
+      ? { ...workspaceTools, ...makeDaemonTools({ clientOptions: { cwd } }) }
+      : workspaceTools
+
     const config: AgentControllerConfig<AdapterControllerState> = {
       id: "agentproto-native",
       // The AGENT.md-built agent backs every mode; parity mode has exactly
@@ -203,17 +251,19 @@ export function makeAgentFactory(
       // Thread rows + per-thread settings persist to the same SQLite file the
       // agent's Memory writes messages to.
       storage: store,
-      // Our hardened workspace toolset stays the tool surface. The backing
-      // agent already carries the AGENT.md-declared subset; controller-level
-      // tools are an additive toolset, so ids overlap onto the same executors.
-      tools: workspaceTools as AgentControllerConfig["tools"],
+      // Our hardened workspace toolset (+ daemon tools, modes-on) stays the
+      // tool surface. The backing agent already carries the AGENT.md-declared
+      // subset; controller-level tools are an additive toolset, so ids
+      // overlap onto the same executors.
+      tools: tools as AgentControllerConfig["tools"],
       // Parity mode disables every built-in controller tool and skips tool
       // approvals entirely (`yolo: true` keeps `requireToolApproval` off so
       // tools execute pass-through exactly as the raw stream did). Modes-on
-      // re-enables `submit_plan` (the plan mode's approval gate) and seeds
-      // real per-category tool-approval policy instead.
+      // re-enables `submit_plan` (the plan mode's approval gate) and
+      // `subagent` (WP-5's in-process reviewer, see `REVIEWER_SUBAGENT`), and
+      // seeds real per-category tool-approval policy instead.
       disableBuiltinTools: modesEnabled
-        ? DISABLED_BUILTIN_TOOL_IDS.filter((id) => id !== "submit_plan")
+        ? DISABLED_BUILTIN_TOOL_IDS.filter((id) => !REENABLED_BUILTIN_TOOL_IDS.includes(id))
         : [...DISABLED_BUILTIN_TOOL_IDS],
       toolCategoryResolver,
       initialState: modesEnabled ? { permissionRules: DEFAULT_PERMISSION_RULES } : { yolo: true },
@@ -228,6 +278,7 @@ export function makeAgentFactory(
       workspace: new Workspace({ skills: () => [] }),
     }
     if (memory) config.memory = memory
+    if (modesEnabled) config.subagents = [REVIEWER_SUBAGENT]
 
     return { controller: new AgentController<AdapterControllerState>(config) }
   }

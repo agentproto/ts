@@ -20,8 +20,8 @@ describe("mastra-agent manifest options", () => {
       resumable: true,
       file_io: true,
       multimodal: true,
-      // Not until WP-5.
-      sub_agents: false,
+      // WP-5: daemon sub-agent-spawning tools + in-process reviewer subagent.
+      sub_agents: true,
     })
     expect(mastraAgent.session?.context_carryover).toBe(true)
   })

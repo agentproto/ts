@@ -23,11 +23,20 @@ const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
   apply_patch: "edit",
   run_command: "execute",
   run_tests: "execute",
-  // Daemon verbs, arriving in WP-5.
+  // Daemon verbs (WP-5) — spawning/prompting/reading a sibling session is the
+  // same "reach outside this run" shape as an MCP tool call, so it gets
+  // Mastra's `mcp` category (default policy `ask`, see below).
   agent_start: "mcp",
   agent_prompt: "mcp",
   agent_output: "mcp",
   session_list: "mcp",
+  // AgentController's built-in `subagent` spawner (WP-5) — spawning an
+  // in-process reviewer is the same "reach outside this run" shape as the
+  // daemon spawn verbs above, so it shares their `mcp` category and default
+  // `ask` policy rather than `other`'s (also `ask` today, but a distinct
+  // category keeps the two spawn surfaces — daemon vs. in-process — tunable
+  // independently later without a behavior change now).
+  subagent: "mcp",
   // `submit_plan` (WP-3) gates itself: calling it always suspends the run
   // for the user's approve/reject decision (see modes.ts's plan mode). It
   // has no "other"-category behavior worth asking about a second time before
