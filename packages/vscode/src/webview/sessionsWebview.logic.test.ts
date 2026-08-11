@@ -272,16 +272,19 @@ describe("laneOf / autoGroupOf", () => {
     expect(laneOf(session({ origin: "vscode" }))).toBe("agents")
     expect(autoGroupOf(session())).toBeUndefined()
   })
-  it("routes gate/cron/command sessions to the auto lane, sub-grouped", () => {
+  it("routes gate/cron/command/child sessions to the auto lane, sub-grouped", () => {
     expect(autoGroupOf(session({ origin: "gate" }))).toBe("gate")
     expect(autoGroupOf(session({ origin: "cron" }))).toBe("cron")
     expect(autoGroupOf(session({ kind: "command" }))).toBe("command")
+    expect(autoGroupOf(session({ parentSessionId: "parent" }))).toBe("task")
     expect(laneOf(session({ origin: "gate" }))).toBe("auto")
     expect(laneOf(session({ kind: "command" }))).toBe("auto")
+    expect(laneOf(session({ parentSessionId: "parent" }))).toBe("auto")
   })
-  it("prefers gate over cron over command when tells overlap", () => {
+  it("prefers gate over cron over command over task when tells overlap", () => {
     expect(autoGroupOf(session({ origin: "gate", kind: "command" }))).toBe("gate")
     expect(autoGroupOf(session({ origin: "cron", kind: "command" }))).toBe("cron")
+    expect(autoGroupOf(session({ origin: "gate", parentSessionId: "p" }))).toBe("gate")
   })
 })
 
@@ -396,11 +399,12 @@ describe("buildSessionsWebviewModel — lane split", () => {
     session({ id: "gate", cwd: "/Code/studio", origin: "gate", status: "exited" }),
     session({ id: "cron", cwd: "/Code/studio", origin: "cron", label: "cron:cron_abc12345", status: "exited" }),
     session({ id: "cmd", cwd: "/Code/studio", kind: "command", status: "exited" }),
+    session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "human" }),
   ]
 
   it("counts both lanes regardless of the selected lane", () => {
     const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "agents" }))
-    expect(model.laneCounts).toEqual({ agents: 1, auto: 3 })
+    expect(model.laneCounts).toEqual({ agents: 1, auto: 4 })
   })
 
   it("shows only human-origin sessions in the agents lane", () => {
@@ -409,10 +413,10 @@ describe("buildSessionsWebviewModel — lane split", () => {
     expect(ids).toEqual(["human"])
   })
 
-  it("groups the auto lane into Gate reviews / Crons / Commands, in order", () => {
+  it("groups the auto lane into Gate reviews / Crons / Commands / Tasks, in order", () => {
     const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "auto" }))
-    expect(model.groups.map(g => g.key)).toEqual(["gate", "cron", "command"])
-    expect(model.groups.map(g => g.label)).toEqual(["Gate reviews", "Crons", "Commands"])
+    expect(model.groups.map(g => g.key)).toEqual(["gate", "cron", "command", "task"])
+    expect(model.groups.map(g => g.label)).toEqual(["Gate reviews", "Crons", "Commands", "Tasks"])
   })
 
   it("cleans up the machine-session name (cron · shortId, command · shortId, gate-review)", () => {
@@ -647,18 +651,18 @@ describe("buildSessionsWebviewModel — filtering + totals", () => {
     expect(model.groups[0]!.rows[0]!.watched).toBe(true)
   })
 
-  it("nests a subagent under its spawner in the same section (item 6)", () => {
+  it("routes a subagent (parentSessionId set) to the auto lane's Tasks group (item 6)", () => {
     const sessions = [
       session({ id: "parent", cwd: "/Code/studio", busy: true }),
       session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "parent" }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
-    const running = model.groups.find(g => g.key === "running")!
-    const parent = running.rows.find(r => r.id === "parent")!
-    const child = running.rows.find(r => r.id === "child")!
-    expect(parent.depth).toBe(0)
-    expect(child.depth).toBe(1)
-    expect(running.rows.indexOf(parent)).toBeLessThan(running.rows.indexOf(child))
+    const agentsModel = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const running = agentsModel.groups.find(g => g.key === "running")!
+    expect(running.rows.map(r => r.id)).toEqual(["parent"])
+
+    const autoModel = buildSessionsWebviewModel(sessions, studioConfig, opts({ lane: "auto" }))
+    const tasks = autoModel.groups.find(g => g.key === "task")!
+    expect(tasks.rows[0]!.id).toBe("child")
   })
 
   it("filters by the pinned search input via the reused predicate", () => {

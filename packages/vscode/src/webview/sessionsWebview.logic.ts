@@ -295,7 +295,7 @@ export interface WebviewWorkspace {
 export type SessionLane = "agents" | "auto"
 
 /** Auto-lane subgroups, in display order. */
-export type AutoGroupKind = "gate" | "cron" | "command"
+export type AutoGroupKind = "gate" | "cron" | "command" | "task"
 
 /**
  * The Auto-lane subgroup a machine-origin session belongs to, or undefined
@@ -305,15 +305,16 @@ export type AutoGroupKind = "gate" | "cron" | "command"
  * `"cron"`, stamped by the cron scheduler) and a raw command execution
  * (`kind === "command"`). No daemon change: these are all existing fields.
  */
-export function autoGroupOf(session: Pick<SessionSummary, "origin" | "kind">): AutoGroupKind | undefined {
+export function autoGroupOf(session: Pick<SessionSummary, "origin" | "kind" | "parentSessionId">): AutoGroupKind | undefined {
   if (isMachineOrigin(session.origin)) return "gate"
   if (session.origin === "cron") return "cron"
   if (session.kind === "command") return "command"
+  if (session.parentSessionId) return "task"
   return undefined
 }
 
 /** Human-origin ("agents") vs machine-origin ("auto") — the segmented-control axis. */
-export function laneOf(session: Pick<SessionSummary, "origin" | "kind">): SessionLane {
+export function laneOf(session: Pick<SessionSummary, "origin" | "kind" | "parentSessionId">): SessionLane {
   return autoGroupOf(session) === undefined ? "agents" : "auto"
 }
 
@@ -321,9 +322,10 @@ const AUTO_GROUP_LABELS: Readonly<Record<AutoGroupKind, string>> = {
   gate: "Gate reviews",
   cron: "Crons",
   command: "Commands",
+  task: "Tasks",
 }
 
-export const AUTO_GROUP_ORDER: readonly AutoGroupKind[] = ["gate", "cron", "command"]
+export const AUTO_GROUP_ORDER: readonly AutoGroupKind[] = ["gate", "cron", "command", "task"]
 
 /**
  * The cron job id a cron session runs under, extracted from its
@@ -361,6 +363,8 @@ function nameIdentityFor(session: SessionSummary): { name: string; idMono: strin
     }
     case "command":
       return { name: "command", idMono: shortSessionId(session.id) }
+    case "task":
+      return { name: labelFor(session), idMono: undefined }
     default:
       return { name: labelFor(session), idMono: undefined }
   }
