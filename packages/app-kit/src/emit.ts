@@ -88,6 +88,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
       ...(app.ui.title !== undefined ? { title: app.ui.title } : {}),
       ...(app.ui.description !== undefined ? { description: app.ui.description } : {}),
       ...(app.ui.tools !== undefined ? { tools: app.ui.tools } : {}),
+      ...(app.ui.port !== undefined ? { port: app.ui.port } : {}),
       ...(app.ui.csp !== undefined ? { csp: app.ui.csp } : {}),
     }
   }

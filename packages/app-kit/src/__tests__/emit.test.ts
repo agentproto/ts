@@ -210,6 +210,7 @@ describe("emit — manifests round-trip through the loaders", () => {
         title: "Solo Panel",
         description: "A panel.",
         tools: ["read_file"],
+        port: 8123,
         csp: { connectDomains: ["api.example.com"] },
       },
     })
@@ -223,6 +224,7 @@ describe("emit — manifests round-trip through the loaders", () => {
     expect(parsed.data.ui.title).toBe("Solo Panel")
     expect(parsed.data.ui.description).toBe("A panel.")
     expect(parsed.data.ui.tools).toEqual(["read_file"])
+    expect(parsed.data.ui.port).toBe(8123)
     expect(parsed.data.ui.csp).toEqual({ connectDomains: ["api.example.com"] })
     expect(parsed.data.ui.html).toBeUndefined()
     expect(join(dir, parsed.data.ui.path)).toBe(uiPath)

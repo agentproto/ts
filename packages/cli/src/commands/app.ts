@@ -35,6 +35,7 @@ import { parseArgs } from "node:util"
 import matter from "gray-matter"
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
+import { runAppServe } from "../app-serve.js"
 
 // ── types ────────────────────────────────────────────────────────────────
 
@@ -78,11 +79,12 @@ interface AgentAppManifest {
   agentprotoVersion: string
 }
 
-const USAGE = `agentproto app — package or unpack an agentproto app bundle (.agentapp)
+const USAGE = `agentproto app — package, unpack, or serve an agentproto app bundle (.agentapp)
 
 Usage:
   agentproto app pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
+  agentproto app serve [appDir] [--port <n>] [--json]
 
 pack:
   Walk <appDir> (must contain .agentproto/APP.md), write manifest.json and a
@@ -92,7 +94,12 @@ pack:
 unpack:
   Extract a .agentapp, verify format agentapp/v1 and the sha256 aggregate,
   and restore the app folder (without manifest.json). Without --dir,
-  restores into <id>-<version> in the current directory.`
+  restores into <id>-<version> in the current directory.
+
+serve:
+  Serve <appDir>'s .agentproto/ui/ as a standalone webapp with a window.McpApp
+  bridge wired to the daemon's /mcp endpoint. Port resolution: --port, then
+  the APP.md "ui.port" hint, then an OS-assigned free port.`
 
 // ── public entries ───────────────────────────────────────────────────────
 
@@ -104,6 +111,10 @@ export async function runApp(args: readonly string[]): Promise<number> {
   }
   if (subVerb === "unpack") {
     return runAppUnpack(args.filter((a) => a !== subVerb))
+  }
+
+  if (subVerb === "serve") {
+    return runAppServe(args.filter((a) => a !== subVerb))
   }
 
   process.stderr.write(
