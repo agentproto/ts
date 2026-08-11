@@ -23,7 +23,9 @@ import type { AgentCliDefinition } from "../types.js"
  */
 
 let nextSpawnError: Error | undefined
+let nextSpawnStderr: string | undefined
 const spawnCalls: Array<{ bin: string; args: string[] }> = []
+const protocolArms: Array<{ sessionId: string; _stderrTail?: () => string }> = []
 
 function fakeChild() {
   const child = Object.assign(new EventEmitter(), {
@@ -37,7 +39,12 @@ function fakeChild() {
   const failure = nextSpawnError
   queueMicrotask(() => {
     if (failure) child.emit("error", failure)
-    else child.emit("spawn")
+    else {
+      child.emit("spawn")
+      queueMicrotask(() => {
+        if (nextSpawnStderr) child.stderr.write(nextSpawnStderr)
+      })
+    }
   })
   return child
 }
@@ -50,14 +57,18 @@ vi.mock("node:child_process", () => ({
 }))
 
 vi.mock("../protocol/acp-client.js", () => ({
-  createAcpProtocolArm: vi.fn(() => ({
-    sessionId: "acp-sess-1",
-    async connect() {},
-    async send() {},
-    async *events() {},
-    async cancel() {},
-    async close() {},
-  })),
+  createAcpProtocolArm: vi.fn(() => {
+    const arm = {
+      sessionId: "acp-sess-1",
+      async connect() {},
+      async send() {},
+      async *events() {},
+      async cancel() {},
+      async close() {},
+    }
+    protocolArms.push(arm)
+    return arm
+  }),
 }))
 
 import { createAgentCliRuntime } from "../define-agent-cli.js"
@@ -120,5 +131,26 @@ describe("createAgentCliRuntime(...).start() — spawn failure never crashes the
     nextSpawnError = undefined
     const session = await createAgentCliRuntime(nodeBinDef).start({ cwd: "/tmp" })
     expect(session.sessionId).toBe("acp-sess-1")
+  })
+
+  it("still starts when Codex reports an available update on stderr", async () => {
+    nextSpawnError = undefined
+    nextSpawnStderr = "✨ Update available! 0.145.0 -> 0.146.0\n"
+    protocolArms.length = 0
+
+    await expect(
+      createAgentCliRuntime({
+        ...nodeBinDef,
+        id: "codex",
+        name: "codex",
+        bin: "npx",
+        bin_args: ["-y", "@agentclientprotocol/codex-acp@1.1.14"],
+      }).start({ cwd: "/tmp" }),
+    ).resolves.toMatchObject({ sessionId: "acp-sess-1" })
+
+    expect(protocolArms.at(-1)?._stderrTail?.()).toContain(
+      "Update available! 0.145.0 -> 0.146.0",
+    )
+    nextSpawnStderr = undefined
   })
 })

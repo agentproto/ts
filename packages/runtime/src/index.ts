@@ -315,6 +315,7 @@ export type {
   AgentSessionLike,
   AgentStreamEvent,
   SessionDescriptor,
+  SessionCurrentPhase,
   SessionKind,
   SessionStatus,
   SpawnSessionInput,

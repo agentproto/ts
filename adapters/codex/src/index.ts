@@ -3,7 +3,8 @@
  * maintained ACP wrapper @agentclientprotocol/codex-acp.
  *
  * The wrapper bundles its own Codex runtime (Rust binary delivered via
- * npm dependency) so a single `npx -y @agentclientprotocol/codex-acp`
+ * npm dependency) so a single
+ * `npx -y @agentclientprotocol/codex-acp@1.1.14`
  * invocation is enough — no separate @openai/codex install needed.
  *
  *   import { codex, codexRuntime } from "@agentproto/adapter-codex"
@@ -27,21 +28,24 @@ export const codex: AgentCliHandle = defineAgentCli({
   name: "codex",
   id: "codex",
   description:
-    "OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via `npx -y @agentclientprotocol/codex-acp` and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.",
+    "OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via a version-pinned npx package and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.",
   version: "0.1.0",
   bin: "npx",
-  bin_args: ["-y", "@agentclientprotocol/codex-acp"],
+  // Keep spawn deterministic. An unversioned npx target performs registry
+  // resolution at session startup and can silently replace both the bridge
+  // and its bundled Codex runtime exactly when either publishes an update.
+  bin_args: ["-y", "@agentclientprotocol/codex-acp@1.1.14"],
   install: [
     {
       method: "npm",
-      package: "@agentclientprotocol/codex-acp",
+      package: "@agentclientprotocol/codex-acp@1.1.14",
       global: true,
     },
   ],
   version_check: {
-    cmd: "npm view @agentclientprotocol/codex-acp version",
+    cmd: "npm view @agentclientprotocol/codex-acp@1.1.14 version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
-    range: ">=1.1.7",
+    range: "=1.1.14",
     timeout_ms: 15_000,
   },
   auth: {
