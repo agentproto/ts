@@ -4066,6 +4066,43 @@ describe("spawnAgentSession — model/route reconciliation", () => {
       expect(result.descriptor.route).toEqual({ gateway: "anthropic" })
     }
   })
+
+  // Hermes false-positive fix: a by-model-router adapter (no fixed
+  // `authDescriptor.provider` — hermes, pi, opencode) that spawns a model
+  // with NO explicit `@route` suffix and NO caller-supplied `route` still
+  // bills a real gateway (derived via `getModelProvider`, mirroring what
+  // `resolveAuthSpec` independently resolves for the credential). Before
+  // this fix the descriptor's `route` stayed empty, so the VS Code
+  // change-model picker's `resolveEffectiveRoute(session.model,
+  // session.route?.gateway)` fell back to treating the session as running
+  // the model's bare/direct route and flagged a false "restart required"
+  // the moment the operator picked another row on the SAME gateway.
+  it("stamps the resolved gateway onto the descriptor for a by-model-router adapter with no explicit route", async () => {
+    const { resolver } = localResolver({})
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "hermes", cwd: "/tmp", model: "deepseek/deepseek-v3.2" },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.model).toBe("deepseek/deepseek-v3.2")
+      expect(result.descriptor.route).toEqual({ gateway: "openrouter" })
+    }
+  })
+
+  it("does NOT stamp a route for a fixed-provider adapter's direct spawn (no regression)", async () => {
+    const { resolver } = localResolver({ provider: "anthropic" })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "claude-code", cwd: "/tmp", model: "claude-opus-4-8" },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.route).toBeUndefined()
+    }
+  })
 })
 
 describe("spawnAgentSession — child→parent report-back plumbing", () => {

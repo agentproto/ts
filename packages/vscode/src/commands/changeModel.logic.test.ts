@@ -141,6 +141,49 @@ describe("mapChangeModelQuickPickItems", () => {
     expect(requesty?.description).toBe("restart required · via requesty")
   })
 
+  it("does NOT flag a false restart-required when the session's route.gateway is stamped (hermes fix)", () => {
+    // Regression for the hermes false-positive: a session running a bare
+    // (no `@route` suffix) model that bills a gateway must carry that
+    // gateway on `session.route.gateway` — the runtime now stamps it at
+    // spawn time (session-spawn.ts) for by-model-router adapters. Once
+    // it's present, switching to another model pinned to the SAME gateway
+    // must not be flagged restart-required.
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        slug: "hermes",
+        modelDetails: [
+          { id: "deepseek/deepseek-v3.2" },
+          { id: "deepseek/deepseek-v4-flash-0731@openrouter" },
+        ],
+      }),
+      session({ model: "deepseek/deepseek-v3.2", route: { gateway: "openrouter" } }),
+    )
+    const target = items.find(i => i.model === "deepseek/deepseek-v4-flash-0731@openrouter")
+    expect(target?.restartRequired).toBeUndefined()
+    // Still names the route (both rows bill the same one) — just no longer
+    // prefixed with "restart required".
+    expect(target?.description).toBe("via openrouter")
+  })
+
+  it("WOULD false-positive without the stamped gateway (documents the bug this fix closes)", () => {
+    // Same rows as above, but the session descriptor lacks `route.gateway`
+    // — the pre-fix shape. `resolveEffectiveRoute` falls back to the bare
+    // model's own (wrong) direct-vendor assumption, so the picker flags an
+    // unnecessary restart even though both rows bill `openrouter`.
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        slug: "hermes",
+        modelDetails: [
+          { id: "deepseek/deepseek-v3.2" },
+          { id: "deepseek/deepseek-v4-flash-0731@openrouter" },
+        ],
+      }),
+      session({ model: "deepseek/deepseek-v3.2" }),
+    )
+    const target = items.find(i => i.model === "deepseek/deepseek-v4-flash-0731@openrouter")
+    expect(target?.restartRequired).toBe(true)
+  })
+
   it("merges restart-required and route suffix on a cross-route row", () => {
     const items = mapChangeModelQuickPickItems(
       adapter({
