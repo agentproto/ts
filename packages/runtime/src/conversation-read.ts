@@ -171,6 +171,32 @@ export async function readConversation(
     return { conversation: null, reason: `session "${input.idOrName}" not found` }
   }
 
+  const format = input.format ?? "markdown"
+
+  const tryDaemonFallback = async (
+    nativeReason: string,
+    nativeIdentity?: Pick<ConversationReadResult, "conversationId" | "adapter">,
+  ): Promise<ConversationReadResult> => {
+    try {
+      const session = await exportDaemonEventsSession(desc.id, desc)
+      const content = format === "json" ? renderJson(session) : renderMarkdown(session)
+      return {
+        conversation: session,
+        conversationId: nativeIdentity?.conversationId ?? desc.id,
+        adapter: nativeIdentity?.adapter ?? "daemon",
+        format,
+        content,
+      }
+    } catch (daemonErr) {
+      const daemonMsg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr)
+      return {
+        conversation: null,
+        ...nativeIdentity,
+        reason: `${nativeReason}\n(daemon-events fallback also failed: ${daemonMsg})`,
+      }
+    }
+  }
+
   const resolved = await resolveConversationId(desc)
   if (resolved.kind === "ambiguous") {
     return {
@@ -180,18 +206,16 @@ export async function readConversation(
     }
   }
   if (resolved.kind === "none") {
-    return { conversation: null, reason: resolved.reason }
+    return tryDaemonFallback(resolved.reason)
   }
 
   const store = CONVERSATION_STORES[resolved.storeKey]
   if (!store) {
-    return {
-      conversation: null,
-      reason: `no conversation store registered for adapter "${resolved.storeKey}"`,
-    }
+    return tryDaemonFallback(`no conversation store registered for adapter "${resolved.storeKey}"`, {
+      conversationId: resolved.conversationId,
+      adapter: resolved.storeKey,
+    })
   }
-
-  const format = input.format ?? "markdown"
   try {
     const session = await store.read(resolved.conversationId, desc.cwd)
     const content = format === "json" ? renderJson(session) : renderMarkdown(session)
@@ -204,31 +228,10 @@ export async function readConversation(
     }
   } catch (readErr) {
     const nativeMsg = readErr instanceof Error ? readErr.message : String(readErr)
-    // Fallback: the provider's native transcript may be missing even though
-    // the conversation id resolved — e.g. a process killed mid-turn before
-    // claude-code ever finalized its own jsonl. The daemon ALWAYS has an
-    // independent capture in events.jsonl (written upstream, before the
-    // native write, by transcript-writer.ts — and it's universal across
-    // adapters). Reconstruct from that before giving up.
-    try {
-      const session = await exportDaemonEventsSession(desc.id, desc)
-      const content = format === "json" ? renderJson(session) : renderMarkdown(session)
-      return {
-        conversation: session,
-        conversationId: resolved.conversationId,
-        adapter: resolved.storeKey,
-        format,
-        content,
-      }
-    } catch (daemonErr) {
-      const daemonMsg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr)
-      return {
-        conversation: null,
-        conversationId: resolved.conversationId,
-        adapter: resolved.storeKey,
-        reason: `${nativeMsg}\n(daemon-events fallback also failed: ${daemonMsg})`,
-      }
-    }
+    return tryDaemonFallback(nativeMsg, {
+      conversationId: resolved.conversationId,
+      adapter: resolved.storeKey,
+    })
   }
 }
 
