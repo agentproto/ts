@@ -39,6 +39,43 @@ export interface BrainStateRecord {
   readonly bytes: number
 }
 
+// ── Knowledge provider configuration ──────────────────────────────────
+//
+// A workspace can declaratively pick WHICH knowledge backends back its
+// brain, and SEVERAL at once. The shape is loaded from
+// `~/.agentproto/workspaces/<slug>/knowledge.json` by the daemon host
+// (see `@agentproto/runtime` `workspace-brains.ts`) and threaded through
+// {@link BrainConfig.knowledge}. Absent → one default `files` provider
+// (BM25), i.e. today's behavior.
+
+/** The concrete adapter implementation a provider entry instantiates. */
+export type KnowledgeProviderAdapterId = "files" | "gbrain-doc" | "qdrant" | "corpus"
+
+/**
+ * One provider entry in a workspace's `knowledge.json`. Adapter-specific
+ * options (endpoint, bearer, url, collection, …) live FLAT on this object —
+ * they ride the string index, and the resolver (provider-resolver.ts) maps
+ * each `adapter` onto its own config shape.
+ */
+export interface KnowledgeProviderConfig {
+  /** Unique id within the workspace (referenced by `defaultQueryProviders`). */
+  readonly id: string
+  /** Which adapter implementation to instantiate. */
+  readonly adapter: KnowledgeProviderAdapterId
+  /** Ingest fan-out target when true. Defaults to true when omitted. */
+  readonly auto?: boolean
+  /** Multiplier on the normalized score during federated merge. Default 1. */
+  readonly weight?: number
+  readonly [key: string]: unknown
+}
+
+/** Parsed contents of `~/.agentproto/workspaces/<slug>/knowledge.json`. */
+export interface KnowledgeConfig {
+  readonly providers: readonly KnowledgeProviderConfig[]
+  /** Providers consulted by `query()`. Absent → all providers. */
+  readonly defaultQueryProviders?: readonly string[]
+}
+
 /**
  * Host-injected config — the one seam between this pure engine and the
  * real conversation stores of the world.
@@ -48,6 +85,12 @@ export interface BrainConfig {
   readonly workspace: string
   /** Absolute brain directory (`~/.agentproto/workspaces/<slug>/brain`). */
   readonly brainDir: string
+  /**
+   * Optional knowledge provider config. Absent → single default
+   * `{ id: "local", adapter: "files", auto: true }` provider (BM25),
+   * i.e. today's behavior. Present → resolved + federated by the manager.
+   */
+  readonly knowledge?: KnowledgeConfig
   /**
    * Resolve a session reference to its exported transcript, or `null` when
    * the session has nothing readable (unknown, no store, empty). Returning
