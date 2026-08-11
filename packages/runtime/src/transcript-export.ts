@@ -356,6 +356,15 @@ export async function exportClaudeCodeSession(
 // node:sqlite is experimental in Node 22.x but functional.
 // Isolated here so a future stable import replaces only this function.
 
+// esbuild (via tsup) strips the `node:` prefix from builtin imports. Most
+// builtins work without it, but `node:sqlite` has NO unprefixed name —
+// `import('sqlite')` fails at runtime. A computed specifier dodges the
+// static analysis so the prefix survives bundling.
+const NODE_SQLITE = "node:" + "sqlite"
+async function importNodeSqlite(): Promise<typeof import("node:sqlite")> {
+  return import(/* @vite-ignore */ NODE_SQLITE)
+}
+
 interface HermesSessionRow {
   id: string
   title?: string
@@ -394,11 +403,9 @@ interface HermesMessageRow {
 type HermesDb = InstanceType<(typeof import("node:sqlite"))["DatabaseSync"]>
 
 async function openHermesDb(dbPath: string): Promise<HermesDb> {
-  // Dynamic import isolates the experimental module warning and lets
-  // callers on older Node get a clear error instead of a crash at load time.
   let DatabaseSync: (typeof import("node:sqlite"))["DatabaseSync"]
   try {
-    const sqlite = await import("node:sqlite")
+    const sqlite = await importNodeSqlite()
     DatabaseSync = sqlite.DatabaseSync
   } catch {
     throw new Error("hermes: node:sqlite unavailable. Requires Node.js ≥22.5.0.")
@@ -454,7 +461,7 @@ function withRetryOnBusy<T>(fn: () => T): T {
 async function openReadonlySqlite(dbPath: string, label: string): Promise<HermesDb> {
   let DatabaseSync: (typeof import("node:sqlite"))["DatabaseSync"]
   try {
-    const sqlite = await import("node:sqlite")
+    const sqlite = await importNodeSqlite()
     DatabaseSync = sqlite.DatabaseSync
   } catch {
     throw new Error(`${label}: node:sqlite unavailable. Requires Node.js ≥22.5.0.`)
