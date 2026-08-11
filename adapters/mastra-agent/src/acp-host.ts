@@ -1,10 +1,12 @@
 /**
- * WP2 — the agent side of AIP-44 ACP, backed by a live Mastra agent.
+ * WP2 — the agent side of AIP-44 ACP, backed by a Mastra `AgentController`.
  *
  * Implements the `@agentclientprotocol/sdk` `Agent` interface: handles the
- * session lifecycle and, on `session/prompt`, drives a Mastra agent's
- * `stream()` — relaying each text delta as an `agent_message_chunk`
- * `session/update`, exactly as an IDE/host expects from codex or claude-code.
+ * session lifecycle and, on `session/prompt`, drives a controller `Session`'s
+ * `sendMessage()` — relaying its subscription events as ACP `session/update`s
+ * (text deltas as `agent_message_chunk`, tool activity as `tool_call` /
+ * `tool_call_update`), exactly as an IDE/host expects from codex or
+ * claude-code.
  *
  * No Mastra-specific protocol knowledge leaks past this file; everything above
  * is the standard ACP wire, so the daemon spawns this like any other arm.
@@ -26,38 +28,43 @@ import type {
   SetSessionModeRequest,
 } from "@agentclientprotocol/sdk"
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
-import { type MastraStreamChunk, chunkToSessionUpdate } from "./tool-call-map.js"
+import type { AgentControllerEvent } from "@mastra/core/agent-controller"
+import { createEventMapper } from "./tool-call-map.js"
 
-/** A built Mastra agent — only the surface we need (its `stream`). Typed
- *  structurally so we don't couple to a specific @mastra/core version.
- *
- *  We read `fullStream` (the typed chunk union: text deltas AND tool-call /
- *  tool-result events) so tool activity surfaces as ACP `tool_call` updates,
- *  not only the final prose. `textStream` is kept as an optional fallback for
- *  a stripped agent that exposes only text. */
-export interface MastraLike {
-  stream(
-    input: string,
-    options?: {
-      abortSignal?: AbortSignal
-      /** Memory threading — `thread` scopes recall to one ACP session. */
-      memory?: { thread?: string; resource?: string }
-      /** Max agentic loop steps (tool-call → execute → continue). Default 1 = no loop. */
-      maxSteps?: number
-    },
-  ): Promise<{
-    fullStream?: ReadableStream<unknown>
-    textStream?: ReadableStream<string>
-    text?: Promise<string>
-  }>
+/** The slice of a controller `Session` this host drives. Typed structurally so
+ *  tests can script one and we don't couple to a specific @mastra/core
+ *  version's `Session` generics. */
+export interface ControllerSessionLike {
+  subscribe(
+    listener: (event: AgentControllerEvent) => void | Promise<void>,
+  ): () => void
+  sendMessage(input: { content: string }): Promise<void>
+  abort(): void
 }
 
-/** Lazily builds the Mastra agent (so model/key errors surface on the first
- *  prompt with a clear message, not at process spawn). */
-export type AgentFactory = () => Promise<MastraLike>
+/** The slice of an `AgentController` this host drives (structural, as above).
+ *  `createSession` keys on (resourceId, scope) — one ACP session maps to one
+ *  controller session via a unique scope, with the thread pinned to the ACP
+ *  session id so memory recall is scoped exactly as before. */
+export interface ControllerLike {
+  init(): Promise<void>
+  createSession(opts: {
+    resourceId?: string
+    scope?: string
+    threadId?: string
+  }): Promise<ControllerSessionLike>
+}
+
+/** Lazily builds the controller (so model/key/AGENT.md errors surface on the
+ *  first prompt with a clear message, not at process spawn or session/new). */
+export type ControllerFactory = () => Promise<{ controller: ControllerLike }>
 
 interface SessionState {
-  prompt: AbortController | null
+  /** The controller session, created lazily on the first prompt. */
+  session: ControllerSessionLike | null
+  /** The in-flight prompt turn, if any. Turn-scoped (not session-scoped) so a
+   *  superseding prompt cancelling this one can't clobber its own state. */
+  turn: { cancelled: boolean } | null
 }
 
 /** Pull the user's text out of an ACP prompt (its `text` content blocks). */
@@ -75,18 +82,18 @@ export function promptText(params: PromptRequest): string {
 
 export class MastraAcpAgent implements AcpAgent {
   readonly #conn: AgentSideConnection
-  readonly #buildAgent: AgentFactory
+  readonly #buildController: ControllerFactory
   readonly #resource: string
   readonly #sessions = new Map<string, SessionState>()
-  #agent: MastraLike | null = null
+  #controller: ControllerLike | null = null
 
   constructor(
     conn: AgentSideConnection,
-    buildAgent: AgentFactory,
+    buildController: ControllerFactory,
     resource = "mastra-agent",
   ) {
     this.#conn = conn
-    this.#buildAgent = buildAgent
+    this.#buildController = buildController
     // `resource` groups a user's threads in Mastra memory; one per agent here.
     this.#resource = resource
   }
@@ -111,38 +118,72 @@ export class MastraAcpAgent implements AcpAgent {
 
   async newSession(_params: NewSessionRequest): Promise<NewSessionResponse> {
     const sessionId = randomId()
-    this.#sessions.set(sessionId, { prompt: null })
+    this.#sessions.set(sessionId, { session: null, turn: null })
     return { sessionId }
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
-    const session = this.#sessions.get(params.sessionId)
-    if (!session) throw new Error(`unknown session ${params.sessionId}`)
+    const state = this.#sessions.get(params.sessionId)
+    if (!state) throw new Error(`unknown session ${params.sessionId}`)
 
     // Cancel any in-flight turn for this session before starting a new one.
-    session.prompt?.abort()
-    const ac = new AbortController()
-    session.prompt = ac
+    if (state.turn) {
+      state.turn.cancelled = true
+      state.session?.abort()
+    }
+    const turn = { cancelled: false }
+    state.turn = turn
 
     const text = promptText(params)
     try {
-      const agent = await this.#ensureAgent()
-      // Thread = ACP session id → recall is scoped to this session's history.
-      const result = await agent.stream(text, {
-        abortSignal: ac.signal,
-        memory: { thread: params.sessionId, resource: this.#resource },
-        maxSteps: 200,
+      const session = await this.#ensureSession(params.sessionId, state)
+
+      // One mapper per turn: it holds the per-message "text already relayed"
+      // state that turns Mastra's full-message updates into ACP deltas.
+      const map = createEventMapper()
+      let endReason: string | undefined
+      let lastError: Error | null = null
+      // Updates must hit the wire in event order; the listener is synchronous
+      // while sessionUpdate is not, so sends are chained.
+      let relay: Promise<void> = Promise.resolve()
+
+      const unsubscribe = session.subscribe((event) => {
+        if (event.type === "error") {
+          lastError = event.error
+          return
+        }
+        if (event.type === "agent_end") {
+          endReason = event.reason ?? "complete"
+          return
+        }
+        const update = map(event)
+        if (!update) return
+        relay = relay.then(() =>
+          this.#conn.sessionUpdate({ sessionId: params.sessionId, update }),
+        )
       })
-      if (result.fullStream) {
-        // Preferred path: the typed chunk stream carries text deltas AND
-        // tool-call / tool-result events, so tool activity surfaces live.
-        await this.#pumpFullStream(params.sessionId, result.fullStream, ac)
-      } else if (result.textStream) {
-        // Fallback: a text-only agent — relay prose deltas, no tool surface.
-        await this.#pumpTextStream(params.sessionId, result.textStream, ac)
+      try {
+        // Awaits the whole run; events stream via the subscription above.
+        await session.sendMessage({ content: text })
+      } finally {
+        unsubscribe()
+        // Flush queued updates; a dead connection shouldn't mask the turn's
+        // real outcome (and there is nowhere left to report it anyway).
+        await relay.catch(() => {})
       }
+
+      if (turn.cancelled || endReason === "aborted") {
+        return { stopReason: "cancelled" }
+      }
+      if (endReason === "error") {
+        // `sendMessage` resolves even when the run dies (the engine reports
+        // via `error` events + agent_end reason) — re-throw into the shared
+        // error path so the failure surfaces exactly as before.
+        throw lastError ?? new Error("the agent run ended with an error")
+      }
+      return { stopReason: "end_turn" }
     } catch (err) {
-      if (ac.signal.aborted) return { stopReason: "cancelled" }
+      if (turn.cancelled) return { stopReason: "cancelled" }
       // Surface the failure to the client as a message chunk, then end the
       // turn — better UX than a bare JSON-RPC error the host may swallow.
       await this.#conn.sessionUpdate({
@@ -155,17 +196,17 @@ export class MastraAcpAgent implements AcpAgent {
           },
         },
       })
-      session.prompt = null
       return { stopReason: "refusal" }
+    } finally {
+      if (state.turn === turn) state.turn = null
     }
-
-    const cancelled = ac.signal.aborted
-    session.prompt = null
-    return { stopReason: cancelled ? "cancelled" : "end_turn" }
   }
 
   async cancel(params: CancelNotification): Promise<void> {
-    this.#sessions.get(params.sessionId)?.prompt?.abort()
+    const state = this.#sessions.get(params.sessionId)
+    if (!state) return
+    if (state.turn) state.turn.cancelled = true
+    state.session?.abort()
   }
 
   /**
@@ -190,59 +231,38 @@ export class MastraAcpAgent implements AcpAgent {
     return {}
   }
 
-  /** Drain Mastra's typed `fullStream`, mapping each chunk to an ACP
-   *  `session/update` (text deltas + tool_call / tool_call_update). */
-  async #pumpFullStream(
-    sessionId: string,
-    stream: ReadableStream<unknown>,
-    ac: AbortController,
-  ): Promise<void> {
-    const reader = stream.getReader()
-    try {
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done || ac.signal.aborted) break
-        if (!value) continue
-        // Single boundary cast: raw Mastra chunks include many event types
-        // beyond what MastraStreamChunk models; chunkToSessionUpdate returns
-        // null for anything it doesn't recognise.
-        const update = chunkToSessionUpdate(value as MastraStreamChunk)
-        if (update) await this.#conn.sessionUpdate({ sessionId, update })
-      }
-    } finally {
-      reader.releaseLock()
-    }
+  /** Resolve this ACP session's controller session, creating it on first use.
+   *  Deferred to the first prompt (not session/new) on purpose: controller
+   *  construction parses the AGENT.md and resolves the model, and those
+   *  errors must keep surfacing as a first-prompt error chunk + "refusal",
+   *  never as a session/new JSON-RPC failure. */
+  async #ensureSession(
+    acpSessionId: string,
+    state: SessionState,
+  ): Promise<ControllerSessionLike> {
+    if (state.session) return state.session
+    const controller = await this.#ensureController()
+    // Thread = ACP session id, resource = the shared agent resource — the same
+    // memory layout the raw-stream host used, so recall stays scoped to this
+    // session's history. `scope` keeps concurrent ACP sessions on distinct
+    // controller sessions despite the shared resourceId.
+    const session = await controller.createSession({
+      resourceId: this.#resource,
+      scope: acpSessionId,
+      threadId: acpSessionId,
+    })
+    state.session = session
+    return session
   }
 
-  /** Fallback drain for an agent exposing only a plain text stream. */
-  async #pumpTextStream(
-    sessionId: string,
-    stream: ReadableStream<string>,
-    ac: AbortController,
-  ): Promise<void> {
-    const reader = stream.getReader()
-    try {
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done || ac.signal.aborted) break
-        if (value) {
-          await this.#conn.sessionUpdate({
-            sessionId,
-            update: {
-              sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text: value },
-            },
-          })
-        }
-      }
-    } finally {
-      reader.releaseLock()
-    }
-  }
-
-  async #ensureAgent(): Promise<MastraLike> {
-    if (!this.#agent) this.#agent = await this.#buildAgent()
-    return this.#agent
+  async #ensureController(): Promise<ControllerLike> {
+    // Memoize only on success so a transient failure retries on the next
+    // prompt instead of pinning every future turn to the first error.
+    if (this.#controller) return this.#controller
+    const { controller } = await this.#buildController()
+    await controller.init()
+    this.#controller = controller
+    return controller
   }
 }
 

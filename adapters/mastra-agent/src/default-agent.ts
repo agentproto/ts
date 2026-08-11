@@ -1,15 +1,22 @@
 /**
- * Builds a runnable Mastra agent from an AIP-42 AGENT.md — either a caller's
- * file or a zero-config built-in default — wiring the model, the markdown body
- * as instructions, the SQLite memory, and the workspace toolset.
+ * Builds a runnable Mastra `AgentController` from an AIP-42 AGENT.md — either
+ * a caller's file or a zero-config built-in default — wiring the model, the
+ * markdown body as instructions, the SQLite memory/storage, and the workspace
+ * toolset, then wrapping the built `Agent` as the controller's shared backing
+ * agent. The ACP host drives controller sessions, not the raw agent stream.
  */
 
 import { readFile } from "node:fs/promises"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent"
 import { buildMastraAgent } from "@agentproto/mastra"
 import type { MastraToolLike } from "@agentproto/mastra"
-import type { MastraLike } from "./acp-host.js"
-import { buildSqliteMemory } from "./memory.js"
+import { AgentController } from "@mastra/core/agent-controller"
+import type {
+  AgentControllerConfig,
+  BuiltinToolId,
+} from "@mastra/core/agent-controller"
+import type { MastraMemoryLike } from "./memory.js"
+import { buildSqliteMemory, buildSqliteStore } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
 import { makeUnwiredToolStub, makeWorkspaceTools } from "./workspace-tools.js"
 
@@ -84,15 +91,33 @@ export async function resolveAgentSource(
   return defaultAgentManifest(opts.model ?? DEFAULT_MODEL)
 }
 
+/** Every AgentController built-in tool id — WP-1 disables them ALL so the
+ *  controller adds nothing the raw-stream agent didn't have. Later WPs
+ *  selectively re-enable (submit_plan for modes, subagent for spawning, …). */
+export const DISABLED_BUILTIN_TOOL_IDS: readonly BuiltinToolId[] = [
+  "ask_user",
+  "submit_plan",
+  "task_write",
+  "task_update",
+  "task_complete",
+  "task_check",
+  "subagent",
+] as const
+
+/** Session state the controller carries for us (see `initialState` below). */
+interface AdapterControllerState {
+  yolo?: boolean
+}
+
 /**
  * A lazy factory: parses the AGENT.md, builds the Mastra agent with the model
  * resolver, SQLite memory, the markdown body as instructions, and the
- * workspace toolset (matched by tool id), then returns it as the structural
- * `MastraLike` the ACP host needs.
+ * workspace toolset (matched by tool id), then wraps it in an
+ * `AgentController` the ACP host creates sessions on.
  */
 export function makeAgentFactory(
   opts: AgentSourceOptions = {},
-): () => Promise<MastraLike> {
+): () => Promise<{ controller: AgentController<AdapterControllerState> }> {
   return async () => {
     const source = await resolveAgentSource(opts)
     const { frontmatter, body } = parseAgentManifest(source)
@@ -104,6 +129,11 @@ export function makeAgentFactory(
       allowExec: opts.allowExec,
       extraTools: opts.extraTools,
     })
+
+    // One LibSQL store shared between the agent's Memory and the controller's
+    // storage — two stores on one SQLite file would contend on writes.
+    const store = buildSqliteStore()
+    let memory: MastraMemoryLike | undefined
 
     const { agent } = await buildMastraAgent(handle, {
       resolveModel: (ref) => resolveMastraModel(ref),
@@ -127,10 +157,35 @@ export function makeAgentFactory(
         )
         return { name: id, tool: makeUnwiredToolStub(id) }
       },
-      buildMemory: (config) => buildSqliteMemory(config),
+      buildMemory: (config) => (memory = buildSqliteMemory(config, process.env, store)),
       // The markdown body is the agent's primary system prompt (AIP-42).
       body,
     })
-    return agent as unknown as MastraLike
+
+    const config: AgentControllerConfig<AdapterControllerState> = {
+      id: "agentproto-native",
+      // The AGENT.md-built agent backs every mode; WP-1 has exactly one mode
+      // and layers no mode instructions, so runs behave as the raw agent did.
+      agent: agent as AgentControllerConfig["agent"],
+      modes: [{ id: "main", metadata: { default: true } }],
+      // Thread rows + per-thread settings persist to the same SQLite file the
+      // agent's Memory writes messages to.
+      storage: store,
+      // Our hardened workspace toolset stays the tool surface. The backing
+      // agent already carries the AGENT.md-declared subset; controller-level
+      // tools are an additive toolset, so ids overlap onto the same executors.
+      tools: workspaceTools as AgentControllerConfig["tools"],
+      // WP-1 is behavior parity: no built-in controller tools, and no tool
+      // approvals — `yolo: true` keeps `requireToolApproval` off so tools
+      // execute pass-through exactly as the raw stream did (approvals are
+      // WP-4; deliberately no `workspace` either, since a configured
+      // Workspace makes the Agent inject Mastra's own workspace file tools
+      // into every run).
+      disableBuiltinTools: [...DISABLED_BUILTIN_TOOL_IDS],
+      initialState: { yolo: true },
+    }
+    if (memory) config.memory = memory
+
+    return { controller: new AgentController<AdapterControllerState>(config) }
   }
 }

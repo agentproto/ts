@@ -141,16 +141,22 @@ export {
   defaultAgentManifest,
   DEFAULT_MODEL,
   DEFAULT_TOOL_IDS,
+  DISABLED_BUILTIN_TOOL_IDS,
 } from "./default-agent.js"
-export { MastraAcpAgent, promptText, type MastraLike } from "./acp-host.js"
+export {
+  MastraAcpAgent,
+  promptText,
+  type ControllerFactory,
+  type ControllerLike,
+  type ControllerSessionLike,
+} from "./acp-host.js"
 export { resolveMastraModel, modelRefToString, providerOf } from "./model-resolver.js"
 export { makeWorkspaceTools, resolveInCwd } from "./workspace-tools.js"
-export { buildSqliteMemory, resolveMemoryDbPath } from "./memory.js"
+export { buildSqliteMemory, buildSqliteStore, resolveMemoryDbPath } from "./memory.js"
 export {
-  chunkToSessionUpdate,
+  createEventMapper,
   toolKindFor,
   toolCallTitle,
-  type MastraStreamChunk,
 } from "./tool-call-map.js"
 export { runAcpOverStdio } from "./run.js"
 export type { AgentCliHandle, AgentCliRuntime }
