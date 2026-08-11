@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest"
+import type { ConversationTurn } from "@agentproto/corpus"
 import { BrainSessionSourcePort } from "../session-source-port.js"
 import type { ExportedSessionLike } from "../types.js"
 

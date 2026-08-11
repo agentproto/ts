@@ -21,7 +21,8 @@ import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 
-/** MCP clients commonly stringify booleans; coerce so `reindex:"true"` works. */
+/** MCP clients commonly stringify booleans; coerce so both the boolean
+ *  `true`/`false` and the string literals `"true"`/`"false"` are accepted. */
 const mcpBool = z.preprocess(
   v => (v === "true" ? true : v === "false" ? false : v),
   z.boolean(),
@@ -165,7 +166,8 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
         .optional()
         .describe(
           "When `sessionId` is set and it was already ingested, force a re-ingest " +
-            "from the current transcript. Default false.",
+            "from the current transcript. Default false. Pass `true` or the " +
+            'string "true" to enable.',
         ),
     },
     async input => {

@@ -58,7 +58,12 @@ export function createWorkspaceBrainSubscriber(
     return (async () => {
       try {
         const workspace = await brains.resolveWorkspace(sessionId)
-        if (!workspace) return
+        if (!workspace) {
+          console.warn(
+            `[workspace-brain] skipping ingest of ${sessionId}: could not resolve its workspace`,
+          )
+          return
+        }
         const result = await brains.getBrain(workspace).ingestSession(sessionId)
         if (result.ok) {
           console.log(

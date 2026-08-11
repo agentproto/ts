@@ -75,6 +75,9 @@ export function createBrainState(brainDir: string): BrainState {
     return { version: 1, updatedAt: "", ingested: {} }
   }
 
+  // Singletons per workspace; the host Map enforces this. Atomic writes here
+  // guard against a half-written file, not against concurrent writers — two
+  // `BrainManager`s for the same workspace would still race.
   const writeFile = async (file: BrainStateFile): Promise<void> => {
     await fs.mkdir(dirname(path), { recursive: true })
     const tmp = `${path}.tmp-${process.pid}`
