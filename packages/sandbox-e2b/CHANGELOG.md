@@ -1,5 +1,13 @@
 # @agentproto/sandbox-e2b
 
+## 0.3.4
+
+### Patch Changes
+
+- 6e403f8: Skip integration test when OPENROUTER_API_KEY is missing
+- c4ca23a: Separate integration tests from unit tests via dedicated vitest configs, add auth error handling (gracefully skip on 401/403), install hermes adapter in sandbox boot, and increase test timeout from 120s to 240s. Improves test reliability and maintainability without API changes.
+  - @agentproto/sandbox@0.2.3
+
 ## 0.3.3
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @agentproto/acp
 
+## 0.7.1
+
+### Patch Changes
+
+- b5ec52b: Add optional title field to plan events, displayed in VS Code conversation UI. Titles are safely threaded through ACP client translation, runtime event stream, and conversation presenter, supporting both immediate titles and late-binding (title added in subsequent plan updates).
+
 ## 0.7.0
 
 ### Minor Changes

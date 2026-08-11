@@ -1,5 +1,119 @@
 # @agentproto/runtime
 
+## 2.6.0
+
+### Minor Changes
+
+- c17620e: Add app-scoped durable data plane with migrate/read/write/list MCP tools
+- af936f8: Add a built-in live-session MCP App that attaches to `agent_start` and streams
+  nested session activity with an app-only bridge polling fallback.
+- b51b58e: **Support shell-based package managers (uv, pip, brew, cargo, go, pipx)** — expand adapter installation beyond npm to handle package managers commonly used in AI/ML workflows. New `parseShellHint` function parses and validates non-npm install commands; only recognized package managers are executed to prevent blind shell injection.
+
+  **ACP adapters can now use `uv tool install`, `pip install`, etc.** — planner detects hint type (npm → shell → unsupported) and adapter install routes handle shell commands with the same safety/timeout guards as npm-global installs.
+
+- 2375019: Extend the MCP app bridge wire (spec 2026-01-26) with three new methods and integrate them into the mail-triage UI:
+  - **`updateModelContext`** (`@agentproto/runtime`): lets an app push updated context back to the model over the bridge; marshaled through JSON-RPC on the postMessage bridge, rejected with a clear error on the standalone bridge.
+  - **`openLink`** (`@agentproto/runtime`): lets an app request the host open a URL; the postMessage bridge marshals the request through JSON-RPC, the standalone bridge falls back to `window.open`.
+  - **`onTeardown`** (`@agentproto/runtime`): registers a callback invoked when the host sends `ui/resource-teardown`; the bridge replies with `{result:{}}` after running registered callbacks synchronously.
+  - **Mail-triage UI** (`@agentproto/apps`): adds email selection via checkboxes, a "send selection" action that pushes selected emails to the model via `updateModelContext`, and "open in Gmail" links wired through `openLink`.
+
+- 6fba2b9: Feature-flag the LLM Endpoint proxy sidecar behind `features.llmEndpoint` (default false). When disabled, the route is not registered, the registry is not created, and MCP tools are not exposed.
+- ce6352b: Fix PR provenance attribution to prefer explicit caller session ID over heuristic guess, eliminating misattribution when unrelated sessions share the same working directory. Add `workspaceSlug` field to disambiguate workspace roots from per-branch worktrees in PR footer labels.
+- 57dec3b: Add harness→profile preset persistence (`~/.agentproto/harness-presets.json`). Eliminates re-picking auth profiles per spawn by storing which profile + default model each adapter harness should bill through. Includes full CRUD store with validation (profile existence, model curation), MCP tools for remote management, and clean spawn-path integration at the correct precedence level (lowest — only fills unpinned profile/model).
+- 1cb2093: Enhance session resumption transparency by distinguishing "no context available" from "partial context recovered from daemon transcript". The new `ResumeContextDigestResult` interface provides explicit context-availability tracking, enabling callers to display honest restart banners about what was actually recovered.
+- dde641e: Add conversation export tool — the write side of cross-adapter transcript pivot. Enables exporting daemon session transcripts into target adapter native stores (starting with claude-code JSONL) and returning resume handles. Complements the existing read-side (`exportClaudeCodeSession`). Includes round-trip tests verifying message fidelity.
+- 4b20f1e: **Per-workspace "brain"**: a queryable index of a workspace's agent sessions for agents to recall what work the workspace has done.
+
+  New package `@agentproto/workspace-brain` provides the pure indexing engine (BM25 via `FilesKnowledgeAdapter`, zero runtime deps). The runtime wires it up with three MCP tools (`workspace_brain_query`, `workspace_brain_status`, `workspace_brain_ingest`) and auto-ingests sessions on exit (fire-and-forget, never takes down the exit path). State is persisted atomically to `brain-state.json`; knowledge index lives in `knowledge/sources/` under a per-workspace brain dir.
+
+  Exports from runtime: `registerBrainTools`, `createWorkspaceBrains`, `readSessionForBrain`, `createWorkspaceBrainSubscriber`.
+
+- 435a6f2: Expose live session activity phase: new read-time fields `currentPhase`, `toolCallsThisTurn`, and `secondsSinceLastActivity` track what an agent session is currently doing (thinking, tool-call, awaiting input, etc.), the distinct tool count in the current turn, and elapsed time since last activity. All fields are ephemeral—computed on every read and never persisted—following the pattern of existing fields like `processAlive`.
+
+### Patch Changes
+
+- 996ec8e: Add regression coverage for `agent_start` user-preset adapter resolution,
+  including adapter and harness aliases, explicit-call precedence, and validation
+  errors.
+- 33e97d3: Add skill surface to defineApp/emit and app_skill_get validation
+- d22fec5: Add artifact surface to defineApp/emit for Cowork artifact registration
+- 59bc722: Three fixes around MCP app panels and session restart:
+  - **MCP bridge injection** (`@agentproto/runtime`, `@agentproto/apps`): fix the idempotency check that incorrectly skipped injection for documents consuming `window.McpApp.connect()` — regex narrowed from `/window\.McpApp\b/` (any mention) to `/window\.McpApp\s*=/` (assignments only). Defensive guard in mail-triage UI when the bridge is missing.
+  - **Credential re-resolution on restart** (`@agentproto/runtime`): pass `accessProfileRef` to `resolveResumeAuth` so restarting a session that used a named auth profile re-reads the current credential from the keychain instead of falling back to a stale mode-based path.
+  - **Restart loading state** (`agentproto-vscode`): show a loading state and disable the restart button while a session restart is in flight; new `restartFailed` webview message resets the state on error.
+
+- 337cbfd: Parked-background-task detection, watch/unwatch sessions, watcher visibility.
+
+  **Runtime** (`@agentproto/runtime`, patch):
+  - Detect sessions parked with pending background tasks (run_in_background tool calls that end a turn without triggering a wake-up). Emit session:bg-tasks-parked / session:bg-tasks-cleared events; stamp pendingBgTasks count on descriptor.
+  - Watcher attach/detach events: emit session:watcher-attached / session:watcher-detached when a blocking wait subscribes/unsubscribes, reporting the watcher count and supervising session id (when the wait came through the scoped orchestrator).
+
+  **VS Code** (`agentproto-vscode`, minor):
+  - Watch/unwatch commands: pin an eye on sessions so transitions into needs-you / stalled / parked-bg / failed / done raise toasts (debounced per state). Persisted per workspace; toggleable from tree and command palette.
+  - Parked-bg activity state (needs-you > stalled > parked-bg > working > idle) with clock/warning icon, bg-task count in tree description + tooltip, '⏳ N bg tasks' webview chip.
+  - Watcher visibility: info banner when a watcher attaches to the session you're watching, user-prompt badges when another session injected the message, and attributed history in the transcript.
+
+- ec9efa3: **Hermes nativeTerminalResume gated on Node ≥22.5** — hermes TUI uses node:sqlite which is unavailable on older runtimes; the capability is now computed at import time so restart falls back to ACP agent-cli instead of crashing.
+
+  **augmentWithFsResume backfills adapterSessionId** — when never captured (session killed before ACP handshake), backfill it from filesystem probe so agent restart can attempt ACP-level resume in addition to PTY-native restart.
+
+  **restartAsTerminal opens transcript on fallback** — when restart falls back to agent-cli (no PTY available), open the conversation transcript view instead of the agent-mirror pseudo-terminal.
+
+- 82ca9e6: Fix daemon crash from unhandled spawn errors and PATH-based node resolution issues:
+  - Add error event listeners to spawn processes to prevent unhandled exceptions from crashing the daemon
+  - Resolve `bin: "node"` in agent CLI definitions to `process.execPath` instead of relying on PATH lookup, preventing failures in launchd environments with minimal PATH
+  - Fix auth method availability detection for models with `modelDerivedApiKey` by checking both `authSubscription` and `modelDerivedApiKey` for oauth-bearer eligibility
+  - Improve test mocks to properly emit spawn events, enabling proper coverage of spawn failure scenarios
+
+- c1e1807: Fix tool resolution failures in mastra-agent adapter: introduce fail-fast stubs for declared-but-unwired tools (preventing hangs), wrap all tools with timeout guards (preventing unbounded blocking), add daemon-style tool ID aliases (fixing vocabulary mismatches in AGENT.md files), and properly handle tool-error chunks from Mastra (preventing tool calls from appearing stuck). Extract shared command-allowlist logic to runtime package for reuse.
+- 2c24d6f: Fix by-model-router adapters (hermes, pi, opencode) to stamp the resolved billing gateway onto the session descriptor's `route` field, preventing false "restart required" alerts in the VS Code change-model picker.
+- a6b06b2: Three adapter infrastructure fixes:
+  1. Codex model list expanded from 8 to ~40 models — covers GPT-5 family
+     (5/5.1/5.2/5.4/5.5), GPT-5.6 (luna/sol/terra), GPT-4.1/4o, and
+     o-series reasoning models (o1/o3/o4-mini).
+  2. CLI `agentproto install <slug>` now drives a generic ACP agent's
+     `install_hint` through the shared hint parser (new `install-hint.ts`
+     module, extracted from `install-driver.ts` to break a circular dep).
+     The `vendored` install step checks if the binary is already on PATH,
+     runs npm/uv/pip/brew/cargo/go hints when recognized, and fails loud
+     with an actionable message otherwise.
+  3. `binOnPath` in `acp-generic.ts` now checks well-known package-manager
+     install directories (`~/.local/bin`, `~/.cargo/bin`, `~/go/bin`,
+     `/opt/homebrew/bin`, `/usr/local/bin`) as a fallback when PATH hasn't
+     picked them up yet — fixes adapters installed via `uv tool install`
+     not showing as "available" until the daemon restarts.
+
+  Also: modelDerivedApiKey provider resolution for adapters like mastra-agent.
+
+- be06061: Populate session descriptor model from adapter default when no explicit model provided.
+
+  When a session is spawned with subscription auth and no explicit model parameter, the session descriptor's model field is now populated from the adapter's manifest default (if available), instead of remaining undefined. This fixes the VSCode panel displaying 'model?' as a fallback. The fix applies consistently to both the normal spawn and async worktree paths.
+
+- bd990d1: Fix bundling of node:sqlite dynamic imports by using a computed specifier to prevent esbuild from stripping the node: prefix. Most builtins work without it, but node:sqlite has no unprefixed name.
+- 66a6446: Add `conversation_locate` MCP tool for bidirectional session ↔ native-transcript lookup, enabling both forward (sessionId to native path) and reverse (native path to sessionId) queries. Also implement graceful fallback to daemon events when native transcripts are missing.
+- c3dbdc4: Multi-provider knowledge federation: introduce `FederatedKnowledgeProvider` for concurrent query/ingest across multiple knowledge backends (files, gbrain-doc, qdrant) with min-max score normalization, per-provider weighting, and graceful degradation. Add `provider-resolver.ts` for config-driven adapter instantiation with environment secret resolution and schema validation. Integrate per-workspace `knowledge.json` config loading in workspace-brains with resilient fallback to default single-provider (files) behavior.
+- b5ec52b: Add optional title field to plan events, displayed in VS Code conversation UI. Titles are safely threaded through ACP client translation, runtime event stream, and conversation presenter, supporting both immediate titles and late-binding (title added in subsequent plan updates).
+- 41e36f4: Settle orphaned tool calls at turn-end. Adapters like Hermes can end a turn while omitting tool-result events for nested/parallel calls, leaving them stuck in "pending" state in UI consumers. This change synthesizes tool-result events with null values before the turn-end is recorded, ensuring transcript replay sees completed tool cards.
+- 9d76f08: Normalize live model changes to each adapter's expected wire ID while preserving canonical model identity in session state.
+- 16e4304: Add test coverage for daemon-events fallback paths when conversation ID resolution fails or the store is not registered.
+- 16e4304: Fall back to daemon events.jsonl for unresolved/missing conversation IDs too
+- Updated dependencies [33e97d3]
+- Updated dependencies [415044d]
+- Updated dependencies [d22fec5]
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+- Updated dependencies [4b20f1e]
+- Updated dependencies [c3dbdc4]
+- Updated dependencies [3d54f15]
+- Updated dependencies [b5ec52b]
+  - @agentproto/app-kit@0.6.0
+  - @agentproto/model-catalog@0.8.3
+  - @agentproto/driver-agent-cli@2.2.2
+  - @agentproto/workspace-brain@0.2.0
+  - @agentproto/acp@0.7.1
+  - @agentproto/providers-store@0.3.6
+  - @agentproto/sandbox@0.2.3
+
 ## 2.5.0
 
 ### Minor Changes

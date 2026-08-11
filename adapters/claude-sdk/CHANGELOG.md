@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.5.5
+
+### Patch Changes
+
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/driver-agent-cli@2.2.2
+
 ## 0.5.4
 
 ### Patch Changes

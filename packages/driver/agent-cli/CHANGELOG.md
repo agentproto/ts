@@ -1,5 +1,19 @@
 # @agentproto/driver-agent-cli
 
+## 2.2.2
+
+### Patch Changes
+
+- bf3407e: Fix unhandled ChildProcess 'error' events that crash the daemon on spawn failures (e.g., bad binary, missing PATH entry). Resolve "node" binary to process.execPath to sidestep PATH lookup issues in minimal launchd environments. Convert spawn errors to rejected promises instead of unhandled exceptions.
+- 82ca9e6: Fix daemon crash from unhandled spawn errors and PATH-based node resolution issues:
+  - Add error event listeners to spawn processes to prevent unhandled exceptions from crashing the daemon
+  - Resolve `bin: "node"` in agent CLI definitions to `process.execPath` instead of relying on PATH lookup, preventing failures in launchd environments with minimal PATH
+  - Fix auth method availability detection for models with `modelDerivedApiKey` by checking both `authSubscription` and `modelDerivedApiKey` for oauth-bearer eligibility
+  - Improve test mocks to properly emit spawn events, enabling proper coverage of spawn failure scenarios
+
+- Updated dependencies [b5ec52b]
+  - @agentproto/acp@0.7.1
+
 ## 2.2.1
 
 ### Patch Changes

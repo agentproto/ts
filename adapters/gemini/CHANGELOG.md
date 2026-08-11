@@ -1,5 +1,13 @@
 # @agentproto/adapter-gemini
 
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/driver-agent-cli@2.2.2
+
 ## 0.2.3
 
 ### Patch Changes

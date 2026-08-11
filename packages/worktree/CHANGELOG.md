@@ -1,5 +1,11 @@
 # @agentproto/worktree
 
+## 0.5.2
+
+### Patch Changes
+
+- 5f5b1bc: Use the active GitHub CLI credential when probing forge availability so a stale secondary account no longer makes worktree status and cleanup appear offline.
+
 ## 0.5.1
 
 ### Patch Changes
