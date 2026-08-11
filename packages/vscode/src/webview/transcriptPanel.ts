@@ -2115,6 +2115,13 @@ export function buildHtml(
       // two, so showing it instantly just flashes; only a block that outlasts
       // this delay is worth a note in the conversation body.
       const BLOCKED_NOTE_DELAY_MS = 20 * 1000;
+      // The "$ now:" line's staleness cutoff. A pending step that outlives
+      // this has almost certainly never resolved — the agent went quiet,
+      // usually because it handed off to a child session (supervising an
+      // executor) and stopped emitting its own [tool] markers. Past this age
+      // the line stops trusting the transcript's frozen last action and leans
+      // on the daemon's own activitySummary (or an explicit supervision label).
+      const NOW_STALE_MS = 30 * 1000;
 
       let exited = false;
       let busy = false;
@@ -3491,14 +3498,43 @@ export function buildHtml(
         const info = isLive ? currentStepInfo(ch.steps.segments) : undefined;
         const since = info && info.since ? Date.parse(info.since) : NaN;
         if (!info || isNaN(since)) {
-          under.hidden = true;
-          under.removeAttribute('data-since');
+          hideNowLine(under);
           return;
         }
         under.hidden = false;
         under.dataset.since = String(since);
-        under.dataset.label = info.label;
+        // A pending step that outlives NOW_STALE_MS has almost certainly never
+        // resolved — the agent went quiet, usually because it handed off to a
+        // child session (supervising an executor) and stopped emitting its own
+        // [tool] markers. The transcript's last action then freezes forever, so
+        // "now:" stops trusting it and falls back to the daemon's own
+        // activitySummary (or an explicit supervision label).
+        under.dataset.label =
+          Date.now() - since > NOW_STALE_MS ? nowStaleLabel() : info.label;
         renderNow(under);
+      }
+
+      function hideNowLine(under) {
+        under.hidden = true;
+        under.removeAttribute('data-since');
+        under.removeAttribute('data-label');
+      }
+
+      // What a >30s-old unresolved step is really doing: supervising a child,
+      // or whatever the daemon's activitySummary says. Falls back to the
+      // trusty "Working" — never the stale tool name.
+      function nowStaleLabel() {
+        if (lastSession && lastSession.blockedOn === 'subagent') return 'Watching executor';
+        const text = lastSession && lastSession.activitySummary && lastSession.activitySummary.text;
+        return text ? clampNowLabel(text) : 'Working';
+      }
+
+      // activitySummary.text is a prose sentence, not a terse tool name —
+      // cap it so the "$ now:" line stays one short line.
+      function clampNowLabel(s) {
+        if (s.length <= 48) return s;
+        const cut = s.slice(0, 48).replace(/\s+\S*$/, '');
+        return (cut.length ? cut : s.slice(0, 48)) + '…';
       }
 
       function renderNow(under) {

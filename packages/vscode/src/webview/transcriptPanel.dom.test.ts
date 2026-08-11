@@ -2298,6 +2298,21 @@ describe("transcriptPanel webview — book view", () => {
     }
   }
 
+  // An assistant turn with ONE pending tool that opened `ms` before "now".
+  function staleToolConv(ms: number): PresentedConversation {
+    return {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [{ kind: "tool", id: "t1", toolName: "read", isError: false, status: "pending", ts: new Date(Date.now() - ms).toISOString() }],
+        },
+      ],
+    }
+  }
+
   it("defaults to the book view for a structured session — book shown, transcript hidden, Book segment active", () => {
     const panel = renderPanel()
     panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
@@ -2610,6 +2625,43 @@ describe("transcriptPanel webview — book view", () => {
     expect(under.hidden).toBe(false)
     expect(under.textContent).toContain("now:")
     expect(under.textContent).toContain("bash")
+  })
+
+  it("labels a >30s-old unresolved step 'Watching executor' when supervising a child", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true, blockedOn: "subagent" }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.hidden).toBe(false)
+    expect(under.textContent).toContain("Watching executor")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("uses the daemon activitySummary for a >30s-old step that isn't supervising", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true, activitySummary: { text: "Refactored the context provider hook", state: "au travail", at: "" } }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("Refactored the context provider hook")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("falls back to 'Working' for a >30s-old step with neither supervision nor a summary", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("Working")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("keeps the real tool name for a fresh (<30s) pending step even while supervising", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(3_000)
+    panel.send({ type: "init", session: session({ busy: true, blockedOn: "subagent" }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("read")
+    expect(under.textContent).not.toContain("Watching executor")
   })
 
   it("renders the minimalist plan: done collapses to a summary, failed stay visible, current + next up (#conversation-chrome)", () => {
