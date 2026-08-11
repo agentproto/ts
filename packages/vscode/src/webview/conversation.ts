@@ -461,6 +461,12 @@ export interface PresentedToolSegment {
   status: "pending" | "ok" | "error"
   /** ISO timestamp the call opened — the webview's elapsed-time display for a pending call. */
   ts?: string
+  /** True when this call was started with `run_in_background: true` (the
+   *  daemon's `pendingBgTasks` heuristic, `@agentproto/runtime` sessions.ts
+   *  `isBackgroundToolCallArguments` — mirrored here rather than imported
+   *  since this module stays dependency-free). Only ever `true` or absent
+   *  (never `false`) so an unset field never appears in a patch's diff. */
+  background?: true
 }
 
 export interface PresentedPlanSegment {
@@ -670,6 +676,17 @@ function stepLabel(seg: PresentedActivityChild): string {
   return seg.kind === "tool" ? (seg.toolName ?? "tool") : "Working"
 }
 
+/** Mirrors `@agentproto/runtime` sessions.ts `isBackgroundToolCallArguments` —
+ *  matched generically on the `run_in_background` property, not the tool
+ *  name, so any adapter/tool sharing the convention is picked up. */
+function isBackgroundToolArguments(args: unknown): boolean {
+  return (
+    typeof args === "object" &&
+    args !== null &&
+    (args as Record<string, unknown>).run_in_background === true
+  )
+}
+
 function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegment {
   switch (seg.kind) {
     case "user":
@@ -701,6 +718,7 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
         isError: seg.isError,
         status: seg.status,
         ts: seg.ts,
+        ...(seg.status === "pending" && isBackgroundToolArguments(seg.arguments) ? { background: true } : {}),
       }
     }
     case "plan":

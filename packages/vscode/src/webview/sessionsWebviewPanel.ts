@@ -623,6 +623,10 @@ export function buildHtml(nonce: string): string {
       --awaiting: #c2a05c;
       --stalled: #bd6a5f;
       --stop-hot: #c46a60;
+      /* Background tasks (pendingBgTasks / childrenBusy) — a warm amber/brown,
+         distinct from the ochre "needs you" accent, so bg-task activity reads
+         as its own signal rather than competing for the one accent color. */
+      --bg-task: #b5854b;
       color: var(--fg);
       background-color: var(--bg);
       font-family: var(--vscode-font-family, -apple-system, "Segoe UI", sans-serif);
@@ -721,6 +725,10 @@ export function buildHtml(nonce: string): string {
     .dot.idle, .dot.stopped { background: transparent; border: 1px solid var(--ws, var(--faint)); opacity: 0.7; }
     .dot.done { background: var(--ws, var(--faint)); opacity: 0.55; }
     .dot.done.unread { background: var(--ws, var(--working)); opacity: 1; border-color: var(--ws, var(--working)); }
+    /* Background tasks pending/running (childrenBusy or pendingBgTasks) — an
+       amber/brown tell that outranks the base status color, except while the
+       row itself is actively working or needs you (those signals stay put). */
+    .dot.bg { background: var(--bg-task); border-color: var(--bg-task); opacity: 1; }
     @keyframes agentproto-pulse { 50% { opacity: 0.4; } }
     @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .spin { animation: none !important; } }
     .mid { flex: 1; min-width: 0; }
@@ -736,9 +744,10 @@ export function buildHtml(nonce: string): string {
        calm register as .watch; it's an informational tell, not an alarm. */
     .name .eye { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
     /* Background-tasks-pending chip — the session ended its turn with work
-       still outstanding (parked-bg). Warning register (ochre), like the stall
-       badge: this is a dead end unless someone re-prompts. */
-    .name .bgtasks { color: var(--awaiting); font-weight: 400; font-size: 11px; opacity: 0.95; }
+       still outstanding (parked-bg). Amber/brown, matching the bg-task dot;
+       clickable (bubbles to the row's own "open" click) — click to view. */
+    .name .bgtasks { display: inline-flex; align-items: center; color: var(--bg-task); background: rgba(181, 133, 75, 0.16); border: 1px solid rgba(181, 133, 75, 0.4); border-radius: 8px; padding: 0 5px; font-weight: 400; font-size: 10.5px; line-height: 14px; cursor: pointer; }
+    .name .bgtasks:hover { background: rgba(181, 133, 75, 0.28); }
     /* Server-confirmed stall badge (turn-liveness watchdog) — a mid-turn
        session whose adapter stream has gone silent past the daemon's
        threshold with no legitimate blockedOn excuse. Ochre, like the
@@ -894,7 +903,11 @@ export function buildHtml(nonce: string): string {
       function rowHTML(r) {
         var depth = typeof r.depth === 'number' && r.depth > 0 ? r.depth : 0;
         var classes = 'row' + (r.open ? ' open' : '') + (r.archived ? ' archived' : '') + (depth > 0 ? ' nested' : '');
-        var dotClasses = 'dot ' + r.status + (r.status === 'done' && r.unread ? ' unread' : '');
+        // Background tasks pending/running color the dot amber — except while
+        // the row is already actively working or needs you, where that
+        // higher-priority signal stays put.
+        var hasBgWork = (r.childrenBusy > 0 || r.pendingBgTasks > 0) && r.status !== 'working' && r.status !== 'awaiting';
+        var dotClasses = 'dot ' + r.status + (r.status === 'done' && r.unread ? ' unread' : '') + (hasBgWork ? ' bg' : '');
         var nameLine =
           (depth > 0 ? '<span class="lineage" aria-hidden="true">↳</span>' : '') +
           '<span>' + escapeHtml(r.name) + '</span>' +
@@ -903,7 +916,7 @@ export function buildHtml(nonce: string): string {
           (r.locallyWatched ? '<span class="eye" title="watched — you get a notification when this session changes state">👁</span>' : '') +
           (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '">⟳' + r.childrenBusy + '</span>' : '') +
           (r.watcherCount > 0 ? '<span class="eye" title="' + r.watcherCount + ' waiter' + (r.watcherCount === 1 ? '' : 's') + ' attached via the daemon">👁' + r.watcherCount + '</span>' : '') +
-          (r.pendingBgTasks > 0 ? '<span class="bgtasks" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending — send a message to wake it">⏳' + r.pendingBgTasks + '</span>' : '') +
+          (r.pendingBgTasks > 0 ? '<span class="bgtasks" role="button" tabindex="-1" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending — click to view">' + r.pendingBgTasks + ' bg</span>' : '') +
           (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠</span>' : '') +
           (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
           (r.approved ? '<span class="ok">✓</span>' : '') +
