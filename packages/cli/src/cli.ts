@@ -41,6 +41,7 @@ import { runInstallMcp } from "./commands/install-mcp.js"
 import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
+import { runApp } from "./commands/app.js"
 import { runWorktree } from "./commands/worktree.js"
 import { runPolicy } from "./commands/policy.js"
 import { runPermissions } from "./commands/permissions.js"
@@ -131,6 +132,8 @@ Usage:
   agentproto pair      exec   <fingerprint|name> -- <verb> [args…]
   agentproto rendezvous serve [--port <n>] [--host <ip>]
   agentproto sandbox   attach <provider> <sandboxId> [--config-json <json>] [--json]
+  agentproto app       pack <appDir> [--out <path.agentapp>] [--json]
+  agentproto app       unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto --help
   agentproto --version
 
@@ -184,6 +187,7 @@ const VERBS = new Set([
   "worktree",
   "policy",
   "permissions",
+  "app",
   "acp",
   "pair",
   "rendezvous",
@@ -273,6 +277,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runCron(rest)
     case "pack":
       return runPack(rest)
+    case "app":
+      return runApp(rest)
     case "worktree":
       return runWorktree(rest)
     case "policy":
