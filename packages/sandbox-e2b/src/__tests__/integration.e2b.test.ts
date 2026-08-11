@@ -36,7 +36,7 @@ describe.skipIf(!process.env.E2B_API_KEY || !process.env.OPENROUTER_API_KEY)(
           await host.stop()
         }
       },
-      120_000,
+      240_000,
     )
   },
 )
