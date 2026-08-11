@@ -59,6 +59,7 @@ describe("buildFooter — format parity with the runner lanes", () => {
         source: "local",
         host: "jeremy-mac-studio",
         cwd: "/Volumes/SSDExternalMacStudio/Code/_agentproto-worktrees/ts/local-pr-provenance-audit",
+        workspaceSlug: "ts",
       },
       authMode: "subscription",
       sha: "abcdef1234567890",
@@ -68,9 +69,33 @@ describe("buildFooter — format parity with the runner lanes", () => {
       "\n\n---\n" +
         "<sub>🤖 **@agentproto-bot** — PR · session `sess_abc123` (`fix-foo`) · " +
         "claude-code / subscription · model `kimi-k2.7-code` · 12.3k in / 67.9k out · $0.1234 (local) · " +
-        "host `jeremy-mac-studio` · cwd `local-pr-provenance-audit` · " +
+        "host `jeremy-mac-studio` · cwd `ts/local-pr-provenance-audit` · " +
         "sha `abcdef1`</sub>",
     )
+  })
+
+  it("cwd without a workspaceSlug falls back to the bare leaf (back-compat)", () => {
+    const footer = buildFooter({
+      prov: { ...baseProv, source: "local", cwd: "/work/some-worktree" },
+      authMode: "subscription",
+      kind: "PR",
+    })
+    expect(footer).toContain("cwd `some-worktree`")
+  })
+
+  it("cwd at the workspace root (leaf == slug) renders the slug once, not doubled", () => {
+    const footer = buildFooter({
+      prov: {
+        ...baseProv,
+        source: "local",
+        cwd: "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts",
+        workspaceSlug: "ts",
+      },
+      authMode: "subscription",
+      kind: "PR",
+    })
+    expect(footer).toContain("cwd `ts`")
+    expect(footer).not.toContain("cwd `ts/ts`")
   })
 
   it("omits the auth-profile part when absent (back-compat with runner lanes)", () => {
@@ -130,6 +155,7 @@ describe("sessionFooterProvenance", () => {
     startedAt: "2026-07-21T10:00:00.000Z",
     label: "open-pr",
     cwd: "/work/wt",
+    workspaceSlug: "ts",
     adapterSlug: "claude-code",
     harness: "claude-code",
     model: "opus-4.8",
@@ -155,6 +181,7 @@ describe("sessionFooterProvenance", () => {
       source: "daemon",
       host: "build-box",
       cwd: "/work/wt",
+      workspaceSlug: "ts",
       costUsd: 0.5,
       tokensIn: 100,
       tokensOut: 200,
