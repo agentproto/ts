@@ -2,25 +2,40 @@
  * `createBrainManager` — the per-workspace orchestrator.
  *
  * Wires the persistence (`brain-state.json`), the ingest pipeline, and the
- * queryable `FilesKnowledgeAdapter` (rooted at `<brain>/knowledge/`, BM25,
- * zero deps) into a single object the host hands to its subscriber + MCP
- * tools. The adapter is created LAZILY on first `getProvider()` so a workspace
- * that never queries a brain pays nothing until it does.
+ * queryable knowledge provider into a single object the host hands to its
+ * subscriber + MCP tools. The provider is a {@link FederatedKnowledgeProvider}
+ * over whatever backends the workspace configures (`knowledge.json`, threaded
+ * through {@link BrainConfig.knowledge}) — from the default single `files`
+ * (BM25, rooted at `<brain>/knowledge/`, zero deps) up to several adapters
+ * queried in parallel and merged. It is created LAZILY on first
+ * `getProvider()` so a workspace that never queries a brain pays nothing
+ * until it does.
  *
  * Singletons per workspace are the HOST's job (the daemon keys a `Map` by
  * bucket slug); this factory just builds one well-formed brain.
  */
 
-import { FilesKnowledgeAdapter, LocalFs } from "@agentproto/adapter-knowledge-files"
 import type { IKnowledgeProvider } from "@agentproto/knowledge-engine"
 import { createBrainState } from "./brain-state.js"
+import { FederatedKnowledgeProvider } from "./federated-provider.js"
 import { IngestPipeline } from "./ingest-pipeline.js"
+import { resolveKnowledgeProviders } from "./provider-resolver.js"
 import type {
   BrainConfig,
   BrainStats,
   IngestReport,
   IngestResult,
+  KnowledgeConfig,
 } from "./types.js"
+
+/**
+ * The config every brain falls back to when the host passes no
+ * `knowledge` — one `files` provider, exactly what this package did before
+ * multi-provider support existed.
+ */
+export const DEFAULT_KNOWLEDGE_CONFIG: KnowledgeConfig = Object.freeze({
+  providers: Object.freeze([Object.freeze({ id: "local", adapter: "files", auto: true })]),
+})
 
 export interface BrainManager {
   /** Ingest one session. `force` re-ingests even if already recorded. */
@@ -38,15 +53,18 @@ export interface BrainManager {
 export function createBrainManager(config: BrainConfig): BrainManager {
   const state = createBrainState(config.brainDir)
 
-  let provider: FilesKnowledgeAdapter | null = null
-  const getProvider = (): FilesKnowledgeAdapter => {
+  let provider: IKnowledgeProvider | null = null
+  const getProvider = (): IKnowledgeProvider => {
     if (!provider) {
-      // Root the FsPort at the brain dir; the engine's `workspacePath` is the
-      // `knowledge/` subtree, so `ingest()` writes `knowledge/sources/<id>.md`
-      // and `query()` walks the same tree.
-      provider = new FilesKnowledgeAdapter({
-        fs: new LocalFs({ root: config.brainDir }),
-        workspacePath: "knowledge",
+      const knowledge = config.knowledge ?? DEFAULT_KNOWLEDGE_CONFIG
+      const resolved = resolveKnowledgeProviders(knowledge, {
+        brainDir: config.brainDir,
+      })
+      provider = new FederatedKnowledgeProvider({
+        providers: resolved,
+        ...(knowledge.defaultQueryProviders
+          ? { defaultQueryProviders: knowledge.defaultQueryProviders }
+          : {}),
       })
     }
     return provider

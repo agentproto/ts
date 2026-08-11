@@ -3610,12 +3610,21 @@ importers:
       '@agentproto/adapter-knowledge-files':
         specifier: workspace:*
         version: link:../../adapters/knowledge-files
+      '@agentproto/adapter-knowledge-gbrain-doc':
+        specifier: workspace:*
+        version: link:../../adapters/knowledge-gbrain-doc
+      '@agentproto/adapter-knowledge-qdrant':
+        specifier: workspace:*
+        version: link:../../adapters/knowledge-qdrant
       '@agentproto/corpus':
         specifier: workspace:*
         version: link:../corpus
       '@agentproto/knowledge-engine':
         specifier: workspace:*
         version: link:../knowledge-engine
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
