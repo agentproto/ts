@@ -65,7 +65,7 @@ describe("IngestPipeline", () => {
 
     // State recorded
     const recorded = await state.read()
-    expect(recorded["sess-abc123"].sessionId).toBe("sess-abc123")
+    expect(recorded["sess-abc123"]!.sessionId).toBe("sess-abc123")
 
     // Query returns the content
     const query = await adapter.query({ query: "handle" })
