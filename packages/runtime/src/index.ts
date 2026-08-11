@@ -31,6 +31,7 @@ import {
   registerSessionTools,
   registerExportSessionTool,
   registerConversationReadTool,
+  registerConversationExportTool,
 } from "./session-tools.js"
 import {
   registerBrowserTools,
@@ -1864,6 +1865,12 @@ export async function createGateway(
     // of requiring one already recorded on the descriptor. Co-located with
     // the tools above; same registry-access pattern.
     registerConversationReadTool(server, { registry: sessions })
+    // Conversation exporter — WRITE side of the cross-adapter pivot above:
+    // copies a daemon session's events.jsonl transcript into a target
+    // adapter's native conversation store (today claude-code JSONL) and
+    // hands back a `claude --resume <uuid>` handle. Read-only with respect
+    // to the daemon's own capture; the session is never modified or resumed.
+    registerConversationExportTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
     // llm-endpoint proxy sidecar lifecycle — only when the feature is on.
