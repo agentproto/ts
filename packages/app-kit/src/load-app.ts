@@ -61,6 +61,12 @@ interface AppFrontmatterArtifact {
   readonly description?: string
 }
 
+interface AppFrontmatterSkill {
+  readonly path: string
+  readonly title?: string
+  readonly description?: string
+}
+
 interface AppFrontmatter {
   readonly schema: string
   readonly id?: string
@@ -73,6 +79,7 @@ interface AppFrontmatter {
   readonly requires?: readonly string[]
   readonly ui?: AppFrontmatterUi
   readonly artifact?: AppFrontmatterArtifact
+  readonly skill?: AppFrontmatterSkill
   readonly artifacts?: readonly AppArtifactDecl[]
   readonly dev?: AppDevDefinition
 }
@@ -235,6 +242,9 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(ui !== undefined ? { ui } : {}),
     ...(fm.artifact !== undefined
       ? { artifact: { path: resolveRef(dir, fm.artifact.path), ...(fm.artifact.title !== undefined ? { title: fm.artifact.title } : {}), ...(fm.artifact.description !== undefined ? { description: fm.artifact.description } : {}) } }
+      : {}),
+    ...(fm.skill !== undefined
+      ? { skill: { path: resolveRef(dir, fm.skill.path), ...(fm.skill.title !== undefined ? { title: fm.skill.title } : {}), ...(fm.skill.description !== undefined ? { description: fm.skill.description } : {}) } }
       : {}),
     ...(fm.artifacts !== undefined ? { artifacts: fm.artifacts } : {}),
     ...(fm.dev !== undefined ? { dev: fm.dev } : {}),

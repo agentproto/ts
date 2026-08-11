@@ -31,12 +31,12 @@
  * build path.
  */
 
-import { copyFile, mkdir, writeFile } from "node:fs/promises"
+import { copyFile, cp, mkdir, writeFile } from "node:fs/promises"
 import { join, relative } from "node:path"
 import matter from "gray-matter"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
-import type { AgentEntry, AppArtifactDecl, AppArtifactSurface, AppDevDefinition, AppUiDefinition, EmittedApp } from "./types.js"
+import type { AgentEntry, AppArtifactDecl, AppArtifactSurface, AppDevDefinition, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
 import { stripOwner } from "./refs.js"
 
 interface EmitInput {
@@ -50,14 +50,12 @@ interface EmitInput {
   readonly requires?: readonly string[]
   readonly ui?: AppUiDefinition
   readonly artifact?: AppArtifactSurface
+  readonly skill?: AppSkillSurface
   readonly artifacts?: readonly AppArtifactDecl[]
   readonly dev?: AppDevDefinition
 }
 
 export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> {
-  // Root WORKSPACE.md (AIP-34): the workspace manifest whose `owner` names
-  // the tenant and whose `storage` names the backing store. The agents +
-  // workflows below live *inside* this workspace, under `.agentproto/`.
   let workspacePath: string | undefined
   if (app.workspace) {
     await mkdir(dir, { recursive: true })
@@ -78,9 +76,6 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     agentPaths[agent.id] = agentPath
   }
 
-  // UI surface (`.agentproto/ui/index.html`): the `html` body is written to
-  // disk, never inlined into APP.md frontmatter — the frontmatter carries
-  // only the relative `path` plus the display metadata.
   let uiPath: string | undefined
   let uiFrontmatter: Record<string, unknown> | undefined
   if (app.ui) {
@@ -97,8 +92,6 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     }
   }
 
-  // Artifact surface (`.agentproto/artifact/index.html`): the source file is
-  // copied from the app's source directory, never inlined into APP.md.
   let artifactPath: string | undefined
   let artifactFrontmatter: Record<string, unknown> | undefined
   if (app.artifact) {
@@ -113,6 +106,19 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     }
   }
 
+  let skillPath: string | undefined
+  let skillFrontmatter: Record<string, unknown> | undefined
+  if (app.skill) {
+    skillPath = join(dir, ".agentproto", "skill")
+    await mkdir(skillPath, { recursive: true })
+    await cp(app.skill.path, skillPath, { recursive: true })
+    skillFrontmatter = {
+      path: relative(dir, skillPath),
+      ...(app.skill.title !== undefined ? { title: app.skill.title } : {}),
+      ...(app.skill.description !== undefined ? { description: app.skill.description } : {}),
+    }
+  }
+
   const workflowPaths: string[] = []
   const workflowRefs: { id: string; path: string }[] = []
   for (const wf of app.workflows) {
@@ -124,9 +130,6 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     workflowRefs.push({ id: wf.id, path: relative(dir, wfPath) })
   }
 
-  // Root APP.md (this WP): the index a future `app_install` reads to
-  // discover the bundle — always written, unlike WORKSPACE.md which is
-  // conditional on the app having a home workspace.
   await mkdir(join(dir, ".agentproto"), { recursive: true })
   const appPath = join(dir, ".agentproto", "APP.md")
   const agentRefs = app.agents.map(({ agent }) => ({
@@ -145,6 +148,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     ...(app.requires !== undefined ? { requires: app.requires } : {}),
     ...(uiFrontmatter !== undefined ? { ui: uiFrontmatter } : {}),
     ...(artifactFrontmatter !== undefined ? { artifact: artifactFrontmatter } : {}),
+    ...(skillFrontmatter !== undefined ? { skill: skillFrontmatter } : {}),
     ...(app.artifacts !== undefined ? { artifacts: app.artifacts } : {}),
     ...(app.dev !== undefined ? { dev: app.dev } : {}),
   }
@@ -157,16 +161,10 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     ...(workspacePath ? { workspacePath } : {}),
     ...(uiPath ? { uiPath } : {}),
     ...(artifactPath ? { artifactPath } : {}),
+    ...(skillPath ? { skillPath } : {}),
   }
 }
 
-/**
- * Serialize a handle to a `.md` manifest. gray-matter's YAML engine
- * rejects `undefined` values; a JSON clone drops them and yields a plain
- * data object (AIP handles are pure data, no functions/Dates) that
- * round-trips through the matching `parse*Manifest`. gray-matter appends
- * a trailing newline, so manifests end in exactly one newline.
- */
 function toManifest(handle: object, body: string): string {
   const data: Record<string, unknown> = JSON.parse(JSON.stringify(handle))
   return matter.stringify(`\n${body}\n`, data)

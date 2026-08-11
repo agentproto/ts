@@ -46,6 +46,13 @@ export interface InstalledApp {
     readonly title?: string
     readonly description?: string
   }
+  /** A Cowork skill directory the app ships. `path` is absolute;
+   *  `app_skill_get` reads files back at call time. */
+  readonly skill?: {
+    readonly path: string
+    readonly title?: string
+    readonly description?: string
+  }
   readonly artifacts?: readonly { readonly type: string; readonly description?: string }[]
   readonly dev?: {
     readonly launch: readonly {

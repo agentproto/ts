@@ -93,7 +93,7 @@ graph when mounting apps via `app_apply`.
 
 ## UI surfaces, artifacts, dev-launch, and the artifact surface
 
-Beyond agents and workflows, an app can declare three optional surfaces that
+Beyond agents and workflows, an app can declare four optional surfaces that
 round-trip through `emit` and `loadAppHandle` and are integrated into the
 runtime app registry:
 
@@ -105,6 +105,10 @@ runtime app registry:
   `.agentproto/artifact/index.html`. The daemon never writes the host manifest
   — it exposes the content via `app_artifact_get`, and the host agent (Cowork)
   calls its own `create_artifact` to register it.
+- **`skill`** — a Cowork skill directory. The app provides a path to a
+  directory containing `SKILL.md` (AIP-42); `emit` copies the entire directory
+  to `.agentproto/skill/`. The daemon exposes the content via `app_skill_get`,
+  and the host agent (Cowork) calls `save_skill` to register it. Install-time
 - **`artifacts`** — a list of artifact types the app's agents may produce,
   declared for discovery.
 - **`dev`** — one or more local launch recipes (`name`, `runtimeExecutable`,
@@ -129,6 +133,27 @@ The three surfaces form the app's public contract:
    title?, description?, html }`.
 4. The host agent then calls its own **`create_artifact`** (host API) with the
    returned HTML, registering the artifact in Claude/Cowork. The daemon never
+The four surfaces form the app's public contract:
+
+| Surface    | Type            | Emitted path                        | Daemon tool                     | Host side                     |
+|------------|-----------------|-------------------------------------|---------------------------------|-------------------------------|
+| `ui`       | MCP App panel   | `.agentproto/ui/index.html`         | `app_ui_<slug>` (MCP tool)      | Renders the panel in-app      |
+| `skill`    | Cowork skill    | `.agentproto/skill/` (dir)          | `app_skill_get`                 | `save_skill` (Cowork)         |
+| `artifact` | Cowork artifact | `.agentproto/artifact/index.html`   | `app_artifact_get`              | `create_artifact` (Cowork)    |
+| `artifacts`| Decl types      | inline in APP.md frontmatter        | —                               | Discovery                     |
+
+### Skill surface flow
+
+1. The app declares `skill: { path: "/abs/path/to/skill-dir", title?, description? }`
+   in `defineApp`. `emit` copies the entire directory to `.agentproto/skill/`.
+2. `app_install` reads the `skill` block from `APP.md` frontmatter, resolves
+   the path, validates the `SKILL.md` frontmatter (must have `name` and
+   `description`), and persists the record.
+3. The host agent (Cowork) calls **`app_skill_get`** with the `appId` — the
+   daemon reads the skill directory from disk at call time and returns
+   `{ appId, name, description, files: [{ path, content }] }`. Binary files
+   are skipped with a warning in the response.
+4. The host agent then calls its own **`save_skill`** (host API) with the
    writes the host manifest directly.
 
 ```ts
@@ -146,6 +171,9 @@ export const dashboardApp = defineApp({
     path: "/path/to/dashboard.html",
     title: "Ops Dashboard",
     description: "Live operations dashboard.",
+  skill: {
+    path: "/path/to/skill-dir",
+    title: "Dashboard Skill",
   },
   artifacts: [
     { type: "image/png", description: "Generated cover illustration" },
