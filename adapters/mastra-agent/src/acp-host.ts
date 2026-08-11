@@ -257,6 +257,23 @@ export function promptContent(params: PromptRequest): {
   return { text: text.trim(), files }
 }
 
+/** Extract a useful message from an error, digging into `.cause` when the
+ *  top-level message is generic (e.g. a bare `new Error()` wrapping a real
+ *  failure), and appending the first stack frames for traceability. */
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const msg = err.message || undefined
+  const causeMsg = err.cause instanceof Error ? err.cause.message : undefined
+  const detail =
+    msg && msg !== "Error" ? msg : causeMsg || msg || "unknown error"
+  const frames = err.stack
+    ?.split("\n")
+    .slice(1, 3)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  return frames?.length ? `${detail} [${frames.join(" ← ")}]` : detail
+}
+
 export class MastraAcpAgent implements AcpAgent {
   readonly #conn: AgentSideConnection
   readonly #buildController: ControllerFactory
@@ -460,7 +477,7 @@ export class MastraAcpAgent implements AcpAgent {
           sessionUpdate: "agent_message_chunk",
           content: {
             type: "text",
-            text: `\n[mastra-agent error] ${(err as Error).message}\n`,
+            text: `\n[mastra-agent error] ${describeError(err)}\n`,
           },
         },
       })
