@@ -24,6 +24,10 @@ function makeFakeChild(): FakeChild {
   child.stdout = new PassThrough()
   child.stderr = new PassThrough()
   child.kill = vi.fn()
+  // print-arm.ts now races 'spawn' vs 'error' right after spawn() to catch
+  // a failed launch cleanly — emit 'spawn' on the next microtask, mirroring
+  // a real ChildProcess's async success signal, so that race resolves.
+  queueMicrotask(() => child.emit("spawn"))
   return child
 }
 

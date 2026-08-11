@@ -146,6 +146,28 @@ export function createPrintSession(
       })
       activeChild = child
 
+      // Attached synchronously, before any `await`/generator suspension
+      // below, so a spawn failure (bad binary, PATH miss) is never left
+      // as an unhandled 'error' on the child — which would throw and
+      // crash the whole daemon process. See the matching guard + incident
+      // note in `define-agent-cli.ts`'s ACP spawn.
+      let spawnFailure: Error | undefined
+      await new Promise<void>(resolve => {
+        child.once("spawn", () => resolve())
+        child.once("error", err => {
+          spawnFailure = err
+          resolve()
+        })
+      })
+      if (spawnFailure) {
+        activeChild = null
+        yield {
+          kind: "error",
+          error: { message: `failed to spawn '${execBin} ${execArgs.join(" ")}': ${spawnFailure.message}` },
+        }
+        return
+      }
+
       const stderrLines: string[] = []
       const STDERR_KEEP = 80
       child.stderr?.setEncoding("utf8")

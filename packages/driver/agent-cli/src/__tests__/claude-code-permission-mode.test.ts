@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PassThrough } from "node:stream"
+import { EventEmitter } from "node:events"
 import { readFileSync, existsSync } from "node:fs"
 import type { ChildProcess } from "node:child_process"
 
@@ -34,14 +35,19 @@ import type { ChildProcess } from "node:child_process"
 
 const spawnCalls: Array<{ bin: string; args: string[]; env: Record<string, string> }> = []
 
+// A real EventEmitter (not a plain object) so `spawned.once("spawn"|"error", ...)`
+// in define-agent-cli.ts's spawn guard works — emits "spawn" on the next
+// microtask, mirroring a real ChildProcess's async success signal.
 function fakeChild(): ChildProcess {
-  return {
+  const child = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(),
     stdout: new PassThrough(),
     stderr: new PassThrough(),
     killed: false,
     kill: vi.fn(),
-  } as unknown as ChildProcess
+  }) as unknown as ChildProcess
+  queueMicrotask(() => child.emit("spawn"))
+  return child
 }
 
 vi.mock("node:child_process", async (importOriginal) => {
