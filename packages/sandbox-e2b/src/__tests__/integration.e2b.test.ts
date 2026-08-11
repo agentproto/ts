@@ -11,29 +11,32 @@ import { describe, it, expect } from "vitest"
 import { createSandboxAgentSessionHost } from "@agentproto/sandbox"
 import { e2bSandboxProvider } from "../provider.js"
 
-describe.skipIf(!process.env.E2B_API_KEY)("e2b sandbox agent host (integration)", () => {
-  it(
-    "boots the agentproto-workstation sandbox and completes one hermes/openrouter turn",
-    async () => {
-      const host = await createSandboxAgentSessionHost({
-        provider: e2bSandboxProvider,
-        spec: {
-          provider: "e2b",
-          config: { installPackages: ["@agentproto/adapter-hermes"] },
-        },
-        secrets: { slugs: ["OPENROUTER_API_KEY"] },
-      })
-      try {
-        const sessionId = await host.spawn("hermes", { cwd: "/home/user" })
-        await host.sendPromptAndWait(sessionId, "Reply with the single word OK. Nothing else.")
-        if (host.readFinalMessage) {
-          const message = await host.readFinalMessage(sessionId)
-          expect(message.trim().toUpperCase()).toContain("OK")
+describe.skipIf(!process.env.E2B_API_KEY || !process.env.OPENROUTER_API_KEY)(
+  "e2b sandbox agent host (integration)",
+  () => {
+    it(
+      "boots the agentproto-workstation sandbox and completes one hermes/openrouter turn",
+      async () => {
+        const host = await createSandboxAgentSessionHost({
+          provider: e2bSandboxProvider,
+          spec: {
+            provider: "e2b",
+            config: { installPackages: ["@agentproto/adapter-hermes"] },
+          },
+          secrets: { slugs: ["OPENROUTER_API_KEY"] },
+        })
+        try {
+          const sessionId = await host.spawn("hermes", { cwd: "/home/user" })
+          await host.sendPromptAndWait(sessionId, "Reply with the single word OK. Nothing else.")
+          if (host.readFinalMessage) {
+            const message = await host.readFinalMessage(sessionId)
+            expect(message.trim().toUpperCase()).toContain("OK")
+          }
+        } finally {
+          await host.stop()
         }
-      } finally {
-        await host.stop()
-      }
-    },
-    120_000,
-  )
-})
+      },
+      120_000,
+    )
+  },
+)

@@ -214,6 +214,8 @@ jobs:
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       # `pnpm test` only covers packages/** and adapters/**, so the release
       # tooling in scripts/ would otherwise ship untested. These guard the
