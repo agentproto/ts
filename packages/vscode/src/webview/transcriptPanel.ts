@@ -901,6 +901,9 @@ export function buildHtml(
        script. Sits in the conversation body, next to the tool call it
        describes, not the header: the tab icon already carries the states
        that deserve a permanent glyph. */
+    /* Neutral on purpose: a long-running block (usually "command") is normal
+       supervision behavior, not an error — warning-yellow reads as one. The
+       dismiss ✕ below stays low-key. */
     #blocked-note {
       flex: 0 0 auto;
       display: flex;
@@ -908,7 +911,8 @@ export function buildHtml(
       gap: 8px;
       padding: 4px 14px 0;
       font-size: 0.85em;
-      color: var(--vscode-editorWarning-foreground);
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.85;
     }
     #blocked-note-text { flex: 1 1 auto; min-width: 0; }
     /* The dismiss X is deliberately low-key — the note is itself low-key. */
@@ -2467,6 +2471,19 @@ export function buildHtml(
       // rendering that verbatim told the user a dead session was blocked on a
       // command. isTerminal already governs busy/exited elsewhere — this must
       // not contradict it.
+      // The book's live "$ now:" line already narrates the in-flight step (in
+      // the supervisor case, "Watching executor"), so a separate "blocked on
+      // …" note below it is redundant — and a warning-yellow banner for normal
+      // long-running command/supervision is exactly the false alarm this commit
+      // removes. Suppress the note while that line is visible; it returns when
+      // the book is left (raw transcript has no now-line, so the note earns its
+      // place there).
+      function liveNowLineVisible() {
+        if (!bookView || !bookApplies()) return false;
+        const live = book.querySelector('.chapter.live .under');
+        return Boolean(live && !live.hidden);
+      }
+
       function refreshBlockedNote() {
         const session = lastSession;
         const live = Boolean(session) && !isTerminal(session) && Boolean(session.busy) && Boolean(session.blockedOn);
@@ -2475,6 +2492,11 @@ export function buildHtml(
           // user's dismissal resets, so the NEXT block shows again.
           blockedSince = 0;
           dismissedBlockedKey = null;
+          blockedNote.hidden = true;
+          blockedNoteText.textContent = '';
+          return;
+        }
+        if (liveNowLineVisible()) {
           blockedNote.hidden = true;
           blockedNoteText.textContent = '';
           return;

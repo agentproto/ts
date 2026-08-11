@@ -1318,6 +1318,26 @@ describe("transcriptPanel webview — blocked-on note", () => {
     expect(el(panel, "blocked-note").hidden).toBe(true)
     expect(el(panel, "blocked-note-text").textContent).toBe("")
   })
+
+  it("stays hidden while the live '$ now:' line already narrates the block", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    const pending: PresentedToolSegment = {
+      kind: "tool", id: "t1", toolName: "bash", isError: false, status: "pending", ts: new Date(Date.now() - 2_000).toISOString(),
+    }
+    panel.send({
+      type: "init",
+      session: session({ status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" }),
+      nonce: "n", mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [pending] }] },
+    })
+    // Past BLOCKED_NOTE_DELAY_MS — a long-running block.
+    vi.advanceTimersByTime(20_000)
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+    // The live "$ now:" line is what carries the story instead.
+    const under = panel.book.querySelector(".chapter.live .under") as DomElement
+    expect(under.hidden).toBe(false)
+  })
 })
 
 describe("transcriptPanel webview — typing mid-turn queues instead of erroring", () => {
