@@ -31,6 +31,7 @@ import {
   registerSessionTools,
   registerExportSessionTool,
   registerConversationReadTool,
+  registerConversationLocateTool,
 } from "./session-tools.js"
 import {
   registerBrowserTools,
@@ -1864,6 +1865,10 @@ export async function createGateway(
     // of requiring one already recorded on the descriptor. Co-located with
     // the tools above; same registry-access pattern.
     registerConversationReadTool(server, { registry: sessions })
+    // Conversation locator — bidirectional session ↔ native-transcript
+    // lookup over the persisted per-workspace index. Stateless (bucketsRoot
+    // resolves straight off HOME), so it needs no injected deps.
+    registerConversationLocateTool(server)
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
     // llm-endpoint proxy sidecar lifecycle — only when the feature is on.
