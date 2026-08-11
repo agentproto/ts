@@ -485,6 +485,12 @@ importers:
       '@agentproto/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@ai-sdk/anthropic':
+        specifier: ^3.0.107
+        version: 3.0.107(zod@4.4.3)
+      '@ai-sdk/provider':
+        specifier: ^3.0.14
+        version: 3.0.14
       '@mastra/core':
         specifier: ^1.57.0
         version: 1.57.0(@bufbuild/protobuf@2.13.0)(ai@6.0.246(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(zod@4.4.3)
