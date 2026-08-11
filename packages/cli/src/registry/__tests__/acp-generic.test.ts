@@ -6,6 +6,7 @@ import {
   ACP_CATALOG,
   resolveAcpSpec,
   binOnPath,
+  fallbackBinDirs,
   listAcpGenericAdapters,
   type AcpAgentSpec,
 } from "../acp-generic.js"
@@ -155,6 +156,26 @@ describe("binOnPath", () => {
 
   it("returns false for a bin that is not installed", async () => {
     expect(await binOnPath("definitely-not-a-real-binary-xyz")).toBe(false)
+  })
+})
+
+// ── fallbackBinDirs ─────────────────────────────────────────────────────
+// `binOnPath` also checks these — the well-known install dirs for the
+// package managers `install-hint.ts` drives (uv/pipx/pip --user, cargo, go,
+// brew) — so a `uv tool install`/`cargo install`/… run by a long-running
+// daemon process is visible on the very next listing even when that
+// directory isn't (yet) on the daemon's inherited PATH. See the doc comment
+// on `fallbackBinDirs` for the "installed but doesn't show as installed"
+// bug this guards against.
+
+describe("fallbackBinDirs", () => {
+  it("includes the well-known package-manager install directories", () => {
+    const dirs = fallbackBinDirs()
+    expect(dirs.some((d) => d.endsWith(".local/bin"))).toBe(true)
+    expect(dirs.some((d) => d.endsWith(".cargo/bin"))).toBe(true)
+    expect(dirs.some((d) => d.endsWith("go/bin"))).toBe(true)
+    expect(dirs).toContain("/opt/homebrew/bin")
+    expect(dirs).toContain("/usr/local/bin")
   })
 })
 

@@ -33,7 +33,7 @@ All 29 verbs in the dispatcher's `VERBS` set (`packages/cli/src/cli.ts`).
 | **run** | — | --cwd, --prompt, --model, --effort, --resume, --json, --output-schema | One-shot: spawn adapter, dispatch turn, stream events, exit |
 | **run-swarm** | — | --manifest, --once, --interval, --verbose | Run swarms from manifest |
 | **serve** | — | --workspace, --port, --bind, --connect, --token, --allow-origin, --interactive | HTTP gateway + MCP server + session registry |
-| **sessions** | start, stop, terminal, export, story, mirror, restart, **gc** | --watch, --attach, --cwd, --workspace, --model, --prompt, --label, --json | Session browser & control |
+| **sessions** | start, stop, terminal, export, story, mirror, restart, **wait**, **gc** | --watch, --attach, --cwd, --workspace, --model, --prompt, --label, --json | Session browser & control |
 | **setup** | — | --force, --dry-run, --only | Run AIP-29 setup pipeline (post-install) |
 | **tunnel** | create, list, stop, status | --port, --provider, --name, --hostname, --json | Manage public tunnels (Cloudflare, Ngrok) |
 | **workspace** | add, list, remove, use | --slug, --label, --json | Manage workspaces registry |

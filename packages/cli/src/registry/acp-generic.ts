@@ -18,6 +18,7 @@
  */
 
 import { promises as fs, constants as fsConstants } from "node:fs"
+import { homedir } from "node:os"
 import { delimiter, join } from "node:path"
 import {
   defineAgentCli,
@@ -220,9 +221,36 @@ export async function resolveAcpSpec(
 }
 
 /**
- * Is `bin` runnable — a path that exists+executable, or a bare name found
- * on PATH? Used to classify generic ACP agents in the listing:
- * `available` when present, `supported` (install_hint) when not.
+ * Well-known install directories for the package managers `install-hint.ts`
+ * recognizes (uv/pipx/pip --user, cargo, go, brew) — checked as a FALLBACK
+ * when a bare bin isn't found on `process.env.PATH`. Exists because the
+ * daemon is a long-running process: it inherits PATH once at boot, and a
+ * `uv tool install`/`cargo install`/… run afterward (e.g. via the
+ * `adapter_install` route) drops its binary into one of these directories,
+ * which is commonly NOT yet on PATH on a machine's first install of that
+ * tool (the tool itself prints a "restart your shell" hint) — so a
+ * genuinely-installed adapter kept reporting "supported" (not installed)
+ * until the daemon itself was restarted. Checking these literal paths is
+ * PATH-independent, so a fresh install is visible on the very next listing
+ * without requiring a daemon restart.
+ */
+export function fallbackBinDirs(): readonly string[] {
+  const home = homedir()
+  return [
+    join(home, ".local", "bin"), // uv tool install, pipx, pip install --user
+    join(home, ".cargo", "bin"), // cargo install
+    join(home, "go", "bin"), // go install (GOPATH unset)
+    "/opt/homebrew/bin", // brew, Apple Silicon
+    "/usr/local/bin", // brew, Intel mac / generic unix
+  ]
+}
+
+/**
+ * Is `bin` runnable — a path that exists+executable, a bare name found on
+ * PATH, or one found in a well-known package-manager install dir PATH
+ * hasn't picked up yet (see {@link fallbackBinDirs})? Used to classify
+ * generic ACP agents in the listing: `available` when present, `supported`
+ * (install_hint) when not.
  */
 export async function binOnPath(bin: string): Promise<boolean> {
   // A path with a separator is checked directly, not walked on PATH.
@@ -230,7 +258,7 @@ export async function binOnPath(bin: string): Promise<boolean> {
     return canExecute(bin)
   }
   const pathVar = process.env.PATH ?? ""
-  const dirs = pathVar.split(delimiter).filter(Boolean)
+  const dirs = [...pathVar.split(delimiter).filter(Boolean), ...fallbackBinDirs()]
   const exts =
     process.platform === "win32"
       ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)

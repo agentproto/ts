@@ -225,7 +225,7 @@ coding-CLI orchestration:
 | `list_agent_sessions` | List active agent sessions only |
 | `kill_agent_session` | Stop a session |
 | `session_tree` | Session hierarchy (parent → children) |
-| `wait_for_any` | Block until one of a set of sessions completes |
+| `session_monitor` | Block until one of a set of sessions fires a lifecycle event (formerly `wait_for_any`) |
 | `poll_events` | Drain runtime events |
 | `list_adapters` | List installed adapter CLIs |
 | `list_discovered_mcps` | MCPs discovered from other CLIs on this machine |

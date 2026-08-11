@@ -3459,6 +3459,33 @@ describe("spawnAgentSession — auth.source self-refreshing subscription (Mode 3
     expect(result.descriptor.auth?.credentialSource).toBe("explicit-config")
     expect(spy).not.toHaveBeenCalled()
   })
+
+  // Regression: spawning a modelDerivedApiKey adapter with NO `authSubscription`
+  // (e.g. `pi`) using `auth.source: "codex"` — a value that IS real elsewhere
+  // (the codex/gemini adapters' own file-based `authSubscription.external`
+  // login) but names a file this adapter's own CLI never reads. Still fails
+  // loud (DECISION 5 — unchanged), but the message must explain the file-based/
+  // bearer-fetch mismatch instead of implying claude-code-oauth is the only
+  // auth concept that exists.
+  it("a file-based source (codex/gemini) on an adapter with no authSubscription.external ⇒ unsupported_auth_source with an actionable message", async () => {
+    const { resolver, captured } = makeAuthResolver({ modelDerivedApiKey: true })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "pi",
+        cwd: "/tmp",
+        model: "claude-sonnet-5",
+        auth: { source: "codex" },
+      },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("unsupported_auth_source")
+    expect(result.message).toContain("file-based")
+    expect(result.message).toContain("authSubscription.external")
+    expect(captured).toHaveLength(0)
+  })
 })
 
 describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
