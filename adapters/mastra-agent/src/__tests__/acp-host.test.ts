@@ -205,6 +205,52 @@ describe("MastraAcpAgent — controller event relay", () => {
     ])
   })
 
+  it("waits for agent_end when sendMessage returns early on follow-up turns", async () => {
+    const updates: Array<Record<string, unknown>> = []
+    const session = scriptedSession([
+      { type: "message_update", message: assistantMessage("m1", "hello") },
+      { type: "agent_end", reason: "complete" },
+    ])
+    // Simulate Mastra's wasActive bug: on the second call, sendMessage
+    // resolves immediately (stale stream state) but events arrive async.
+    let callCount = 0
+    session.sendMessage = async (input) => {
+      session.sent.push(input)
+      callCount++
+      if (callCount === 1) {
+        // First call: normal — events are emitted synchronously.
+        session.emit({ type: "message_update", message: assistantMessage("m1", "first") })
+        session.emit({ type: "agent_end", reason: "complete" })
+      } else {
+        // Follow-up: sendMessage returns immediately (wasActive=true path).
+        // Events arrive asynchronously shortly after.
+        setTimeout(() => {
+          session.emit({ type: "message_update", message: assistantMessage("m2", "second") })
+          session.emit({ type: "agent_end", reason: "complete" })
+        }, 10)
+      }
+    }
+    const host = new MastraAcpAgent(fakeConn(updates), async () => ({
+      controller: controllerOf(session),
+    }))
+
+    const { sessionId } = await host.newSession({} as never)
+    await host.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] } as never)
+    updates.length = 0
+
+    const res = await host.prompt({
+      sessionId,
+      prompt: [{ type: "text", text: "again" }],
+    } as never)
+
+    expect(res.stopReason).toBe("end_turn")
+    // The fix: events from the second turn are captured despite sendMessage
+    // returning early.
+    expect(updates).toEqual([
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "second" } },
+    ])
+  })
+
   it("surfaces a run that ends in error as an error chunk + refusal", async () => {
     const updates: Array<Record<string, unknown>> = []
     const session = scriptedSession([

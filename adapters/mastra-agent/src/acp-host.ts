@@ -370,6 +370,15 @@ export class MastraAcpAgent implements AcpAgent {
       // while sessionUpdate is not, so sends are chained.
       let relay: Promise<void> = Promise.resolve()
 
+      // Mastra's Session.sendMessage may return before the run completes on
+      // follow-up turns (its internal `wasActive` check can see stale stream
+      // state). Track agent_end independently so we keep the subscription
+      // alive until the run truly finishes.
+      let resolveAgentEnd: (() => void) | undefined
+      const agentEndPromise = new Promise<void>((r) => {
+        resolveAgentEnd = r
+      })
+
       const unsubscribe = session.subscribe((event) => {
         if (event.type === "error") {
           lastError = event.error
@@ -377,6 +386,7 @@ export class MastraAcpAgent implements AcpAgent {
         }
         if (event.type === "agent_end") {
           endReason = event.reason ?? "complete"
+          resolveAgentEnd?.()
           return
         }
         if (event.type === "tool_approval_required") {
@@ -432,6 +442,12 @@ export class MastraAcpAgent implements AcpAgent {
           await session.sendMessage({ content: text, files })
         } else {
           await session.sendMessage({ content: text })
+        }
+        // Mastra's sendMessage may resolve before agent_end on follow-up
+        // turns (stale wasActive check). Keep the subscription alive until
+        // the run actually finishes so we capture all events.
+        if (!endReason && !lastError && !turn.cancelled) {
+          await agentEndPromise
         }
       } finally {
         unsubscribe()
