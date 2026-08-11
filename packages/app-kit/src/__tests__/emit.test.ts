@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, rm, mkdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import matter from "gray-matter"
@@ -298,5 +298,44 @@ describe("emit — manifests round-trip through the loaders", () => {
     expect(artifactPath).toBeUndefined()
     const parsed = matter(await readFile(appPath, "utf8"))
     expect(parsed.data.artifact).toBeUndefined()
+  })
+
+  it("copies the skill directory to .agentproto/skill/ and writes path into APP.md frontmatter", async () => {
+    const skillDir = join(dir, "my-skill")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, "SKILL.md"), "---\nname: my-skill\ndescription: A test skill.\n---\n\nSkill body.", "utf8")
+    await writeFile(join(skillDir, "helper.js"), "console.log('hello')", "utf8")
+
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent with skill.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      skill: { path: skillDir, title: "My Skill", description: "A test skill." },
+    })
+    const { skillPath, appPath } = await app.emit(dir)
+
+    expect(skillPath).toMatch(/\.agentproto\/skill$/)
+    expect(await readFile(join(skillPath!, "SKILL.md"), "utf8")).toContain("name: my-skill")
+    expect(await readFile(join(skillPath!, "helper.js"), "utf8")).toBe("console.log('hello')")
+
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.skill.path).toBe(".agentproto/skill")
+    expect(parsed.data.skill.title).toBe("My Skill")
+    expect(parsed.data.skill.description).toBe("A test skill.")
+  })
+
+  it("omits skillPath and skill frontmatter when the app has no skill", async () => {
+    const { skillPath, appPath } = await buildApp().emit(dir)
+    expect(skillPath).toBeUndefined()
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.skill).toBeUndefined()
   })
 })

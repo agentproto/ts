@@ -106,6 +106,19 @@ export interface AppArtifactDecl {
   readonly description?: string
 }
 
+/**
+ * A Cowork skill the app ships — a directory containing `SKILL.md` (AIP-42)
+ * plus optional assets (scripts, templates). `path` is the absolute path to
+ * the directory; `emit` copies it to `.agentproto/skill/`. The daemon exposes
+ * the content via `app_skill_get` — the host agent (Cowork) calls `save_skill`
+ * to register it, never writes the host manifest directly.
+ */
+export interface AppSkillSurface {
+  readonly path: string
+  readonly title?: string
+  readonly description?: string
+}
+
 /** One way to launch the app for local development. */
 export interface AppDevLaunchConfig {
   readonly name: string
@@ -156,6 +169,9 @@ export interface AppDefinition {
    *  must be an absolute path to an HTML file on disk — `emit` copies it into
    *  the bundle. */
   readonly artifact?: AppArtifactSurface
+  /** A Cowork skill directory the app ships. `path` must be an absolute path
+   *  to a directory containing `SKILL.md` — `emit` copies it into the bundle. */
+  readonly skill?: AppSkillSurface
   /** Artifact types this app's agents may produce, declared for discovery. */
   readonly artifacts?: readonly AppArtifactDecl[]
   /** Dev-launch configuration for running the app locally. */
@@ -179,6 +195,8 @@ export interface EmittedApp {
   readonly uiPath?: string
   /** Absolute path to the written `.agentproto/artifact/index.html`, when the app has an `artifact`. */
   readonly artifactPath?: string
+  /** Absolute path to the written `.agentproto/skill/` directory, when the app has a `skill`. */
+  readonly skillPath?: string
 }
 
 /**
@@ -205,6 +223,8 @@ export interface AppHandle {
   readonly ui?: AppUiDefinition
   /** A persistent HTML dashboard (Cowork artifact) the app ships. */
   readonly artifact?: AppArtifactSurface
+  /** A Cowork skill directory the app ships. */
+  readonly skill?: AppSkillSurface
   /** Artifact types this app's agents may produce, declared for discovery. */
   readonly artifacts?: readonly AppArtifactDecl[]
   /** Dev-launch configuration for running the app locally. */

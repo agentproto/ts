@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -278,6 +278,225 @@ describe("app_* verbs", () => {
     expect(isAbsolute(record.artifact.path)).toBe(true)
     expect(record.artifact.title).toBe("Dashboard")
     expect(record.artifact.description).toBe("A dashboard.")
+  })
+
+  it("app_install persists skill with an absolute path", async () => {
+    const skillDir = join(dir, "my-skill")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, "SKILL.md"), "---\nname: my-skill\ndescription: A test skill.\n---\n\nBody.", "utf8")
+    await writeFile(join(skillDir, "helper.js"), "console.log('hello')", "utf8")
+
+    const app = defineApp({
+      id: "@test/skill-app",
+      name: "Skill App",
+      description: "An app with a skill.",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      skill: { path: skillDir, title: "My Skill", description: "A test skill." },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(false)
+    const record = parseToolJson(res)
+
+    expect(record.skill.path).toBe(join(dir, ".agentproto", "skill"))
+    expect(isAbsolute(record.skill.path)).toBe(true)
+    expect(record.skill.title).toBe("My Skill")
+    expect(record.skill.description).toBe("A test skill.")
+  })
+
+  it("app_install rejects skill with missing SKILL.md", async () => {
+    const skillDir = join(dir, "empty-skill")
+    await mkdir(skillDir, { recursive: true })
+
+    const app = defineApp({
+      id: "@test/bad-skill-app",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      skill: { path: skillDir },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("missing SKILL.md")
+  })
+
+  it("app_install rejects skill with invalid SKILL.md frontmatter (no name)", async () => {
+    const skillDir = join(dir, "bad-skill")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, "SKILL.md"), "---\ndescription: No name.\n---\n\nBody.", "utf8")
+
+    const app = defineApp({
+      id: "@test/bad-skill-app-2",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      skill: { path: skillDir },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("name")
+  })
+
+  it("app_install rejects skill with invalid SKILL.md frontmatter (no description)", async () => {
+    const skillDir = join(dir, "bad-skill-2")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, "SKILL.md"), "---\nname: no-desc\n---\n\nBody.", "utf8")
+
+    const app = defineApp({
+      id: "@test/bad-skill-app-3",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      skill: { path: skillDir },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("description")
+  })
+
+  it("app_skill_get returns the skill files for an installed app", async () => {
+    const skillDir = join(dir, "get-skill")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, "SKILL.md"), "---\nname: test-skill\ndescription: A test.\n---\n\nBody.", "utf8")
+    await writeFile(join(skillDir, "helper.js"), "console.log('hello')", "utf8")
+
+    const app = defineApp({
+      id: "@test/skill-get-app",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      skill: { path: skillDir, title: "Test Skill", description: "A test." },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const res = await client.callTool({ name: "app_skill_get", arguments: { appId: "@test/skill-get-app" } })
+    expect(isError(res)).toBe(false)
+    const body = parseToolJson(res)
+    expect(body.appId).toBe("@test/skill-get-app")
+    expect(body.name).toBe("test-skill")
+    expect(body.description).toBe("A test.")
+    expect(body.files).toEqual(
+      expect.arrayContaining([
+        { path: "SKILL.md", content: expect.stringContaining("name: test-skill") },
+        { path: "helper.js", content: "console.log('hello')" },
+      ]),
+    )
+  })
+
+  it("app_skill_get reads files at call time, not from cache", async () => {
+    const skillDir = join(dir, "live-skill")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, "SKILL.md"), "---\nname: live-skill\ndescription: V1.\n---\n\nBody.", "utf8")
+    await writeFile(join(skillDir, "data.txt"), "v1", "utf8")
+
+    const app = defineApp({
+      id: "@test/skill-live-app",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      skill: { path: skillDir },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const first = parseToolJson(
+      await client.callTool({ name: "app_skill_get", arguments: { appId: "@test/skill-live-app" } }),
+    )
+    expect(first.files.find((f: any) => f.path === "data.txt").content).toBe("v1")
+
+    await writeFile(join(dir, ".agentproto", "skill", "data.txt"), "v2", "utf8")
+
+    const second = parseToolJson(
+      await client.callTool({ name: "app_skill_get", arguments: { appId: "@test/skill-live-app" } }),
+    )
+    expect(second.files.find((f: any) => f.path === "data.txt").content).toBe("v2")
+  })
+
+  it("app_skill_get errors for an app with no skill", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const res = await client.callTool({ name: "app_skill_get", arguments: { appId: "@test/fixture-app" } })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain("has no skill")
+  })
+
+  it("app_skill_get errors for an unknown appId", async () => {
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_skill_get", arguments: { appId: "@test/does-not-exist" } })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
   })
 
   it("app_run rejects an unknown agent id", async () => {
@@ -1046,6 +1265,37 @@ describe("app_catalog", () => {
     const entry = entries.find((e: any) => e.appId === "@test/artifact-catalog-app")
     expect(entry.installed).toBe(true)
     expect(entry.hasArtifact).toBe(true)
+  })
+
+  it("reports hasSkill=true for an installed app with a skill", async () => {
+    const skillDir = join(dir, "catalog-skill")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, "SKILL.md"), "---\nname: catalog-skill\ndescription: A test skill.\n---\n\nBody.", "utf8")
+
+    const app = defineApp({
+      id: "@test/skill-catalog-app",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      skill: { path: skillDir },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
+    const entry = entries.find((e: any) => e.appId === "@test/skill-catalog-app")
+    expect(entry.installed).toBe(true)
+    expect(entry.hasSkill).toBe(true)
   })
 })
 

@@ -50,6 +50,7 @@ export type {
   WorkspaceInput,
   AppUiDefinition,
   AppArtifactSurface,
+  AppSkillSurface,
   AppArtifactDecl,
   AppDevLaunchConfig,
   AppDevDefinition,

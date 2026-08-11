@@ -17,8 +17,8 @@
  * step at a time.
  */
 
-import { readFile } from "node:fs/promises"
-import { isAbsolute, join } from "node:path"
+import { readFile, readdir, stat } from "node:fs/promises"
+import { isAbsolute, join, relative } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -162,12 +162,18 @@ interface AppRefsArtifact {
   readonly description?: string
 }
 
+interface AppRefsSkill {
+  readonly path: string
+  readonly title?: string
+  readonly description?: string
+}
+
 async function readAppRefs(
   dir: string,
-): Promise<{ agents: InstalledAppRef[]; workflows: InstalledAppRef[]; ui?: AppRefsUi; artifact?: AppRefsArtifact }> {
+): Promise<{ agents: InstalledAppRef[]; workflows: InstalledAppRef[]; ui?: AppRefsUi; artifact?: AppRefsArtifact; skill?: AppRefsSkill }> {
   const appPath = join(dir, ".agentproto", "APP.md")
   const source = await readFile(appPath, "utf8")
-  const { data } = matter(source) as { data: { agents?: unknown; workflows?: unknown; ui?: unknown; artifact?: unknown } }
+  const { data } = matter(source) as { data: { agents?: unknown; workflows?: unknown; ui?: unknown; artifact?: unknown; skill?: unknown } }
   const toRefs = (v: unknown): InstalledAppRef[] =>
     Array.isArray(v)
       ? v
@@ -190,7 +196,12 @@ async function readAppRefs(
     const artData = data.artifact as AppRefsArtifact
     artifact = { ...artData, path: resolveRef(dir, artData.path) }
   }
-  return { agents: toRefs(data.agents), workflows: toRefs(data.workflows), ...(ui ? { ui } : {}), ...(artifact ? { artifact } : {}) }
+  let skill: AppRefsSkill | undefined
+  if (typeof data.skill === "object" && data.skill !== null && typeof (data.skill as { path?: unknown }).path === "string") {
+    const skillData = data.skill as AppRefsSkill
+    skill = { ...skillData, path: resolveRef(dir, skillData.path) }
+  }
+  return { agents: toRefs(data.agents), workflows: toRefs(data.workflows), ...(ui ? { ui } : {}), ...(artifact ? { artifact } : {}), ...(skill ? { skill } : {}) }
 }
 
 export interface RegisterAppToolsOptions {
@@ -303,6 +314,31 @@ export async function performInstall(
       }
     : undefined
 
+  if (refs.skill) {
+    const skillMdPath = join(refs.skill.path, "SKILL.md")
+    let skillSource: string
+    try {
+      skillSource = await readFile(skillMdPath, "utf8")
+    } catch {
+      return { ok: false, error: `app_install: skill directory "${refs.skill.path}" is missing SKILL.md.` }
+    }
+    const skillFm = matter(skillSource).data as { name?: unknown; description?: unknown }
+    if (typeof skillFm.name !== "string" || skillFm.name.trim() === "") {
+      return { ok: false, error: `app_install: skill SKILL.md frontmatter must have a non-empty 'name' field.` }
+    }
+    if (typeof skillFm.description !== "string" || skillFm.description.trim() === "") {
+      return { ok: false, error: `app_install: skill SKILL.md frontmatter must have a non-empty 'description' field.` }
+    }
+  }
+
+  const skill = refs.skill
+    ? {
+        path: refs.skill.path,
+        ...(handle.skill?.title !== undefined ? { title: handle.skill.title } : {}),
+        ...(handle.skill?.description !== undefined ? { description: handle.skill.description } : {}),
+      }
+    : undefined
+
   const record = appRegistry.upsertApp({
     appId: handle.id,
     dir,
@@ -315,6 +351,7 @@ export async function performInstall(
     ...(handle.requires ? { requires: handle.requires } : {}),
     ...(ui ? { ui } : {}),
     ...(artifact ? { artifact } : {}),
+    ...(skill ? { skill } : {}),
     ...(handle.artifacts ? { artifacts: handle.artifacts } : {}),
     ...(handle.dev ? { dev: handle.dev } : {}),
   })
@@ -682,7 +719,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     "app_catalog",
     "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
       "tolerates a missing file), merged with installed-app status — every entry reports " +
-      "`installed`, `hasUi`, and `hasArtifact`. Installed apps absent from the catalog file are included too.",
+      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Installed apps absent from the catalog file are included too.",
     {
       scopeId: z
         .string()
@@ -709,6 +746,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           installed: installed !== undefined,
           hasUi: installed?.ui !== undefined,
           hasArtifact: installed?.artifact !== undefined,
+          hasSkill: installed?.skill !== undefined,
         }
       })
 
@@ -722,6 +760,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           installed: true,
           hasUi: app.ui !== undefined,
           hasArtifact: app.artifact !== undefined,
+          hasSkill: app.skill !== undefined,
         })
       }
 
@@ -759,6 +798,76 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         ...(installed.artifact.description ? { description: installed.artifact.description } : {}),
         html,
       })
+    },
+  )
+
+  server.tool(
+    "app_skill_get",
+    "Return the skill files for an installed app. Reads the skill directory " +
+      "from disk at call time and returns every file's content (utf-8 text " +
+      "only — binary files are skipped with a warning in the response). " +
+      "The host agent (Cowork) calls `save_skill` with this content — the " +
+      "daemon exposes the content; it never writes the host manifest directly. " +
+      "Errors if the app has no skill.",
+    { appId: z.string() },
+    async input => {
+      const installed = appRegistry.getApp(input.appId)
+      if (!installed) {
+        return errorResult(`app_skill_get: no installed app "${input.appId}".`)
+      }
+      if (!installed.skill) {
+        return errorResult(`app_skill_get: app "${input.appId}" has no skill.`)
+      }
+      const skillDir = installed.skill.path
+      let skillSource: string
+      try {
+        skillSource = await readFile(join(skillDir, "SKILL.md"), "utf8")
+      } catch (err) {
+        return errorResult(
+          `app_skill_get: could not read SKILL.md in "${skillDir}": ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      const skillFm = matter(skillSource).data as { name?: unknown; description?: unknown }
+      const name = typeof skillFm.name === "string" ? skillFm.name : installed.skill.title ?? "untitled"
+      const description = typeof skillFm.description === "string" ? skillFm.description : installed.skill.description
+
+      const files: { path: string; content: string }[] = []
+      const skipped: string[] = []
+      const binaryExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".zip", ".tar", ".gz"])
+
+      try {
+        const entries = await readdir(skillDir, { withFileTypes: true })
+        for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+          const fullPath = join(skillDir, entry.name)
+          if (entry.isDirectory()) continue
+          const ext = entry.name.slice(entry.name.lastIndexOf(".")).toLowerCase()
+          if (binaryExts.has(ext)) {
+            skipped.push(entry.name)
+            continue
+          }
+          try {
+            const content = await readFile(fullPath, "utf8")
+            files.push({ path: entry.name, content })
+          } catch {
+            skipped.push(entry.name)
+          }
+        }
+      } catch (err) {
+        return errorResult(
+          `app_skill_get: could not read skill directory "${skillDir}": ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+
+      const result: Record<string, unknown> = {
+        appId: installed.appId,
+        name,
+        ...(description ? { description } : {}),
+        files,
+      }
+      if (skipped.length > 0) result.skipped = skipped
+      return textResult(result)
     },
   )
 }
