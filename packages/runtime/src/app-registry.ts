@@ -77,8 +77,19 @@ export interface AppRun {
   readonly appId: string
   readonly sessions: readonly AppRunSession[]
   readonly startedAt: string
-  status: "running" | "stopped"
+  /** Runner selected for this run — mirrored from `app_run`'s adapter/harness
+   *  pass-through (A) so it stays observable through app_status/app_list even
+   *  after the run's sessions have all ended. `running` is a stored default;
+   *  sequential runs are flipped to `ended`/`failed` on completion. */
+  status: "running" | "stopped" | "ended" | "failed"
   endedAt?: string
+  /** Adapter slug the run's sessions were spawned under. Defaults to
+   *  `DEFAULT_AGENT_ADAPTER` when unset. */
+  readonly adapter?: string
+  /** Canonical harness slug (defaults to `adapter` when unset). */
+  readonly harness?: string
+  /** Model id passed through to each spawned session, if any. */
+  readonly model?: string
 }
 
 export interface AppliedMount {
@@ -105,12 +116,23 @@ export interface AppRegistry {
    *  are responsible for checking there's no applied mount / running run
    *  first — this does no such validation itself. */
   removeApp(appId: string): InstalledApp | undefined
-  createRun(input: { appId: string; sessions: readonly AppRunSession[] }): AppRun
+  createRun(input: {
+    appId: string
+    sessions: readonly AppRunSession[]
+    adapter?: string
+    harness?: string
+    model?: string
+  }): AppRun
   getRun(appRunId: string): AppRun | undefined
   listRuns(): AppRun[]
-  /** Mark a run "stopped" with `endedAt` now. No-op (returns undefined) for
+  /** Mark a run terminal (`endedAt` now, status `opts.status` defaulting to
+   *  "stopped") — the explicit kill path (`app_stop`) and the sequential
+   *  completion path both route through here. No-op (returns undefined) for
    *  an unknown appRunId. */
-  endRun(appRunId: string): AppRun | undefined
+  endRun(
+    appRunId: string,
+    opts?: { status?: "stopped" | "ended" | "failed" },
+  ): AppRun | undefined
   /** Apply an app to a scope (idempotent upsert per scopeId+appId pair). */
   applyApp(input: { scopeId: string; appId: string }): AppliedMount
   /** Remove a scope mount. Returns the removed mount or undefined if not applied. */
@@ -201,6 +223,9 @@ export function createAppRegistry(opts?: {
         sessions: input.sessions,
         startedAt: new Date().toISOString(),
         status: "running",
+        ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
+        ...(input.harness !== undefined ? { harness: input.harness } : {}),
+        ...(input.model !== undefined ? { model: input.model } : {}),
       }
       state.runs.push(run)
       persist()
@@ -212,10 +237,10 @@ export function createAppRegistry(opts?: {
     listRuns() {
       return [...state.runs]
     },
-    endRun(appRunId) {
+    endRun(appRunId, opts) {
       const run = state.runs.find(r => r.appRunId === appRunId)
       if (!run) return undefined
-      run.status = "stopped"
+      run.status = opts?.status ?? "stopped"
       run.endedAt = new Date().toISOString()
       persist()
       return run
