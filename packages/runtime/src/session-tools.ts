@@ -2763,3 +2763,20 @@ export type {
   ConversationLocateInput,
   ConversationLocateResult,
 } from "./conversation-locate-tool.js"
+
+/**
+ * Re-exported from conversation-export.ts so callers of session-tools.ts
+ * (e.g. index.ts) have one import site for the cross-adapter conversation
+ * writer next to the reader above. The canonical definition lives there.
+ */
+export {
+  registerConversationExportTool,
+  exportConversation,
+  writeToNativeStore,
+} from "./conversation-export.js"
+export type {
+  ConversationExportOps,
+  ConversationExportInput,
+  ConversationExportResult,
+  ConversationExportTarget,
+} from "./conversation-export.js"
