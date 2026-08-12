@@ -8,6 +8,16 @@
  * file, and read defensively: a missing file means "nothing ingested yet", a
  * corrupt file reads back as empty rather than throwing — the same
  * degrade-to-empty contract every other on-disk reader in the runtime uses.
+ *
+ * `record`/`forget` calls against ONE `BrainState` instance are serialized
+ * (see `enqueue` below): `workspace-brain-subscriber.ts` fires one
+ * `ingest()` per session exiting inside the same debounce batch, all against
+ * the same per-workspace `BrainManager`/`BrainState`, with no ordering
+ * between them — an unserialized read-modify-write here raced on the tmp
+ * filename (unique only per-process, not per-call) and corrupted
+ * `brain-state.json` in production (a valid JSON body followed by a stray
+ * `}` from an interleaved write). Serializing turns that into a queue: each
+ * call's read/merge/write runs after the previous one's write has landed.
  */
 
 import { promises as fs } from "node:fs"
@@ -40,6 +50,20 @@ export const brainStatePath = (brainDir: string): string =>
 
 export function createBrainState(brainDir: string): BrainState {
   const path = brainStatePath(brainDir)
+
+  // Chains every mutating call onto the previous one so a read-modify-write
+  // against this instance never interleaves with another. `.catch(() => {})`
+  // keeps the chain alive after a rejection instead of wedging every
+  // subsequent call behind a permanently-rejected promise.
+  let queue: Promise<void> = Promise.resolve()
+  const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
+    const result = queue.then(fn, fn)
+    queue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
 
   const readFile = async (): Promise<BrainStateFile> => {
     let raw: string
@@ -76,11 +100,15 @@ export function createBrainState(brainDir: string): BrainState {
   }
 
   // Singletons per workspace; the host Map enforces this. Atomic writes here
-  // guard against a half-written file, not against concurrent writers — two
-  // `BrainManager`s for the same workspace would still race.
+  // guard against a half-written file; `enqueue` (above) guards against two
+  // calls on this instance racing each other. A per-call tmp suffix is
+  // defense in depth on top of that — `process.pid` alone isn't unique
+  // per call, so two interleaved writers sharing it is what corrupted
+  // `brain-state.json` before `enqueue` existed.
+  let writeCounter = 0
   const writeFile = async (file: BrainStateFile): Promise<void> => {
     await fs.mkdir(dirname(path), { recursive: true })
-    const tmp = `${path}.tmp-${process.pid}`
+    const tmp = `${path}.tmp-${process.pid}-${writeCounter++}`
     await fs.writeFile(tmp, JSON.stringify(file, null, 2) + "\n", "utf8")
     await fs.rename(tmp, path)
   }
@@ -90,17 +118,21 @@ export function createBrainState(brainDir: string): BrainState {
     async read() {
       return (await readFile()).ingested
     },
-    async record(record) {
-      const file = await readFile()
-      const ingested = { ...file.ingested, [record.sessionId]: record }
-      await writeFile({ version: 1, updatedAt: new Date().toISOString(), ingested })
+    record(record) {
+      return enqueue(async () => {
+        const file = await readFile()
+        const ingested = { ...file.ingested, [record.sessionId]: record }
+        await writeFile({ version: 1, updatedAt: new Date().toISOString(), ingested })
+      })
     },
-    async forget(sessionId) {
-      const file = await readFile()
-      if (!(sessionId in file.ingested)) return
-      const ingested = { ...file.ingested }
-      delete ingested[sessionId]
-      await writeFile({ version: 1, updatedAt: new Date().toISOString(), ingested })
+    forget(sessionId) {
+      return enqueue(async () => {
+        const file = await readFile()
+        if (!(sessionId in file.ingested)) return
+        const ingested = { ...file.ingested }
+        delete ingested[sessionId]
+        await writeFile({ version: 1, updatedAt: new Date().toISOString(), ingested })
+      })
     },
   }
 }
