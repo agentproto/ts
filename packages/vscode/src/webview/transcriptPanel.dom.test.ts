@@ -199,6 +199,71 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
     expect(after?.textContent).toContain("Always Allow")
   })
 
+  it("renders structured options as ENABLED chips that post resolveQuestion with the paired optionId", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: msg => posted.push(msg) })
+    const seg: PresentedQuestionSegment = {
+      kind: "agent-question",
+      id: "q1",
+      toolCallId: "perm-1",
+      options: ["Allow Once", "Always Allow", "Deny"],
+      optionItems: [
+        { id: "allow_once", label: "Allow Once" },
+        { id: "allow_always", label: "Always Allow" },
+        { id: "deny", label: "Deny" },
+      ],
+      optionsById: { allow_once: "Allow Once", allow_always: "Always Allow", deny: "Deny" },
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [seg] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const buttons = [...segNode(panel, "q1")!.querySelectorAll("button.question-option")]
+    expect(buttons.map(b => b.textContent)).toEqual(["Allow Once", "Always Allow", "Deny"])
+    expect(buttons.every(b => !(b as unknown as HTMLButtonElement).disabled)).toBe(true)
+
+    buttons[1]!.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+    expect(posted).toContainEqual({
+      type: "resolveQuestion",
+      toolCallId: "perm-1",
+      decision: "approve",
+      optionId: "allow_always",
+    })
+  })
+
+  it("disables chips for a legacy ask (labels only) and for an ask without a toolCallId", () => {
+    const panel = renderPanel()
+    const legacy: PresentedQuestionSegment = {
+      kind: "agent-question",
+      id: "q-legacy",
+      toolCallId: "perm-1",
+      options: ["Allow", "Deny"], // no optionItems — labels only
+    }
+    const noPermission: PresentedQuestionSegment = {
+      kind: "agent-question",
+      id: "q-noperm",
+      options: ["Allow"],
+      optionItems: [{ id: "allow", label: "Allow" }], // id, but nothing to answer
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [legacy, noPermission] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const legacyButtons = [...segNode(panel, "q-legacy")!.querySelectorAll("button.question-option")]
+    expect(legacyButtons).toHaveLength(2)
+    expect(legacyButtons.every(b => (b as unknown as HTMLButtonElement).disabled)).toBe(true)
+
+    const nopermButtons = [...segNode(panel, "q-noperm")!.querySelectorAll("button.question-option")]
+    expect(nopermButtons).toHaveLength(1)
+    expect((nopermButtons[0] as unknown as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it("leaves untouched turns and segments referentially identical (===) across a patch touching one turn", () => {
     const panel = renderPanel()
     const conv: PresentedConversation = {

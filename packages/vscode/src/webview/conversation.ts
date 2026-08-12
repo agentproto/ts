@@ -76,9 +76,21 @@ export interface PlanSegment extends SegmentBase {
   total: number
 }
 
+/** One offered option of an agent-question, in the daemon's offer order.
+ *  `id` is the daemon's own optionId when the ask carried structured options;
+ *  absent for a plain-string (legacy) option, which is not respondable. */
+export interface QuestionOptionItem {
+  id?: string
+  label: string
+}
+
 export interface QuestionSegment extends SegmentBase {
   kind: "agent-question"
   options: string[]
+  /** Ordered `{id?, label}` pairs the chips render from — the id rides WITH
+   *  its label, so the renderer never has to reverse a map (labels are not
+   *  unique; ids are). Same objects `options` was flattened from. */
+  optionItems?: QuestionOptionItem[]
   /** Correlates this ask to its "permission-resolved" record (same
    *  toolCallId the daemon's "agent-prompt" carried) — absent for a
    *  question that isn't a respondable permission (e.g. an ACP driver
@@ -314,13 +326,15 @@ export function reduceConversation(
       }
       case "agent-prompt": {
         const turn = openAssistant(rec)
-        const optionsById = normalizeOptionsById(rec.options)
+        const optionItems = normalizeOptionItems(rec.options)
+        const optionsById = optionsByIdFrom(optionItems)
         const seg: QuestionSegment = {
           kind: "agent-question",
           id: `seg-${rec.seq}`,
           seq: rec.seq,
           ts: rec.ts,
-          options: normalizeOptions(rec.options),
+          options: optionItems.map(i => i.label),
+          ...(optionItems.length > 0 ? { optionItems } : {}),
           ...(rec.toolCallId ? { toolCallId: rec.toolCallId } : {}),
           ...(optionsById ? { optionsById } : {}),
         }
@@ -409,43 +423,37 @@ function mergeUsage(
 
 /**
  * Narrow an agent-prompt event's `options` (typed `unknown` at the record
- * boundary) into a flat label list — accepts plain strings or objects
- * exposing `label`/`name`/`id`/`optionId`. Mirrors the daemon's own
- * `normalizeAgentPromptOptions` (sessions.ts) so the two agree.
+ * boundary) into an ordered `{id?, label}` list — accepts plain strings
+ * (label only, not respondable) or objects exposing `label`/`name`/`id`/
+ * `optionId` (the daemon's structured shape, id preserved). Mirrors the
+ * daemon's own `normalizeAgentPromptOptions` (sessions.ts) so the two agree.
+ * ONE pass feeds everything downstream: the label list, the render items,
+ * and the id→label map — so they can never disagree about order or pairing.
  */
-function normalizeOptions(raw: unknown): string[] {
+function normalizeOptionItems(raw: unknown): QuestionOptionItem[] {
   if (!Array.isArray(raw)) return []
-  const out: string[] = []
+  const out: QuestionOptionItem[] = []
   for (const o of raw) {
     if (typeof o === "string") {
-      out.push(o)
+      out.push({ label: o })
       continue
     }
     if (o && typeof o === "object") {
       const r = o as Record<string, unknown>
       const label = r.label ?? r.name ?? r.id ?? r.optionId
-      if (typeof label === "string") out.push(label)
+      if (typeof label !== "string") continue
+      out.push(typeof r.optionId === "string" ? { id: r.optionId, label } : { label })
     }
   }
   return out
 }
 
-/**
- * Narrow an "agent-prompt" event's `options` into an `optionId -> label` map
- * — the same objects `normalizeOptions` flattens to a label list, kept
- * paired with their `optionId` this time so a later "permission-resolved"
- * record (which only carries the chosen `optionId`) can look its label back
- * up. Entries without a string `optionId` (or a plain-string option, which
- * has no id to key on) are dropped — they can't be correlated anyway.
- */
-function normalizeOptionsById(raw: unknown): Record<string, string> | undefined {
-  if (!Array.isArray(raw)) return undefined
+/** The `optionId → label` lookup a later "permission-resolved" record needs,
+ *  derived from the SAME items the chips render — id-less entries drop out. */
+function optionsByIdFrom(items: readonly QuestionOptionItem[]): Record<string, string> | undefined {
   const out: Record<string, string> = {}
-  for (const o of raw) {
-    if (!o || typeof o !== "object") continue
-    const r = o as Record<string, unknown>
-    const label = r.label ?? r.name ?? r.id ?? r.optionId
-    if (typeof r.optionId === "string" && typeof label === "string") out[r.optionId] = label
+  for (const item of items) {
+    if (item.id) out[item.id] = item.label
   }
   return Object.keys(out).length > 0 ? out : undefined
 }
@@ -506,6 +514,18 @@ export interface PresentedQuestionSegment {
   kind: "agent-question"
   id: string
   options: string[]
+  /** Ordered `{id?, label}` pairs the webview renders chips from — the id
+   *  travels WITH its label (labels are not unique keys). An id-less item is
+   *  presentational only. Absent for a legacy ask that predates the
+   *  structured-options path. */
+  optionItems?: QuestionOptionItem[]
+  /** ACP tool-call id correlating this ask to its pending permission — the
+   *  webview forwards it back when the user picks an option, so the host
+   *  can call `permissions_respond` with the right daemon permission id. */
+  toolCallId?: string
+  /** optionId → display label for THIS ask's offered options — kept for the
+   *  resolved-state label lookup; chips render from `optionItems`. */
+  optionsById?: Record<string, string>
   /** Set once this ask has been answered — see `QuestionSegment.resolved`.
    *  Absent means still awaiting a human/orchestrator decision. */
   resolved?: { decision: "approve" | "deny" | "cancelled"; optionId?: string; optionLabel?: string }
@@ -753,6 +773,9 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
         kind: "agent-question",
         id: seg.id,
         options: seg.options,
+        ...(seg.optionItems ? { optionItems: seg.optionItems } : {}),
+        ...(seg.toolCallId ? { toolCallId: seg.toolCallId } : {}),
+        ...(seg.optionsById ? { optionsById: seg.optionsById } : {}),
         ...(seg.resolved ? { resolved: seg.resolved } : {}),
       }
     case "error":

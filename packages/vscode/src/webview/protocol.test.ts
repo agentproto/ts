@@ -125,4 +125,13 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "openLink", kind: "file" })).toBe(false)
     expect(isWebviewMessage({ type: "openLink", kind: "file", target: "src/a.ts", line: "12" })).toBe(false)
   })
+
+  it("accepts resolveQuestion with a known decision, a string optionId, and an optional toolCallId", () => {
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: "a" })).toBe(true)
+    expect(isWebviewMessage({ type: "resolveQuestion", toolCallId: "tc-1", decision: "deny", optionId: "d" })).toBe(true)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "cancelled", optionId: "a" })).toBe(false)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve" })).toBe(false)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: 1 })).toBe(false)
+    expect(isWebviewMessage({ type: "resolveQuestion", toolCallId: 42, decision: "approve", optionId: "a" })).toBe(false)
+  })
 })
