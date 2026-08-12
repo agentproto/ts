@@ -858,16 +858,24 @@ jobs:
       # dead/expired/rate-limited PRIMARY token doesn't fall all the way
       # through to the legacy API-key reviewer (a different code path on the
       # same org/credit pool, not a genuinely independent account) before a
-      # cheaper same-lane retry is even tried. Fires only when the primary
-      # attempt genuinely failed AND no review has landed yet for this SHA
-      # (the postcheck above) AND a fallback token is actually configured —
-      # see "Determine review mode" for why has-fallback-account is a step
-      # output rather than an inline secret test. Gated to
-      # auth-mode=='subscription': the fallback secret is specifically a
-      # second OAuth token, so under api-key billing it would resolve to the
-      # exact same ANTHROPIC_API_KEY as the primary attempt (write-config.mjs
-      # only reads the credential matching auth-mode) and just re-run the
-      # identical failure for free.
+      # cheaper same-lane retry is even tried. Fires whenever no review has
+      # landed yet for this SHA (the postcheck above) AND a fallback token is
+      # actually configured — see "Determine review mode" for why
+      # has-fallback-account is a step output rather than an inline secret
+      # test. Gated to auth-mode=='subscription': the fallback secret is
+      # specifically a second OAuth token, so under api-key billing it would
+      # resolve to the exact same ANTHROPIC_API_KEY as the primary attempt
+      # (write-config.mjs only reads the credential matching auth-mode) and
+      # just re-run the identical failure for free.
+      #
+      # Deliberately NOT gated on `reviewer-agentproto.outcome`/`outputs.status`
+      # — a real 429 on the primary account (PR #951's own review run) proved
+      # those self-reported signals lie: the composite action step still
+      # exits `outcome: success` / `status: done` (the daemon's workflow run
+      # DID reach a terminal state) even though the embedded agent turn
+      # returned "API Error: Request rejected (429)" and posted nothing. The
+      # only signal actually worth trusting is `postcheck.outputs.posted` —
+      # a real row on the PR for this SHA — which is already required above.
       - name: Run agentic PR reviewer (agentproto lane, fallback account)
         id: reviewer-agentproto-fallback
         if: |
@@ -876,8 +884,7 @@ jobs:
           steps.mode.outputs.mode == 'agentproto' &&
           steps.postcheck.outputs.posted != 'true' &&
           steps.mode.outputs.has-fallback-account == 'true' &&
-          steps.cliver.outputs.auth-mode == 'subscription' &&
-          (steps.reviewer-agentproto.outcome == 'failure' || steps.reviewer-agentproto.outputs.status == 'failed')
+          steps.cliver.outputs.auth-mode == 'subscription'
         continue-on-error: true
         uses: ./.github/actions/agentproto-run
         env:
@@ -917,11 +924,12 @@ jobs:
       # successfully and then report a turn-level failure during wind-down
       # (the exact race the first postcheck exists for; see PR #494 in that
       # step's comment), so legacy must not be armed off a stale first-tier
-      # `posted=false` alone once a SECOND attempt has run. Shares the fallback
-      # step's own `if:` (mirrored, not derived from its outcome) so it always
-      # runs exactly when there was something to check, and skips (outputs
-      # stay empty, safely `!= 'true'` downstream) whenever the fallback step
-      # itself was skipped.
+      # `posted=false` alone once a SECOND attempt has run. Mirrors the
+      # fallback step's own `if:` exactly (see that step's comment for why it
+      # no longer checks `reviewer-agentproto.outcome`/`outputs.status`) so
+      # this always runs exactly when the fallback step did, and skips
+      # (outputs stay empty, safely `!= 'true'` downstream) whenever the
+      # fallback step itself was skipped.
       - name: Check whether a review was already posted (before legacy fallback)
         id: postcheck-fallback
         if: |
@@ -930,8 +938,7 @@ jobs:
           steps.mode.outputs.mode == 'agentproto' &&
           steps.postcheck.outputs.posted != 'true' &&
           steps.mode.outputs.has-fallback-account == 'true' &&
-          steps.cliver.outputs.auth-mode == 'subscription' &&
-          (steps.reviewer-agentproto.outcome == 'failure' || steps.reviewer-agentproto.outputs.status == 'failed')
+          steps.cliver.outputs.auth-mode == 'subscription'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -951,24 +958,24 @@ jobs:
       - name: Run agentic PR reviewer (legacy API-key fallback)
         id: reviewer-legacy
         # Legacy is now the LAST resort in a three-tier ladder (primary
-        # account → fallback account → legacy API key): both postchecks must
-        # have found nothing posted, and either no agentproto credential
-        # existed at all (mode=='legacy') or the primary attempt failed AND
-        # the fallback account tier didn't rescue it — which itself covers
-        # three cases: no fallback secret configured, auth-mode isn't
-        # subscription (fallback tier never runs), or the fallback attempt
-        # ran and failed too.
+        # account → fallback account → legacy API key). Both postcheck
+        # steps are the sole arming signal — no reliance on any tier's
+        # self-reported outcome/status (see the fallback-account step's
+        # comment for why that self-report can't be trusted: a real 429 on
+        # PR #951's own primary-account attempt still reported outcome:
+        # success / status: done). `postcheck.outputs.posted` covers
+        # mode=='legacy' for free — that step only runs under
+        # mode=='agentproto', so under mode=='legacy' its output is empty and
+        # `!= 'true'` holds trivially. `postcheck-fallback.outputs.posted`
+        # is equally empty (and so equally `!= 'true'`) whenever the fallback
+        # tier never ran — no fallback secret configured, auth-mode isn't
+        # subscription, or mode=='legacy' — so no extra disjunct is needed to
+        # cover those cases either.
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.postcheck.outputs.posted != 'true' &&
-          steps.postcheck-fallback.outputs.posted != 'true' &&
-          (steps.mode.outputs.mode == 'legacy' ||
-            ((steps.reviewer-agentproto.outcome == 'failure' || steps.reviewer-agentproto.outputs.status == 'failed') &&
-              (steps.mode.outputs.has-fallback-account != 'true' ||
-                steps.cliver.outputs.auth-mode != 'subscription' ||
-                steps.reviewer-agentproto-fallback.outcome == 'failure' ||
-                steps.reviewer-agentproto-fallback.outputs.status == 'failed')))
+          steps.postcheck-fallback.outputs.posted != 'true'
         # Don't abort the job on a non-posting reviewer — capture the outcome so
         # the gate can turn it into an honest red instead of a false green.
         continue-on-error: true
