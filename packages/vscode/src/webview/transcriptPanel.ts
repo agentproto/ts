@@ -3055,14 +3055,19 @@ export function buildHtml(
             }
             node.className = 'seg question';
             node.appendChild(el('div', 'question-label', 'Awaiting your decision'));
-            if (seg.options && seg.options.length) {
+            // Chips render from the presenter's ordered {id?, label} items —
+            // the daemon's own optionId rides with its label, so no reverse
+            // lookup (labels are not unique keys). Legacy asks without items
+            // fall back to bare labels, presentational only.
+            const items = seg.optionItems && seg.optionItems.length
+              ? seg.optionItems
+              : (seg.options || []).map((label) => ({ label }));
+            if (items.length) {
               const row = el('div', 'question-options');
-              for (const opt of seg.options) {
-                const btn = el('button', 'question-option', opt);
-                // Resolve the label back to its optionId via the map the
-                // presenter ships — the daemon's own optionId, not a guess.
-                const optionId = seg.optionsById?.[opt];
-                if (optionId) {
+              for (const item of items) {
+                const btn = el('button', 'question-option', item.label);
+                if (item.id && seg.toolCallId) {
+                  const optionId = item.id;
                   btn.addEventListener('click', () => {
                     vscode.postMessage({
                       type: 'resolveQuestion',
@@ -3072,9 +3077,11 @@ export function buildHtml(
                     });
                   });
                 } else {
-                  // Legacy: no optionId map — button is presentational only.
+                  // Not respondable from here: a plain-string option carries
+                  // no optionId, and without a toolCallId there is no pending
+                  // permission to answer.
                   btn.disabled = true;
-                  btn.title = 'option id unavailable';
+                  btn.title = item.id ? 'no pending permission to answer' : 'option id unavailable';
                 }
                 row.appendChild(btn);
               }
