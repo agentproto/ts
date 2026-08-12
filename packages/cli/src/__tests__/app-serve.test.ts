@@ -21,6 +21,10 @@ import {
   injectBridge,
   readDeclaredUIPort,
   callDaemonTool,
+  sanitizeUploadName,
+  resolveInboxTarget,
+  UploadSizeTracker,
+  MAX_UPLOAD_BYTES,
 } from "../app-serve.js"
 
 const tmpRoots: string[] = []
@@ -209,5 +213,83 @@ describe("callDaemonTool", () => {
       { name: "do", args: "not-an-object" },
     )
     expect(called).toEqual([{}])
+  })
+})
+
+describe("sanitizeUploadName", () => {
+  it("accepts a plain filename, preserving its extension", () => {
+    expect(sanitizeUploadName("photo.png")).toBe("photo.png")
+  })
+
+  it("takes the basename of a path-y value", () => {
+    expect(sanitizeUploadName("some/dir/photo.png")).toBe("photo.png")
+    expect(sanitizeUploadName("some\\dir\\photo.png")).toBe("photo.png")
+  })
+
+  it("rejects traversal attempts", () => {
+    expect(sanitizeUploadName("../../etc/passwd")).toBe("passwd")
+    expect(sanitizeUploadName("..")).toBeNull()
+    expect(sanitizeUploadName("foo..bar")).toBeNull()
+  })
+
+  it("rejects empty and null/undefined names", () => {
+    expect(sanitizeUploadName("")).toBeNull()
+    expect(sanitizeUploadName(null)).toBeNull()
+    expect(sanitizeUploadName(undefined)).toBeNull()
+    expect(sanitizeUploadName("dir/")).toBeNull()
+  })
+
+  it("rejects dotfiles", () => {
+    expect(sanitizeUploadName(".env")).toBeNull()
+    expect(sanitizeUploadName(".gitignore")).toBeNull()
+  })
+})
+
+describe("resolveInboxTarget", () => {
+  it("uses the given name when the inbox is empty", async () => {
+    const dir = await mktmp()
+    const { finalName, path } = await resolveInboxTarget(dir, "report.pdf")
+    expect(finalName).toBe("report.pdf")
+    expect(path).toBe(join(dir, "report.pdf"))
+  })
+
+  it("suffixes with -2, -3, ... before the extension on collision", async () => {
+    const dir = await mktmp()
+    await writeFile(join(dir, "report.pdf"), "one", "utf8")
+    const first = await resolveInboxTarget(dir, "report.pdf")
+    expect(first.finalName).toBe("report-2.pdf")
+
+    await writeFile(join(dir, "report-2.pdf"), "two", "utf8")
+    const second = await resolveInboxTarget(dir, "report.pdf")
+    expect(second.finalName).toBe("report-3.pdf")
+  })
+
+  it("suffixes extensionless names directly", async () => {
+    const dir = await mktmp()
+    await writeFile(join(dir, "notes"), "one", "utf8")
+    const { finalName } = await resolveInboxTarget(dir, "notes")
+    expect(finalName).toBe("notes-2")
+  })
+})
+
+describe("UploadSizeTracker", () => {
+  it("stays under the default 200 MB limit for small uploads", () => {
+    const tracker = new UploadSizeTracker()
+    expect(tracker.add(1024)).toBe(false)
+    expect(tracker.bytes).toBe(1024)
+  })
+
+  it("flags the chunk that pushes the running total past the limit", () => {
+    const tracker = new UploadSizeTracker(100)
+    expect(tracker.add(60)).toBe(false)
+    expect(tracker.add(60)).toBe(true)
+    expect(tracker.bytes).toBe(120)
+  })
+
+  it("defaults to MAX_UPLOAD_BYTES (200 MB)", () => {
+    expect(MAX_UPLOAD_BYTES).toBe(200 * 1024 * 1024)
+    const tracker = new UploadSizeTracker()
+    expect(tracker.add(MAX_UPLOAD_BYTES)).toBe(false)
+    expect(tracker.add(1)).toBe(true)
   })
 })
