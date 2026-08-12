@@ -5,9 +5,13 @@
  * Package an agentproto app folder (one holding a valid `.agentproto/APP.md`)
  * into a single self-contained `.agentapp` tar.gz bundle — the "APK for
  * agentproto apps" — and unpack that bundle back into a folder, verifying
- * the aggregate SHA-256 before restoring.
+ * the aggregate SHA-256 before restoring. This file also dispatches `app
+ * serve` (`../app-serve.ts`), `app build` (`../app-build.ts`), and `app dev`
+ * (`../app-dev.ts`) — pack/unpack are the only sub-verbs implemented here.
  *
- * PACK   walks the entire app dir (including `.agentproto/`), writes a
+ * PACK   walks the entire app dir (including `.agentproto/`, but skipping
+ *        any `node_modules/` or `.git/` at any depth — a `ui/` source tree
+ *        ships both and neither belongs in the shipped app), writes a
  *        `manifest.json` at the bundle root, and tars the app folder's
  *        CONTENTS (not the folder itself) with system `tar`, so extraction
  *        yields `manifest.json` + `.agentproto/` + loose files at the top
@@ -36,11 +40,16 @@ import matter from "gray-matter"
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
 import { runAppServe } from "../app-serve.js"
+import { runAppBuild } from "../app-build.js"
+import { runAppDev } from "../app-dev.js"
 
 // ── types ────────────────────────────────────────────────────────────────
 
 const FORMAT = "agentapp/v1" as const
 const DEFAULT_VERSION = "0.1.0"
+
+/** Directory names skipped at any depth while walking/copying an app dir. */
+const SKIP_DIR_NAMES = new Set(["node_modules", ".git"])
 
 /** `.agentproto/APP.md` frontmatter, digested into bundle metadata. */
 interface AppMeta {
@@ -79,17 +88,20 @@ interface AgentAppManifest {
   agentprotoVersion: string
 }
 
-const USAGE = `agentproto app — package, unpack, or serve an agentproto app bundle (.agentapp)
+const USAGE = `agentproto app — package, unpack, serve, build, or dev an agentproto app
 
 Usage:
   agentproto app pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app serve [appDir] [--port <n>] [--json]
+  agentproto app build <appDir> [--json]
+  agentproto app dev <appDir> [--port <n>] [--json] [-- <viteArgs...>]
 
 pack:
   Walk <appDir> (must contain .agentproto/APP.md), write manifest.json and a
   sha256 aggregate over every file, and emit a verified .agentapp tar.gz.
   Without --out, derives <id>-<version>.agentapp in the current directory.
+  Skips any node_modules/ or .git/ directory at any depth.
 
 unpack:
   Extract a .agentapp, verify format agentapp/v1 and the sha256 aggregate,
@@ -99,7 +111,17 @@ unpack:
 serve:
   Serve <appDir>'s .agentproto/ui/ as a standalone webapp with a window.McpApp
   bridge wired to the daemon's /mcp endpoint. Port resolution: --port, then
-  the APP.md "ui.port" hint, then an OS-assigned free port.`
+  the APP.md "ui.port" hint, then an OS-assigned free port.
+
+build:
+  Build <appDir>/ui/ (a Vite UI source project) into .agentproto/ui/. No
+  ui/ project, or one with no "scripts.build", is a no-op success — the app
+  is a hand-written static UI with nothing to compile.
+
+dev:
+  Run <appDir>/ui/'s own dev server with a live window.McpApp bridge (a
+  bridge-only HTTP server, CORS-enabled, separate from the Vite dev port).
+  Requires ui/package.json with a "scripts.dev"; static UIs use app serve.`
 
 // ── public entries ───────────────────────────────────────────────────────
 
@@ -115,6 +137,12 @@ export async function runApp(args: readonly string[]): Promise<number> {
 
   if (subVerb === "serve") {
     return runAppServe(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "build") {
+    return runAppBuild(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "dev") {
+    return runAppDev(args.filter((a) => a !== subVerb))
   }
 
   process.stderr.write(
@@ -209,10 +237,17 @@ export async function runAppPack(args: readonly string[]): Promise<number> {
     agentprotoVersion: ">=0.1.0",
   }
 
-  // 6. Stage: copy contents into a temp dir, write manifest.json, tar it
+  // 6. Stage: copy contents into a temp dir, write manifest.json, tar it.
+  // The filter also enforces the node_modules/.git exclusion on the actual
+  // bundle contents (collectFiles above only shaped the manifest's `files`
+  // list) — cp() skips a filtered-out directory's contents entirely rather
+  // than recursing into it.
   const staging = await mkdtemp(join(tmpdir(), "agentapp-"))
   try {
-    await cp(appDirAbs, staging, { recursive: true })
+    await cp(appDirAbs, staging, {
+      recursive: true,
+      filter: (source) => !SKIP_DIR_NAMES.has(basename(source)),
+    })
     await writeFile(
       join(staging, "manifest.json"),
       JSON.stringify(manifest, null, 2) + "\n",
@@ -451,12 +486,18 @@ function extractPaths(
   return out.length > 0 ? out : undefined
 }
 
-/** Recursively collect every regular file under root as relative paths. */
+/**
+ * Recursively collect every regular file under root as relative paths,
+ * skipping any `node_modules/` or `.git/` directory at any depth — a `ui/`
+ * source tree ships both, and bundling either would balloon the .agentapp
+ * for no benefit (they're never part of the shipped app).
+ */
 async function collectFiles(root: string): Promise<BundleFile[]> {
   const files: BundleFile[] = []
   async function walk(relDir: string): Promise<void> {
     const absDir = join(root, relDir)
     for (const entry of await readdir(absDir, { withFileTypes: true })) {
+      if (entry.isDirectory() && SKIP_DIR_NAMES.has(entry.name)) continue
       const rel = relDir ? join(relDir, entry.name) : entry.name
       const abs = join(absDir, entry.name)
       if (entry.isDirectory()) {

@@ -70,8 +70,9 @@ daemon's /mcp endpoint (http://127.0.0.1:<daemon.port>/mcp). Start the daemon
 first: agentproto serve`
 
 // reserved route the in-page bridge POSTs tool calls to — a double-underscore
-// prefix no app's ui/ static files should collide with.
-const TOOL_CALL_PATH = "/__agentproto/tool-call"
+// prefix no app's ui/ static files should collide with. Exported so `app dev`
+// (a separate bridge-only server, see app-dev.ts) POSTs to the same path.
+export const TOOL_CALL_PATH = "/__agentproto/tool-call"
 
 /** Content types for the static surface (extensions ui/ apps actually ship). */
 const MIME_BY_EXT: Record<string, string> = {
@@ -94,11 +95,83 @@ const MIME_BY_EXT: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
 }
 
-/** Resolve the daemon's /mcp URL from config — mirrors mcp-bridge. */
-async function resolveDaemonMcpUrl(): Promise<string> {
+/**
+ * Resolve the daemon's /mcp URL from config — mirrors mcp-bridge. Exported
+ * for `app dev`, which holds its own daemon MCP client the same way `app
+ * serve` does.
+ */
+export async function resolveDaemonMcpUrl(): Promise<string> {
   const cfg = await loadConfig()
   const port = cfg.daemon?.port ?? 18790
   return `http://127.0.0.1:${port}/mcp`
+}
+
+/**
+ * Build a lazy, cached getter for a Streamable-HTTP MCP client to the
+ * daemon's /mcp endpoint. The client connects on first use and is reused
+ * across calls; a failed connect attempt drops the cached promise so the
+ * next call retries rather than permanently surfacing the first failure.
+ * Shared by `app serve` and `app dev` — both hold their own protocol client
+ * to the daemon rather than proxying through an installed appId.
+ */
+export function createDaemonMcpClientGetter(
+  daemonMcpUrl: string,
+  clientName: string,
+): () => Promise<Client> {
+  let clientPromise: Promise<Client> | null = null
+  return (): Promise<Client> => {
+    if (!clientPromise) {
+      clientPromise = (async () => {
+        const client = new Client(
+          { name: clientName, version: "0.1.0" },
+          { capabilities: {} },
+        )
+        const transport = new StreamableHTTPClientTransport(new URL(daemonMcpUrl))
+        await client.connect(transport)
+        return client
+      })().catch((err) => {
+        clientPromise = null
+        throw err
+      })
+    }
+    return clientPromise
+  }
+}
+
+/**
+ * Handle a `POST /__agentproto/tool-call` request end-to-end: read the JSON
+ * body (capped at 1MB), forward it through `callDaemonTool`, and write the
+ * response. Shared by `app serve` (same-origin static server) and `app dev`
+ * (bridge-only CORS server) so the wire contract is identical between them.
+ */
+export function handleToolCallRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  getClient: () => Promise<Client>,
+): void {
+  let raw = ""
+  req.setEncoding("utf8")
+  req.on("data", (chunk: string) => {
+    raw += chunk
+    if (raw.length > 1_000_000) {
+      req.destroy()
+    }
+  })
+  req.on("end", () => {
+    void (async () => {
+      let body: unknown
+      try {
+        body = raw ? JSON.parse(raw) : null
+      } catch {
+        res.writeHead(400, { "content-type": "application/json" })
+        res.end(JSON.stringify({ error: "bad_request", message: "body is not valid JSON." }))
+        return
+      }
+      const [status, result] = await callDaemonTool(getClient, body)
+      res.writeHead(status, { "content-type": "application/json" })
+      res.end(JSON.stringify(result))
+    })()
+  })
 }
 
 /**
@@ -346,26 +419,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
 
   // 3. The daemon MCP client — connected once, reused across calls.
   const daemonMcpUrl = await resolveDaemonMcpUrl()
-  let clientPromise: Promise<Client> | null = null
-  const getClient = (): Promise<Client> => {
-    if (!clientPromise) {
-      clientPromise = (async () => {
-        const client = new Client(
-          { name: "agentproto-app-serve", version: "0.1.0" },
-          { capabilities: {} },
-        )
-        const transport = new StreamableHTTPClientTransport(new URL(daemonMcpUrl))
-        await client.connect(transport)
-        return client
-      })().catch((err) => {
-        // A failed connect poisons the cached promise — drop it so the next
-        // call retries rather than permanently surfacing this first failure.
-        clientPromise = null
-        throw err
-      })
-    }
-    return clientPromise
-  }
+  const getClient = createDaemonMcpClientGetter(daemonMcpUrl, "agentproto-app-serve")
 
   const bridgeScript = buildBridgeScript(TOOL_CALL_PATH)
   const runJson = values.json === true
@@ -374,29 +428,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
   const server = createServer((req, res) => {
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
     if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
-      let raw = ""
-      req.setEncoding("utf8")
-      req.on("data", (chunk: string) => {
-        raw += chunk
-        if (raw.length > 1_000_000) {
-          req.destroy()
-        }
-      })
-      req.on("end", () => {
-        void (async () => {
-          let body: unknown
-          try {
-            body = raw ? JSON.parse(raw) : null
-          } catch {
-            res.writeHead(400, { "content-type": "application/json" })
-            res.end(JSON.stringify({ error: "bad_request", message: "body is not valid JSON." }))
-            return
-          }
-          const [status, result] = await callDaemonTool(getClient, body)
-          res.writeHead(status, { "content-type": "application/json" })
-          res.end(JSON.stringify(result))
-        })()
-      })
+      handleToolCallRequest(req, res, getClient)
       return
     }
     void serveStatic(uiRoot, req.url ?? "/", bridgeScript, res)
