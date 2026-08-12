@@ -2,7 +2,7 @@
 
 An **agent-CLI adapter** is the npm-installable definition of how to
 drive a specific CLI agent — claude-code, hermes, opencode,
-codex, mastra-agent, openclaw, antigravity, and whatever your team ships. Adapters
+codex, mastra-agent, openclaw, antigravity, jcode, and whatever your team ships. Adapters
 declare:
 
 - Where to download the binary (npm / brew / curl / pip / cargo / go /
