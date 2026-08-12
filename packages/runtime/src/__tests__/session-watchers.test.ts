@@ -61,6 +61,55 @@ describe("session watchers counter", () => {
 
     reg.shutdown()
   })
+
+  it("stamps watcherDetails alongside the count, removing by reference on decrement", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+    })
+
+    // Field is always present (empty array), never absent — same "0 vs
+    // unsupported" contract as `watchers`.
+    expect(reg.get(desc.id)?.watcherDetails).toEqual([])
+
+    const a = { watcherSessionId: "sup-a", watcherLabel: "supervisor A", event: "turn-end", since: "t0" }
+    const b = { event: "any", timeoutMs: 7_200_000, since: "t1" } // anonymous waiter
+    reg.incWatchers(desc.id, a)
+    reg.incWatchers(desc.id, b)
+    expect(reg.get(desc.id)?.watchers).toBe(2)
+    expect(reg.get(desc.id)?.watcherDetails).toEqual([a, b])
+
+    // Decrement by reference removes exactly that waiter, not just any entry.
+    reg.decWatchers(desc.id, a)
+    expect(reg.get(desc.id)?.watchers).toBe(1)
+    expect(reg.get(desc.id)?.watcherDetails).toEqual([b])
+
+    reg.decWatchers(desc.id, b)
+    expect(reg.get(desc.id)?.watcherDetails).toEqual([])
+
+    reg.shutdown()
+  })
+
+  it("stampWatchers copies the detail list — a caller mutating it can't corrupt the registry", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+    })
+    const detail = { event: "exited", since: "t0" }
+    reg.incWatchers(desc.id, detail)
+
+    const first = reg.get(desc.id)?.watcherDetails as { event: string; since: string }[]
+    first.push({ event: "fake", since: "t1" })
+    expect(reg.get(desc.id)?.watcherDetails).toEqual([detail])
+
+    reg.shutdown()
+  })
 })
 
 describe("childrenBusy — subtree rollup", () => {

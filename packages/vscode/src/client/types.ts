@@ -24,6 +24,18 @@ export interface SessionAwaitingQuestion {
   source: "structured" | "heuristic"
 }
 
+/** Mirrors @agentproto/runtime SessionWatcherInfo — one live waiter behind
+ *  `SessionDescriptor.watchers` (#session-visibility). See the runtime type's
+ *  doc for the attach-time-snapshot semantics (never live-updated, never
+ *  persisted). */
+export interface SessionWatcherInfo {
+  watcherSessionId?: string
+  watcherLabel?: string
+  event: string
+  timeoutMs?: number
+  since: string
+}
+
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =
   | "starting"
@@ -196,6 +208,11 @@ export interface SessionDescriptor {
    *  of supervisors blocked waiting on this session (#session-visibility).
    *  Ephemeral, stamped at read time; 0/absent ⇒ nothing is watching. */
   watchers?: number
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.watcherDetails — per-waiter
+   *  detail behind `watchers`: who is watching (when named) and what they're
+   *  waiting for. Same lifetime as `watchers`; empty/absent ⇒ nothing is
+   *  watching. Drives the transcript panel's watcher presence chip. */
+  watcherDetails?: readonly SessionWatcherInfo[]
   /** Mirrors `@agentproto/runtime` SessionDescriptor.pendingBgTasks — how many
    *  background tool starts were counted in the session's last turn; the
    *  session ended its turn with them likely still pending. Ephemeral, stamped

@@ -2228,6 +2228,119 @@ describe("transcriptPanel webview — header detail popovers", () => {
   })
 })
 
+describe("transcriptPanel webview — watcher presence chip (#session-visibility)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function initWith(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("stays hidden when nobody is watching", () => {
+    const panel = renderPanel()
+    initWith(panel, { watchers: 0 })
+    expect(el(panel, "watchers-wrap").hidden).toBe(true)
+  })
+
+  it("shows the eye + count once someone is watching, with identity in the popover", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 1,
+      watcherDetails: [
+        { watcherSessionId: "sup1", watcherLabel: "orchestrator-lead", event: "turn-end", since: "t0" },
+      ],
+    })
+    expect(el(panel, "watchers-wrap").hidden).toBe(false)
+    expect(el(panel, "watchers-btn").textContent).toBe("\u{1F441} 1")
+    expect((el(panel, "watchers-btn") as unknown as HTMLElement).title).toBe(
+      "orchestrator-lead — until turn-end",
+    )
+    expect(el(panel, "watchers-popover").hidden).toBe(true)
+
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "watchers-popover").hidden).toBe(false)
+    const rows = [...el(panel, "watchers-list").querySelectorAll(".popover-row")]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.querySelector(".popover-label")?.textContent).toBe("orchestrator-lead")
+    expect(rows[0]!.querySelector(".watcher-wait")?.textContent).toBe("until turn-end")
+  })
+
+  it("falls back to the session id, then to a generic count, when identity is unavailable", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 1,
+      watcherDetails: [{ watcherSessionId: "sess_abc123", event: "awaiting-input", since: "t0" }],
+    })
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "watchers-list").textContent).toContain("sess_abc123")
+    expect(el(panel, "watchers-list").textContent).toContain("until it asks for input")
+
+    const panel2 = renderPanel()
+    initWith(panel2, { watchers: 2, watcherDetails: [] })
+    expect(el(panel2, "watchers-btn").textContent).toBe("\u{1F441} 2")
+    el(panel2, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel2, "watchers-list").textContent).toBe("2 waiters")
+  })
+
+  it("shows the timeout alongside the wait condition when the daemon reported one", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 1,
+      watcherDetails: [{ watcherLabel: "supervisor", event: "any", timeoutMs: 7_200_000, since: "t0" }],
+    })
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "watchers-list").querySelector(".watcher-wait")?.textContent).toBe(
+      "for any change, 2h timeout",
+    )
+  })
+
+  it("lists every waiter and titles the button generically once there is more than one", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 2,
+      watcherDetails: [
+        { watcherLabel: "first", event: "turn-end", since: "t0" },
+        { watcherLabel: "second", event: "exited", since: "t1" },
+      ],
+    })
+    expect((el(panel, "watchers-btn") as unknown as HTMLElement).title).toBe("2 waiters attached — click for detail")
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    const rows = [...el(panel, "watchers-list").querySelectorAll(".popover-row")]
+    expect(rows.map(r => r.querySelector(".popover-label")?.textContent)).toEqual(["first", "second"])
+  })
+
+  it("hides again on a live update once the last watcher detaches", () => {
+    const panel = renderPanel()
+    initWith(panel, { watchers: 1, watcherDetails: [{ event: "turn-end", since: "t0" }] })
+    expect(el(panel, "watchers-wrap").hidden).toBe(false)
+
+    panel.send({ type: "sessionUpdate", session: session({ watchers: 0, watcherDetails: [] }) })
+    expect(el(panel, "watchers-wrap").hidden).toBe(true)
+    expect(el(panel, "watchers-popover").hidden).toBe(true)
+  })
+
+  it("never renders raw HTML from a watcher label — textContent only", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 1,
+      watcherDetails: [{ watcherLabel: "<img src=x onerror=alert(1)>", event: "turn-end", since: "t0" }],
+    })
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "watchers-list").querySelector("img")).toBeNull()
+    expect(el(panel, "watchers-list").querySelector(".popover-label")?.textContent).toBe(
+      "<img src=x onerror=alert(1)>",
+    )
+  })
+})
+
 describe("header terminal button", () => {
   function el(panel: Panel, id: string): DomElement {
     const found = panel.document.getElementById(id)

@@ -10,7 +10,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { SessionsRegistry } from "./sessions.js"
+import type { SessionsRegistry, SessionWatcherInfo } from "./sessions.js"
 import type {
   SessionEventBus,
   SessionEventType,
@@ -298,18 +298,34 @@ export async function monitorSessionWait(opts: {
     // transcript panel) can surface "a watcher attached/detached" inside the
     // WATCHED session — not just in the supervisor's own view. `watchers` is
     // the count AFTER the change, read back from the registry (a concurrent
-    // waiter may have moved it); `watcherSessionId` names the supervising
-    // session when this wait was initiated by one (absent for an anonymous
-    // CLI/HTTP waiter). Detection + signal only — the wait itself is
+    // waiter may have moved it); `watcherSessionId`/`label` name the
+    // supervising session when this wait was initiated by one (absent for an
+    // anonymous CLI/HTTP waiter). Detection + signal only — the wait itself is
     // unchanged.
+    //
+    // The SAME `watcherDetail` object is registered on every id in a
+    // multi-id wait (`session_monitor`'s fan-in) and passed BACK by reference
+    // to `decWatchers` in `finish()` — reference equality is how the registry
+    // removes exactly this waiter from each id's detail list.
+    const watcherLabel = callerScope?.ownerSessionId
+      ? (registry.get(callerScope.ownerSessionId)?.label ?? registry.get(callerScope.ownerSessionId)?.title)
+      : undefined
+    const watcherDetail: SessionWatcherInfo = {
+      ...(callerScope?.ownerSessionId ? { watcherSessionId: callerScope.ownerSessionId } : {}),
+      ...(watcherLabel ? { watcherLabel } : {}),
+      event: targetEvent,
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      since: new Date().toISOString(),
+    }
     for (const id of resolvedIds) {
-      registry.incWatchers(id)
+      registry.incWatchers(id, watcherDetail)
       const watchers = registry.get(id)?.watchers ?? 0
       sessionEvents.emit({
         type: "session:watcher-attached",
         sessionId: id,
         watchers,
         ...(callerScope?.ownerSessionId ? { watcherSessionId: callerScope.ownerSessionId } : {}),
+        ...(watcherLabel ? { label: watcherLabel } : {}),
         ts: new Date().toISOString(),
       })
     }
@@ -320,13 +336,14 @@ export async function monitorSessionWait(opts: {
       clearTimeout(timer)
       for (const u of unsubs) u()
       for (const id of resolvedIds) {
-        registry.decWatchers(id)
+        registry.decWatchers(id, watcherDetail)
         const watchers = registry.get(id)?.watchers ?? 0
         sessionEvents.emit({
           type: "session:watcher-detached",
           sessionId: id,
           watchers,
           ...(callerScope?.ownerSessionId ? { watcherSessionId: callerScope.ownerSessionId } : {}),
+          ...(watcherLabel ? { label: watcherLabel } : {}),
           ts: new Date().toISOString(),
         })
       }

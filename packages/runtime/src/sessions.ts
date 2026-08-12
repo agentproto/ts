@@ -616,6 +616,31 @@ export interface SessionAccessProfileEcho {
   method: AuthMethod
 }
 
+/**
+ * One live waiter behind a session's {@link SessionDescriptor.watchers} count
+ * (#session-visibility). Captured at `monitorSessionWait` attach time and held
+ * only for the life of that wait — never persisted, never updated in place
+ * (a snapshot of the waiter's label at attach time, not a live mirror of it).
+ */
+export interface SessionWatcherInfo {
+  /** The waiting session's id, when this wait was initiated by an agent
+   *  session via the orchestrator scope (`callerScope.ownerSessionId`).
+   *  Absent for an anonymous CLI/HTTP waiter — it still counts toward
+   *  `watchers`, it just can't be named. */
+  watcherSessionId?: string
+  /** Best-effort label/title for `watcherSessionId`, resolved once at attach
+   *  time. A later rename of the watching session is not reflected. */
+  watcherLabel?: string
+  /** What this wait is blocking on — mirrors `session_monitor`'s `event`
+   *  parameter (`SessionWaitEvent` in orchestration-tools.ts; kept as a plain
+   *  string here so the registry doesn't depend on the tool-layer type). */
+  event: string
+  /** The wait's configured timeout, ms — absent for the MCP tool's default. */
+  timeoutMs?: number
+  /** ISO 8601 timestamp this waiter attached. */
+  since: string
+}
+
 export interface SessionDescriptor {
   id: string
   kind: SessionKind
@@ -705,6 +730,15 @@ export interface SessionDescriptor {
    *  daemon restart). 0/absent ⇒ nothing is watching. Lets a UI mark a
    *  session "supervised — notify on turn-end". */
   watchers?: number
+  /** Per-waiter detail behind the {@link watchers} count — who is blocked on
+   *  this session and what they're blocked on. Same lifetime/source as
+   *  `watchers` (stamped at read time from the registry's live waiter list,
+   *  never persisted); empty/absent ⇒ nothing is watching. An anonymous
+   *  CLI/HTTP waiter (no `callerScope`) carries no `watcherSessionId` — it
+   *  still counts, it just can't be named. Lets a UI answer "who is watching
+   *  this, and what are they waiting for" without guessing from the bare
+   *  count. */
+  watcherDetails?: readonly SessionWatcherInfo[]
   /** Count of DESCENDANT sessions (children, grandchildren, …) currently
    *  mid-turn, derived at read time from the `parentSessionId` lineage
    *  (#session-visibility, subtree rollup). Lets a UI show an idle parent that
@@ -2199,11 +2233,17 @@ export interface SessionsRegistry {
    *  ephemeral `watchers` counter surfaced on the descriptor at read time.
    *  Called by `monitorSessionWait` when a `/sessions/:id/wait` long-poll or
    *  `session_monitor` subscription actually blocks. A no-op for an unknown id
-   *  is fine (the wait may outlive the row). */
-  incWatchers(id: string): void
+   *  is fine (the wait may outlive the row). `detail`, when passed, is held
+   *  (by reference) alongside the count and surfaced as
+   *  `SessionDescriptor.watcherDetails` — pass the SAME object reference to
+   *  the matching {@link decWatchers} call so removal is exact. */
+  incWatchers(id: string, detail?: SessionWatcherInfo): void
   /** Balance an {@link incWatchers} when the waiter resolves or times out.
-   *  Clamps at 0 and drops the map entry at zero so the counter can't leak. */
-  decWatchers(id: string): void
+   *  Clamps at 0 and drops the map entry at zero so the counter can't leak.
+   *  Pass the same `detail` reference given to `incWatchers` to remove it from
+   *  `watcherDetails`; omitted/mismatched detail leaves the count balanced but
+   *  the detail list untouched (defensive — should not happen in practice). */
+  decWatchers(id: string, detail?: SessionWatcherInfo): void
   /** Archive a TERMINAL-status session (exited/killed/error) — sets
    *  `archived: true` and persists. Pure housekeeping: hides the row from
    *  `list()`'s default view, nothing else. Refuses (throws) a still-alive
@@ -2956,11 +2996,18 @@ export function createSessionsRegistry(opts?: {
   // persisted SessionRuntime rows (a waiter can't survive a restart) and
   // stamped onto the descriptor at read time, like `processAlive`.
   const watchersById = new Map<string, number>()
-  /** Stamp the live waiter count onto a descriptor at read time (mirrors
-   *  `stampProcessAlive`). 0 when nothing is waiting — the field is always set
-   *  so a reader can tell "no watchers" from "field unsupported". */
+  /** Per-waiter detail behind `watchersById`'s count (#session-visibility) —
+   *  see {@link SessionWatcherInfo}. Kept as a parallel map rather than
+   *  folding the count into `.length` so a caller that never passes `detail`
+   *  (an anonymous waiter) still counts without needing a placeholder entry. */
+  const watcherDetailsById = new Map<string, SessionWatcherInfo[]>()
+  /** Stamp the live waiter count + detail onto a descriptor at read time
+   *  (mirrors `stampProcessAlive`). 0/empty when nothing is waiting — both
+   *  fields are always set so a reader can tell "no watchers" from "field
+   *  unsupported". A shallow copy so a caller can't mutate the live list. */
   const stampWatchers = (desc: SessionDescriptor): void => {
     desc.watchers = watchersById.get(desc.id) ?? 0
+    desc.watcherDetails = [...(watcherDetailsById.get(desc.id) ?? [])]
   }
   /** Read-time subtree rollup (#session-visibility): for every session, how
    *  many of its descendants (via `parentSessionId`) are currently mid-turn.
@@ -6029,13 +6076,26 @@ export function createSessionsRegistry(opts?: {
       }
       return desc
     },
-    incWatchers(id) {
+    incWatchers(id, detail) {
       watchersById.set(id, (watchersById.get(id) ?? 0) + 1)
+      if (detail) {
+        const list = watcherDetailsById.get(id)
+        if (list) list.push(detail)
+        else watcherDetailsById.set(id, [detail])
+      }
     },
-    decWatchers(id) {
+    decWatchers(id, detail) {
       const next = (watchersById.get(id) ?? 0) - 1
       if (next > 0) watchersById.set(id, next)
       else watchersById.delete(id)
+      if (detail) {
+        const list = watcherDetailsById.get(id)
+        if (list) {
+          const idx = list.indexOf(detail)
+          if (idx >= 0) list.splice(idx, 1)
+          if (list.length === 0) watcherDetailsById.delete(id)
+        }
+      }
     },
     attach(id, onLine) {
       const rt = sessions.get(id)
