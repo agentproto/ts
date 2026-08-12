@@ -35,6 +35,8 @@ import { dirname, join } from "node:path"
 import { parseArgs } from "node:util"
 import { loadConfig, CONFIG_FILE_PATH } from "@agentproto/runtime/config"
 
+import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
+
 const LABEL = "sh.agentproto"
 const USAGE = `agentproto daemon — run agentproto serve as a background service
 
@@ -208,6 +210,76 @@ async function runUninstall(): Promise<number> {
   return 0
 }
 
+/** What `/health` reports about the RUNNING daemon (plus the url we probed). */
+export interface DaemonHealthInfo {
+  url: string
+  version?: string | null
+  pid?: number
+  node?: string
+  entry?: string | null
+  workspace?: string
+  uptimeMs?: number
+}
+
+/** Single `/health` attempt against the configured bind/port — null when
+ *  unreachable. Injectable so the lifecycle tests never hit the network. */
+export type HealthFetchFn = () => Promise<DaemonHealthInfo | null>
+
+async function fetchHealth(): Promise<DaemonHealthInfo | null> {
+  const cfg = await loadConfig()
+  const port = cfg.daemon?.port ?? 18790
+  const bind = cfg.daemon?.bind ?? "127.0.0.1"
+  const host = bind === "0.0.0.0" || bind === "::" ? "127.0.0.1" : bind
+  const url = `http://${host}:${port}`
+  try {
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(800) })
+    if (!res.ok) return null
+    const body = (await res.json()) as Omit<DaemonHealthInfo, "url">
+    return { ...body, url }
+  } catch {
+    return null
+  }
+}
+
+async function waitForHealth(
+  health: HealthFetchFn,
+  attempts: number,
+  delayMs: number,
+): Promise<DaemonHealthInfo | null> {
+  for (let i = 0; i < attempts; i++) {
+    const info = await health()
+    if (info) return info
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs))
+  }
+  return null
+}
+
+function tilde(p: string | null | undefined): string {
+  if (!p) return "?"
+  const home = homedir()
+  return p.startsWith(home) ? "~" + p.slice(home.length) : p
+}
+
+/** The post-start/restart info block: what booted, where its bin lives,
+ *  where it serves, where it logs. */
+function printLifecycleInfo(verb: string, info: DaemonHealthInfo | null): void {
+  const p = paths()
+  if (!info) {
+    process.stdout.write(
+      `agentproto daemon: ${verb} (not answering /health yet — check \`agentproto daemon logs\`)\n`,
+    )
+    return
+  }
+  process.stdout.write(
+    `agentproto daemon: ${verb}\n` +
+      `  version:   ${info.version ?? "?"} · pid ${info.pid ?? "?"} · up ${humaniseUptime(info.uptimeMs ?? 0)}\n` +
+      `  bin:       ${tilde(info.node)} ${tilde(info.entry)}\n` +
+      `  url:       ${info.url}\n` +
+      `  workspace: ${tilde(info.workspace)}\n` +
+      `  logs:      ${tilde(p.log)}\n`,
+  )
+}
+
 /**
  * `start` — idempotent launch. `kickstart` WITHOUT `-k` asks launchd to start
  * the service if it isn't running and is a no-op if it already is; it never
@@ -218,6 +290,8 @@ async function runUninstall(): Promise<number> {
  */
 export async function runStart(
   run: LaunchctlFn = launchctl,
+  health: HealthFetchFn = fetchHealth,
+  probeAttempts = 20,
 ): Promise<number> {
   const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
   const out = await run(["kickstart", target])
@@ -228,7 +302,7 @@ export async function runStart(
     )
     return out.code
   }
-  process.stdout.write("agentproto daemon: started\n")
+  printLifecycleInfo("started", await waitForHealth(health, probeAttempts, 300))
   return 0
 }
 
@@ -240,6 +314,8 @@ export async function runStart(
  */
 export async function runRestart(
   run: LaunchctlFn = launchctl,
+  health: HealthFetchFn = fetchHealth,
+  probeAttempts = 20,
 ): Promise<number> {
   const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
   const out = await run(["kickstart", "-k", target])
@@ -250,20 +326,86 @@ export async function runRestart(
     )
     return out.code
   }
-  process.stdout.write("agentproto daemon: restarted\n")
+  printLifecycleInfo("restarted", await waitForHealth(health, probeAttempts, 300))
   return 0
 }
 
-async function runStop(): Promise<number> {
+/** The lifetime summary printed on `stop` — gathered BEFORE the SIGTERM
+ *  (the daemon can't answer afterwards). All fields best-effort. */
+export interface DaemonStopStats {
+  uptimeMs?: number
+  version?: string | null
+  sessions?: number
+  tokensIn?: number
+  tokensOut?: number
+  unpricedTokens?: number
+  spentUsd?: number
+}
+
+export type StopStatsFn = () => Promise<DaemonStopStats | null>
+
+/** `/health` for uptime/version, then `/usage/rollup` over exactly the
+ *  daemon's own uptime window — sessions with activity + token totals +
+ *  the local spend estimate for THIS daemon run, not all history. */
+async function gatherStopStats(): Promise<DaemonStopStats | null> {
+  const health = await fetchHealth()
+  if (!health) return null
+  const stats: DaemonStopStats = {
+    ...(health.uptimeMs !== undefined ? { uptimeMs: health.uptimeMs } : {}),
+    version: health.version ?? null,
+  }
+  try {
+    const report = await discoverDaemon()
+    if (report.found) {
+      const windowS = Math.max(1, Math.ceil((health.uptimeMs ?? 0) / 1000))
+      const rollup = await httpGetJson<{
+        total: { spentUsd: number; tokensIn: number; tokensOut: number; unpricedTokens: number }
+        sessionsConsidered: number
+      }>(`${report.found.url}/usage/rollup?window=${windowS}s`)
+      stats.sessions = rollup.sessionsConsidered
+      stats.tokensIn = rollup.total.tokensIn
+      stats.tokensOut = rollup.total.tokensOut
+      stats.unpricedTokens = rollup.total.unpricedTokens
+      stats.spentUsd = rollup.total.spentUsd
+    }
+  } catch {
+    // Usage rollup is decoration on the goodbye line — never block a stop.
+  }
+  return stats
+}
+
+/** `1.2M` / `340k` / `512` — compact token counts for the stop summary. */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+  return String(n)
+}
+
+export async function runStop(
+  run: LaunchctlFn = launchctl,
+  gather: StopStatsFn = gatherStopStats,
+): Promise<number> {
+  // Gather BEFORE killing — a stopped daemon answers nothing.
+  const stats = await gather()
   const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
-  const out = await launchctl(["kill", "SIGTERM", target])
+  const out = await run(["kill", "SIGTERM", target])
   if (out.code !== 0) {
     process.stderr.write(
       `agentproto daemon stop: ${out.stderr || "launchctl exited " + out.code}\n`,
     )
     return out.code
   }
-  process.stdout.write("agentproto daemon: SIGTERM sent\n")
+  let msg = "agentproto daemon: SIGTERM sent\n"
+  if (stats) {
+    msg += `  ran:       ${humaniseUptime(stats.uptimeMs ?? 0)}${stats.version ? ` · v${stats.version}` : ""}\n`
+    if (stats.sessions !== undefined) {
+      const tokens = `${fmtTokens(stats.tokensIn ?? 0)} in / ${fmtTokens(stats.tokensOut ?? 0)} out tok`
+      const unpriced = stats.unpricedTokens ? ` · ${fmtTokens(stats.unpricedTokens)} unpriced` : ""
+      const spend = stats.spentUsd !== undefined ? ` · ~$${stats.spentUsd.toFixed(2)} est` : ""
+      msg += `  activity:  ${stats.sessions} session${stats.sessions === 1 ? "" : "s"} · ${tokens}${spend}${unpriced}\n`
+    }
+  }
+  process.stdout.write(msg)
   return 0
 }
 
@@ -301,8 +443,11 @@ async function runStatus(): Promise<number> {
       const body = (await res.json().catch(() => ({}))) as {
         workspace?: string
         uptimeMs?: number
+        version?: string | null
       }
-      health = `ok · workspace=${body.workspace ?? "?"} · up ${humaniseUptime(body.uptimeMs ?? 0)}`
+      health =
+        `ok${body.version ? ` · v${body.version}` : ""}` +
+        ` · workspace=${body.workspace ?? "?"} · up ${humaniseUptime(body.uptimeMs ?? 0)}`
     } else {
       health = `HTTP ${res.status}`
     }
@@ -434,10 +579,14 @@ function launchctl(args: string[]): Promise<LaunchctlResult> {
 
 function humaniseUptime(ms: number): string {
   if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`
-  return `${Math.floor(ms / 86_400_000)}d`
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m${s % 60 ? `${s % 60}s` : ""}`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h${m % 60 ? `${m % 60}m` : ""}`
+  const d = Math.floor(h / 24)
+  return `${d}d${h % 24 ? `${h % 24}h` : ""}`
 }
 
 function indent(s: string, prefix: string): string {
