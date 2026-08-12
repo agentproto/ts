@@ -118,6 +118,12 @@ agentproto config set daemon.port 18791
   // --preset <name>`. See "terminalPresets" below.
   "terminalPresets": {
     "terra": { "argv": ["bash", "-l"], "env": { "TERM": "xterm-256color" } }
+  },
+
+  // Feature toggles. See "features" below.
+  "features": {
+    "pty": true,
+    "llmEndpoint": false
   }
 }
 ```
@@ -252,6 +258,16 @@ manifests or `defaults`.
 | `workspace` | `string`                  | Workspace slug used for `cwd` fallback when `cwd` is omitted.           |
 | `name`      | `string`                  | Stable session name passed to the registry.                            |
 | `label`     | `string`                  | Human-readable label surfaced in session listings.                     |
+
+### `features: object`
+
+Daemon feature toggles. All fields are optional; defaults are conservative
+(off / informational) so upgrades don't change behaviour.
+
+| Field         | Type      | Meaning |
+| ------------- | --------- | ------- |
+| `pty`         | `boolean` | Informational hint that PTY support is desired. The daemon still detects `node-pty`'s presence at runtime. |
+| `llmEndpoint` | `boolean` | Enable the local `@agentproto/llm-endpoint` proxy sidecar. When `true`, the daemon registers the `llm-endpoint` route and exposes the `llm_endpoint_*` MCP tools. Default `false` — opt-in because the sidecar spawns a child process and binds an extra port. |
 
 ### `tunnel: object`
 

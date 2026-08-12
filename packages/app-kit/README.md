@@ -142,6 +142,22 @@ The four surfaces form the app's public contract:
 | `artifact` | Cowork artifact | `.agentproto/artifact/index.html`   | `app_artifact_get`              | `create_artifact` (Cowork)    |
 | `artifacts`| Decl types      | inline in APP.md frontmatter        | —                               | Discovery                     |
 
+### UI bridge API
+
+A `ui` panel runs inside an MCP Apps host (or standalone via `agentproto app
+serve`) and receives a `window.McpApp` bridge:
+
+- `callTool(name, args)` — invoke an MCP tool exposed by the host.
+- `sendMessage(content)` — push a user message up to the chat host.
+- `updateModelContext({ content?, structuredContent? })` — replace the model
+  context the host sees for this panel.
+- `openLink(url)` — ask the host to open a URL.
+- `onTeardown(cb)` — register a cleanup callback fired when the host tears down
+  the panel.
+
+In a standalone browser tab, `callTool` proxies to the daemon's `/mcp` endpoint,
+while `sendMessage` and `updateModelContext` reject (there is no chat host).
+
 ### Skill surface flow
 
 1. The app declares `skill: { path: "/abs/path/to/skill-dir", title?, description? }`

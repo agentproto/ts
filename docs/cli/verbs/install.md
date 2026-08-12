@@ -42,15 +42,18 @@ reads the adapter's `AgentCliHandle` and walks its `install[]` block.
 | Method | Status | Notes |
 |--------|:--:|-------|
 | `npm` | ✓ | `npm install [-g] <package>` |
+| `uv` | ✓ | `uv tool install <package>` (Python-based agents) |
+| `pip` | ✓ | `pip install [--user] <package>` |
+| `pip3` | ✓ | `pip3 install [--user] <package>` |
+| `pipx` | ✓ | `pipx install <package>` (isolated Python tools) |
 | `brew` | ✓ | `brew install <package>` (supports `tap/repo/pkg` form) |
 | `curl` | ✓ | Downloads `<url>`, optionally verifies `verify_sha256`, then `bash <script>`. Warns when no SHA is declared. |
 | `download` | ✓ | Fetches archive (`.tar`/`.tar.gz`/`.tgz`/`.zip`), optionally verifies `verify_sha256`, extracts, copies `extract_bin` into `~/.local/bin` (or `$AGENTPROTO_BIN_DIR`), `chmod +x`. |
-| `pip` | ✓ | `pip install [--user] <package>` |
 | `cargo` | ✓ | `cargo install <package>` |
 | `go` | ✓ | `go install <package>` |
 | `apt` / `dnf` / `pacman` | ✗ | Privilege-escalation policy isn't defined yet. |
 | `choco` / `scoop` | ✗ | Windows-only; not yet platform-detected. |
-| `vendored` | ✗ | Needs a workspace root concept that the host CLI doesn't have yet. |
+| `vendored` | ✓ | Generic ACP agents: run the agent's `install_hint` through a recognized package manager (`npm`, `uv`, `pip`/`pip3`, `pipx`, `brew`, `cargo`, `go`). Fails loud with an actionable message if the hint is unsupported or the package manager is missing. |
 
 Methods are tried **in order until one succeeds**. So adapters can
 ship an `npm` step followed by a `curl`/`download` fallback, and the

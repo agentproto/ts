@@ -8,7 +8,7 @@ one's work — with your tests or a reviewer model — before anything is
 committed. No more babysitting terminal windows.
 
 - **Run them all the same way.** Start, message, watch, and stop any agent
-  with the same commands. Twelve adapters today.
+  with the same commands. Thirteen adapters today.
 - **Work checked before it lands.** Attach a check — your tests, or a stronger
   model reviewing the change — and it runs each time the agent finishes.
   Commits wait for the check and your OK, even after you close your laptop.
@@ -26,7 +26,7 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 0.11.4-alpha.** APIs are stabilising; expect minor breaking changes
+> **Status: 0.12.0-alpha.** APIs are stabilising; expect minor breaking changes
 > between alpha releases.
 
 ## Quick start
@@ -48,8 +48,8 @@ for the honest split below.
 
 This repo ships two very different things under one name:
 
-- **Tier 1 — live, verified hands-on:** the daemon, the CLI, twelve agent
-  adapters (Claude Code, Claude SDK, Codex, Gemini, Hermes, opencode, Mastra Code +
+- **Tier 1 — live, verified hands-on:** the daemon, the CLI, thirteen agent
+  adapters (Claude Code, Claude SDK, Codex, Gemini, Hermes, jcode, opencode, Mastra Code +
   in-process, Mastra Agent, OpenClaw, browser-as-agent, Antigravity, pi), durable policy gates,
   nested orchestration with role gating, fan-in monitoring, workflows/cron,
   and an MCP surface (~90 tools) on the daemon itself.
@@ -135,6 +135,11 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `workflow_run_file` / `workflow_start` / `workflow_status` / `workflow_cancel` | Run WORKFLOW.md and stage-barrier workflows |
 | `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` | Install and run `@agentproto/app-kit` apps as live agent sessions |
 | `app_apply` / `app_unapply` / `app_list_applied` | Mount / unmount apps to scopes with dependency validation |
+| `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane (read/write/list + legacy migration) |
+| `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets |
+| `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (BM25) |
+| `conversation_export` | Export a daemon transcript to a target adapter's native store (claude-code today) |
+| `llm_endpoint_start` / `llm_endpoint_stop` / `llm_endpoint_status` / `llm_endpoint_set_upstream_link` / `llm_endpoint_list_links` | Local LLM Endpoint proxy sidecar (requires `features.llmEndpoint`) |
 | `tunnel_create` / `tunnel_list` / `tunnel_stop` / `tunnel_status` | Public URL tunnels for local ports |
 | `list_provider_presets` | Gateway presets (Anthropic, Moonshot, OpenRouter, Requesty, DeepSeek, xAI) |
 | `adapter_install` | Install a not-yet-installed agent-CLI harness by slug |
@@ -282,7 +287,7 @@ Key specs implemented here:
 | AIP-40 | EXTENSION.md | `@agentproto/extension` |
 | AIP-41 | ROUTINE.md | `@agentproto/routine` |
 | AIP-42 | AGENT.md | `@agentproto/agent`, `@agentproto/mastra` |
-| AIP-45 | Agent CLI adapter | `adapters/{claude-code,claude-sdk,hermes,opencode,codex,openclaw,mastra-agent,antigravity}` |
+| AIP-45 | Agent CLI adapter | `adapters/{claude-code,claude-sdk,hermes,opencode,codex,openclaw,mastra-agent,antigravity,jcode}` |
 
 ## Building from source
 

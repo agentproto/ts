@@ -31,6 +31,22 @@ survive the round-trip.
 
 ## Subverbs
 
+### `serve [appDir] [--port <n>] [--json]`
+
+Serve an agentproto app's `.agentproto/ui/` as a standalone webapp with a
+working `window.McpApp` bridge wired to the daemon's `/mcp` endpoint. The same
+HTML dashboard that renders inside an MCP-Apps panel now runs in a plain
+browser tab with full MCP connectivity.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `appDir` | current directory | Directory holding `.agentproto/APP.md` + `.agentproto/ui/`. |
+| `--port <n>` | declared `ui.port` in `APP.md`, else OS-assigned | Port to bind. A declared `ui.port` that is already taken falls back to auto-assign; an explicit `--port` that is taken is a hard error. |
+| `--json` | `false` | Print `{ url, appDir, daemonMcpUrl }` on stdout instead of a human summary. |
+
+Start the daemon first (`agentproto serve`); the bridge proxies tool calls to
+`http://127.0.0.1:<daemon.port>/mcp`.
+
 ### `pack <appDir> [--out <path.agentapp>] [--json]`
 
 Reads `<appDir>/.agentproto/APP.md`, walks the entire app dir, computes an
