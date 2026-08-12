@@ -112,6 +112,14 @@ with `AGENTPROTO_BRIDGE_URL=http://127.0.0.1:<bridgePort>` in its
 environment, so a scaffolded `vite.config.ts` can proxy `/__agentproto` to
 it. Extra args after `--` are forwarded to `<pm> run dev`.
 
+When APP.md declares `ui.port` (the same frontmatter `serve` reads) and no
+`-- <viteArgs>` were passed at all, `dev` appends `--port <declared>` to the
+`<pm> run dev` invocation itself, so the ui dev server's own URL is stable
+and matches the app's declared surface — this is unrelated to the `--port`
+flag above, which only controls the bridge server. Passing any explicit
+`viteArgs` disables the hint entirely: you're steering the dev server
+directly, so nothing gets merged on top of your flags.
+
 Ctrl-C or the dev server child exiting tears both servers down; `app dev`
 exits with the child's exit code. `--json` prints
 `{"bridgeUrl":"...","appDir":"..."}` on one line before handing the

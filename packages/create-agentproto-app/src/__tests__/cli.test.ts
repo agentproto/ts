@@ -106,6 +106,18 @@ describe("runCreateApp", () => {
     expect(stderr.text()).toContain("already exists and is not empty")
   })
 
+  it("--template vanilla scaffolds and prints `app serve` (not `app dev`) next steps", async () => {
+    const root = await mktmp()
+    const target = join(root, "vanilla-app")
+    const stdout = captureStdout()
+
+    const code = await runCreateApp([target, "--template", "vanilla"])
+    expect(code).toBe(0)
+    expect(stdout.text()).toContain("agentproto app serve .")
+    expect(stdout.text()).not.toContain("pnpm install")
+    expect(stdout.text()).not.toContain("agentproto app dev .")
+  })
+
   it("--help prints usage and exits 0 without touching the filesystem", async () => {
     const stdout = captureStdout()
     const code = await runCreateApp(["--help"])
