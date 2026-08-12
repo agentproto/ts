@@ -81,6 +81,7 @@ type WebviewToHostMessage =
   | { type: "removeModel"; profileId: string; model: string }
   | { type: "addProfile" }
   | { type: "openMap" }
+  | { type: "openExplorer" }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   if (typeof value !== "object" || value === null) return false
@@ -189,6 +190,10 @@ class AuthProfilesWebviewProvider implements vscode.WebviewViewProvider {
         return
       case "openMap": {
         void vscode.commands.executeCommand("agentproto.openAuthModel")
+        return
+      }
+      case "openExplorer": {
+        void vscode.commands.executeCommand("agentproto.openAuthExplorer")
         return
       }
       case "addProfile": {
@@ -442,15 +447,15 @@ export function buildHtml(nonce: string, cspSource: string): string {
     }
     #clear.show { display: block; }
     #summary { flex: 0 0 auto; padding: 6px 12px 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
-    #maplink {
+    #maplink, #explorerlink {
       display: block; width: calc(100% - 24px); margin: 8px 12px 0; text-align: left;
       background: transparent; border: 1px dashed var(--vscode-panel-border, rgba(128,128,128,0.35));
       color: var(--vscode-textLink-foreground, #8fc2ff); font-family: inherit; font-size: 11px;
       padding: 5px 8px; border-radius: 4px; cursor: pointer;
     }
-    #maplink:hover { border-color: var(--vscode-textLink-foreground, #8fc2ff); }
+    #maplink:hover, #explorerlink:hover { border-color: var(--vscode-textLink-foreground, #8fc2ff); }
     #toolbar { display: flex; gap: 6px; margin: 8px 12px 0; }
-    #toolbar #maplink { margin: 0; flex: 1 1 auto; }
+    #toolbar #maplink, #toolbar #explorerlink { margin: 0; flex: 1 1 auto; }
     #addwallet {
       flex: 0 0 auto; font: 600 11px var(--vscode-font-family); padding: 5px 10px; border-radius: 4px;
       border: none; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer;
@@ -579,7 +584,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
   </div>
   <div id="summary"></div>
   <div id="toolbar">
-    <button id="maplink" title="Open the full auth &amp; model configuration map">↗ open Auth &amp; Model Map</button>
+    <button id="explorerlink" title="Open the editable Auth &amp; Models explorer">✎ manage</button>
+    <button id="maplink" title="Open the full auth &amp; model configuration map">↗ map</button>
     <button id="addwallet" title="Add a wallet — an existing local login or a new endpoint/credential">+ Add wallet</button>
   </div>
   <div id="list"></div>
@@ -839,6 +845,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
 
       mapEl.addEventListener('click', function () {
         vscode.postMessage({ type: 'openMap' });
+      });
+      document.getElementById('explorerlink').addEventListener('click', function () {
+        vscode.postMessage({ type: 'openExplorer' });
       });
       addWalletEl.addEventListener('click', function () {
         vscode.postMessage({ type: 'addProfile' });

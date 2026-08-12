@@ -63,6 +63,7 @@ import { registerAppPanels } from "./webview/appPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
 import { registerConfigurationLabWebview } from "./webview/configurationLabPanel.js"
 import { registerAuthModelMindmap } from "./webview/authModelMindmapPanel.js"
+import { registerAuthExplorer } from "./webview/authExplorerPanel.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -153,6 +154,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const appPanels = registerAppPanels(ctx, client) // agentproto.openAppPanel (installed app UI panels)
   registerAppCommands(ctx, client, appPanels, appsProvider) // agentproto.openAppPanel / refreshApps
   const authModelMindmap = registerAuthModelMindmap(ctx, client) // agentproto.openAuthModel (auth/model config map)
+  const authExplorer = registerAuthExplorer(ctx, client, authProfilesProvider) // agentproto.openAuthExplorer (editable auth & models)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSessionConfig(ctx, client, store, authProfilesProvider, () => transcriptPanels.activeSessionId()) // agentproto.configureSession
@@ -170,6 +172,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     ),
     vscode.commands.registerCommand("agentproto.openAuthModel", () =>
       authModelMindmap.open(),
+    ),
+    vscode.commands.registerCommand("agentproto.openAuthExplorer", () =>
+      authExplorer.open(),
     ),
     // Simple toggle, not full filter-infra integration (SessionFilterState's
     // shape is frozen — see sessionFilter.logic.ts) — flips the store's
