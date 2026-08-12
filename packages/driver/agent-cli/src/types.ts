@@ -1068,6 +1068,23 @@ export interface AgentCliStartOptions {
    */
   resumeSessionId?: string
   /**
+   * Persistent location for the adapter's ISOLATED config dir (claude-code's
+   * `CLAUDE_CONFIG_DIR`), replacing the default throwaway `mkdtemp` under
+   * `os.tmpdir()`. The driver creates it (recursive) and seeds/re-asserts the
+   * same isolation content either way — explicit empty `mcpServers` in
+   * `.claude.json`, attribution suppression + permission mode in
+   * `settings.json` — so this changes WHERE the isolation lives, never
+   * WHETHER it applies. The point: the SDK's conversation store
+   * (`projects/<cwd-slug>/<uuid>.jsonl`) lands somewhere a later respawn can
+   * point back at, making `resumeSessionId` actually able to restore full
+   * context after the adapter process was reaped (a temp dir dies with the
+   * process's run; the transcript inside it is what native resume needs).
+   * The daemon keys this per session lineage — see the runtime's
+   * `SessionDescriptor.adapterConfigDir`. Adapters that don't isolate a
+   * config dir ignore it.
+   */
+  configDir?: string
+  /**
    * MCP servers to mount into the spawned agent's session. Threaded
    * through to `protocolArm.connect({ mcpServers })` → the ACP arm's
    * `session/new.mcpServers`. Lets the host inject a scoped toolset

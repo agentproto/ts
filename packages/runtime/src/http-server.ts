@@ -211,6 +211,14 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   startSession(opts: {
     cwd: string
     resumeSessionId?: string
+    /** Persistent isolated-config location for the adapter (claude-code's
+     *  `CLAUDE_CONFIG_DIR`) — forwarded to the driver's
+     *  `start({ configDir })`. The daemon keys it per session lineage
+     *  (`SessionDescriptor.adapterConfigDir`) so the provider's own
+     *  conversation store survives adapter respawns and `resumeSessionId`
+     *  can restore full context instead of falling back to a digest.
+     *  Adapters that don't isolate a config dir ignore it. */
+    configDir?: string
     /**
      * Manifest-declared mode id forwarded from `agent_start` (AIP-45
      * `AgentCliHandle.modes` — e.g. claude-code's `plan` /

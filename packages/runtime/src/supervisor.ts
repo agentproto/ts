@@ -119,7 +119,7 @@ import {
   readFileSync,
   promises as fsp,
 } from "node:fs"
-import { isResumable, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
+import { adapterConfigDirFor, isResumable, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus, JudgeVerdict, VerdictSeverity } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { CostBudget } from "@agentproto/auth"
@@ -1149,6 +1149,7 @@ export function createCompletionPolicySupervisor(opts: {
         const judgeSessionId = mintSessionId()
         const agentSession = await resolved.startSession({
           cwd,
+          configDir: adapterConfigDirFor(judgeSessionId),
           ...(spec.model ? { model: spec.model } : {}),
           env: {
             [SESSION_ID_ENV]: judgeSessionId,
@@ -1163,6 +1164,7 @@ export function createCompletionPolicySupervisor(opts: {
           cwd,
           agentSession,
           adapterSlug: spec.adapter,
+          adapterConfigDir: adapterConfigDirFor(judgeSessionId),
           label: `judge:${state.policyId}`,
           // PR #800: groups machine-run gate sessions in the VS Code tree.
           origin: "gate",

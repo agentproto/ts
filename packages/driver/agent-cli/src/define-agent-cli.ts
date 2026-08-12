@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createDoctype } from "@agentproto/define-doctype"
@@ -306,17 +306,48 @@ export function createAgentCliRuntime(
       // extraWritePaths entry, not rely on the workspace bind.
       let claudeConfigDir: string | undefined
       if (isolateClaudeCodeConfig) {
-        claudeConfigDir = mkdtempSync(
-          join(tmpdir(), "agentproto-claude-config-"),
-        )
+        // `opts.configDir` (AgentCliStartOptions.configDir) makes the
+        // isolated dir PERSISTENT instead of throwaway: the caller picks a
+        // stable path (the daemon keys it per session lineage) so the SDK's
+        // own conversation store — `projects/<cwd-slug>/<uuid>.jsonl`, the
+        // thing `resumeSessionId` needs to find — survives adapter respawns.
+        // A fresh mkdtemp per spawn is why a reaped-then-resumed session
+        // used to lose native resume: the transcript sat in the previous
+        // process's temp dir, and the new one minted an empty dir. The
+        // isolation content below is written either way — the ISOLATION
+        // invariant lives in the files, not in the dir being temporary.
+        if (opts?.configDir) {
+          claudeConfigDir = opts.configDir
+          mkdirSync(claudeConfigDir, { recursive: true })
+        } else {
+          claudeConfigDir = mkdtempSync(
+            join(tmpdir(), "agentproto-claude-config-"),
+          )
+        }
         // Explicit empty `mcpServers` rather than just leaving the global
         // config file absent — an absent file falls back to whatever the
         // SDK treats as "fresh install" defaults, which is unspecified and
         // could change; writing it makes the isolation load-bearing on our
-        // own content, not on unverified fallback behavior.
+        // own content, not on unverified fallback behavior. On a REUSED
+        // persistent dir, preserve the SDK's own accumulated state (project
+        // trust, onboarding flags — it rewrites this file itself) but
+        // RE-ASSERT `mcpServers: {}` every spawn: a session that ran
+        // `claude mcp add` mid-conversation must not smuggle that server
+        // back into its next respawn — same ambient-leak surface the
+        // temp-dir isolation closed (#824).
+        const globalConfigPath = join(claudeConfigDir, ".claude.json")
+        let priorGlobalConfig: Record<string, unknown> = {}
+        try {
+          const parsed: unknown = JSON.parse(readFileSync(globalConfigPath, "utf8"))
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            priorGlobalConfig = parsed as Record<string, unknown>
+          }
+        } catch {
+          // absent or unparseable — start from the empty baseline
+        }
         writeFileSync(
-          join(claudeConfigDir, ".claude.json"),
-          JSON.stringify({ mcpServers: {} }),
+          globalConfigPath,
+          JSON.stringify({ ...priorGlobalConfig, mcpServers: {} }),
         )
         // Isolating CLAUDE_CONFIG_DIR also shadows the operator's real
         // `~/.claude/settings.json` — including `attribution`, the key an
