@@ -14,7 +14,9 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import type { IncomingMessage, ServerResponse } from "node:http"
 import {
+  applyCors,
   buildBridgeScript,
   injectBridge,
   readDeclaredUIPort,
@@ -78,6 +80,45 @@ describe("injectBridge", () => {
     const script = "<script>/* bridge */</script>"
     const out = injectBridge("<html><head><body>Panel</body></html>", script)
     expect(out.indexOf(script)).toBeLessThan(out.indexOf("<body>"))
+  })
+})
+
+describe("applyCors", () => {
+  function fakeReqRes(headers: Record<string, string> = {}) {
+    const req = { headers } as unknown as IncomingMessage
+    const set: Record<string, string> = {}
+    const res = {
+      setHeader: (name: string, value: string) => {
+        set[name] = value
+      },
+    } as unknown as ServerResponse
+    return { req, res, set }
+  }
+
+  it("allows any origin so a cross-origin viewer page can reach the tool-call bridge", () => {
+    const { req, res, set } = fakeReqRes()
+    applyCors(req, res)
+    expect(set["Access-Control-Allow-Origin"]).toBe("*")
+  })
+
+  it("allows GET, POST, and OPTIONS", () => {
+    const { req, res, set } = fakeReqRes()
+    applyCors(req, res)
+    expect(set["Access-Control-Allow-Methods"]).toBe("GET,POST,OPTIONS")
+  })
+
+  it("echoes the preflight's requested headers when present", () => {
+    const { req, res, set } = fakeReqRes({
+      "access-control-request-headers": "content-type,x-custom",
+    })
+    applyCors(req, res)
+    expect(set["Access-Control-Allow-Headers"]).toBe("content-type,x-custom")
+  })
+
+  it("defaults Access-Control-Allow-Headers to content-type", () => {
+    const { req, res, set } = fakeReqRes()
+    applyCors(req, res)
+    expect(set["Access-Control-Allow-Headers"]).toBe("content-type")
   })
 })
 
