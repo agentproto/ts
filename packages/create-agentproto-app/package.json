@@ -1,7 +1,7 @@
 {
   "name": "create-agentproto-app",
   "version": "0.1.0",
-  "description": "create-agentproto-app — scaffold an agentproto agent app: the .agentproto/ shell (APP.md, an agent, a workflow) plus a Vite + TanStack Router + TanStack Query ui/ project that builds to static files in .agentproto/ui/. Run with `pnpm create agentproto-app <dir>`.",
+  "description": "create-agentproto-app \u2014 scaffold an agentproto agent app: the .agentproto/ shell (APP.md, an agent, a workflow) plus a Vite + TanStack Router + TanStack Query ui/ project that builds to static files in .agentproto/ui/. Run with `pnpm create agentproto-app <dir>`.",
   "keywords": [
     "agentproto",
     "create",
@@ -42,7 +42,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "gray-matter": "^4.0.3"
+    "gray-matter": "^4.0.3",
+    "@agentproto/app-client": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
