@@ -35,6 +35,21 @@ import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
 
 export type AuthProfileStatus = "ready" | "available" | "dim" | "unconnected"
 
+/** Why a curated model is (not) usable through this wallet right now:
+ *  `active` — this wallet bills it; `inactive` — the wallet is disabled or
+ *  another wallet bills it; `unbillable` — the model is in the catalog but NO
+ *  connected wallet can bill it (the "No connected profile can bill this
+ *  model" spawn error, made visible before spawning); `unlisted` — the id
+ *  matches nothing in the provider's catalog. */
+export type CuratedModelStatus = "active" | "inactive" | "unbillable" | "unlisted"
+
+export interface CuratedModelChip {
+  id: string
+  status: CuratedModelStatus
+  /** Human one-liner for the chip tooltip — states the reason, not just the color. */
+  hint: string
+}
+
 export interface WalletWebviewRow extends WalletView {
   /** Convenience mirror of `!disabled`, so the panel toggles without
    *  re-deriving it from the wallet's `disabled` flag every time. */
@@ -47,6 +62,9 @@ export interface WalletWebviewRow extends WalletView {
    *  as removable chips behind the card's collapsed-by-default curation
    *  editor. Empty means "allows all". */
   curatedIds: string[]
+  /** The same curated ids joined against the catalog, one status + hint per
+   *  chip — how the card shows WHY a curated model isn't active. */
+  curatedModels: CuratedModelChip[]
 }
 
 export interface ProviderWebviewRow {
@@ -168,14 +186,63 @@ function curationSummaryFor(enabled: boolean, counts: WalletCatalogCounts): stri
   return `${counts.curatedCount} curated · ${counts.runnableCount} active`
 }
 
+/** Same id↔route matching as {@link profileAllowsModel}, inverted: does this
+ *  catalog route answer to the curated id? */
+function routeMatchesId(id: string, ref: string, vendorProduct: string): boolean {
+  const slash = vendorProduct.indexOf("/")
+  const product = slash === -1 ? vendorProduct : vendorProduct.slice(slash + 1)
+  const isDirect = !ref.includes("@")
+  return id === ref || id === vendorProduct || (isDirect && id === product)
+}
+
+/**
+ * Join one curated id against the wallet's slice of the catalog and say why
+ * it is (not) usable — this is where "model not active" and "no billing
+ * wallet" stop looking identical.
+ */
+function curatedChipFor(
+  profile: AuthProfileSummary,
+  enabled: boolean,
+  catalog: CatalogModelsResponse,
+  id: string,
+): CuratedModelChip {
+  let matched = false
+  let activeHere = false
+  let runnableElsewhere = false
+  for (const vendor of catalog.vendors ?? []) {
+    for (const product of vendor.products ?? []) {
+      for (const route of product.routes ?? []) {
+        if (route.route !== profile.endpoint) continue
+        if (!routeMatchesId(id, route.ref, `${vendor.vendor}/${product.product}`)) continue
+        matched = true
+        if (route.runnable && route.eligibleProfiles.includes(profile.id)) activeHere = true
+        else if (route.runnable) runnableElsewhere = true
+      }
+    }
+  }
+  if (!enabled) return { id, status: "inactive", hint: "wallet disabled — enable it to serve this model" }
+  if (activeHere) return { id, status: "active", hint: "active — this wallet bills it" }
+  if (runnableElsewhere) return { id, status: "inactive", hint: "not billed by this wallet — another connected wallet serves it" }
+  if (matched) {
+    return {
+      id,
+      status: "unbillable",
+      hint: `no connected wallet can bill this model on ${profile.endpoint} — check this wallet's credential`,
+    }
+  }
+  return { id, status: "unlisted", hint: `not in the ${profile.endpoint} catalog — check the model id` }
+}
+
 function toWalletRow(w: WalletView, profile: AuthProfileSummary | undefined, catalog: CatalogModelsResponse): WalletWebviewRow {
   const enabled = !w.disabled
   const counts = profile ? walletCatalogCounts(profile, enabled, catalog) : { catalogCount: 0, curatedCount: 0, runnableCount: 0 }
+  const curatedIds = profileCuratedIds(profile)
   return {
     ...w,
     enabled,
     curationSummary: curationSummaryFor(enabled, counts),
-    curatedIds: profileCuratedIds(profile),
+    curatedIds,
+    curatedModels: profile ? curatedIds.map(id => curatedChipFor(profile, enabled, catalog, id)) : [],
   }
 }
 

@@ -407,8 +407,14 @@ export interface WebviewRow {
   idMono: string | undefined
   /** Line 2 — the session's live activity summary, clamped; absent when there is none yet. */
   message: string | undefined
-  /** Line 3 lead segment — isolation posture ("⑂ <worktree>" or "in-place"). */
+  /** Line 3 lead segment — "⑂ <worktree>" for an isolated session, the
+   *  WORKSPACE label for an in-place one (the posture is the default, so it
+   *  isn't worth a word — where it runs is), or "" to render no line at all
+   *  (in-place with no resolvable workspace). */
   tag: string
+  /** Hover detail for the tag — the cwd path plus the isolation posture.
+   *  Undefined when there is nothing more to say than the tag itself. */
+  tagTitle: string | undefined
   /** Adapter/harness logo — a brand icon file or a lettermark fallback, see {@link adapterLogoFor}. */
   logo: AdapterLogo
   model: string | undefined
@@ -599,6 +605,11 @@ function toRow(
   const pctStr = contextPercent(session.contextUsed, session.contextSize)
   const ws = workspaceFor(config, session)
   const identity = nameIdentityFor(session)
+  const isolation = isolationLabelFor(session)
+  const inPlace = isolation === "in-place"
+  const tagTitleParts = [session.cwd, inPlace ? "runs in-place" : "isolated worktree"].filter(
+    (p): p is string => Boolean(p),
+  )
   return {
     id: session.id,
     session,
@@ -607,7 +618,8 @@ function toRow(
     name: identity.name,
     idMono: identity.idMono,
     message: previewTextFor(session),
-    tag: isolationLabelFor(session),
+    tag: inPlace ? (ws?.label ?? "") : isolation,
+    tagTitle: tagTitleParts.length > 0 ? tagTitleParts.join(" · ") : undefined,
     logo: adapterLogoFor(session.adapterSlug ?? session.kind),
     model: session.model,
     ctxPercent: pctStr ? Number(pctStr.slice(0, -1)) : undefined,

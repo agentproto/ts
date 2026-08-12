@@ -353,8 +353,29 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     expect(row.model).toBe("glm-5.2")
     expect(row.cost).toBe("$0.42")
     expect(row.ctxPercent).toBe(33)
-    expect(row.tag).toBe("in-place")
+    // In-place is the unremarkable default — the tag shows WHERE it runs
+    // (the workspace label), with the posture + path relegated to the hover.
+    expect(row.tag).toBe("Agentik Studio")
+    expect(row.tagTitle).toBe("/Code/studio · runs in-place")
     expect(row.workspace?.slug).toBe("studio")
+  })
+
+  it("renders no location tag for an in-place session with no resolvable workspace", () => {
+    const sessions = [session({ id: "a", cwd: "/somewhere/else", workspaceSlug: "default" })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const row = model.groups[0]!.rows[0]! as WebviewRow
+    expect(row.tag).toBe("")
+    expect(row.tagTitle).toBe("/somewhere/else · runs in-place")
+  })
+
+  it("keeps the worktree glyph tag for an isolated session, path in the hover", () => {
+    const sessions = [
+      session({ id: "a", cwd: "/Code/studio", worktreePath: "/Code/studio/.worktrees/fix-auth" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const row = model.groups[0]!.rows[0]! as WebviewRow
+    expect(row.tag).toContain("fix-auth")
+    expect(row.tagTitle).toBe("/Code/studio · isolated worktree")
   })
 
   it("falls back to session.kind for the logo when adapterSlug is absent", () => {

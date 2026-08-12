@@ -8,7 +8,7 @@
  * delegate to the workflow-runtime's step-walker.
  */
 
-import { mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { AgentSandboxRef, AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
@@ -118,6 +118,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     const stepSessionId = mintSessionId()
     const agentSession = await resolved.startSession({
       cwd,
+      configDir: adapterConfigDirFor(stepSessionId),
       env: {
         [SESSION_ID_ENV]: stepSessionId,
         [WORKSPACE_SLUG_ENV]: workspaceSlug,
@@ -130,6 +131,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       cwd,
       agentSession,
       adapterSlug: adapter,
+      adapterConfigDir: adapterConfigDirFor(stepSessionId),
       label: `agent-step:${adapter}`,
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
     })

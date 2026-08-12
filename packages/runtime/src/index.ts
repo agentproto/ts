@@ -1224,6 +1224,16 @@ export async function createGateway(
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
+                // Point the respawned adapter at the SAME persistent
+                // isolated-config dir the original spawn used — the
+                // provider's conversation store lives inside it, so this is
+                // what makes `resumeSessionId` restore full context instead
+                // of degrading to the daemon-transcript digest. Absent on
+                // legacy rows spawned before adapterConfigDir existed (those
+                // keep today's digest-fallback behaviour).
+                ...(descriptor.adapterConfigDir
+                  ? { configDir: descriptor.adapterConfigDir }
+                  : {}),
                 // Re-mount the persisted spawn-time toolset on resume
                 // (orchestrator WP1) — closes the gap where re-spawn
                 // dropped mcpServers.
@@ -2125,6 +2135,7 @@ export async function createGateway(
       workspace,
       registered,
       startedAt,
+      ...(opts.version ? { version: opts.version } : {}),
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,

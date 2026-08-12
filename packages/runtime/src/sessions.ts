@@ -488,6 +488,22 @@ export function mintSessionId(): string {
 }
 
 /**
+ * Canonical persistent location for a session's isolated adapter-config dir
+ * (`SessionDescriptor.adapterConfigDir` / `startSession({ configDir })`).
+ * Keyed by session id — the FIRST id in a restart lineage, since restarts
+ * carry the recorded path forward instead of re-deriving it (a restarted
+ * session has a fresh id but must keep pointing at the dir holding the
+ * provider's conversation store). Sibling of the per-session transcript
+ * dirs (`~/.agentproto/sessions/<id>/`) but under its own root so session
+ * GC/archival never rips a live lineage's resume store out from under it.
+ * Nothing cleans these up today — same accumulate-forever discipline as
+ * `~/.agentproto/sessions/` itself.
+ */
+export function adapterConfigDirFor(sessionId: string): string {
+  return resolve(homedir(), ".agentproto", "adapter-config", sessionId)
+}
+
+/**
  * Env vars the registry injects into every process it spawns on a session's
  * behalf (agent-cli adapters, PTY/terminal, and generic `spawn()` — see
  * `spawn()`/`spawnPty()` below; `spawnAgent()` doesn't own the child process,
@@ -1036,6 +1052,17 @@ export interface SessionDescriptor {
    *  via sessions.json so `restart` can pass it as `resumeSessionId`
    *  and reattach to the prior conversation history. */
   adapterSessionId?: string
+  /** Persistent isolated-config dir handed to the adapter at spawn time
+   *  (`startSession({ configDir })` → claude-code's `CLAUDE_CONFIG_DIR`).
+   *  Keyed by the FIRST session id in a restart lineage
+   *  (`adapterConfigDirFor`) and carried forward verbatim across
+   *  restarts/lazy resumes — the provider's own conversation store lives
+   *  inside it, so reusing the SAME dir is what lets `resumeSessionId`
+   *  restore full context after the adapter process died (before this,
+   *  each respawn minted a fresh temp dir and native resume always
+   *  degraded to the daemon-transcript digest). Absent on legacy rows and
+   *  adapters that don't isolate a config dir. */
+  adapterConfigDir?: string
   /** MCP servers mounted into the agent's session at spawn time
    *  (orchestrator WP1). Persisted so the resume/re-spawn path can
    *  re-mount the same host-chosen toolset instead of resuming a
@@ -2509,6 +2536,12 @@ export interface SpawnAgentInput {
    *  the resume/re-spawn path can re-mount the same toolset (orchestrator
    *  WP1). */
   mcpServers?: AcpMcpServer[]
+  /** Persistent isolated-config dir this spawn passed to
+   *  `startSession({ configDir })` — recorded verbatim onto
+   *  {@link SessionDescriptor.adapterConfigDir} so restart/lazy-resume can
+   *  point the respawned adapter back at the SAME dir (where the provider's
+   *  conversation store lives). See that field's doc. */
+  adapterConfigDir?: string
   /** Spawning orchestrator's session id — set when the spawn arrived
    *  through the scoped sub-gateway (orchestrator WP4). Recorded on the
    *  descriptor for subtree scoping + quota accounting. */
@@ -5080,6 +5113,9 @@ export function createSessionsRegistry(opts?: {
         // Persist the spawn-time MCP mounts so resume re-mounts the same
         // toolset (orchestrator WP1). Reference-only shape — no secrets.
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        // Persist the isolated-config location so restart/lazy-resume can
+        // hand the respawned adapter the SAME dir (native-resume store).
+        ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
         // Parent attribution + depth (orchestrator WP4). Depth is always
         // recorded (defaults to 0) so subtree/depth logic never has to
         // distinguish "absent" from "root".
@@ -5205,6 +5241,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.title ? { title: input.title } : {}),
         ...(input.label ? { renamedByUser: false } : {}),
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),

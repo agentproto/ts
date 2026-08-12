@@ -27,7 +27,7 @@ import { resolve, dirname } from "node:path"
 import { homedir } from "node:os"
 import { mkdirSync, writeFileSync, readFileSync, promises as fsp } from "node:fs"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
-import { mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   routeInboundMessage,
@@ -278,6 +278,7 @@ export function createInboundWatcher(opts: {
       const contactSessionId = mintSessionId()
       const agentSession = await resolved.startSession({
         cwd: state.input.cwd,
+        configDir: adapterConfigDirFor(contactSessionId),
         ...(mcpServers ? { mcpServers } : {}),
         env: {
           [SESSION_ID_ENV]: contactSessionId,
@@ -294,6 +295,7 @@ export function createInboundWatcher(opts: {
         cwd: state.input.cwd,
         agentSession,
         adapterSlug: state.input.adapter,
+        adapterConfigDir: adapterConfigDirFor(contactSessionId),
         origin: "webhook",
         initialPrompt: prompt,
         label: labelParts.join(":"),

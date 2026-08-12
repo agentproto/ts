@@ -45,6 +45,7 @@
  */
 
 import {
+  adapterConfigDirFor,
   mintSessionId,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
@@ -719,9 +720,18 @@ export async function restartAgentSession(
       const message = err instanceof Error ? err.message : String(err)
       throw new Error(message)
     }
+    // Carry the prior session's persistent isolated-config dir forward —
+    // the provider's conversation store lives inside it, so reusing the
+    // SAME dir is what lets `resumeSessionId` restore full context (a
+    // fresh dir here is exactly the old always-degrade-to-digest bug).
+    // A legacy row with no recorded dir gets one keyed by the NEW id, so
+    // the lineage is resumable from here on even if THIS restart lands as
+    // a digest fallback.
+    const restartConfigDir = prev.adapterConfigDir ?? adapterConfigDirFor(restartedSessionId)
     const agentSession = await resolved.startSession({
       cwd,
       ...(resumeSessionId ? { resumeSessionId } : {}),
+      configDir: restartConfigDir,
       ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
@@ -767,6 +777,7 @@ export async function restartAgentSession(
       cwd,
       agentSession,
       adapterSlug,
+      adapterConfigDir: restartConfigDir,
       ...(resolved.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       ...(resolved.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }

@@ -112,6 +112,7 @@ interface RenderRow {
   idMono: string | undefined
   message: string | undefined
   tag: string
+  tagTitle: string | undefined
   logo: RenderLogo
   model: string | undefined
   ctxPercent: number | undefined
@@ -209,6 +210,7 @@ function toRenderRow(
     idMono: row.idMono,
     message: row.message,
     tag: row.tag,
+    tagTitle: row.tagTitle,
     logo: toRenderLogo(row.logo, webview, extensionUri),
     model: row.model,
     ctxPercent: row.ctxPercent,
@@ -778,8 +780,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
     /* Background-tasks-pending chip — the session ended its turn with work
        still outstanding (parked-bg). Amber/brown, matching the bg-task dot;
        clickable (bubbles to the row's own "open" click) — click to view. */
-    .name .bgtasks { display: inline-flex; align-items: center; color: var(--bg-task); background: rgba(181, 133, 75, 0.16); border: 1px solid rgba(181, 133, 75, 0.4); border-radius: 8px; padding: 0 5px; font-weight: 400; font-size: 10.5px; line-height: 14px; cursor: pointer; }
-    .name .bgtasks:hover { background: rgba(181, 133, 75, 0.28); }
+    .bgtasks { display: inline-flex; align-items: center; color: var(--bg-task); background: rgba(181, 133, 75, 0.16); border: 1px solid rgba(181, 133, 75, 0.4); border-radius: 8px; padding: 0 5px; font-weight: 400; font-size: 10.5px; line-height: 14px; cursor: pointer; white-space: nowrap; }
+    .bgtasks:hover { background: rgba(181, 133, 75, 0.28); }
     /* Server-confirmed stall badge (turn-liveness watchdog) — a mid-turn
        session whose adapter stream has gone silent past the daemon's
        threshold with no legitimate blockedOn excuse. Ochre, like the
@@ -792,7 +794,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .name .deleg { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
     /* Origin chip — the source channel (cowork/vscode/cron) on a root row. A
        faint, uppercase-ish tag so lineage attribution reads at a glance. */
-    .name .origin { color: var(--faint); font-weight: 400; font-size: 10px; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; }
+    .name .origin { color: var(--faint); font-weight: 400; font-size: 10px; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Nested subagent lineage — a faint connector before the child's name and a
        quiet left guide, so the parent→child stack reads without shouting. */
     .name .lineage { color: var(--faint); font-weight: 400; }
@@ -955,7 +957,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
       }
 
       function metaLocHTML(r) {
-        return escapeHtml(r.tag);
+        if (!r.tag) return '';
+        return '<span class="loc"' + (r.tagTitle ? ' title="' + escapeHtml(r.tagTitle) + '"' : '') + '>' + escapeHtml(r.tag) + '</span>';
       }
 
       function metaHTML(r) {
@@ -985,7 +988,6 @@ export function buildHtml(nonce: string, cspSource: string): string {
           (r.locallyWatched ? '<span class="eye" title="watched — you get a notification when this session changes state">👁</span>' : '') +
           (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '">⟳' + r.childrenBusy + '</span>' : '') +
           (r.watcherCount > 0 ? '<span class="eye" title="' + r.watcherCount + ' waiter' + (r.watcherCount === 1 ? '' : 's') + ' attached via the daemon">👁' + r.watcherCount + '</span>' : '') +
-          (r.pendingBgTasks > 0 ? '<span class="bgtasks" role="button" tabindex="-1" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending — click to view">' + r.pendingBgTasks + ' bg</span>' : '') +
           (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠</span>' : '') +
           (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
           (r.approved ? '<span class="ok">✓</span>' : '') +
@@ -999,10 +1001,12 @@ export function buildHtml(nonce: string, cspSource: string): string {
           '<div class="mid">' +
             '<div class="name">' + nameLine + '</div>' +
             (r.message ? '<div class="msg">' + escapeHtml(r.message) + '</div>' : '') +
-            '<div class="meta-loc">' + metaLocHTML(r) + '</div>' +
+            (metaLocHTML(r) ? '<div class="meta-loc">' + metaLocHTML(r) + '</div>' : '') +
             '<div class="meta">' + metaHTML(r) + '</div>' +
           '</div>' +
-          '<div class="right"><span class="time">' + escapeHtml(r.time) + '</span><span class="acts">' + acts + '</span></div>' +
+          '<div class="right"><span class="time">' + escapeHtml(r.time) + '</span>' +
+            (r.pendingBgTasks > 0 ? '<span class="bgtasks" role="button" tabindex="-1" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending — click to view">' + r.pendingBgTasks + ' bg</span>' : '') +
+            '<span class="acts">' + acts + '</span></div>' +
         '</div>';
       }
 

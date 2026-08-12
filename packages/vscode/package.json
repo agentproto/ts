@@ -62,7 +62,7 @@
         {
           "id": "agentprotoConfig",
           "title": "Agentproto Lab",
-          "icon": "media/activitybar.svg"
+          "icon": "media/activitybar-lab.svg"
         }
       ]
     },
@@ -148,6 +148,12 @@
         "title": "agentproto: Open Auth & Model Map",
         "category": "agentproto",
         "icon": "$(circuit-board)"
+      },
+      {
+        "command": "agentproto.openAuthExplorer",
+        "title": "agentproto: Open Auth & Models Explorer",
+        "category": "agentproto",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "agentproto.promptSession",

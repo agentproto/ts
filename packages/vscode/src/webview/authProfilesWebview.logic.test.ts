@@ -225,6 +225,61 @@ describe("buildAuthProfilesWebviewModel — curation summary (migrated from Auth
     expect(wallet.curatedIds).toEqual(profileCuratedIds(p))
   })
 
+  it("statuses each curated chip: active vs billed-elsewhere vs unbillable vs unlisted", () => {
+    const catalog: CatalogModelsResponse = {
+      vendors: [
+        {
+          vendor: "xai",
+          products: [
+            {
+              product: "grok-4.5",
+              routes: [
+                { route: "xai", ref: "xai/grok-4.5", baseUrl: null, pricing: null, runnable: true, eligibleProfiles: ["xai-api"], adapterModes: [], adapters: [], curated: true },
+              ],
+            },
+            {
+              product: "grok-4.20",
+              routes: [
+                { route: "xai", ref: "xai/grok-4.20", baseUrl: null, pricing: null, runnable: true, eligibleProfiles: ["xai-other"], adapterModes: [], adapters: [], curated: true },
+              ],
+            },
+            {
+              product: "grok-4.3",
+              routes: [
+                { route: "xai", ref: "xai/grok-4.3", baseUrl: null, pricing: null, runnable: false, eligibleProfiles: [], adapterModes: [], adapters: [], curated: true },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const p = profile({
+      id: "xai-api",
+      endpoint: "xai",
+      models: { mode: "allow", ids: ["xai/grok-4.5", "xai/grok-4.20", "xai/grok-4.3", "xai/grok-typo"] },
+    })
+    const model = buildAuthProfilesWebviewModel([], [p], catalog, STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    const wallet = model.providers.rows[0]!.wallets[0]!
+    expect(wallet.curatedModels.map(c => [c.id, c.status])).toEqual([
+      ["xai/grok-4.5", "active"],
+      ["xai/grok-4.20", "inactive"],
+      ["xai/grok-4.3", "unbillable"],
+      ["xai/grok-typo", "unlisted"],
+    ])
+    expect(wallet.curatedModels[2]!.hint).toContain("no connected wallet can bill this model on xai")
+    expect(wallet.curatedModels[3]!.hint).toContain("not in the xai catalog")
+  })
+
+  it("marks every curated chip inactive with a 'wallet disabled' hint when the wallet is off", () => {
+    const allowed = ["xai/grok-4.5"]
+    const p = profile({ id: "xai-api", endpoint: "xai", disabled: true, models: { mode: "allow", ids: allowed } })
+    const model = buildAuthProfilesWebviewModel([], [p], xaiCatalog({ allowedIds: allowed }), STOPPED_ROUTER, "", ALL_EXPANDED, false)
+    const wallet = model.providers.rows[0]!.wallets[0]!
+    expect(wallet.curatedModels).toEqual([
+      { id: "xai/grok-4.5", status: "inactive", hint: "wallet disabled — enable it to serve this model" },
+    ])
+  })
+
   it("keeps native xai and xai-anthropic profiles from cross-qualifying", () => {
     const xaiP = profile({ id: "xai-api", endpoint: "xai" })
     const model = buildAuthProfilesWebviewModel([], [xaiP], xaiCatalog(), STOPPED_ROUTER, "", ALL_EXPANDED, false)

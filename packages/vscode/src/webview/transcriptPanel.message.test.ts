@@ -4,6 +4,7 @@ vi.mock("vscode", () => ({
   window: {
     showInformationMessage: vi.fn(),
     showErrorMessage: vi.fn(),
+    showWarningMessage: vi.fn(),
   },
   commands: {
     executeCommand: vi.fn().mockResolvedValue(undefined),
@@ -140,5 +141,71 @@ describe("handleWebviewMessage", () => {
     )
     expect(controller.onSetView).toHaveBeenCalledWith("conversation")
     expect(panel.reveal).toHaveBeenCalledWith(vscode.ViewColumn.One, false)
+  })
+
+  describe("resolveQuestion", () => {
+    it("resolves the pending permission matched by toolCallId via permissions_respond", async () => {
+      client.listPermissions = vi
+        .fn()
+        .mockResolvedValue([
+          { id: "perm-db-id", toolCallId: "tc-1" },
+          { id: "other", toolCallId: "tc-2" },
+        ]) as DaemonClient["listPermissions"]
+      client.respondPermission = vi.fn().mockResolvedValue(undefined) as DaemonClient["respondPermission"]
+
+      await handleWebviewMessage(
+        { type: "resolveQuestion", toolCallId: "tc-1", decision: "approve", optionId: "allow_once" },
+        panel,
+        controller,
+        outputDocs,
+        client,
+      )
+
+      expect(client.listPermissions).toHaveBeenCalledWith("session-abc")
+      expect(client.respondPermission).toHaveBeenCalledWith("perm-db-id", {
+        decision: "approve",
+        optionId: "allow_once",
+      })
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled()
+    })
+
+    it("warns and does nothing when the message carries no toolCallId", async () => {
+      client.listPermissions = vi.fn() as unknown as DaemonClient["listPermissions"]
+      client.respondPermission = vi.fn() as unknown as DaemonClient["respondPermission"]
+
+      await handleWebviewMessage(
+        { type: "resolveQuestion", decision: "approve", optionId: "allow_once" },
+        panel,
+        controller,
+        outputDocs,
+        client,
+      )
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining("no toolCallId"),
+      )
+      expect(client.listPermissions).not.toHaveBeenCalled()
+      expect(client.respondPermission).not.toHaveBeenCalled()
+    })
+
+    it("warns when no pending permission matches the toolCallId (already resolved)", async () => {
+      client.listPermissions = vi
+        .fn()
+        .mockResolvedValue([{ id: "other", toolCallId: "tc-2" }]) as DaemonClient["listPermissions"]
+      client.respondPermission = vi.fn() as unknown as DaemonClient["respondPermission"]
+
+      await handleWebviewMessage(
+        { type: "resolveQuestion", toolCallId: "tc-gone", decision: "deny", optionId: "deny" },
+        panel,
+        controller,
+        outputDocs,
+        client,
+      )
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining("not found"),
+      )
+      expect(client.respondPermission).not.toHaveBeenCalled()
+    })
   })
 })

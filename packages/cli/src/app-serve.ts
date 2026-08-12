@@ -39,7 +39,7 @@
 
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import { readFile, stat } from "node:fs/promises"
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { extname, join, normalize, resolve, sep } from "node:path"
 import { parseArgs } from "node:util"
 
@@ -72,6 +72,13 @@ first: agentproto serve`
 // reserved route the in-page bridge POSTs tool calls to — a double-underscore
 // prefix no app's ui/ static files should collide with.
 const TOOL_CALL_PATH = "/__agentproto/tool-call"
+
+// sibling reserved route a browser UI POSTs raw file bytes to, landing in
+// `<appDir>/inbox/`.
+const UPLOAD_PATH = "/__agentproto/upload"
+
+/** Hard cap on an upload's body size — 200 MB. */
+export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 /** Content types for the static surface (extensions ui/ apps actually ship). */
 const MIME_BY_EXT: Record<string, string> = {
@@ -170,6 +177,109 @@ export async function readDeclaredUIPort(appDir: string): Promise<number | undef
   } catch {
     return undefined
   }
+}
+
+/**
+ * Sanitize a client-supplied upload filename down to a safe basename, or
+ * `null` if it can't be made safe. Strips any directory components (either
+ * separator, regardless of host OS) and rejects the result if it's empty, a
+ * dotfile, or still contains `..`.
+ */
+export function sanitizeUploadName(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const base = raw.split(/[\\/]/).pop() ?? ""
+  if (base.length === 0) return null
+  if (base.startsWith(".")) return null
+  if (base.includes("..")) return null
+  return base
+}
+
+/**
+ * Pick the on-disk name for an upload inside `inboxDir`: `filename` if free,
+ * else `<stem>-2<ext>`, `<stem>-3<ext>`, … before the extension so the
+ * original never gets overwritten.
+ */
+export async function resolveInboxTarget(
+  inboxDir: string,
+  filename: string,
+): Promise<{ path: string; finalName: string }> {
+  const ext = extname(filename)
+  const stem = filename.slice(0, filename.length - ext.length)
+  let candidate = filename
+  for (let n = 2; await pathExists(join(inboxDir, candidate)); n++) {
+    candidate = `${stem}-${n}${ext}`
+  }
+  return { path: join(inboxDir, candidate), finalName: candidate }
+}
+
+/** Pure accumulator enforcing the upload size cap while streaming chunks in. */
+export class UploadSizeTracker {
+  private total = 0
+
+  constructor(private readonly limit: number = MAX_UPLOAD_BYTES) {}
+
+  get bytes(): number {
+    return this.total
+  }
+
+  /** Record a chunk's length; returns true once the running total exceeds the limit. */
+  add(length: number): boolean {
+    this.total += length
+    return this.total > this.limit
+  }
+}
+
+/**
+ * `POST /__agentproto/upload?filename=<name>` — raw body = file bytes.
+ * Streams into memory (capped at `MAX_UPLOAD_BYTES`) and writes to
+ * `<appDir>/inbox/<finalName>`.
+ */
+async function handleUpload(
+  req: IncomingMessage,
+  res: ServerResponse,
+  appDir: string,
+): Promise<void> {
+  const url = new URL(req.url ?? "/", "http://127.0.0.1")
+  const filename = sanitizeUploadName(url.searchParams.get("filename"))
+  if (!filename) {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "bad_filename" }))
+    return
+  }
+
+  const chunks: Buffer[] = []
+  const tracker = new UploadSizeTracker()
+  let responded = false
+
+  req.on("data", (chunk: Buffer) => {
+    if (responded) return
+    if (tracker.add(chunk.length)) {
+      responded = true
+      res.writeHead(413, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: "payload_too_large" }))
+      req.destroy()
+      return
+    }
+    chunks.push(chunk)
+  })
+
+  req.on("end", () => {
+    if (responded) return
+    void (async () => {
+      const inboxDir = join(appDir, "inbox")
+      await mkdir(inboxDir, { recursive: true })
+      const { path: targetPath, finalName } = await resolveInboxTarget(inboxDir, filename)
+      const data = Buffer.concat(chunks)
+      await writeFile(targetPath, data)
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ path: `inbox/${finalName}`, bytes: data.length }))
+    })()
+  })
+
+  // Swallow the error a destroyed (over-cap) request emits — already responded.
+  req.on("error", () => {
+    responded = true
+  })
 }
 
 /** Serve one static file from the ui/ root, injecting the bridge on index.html. */
@@ -289,6 +399,21 @@ export function buildBridgeScript(route: string): string {
 `
 }
 
+/**
+ * Permissive CORS for this local serve host — mirrors the shape of the
+ * daemon's own `applyCors` (`packages/runtime/src/http-server.ts`) minus its
+ * origin allowlist/credentials branch, which exists there to protect
+ * session state this host doesn't carry.
+ */
+export function applyCors(req: IncomingMessage, res: ServerResponse): void {
+  res.setHeader("Access-Control-Allow-Origin", "*")
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] ?? "content-type",
+  )
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+}
+
 /** `agentproto app serve <appDir> [--port <n>] [--json]`. */
 export async function runAppServe(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -372,6 +497,21 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
 
   // 4. Build the HTTP server.
   const server = createServer((req, res) => {
+    // Permissive CORS: this host only ever serves one local app's UI (no
+    // cookies/credentials involved), so — unlike the daemon's own /mcp
+    // gateway, which reflects an origin allowlist because it carries
+    // session state — a bare `*` is fine here. Without it, a page loaded
+    // from a different origin (e.g. a file:// or other-port viewer
+    // embedding this app's index.html) can't call the tool-call bridge at
+    // all: the browser blocks the cross-origin fetch before it ever hits
+    // this server.
+    applyCors(req, res)
+    if (req.method === "OPTIONS") {
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
     if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
       let raw = ""
@@ -397,6 +537,15 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
           res.end(JSON.stringify(result))
         })()
       })
+      return
+    }
+    if (urlPath === UPLOAD_PATH) {
+      if (req.method !== "POST") {
+        res.writeHead(405, { "content-type": "application/json" })
+        res.end(JSON.stringify({ error: "method_not_allowed" }))
+        return
+      }
+      void handleUpload(req, res, appDir)
       return
     }
     void serveStatic(uiRoot, req.url ?? "/", bridgeScript, res)

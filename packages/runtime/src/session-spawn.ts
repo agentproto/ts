@@ -8,7 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import { mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -2003,6 +2003,7 @@ export async function spawnAgentSession(
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
+        adapterConfigDir: adapterConfigDirFor(mintedSessionId),
         harness: input.harness ?? input.adapter,
         ...(resolved?.routeSelection !== undefined
           ? { routeSelection: resolved.routeSelection }
@@ -2092,6 +2093,11 @@ export async function spawnAgentSession(
           const agentSession = await resolved!.startSession({
             cwd: finalCwd,
             ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+            // Persistent isolated-config dir, keyed by this session's id —
+            // recorded on the pending descriptor above so restart/lazy-resume
+            // can hand the respawned adapter the same dir (native-resume
+            // store). Adapters that don't isolate a config dir ignore it.
+            configDir: adapterConfigDirFor(mintedSessionId),
             ...(input.mode ? { mode: input.mode } : {}),
             ...(launchConfig.options ? { options: launchConfig.options } : {}),
             ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
@@ -2239,6 +2245,11 @@ export async function spawnAgentSession(
       agentSession = await resolved!.startSession({
         cwd,
         ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+        // Persistent isolated-config dir, keyed by this session's id —
+        // recorded on the descriptor below so restart/lazy-resume can hand
+        // the respawned adapter the same dir (native-resume store).
+        // Adapters that don't isolate a config dir ignore it.
+        configDir: adapterConfigDirFor(mintedSessionId),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(launchConfig.options ? { options: launchConfig.options } : {}),
         ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
@@ -2296,6 +2307,7 @@ export async function spawnAgentSession(
       cwd,
       agentSession,
       adapterSlug: input.adapter,
+      adapterConfigDir: adapterConfigDirFor(mintedSessionId),
       ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       ...(resolved?.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }

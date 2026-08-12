@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PassThrough } from "node:stream"
 import { EventEmitter } from "node:events"
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { ChildProcess } from "node:child_process"
 
 /**
@@ -222,6 +224,88 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
     })
     expect(JSON.parse(readFileSync(`${configDir}/.claude.json`, "utf8"))).toEqual({
       mcpServers: {},
+    })
+  })
+
+  describe("persistent configDir (AgentCliStartOptions.configDir)", () => {
+    let baseDir: string
+    beforeEach(() => {
+      baseDir = mkdtempSync(join(tmpdir(), "agentproto-configdir-test-"))
+    })
+    afterEach(() => {
+      rmSync(baseDir, { recursive: true, force: true })
+    })
+
+    it("uses the caller's dir (created recursively) instead of a fresh mkdtemp, with the same isolation content", async () => {
+      // Deliberately nested + nonexistent: the daemon hands a path keyed by
+      // a session id that has never spawned before.
+      const configDir = join(baseDir, "adapter-config", "sess_abc123")
+      const handle = defineAgentCli(claudeCodeLike())
+      const runtime = createAgentCliRuntime(handle)
+      await runtime.start({ cwd: "/scratch", configDir, config: { mode: "plan" } })
+
+      expect(spawnCalls[0]!.env.CLAUDE_CONFIG_DIR).toBe(configDir)
+      expect(JSON.parse(readFileSync(join(configDir, ".claude.json"), "utf8"))).toEqual({
+        mcpServers: {},
+      })
+      expect(JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8"))).toEqual({
+        attribution: { commit: "", pr: "", sessionUrl: false },
+        permissions: { defaultMode: "plan" },
+      })
+    })
+
+    it("on a REUSED dir: preserves the SDK's own .claude.json state, re-asserts mcpServers:{}, and never touches the conversation store", async () => {
+      const configDir = join(baseDir, "sess_reuse")
+      const handle = defineAgentCli(claudeCodeLike())
+      const runtime = createAgentCliRuntime(handle)
+      // First spawn seeds the dir; then simulate what a live session leaves
+      // behind: the SDK mutates .claude.json (project trust, onboarding) and
+      // — the leak case — a `claude mcp add` mid-session persists a server.
+      // The transcript store is the whole point of persistence: it must
+      // survive the respawn untouched.
+      await runtime.start({ cwd: "/scratch", configDir })
+      writeFileSync(
+        join(configDir, ".claude.json"),
+        JSON.stringify({
+          projects: { "/scratch": { hasTrustDialogAccepted: true } },
+          mcpServers: { smuggled: { command: "evil" } },
+        }),
+      )
+      const transcript = join(configDir, "projects", "-scratch")
+      mkdirSync(transcript, { recursive: true })
+      writeFileSync(join(transcript, "uuid-1.jsonl"), '{"type":"user"}\n')
+
+      await runtime.start({ cwd: "/scratch", configDir })
+
+      // SDK state preserved, isolation re-asserted, transcript intact.
+      expect(JSON.parse(readFileSync(join(configDir, ".claude.json"), "utf8"))).toEqual({
+        projects: { "/scratch": { hasTrustDialogAccepted: true } },
+        mcpServers: {},
+      })
+      expect(readFileSync(join(transcript, "uuid-1.jsonl"), "utf8")).toBe('{"type":"user"}\n')
+    })
+
+    it("replaces an unparseable .claude.json with the empty baseline instead of failing the spawn", async () => {
+      const configDir = join(baseDir, "sess_corrupt")
+      mkdirSync(configDir, { recursive: true })
+      writeFileSync(join(configDir, ".claude.json"), "{not json")
+      const handle = defineAgentCli(claudeCodeLike())
+      const runtime = createAgentCliRuntime(handle)
+      await runtime.start({ cwd: "/scratch", configDir })
+
+      expect(JSON.parse(readFileSync(join(configDir, ".claude.json"), "utf8"))).toEqual({
+        mcpServers: {},
+      })
+    })
+
+    it("ignores configDir for a non-claude-code adapter (no isolation there at all)", async () => {
+      const configDir = join(baseDir, "sess_hermes")
+      const handle = defineAgentCli({ ...claudeCodeLike(), id: "hermes", name: "hermes" })
+      const runtime = createAgentCliRuntime(handle)
+      await runtime.start({ cwd: "/scratch", configDir })
+
+      expect(spawnCalls[0]!.env.CLAUDE_CONFIG_DIR).toBeUndefined()
+      expect(existsSync(configDir)).toBe(false)
     })
   })
 

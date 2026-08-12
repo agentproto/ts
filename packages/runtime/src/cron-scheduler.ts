@@ -40,7 +40,7 @@ import {
 } from "node:fs"
 import { Cron } from "croner"
 import { loadAllowlist, runCommand } from "./command-tools.js"
-import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
+import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, adapterConfigDirFor, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { restartAgentSession } from "./session-restart-core.js"
@@ -438,6 +438,7 @@ export function createCronScheduler(opts: {
     const agentSessionId = mintSessionId()
     const agentSession = await resolved.startSession({
       cwd,
+      configDir: adapterConfigDirFor(agentSessionId),
       ...(action.model ? { model: action.model } : {}),
       ...(action.mode ? { mode: action.mode } : {}),
       ...(action.permissionHold ? { permissionHold: true } : {}),
@@ -453,6 +454,7 @@ export function createCronScheduler(opts: {
       cwd,
       agentSession,
       adapterSlug: action.adapter,
+      adapterConfigDir: adapterConfigDirFor(agentSessionId),
       origin: "cron",
       label: `cron:${job.id}`,
       ...(action.mode ? { mode: action.mode } : {}),
