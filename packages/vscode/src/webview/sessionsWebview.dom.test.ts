@@ -70,7 +70,8 @@ const ROW_A = {
   name: "openagentik-migration-lead",
   idMono: undefined,
   message: "Fanned out 3 executors.",
-  tag: "in-place",
+  tag: "Agentik Studio",
+  tagTitle: "/Code/studio · runs in-place",
   logo: { kind: "lettermark", text: "C" },
   model: "opus",
   ctxPercent: 71,
@@ -91,7 +92,8 @@ const ROW_DONE = {
   name: "sales-analysis",
   idMono: undefined,
   message: undefined,
-  tag: "in-place",
+  tag: "",
+  tagTitle: undefined,
   logo: { kind: "lettermark", text: "C" },
   model: undefined,
   ctxPercent: undefined,
@@ -256,9 +258,23 @@ describe("sessions webview — render", () => {
     expect(chip.textContent).toBe("2 bg")
     expect(chip.querySelector("img, svg")).toBeNull()
     expect(row.querySelector(".dot.bg")).toBeTruthy()
+    // Lives bottom-right under the timestamp, NOT in the title line.
+    expect(row.querySelector(".right .bgtasks")).toBeTruthy()
+    expect(row.querySelector(".name .bgtasks")).toBeNull()
 
     click(panel, chip)
     expect(panel.posted).toContainEqual({ type: "open", id: "s1" })
+  })
+
+  it("shows the workspace as the location tag with the path on hover, and no line when empty", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [ROW_A, ROW_DONE])] }))
+    const list = el(panel, "list")
+    const loc = list.querySelector('[data-id="s1"] .meta-loc .loc')!
+    expect(loc.textContent).toBe("Agentik Studio")
+    expect(loc.getAttribute("title")).toBe("/Code/studio · runs in-place")
+    // ROW_DONE has an empty tag (in-place, unknown workspace) — no line at all.
+    expect(list.querySelector('[data-id="s2"] .meta-loc')).toBeNull()
   })
 
   it("leaves the dot alone (no .bg) when the row is actively working or awaiting, even with bg work pending", () => {
