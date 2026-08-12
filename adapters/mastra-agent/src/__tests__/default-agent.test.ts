@@ -9,9 +9,10 @@ import { join } from "node:path"
 import { Agent } from "@mastra/core/agent"
 import { AgentController } from "@mastra/core/agent-controller"
 import type { AgentControllerMode } from "@mastra/core/agent-controller"
+import type { CompatRule } from "@mastra/core/processors"
 import { Workspace } from "@mastra/core/workspace"
 import { afterEach, describe, expect, it } from "vitest"
-import { DISABLED_BUILTIN_TOOL_IDS, makeAgentFactory } from "../default-agent.js"
+import { DISABLED_BUILTIN_TOOL_IDS, makeAgentFactory, stripTrailingReasoningRule } from "../default-agent.js"
 import { buildSqliteStore } from "../memory.js"
 import { DEFAULT_MODE_ID, DEFAULT_MODES } from "../modes.js"
 import { DEFAULT_PERMISSION_RULES, toolCategoryResolver } from "../tool-categories.js"
@@ -189,5 +190,58 @@ describe("makeAgentFactory — parity mode (modes: false)", () => {
     expect(session.resolveToolApproval("write_file")).toBe("allow")
     expect(session.resolveToolApproval("run_command")).toBe("allow")
     expect(session.permissions.getRules()).toEqual({ categories: {}, tools: {} })
+  })
+})
+
+describe("stripTrailingReasoningRule", () => {
+  type CompatPrompt = Parameters<NonNullable<CompatRule["applyToPrompt"]>>[0]["prompt"]
+  const apply = (prompt: CompatPrompt) =>
+    stripTrailingReasoningRule.applyToPrompt!({ prompt, model: "anthropic/claude-sonnet-5" })
+
+  const reasoning = (text: string) => ({ type: "reasoning", text }) as CompatPrompt[number]["content"][number]
+  const text = (t: string) => ({ type: "text", text: t }) as CompatPrompt[number]["content"][number]
+
+  it("strips a trailing reasoning block but keeps the message when text remains", () => {
+    const prompt = [
+      { role: "user", content: [text("hi")] },
+      { role: "assistant", content: [text("answer"), reasoning("thinking…")] },
+    ] as CompatPrompt
+    const next = apply(prompt)
+    expect(next).toBeDefined()
+    expect(next![1]).toEqual({ role: "assistant", content: [{ type: "text", text: "answer" }] })
+  })
+
+  it("DROPS a reasoning-only assistant message instead of patching in text('') — Anthropic rejects empty text blocks", () => {
+    const prompt = [
+      { role: "user", content: [text("hi")] },
+      { role: "assistant", content: [reasoning("only thinking")] },
+      { role: "user", content: [text("follow-up")] },
+    ] as CompatPrompt
+    const next = apply(prompt)
+    expect(next).toBeDefined()
+    expect(next).toHaveLength(2)
+    expect(next!.map((m) => m.role)).toEqual(["user", "user"])
+    // The regression guard: no empty text block may survive anywhere.
+    for (const message of next!) {
+      for (const part of message.content as Array<{ type: string; text?: string }>) {
+        if (part.type === "text") expect(part.text).not.toBe("")
+      }
+    }
+  })
+
+  it("leaves prompts without trailing reasoning untouched (returns undefined)", () => {
+    const prompt = [
+      { role: "user", content: [text("hi")] },
+      { role: "assistant", content: [reasoning("mid"), text("final")] },
+    ] as CompatPrompt
+    expect(apply(prompt)).toBeUndefined()
+  })
+
+  it("ignores non-assistant messages and string content", () => {
+    const prompt = [
+      { role: "system", content: "be terse" },
+      { role: "user", content: [reasoning("weird but not ours to touch")] },
+    ] as CompatPrompt
+    expect(apply(prompt)).toBeUndefined()
   })
 })
