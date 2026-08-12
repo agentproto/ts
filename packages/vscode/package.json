@@ -62,7 +62,7 @@
         {
           "id": "agentprotoConfig",
           "title": "Agentproto Lab",
-          "icon": "media/activitybar.svg"
+          "icon": "media/activitybar-lab.svg"
         }
       ]
     },
