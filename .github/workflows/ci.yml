@@ -700,6 +700,26 @@ jobs:
             echo "No reviewer credential — falling back to legacy API-key reviewer"
           fi
 
+          # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
+          # fallback above. CLAUDE_CODE_OAUTH_TOKEN_FALLBACK is a second
+          # `claude setup-token`-minted OAuth token from a SEPARATE Anthropic
+          # subscription account, kept for the case where the PRIMARY
+          # account's token is dead/expired/rate-limited rather than simply
+          # absent (absent is already handled by mode=legacy above). Computed
+          # once here as a step output — rather than testing the secret's
+          # non-emptiness inline in each downstream step's `if:` — so every
+          # gate below reads a plain boolean and a still-unset secret degrades
+          # to a quiet skip of the retry step (see its own comment) instead of
+          # write-config.mjs hard-erroring on an empty credential with no
+          # adapter options set, which would turn "haven't added the secret
+          # yet" into a red job instead of a no-op.
+          if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}" ]; then
+            echo "has-fallback-account=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-fallback-account=false" >> "$GITHUB_OUTPUT"
+            echo "No CLAUDE_CODE_OAUTH_TOKEN_FALLBACK secret configured — the cross-account retry step will no-op if the primary account fails."
+          fi
+
       - name: Resolve agentproto CLI source/version
         id: cliver
         if: steps.prstate.outputs.skip != 'true'
@@ -833,13 +853,129 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Cross-account retry: the exact same agentproto lane and workflow,
+      # under a SECOND Anthropic subscription account's OAuth token, so a
+      # dead/expired/rate-limited PRIMARY token doesn't fall all the way
+      # through to the legacy API-key reviewer (a different code path on the
+      # same org/credit pool, not a genuinely independent account) before a
+      # cheaper same-lane retry is even tried. Fires whenever no review has
+      # landed yet for this SHA (the postcheck above) AND a fallback token is
+      # actually configured — see "Determine review mode" for why
+      # has-fallback-account is a step output rather than an inline secret
+      # test. Gated to auth-mode=='subscription': the fallback secret is
+      # specifically a second OAuth token, so under api-key billing it would
+      # resolve to the exact same ANTHROPIC_API_KEY as the primary attempt
+      # (write-config.mjs only reads the credential matching auth-mode) and
+      # just re-run the identical failure for free.
+      #
+      # Deliberately NOT gated on `reviewer-agentproto.outcome`/`outputs.status`
+      # — a real 429 on the primary account (PR #951's own review run) proved
+      # those self-reported signals lie: the composite action step still
+      # exits `outcome: success` / `status: done` (the daemon's workflow run
+      # DID reach a terminal state) even though the embedded agent turn
+      # returned "API Error: Request rejected (429)" and posted nothing. The
+      # only signal actually worth trusting is `postcheck.outputs.posted` —
+      # a real row on the PR for this SHA — which is already required above.
+      - name: Run agentic PR reviewer (agentproto lane, fallback account)
+        id: reviewer-agentproto-fallback
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.postcheck.outputs.posted != 'true' &&
+          steps.mode.outputs.has-fallback-account == 'true' &&
+          steps.cliver.outputs.auth-mode == 'subscription'
+        continue-on-error: true
+        uses: ./.github/actions/agentproto-run
+        env:
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+        with:
+          adapter: ${{ steps.cliver.outputs.adapter }}
+          auth-mode: ${{ steps.cliver.outputs.auth-mode }}
+          # The only thing that changes vs the primary attempt above: a
+          # second subscription account's OAuth token. Everything else
+          # (adapter, sandbox, tracing, workflow) is identical, so a review
+          # that succeeds here is indistinguishable in substance from one the
+          # primary account would have posted.
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
+          langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
+          workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          cli-source: ${{ steps.cliver.outputs.cli-source }}
+          cli-version: ${{ steps.cliver.outputs.cli-version }}
+          workflow-input: |
+            {
+              "prNumber": ${{ github.event.pull_request.number }},
+              "baseRef": "${{ github.base_ref }}",
+              "repo": "${{ github.repository }}",
+              "lastReviewedSha": "${{ steps.lastreview.outputs.sha }}",
+              "priorReviewBody": ${{ toJSON(steps.lastreview.outputs.body) }},
+              "githubToken": "${{ steps.setup.outputs.token }}",
+              "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
+            }
+          timeout-minutes: 15
+
+      # Second tier of the same "review already posted?" guard as the
+      # postcheck step above — the fallback account's session can ALSO post
+      # successfully and then report a turn-level failure during wind-down
+      # (the exact race the first postcheck exists for; see PR #494 in that
+      # step's comment), so legacy must not be armed off a stale first-tier
+      # `posted=false` alone once a SECOND attempt has run. Mirrors the
+      # fallback step's own `if:` exactly (see that step's comment for why it
+      # no longer checks `reviewer-agentproto.outcome`/`outputs.status`) so
+      # this always runs exactly when the fallback step did, and skips
+      # (outputs stay empty, safely `!= 'true'` downstream) whenever the
+      # fallback step itself was skipped.
+      - name: Check whether a review was already posted (before legacy fallback)
+        id: postcheck-fallback
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.postcheck.outputs.posted != 'true' &&
+          steps.mode.outputs.has-fallback-account == 'true' &&
+          steps.cliver.outputs.auth-mode == 'subscription'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ steps.headsha.outputs.sha }}
+        run: |
+          # Same --paginate + `jq -s add` recipe as the postcheck step above —
+          # see its comment for why a naive `--paginate --jq` miscounts.
+          COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+            | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
+          echo "Reviews already posted against reviewed SHA $SHA (post-fallback-account check): $COUNT"
+          if [ "$COUNT" -gt 0 ] 2>/dev/null; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run agentic PR reviewer (legacy API-key fallback)
         id: reviewer-legacy
+        # Legacy is now the LAST resort in a three-tier ladder (primary
+        # account → fallback account → legacy API key). Both postcheck
+        # steps are the sole arming signal — no reliance on any tier's
+        # self-reported outcome/status (see the fallback-account step's
+        # comment for why that self-report can't be trusted: a real 429 on
+        # PR #951's own primary-account attempt still reported outcome:
+        # success / status: done). `postcheck.outputs.posted` covers
+        # mode=='legacy' for free — that step only runs under
+        # mode=='agentproto', so under mode=='legacy' its output is empty and
+        # `!= 'true'` holds trivially. `postcheck-fallback.outputs.posted`
+        # is equally empty (and so equally `!= 'true'`) whenever the fallback
+        # tier never ran — no fallback secret configured, auth-mode isn't
+        # subscription, or mode=='legacy' — so no extra disjunct is needed to
+        # cover those cases either.
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.postcheck.outputs.posted != 'true' &&
-          (steps.mode.outputs.mode == 'legacy' || steps.reviewer-agentproto.outcome == 'failure' || steps.reviewer-agentproto.outputs.status == 'failed')
+          steps.postcheck-fallback.outputs.posted != 'true'
         # Don't abort the job on a non-posting reviewer — capture the outcome so
         # the gate can turn it into an honest red instead of a false green.
         continue-on-error: true
@@ -856,13 +992,26 @@ jobs:
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
+        env:
+          # Provenance is JSON (session labels, model ids, …), not a
+          # controlled enum like `status`/`posted` below — route it through
+          # env instead of inline `${{ }}` interpolation into the script body,
+          # for the same shell-injection reason the "Check for changeset" step
+          # above documents for PR_TITLE.
+          PRIMARY_PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
+          FALLBACK_PROVENANCE: ${{ steps.reviewer-agentproto-fallback.outputs.provenance }}
         run: |
           # A posted review IS lane success, even when the native session
           # errored after posting (post-review wind-down — see the postcheck
-          # step). The verify step below independently re-proves the review
-          # row before the gate trusts this.
+          # step(s)). The verify step below independently re-proves the
+          # review row before the gate trusts this. Both accounts land in the
+          # same "agentproto" mode for the gate/stamp — a review posted under
+          # the fallback account is not a lesser outcome than one posted
+          # under the primary account.
           if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ] \
-            || [ "${{ steps.postcheck.outputs.posted }}" = "true" ]; then
+            || [ "${{ steps.postcheck.outputs.posted }}" = "true" ] \
+            || [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ] \
+            || [ "${{ steps.postcheck-fallback.outputs.posted }}" = "true" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
           elif [ "${{ steps.reviewer-legacy.outcome }}" = "success" ]; then
@@ -872,6 +1021,24 @@ jobs:
             echo "outcome=failure" >> "$GITHUB_OUTPUT"
             echo "mode=none" >> "$GITHUB_OUTPUT"
           fi
+
+          # Which tier's session actually produced the review — feeds the
+          # "Stamp review provenance footer" step below so it cites the
+          # account/session that posted, not the failed primary attempt's
+          # (possibly empty) provenance when the fallback account is the one
+          # that succeeded.
+          if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
+            PROVENANCE="$PRIMARY_PROVENANCE"
+          elif [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ]; then
+            PROVENANCE="$FALLBACK_PROVENANCE"
+          else
+            PROVENANCE="$PRIMARY_PROVENANCE"
+          fi
+          {
+            echo "provenance<<__PROVENANCE_EOF__"
+            echo "$PROVENANCE"
+            echo "__PROVENANCE_EOF__"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Commit changeset (if written by reviewer)
         if: |
@@ -1001,7 +1168,10 @@ jobs:
           AUTH_MODE: ${{ steps.cliver.outputs.auth-mode }}
           RUN_ID: ${{ github.run_id }}
           SERVER_URL: ${{ github.server_url }}
-          PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
+          # Resolved by "Propagate reviewer outcome for gate" to whichever
+          # tier's session actually posted (primary or fallback account) —
+          # see that step's comment.
+          PROVENANCE: ${{ steps.reviewer.outputs.provenance }}
         run: node scripts/stamp-review-footer.mjs
 
       # Gate: resolve decision + blocking config, post explicit statuses on

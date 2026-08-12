@@ -300,6 +300,31 @@ describe("reduceConversation", () => {
     expect(conv.turns[0]!.segments[1]).toMatchObject({ message: "kaput" })
   })
 
+  it("pairs each option's id WITH its label in optionItems, in offer order", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({
+        kind: "agent-prompt",
+        toolCallId: "p1",
+        options: [
+          { optionId: "allow_once", name: "Allow" },
+          { optionId: "allow_always", label: "Allow" }, // duplicate label — ids must not collide
+          "Deny", // plain string: label only, not respondable
+        ],
+      }),
+    ])
+    const question = conv.turns[0]!.segments.find(s => s.kind === "agent-question")!
+    expect(question).toMatchObject({
+      options: ["Allow", "Allow", "Deny"],
+      optionItems: [
+        { id: "allow_once", label: "Allow" },
+        { id: "allow_always", label: "Allow" },
+        { label: "Deny" },
+      ],
+      optionsById: { allow_once: "Allow", allow_always: "Allow" },
+    })
+  })
+
   it("marks a question resolved once a matching permission-resolved record arrives", () => {
     freshSeq()
     const conv = reduceConversation("s1", [

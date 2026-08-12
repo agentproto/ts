@@ -358,6 +358,25 @@ export async function handleWebviewMessage(
       // is dropped quietly rather than thrown.
       await openLinkTarget(msg.kind, msg.target, msg.line, controller)
       return
+    case "resolveQuestion": {
+      // A permission-ask chip was clicked in the transcript. Resolve the
+      // daemon's pending permission by toolCallId, then respond.
+      if (!msg.toolCallId) {
+        void vscode.window.showWarningMessage("agentproto: permission has no toolCallId — cannot respond.")
+        return
+      }
+      const sessionId = controller.session.id
+      const permissions = await client.listPermissions(sessionId)
+      const perm = permissions.find(p => p.toolCallId === msg.toolCallId)
+      if (!perm) {
+        void vscode.window.showWarningMessage(
+          `agentproto: permission ${msg.toolCallId} not found (already resolved?).`,
+        )
+        return
+      }
+      await client.respondPermission(perm.id, { decision: msg.decision, optionId: msg.optionId })
+      return
+    }
   }
 }
 
@@ -1237,15 +1256,69 @@ export function buildHtml(
     .plan-list li.plan-donesum .plan-chev { margin-left: auto; color: var(--plan-faint); font-size: 0.85em; }
     .plan-list li.plan-more { cursor: pointer; color: var(--plan-faint); }
     .plan-list li.plan-more:hover { color: var(--plan-muted); }
+    /* ── Question / permission ask ───────────────────────────────────
+       A bordered card like the assistant bubble, with a prompt label and
+       clickable option chips that resolve the pending permission. */
     .seg.question {
-      border-left: 3px solid var(--vscode-editorWarning-foreground);
-      padding: 4px 0 4px 10px;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      border-radius: 6px;
+      padding: 10px 14px;
+      background: var(--vscode-textCodeBlock-background);
+      margin: 8px 0;
     }
-    /* Resolved: the ask is already answered — a calmer border than the
-       still-pending warning color so the two states read apart at a glance. */
+    .question-label {
+      font-size: 0.88em;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 10px;
+    }
+    .question-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .question-option {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 14px;
+      border-radius: 5px;
+      border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+      background: var(--vscode-button-secondaryBackground, var(--vscode-input-background));
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      font-size: 0.88em;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    .question-option:hover {
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+      border-color: var(--vscode-focusBorder, #007acc);
+    }
+    .question-option:active {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    /* Approve-style option — primary action. */
+    .question-option.primary {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: var(--vscode-button-background);
+    }
+    .question-option.primary:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    /* Deny-style option — subtle, secondary. */
+    .question-option.secondary {
+      opacity: 0.7;
+    }
+    .question-option.secondary:hover {
+      opacity: 1;
+    }
+    /* Resolved: the ask is already answered — a calmer card. */
     .seg.question.resolved {
       border-left: 3px solid var(--vscode-descriptionForeground);
       color: var(--vscode-descriptionForeground);
+      background: transparent;
+      padding: 4px 0 4px 10px;
     }
     .seg.error {
       color: var(--vscode-errorForeground);
@@ -2981,11 +3054,38 @@ export function buildHtml(
               return;
             }
             node.className = 'seg question';
-            node.appendChild(el('div', undefined, 'Awaiting your decision'));
-            if (seg.options && seg.options.length) {
-              const ul = el('ul');
-              for (const opt of seg.options) ul.appendChild(el('li', undefined, opt));
-              node.appendChild(ul);
+            node.appendChild(el('div', 'question-label', 'Awaiting your decision'));
+            // Chips render from the presenter's ordered {id?, label} items —
+            // the daemon's own optionId rides with its label, so no reverse
+            // lookup (labels are not unique keys). Legacy asks without items
+            // fall back to bare labels, presentational only.
+            const items = seg.optionItems && seg.optionItems.length
+              ? seg.optionItems
+              : (seg.options || []).map((label) => ({ label }));
+            if (items.length) {
+              const row = el('div', 'question-options');
+              for (const item of items) {
+                const btn = el('button', 'question-option', item.label);
+                if (item.id && seg.toolCallId) {
+                  const optionId = item.id;
+                  btn.addEventListener('click', () => {
+                    vscode.postMessage({
+                      type: 'resolveQuestion',
+                      toolCallId: seg.toolCallId,
+                      decision: 'approve',
+                      optionId,
+                    });
+                  });
+                } else {
+                  // Not respondable from here: a plain-string option carries
+                  // no optionId, and without a toolCallId there is no pending
+                  // permission to answer.
+                  btn.disabled = true;
+                  btn.title = item.id ? 'no pending permission to answer' : 'option id unavailable';
+                }
+                row.appendChild(btn);
+              }
+              node.appendChild(row);
             }
             return;
           }
