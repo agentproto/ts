@@ -353,6 +353,10 @@ describe("CronScheduler", () => {
       expect(startSession).toHaveBeenCalledOnce()
       expect(startSession).toHaveBeenCalledWith({
         cwd: workspace,
+        // Persistent isolated-config dir, keyed by the minted session id —
+        // what lets a reaped cron session natively resume (see
+        // adapterConfigDirFor in sessions.ts).
+        configDir: expect.stringContaining("adapter-config"),
         mode: "bypass-permissions",
         permissionHold: true,
         options: { skills: "fast", verbose: true },
@@ -801,6 +805,10 @@ describe("CronScheduler", () => {
       const startSessionArg = startSession.mock.calls[0]![0]
       expect(startSessionArg).toEqual({
         cwd: workspace,
+        // Always present — the persistent isolated-config dir is not one of
+        // the leak-prone optional fields this test guards, it's part of the
+        // base spawn contract (see adapterConfigDirFor in sessions.ts).
+        configDir: expect.stringContaining("adapter-config"),
         env: {
           [SESSION_ID_ENV]: expect.any(String),
           [WORKSPACE_SLUG_ENV]: "default",
