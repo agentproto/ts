@@ -6,6 +6,10 @@
  * `__APP_SLUG__-assistant` lands as `my-app-assistant`. `_gitignore` is
  * renamed to `.gitignore` on the way out — npm strips dotfiles from
  * published package contents, so the template ships the escaped name.
+ * `_agentproto/` is renamed to `.agentproto/` for the same escaping reason,
+ * plus a nearer trap: this monorepo's root `.gitignore` ignores
+ * `.agentproto/` at any depth (it's the daemon's workspace-state dir), so a
+ * literal `.agentproto/` template tree would silently never be committed.
  */
 
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
@@ -36,8 +40,13 @@ function substitute(text: string, tokens: TemplateTokens): string {
   return text.replace(TOKEN_PATTERN, (token) => tokenValue(token, tokens))
 }
 
+const RENAME_BY_NAME: Readonly<Record<string, string>> = {
+  _gitignore: ".gitignore",
+  _agentproto: ".agentproto",
+}
+
 function renameEntry(name: string): string {
-  return name === "_gitignore" ? ".gitignore" : name
+  return RENAME_BY_NAME[name] ?? name
 }
 
 /** Recursively copy `srcDir` into `destDir`, returning the file count written. */

@@ -47,6 +47,21 @@ async function readAllFiles(root: string): Promise<Map<string, string>> {
   return out
 }
 
+describe("template source tree", () => {
+  it("ships _agentproto/ (escaped), never a literal .agentproto/", async () => {
+    // The monorepo root .gitignore ignores `.agentproto/` at any depth, so a
+    // dot-named template tree exists locally but silently never reaches git —
+    // CI then scaffolds apps with no APP.md. The template must ship the
+    // escaped name and rely on the copy-time rename in template.ts.
+    const { readdir } = await import("node:fs/promises")
+    const { fileURLToPath } = await import("node:url")
+    const templateDir = fileURLToPath(new URL("../../templates/react-ts", import.meta.url))
+    const entries = await readdir(templateDir)
+    expect(entries).toContain("_agentproto")
+    expect(entries).not.toContain(".agentproto")
+  })
+})
+
 describe("scaffoldApp", () => {
   it("writes the frozen file set with default id/name derived from the dir basename", async () => {
     const root = await mktmp()
