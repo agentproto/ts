@@ -386,6 +386,14 @@ export type WebviewMessage =
    * 1-based line number when the citation carried a `:line` suffix.
    */
   | { type: "openLink"; kind: "external" | "file"; target: string; line?: number }
+  /**
+   * The user clicked an option in a permission-ask (clarify / agent-question)
+   * block. Carries `toolCallId` (to correlate with the pending permission),
+   * `decision` and the chosen `optionId` so the host can call
+   * `permissions_respond` on the daemon — no daemon data crosses into the
+   * webview; only ids do.
+   */
+  | { type: "resolveQuestion"; toolCallId?: string; decision: "approve" | "deny"; optionId: string }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -430,6 +438,12 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
         (m.kind === "external" || m.kind === "file") &&
         typeof m.target === "string" &&
         (m.line === undefined || typeof m.line === "number")
+      )
+    case "resolveQuestion":
+      return (
+        (m.decision === "approve" || m.decision === "deny") &&
+        typeof m.optionId === "string" &&
+        (m.toolCallId === undefined || typeof m.toolCallId === "string")
       )
     default:
       return false

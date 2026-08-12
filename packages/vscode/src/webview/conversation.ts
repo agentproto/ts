@@ -506,6 +506,15 @@ export interface PresentedQuestionSegment {
   kind: "agent-question"
   id: string
   options: string[]
+  /** ACP tool-call id correlating this ask to its pending permission — the
+   *  webview forwards it back when the user picks an option, so the host
+   *  can call `permissions_respond` with the right daemon permission id. */
+  toolCallId?: string
+  /** optionId → display label for THIS ask's offered options — lets the
+   *  webview resolve a clicked label back to its optionId so it can call
+   *  `permissions_respond` without guessing. Absent for a legacy ask that
+   *  predates the structured-options path. */
+  optionsById?: Record<string, string>
   /** Set once this ask has been answered — see `QuestionSegment.resolved`.
    *  Absent means still awaiting a human/orchestrator decision. */
   resolved?: { decision: "approve" | "deny" | "cancelled"; optionId?: string; optionLabel?: string }
@@ -753,6 +762,8 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
         kind: "agent-question",
         id: seg.id,
         options: seg.options,
+        ...(seg.toolCallId ? { toolCallId: seg.toolCallId } : {}),
+        ...(seg.optionsById ? { optionsById: seg.optionsById } : {}),
         ...(seg.resolved ? { resolved: seg.resolved } : {}),
       }
     case "error":
