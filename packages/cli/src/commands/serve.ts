@@ -666,6 +666,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
         bind: opts.bind,
         specs: [driverSpec],
         name: "agentproto-serve",
+        // Surfaced over MCP and `/health` — what is actually running.
+        version: __CLI_VERSION__,
         // BOOT.md is silly for a tunnel daemon — skip it.
         boot: false,
         // Opt-in eager resume-on-boot (§5, PR-4). Resolved from
@@ -872,12 +874,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   // ── shutdown wiring (covers both local-only and tunnel modes) ──
   const aborter = new AbortController()
+  const bootedAt = Date.now()
   let shuttingDown = false
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
     process.stderr.write(
-      `\n${color.dim}── shutting down (${signal}) ──${color.reset}\n`,
+      `\n${color.dim}── shutting down (${signal}) · v${__CLI_VERSION__} · up ${formatDuration(Date.now() - bootedAt)} ──${color.reset}\n`,
     )
     aborter.abort()
     await gateway.stop().catch(() => undefined)
@@ -1425,8 +1428,13 @@ function printBootBanner(opts: {
     ? `${c.amber}bearer${c.reset} ${c.dim}(daemon.authToken)${c.reset}`
     : `${c.dim}open (no token set)${c.reset}`
   const line = `${c.dim}─${c.reset}`
+  const entry = process.argv[1] ?? "?"
+  const bin =
+    home && entry.startsWith(home) ? "~" + entry.slice(home.length) : entry
   process.stderr.write(
     `\n${line} ${c.bold}agentproto${c.reset} ${c.dim}·${c.reset} gateway up ${c.dim}·${c.reset} ${c.cyan}${opts.url}${c.reset} ${line}\n` +
+      `  ${c.dim}version${c.reset}      ${__CLI_VERSION__} ${c.dim}· pid ${process.pid} · node ${process.version}${c.reset}\n` +
+      `  ${c.dim}bin${c.reset}          ${bin}\n` +
       `  ${c.dim}workspace${c.reset}    ${workspace}\n` +
       `  ${c.dim}pty${c.reset}          ${ptyState}\n` +
       `  ${c.dim}origins${c.reset}      ${origins}\n` +
@@ -1435,6 +1443,18 @@ function printBootBanner(opts: {
       `  ${c.dim}mode${c.reset}         ${mode}\n` +
       `\n`,
   )
+}
+
+/** `3h12m`, `47m`, `12s` — compact elapsed-time tag for the lifecycle lines. */
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h${m % 60 ? `${m % 60}m` : ""}`
+  const d = Math.floor(h / 24)
+  return `${d}d${h % 24 ? `${h % 24}h` : ""}`
 }
 
 /**
