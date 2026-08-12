@@ -3,22 +3,31 @@
 ```text
 agentproto app pack   <appDir> [--out <path.agentapp>] [--json]
 agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
+agentproto app serve  [appDir] [--port <n>] [--json]
+agentproto app build  <appDir> [--json]
+agentproto app dev    <appDir> [--port <n>] [--json] [-- <viteArgs...>]
 ```
 
 Bundle an agentproto app folder (one carrying a valid `.agentproto/APP.md`)
 into a single self-contained `.agentapp` tar.gz — the "APK for agentproto
 apps" — and unpack that bundle back into a folder, verifying an aggregate
 SHA-256 before restoring. Entirely local and dependency-free (system `tar`):
-no daemon, no network.
+no daemon, no network. `build` and `dev` compile/run an app's optional `ui/`
+**source** project (Vite + TypeScript) into/against the static
+`.agentproto/ui/` that `serve`, `pack`, and the MCP-Apps panel actually
+consume — see [Optional `ui/` source project](#optional-ui-source-project)
+below.
 
 An app folder is any directory with `.agentproto/APP.md` plus the agents
 (`.agentproto/agents/<id>/AGENT.md`), workflows
 (`.agentproto/workflows/<id>/WORKFLOW.md`), and optional UI
 (`.agentproto/ui/`) it references — the shape `defineApp().emit(dir)`
 (`@agentproto/app-kit`) produces. The bundle walks the WHOLE folder
-(including `.agentproto/` and any loose workspace files), so unpacking
-restores the exact tree and relative paths that `readAppRefs` / `app_install`
-depend on survive the round-trip.
+(including `.agentproto/` and any loose workspace files, but skipping any
+`node_modules/` or `.git/` directory at any depth — a `ui/` source tree ships
+both and neither belongs in the shipped app), so unpacking restores the
+exact tree and relative paths that `readAppRefs` / `app_install` depend on
+survive the round-trip.
 
 ## Subverbs
 
@@ -50,6 +59,84 @@ artifact, not part of the app) into the destination.
 |------|---------|-------------|
 | `--dir <dir>` | `<safeId>-<version>` in cwd | Dest folder to restore into. When omitted, derives `<safeId>-<version>` from the manifest. |
 | `--json` | `false` | Print a machine-readable verification summary on stdout. |
+
+### `serve [appDir] [--port <n>] [--json]`
+
+Serves `<appDir>/.agentproto/ui/` as a standalone webapp with a working
+`window.McpApp` bridge, so the same UI that renders inside an MCP-Apps panel
+runs in a plain browser tab with full MCP connectivity. Port resolution:
+`--port` > the app's declared `ui.port` (APP.md frontmatter) > an
+OS-assigned free port. Requires the daemon (`agentproto serve`) to be
+running — the bridge forwards tool calls to its `/mcp` endpoint.
+
+### `build <appDir> [--json]`
+
+Builds `<appDir>/ui/` (the optional Vite UI **source** project — see
+[Optional `ui/` source project](#optional-ui-source-project)) into
+`<appDir>/.agentproto/ui/`, the static output `serve`/`pack`/the MCP-Apps
+panel consume.
+
+- No `ui/package.json`, or one with no `scripts.build` → **no-op success**
+  (exit `0`): the app is a hand-written static UI with nothing to compile.
+  Human output: `no ui build step — static UI passthrough`. `--json`:
+  `{"built":false,"reason":"no-ui-project"}` (missing `ui/package.json`) or
+  `{"built":false,"reason":"no-build-script"}` (present but no
+  `scripts.build`).
+- Otherwise runs `<pm> run build` with cwd `<appDir>/ui`, stdio inherited.
+  The package manager is detected from a lockfile — `pnpm-lock.yaml` →
+  pnpm, `package-lock.json` → npm, `yarn.lock` → yarn — checked in
+  `<appDir>` first, then `<appDir>/ui`, defaulting to pnpm.
+- A non-zero build exit is a hard failure (exit `1`). After a successful
+  build, `agentproto app build` verifies `<appDir>/.agentproto/ui/index.html`
+  exists; if the ui project's `vite.config.ts` doesn't emit there
+  (`outDir: "../.agentproto/ui"`), that's also exit `1`, with a hint.
+- `--json` success: `{"built":true,"uiDir":"<abs .agentproto/ui path>"}`.
+
+Fails with exit code `2` if `<appDir>` has no `.agentproto/APP.md`.
+
+### `dev <appDir> [--port <n>] [--json] [-- <viteArgs...>]`
+
+Runs `<appDir>/ui/`'s own dev server (`<pm> run dev`, same package-manager
+detection as `build`) with a live `window.McpApp` bridge — the `app serve`
+experience but with Vite's HMR instead of a static build. Requires
+`<appDir>/ui/package.json` to declare a `scripts.dev`; a hand-written static
+UI has nothing to hot-reload — use `agentproto app serve` instead (exit `2`
+otherwise).
+
+Two servers run: the ui project's own dev server (whatever port it picks)
+and a bridge-only HTTP server this command owns — `POST
+/__agentproto/tool-call` plus `OPTIONS`/CORS, since the browser talks to the
+Vite dev origin, a different port than the bridge. `--port` sets the
+bridge server's port (default: OS-assigned). The dev server child is spawned
+with `AGENTPROTO_BRIDGE_URL=http://127.0.0.1:<bridgePort>` in its
+environment, so a scaffolded `vite.config.ts` can proxy `/__agentproto` to
+it. Extra args after `--` are forwarded to `<pm> run dev`.
+
+Ctrl-C or the dev server child exiting tears both servers down; `app dev`
+exits with the child's exit code. `--json` prints
+`{"bridgeUrl":"...","appDir":"..."}` on one line before handing the
+terminal to the dev server.
+
+## Optional `ui/` source project
+
+An app's `.agentproto/ui/` is always the thing actually served — a plain
+`index.html` + assets, hand-written or built. An app MAY additionally carry
+a `ui/` **source** project (a Vite + TypeScript project) that *builds into*
+`.agentproto/ui/`:
+
+- `vite.config.ts` sets `outDir: "../.agentproto/ui"`, `emptyOutDir: true`,
+  and `base: "./"` (relative asset paths, since the daemon / `app serve` /
+  the MCP-Apps panel serve static files with no rewrite rules and may serve
+  from a subpath).
+- The router (if any) uses hash history (`createHashHistory`) for the same
+  reason: one `index.html` + hash routes works from any subpath, and even
+  `file://`, with no per-route HTML emission needed from the static host.
+- No `ui/` directory, or a `ui/` without a `package.json` build script,
+  means the app is a hand-written static UI — `app build` no-ops
+  successfully and `app dev` isn't available (use `app serve`).
+
+`create-agentproto-app` scaffolds this shape (Vite + TanStack Router +
+TanStack Query + `@agentproto/app-client`) end to end.
 
 ## The `manifest.json`
 
@@ -92,4 +179,13 @@ agentproto app unpack kit.agentapp --dir ./my-app
 
 # An unpacked folder is itself packable again (round-trip stable)
 agentproto app pack ./my-app
+
+# Build a ui/ source project into .agentproto/ui/ (no-ops for a static UI)
+agentproto app build ./my-app
+
+# Run the ui/ dev server with a live MCP bridge (daemon must be running)
+agentproto app dev ./my-app
+
+# Forward extra args to the underlying dev server
+agentproto app dev ./my-app -- --host 0.0.0.0
 ```

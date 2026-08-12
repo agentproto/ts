@@ -225,6 +225,50 @@ describe("app pack", () => {
     expect(code).toBe(2)
     expect(writes.join("")).toContain("not an agentproto app")
   })
+
+  it("skips node_modules/ and .git/ at any depth (a ui/ source tree ships both)", async () => {
+    const root = await mktmp()
+    const appDir = await buildFixture(root)
+
+    // Top-level .git/ (every real checkout has one) + a nested ui/ source
+    // tree with its own node_modules/, plus a nested .git (e.g. a vendored
+    // submodule-like dir) to prove "any depth".
+    await mkdir(join(appDir, ".git", "objects"), { recursive: true })
+    await writeFile(join(appDir, ".git", "HEAD"), "ref: refs/heads/main\n", "utf8")
+    await mkdir(join(appDir, "ui", "node_modules", "some-dep"), { recursive: true })
+    await writeFile(
+      join(appDir, "ui", "node_modules", "some-dep", "index.js"),
+      "module.exports = {}\n",
+      "utf8",
+    )
+    await mkdir(join(appDir, "ui", "src"), { recursive: true })
+    await writeFile(join(appDir, "ui", "src", "main.tsx"), "// entry\n", "utf8")
+    await mkdir(join(appDir, "vendored", ".git"), { recursive: true })
+    await writeFile(join(appDir, "vendored", ".git", "HEAD"), "ref: refs/heads/main\n", "utf8")
+    await writeFile(join(appDir, "vendored", "keep.txt"), "kept\n", "utf8")
+
+    const out = join(root, "with-node-modules.agentapp")
+    const code = await runAppPack([appDir, "--out", out, "--json"])
+    expect(code).toBe(0)
+
+    const extractTo = await mktmp("agentapp-nm-extract-")
+    const res = spawnSync("tar", ["-xzf", out, "-C", extractTo], { encoding: "utf8" })
+    expect(res.status).toBe(0)
+
+    expect(existsSync(join(extractTo, "ui", "src", "main.tsx"))).toBe(true)
+    expect(existsSync(join(extractTo, "vendored", "keep.txt"))).toBe(true)
+    expect(existsSync(join(extractTo, "ui", "node_modules"))).toBe(false)
+    expect(existsSync(join(extractTo, ".git"))).toBe(false)
+    expect(existsSync(join(extractTo, "vendored", ".git"))).toBe(false)
+
+    const manifest = JSON.parse(
+      await readFile(join(extractTo, "manifest.json"), "utf8"),
+    )
+    expect(manifest.files.some((f: string) => f.includes("node_modules"))).toBe(false)
+    expect(manifest.files.some((f: string) => f.startsWith(".git/") || f.includes("/.git/"))).toBe(false)
+    expect(manifest.files).toContain("ui/src/main.tsx")
+    expect(manifest.files).toContain("vendored/keep.txt")
+  })
 })
 
 // ── unpack ───────────────────────────────────────────────────────────────
