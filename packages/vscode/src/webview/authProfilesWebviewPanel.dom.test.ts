@@ -77,6 +77,14 @@ const CURATED_WALLET = {
   enabled: true,
   curationSummary: "4 curated · 4 active",
   curatedIds: ["anthropic/claude-fable-5", "anthropic/claude-opus-4-8"],
+  curatedModels: [
+    { id: "anthropic/claude-fable-5", status: "active", hint: "active — this wallet bills it" },
+    {
+      id: "anthropic/claude-opus-4-8",
+      status: "unbillable",
+      hint: "no connected wallet can bill this model on anthropic — check this wallet's credential",
+    },
+  ],
 }
 
 const UNCURATED_WALLET = {
@@ -86,6 +94,7 @@ const UNCURATED_WALLET = {
   accessKind: "api-key",
   curationSummary: "no catalog models",
   curatedIds: [],
+  curatedModels: [],
 }
 
 const PROVIDER = {
@@ -153,6 +162,17 @@ describe("wallets webview — curation editing (migrated from Auth Settings)", (
     expect(panel.posted).toEqual([])
   })
 
+  it("renders a status dot + reason tooltip per curated chip, so inactive vs unbillable is visible", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    const card = el(panel, "list").querySelector(".wcard")!
+    const chips = [...card.querySelectorAll(".curated-chips .chip")].map(htmlEl)
+    expect(chips[0]!.querySelector(".mdot.active")).toBeTruthy()
+    expect(chips[0]!.getAttribute("title")).toContain("this wallet bills it")
+    expect(chips[1]!.querySelector(".mdot.unbillable")).toBeTruthy()
+    expect(chips[1]!.getAttribute("title")).toContain("no connected wallet can bill this model")
+  })
+
   it("clicking a chip's × posts removeModel with the wallet id and model id", () => {
     const panel = renderPanel()
     send(panel, modelMessage())
@@ -161,6 +181,78 @@ describe("wallets webview — curation editing (migrated from Auth Settings)", (
     click(panel, card.querySelector("[data-remove-model]")!)
     expect(panel.posted).toEqual([
       { type: "removeModel", profileId: "anthropic-sub", model: "anthropic/claude-fable-5" },
+    ])
+  })
+})
+
+describe("wallets webview — wallet card actions", () => {
+  it("renders the set-models / toggle / delete actions inline in the card header, not hover-gated", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    const card = htmlEl(el(panel, "list").querySelector(".wcard"))
+    const actions = card.querySelector(".wtop .wactions")
+    expect(actions).toBeTruthy()
+    expect(actions!.querySelector("[data-set-models]")).toBeTruthy()
+    expect(actions!.querySelector("[data-toggle]")).toBeTruthy()
+    expect(actions!.querySelector("[data-delete]")).toBeTruthy()
+  })
+
+  it("clicking the + action posts requestSetModels with the wallet id", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage())
+    panel.posted.length = 0
+    const card = el(panel, "list").querySelector(".wcard")!
+    click(panel, card.querySelector("[data-set-models]")!)
+    expect(panel.posted).toEqual([{ type: "requestSetModels", profileId: "anthropic-sub" }])
+  })
+})
+
+describe("wallets webview — allowed-models dialog", () => {
+  const DIALOG = {
+    type: "setModelsDialog",
+    profileId: "openrouter-env",
+    items: [
+      { id: "deepseek/deepseek-v4-flash-0731", label: "deepseek/deepseek-v4-flash-0731", picked: false },
+      { id: "deepseek/deepseek-v4-pro", label: "deepseek/deepseek-v4-pro", picked: true },
+      { id: "anthropic/claude-fable-latest", label: "~anthropic/claude-fable-latest", picked: true },
+    ],
+  }
+
+  function input(panel: Panel, element: DomElement, value: string): void {
+    ;(element as unknown as HTMLInputElement).value = value
+    element.dispatchEvent(new panel.window.Event("input", { bubbles: true }))
+  }
+
+  it("renders a filter input above the model list and filters items as you type", () => {
+    const panel = renderPanel()
+    send(panel, DIALOG)
+    const filter = el(panel, "model-filter")
+    const items = [...el(panel, "dialog-body").querySelectorAll(".model-item")].map(htmlEl)
+    expect(items).toHaveLength(3)
+    input(panel, filter, "flash 0731")
+    expect(items.map(i => i.style.display)).toEqual(["", "none", "none"])
+    input(panel, filter, "")
+    expect(items.map(i => i.style.display)).toEqual(["", "", ""])
+  })
+
+  it("saving posts every checked model, including ones hidden by the filter", () => {
+    const panel = renderPanel()
+    send(panel, DIALOG)
+    panel.posted.length = 0
+    const flash = htmlEl(el(panel, "dialog-body").querySelector('[data-model-id="deepseek/deepseek-v4-flash-0731"]'))
+    ;(flash as HTMLInputElement).checked = true
+    input(panel, el(panel, "model-filter"), "claude")
+    click(panel, el(panel, "dialog-confirm"))
+    expect(panel.posted).toEqual([
+      {
+        type: "setModels",
+        profileId: "openrouter-env",
+        ids: [
+          "deepseek/deepseek-v4-flash-0731",
+          "deepseek/deepseek-v4-pro",
+          "anthropic/claude-fable-latest",
+        ],
+      },
     ])
   })
 })

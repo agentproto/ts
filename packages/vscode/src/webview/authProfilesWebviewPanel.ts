@@ -504,12 +504,19 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .wmeta .curation-toggle:hover { color: var(--vscode-foreground); }
     .curated-chips { display: none; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
     .curated-chips.show { display: flex; }
-    .curated-chips .chip { font-size: 9.5px; padding: 1px 5px 1px 7px; border-radius: 99px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); color: var(--vscode-descriptionForeground); display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+    .curated-chips .chip { font-size: 9.5px; padding: 1px 5px 1px 7px; border-radius: 99px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); color: var(--vscode-descriptionForeground); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .curated-chips .chip .mdot { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; }
+    .curated-chips .chip .mdot.active { background: var(--vscode-charts-green, #2ea043); }
+    .curated-chips .chip .mdot.inactive { background: var(--vscode-editorWarning-foreground, #cca700); }
+    .curated-chips .chip .mdot.unbillable { background: var(--vscode-errorForeground, #f14c4c); }
+    .curated-chips .chip .mdot.unlisted { background: var(--vscode-descriptionForeground); opacity: 0.5; }
     .curated-chips .chip button { background: none; border: none; color: var(--vscode-errorForeground); cursor: pointer; padding: 0; font-size: 11px; line-height: 1; }
-    .wactions { display: none; gap: 6px; position: absolute; top: 6px; right: 8px; }
-    .wcard:hover .wactions { display: flex; }
-    .wactions span { cursor: pointer; color: var(--vscode-descriptionForeground); }
-    .wactions span:hover { color: var(--vscode-foreground); }
+    .wactions { display: flex; gap: 2px; flex: 0 0 auto; margin-left: 4px; }
+    .wactions span {
+      cursor: pointer; color: var(--vscode-descriptionForeground);
+      padding: 1px 4px; border-radius: 3px; line-height: 1.2;
+    }
+    .wactions span:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
     .grouplabel { font-size: 9.5px; font-weight: 600; letter-spacing: 0.08em; color: var(--vscode-descriptionForeground); opacity: 0.75; text-transform: uppercase; padding: 8px 12px 2px; }
     .morebtn { width: calc(100% - 24px); margin: 6px 12px 0; font: 600 10px var(--vscode-font-family); padding: 6px; border-radius: 6px; border: 1px dashed var(--vscode-panel-border, rgba(128,128,128,0.35)); background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
     .morebtn:hover { color: var(--vscode-foreground); border-color: var(--vscode-descriptionForeground); }
@@ -541,7 +548,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
       display: none; flex-direction: column;
     }
     .dialog-backdrop.show { display: flex; }
-    .dialog { flex: 1 1 auto; display: flex; flex-direction: column; padding: 12px; }
+    .dialog { flex: 1 1 auto; display: flex; flex-direction: column; padding: 12px; min-height: 0; }
     .dialog-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--vscode-foreground); }
     .dialog-body { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
     .dialog-input {
@@ -644,12 +651,13 @@ export function buildHtml(nonce: string, cspSource: string): string {
       }
 
       function curatedChipsHTML(w) {
-        if (!w.curatedIds.length) return '';
+        if (!w.curatedModels.length) return '';
         var chips = '';
-        for (var i = 0; i < w.curatedIds.length; i++) {
-          var id = w.curatedIds[i];
-          chips += '<span class="chip">' + escapeHtml(id) +
-            '<button data-remove-model="' + escapeHtml(id) + '" title="Remove ' + escapeHtml(id) + '">×</button></span>';
+        for (var i = 0; i < w.curatedModels.length; i++) {
+          var m = w.curatedModels[i];
+          chips += '<span class="chip" title="' + escapeHtml(m.hint) + '">' +
+            '<span class="mdot ' + escapeHtml(m.status) + '"></span>' + escapeHtml(m.id) +
+            '<button data-remove-model="' + escapeHtml(m.id) + '" title="Remove ' + escapeHtml(m.id) + '">×</button></span>';
         }
         return '<div class="curated-chips">' + chips + '</div>';
       }
@@ -668,10 +676,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
             '<span class="dot ' + escapeHtml(w.keyStatus || 'stored') + '"></span>' +
             '<span class="wname">' + escapeHtml(w.label) + '</span>' +
             '<span class="kchip ' + kindClass(w.accessKind) + '">' + kindLabel(w.accessKind) + '</span>' +
+            actions +
           '</div>' +
           '<div class="wmeta">' + escapeHtml(w.credential) + ' · ' + escapeHtml(w.curationSummary) + (w.enabled ? '' : ' · disabled') + curationToggle + '</div>' +
           curatedChipsHTML(w) +
-          actions +
         '</div>';
       }
 
@@ -769,9 +777,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
 
       function showSetModelsDialog(payload) {
         dialogState = { mode: 'setModels', profileId: payload.profileId, slug: null };
-        dialogTitle.textContent = 'Allowed models for ' + escapeHtml(payload.profileId);
+        dialogTitle.textContent = 'Allowed models for ' + payload.profileId;
         dialogConfirm.textContent = 'Save';
-        var html = '<div class="model-list">';
+        var html = '<input id="model-filter" class="dialog-input" placeholder="Filter models…" autocomplete="off" />' +
+          '<div class="model-list">';
         for (var i = 0; i < payload.items.length; i++) {
           var item = payload.items[i];
           var detail = item.detail ? '<div class="detail">' + escapeHtml(item.detail) + '</div>' : '';
@@ -783,7 +792,18 @@ export function buildHtml(nonce: string, cspSource: string): string {
         }
         html += '</div>';
         dialogBody.innerHTML = html;
+        var filterEl = document.getElementById('model-filter');
+        filterEl.addEventListener('input', function () {
+          var terms = filterEl.value.trim().toLowerCase().split(/\\s+/).filter(Boolean);
+          var items = dialogBody.querySelectorAll('.model-item');
+          for (var k = 0; k < items.length; k++) {
+            var haystack = (items[k].textContent || '').toLowerCase();
+            var match = terms.every(function (t) { return haystack.indexOf(t) !== -1; });
+            items[k].style.display = match ? '' : 'none';
+          }
+        });
         dialogBackdrop.classList.add('show');
+        filterEl.focus();
       }
 
       function showConnectDialog(payload) {
