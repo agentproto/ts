@@ -37,7 +37,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/ai-sdk:
     dependencies:
@@ -65,7 +65,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -93,7 +93,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/browser:
     dependencies:
@@ -115,7 +115,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/claude-code:
     dependencies:
@@ -140,7 +140,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/claude-sdk:
     dependencies:
@@ -171,7 +171,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/code-brain-gbrain:
     dependencies:
@@ -208,7 +208,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/codex:
     dependencies:
@@ -230,7 +230,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/gemini:
     dependencies:
@@ -255,7 +255,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/hermes:
     dependencies:
@@ -283,7 +283,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/jcode:
     dependencies:
@@ -311,7 +311,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/knowledge-corpus:
     dependencies:
@@ -342,7 +342,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/knowledge-files:
     dependencies:
@@ -373,7 +373,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/knowledge-gbrain-doc:
     dependencies:
@@ -404,7 +404,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/knowledge-qdrant:
     dependencies:
@@ -435,7 +435,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/mastra:
     dependencies:
@@ -463,7 +463,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -524,7 +524,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/mastracode:
     dependencies:
@@ -552,7 +552,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/mastracode-inprocess:
     dependencies:
@@ -583,7 +583,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/openclaw:
     dependencies:
@@ -605,7 +605,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/opencode:
     dependencies:
@@ -630,7 +630,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   adapters/pi:
     dependencies:
@@ -658,7 +658,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/acp:
     dependencies:
@@ -692,7 +692,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/action:
     dependencies:
@@ -723,7 +723,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/adapter-kit:
     dependencies:
@@ -748,7 +748,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -782,7 +782,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/agencies/engine:
     dependencies:
@@ -813,7 +813,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/agencies/mastra:
     dependencies:
@@ -844,7 +844,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/agency-v2:
     dependencies:
@@ -872,7 +872,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/agent:
     dependencies:
@@ -903,7 +903,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/agent-runtime:
     dependencies:
@@ -934,9 +934,48 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/agentproto-placeholder: {}
+
+  packages/app-client:
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@tanstack/react-query':
+        specifier: ^5.66.0
+        version: 5.101.4(react@19.2.8)
+      '@testing-library/react':
+        specifier: ^16.1.0
+        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      '@types/react':
+        specifier: ^19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.2.4
+        version: 19.2.4(@types/react@19.2.18)
+      happy-dom:
+        specifier: ^15.11.0
+        version: 15.11.7
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.23.12)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/app-kit:
     dependencies:
@@ -976,7 +1015,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/apps:
     dependencies:
@@ -1010,7 +1049,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/assembly:
     dependencies:
@@ -1038,7 +1077,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/auth:
     dependencies:
@@ -1066,7 +1105,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/browser-process:
     devDependencies:
@@ -1084,7 +1123,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/canvakit:
     dependencies:
@@ -1112,7 +1151,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/catalog:
     devDependencies:
@@ -1130,7 +1169,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/catalog-sync:
     dependencies:
@@ -1155,7 +1194,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/cli:
     dependencies:
@@ -1291,7 +1330,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
     optionalDependencies:
       node-pty:
         specifier: ^1.0.0
@@ -1313,7 +1352,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/code:
     dependencies:
@@ -1341,7 +1380,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/code-brain:
     dependencies:
@@ -1378,7 +1417,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/collection:
     dependencies:
@@ -1406,7 +1445,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/command-sandbox:
     devDependencies:
@@ -1424,7 +1463,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/company:
     dependencies:
@@ -1452,7 +1491,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/connector:
     dependencies:
@@ -1477,7 +1516,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1535,7 +1574,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/corpus-cli:
     dependencies:
@@ -1572,7 +1611,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/corpus-presets:
     dependencies:
@@ -1594,7 +1633,29 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+
+  packages/create-agentproto-app:
+    dependencies:
+      gray-matter:
+        specifier: ^4.0.3
+        version: 4.0.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.23.12)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/define-doctype:
     devDependencies:
@@ -1612,7 +1673,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/design:
     dependencies:
@@ -1640,7 +1701,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/desktop:
     dependencies:
@@ -1711,7 +1772,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/driver/cli:
     dependencies:
@@ -1736,7 +1797,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1773,7 +1834,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/driver/http:
     dependencies:
@@ -1798,7 +1859,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1826,7 +1887,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1854,7 +1915,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1879,7 +1940,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/eval:
     dependencies:
@@ -1913,7 +1974,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/eval-reporters:
     dependencies:
@@ -1947,7 +2008,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/extension:
     dependencies:
@@ -1978,7 +2039,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/governance/core:
     dependencies:
@@ -2009,7 +2070,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/governance/engine:
     dependencies:
@@ -2043,7 +2104,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/harness:
     devDependencies:
@@ -2064,7 +2125,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -2095,7 +2156,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/intent:
     dependencies:
@@ -2123,7 +2184,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/io:
     dependencies:
@@ -2151,7 +2212,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/knowledge:
     dependencies:
@@ -2179,7 +2240,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/knowledge-engine:
     dependencies:
@@ -2216,7 +2277,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/lesson:
     dependencies:
@@ -2244,7 +2305,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/lifecycle:
     devDependencies:
@@ -2262,7 +2323,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/llm-endpoint:
     dependencies:
@@ -2290,7 +2351,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/manifest:
     dependencies:
@@ -2315,7 +2376,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/mastra:
     dependencies:
@@ -2343,7 +2404,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/mcp-server:
     dependencies:
@@ -2389,7 +2450,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/model-catalog:
     dependencies:
@@ -2411,7 +2472,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/office:
     dependencies:
@@ -2439,7 +2500,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/operator:
     dependencies:
@@ -2467,7 +2528,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/persona:
     dependencies:
@@ -2495,7 +2556,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/playbook:
     dependencies:
@@ -2523,7 +2584,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/plugin-local-browser:
     devDependencies:
@@ -2541,7 +2602,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/policy:
     dependencies:
@@ -2569,7 +2630,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/provider-kit:
     devDependencies:
@@ -2590,7 +2651,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -2611,7 +2672,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/providers-store:
     dependencies:
@@ -2633,7 +2694,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/redaction:
     devDependencies:
@@ -2651,7 +2712,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/ref:
     dependencies:
@@ -2673,7 +2734,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/registry:
     devDependencies:
@@ -2691,7 +2752,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/relay:
     dependencies:
@@ -2716,7 +2777,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/rendezvous:
     dependencies:
@@ -2741,7 +2802,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/role:
     dependencies:
@@ -2772,7 +2833,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/role-catalog:
     dependencies:
@@ -2797,7 +2858,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/routine:
     dependencies:
@@ -2828,7 +2889,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/runner:
     dependencies:
@@ -2856,7 +2917,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/runtime:
     dependencies:
@@ -2971,7 +3032,7 @@ importers:
         version: 3.2.4(@types/node@25.6.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
     optionalDependencies:
       '@agentproto/sandbox-e2b':
         specifier: workspace:*
@@ -2996,7 +3057,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/sandbox:
     dependencies:
@@ -3033,7 +3094,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/sandbox-box:
     dependencies:
@@ -3058,7 +3119,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/sandbox-e2b:
     dependencies:
@@ -3083,7 +3144,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/secrets:
     dependencies:
@@ -3114,7 +3175,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/skill:
     dependencies:
@@ -3142,7 +3203,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/skill-pack-agentproto:
     devDependencies:
@@ -3151,7 +3212,7 @@ importers:
         version: link:../cli
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/skill-pack-bureau:
     devDependencies:
@@ -3160,7 +3221,7 @@ importers:
         version: link:../cli
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/storage:
     dependencies:
@@ -3188,7 +3249,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/storage-github:
     dependencies:
@@ -3213,7 +3274,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/telemetry:
     devDependencies:
@@ -3234,7 +3295,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/telemetry-langfuse:
     dependencies:
@@ -3259,7 +3320,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/tool:
     dependencies:
@@ -3293,7 +3354,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/tool-cli:
     dependencies:
@@ -3321,7 +3382,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/tooling:
     dependencies:
@@ -3370,7 +3431,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/wallet:
     dependencies:
@@ -3395,7 +3456,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/work:
     dependencies:
@@ -3423,7 +3484,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/workflow:
     dependencies:
@@ -3451,7 +3512,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/workflow-ai-sdk:
     dependencies:
@@ -3482,7 +3543,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -3507,7 +3568,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -3541,7 +3602,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -3572,7 +3633,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -3603,7 +3664,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/workspace-brain:
     dependencies:
@@ -3640,7 +3701,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/worktree:
     dependencies:
@@ -3680,7 +3741,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
   packages/worktree-agent-example:
     dependencies:
@@ -3702,7 +3763,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0)
 
 packages:
 
@@ -5506,6 +5567,14 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
+  '@tanstack/query-core@5.101.4':
+    resolution: {integrity: sha512-gNwcvOJcRbLWPOLG/2OBm+zM+Yv+MKsXKEOWC57USuZDEsI71hEErQsiEGx5wX9rzWWkfwM0fVSPoiIFSsxfiw==}
+
+  '@tanstack/react-query@5.101.4':
+    resolution: {integrity: sha512-yRg2pfOCxIs4ZJW3XYYHU/WgtD04FHSnfHlpRT7h7pR77hwkdRG4wxbKe4aq6P0RvXUTBSQpQeadS1SUYUe+KA==}
+    peerDependencies:
+      react: ^18 || ^19
+
   '@tauri-apps/api@2.11.1':
     resolution: {integrity: sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA==}
 
@@ -5586,6 +5655,25 @@ packages:
   '@tavily/core@0.7.7':
     resolution: {integrity: sha512-6Sc+u4nPEdzLB2D7Ubut/sLI2wR3Wc81P1VCJNTsdFtvgLOpVGGGEYAG9VUCLOzVCeEUT5SzHRIMSnsqJ4Pdow==}
 
+  '@testing-library/dom@10.4.1':
+    resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
+    engines: {node: '>=18'}
+
+  '@testing-library/react@16.3.2':
+    resolution: {integrity: sha512-XU5/SytQM+ykqMnAnvB2umaJNIOsLF3PVv//1Ew4CTcpz0/BRyy/af40qqrt7SjKpDdT1saBMc42CUok5gaw+g==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@testing-library/dom': ^10.0.0
+      '@types/react': ^18.0.0 || ^19.0.0
+      '@types/react-dom': ^18.0.0 || ^19.0.0
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      '@types/react-dom':
+        optional: true
+
   '@tootallnate/quickjs-emscripten@0.23.0':
     resolution: {integrity: sha512-C5Mc6rdnsaJDjO3UpGW/CQTHtCKaYlScZTly4JIu97Jxo/odCiH0ITnDXSJPTOrEKk/ycSZ0AOgTmkDtkOsvIA==}
 
@@ -5618,6 +5706,9 @@ packages:
     resolution: {integrity: sha512-W2Ub165Qv0iMFljbYKxxbZN+2dVSngnzEjQNEFXtnz5oJVx9XSypmNmUvMtuYMeZ3kdVC1zI7yd/rtuX+SDnbg==}
     cpu: [arm64]
     os: [win32]
+
+  '@types/aria-query@5.0.4':
+    resolution: {integrity: sha512-rfT93uj5s0PRL7EzccGMs3brplhcrghnDoV26NqKhCAS1hVo+WdNsPvE/yb6ilfr5hi2MEk6d5EWJTKdxg8jVw==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -5859,6 +5950,10 @@ packages:
     resolution: {integrity: sha512-zbB9rCJAT1rbjiVDb2hqKFHNYLxgtk8NURxZ3IZwD3F6NtxbXZQCnnSi1Lkx+IDohdPlFp222wVALIheZJQSEg==}
     engines: {node: '>=8'}
 
+  ansi-styles@5.2.0:
+    resolution: {integrity: sha512-Cxwpt2SfTzTtXcfOlzGEee8O+c+MmUgGrNiBcXnuWxuFJHe6a5Hz7qwhwe5OgaSYI0IJvkLqWX1ASG+cJOkEiA==}
+    engines: {node: '>=10'}
+
   ansi-styles@6.2.3:
     resolution: {integrity: sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg==}
     engines: {node: '>=12'}
@@ -5882,6 +5977,9 @@ packages:
 
   argparse@2.0.1:
     resolution: {integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==}
+
+  aria-query@5.3.0:
+    resolution: {integrity: sha512-b0P0sZPKtyu8HkeRAfCq0IfURZK+SuwMjY1UXGBU27wpAiTwQAIlq56IbIO+ytk/JjS1fMR14ee5WBBfKi5J6A==}
 
   aria-query@5.3.2:
     resolution: {integrity: sha512-COROpnaoap1E2F000S62r6A60uHZnmlvomhfyT2DlTcrY1OrBKn2UhH7qn5wTC9zMvD0AY7csdPSNwKP+7WiQw==}
@@ -6386,6 +6484,9 @@ packages:
   dockerfile-ast@0.7.1:
     resolution: {integrity: sha512-oX/A4I0EhSkGqrFv0YuvPkBUSYp1XiY8O8zAKc8Djglx8ocz+JfOr8gP0ryRMC2myqvDLagmnZaU9ot1vG2ijw==}
 
+  dom-accessibility-api@0.5.16:
+    resolution: {integrity: sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==}
+
   dom-serializer@2.0.0:
     resolution: {integrity: sha512-wIkAryiqt/nV5EQKqQpo3SToSOV9J0DnbJqwK7Wv/Trc92zIAYZ4FlMu+JPFW1DfGFt81ZTCGgDEabffXeLyJg==}
 
@@ -6827,6 +6928,10 @@ packages:
     resolution: {integrity: sha512-5v6yZd4JK3eMI3FqqCouswVqwugaA9r4dNZB1wwcmrD02QkV5H0y7XBQW8QwQqEaZY1pM9aqORSORhJRdNK44Q==}
     engines: {node: '>=6.0'}
 
+  happy-dom@15.11.7:
+    resolution: {integrity: sha512-KyrFvnl+J9US63TEzwoiJOQzZBJY7KgBushJA8X61DMbNsH+2ONkDuLDnCnwUiPTF42tLoEmrPyoqbenVA5zrg==}
+    engines: {node: '>=18.0.0'}
+
   has-flag@4.0.0:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
     engines: {node: '>=8'}
@@ -7236,6 +7341,10 @@ packages:
   lru-cache@7.18.3:
     resolution: {integrity: sha512-jumlc0BIUrS3qJGgIkWZsyfAM7NCWiBcCDhnd+3NNM5KbBmLTgHVfWBcg6W+rLUsIpzpERPsvwUP7CckAQSOoA==}
     engines: {node: '>=12'}
+
+  lz-string@1.5.0:
+    resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
+    hasBin: true
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -7868,6 +7977,10 @@ packages:
     engines: {node: '>=14'}
     hasBin: true
 
+  pretty-format@27.5.1:
+    resolution: {integrity: sha512-Qb1gy5OrP5+zDf2Bvnzdl3jsTf1qXVMazbvCoKhtKqVs4/YK4ozX4gKQJJVyNe+cajNPn0KoC0MC3FUmaHWEmQ==}
+    engines: {node: ^10.13.0 || ^12.13.0 || ^14.15.0 || >=15.0.0}
+
   pretty-ms@9.3.0:
     resolution: {integrity: sha512-gjVS5hOP+M3wMm5nmNOucbIrqudzs9v/57bWRHQWLYklXqoXKrVfYW2W9+glfGsqtPgpiz5WwyEEB+ksXIx3gQ==}
     engines: {node: '>=18'}
@@ -7957,6 +8070,9 @@ packages:
     resolution: {integrity: sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ==}
     peerDependencies:
       react: ^19.2.8
+
+  react-is@17.0.2:
+    resolution: {integrity: sha512-w2GsyukL62IJnlaff/nRegPQR94C/XXamvMWmSHRJ4y7Ts/4ocGRmTHvOs8PSE6pB3dWOrD/nueuU5sduBsQ4w==}
 
   react-refresh@0.17.0:
     resolution: {integrity: sha512-z6F7K9bV85EfseRCp2bzrpyQ0Gkw1uLoCel9XBVWPg/TjRj94SkJzUTGfOa4bs7iJvBWtQG0Wq7wnI0syw3EBQ==}
@@ -8680,6 +8796,10 @@ packages:
   webidl-conversions@3.0.1:
     resolution: {integrity: sha512-2JAn3z8AR6rjK8Sm8orRC0h/bcl/DqL7tRPdGZ4I1CjdF+EaMLmYxBHyXuKL849eucPFhvBoxMsflfOb8kxaeQ==}
 
+  webidl-conversions@7.0.0:
+    resolution: {integrity: sha512-VwddBukDzu71offAQR975unBIGqfKZpM+8ZX6ySk8nYhVoo5CYaZyzt3YBvYtRtO+aoGlqxPg/B87NGVZ/fu6g==}
+    engines: {node: '>=12'}
+
   webidl-conversions@8.0.1:
     resolution: {integrity: sha512-BMhLD/Sw+GbJC21C/UgyaZX41nPt8bUTg+jWyDeg7e7YN4xOM05YPSIXceACnXVtqyEw/LMClUQMtMZ+PGGpqQ==}
     engines: {node: '>=20'}
@@ -8688,6 +8808,10 @@ packages:
     resolution: {integrity: sha512-6qN4hJdMwfYBtE3YBTTHhoeuUrDBPZmbQaxWAqSALV/MeEnR5z1xd8UKud2RAkFoPkmB+hli1TZSnyi84xz1vQ==}
     engines: {node: '>=18'}
     deprecated: Use @exodus/bytes instead for a more spec-conformant and faster implementation
+
+  whatwg-mimetype@3.0.0:
+    resolution: {integrity: sha512-nt+N2dzIutVRxARx1nghPKGv1xHikU7HKdfafKkLNLindmPU/ch3U31NOCGGA/dmPcmb1VlofO0vnKAcsm0o/Q==}
+    engines: {node: '>=12'}
 
   whatwg-mimetype@4.0.0:
     resolution: {integrity: sha512-QaKxh0eNIi2mE9p2vEdzfagOKHCcj1pJ56EEHGQOVxp8r9/iszLUUV7v89x9O1p/T+NlTM5W7jW6+cz4Fq1YVg==}
@@ -10821,6 +10945,13 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
+  '@tanstack/query-core@5.101.4': {}
+
+  '@tanstack/react-query@5.101.4(react@19.2.8)':
+    dependencies:
+      '@tanstack/query-core': 5.101.4
+      react: 19.2.8
+
   '@tauri-apps/api@2.11.1': {}
 
   '@tauri-apps/cli-darwin-arm64@2.11.4':
@@ -10883,6 +11014,27 @@ snapshots:
       - debug
       - supports-color
 
+  '@testing-library/dom@10.4.1':
+    dependencies:
+      '@babel/code-frame': 7.29.7
+      '@babel/runtime': 7.29.7
+      '@types/aria-query': 5.0.4
+      aria-query: 5.3.0
+      dom-accessibility-api: 0.5.16
+      lz-string: 1.5.0
+      picocolors: 1.1.1
+      pretty-format: 27.5.1
+
+  '@testing-library/react@16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@babel/runtime': 7.29.7
+      '@testing-library/dom': 10.4.1
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+    optionalDependencies:
+      '@types/react': 19.2.18
+      '@types/react-dom': 19.2.4(@types/react@19.2.18)
+
   '@tootallnate/quickjs-emscripten@0.23.0': {}
 
   '@turbo/darwin-64@2.10.9':
@@ -10902,6 +11054,8 @@ snapshots:
 
   '@turbo/windows-arm64@2.10.9':
     optional: true
+
+  '@types/aria-query@5.0.4': {}
 
   '@types/babel__core@7.20.5':
     dependencies:
@@ -11202,6 +11356,8 @@ snapshots:
     dependencies:
       color-convert: 2.0.1
 
+  ansi-styles@5.2.0: {}
+
   ansi-styles@6.2.3: {}
 
   any-promise@1.3.0: {}
@@ -11237,6 +11393,10 @@ snapshots:
       sprintf-js: 1.0.3
 
   argparse@2.0.1: {}
+
+  aria-query@5.3.0:
+    dependencies:
+      dequal: 2.0.3
 
   aria-query@5.3.2: {}
 
@@ -11707,6 +11867,8 @@ snapshots:
     dependencies:
       vscode-languageserver-textdocument: 1.0.12
       vscode-languageserver-types: 3.18.0
+
+  dom-accessibility-api@0.5.16: {}
 
   dom-serializer@2.0.0:
     dependencies:
@@ -12283,6 +12445,12 @@ snapshots:
       section-matter: 1.0.0
       strip-bom-string: 1.0.0
 
+  happy-dom@15.11.7:
+    dependencies:
+      entities: 4.5.0
+      webidl-conversions: 7.0.0
+      whatwg-mimetype: 3.0.0
+
   has-flag@4.0.0: {}
 
   has-property-descriptors@1.0.2:
@@ -12658,6 +12826,8 @@ snapshots:
       yallist: 3.1.1
 
   lru-cache@7.18.3: {}
+
+  lz-string@1.5.0: {}
 
   magic-string@0.30.21:
     dependencies:
@@ -13467,6 +13637,12 @@ snapshots:
 
   prettier@3.8.3: {}
 
+  pretty-format@27.5.1:
+    dependencies:
+      ansi-regex: 5.0.1
+      ansi-styles: 5.2.0
+      react-is: 17.0.2
+
   pretty-ms@9.3.0:
     dependencies:
       parse-ms: 4.0.0
@@ -13565,6 +13741,8 @@ snapshots:
     dependencies:
       react: 19.2.8
       scheduler: 0.27.0
+
+  react-is@17.0.2: {}
 
   react-refresh@0.17.0: {}
 
@@ -14250,7 +14428,7 @@ snapshots:
       tsx: 4.23.12
       yaml: 2.9.0
 
-  vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0):
+  vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.12)(yaml@2.9.0):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.4
@@ -14278,6 +14456,7 @@ snapshots:
     optionalDependencies:
       '@types/debug': 4.1.13
       '@types/node': 25.6.2
+      happy-dom: 15.11.7
       jsdom: 29.1.1
     transitivePeerDependencies:
       - jiti
@@ -14380,11 +14559,15 @@ snapshots:
 
   webidl-conversions@3.0.1: {}
 
+  webidl-conversions@7.0.0: {}
+
   webidl-conversions@8.0.1: {}
 
   whatwg-encoding@3.1.1:
     dependencies:
       iconv-lite: 0.6.3
+
+  whatwg-mimetype@3.0.0: {}
 
   whatwg-mimetype@4.0.0: {}
 
