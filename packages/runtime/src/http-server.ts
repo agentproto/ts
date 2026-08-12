@@ -766,6 +766,10 @@ export interface RuntimeHttpServerOptions {
     registered: readonly string[]
     /** Daemon start timestamp. Defaults to `Date.now()` at server start. */
     startedAt?: number
+    /** Daemon build version (the CLI's `__CLI_VERSION__` when served by
+     *  `agentproto serve`). Surfaced via `/health` so lifecycle tooling can
+     *  report what is actually RUNNING, not what is installed on disk. */
+    version?: string
     /** Effective `daemon.resumeSessionsOnBoot` knob (§5, PR-4). Kept in sync
      *  with the `daemon_health` MCP tool's field of the same name. */
     resumeSessionsOnBoot?: boolean
@@ -1205,6 +1209,14 @@ export async function startHttpServer(
         workspace: opts.meta.workspace,
         registered: opts.meta.registered,
         uptimeMs: Date.now() - startedAt,
+        startedAt: new Date(startedAt).toISOString(),
+        // What is actually running — version, process, and the exact
+        // node+entry pair launchd (or the shell) exec'd. Lifecycle tooling
+        // (`agentproto daemon start/stop/status`) reports these.
+        version: opts.meta.version ?? null,
+        pid: process.pid,
+        node: process.execPath,
+        entry: process.argv[1] ?? null,
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,

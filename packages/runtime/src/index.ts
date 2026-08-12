@@ -2125,6 +2125,7 @@ export async function createGateway(
       workspace,
       registered,
       startedAt,
+      ...(opts.version ? { version: opts.version } : {}),
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
