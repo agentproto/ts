@@ -150,6 +150,12 @@
         "icon": "$(circuit-board)"
       },
       {
+        "command": "agentproto.openAuthExplorer",
+        "title": "agentproto: Open Auth & Models Explorer",
+        "category": "agentproto",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "agentproto.promptSession",
         "title": "agentproto: Prompt Session",
         "category": "agentproto",
