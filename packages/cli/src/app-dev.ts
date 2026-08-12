@@ -23,6 +23,14 @@
  * scaffolded `vite.config.ts` can proxy `/__agentproto` to it for
  * same-origin `fetch` calls from `connectMcpApp`'s default `bridgeRoute`;
  * direct cross-origin calls to the bridge URL also work via CORS.
+ *
+ * The `ui/` dev server's OWN port is separate from `--port` above (that's
+ * the bridge). When APP.md declares `ui.port` (`readDeclaredUIPort`, shared
+ * with `app serve`) and the caller passed no `-- <viteArgs>` at all, this
+ * command appends `["--port", String(declared)]` to the dev script
+ * invocation so the dev URL matches the app's declared surface. Any
+ * explicit `viteArgs` disable the hint entirely — the caller is steering,
+ * so don't merge flags on top of theirs.
  */
 
 import { createServer } from "node:http"
@@ -35,6 +43,7 @@ import {
   TOOL_CALL_PATH,
   createDaemonMcpClientGetter,
   handleToolCallRequest,
+  readDeclaredUIPort,
   resolveDaemonMcpUrl,
 } from "./app-serve.js"
 import { pathExists } from "./commands/skill-install/shared.js"
@@ -57,7 +66,10 @@ appDir:
   server's own port, which the ui/ project picks itself.
 
 -- <viteArgs...>:
-  Extra args forwarded verbatim to "<pm> run dev".
+  Extra args forwarded verbatim to "<pm> run dev". When omitted AND APP.md
+  declares ui.port, "--port <declared>" is appended automatically so the ui
+  dev server's own port matches the app's declared surface. This hint is
+  UNRELATED to the --port flag above (the bridge server's port).
 
 --json:
   Print {"bridgeUrl":"...","appDir":"..."} on a single line before handing
@@ -181,9 +193,20 @@ export async function runAppDev(args: readonly string[]): Promise<number> {
     )
   }
 
-  // 3. Spawn the ui/ project's own dev server.
+  // 3. Spawn the ui/ project's own dev server. When the caller passed no
+  // viteArgs, honour APP.md's declared ui.port hint for the dev server's
+  // own port (distinct from --port/bridge.port above); any explicit
+  // viteArgs mean the caller is steering, so skip the hint entirely.
   const pm = await detectPackageManager(appDir, uiDir)
-  const devArgs = viteArgs.length > 0 ? ["run", "dev", "--", ...viteArgs] : ["run", "dev"]
+  let effectiveViteArgs = viteArgs
+  if (viteArgs.length === 0) {
+    const declaredUIPort = await readDeclaredUIPort(appDir)
+    if (declaredUIPort !== undefined) {
+      effectiveViteArgs = ["--port", String(declaredUIPort)]
+    }
+  }
+  const devArgs =
+    effectiveViteArgs.length > 0 ? ["run", "dev", "--", ...effectiveViteArgs] : ["run", "dev"]
   const child = spawn(pm, devArgs, {
     cwd: uiDir,
     stdio: "inherit",

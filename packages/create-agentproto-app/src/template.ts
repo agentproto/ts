@@ -1,10 +1,10 @@
 /**
  * Template engine: recursive copy of a `templates/<name>/` tree into a
  * target directory, substituting `__APP_ID__` / `__APP_NAME__` /
- * `__APP_SLUG__` tokens in both file contents AND path segments (directory
- * and file names), so e.g. a template dir literally named
- * `__APP_SLUG__-assistant` lands as `my-app-assistant`. `_gitignore` is
- * renamed to `.gitignore` on the way out — npm strips dotfiles from
+ * `__APP_SLUG__` / `__APP_CLIENT_VERSION__` tokens in both file contents AND
+ * path segments (directory and file names), so e.g. a template dir literally
+ * named `__APP_SLUG__-assistant` lands as `my-app-assistant`. `_gitignore`
+ * is renamed to `.gitignore` on the way out — npm strips dotfiles from
  * published package contents, so the template ships the escaped name.
  * `_agentproto/` is renamed to `.agentproto/` for the same escaping reason,
  * plus a nearer trap: this monorepo's root `.gitignore` ignores
@@ -19,9 +19,10 @@ export interface TemplateTokens {
   readonly __APP_ID__: string
   readonly __APP_NAME__: string
   readonly __APP_SLUG__: string
+  readonly __APP_CLIENT_VERSION__: string
 }
 
-const TOKEN_PATTERN = /__APP_(?:ID|NAME|SLUG)__/g
+const TOKEN_PATTERN = /__APP_(?:ID|NAME|SLUG|CLIENT_VERSION)__/g
 
 function tokenValue(token: string, tokens: TemplateTokens): string {
   switch (token) {
@@ -31,6 +32,8 @@ function tokenValue(token: string, tokens: TemplateTokens): string {
       return tokens.__APP_NAME__
     case "__APP_SLUG__":
       return tokens.__APP_SLUG__
+    case "__APP_CLIENT_VERSION__":
+      return tokens.__APP_CLIENT_VERSION__
     default:
       return token
   }

@@ -22,7 +22,7 @@ npx create-agentproto-app my-app
 
 ```
 create-agentproto-app <dir> [--id <@scope/app-id>] [--name <display name>]
-                            [--template react-ts] [--json]
+                            [--template react-ts|vanilla] [--json]
 ```
 
 `<dir>` must not exist, or must be empty. The scaffolder refuses (exit 2)
@@ -32,12 +32,34 @@ rather than write into an occupied directory.
 | --- | --- |
 | `--id` | `<dir>`'s slug (lowercased, hyphenated, no scope) |
 | `--name` | title-cased slug |
-| `--template` | `react-ts` (the only template today) |
+| `--template` | `react-ts` |
 | `--json` | off — prints a human summary instead |
 
 The slug is always derived from `<dir>`'s basename, even when `--id` is a
 scoped id like `@acme/my-app` — it's what names the on-disk agent/workflow
 folders (`.agentproto/agents/<slug>-assistant/`).
+
+### Templates
+
+| `--template` | Shape | Install / build |
+| --- | --- | --- |
+| `react-ts` (default) | `.agentproto/` shell + a Vite + TanStack Router + TanStack Query `ui/` source project that builds to `.agentproto/ui/` | `pnpm install`, then `agentproto app build` / `app dev` |
+| `vanilla` | `.agentproto/` shell + a single hand-written `.agentproto/ui/index.html` (vanilla JS, no build step, no `ui/` dir, no root `package.json`) | none — `agentproto app serve` runs it directly |
+
+Both templates ship the same `.agentproto/APP.md` + one agent + one
+workflow shape; only the UI differs. `vanilla` is the shape a hand-written
+app like `job-application-kit` uses — pick it when you don't want a Vite
+toolchain at all. `agentproto app build` no-ops successfully against a
+`vanilla`-scaffolded app (no `ui/package.json` to compile) — see
+[`verbs/app.md`](../verbs/app.md#optional-ui-source-project).
+
+### Version stamp
+
+`react-ts`'s `ui/package.json` pins `@agentproto/app-client` to whatever
+version this `create-agentproto-app` itself depends on (resolved at
+scaffold time from the installed package, not hardcoded) — so a freshly
+scaffolded app always starts on a matching, in-lockstep `app-client`
+version.
 
 ## 2. Install and run
 
@@ -92,7 +114,7 @@ browser history without also solving that serving problem.
 
 A hand-written, single-file vanilla UI (no `ui/` dir, or a `ui/` without a
 `package.json` `scripts.build`) is a valid agentproto app too —
-`agentproto app build` no-ops successfully for it. `create-agentproto-app`
-always scaffolds the TanStack `ui/` project; delete `ui/` and hand-write
-`.agentproto/ui/index.html` yourself if you'd rather skip the build step
-entirely.
+`agentproto app build` no-ops successfully for it. Scaffold that shape
+directly with `--template vanilla` (see [Templates](#templates) above), or
+start from `react-ts` and delete `ui/` in favor of a hand-written
+`.agentproto/ui/index.html` later.

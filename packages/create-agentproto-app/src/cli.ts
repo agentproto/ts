@@ -13,7 +13,7 @@ const USAGE = `create-agentproto-app — scaffold an agentproto agent app
 
 Usage:
   create-agentproto-app <dir> [--id <@scope/app-id>] [--name <display name>]
-                              [--template react-ts] [--json]
+                              [--template react-ts|vanilla] [--json]
 
 <dir>:
   Target directory for the new app. Must not exist, or must be empty.
@@ -26,7 +26,9 @@ Usage:
   Human-readable app name. Defaults to a title-cased slug.
 
 --template <name>:
-  Scaffold template. Only "react-ts" is available today.
+  Scaffold template: "react-ts" (default, a Vite + TanStack ui/ source
+  project) or "vanilla" (a single hand-written .agentproto/ui/index.html,
+  no ui/ dir, nothing to install or build).
 
 Scaffolds a Vite + TanStack Router + TanStack Query ui/ project alongside a
 .agentproto/ shell (APP.md, one agent, one workflow). Next steps:
@@ -92,13 +94,15 @@ export async function runCreateApp(argv: readonly string[]): Promise<number> {
   }
 
   const rel = relative(process.cwd(), result.appDir)
+  const cdLine = `  cd ${rel.length > 0 ? rel : "."}\n`
+  const nextSteps =
+    result.template === "vanilla"
+      ? `Next steps:\n${cdLine}  agentproto app serve .\n`
+      : `Next steps:\n${cdLine}  pnpm install\n  agentproto app dev .\n`
   process.stdout.write(
     `agentproto: scaffolded ${result.name} (${result.id}) -> ${result.appDir}\n` +
       `  ${result.fileCount} file(s) written from template '${result.template}'.\n\n` +
-      `Next steps:\n` +
-      `  cd ${rel.length > 0 ? rel : "."}\n` +
-      `  pnpm install\n` +
-      `  agentproto app dev .\n`,
+      nextSteps,
   )
   return 0
 }

@@ -6,6 +6,7 @@
  */
 
 import { mkdir, readdir } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { basename, resolve, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -18,7 +19,35 @@ import { slugify, titleCase } from "./slug.js"
 // since both sit one level below the package root.
 const TEMPLATES_ROOT = fileURLToPath(new URL("../templates", import.meta.url))
 
-export type ScaffoldTemplate = "react-ts"
+const FALLBACK_APP_CLIENT_VERSION = "0.1.0"
+
+function hasVersionField(value: unknown): value is { version: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).version === "string"
+  )
+}
+
+/**
+ * The scaffolder depends on `@agentproto/app-client` itself (see
+ * `package.json`), so its installed `package.json` is always resolvable
+ * next to this module — reading its `version` keeps the stamped
+ * `ui/package.json` dependency in lockstep with whatever app-client this
+ * scaffolder shipped with, with no manual bump. Falls back only if
+ * resolution throws (e.g. a broken install).
+ */
+function resolveAppClientVersion(): string {
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg: unknown = require("@agentproto/app-client/package.json")
+    return hasVersionField(pkg) ? pkg.version : FALLBACK_APP_CLIENT_VERSION
+  } catch {
+    return FALLBACK_APP_CLIENT_VERSION
+  }
+}
+
+export type ScaffoldTemplate = "react-ts" | "vanilla"
 
 export interface ScaffoldOptions {
   readonly targetDir: string
@@ -52,7 +81,7 @@ export interface ScaffoldSuccess {
 export type ScaffoldOutcome = ScaffoldSuccess | ScaffoldFailure
 
 function isScaffoldTemplate(value: string): value is ScaffoldTemplate {
-  return value === "react-ts"
+  return value === "react-ts" || value === "vanilla"
 }
 
 export async function scaffoldApp(options: ScaffoldOptions): Promise<ScaffoldOutcome> {
@@ -61,7 +90,7 @@ export async function scaffoldApp(options: ScaffoldOptions): Promise<ScaffoldOut
     return {
       ok: false,
       reason: "unknown-template",
-      message: `unknown template '${templateArg}' (available: react-ts).`,
+      message: `unknown template '${templateArg}' (available: react-ts, vanilla).`,
     }
   }
   const template = templateArg
@@ -83,6 +112,7 @@ export async function scaffoldApp(options: ScaffoldOptions): Promise<ScaffoldOut
     __APP_ID__: id,
     __APP_NAME__: name,
     __APP_SLUG__: slug,
+    __APP_CLIENT_VERSION__: resolveAppClientVersion(),
   }
 
   await mkdir(appDir, { recursive: true })

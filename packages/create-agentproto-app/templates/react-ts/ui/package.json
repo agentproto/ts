@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@agentproto/app-client": "^0.1.0",
+    "@agentproto/app-client": "^__APP_CLIENT_VERSION__",
     "@tanstack/react-query": "^5",
     "@tanstack/react-router": "^1",
     "react": "^19",

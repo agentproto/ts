@@ -62,6 +62,27 @@ async function writeUiPackage(
   )
 }
 
+async function writeAppMdWithUIPort(appDir: string, port: number): Promise<void> {
+  await mkdir(join(appDir, ".agentproto"), { recursive: true })
+  await writeFile(
+    join(appDir, ".agentproto", "APP.md"),
+    `---\nschema: app/v1\nui:\n  path: .agentproto/ui/index.html\n  port: ${port}\n---\n`,
+    "utf8",
+  )
+}
+
+/** A fake dev script (plain node file, not `-e`) that records its own argv. */
+async function writeArgvRecordingDevScript(appDir: string, marker: string): Promise<void> {
+  const scriptPath = join(appDir, "record-argv.mjs")
+  await writeFile(
+    scriptPath,
+    `import { writeFileSync } from "node:fs"\n` +
+      `writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)))\n`,
+    "utf8",
+  )
+  await writeUiPackage(appDir, { dev: `node ${JSON.stringify(scriptPath)}` })
+}
+
 // ── bindBridgeServer: HTTP plumbing, no live daemon ────────────────────────
 
 describe("bindBridgeServer", () => {
@@ -162,5 +183,46 @@ describe("runAppDev", () => {
 
     const seen = await readFile(marker, "utf8")
     expect(seen).toBe(printed.bridgeUrl)
+  })
+
+  it("appends the declared ui.port hint when APP.md declares one and no viteArgs are passed", async () => {
+    const appDir = await mktmp()
+    const marker = join(appDir, "argv-seen.json")
+    await writeArgvRecordingDevScript(appDir, marker)
+    await writeAppMdWithUIPort(appDir, 8123)
+
+    captureStdout()
+    const code = await runAppDev([appDir])
+    expect(code).toBe(0)
+
+    const argv = JSON.parse(await readFile(marker, "utf8"))
+    expect(argv).toEqual(["--", "--port", "8123"])
+  })
+
+  it("does not append the ui.port hint when explicit viteArgs are passed", async () => {
+    const appDir = await mktmp()
+    const marker = join(appDir, "argv-seen.json")
+    await writeArgvRecordingDevScript(appDir, marker)
+    await writeAppMdWithUIPort(appDir, 8123)
+
+    captureStdout()
+    const code = await runAppDev([appDir, "--", "--host", "0.0.0.0"])
+    expect(code).toBe(0)
+
+    const argv = JSON.parse(await readFile(marker, "utf8"))
+    expect(argv).toEqual(["--", "--host", "0.0.0.0"])
+  })
+
+  it("leaves dev args unchanged when no ui.port is declared", async () => {
+    const appDir = await mktmp()
+    const marker = join(appDir, "argv-seen.json")
+    await writeArgvRecordingDevScript(appDir, marker)
+
+    captureStdout()
+    const code = await runAppDev([appDir])
+    expect(code).toBe(0)
+
+    const argv = JSON.parse(await readFile(marker, "utf8"))
+    expect(argv).toEqual([])
   })
 })
