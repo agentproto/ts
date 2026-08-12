@@ -289,6 +289,21 @@ export function buildBridgeScript(route: string): string {
 `
 }
 
+/**
+ * Permissive CORS for this local serve host — mirrors the shape of the
+ * daemon's own `applyCors` (`packages/runtime/src/http-server.ts`) minus its
+ * origin allowlist/credentials branch, which exists there to protect
+ * session state this host doesn't carry.
+ */
+export function applyCors(req: IncomingMessage, res: ServerResponse): void {
+  res.setHeader("Access-Control-Allow-Origin", "*")
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] ?? "content-type",
+  )
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+}
+
 /** `agentproto app serve <appDir> [--port <n>] [--json]`. */
 export async function runAppServe(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -372,6 +387,21 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
 
   // 4. Build the HTTP server.
   const server = createServer((req, res) => {
+    // Permissive CORS: this host only ever serves one local app's UI (no
+    // cookies/credentials involved), so — unlike the daemon's own /mcp
+    // gateway, which reflects an origin allowlist because it carries
+    // session state — a bare `*` is fine here. Without it, a page loaded
+    // from a different origin (e.g. a file:// or other-port viewer
+    // embedding this app's index.html) can't call the tool-call bridge at
+    // all: the browser blocks the cross-origin fetch before it ever hits
+    // this server.
+    applyCors(req, res)
+    if (req.method === "OPTIONS") {
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
     if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
       let raw = ""
