@@ -11,6 +11,7 @@ import { agentFromManifest, parseAgentManifest } from "@agentproto/agent"
 import { buildMastraAgent } from "@agentproto/mastra"
 import type { MastraToolLike } from "@agentproto/mastra"
 import { ProviderHistoryCompat } from "@mastra/core/processors"
+import type { CompatRule } from "@mastra/core/processors"
 import { AgentController } from "@mastra/core/agent-controller"
 import type {
   AgentControllerConfig,
@@ -170,6 +171,38 @@ const REVIEWER_SUBAGENT: AgentControllerSubagent = {
   forked: true,
 }
 
+/**
+ * Anthropic rejects an assistant message whose FINAL content block is a
+ * thinking block ("final assistant content cannot end with a trailing
+ * whitespace / thinking block"), which happens when Mastra's persistence
+ * layer strips working-memory tags from text (leaving `text("")`), and the
+ * prompt builder then filters out the empty text part — unmasking a trailing
+ * reasoning block as the last (or only) content.
+ *
+ * When stripping leaves the message empty, the message is DROPPED from the
+ * outbound prompt — it must not be patched with `text("")`, because Anthropic
+ * also rejects empty text blocks ("text content blocks must be non-empty";
+ * nothing re-filters the prompt after this processor runs, so an injected
+ * empty block goes straight to the wire). Reasoning-only messages carry no
+ * tool calls, so dropping one cannot orphan a tool_result.
+ */
+export const stripTrailingReasoningRule: CompatRule = {
+  name: "strip-trailing-reasoning-from-assistant",
+  applyToPrompt({ prompt }) {
+    let mutated = false
+    const next = prompt.flatMap((message) => {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) return [message]
+      const content = message.content as Array<{ type: string }>
+      const last = content[content.length - 1]
+      if (!last || last.type !== "reasoning") return [message]
+      const filtered = content.filter((p) => p.type !== "reasoning")
+      mutated = true
+      return filtered.length > 0 ? [{ ...message, content: filtered } as typeof message] : []
+    })
+    return mutated ? next : undefined
+  },
+}
+
 /** Session state the controller carries for us (see `initialState` below). */
 interface AdapterControllerState {
   /** WP-1 parity mode only: skips tool approvals entirely. Unset when modes are on. */
@@ -205,22 +238,7 @@ export function makeAgentFactory(
     let memory: MastraMemoryLike | undefined
 
     const historyCompat = new ProviderHistoryCompat({
-      additionalRules: [{
-        name: "strip-trailing-reasoning-from-assistant",
-        applyToPrompt({ prompt }) {
-          let mutated = false
-          const next = prompt.map((message) => {
-            if (message.role !== "assistant" || !Array.isArray(message.content)) return message
-            const content = message.content as Array<{ type: string }>
-            const last = content[content.length - 1]
-            if (!last || last.type !== "reasoning") return message
-            const filtered = content.filter((p) => p.type !== "reasoning")
-            mutated = true
-            return { ...message, content: filtered.length > 0 ? filtered : [{ type: "text" as const, text: "" }] }
-          })
-          return mutated ? (next as typeof prompt) : undefined
-        },
-      }],
+      additionalRules: [stripTrailingReasoningRule],
     })
 
     const { agent } = await buildMastraAgent(handle, {
