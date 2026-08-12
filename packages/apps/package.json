@@ -54,6 +54,11 @@
       "import": "./dist/media-viewer.mjs",
       "default": "./dist/media-viewer.mjs"
     },
+    "./session-viewer": {
+      "types": "./dist/session-viewer/index.d.ts",
+      "import": "./dist/session-viewer.mjs",
+      "default": "./dist/session-viewer.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
