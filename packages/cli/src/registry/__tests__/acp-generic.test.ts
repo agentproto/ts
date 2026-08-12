@@ -186,7 +186,7 @@ describe("listAcpGenericAdapters", () => {
     const entries = await listAcpGenericAdapters({ config: {} })
     expect(entries.length).toBe(ACP_CATALOG.length)
     for (const e of entries) {
-      expect(["available", "supported"]).toContain(e.status)
+      expect(["ready", "supported"]).toContain(e.status)
       expect(e.source).toBe("acp-catalog")
       expect(e.protocol).toBe("acp")
     }

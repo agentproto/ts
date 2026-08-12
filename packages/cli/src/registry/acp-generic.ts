@@ -249,7 +249,7 @@ export function fallbackBinDirs(): readonly string[] {
  * Is `bin` runnable — a path that exists+executable, a bare name found on
  * PATH, or one found in a well-known package-manager install dir PATH
  * hasn't picked up yet (see {@link fallbackBinDirs})? Used to classify
- * generic ACP agents in the listing: `available` when present, `supported`
+ * generic ACP agents in the listing: `ready` when present, `supported`
  * (install_hint) when not.
  */
 export async function binOnPath(bin: string): Promise<boolean> {
@@ -283,7 +283,7 @@ async function canExecute(path: string): Promise<boolean> {
 /** A generic ACP entry as surfaced in the adapter listing — the same
  *  UI-safe shape as `listAdaptersWithCatalog` entries, plus provenance. */
 export type AcpGenericListEntry = AdapterInfo & {
-  status: "supported" | "available"
+  status: "supported" | "ready"
   hint?: string
   source: AcpSpecSource
 }
@@ -291,8 +291,17 @@ export type AcpGenericListEntry = AdapterInfo & {
 /**
  * List the generic ACP agents (curated catalog + user config, config
  * shadowing catalog) with a runtime `status` derived from bin presence:
- * `available` when the bin is on PATH, `supported` (not installed, shows
+ * `ready` when the bin is on PATH, `supported` (not installed, shows
  * `install_hint`) otherwise. Config-defined agents are always listed.
+ *
+ * `ready`, not `available`: in the merged listing's vocabulary
+ * (`listAdaptersWithCatalog`), "available" means installed-but-setup/auth-
+ * pending — a state a generic spec can never leave, since it declares no
+ * setup ledger or auth descriptor for anyone to complete. Reporting it
+ * kept UIs offering "Install" forever on an installed CLI (the install
+ * re-ran the hint as a no-op) while never offering "Start". A CLI whose
+ * own auth is missing (`kimi login`, MISTRAL_API_KEY) now fails at spawn
+ * with its real error instead — actionable, where the Install loop was not.
  *
  * `excludeSlugs` drops entries already covered by an npm adapter /
  * native catalog entry, so a generic spec never double-appears next to a
@@ -335,7 +344,7 @@ export async function listAcpGenericAdapters(opts?: {
       // provider/mode binding surface, so every entry states an unstated
       // provider, same as a bare string in an AIP-45 manifest would.
       modelDetails: (spec.models?.allowed ?? []).map((id) => ({ id })),
-      status: present ? "available" : "supported",
+      status: present ? "ready" : "supported",
       source,
       ...(spec.install_hint ? { hint: spec.install_hint } : {}),
     })

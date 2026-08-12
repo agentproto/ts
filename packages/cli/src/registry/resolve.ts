@@ -1330,7 +1330,8 @@ export type AdapterListing = AdapterInfo & {
  * `ACP_CATALOG` + user `config.acpAgents`). Generic entries whose slug is
  * already covered by a native adapter are dropped, so a slug never appears
  * twice. Native adapters keep their richer status (`ready` after setup);
- * generic entries are `available` (bin on PATH) or `supported` (not yet).
+ * generic entries are `ready` (bin on PATH — they have no setup/auth axis
+ * to be pending on, see `AcpGenericListEntry`) or `supported` (not yet).
  */
 export async function listAdaptersWithAcp(
   catalog: readonly AdapterCatalogEntry[]
