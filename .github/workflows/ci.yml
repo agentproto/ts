@@ -257,6 +257,12 @@ jobs:
       - name: Run pr-review entry tests
         run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs
 
+      # Guards the CI artifact ledger — the pure record/marker/select helpers
+      # the delivery helper, the agentproto-run driver, and both stamp scripts
+      # share. Lives outside packages/**/adapters/**, so `pnpm test` misses it.
+      - name: Run artifact-ledger tests
+        run: node --test scripts/lib/artifact-ledger.test.mjs .github/agentproto-workflows/lib/deliver-artifact.test.mjs
+
       # `changeset version` only runs on main, after the merge, and hard-errors
       # on a package name that isn't in the workspace — so one bad changeset
       # takes down every release until a human notices. pr-338-review declared
@@ -1000,6 +1006,11 @@ jobs:
           # above documents for PR_TITLE.
           PRIMARY_PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
           FALLBACK_PROVENANCE: ${{ steps.reviewer-agentproto-fallback.outputs.provenance }}
+          # The artifact ledger (review id recorded at creation time) travels the
+          # same tier-selection path as provenance below, so the review-footer
+          # stamp keys off the id the winning account actually posted under.
+          PRIMARY_ARTIFACTS: ${{ steps.reviewer-agentproto.outputs.artifacts }}
+          FALLBACK_ARTIFACTS: ${{ steps.reviewer-agentproto-fallback.outputs.artifacts }}
         run: |
           # A posted review IS lane success, even when the native session
           # errored after posting (post-review wind-down — see the postcheck
@@ -1029,15 +1040,21 @@ jobs:
           # that succeeded.
           if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
             PROVENANCE="$PRIMARY_PROVENANCE"
+            ARTIFACTS="$PRIMARY_ARTIFACTS"
           elif [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ]; then
             PROVENANCE="$FALLBACK_PROVENANCE"
+            ARTIFACTS="$FALLBACK_ARTIFACTS"
           else
             PROVENANCE="$PRIMARY_PROVENANCE"
+            ARTIFACTS="$PRIMARY_ARTIFACTS"
           fi
           {
             echo "provenance<<__PROVENANCE_EOF__"
             echo "$PROVENANCE"
             echo "__PROVENANCE_EOF__"
+            echo "artifacts<<__ARTIFACTS_EOF__"
+            echo "$ARTIFACTS"
+            echo "__ARTIFACTS_EOF__"
           } >> "$GITHUB_OUTPUT"
 
       - name: Commit changeset (if written by reviewer)
@@ -1172,6 +1189,9 @@ jobs:
           # tier's session actually posted (primary or fallback account) —
           # see that step's comment.
           PROVENANCE: ${{ steps.reviewer.outputs.provenance }}
+          # Artifact ledger (review id at creation time) — the stamp keys off
+          # this id; empty ⇒ it falls back to sha discovery with a ::warning::.
+          ARTIFACTS: ${{ steps.reviewer.outputs.artifacts }}
         run: node scripts/stamp-review-footer.mjs
 
       # Gate: resolve decision + blocking config, post explicit statuses on

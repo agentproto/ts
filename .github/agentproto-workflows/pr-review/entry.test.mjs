@@ -17,14 +17,17 @@ test('default placement (no reviewerSandbox, no repo) reviews via gh CLI', () =>
 
 // ── sandbox placement (unchanged behavior) ──────────────────────────────────
 
-test('reviewerSandbox + repo selects sandbox (curl REST) delivery', () => {
+test('reviewerSandbox + repo selects sandbox (shared delivery helper) delivery', () => {
   const text = prompt({
     prNumber: 7,
     repo: 'agentproto/ts',
     reviewConfig: { reviewerSandbox: 'e2b' },
   })
   assert.match(text, /Phase 0: Workspace bootstrap/)
-  assert.match(text, /curl -sS -X POST/)
+  // Sandbox delivery now routes through the shared delivery+ledger helper
+  // (records the review to the artifact ledger) instead of raw curl.
+  assert.match(text, /deliver-artifact\.mjs/)
+  assert.match(text, /--kind review/)
   assert.doesNotMatch(text, /gh pr review 7 --comment/)
   assert.doesNotMatch(text, /LOCAL run/)
 })

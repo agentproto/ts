@@ -257,6 +257,9 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
           AUTH_MODE: ${{ steps.compose.outputs.auth_mode }}
           PROVENANCE: ${{ steps.sandbox-verb.outputs.provenance }}
+          # Artifact ledger (PR id/number at creation time) — the stamp keys off
+          # this; empty ⇒ it falls back to placeholder discovery with a ::warning::.
+          ARTIFACTS: ${{ steps.sandbox-verb.outputs.artifacts }}
         run: node scripts/stamp-pr-footer.mjs
 
       - name: React result (✅ / ❌)

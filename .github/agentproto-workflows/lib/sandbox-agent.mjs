@@ -155,17 +155,22 @@ export const skillsBlock = (config, verb) => {
   ].join("\n")
 }
 
-/** Post a PR review via curl REST (write body to a file first — safe JSON quoting). */
+/**
+ * Post a PR review via the shared delivery helper (write body to a file first —
+ * safe JSON quoting). The helper does the REST POST AND records the created
+ * review to the artifact ledger, so the runner stamps the provenance footer by
+ * id instead of re-discovering the review.
+ */
 export const restPostReviewBlock = ({ repo, prNumber }) => [
-  `   Write the review body to a file first (safe JSON quoting), then POST it via the GitHub REST API:`,
+  `   Write the review body to a file first (safe JSON quoting), then deliver it via the shared helper (which POSTs to the GitHub REST API AND records the created review to the artifact ledger so CI can stamp its provenance footer):`,
   `   \`\`\`bash`,
   `   # review.md contains your review markdown`,
   `   node -e 'const fs=require("fs");fs.writeFileSync("payload.json",JSON.stringify({event:process.argv[1],body:fs.readFileSync("review.md","utf8")}))' COMMENT`,
-  `   curl -sS -X POST -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
-  `     "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews" \\`,
-  `     --data @payload.json`,
+  `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
+  `     --kind review --body-file payload.json \\`,
+  `     --url "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews"`,
   `   \`\`\``,
-  `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. Check the curl response: a JSON object with an "id" field means the review posted; anything else, print the response and retry once.`,
+  `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. The helper exits 0 and prints \`created review id=…\` on success; if it exits non-zero it prints the API response — read it and retry once.`,
 ].join("\n")
 
 /**
@@ -180,12 +185,12 @@ export const restOpenPrBlock = ({ repo, branch, base, titleHint }) => [
   `   git add -A && git commit -m "<concise conventional-commit title>"`,
   `   git push origin "HEAD:${branch}"`,
   `   node -e 'const fs=require("fs");fs.writeFileSync("pr.json",JSON.stringify({title:process.argv[1],head:"${branch}",base:"${base}",body:fs.readFileSync("pr-body.md","utf8")}))' "<PR title>"`,
-  `   curl -sS -X POST -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
-  `     "https://api.github.com/repos/${repo}/pulls" --data @pr.json`,
+  `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
+  `     --kind pr --body-file pr.json \\`,
+  `     --url "https://api.github.com/repos/${repo}/pulls"`,
   `   \`\`\``,
-  `   Write \`pr-body.md\` BEFORE the curl: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}.`,
-  `   The LAST line of \`pr-body.md\` must be exactly the hidden placeholder \`<!-- agentproto-bot:provenance -->\` — the CI runner replaces it with a provenance footer (session id, cost, run link); do not omit it.`,
-  `   Check the response has an "id"/"number" field; anything else, print it and retry once.`,
+  `   Write \`pr-body.md\` BEFORE running the helper: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}. Do NOT add a signature or provenance footer — the CI runner stamps a deterministic \`@agentproto-bot\` footer (session id, cost, run link) onto the PR body it just recorded.`,
+  `   The helper (\`.github/agentproto-workflows/lib/deliver-artifact.mjs\`) POSTs the PR AND records it to the artifact ledger so CI can stamp by id. It exits 0 and prints \`created pr id=… number=…\` on success; if it exits non-zero it prints the API response — read it and retry once.`,
 ].join("\n")
 
 /** Commit-mode delivery: push the change directly onto an existing branch. */
