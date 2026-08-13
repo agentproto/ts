@@ -409,6 +409,12 @@
         "icon": "$(window)"
       },
       {
+        "command": "agentproto.openAppInBrowser",
+        "title": "agentproto: Open App in Browser",
+        "category": "agentproto",
+        "icon": "$(globe)"
+      },
+      {
         "command": "agentproto.refreshAuthProfiles",
         "title": "agentproto: Refresh Auth Profiles",
         "category": "agentproto",
@@ -578,6 +584,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "agentproto.openAppInBrowser",
+          "when": "view == agentproto.apps && viewItem == app",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.openAppPanel",
+          "when": "view == agentproto.apps && viewItem == app",
+          "group": "1_app@1"
+        },
         {
           "command": "agentproto.promptSession",
           "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-watched)?$/",
