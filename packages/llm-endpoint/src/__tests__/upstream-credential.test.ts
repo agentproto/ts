@@ -90,6 +90,28 @@ describe('resolveUpstreamCredential', () => {
     expect(authMock.read).not.toHaveBeenCalled();
   });
 
+  it('derives method:"oauth-bearer" from an env-key OAT (sk-ant-oat…) when no profile is mapped', async () => {
+    // Regression: the runtime's billing-auth resolver injects a subscription
+    // OAT straight into ANTHROPIC_API_KEY for a modelDerivedApiKey adapter
+    // with no authSubscription (e.g. pi) — the env-key fallback must classify
+    // it by its own shape, not hardcode "api-key" (which sends it as
+    // x-api-key and Anthropic hard-401s: "invalid x-api-key").
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-oat01-abc123';
+
+    const cred = await resolveUpstreamCredential('anthropic');
+
+    expect(cred).toEqual({ value: 'sk-ant-oat01-abc123', method: 'oauth-bearer' });
+    expect(authMock.getAuthProfile).not.toHaveBeenCalled();
+  });
+
+  it('does not misclassify an OAT-shaped value on a non-anthropic provider', async () => {
+    process.env.MOONSHOT_API_KEY = 'sk-ant-oat01-abc123';
+
+    const cred = await resolveUpstreamCredential('moonshot');
+
+    expect(cred).toEqual({ value: 'sk-ant-oat01-abc123', method: 'api-key' });
+  });
+
   it('returns undefined for a missing mapped profile (caller 401s)', async () => {
     process.env.LLM_ENDPOINT_PROFILE_ANTHROPIC = 'ghost';
     authMock.getAuthProfile.mockResolvedValue(undefined);

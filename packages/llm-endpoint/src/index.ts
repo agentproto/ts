@@ -454,6 +454,16 @@ function upstreamProfileEnvVar(provider: string): string {
   return `LLM_ENDPOINT_PROFILE_${provider.toUpperCase()}`;
 }
 
+// Anthropic OAuth Access Tokens (subscription OATs) are shape-identifiable —
+// `sk-ant-oat…` — and require `Authorization: Bearer`, never `x-api-key`.
+// Mirrors the same prefix check adapters/mastra-agent and the pi CLI's own
+// SDK use; re-declared locally (not imported) for the same reason as the
+// ANTHROPIC_VERSION/ANTHROPIC_OAUTH_BETA constants above — this package
+// never imports @agentproto/runtime.
+function isAnthropicOAuthToken(provider: string, value: string): boolean {
+  return provider === 'anthropic' && value.startsWith('sk-ant-oat');
+}
+
 // Log-once dedupe so a persistent misconfig (e.g. non-darwin keychain) doesn't
 // spam a warning on every single request.
 const _warnedUpstream = new Set<string>();
@@ -478,7 +488,15 @@ function warnUpstreamOnce(key: string, message: string): void {
  *       key)
  *     • keychain read throws (platform-unsupported backend, e.g. non-darwin
  *       host) → env-key fallback + a one-time log; never crashes the request
- * - no mapping → env-key path UNCHANGED (method "api-key").
+ * - no mapping → env-key path: method is derived from the credential's own
+ *   shape, not hardcoded — an anthropic env key that is actually a
+ *   subscription OAT (`sk-ant-oat…`, e.g. injected by the runtime's
+ *   billing-auth resolver for a modelDerivedApiKey adapter with no
+ *   `authSubscription`, such as pi) resolves to "oauth-bearer" so
+ *   {@link buildUpstreamAuthHeaders} sends it as `Authorization: Bearer`
+ *   instead of `x-api-key` — Anthropic hard-401s an OAT presented as
+ *   `x-api-key` ("invalid x-api-key"). Any other anthropic key, and every
+ *   other provider, keeps "api-key" exactly as before.
  */
 export async function resolveUpstreamCredential(
   provider: string,
@@ -528,8 +546,10 @@ export async function resolveUpstreamCredential(
       // fall through to the env-key path below
     }
   }
-  // No mapping (or keychain fallback): existing env-key path, unchanged.
-  return { value: getApiKey(provider), method: 'api-key' };
+  // No mapping (or keychain fallback): existing env-key path, method now
+  // shape-derived instead of hardcoded (see doc comment above).
+  const value = getApiKey(provider);
+  return { value, method: isAnthropicOAuthToken(provider, value) ? 'oauth-bearer' : 'api-key' };
 }
 
 /**
