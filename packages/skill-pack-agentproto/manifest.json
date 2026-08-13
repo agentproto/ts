@@ -1,6 +1,6 @@
 {
   "name": "agentproto-plugin",
-  "description": "Operate and supervise a fleet of coding agents (claude-code, hermes, codex, ...) through the agentproto daemon: launch and babysit agent sessions, run them in parallel, drive economical light models with a Sonnet verification net, orchestrate an orchestrator (nested), govern durable supervision (policies, gated commits, webhook escalation), set up adapters and tunnels, use custom LLM endpoints, and author protocol tools/drivers.",
+  "description": "Operate and supervise a fleet of coding agents (claude-code, hermes, codex, ...) through the agentproto daemon: launch and babysit agent sessions, run them in parallel, drive economical light models with a Sonnet verification net, orchestrate an orchestrator (nested), govern durable supervision (policies, gated commits, webhook escalation), set up adapters and tunnels, use custom LLM endpoints, author protocol tools/drivers, and build/operate AIP-42 agent apps (app_install/app_run/app_data/app serve).",
   "skills": [
     "agent-session-orchestration-agentproto",
     "light-coder-orchestration",
@@ -10,7 +10,8 @@
     "adapter-setup-kit",
     "supervisor-session",
     "agentproto-llm-endpoint",
-    "agentproto"
+    "agentproto",
+    "agentproto-apps"
   ],
   "sourceDir": "./src/skills",
   "author": { "name": "Jeremy — fabrikapp" },
@@ -27,6 +28,7 @@
     "adapters",
     "llm-endpoint",
     "supervisor-session",
-    "custom-providers"
+    "custom-providers",
+    "apps"
   ]
 }
