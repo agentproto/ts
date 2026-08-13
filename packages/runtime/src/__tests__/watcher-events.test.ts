@@ -23,21 +23,34 @@ import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
  */
 function makeRegistry(descs: Record<string, SessionDescriptor>): SessionsRegistry {
   const watchers = new Map<string, number>()
+  const details = new Map<string, unknown[]>()
   return {
     get: vi.fn((id: string) => {
       const desc = descs[id]
       if (!desc) return undefined
-      // Stamp the live count at read time, mirroring the real registry.
-      return { ...desc, watchers: watchers.get(id) ?? 0 }
+      // Stamp the live count + detail list at read time, mirroring the real registry.
+      return { ...desc, watchers: watchers.get(id) ?? 0, watcherDetails: [...(details.get(id) ?? [])] }
     }),
     findByIdOrName: vi.fn((q: string) => descs[q]),
-    incWatchers: vi.fn((id: string) => {
+    incWatchers: vi.fn((id: string, detail?: unknown) => {
       watchers.set(id, (watchers.get(id) ?? 0) + 1)
+      if (detail) {
+        const list = details.get(id)
+        if (list) list.push(detail)
+        else details.set(id, [detail])
+      }
     }),
-    decWatchers: vi.fn((id: string) => {
+    decWatchers: vi.fn((id: string, detail?: unknown) => {
       const next = (watchers.get(id) ?? 0) - 1
       if (next > 0) watchers.set(id, next)
       else watchers.delete(id)
+      if (detail) {
+        const list = details.get(id)
+        if (list) {
+          const idx = list.indexOf(detail)
+          if (idx >= 0) list.splice(idx, 1)
+        }
+      }
     }),
     spawn: vi.fn(),
     register: vi.fn(),
@@ -155,6 +168,48 @@ describe("watcher attach/detach bus events (monitorSessionWait)", () => {
     const detached = events.filter(e => e.type === "session:watcher-detached")
     expect((attached[0] as { watcherSessionId?: string }).watcherSessionId).toBe("sess_supervisor")
     expect((detached[0] as { watcherSessionId?: string }).watcherSessionId).toBe("sess_supervisor")
+  })
+
+  it("resolves the supervising session's label onto the event and the target's watcherDetails", async () => {
+    const registry = makeRegistry({
+      s1: idleSession("s1"),
+      sess_supervisor: { ...idleSession("sess_supervisor"), label: "orchestrator-lead" },
+    })
+    const bus = createSessionEventBus()
+    const ring = createEventRing()
+    const events = collectEvents(bus)
+
+    const pending = monitorSessionWait({
+      registry,
+      sessionEvents: bus,
+      eventRing: ring,
+      sessionIds: ["s1"],
+      event: "turn-end",
+      timeoutMs: 5_000,
+      callerScope: { ownerSessionId: "sess_supervisor" },
+    })
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    // Attached — label carried on the bus event, and stamped into the target
+    // session's watcherDetails (the field the transcript panel reads).
+    const attached = events.filter(e => e.type === "session:watcher-attached")
+    expect((attached[0] as { label?: string }).label).toBe("orchestrator-lead")
+    expect(registry.get("s1")?.watcherDetails).toEqual([
+      {
+        watcherSessionId: "sess_supervisor",
+        watcherLabel: "orchestrator-lead",
+        event: "turn-end",
+        timeoutMs: 5_000,
+        since: expect.any(String),
+      },
+    ])
+
+    bus.emit({ type: "session:turn-end", sessionId: "s1", awaitingInput: false, ts: new Date().toISOString() })
+    await pending
+
+    const detached = events.filter(e => e.type === "session:watcher-detached")
+    expect((detached[0] as { label?: string }).label).toBe("orchestrator-lead")
+    expect(registry.get("s1")?.watcherDetails).toEqual([])
   })
 
   it("emits one attach/detach pair per watched session id", async () => {

@@ -4,7 +4,8 @@
  */
 
 import { sessionDisplayName } from "../client/sessionName.js"
-import type { SessionDescriptor, SessionStreamLine } from "../client/types.js"
+import type { SessionDescriptor, SessionStreamLine, SessionWatcherInfo } from "../client/types.js"
+import { formatDuration } from "../views/sessionsTree.logic.js"
 
 export interface TranscriptModel {
   sessionId: string
@@ -222,32 +223,68 @@ export function describePromptSource(
   }
 }
 
+/** Human phrase for what a wait is blocking on — mirrors `session_monitor`'s
+ *  `event` vocabulary (`SessionWaitEvent` in @agentproto/runtime). Falls back
+ *  to the raw event string for anything unrecognized (forward-compatible with
+ *  a daemon that adds a new wait kind before the client updates). */
+const WAIT_EVENT_PHRASES: Readonly<Record<string, string>> = {
+  "turn-end": "until turn-end",
+  "awaiting-input": "until it asks for input",
+  exited: "until it exits",
+  any: "for any change",
+}
+
+/** "until turn-end, 2h timeout" — the wait condition a watcher chip/banner
+ *  shows, from a single {@link SessionWatcherInfo}. */
+export function describeWaitCondition(detail: SessionWatcherInfo): string {
+  const phrase = WAIT_EVENT_PHRASES[detail.event] ?? `until ${detail.event}`
+  return typeof detail.timeoutMs === "number" ? `${phrase}, ${formatDuration(detail.timeoutMs)} timeout` : phrase
+}
+
+/** A watcher's display identity — its label when known, else its (short)
+ *  session id, else undefined for a fully anonymous CLI/HTTP waiter. */
+export function watcherIdentity(detail: SessionWatcherInfo): string | undefined {
+  return detail.watcherLabel ?? detail.watcherSessionId
+}
+
 /**
- * Decide the cross-session info banner for a watcher-count change between
- * two successive session descriptors (`onSessionUpdate`). The daemon's
+ * Decide the cross-session info banner for a watcher-count change between two
+ * successive session descriptors (`onSessionUpdate`). The daemon's
  * `session:watcher-attached`/`-detached` bus events do NOT reach the panel
  * (they never flow through the structured events.jsonl record feed), so the
- * panel diffs the ephemeral `watchers` counter it already receives and
- * words the banner count-only — the attaching session's identity is
- * generally not available panel-side.
+ * panel diffs the ephemeral `watchers` counter (and now `watcherDetails`,
+ * #session-visibility) it already receives.
  *
- * Returns the banner text to show, or `undefined` when the change isn't
- * worth a ping: an increase announces the NEW watcher (`N waiting on this
- * session`); a decrease only earns a banner when it reaches ZERO (the last
- * watcher leaving is the notable transition — one of several detaching is
- * noise). No change, a 0→0, or a partial decrease all return `undefined`.
+ * Returns the banner text to show, or `undefined` when the change isn't worth
+ * a ping: an increase announces the NEW watcher — named with its wait
+ * condition when `nextDetails` carries identity (`"<label> — until
+ * turn-end"`), bare-count otherwise (an anonymous CLI/HTTP waiter, or the
+ * caller not passing details); a decrease only earns a banner when it reaches
+ * ZERO (the last watcher leaving is the notable transition — one of several
+ * detaching is noise), named from `prevDetails` when exactly one watcher was
+ * attached before the drop. No change, a 0→0, or a partial decrease all
+ * return `undefined`.
  */
 export function watcherBannerFor(
   prev: number | undefined,
   next: number | undefined,
+  opts: { prevDetails?: readonly SessionWatcherInfo[]; nextDetails?: readonly SessionWatcherInfo[] } = {},
 ): string | undefined {
   const before = prev ?? 0
   const after = next ?? 0
   if (after > before) {
+    const newest = opts.nextDetails?.at(-1)
+    const who = newest ? watcherIdentity(newest) : undefined
+    if (who) {
+      const suffix = after > 1 ? ` (${after} waiting total)` : ""
+      return `A watcher attached — ${who} — ${describeWaitCondition(newest!)}${suffix}`
+    }
     return `A watcher attached — ${after} waiting on this session`
   }
   if (after < before && after === 0) {
-    return "Watcher detached"
+    const departing = before === 1 ? opts.prevDetails?.at(0) : undefined
+    const who = departing ? watcherIdentity(departing) : undefined
+    return who ? `Watcher detached — ${who}` : "Watcher detached"
   }
   return undefined
 }

@@ -184,15 +184,24 @@ describe("webviewRowStatus", () => {
     expect(webviewRowStatus(session({ busy: false, childrenBusy: 1, watchers: 1 }))).toBe("delegating")
   })
 
-  it("renders a session parked with background tasks pending as 'parked' (warning styling)", () => {
-    // parked-bg folds into the existing parked row status — the warning chip
-    // carries the distinction, the dot stays the same quiet-but-watched tell.
-    expect(webviewRowStatus(session({ busy: false, pendingBgTasks: 2 }))).toBe("parked")
+  it("renders a session parked with background tasks pending as its own 'awaiting-bg' status", () => {
+    // parked-bg gets its own dedicated row status — a distinct top-priority
+    // section (Awaiting bg), not folded into the quiet/parked bucket.
+    expect(webviewRowStatus(session({ busy: false, pendingBgTasks: 2 }))).toBe("awaiting-bg")
     // A busy session with leftover bg tasks is still working.
     expect(webviewRowStatus(session({ busy: true, pendingBgTasks: 2 }))).toBe("working")
     // Absent/zero tolerate the older daemon.
     expect(webviewRowStatus(session({ busy: false }))).toBe("idle")
     expect(webviewRowStatus(session({ busy: false, pendingBgTasks: 0 }))).toBe("idle")
+  })
+
+  it("keeps 'parked' (watcher-idle) and 'awaiting-bg' (bg-task-idle) as distinct statuses", () => {
+    // A supervisor watching an idle session with NO bg tasks is still "parked".
+    expect(webviewRowStatus(session({ busy: false, watchers: 1, pendingBgTasks: 0 }))).toBe("parked")
+    // A session with pending bg tasks reads "awaiting-bg" even if also watched —
+    // the bg-task tell outranks the plain watcher tell (ACTIVITY_TO_ROW_STATUS
+    // resolves parked-bg before the idle-only watcher refinement ever runs).
+    expect(webviewRowStatus(session({ busy: false, watchers: 1, pendingBgTasks: 2 }))).toBe("awaiting-bg")
   })
 })
 
@@ -299,22 +308,27 @@ describe("sectionFor", () => {
     expect(sectionFor(session({ status: "exited" }))).toBe("earlier")
     expect(sectionFor(session({ status: "killed", killedMidTurn: true }))).toBe("earlier")
   })
+
+  it("gives a session parked with background tasks its own 'awaiting-bg' section", () => {
+    expect(sectionFor(session({ busy: false, pendingBgTasks: 2 }))).toBe("awaiting-bg")
+  })
 })
 
 describe("buildSessionsWebviewModel — attention sections", () => {
-  it("organizes the agents lane into the five sections in fixed order", () => {
+  it("organizes the agents lane into the six sections in fixed order", () => {
     const sessions = [
       session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
+      session({ id: "bg", cwd: "/Code/studio", busy: false, pendingBgTasks: 1 }),
       session({ id: "run", cwd: "/Code/studio", busy: true }),
       session({ id: "fail", cwd: "/Code/studio", status: "error" }),
       session({ id: "idle", cwd: "/Code/studio", busy: false }),
       session({ id: "done", cwd: "/Code/studio", status: "exited" }),
     ]
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
-    expect(model.groups.map(g => g.key)).toEqual(["needs-you", "running", "attention", "quiet", "earlier"])
-    expect(model.groups.map(g => g.label)).toEqual(["Needs you", "Running", "Attention", "Quiet", "Earlier"])
+    expect(model.groups.map(g => g.key)).toEqual(["needs-you", "awaiting-bg", "running", "attention", "quiet", "earlier"])
+    expect(model.groups.map(g => g.label)).toEqual(["Needs you", "Awaiting bg", "Running", "Attention", "Quiet", "Earlier"])
     expect(model.groups.find(g => g.key === "earlier")?.hint).toBe("last 24 h")
-    expect(model.shownCount).toBe(5)
+    expect(model.shownCount).toBe(6)
   })
 
   it("omits empty sections", () => {
@@ -395,8 +409,8 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     const a = rows.find(r => r.id === "a")!
     const b = rows.find(r => r.id === "b")!
     expect(a.pendingBgTasks).toBe(3)
-    // The row status reflects the parked-bg fold (parked chip styling).
-    expect(a.status).toBe("parked")
+    // The row status reflects the dedicated awaiting-bg section.
+    expect(a.status).toBe("awaiting-bg")
     // Absent field → 0 (older daemon tolerated), so no chip renders.
     expect(b.pendingBgTasks).toBe(0)
   })

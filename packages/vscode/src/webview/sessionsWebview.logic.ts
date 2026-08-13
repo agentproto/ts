@@ -7,10 +7,15 @@
  * DESIGN B — "Attention-first sections" (validated 2026-08-07). The seven
  * status tabs are gone: status is no longer a control the operator drives, it
  * is the SORT ORDER the list organizes itself into. Every session falls into
- * exactly one of five fixed-priority sections —
- *   Needs you → Running → Attention → Quiet → Earlier
+ * exactly one of six fixed-priority sections —
+ *   Needs you → Awaiting bg → Running → Attention → Quiet → Earlier
  * — keyed off the tree's canonical `activityFor` classifier, so the webview
- * never disagrees with the tree about what a session IS.
+ * never disagrees with the tree about what a session IS. "Awaiting bg" reuses
+ * the "Needs you" affordance (its own top-priority section, not folded into
+ * Quiet) for a session that ended its turn with background tasks still
+ * outstanding — a silent dead end unless someone re-prompts it, so it earns
+ * the same visual weight as a session waiting on human input, just in its own
+ * amber register rather than ochre.
  *
  * Navigation collapses to two axes only, both reusing logic that already
  * exists (NO daemon changes):
@@ -132,13 +137,17 @@ export function previewTextFor(session: Pick<SessionSummary, "activitySummary">)
 /**
  * The row's status dot — driven directly by the tree's `activityFor`
  * classifier. Each activity gets its own CSS class; only `working` rows pulse
- * (moss), and only `awaiting` rows take the ochre accent — the one signal
- * allowed to catch the eye.
+ * (moss), `awaiting` rows take the ochre accent, and `awaiting-bg` rows take
+ * the amber bg-task accent — the two signals allowed to catch the eye, kept
+ * visually distinct from each other (same dot shape, different color) so
+ * "needs a human" and "needs a re-prompt because its own bg work parked it"
+ * never read as the same thing.
  */
 export type WebviewRowStatus =
   | "working"
   | "delegating" // idle itself, but its subtree is mid-turn (#session-visibility)
   | "awaiting"
+  | "awaiting-bg" // ended its turn with background tasks still pending — a silent dead end unless re-prompted
   | "parked" // idle + a supervisor is waiting on it — will be re-prompted
   | "idle"
   | "stalled"
@@ -151,7 +160,7 @@ const ACTIVITY_TO_ROW_STATUS: Readonly<Record<SessionActivity, WebviewRowStatus>
   working: "working",
   idle: "idle",
   stalled: "stalled",
-  "parked-bg": "parked",
+  "parked-bg": "awaiting-bg",
   failed: "failed",
   stopped: "stopped",
   done: "done",
@@ -161,13 +170,14 @@ const ACTIVITY_TO_ROW_STATUS: Readonly<Record<SessionActivity, WebviewRowStatus>
  * Busiest-first rank for the visibility states (#session-visibility), used to
  * roll a collapsed parent up to the busiest state in its subtree and to sort
  * within a section. Precedence: working > delegating > awaiting > stalled >
- * parked > idle > terminal.
+ * awaiting-bg > parked > idle > terminal.
  */
 export const ROW_STATUS_RANK: Readonly<Record<WebviewRowStatus, number>> = {
-  working: 8,
-  delegating: 7,
-  awaiting: 6,
-  stalled: 5,
+  working: 9,
+  delegating: 8,
+  awaiting: 7,
+  stalled: 6,
+  "awaiting-bg": 5,
   parked: 4,
   idle: 3,
   failed: 2,
@@ -181,11 +191,14 @@ export function busierRowStatus(a: WebviewRowStatus, b: WebviewRowStatus): Webvi
 }
 
 /**
- * The row's presented status. Starts from the shared `activityFor`, then
- * refines a genuinely-idle (alive, quiet, not-awaiting) session into
+ * The row's presented status. Starts from the shared `activityFor` (which
+ * already resolves "ended its turn with bg tasks still pending" to its own
+ * `awaiting-bg` row status — see {@link ACTIVITY_TO_ROW_STATUS}), then refines
+ * a genuinely-idle (alive, quiet, not-awaiting, no bg tasks) session into
  * "delegating" (its subtree is mid-turn) or "parked" (a supervisor is waiting
- * on it). These refine ONLY `idle` — never override working/awaiting/terminal —
- * so the precedence busy > delegating > awaiting > parked > quiet holds.
+ * on it). These refine ONLY `idle` — never override working/awaiting/
+ * awaiting-bg/terminal — so the precedence busy > delegating > awaiting >
+ * stalled > awaiting-bg > parked > quiet holds.
  */
 export function webviewRowStatus(session: SessionSummary, now?: number): WebviewRowStatus {
   const base = ACTIVITY_TO_ROW_STATUS[activityFor(session, now)]
@@ -465,11 +478,12 @@ export interface WebviewRow {
   archived: boolean
 }
 
-/** The five attention sections, in fixed priority order. */
-export type SectionKey = "needs-you" | "running" | "attention" | "quiet" | "earlier"
+/** The six attention sections, in fixed priority order. */
+export type SectionKey = "needs-you" | "awaiting-bg" | "running" | "attention" | "quiet" | "earlier"
 
 export const SECTION_ORDER: readonly SectionKey[] = [
   "needs-you",
+  "awaiting-bg",
   "running",
   "attention",
   "quiet",
@@ -478,6 +492,7 @@ export const SECTION_ORDER: readonly SectionKey[] = [
 
 const SECTION_LABELS: Readonly<Record<SectionKey, string>> = {
   "needs-you": "Needs you",
+  "awaiting-bg": "Awaiting bg",
   running: "Running",
   attention: "Attention",
   quiet: "Quiet",
@@ -494,13 +509,18 @@ const SECTION_HINTS: Readonly<Partial<Record<SectionKey, string>>> = {
  *  `now`-aware `activityFor`). */
 const SECTION_BY_STATUS: Readonly<Record<WebviewRowStatus, SectionKey>> = {
   awaiting: "needs-you",
+  // A session parked with its own background tasks still outstanding gets its
+  // own top-priority section — same "needs a look" weight as Needs you, but a
+  // distinct amber register (never folded into Quiet; see ROW_STATUS_RANK).
+  "awaiting-bg": "awaiting-bg",
   working: "running",
   // A delegating parent is actively working (through its subtree), so it sorts
   // with the live sessions rather than sinking into Quiet.
   delegating: "running",
   stalled: "attention",
   failed: "attention",
-  // Parked = quiet but supervised; stays in Quiet, distinguished by its tell.
+  // Parked = quiet but supervised (a watcher, not a bg task); stays in Quiet,
+  // distinguished by its tell.
   parked: "quiet",
   idle: "quiet",
   stopped: "earlier",
@@ -676,7 +696,7 @@ export function collapseCronRuns(rows: readonly WebviewRow[]): WebviewRow[] {
  * The webview's single entry point. Filtering (archived-hidden, resume-chain
  * collapse, search, project) is applied first; the survivors are split into
  * the two lanes for the segmented-control counts and the project rail, then
- * the selected lane's scope is sorted and organized — into the five attention
+ * the selected lane's scope is sorted and organized — into the six attention
  * sections (Agents) or the three Auto subgroups (Auto), the latter with
  * consecutive cron runs collapsed.
  */

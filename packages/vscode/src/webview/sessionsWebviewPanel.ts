@@ -3,8 +3,9 @@
  * TreeView (`agentproto.sessionsView === "webview"`). Implements DESIGN B,
  * "Attention-first sections" (validated 2026-08-07): the seven status tabs are
  * gone. Status is no longer a control — it is the sort order the list
- * organizes itself into. Every session falls into one of five fixed-priority
- * sections (Needs you → Running → Attention → Quiet → Earlier), and navigation
+ * organizes itself into. Every session falls into one of six fixed-priority
+ * sections (Needs you → Awaiting bg → Running → Attention → Quiet → Earlier),
+ * and navigation
  * collapses to two axes: a top PROJECT RAIL (All + per-workspace chips, each
  * with a count and an ochre "awaiting" dot) and an `Agents | Auto` SEGMENTED
  * CONTROL (human- vs machine-origin, the latter grouped into Gate reviews /
@@ -754,6 +755,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .dot.working { background: var(--ws, var(--working)); animation: agentproto-pulse 2s infinite; }
     .dot.delegating { background: transparent; border: 2px solid var(--ws, var(--working)); }
     .dot.awaiting { background: var(--awaiting); }
+    /* Awaiting bg — same filled-dot shape as .dot.awaiting, amber instead of
+       ochre: distinguishable at a glance from "needs a human" while reading as
+       the same tier of "needs a look" rather than a lesser Quiet tell. */
+    .dot.awaiting-bg { background: var(--bg-task); }
     .dot.stalled, .dot.failed { background: var(--stalled); }
     .dot.parked { background: var(--ws, var(--faint)); opacity: 0.5; }
     .dot.idle, .dot.stopped { background: transparent; border: 1px solid var(--ws, var(--faint)); opacity: 0.7; }
@@ -777,11 +782,6 @@ export function buildHtml(nonce: string, cspSource: string): string {
        long-poll / session_monitor is actively blocked on this session. Same
        calm register as .watch; it's an informational tell, not an alarm. */
     .name .eye { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
-    /* Background-tasks-pending chip — the session ended its turn with work
-       still outstanding (parked-bg). Amber/brown, matching the bg-task dot;
-       clickable (bubbles to the row's own "open" click) — click to view. */
-    .bgtasks { display: inline-flex; align-items: center; color: var(--bg-task); background: rgba(181, 133, 75, 0.16); border: 1px solid rgba(181, 133, 75, 0.4); border-radius: 8px; padding: 0 5px; font-weight: 400; font-size: 10.5px; line-height: 14px; cursor: pointer; white-space: nowrap; }
-    .bgtasks:hover { background: rgba(181, 133, 75, 0.28); }
     /* Server-confirmed stall badge (turn-liveness watchdog) — a mid-turn
        session whose adapter stream has gone silent past the daemon's
        threshold with no legitimate blockedOn excuse. Ochre, like the
@@ -792,9 +792,6 @@ export function buildHtml(nonce: string, cspSource: string): string {
        really waiting on its own busy subtree. Working-coloured so it reads as
        active work happening below it. */
     .name .deleg { color: var(--working); font-weight: 400; font-size: 11px; opacity: 0.9; }
-    /* Origin chip — the source channel (cowork/vscode/cron) on a root row. A
-       faint, uppercase-ish tag so lineage attribution reads at a glance. */
-    .name .origin { color: var(--faint); font-weight: 400; font-size: 10px; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Nested subagent lineage — a faint connector before the child's name and a
        quiet left guide, so the parent→child stack reads without shouting. */
     .name .lineage { color: var(--faint); font-weight: 400; }
@@ -808,6 +805,16 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .meta .logo.img img { width: 12px; height: 12px; object-fit: contain; border-radius: 2px; }
     .meta .logo.mono { width: 12px; height: 12px; border-radius: 50%; background: rgba(255, 255, 255, 0.08); font-size: 8px; font-weight: 700; line-height: 12px; text-align: center; letter-spacing: -0.02em; }
     .meta .model { color: var(--dim); }
+    /* Background tasks pending — folded into the metadata line as a subtle
+       icon + count, same weight as model/cost, deliberately NOT a bordered
+       badge: presence is secondary information, not a signal competing with
+       the row's name or its section/dot. */
+    .meta .bgcount { color: var(--bg-task); }
+    /* Origin chip — the source channel (cowork/vscode/cron) on a root row,
+       folded into the metadata line alongside model/cost rather than
+       crowding the title. Faint, uppercase-ish tag so lineage attribution
+       still reads at a glance without competing with the name. */
+    .meta .origin { color: var(--faint); font-weight: 400; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ctxbar { display: inline-flex; align-items: center; gap: 5px; }
     .ctxbar .track { width: 22px; height: 2px; background: var(--border); position: relative; }
     .ctxbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--dim); }
@@ -961,7 +968,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return '<span class="loc"' + (r.tagTitle ? ' title="' + escapeHtml(r.tagTitle) + '"' : '') + '>' + escapeHtml(r.tag) + '</span>';
       }
 
-      function metaHTML(r) {
+      function metaHTML(r, depth) {
         var parts = [];
         var shortModel = r.model ? r.model.split('/').pop() : '';
         parts.push('<span class="harness">' + logoHtml(r.logo) + (r.model ? '<span class="model" title="' + escapeHtml(r.model) + '">' + escapeHtml(shortModel) + '</span>' : '') + '</span>');
@@ -969,6 +976,16 @@ export function buildHtml(nonce: string, cspSource: string): string {
           parts.push('<span class="ctxbar"><span class="track"><span class="fill" style="width:' + r.ctxPercent + '%"></span></span>' + r.ctxPercent + '%</span>');
         }
         if (r.cost) parts.push('<span class="cost">' + escapeHtml(r.cost) + '</span>');
+        // Background tasks pending — a subtle icon + count, not a badge; the
+        // section/dot already carries the "needs attention" signal.
+        if (r.pendingBgTasks > 0) {
+          parts.push('<span class="bgcount" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending">⏳' + r.pendingBgTasks + '</span>');
+        }
+        // Origin chip — only on root rows, folded into the metadata line
+        // rather than the title.
+        if (r.originLabel && depth === 0) {
+          parts.push('<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>');
+        }
         return parts.join('');
       }
 
@@ -976,9 +993,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
         var depth = typeof r.depth === 'number' && r.depth > 0 ? r.depth : 0;
         var classes = 'row' + (r.open ? ' open' : '') + (r.archived ? ' archived' : '') + (depth > 0 ? ' nested' : '');
         // Background tasks pending/running color the dot amber — except while
-        // the row is already actively working or needs you, where that
-        // higher-priority signal stays put.
-        var hasBgWork = (r.childrenBusy > 0 || r.pendingBgTasks > 0) && r.status !== 'working' && r.status !== 'awaiting';
+        // the row is already actively working, needs you, or is itself the
+        // dedicated awaiting-bg status (already amber via its own dot class).
+        var hasBgWork = (r.childrenBusy > 0 || r.pendingBgTasks > 0) && r.status !== 'working' && r.status !== 'awaiting' && r.status !== 'awaiting-bg';
         var dotClasses = 'dot ' + r.status + (r.status === 'done' && r.unread ? ' unread' : '') + (hasBgWork ? ' bg' : '');
         var nameLine =
           (depth > 0 ? '<span class="lineage" aria-hidden="true">↳</span>' : '') +
@@ -989,7 +1006,6 @@ export function buildHtml(nonce: string, cspSource: string): string {
           (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '">⟳' + r.childrenBusy + '</span>' : '') +
           (r.watcherCount > 0 ? '<span class="eye" title="' + r.watcherCount + ' waiter' + (r.watcherCount === 1 ? '' : 's') + ' attached via the daemon">👁' + r.watcherCount + '</span>' : '') +
           (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠</span>' : '') +
-          (r.originLabel && depth === 0 ? '<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>' : '') +
           (r.approved ? '<span class="ok">✓</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + '</span>' : '');
         var acts = actionButton(r);
@@ -1002,10 +1018,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
             '<div class="name">' + nameLine + '</div>' +
             (r.message ? '<div class="msg">' + escapeHtml(r.message) + '</div>' : '') +
             (metaLocHTML(r) ? '<div class="meta-loc">' + metaLocHTML(r) + '</div>' : '') +
-            '<div class="meta">' + metaHTML(r) + '</div>' +
+            '<div class="meta">' + metaHTML(r, depth) + '</div>' +
           '</div>' +
           '<div class="right"><span class="time">' + escapeHtml(r.time) + '</span>' +
-            (r.pendingBgTasks > 0 ? '<span class="bgtasks" role="button" tabindex="-1" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending — click to view">' + r.pendingBgTasks + ' bg</span>' : '') +
             '<span class="acts">' + acts + '</span></div>' +
         '</div>';
       }
