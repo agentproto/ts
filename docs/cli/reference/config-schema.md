@@ -114,6 +114,11 @@ agentproto config set daemon.port 18791
     "attach": "always"
   },
 
+  // Provenance policy — the opt-in `gh` PATH shim. See "provenance" below.
+  "provenance": {
+    "wrapGh": false
+  },
+
   // Named terminal/TUI launch presets for `agentproto sessions terminal
   // --preset <name>`. See "terminalPresets" below.
   "terminalPresets": {
@@ -243,6 +248,14 @@ Daemon-side policy for `agent_start` spawns.
 | --- | --- | --- |
 | `attach` | `"always"` \| `"on-request"` | Whether a spawn auto-attaches to its caller as parent lineage. `"always"` (default) nests a child under the spawning session whenever the identity is derivable; `"on-request"` disables auto-attribution unless the caller opts in. Resolution order: `AGENTPROTO_SPAWN_ATTACH` env > this field > `"always"`. A per-call `attach: false` opts out. |
 | `dedupe` | `"always"` \| `"on-request"` | Implicit idempotency-key policy. `"always"` (default) derives a key from the spawn's `label` + a hash of the initial `prompt` when no explicit `idempotencyKey` is given; `"on-request"` disables implicit derivation. Resolution order: `AGENTPROTO_SPAWN_DEDUPE` env > this field > `"always"`. A per-call `dedupe: false` opts out. |
+
+### `provenance: object`
+
+Daemon-side provenance policy — the opt-in `gh` PATH shim.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `wrapGh` | `boolean` | When `true`, every agent session the daemon spawns gets a shim directory prepended to its PATH so any `gh pr create` it — or an adapter subprocess shelling out (claude-code, codex, …) — runs has a deterministic `🤖 @agentproto-bot` provenance footer (session id, adapter, model, workspace) appended to the created PR's **body**, matching the footer the cloud runner stamps. The tool stamps, never the model; commit messages are never touched. Stamping is cosmetic — a failure never fails the underlying `gh`. Resolution order: `AGENTPROTO_PROVENANCE_WRAP_GH` env > this field > default `false` (off). |
 
 ### `terminalPresets: Record<string, object>`
 

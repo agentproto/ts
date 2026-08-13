@@ -281,6 +281,23 @@ export interface SpawnConfig {
   dedupe?: SpawnDedupeMode
 }
 
+/**
+ * Provenance policy — the opt-in `gh` PATH shim (`gh-provenance-shim.ts`).
+ * Off by default. When `wrapGh` is on, every agent session the daemon spawns
+ * gets a shim directory prepended to its PATH so that any `gh pr create` the
+ * session (or an adapter subprocess shelling out — claude-code, codex, …) runs
+ * has a deterministic `@agentproto-bot` provenance footer appended to the
+ * created PR's BODY, matching the footer the cloud runner stamps. The TOOL
+ * stamps, never the model; commit messages are never touched (the repo's
+ * hygiene-check forbids attribution there). Resolution order mirrors
+ * `spawn.attach`: `AGENTPROTO_PROVENANCE_WRAP_GH` env > this field > default
+ * `false`.
+ */
+export interface ProvenanceConfig {
+  /** Enable the opt-in `gh` provenance PATH shim for spawned sessions. */
+  wrapGh?: boolean
+}
+
 export interface PairingConfig {
   /** Rendezvous broker WS URL (ws:// or wss://) used by `pair offer` and by
    *  autoconnect on boot. When unset, `pair offer` requires an explicit
@@ -394,6 +411,8 @@ export interface AgentprotoConfig {
   worktrees?: WorktreesConfig
   /** Spawn-time policy (`agent_start`). See {@link SpawnConfig}. */
   spawn?: SpawnConfig
+  /** Provenance policy — the opt-in `gh` PATH shim. See {@link ProvenanceConfig}. */
+  provenance?: ProvenanceConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */

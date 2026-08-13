@@ -103,6 +103,11 @@ import {
   loadSpawnDedupe,
   type SpawnDedupeMode,
 } from "./spawn-dedupe.js"
+import {
+  loadProvenanceWrapGh,
+  ensureGhShimDir,
+  buildGhShimEnv,
+} from "./gh-provenance-shim.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -601,6 +606,14 @@ export interface SpawnAgentSessionDeps {
    *  tests inject a stub to pin the mode without touching env or the file.
    *  See `spawn-dedupe.ts`. */
   resolveSpawnDedupe?: () => Promise<SpawnDedupeMode>
+  /** Resolves the effective `provenance.wrapGh` opt-in (env > config >
+   *  `false`). When it resolves true, a `gh` PATH shim is prepended to the
+   *  spawned session's env so any `gh pr create` it (or an adapter
+   *  subprocess) runs gets the daemon's provenance footer appended to the
+   *  created PR's body — see `gh-provenance-shim.ts`. Defaults to
+   *  `loadProvenanceWrapGh` (reads the real config) when omitted; tests
+   *  inject a stub to pin it without touching env or the file. */
+  resolveProvenanceWrapGh?: () => Promise<boolean>
 }
 
 export interface SpawnAgentSessionInput {
@@ -959,6 +972,7 @@ export async function spawnAgentSession(
     resolveWorktreeIsolation,
     resolveSpawnAttach,
     resolveSpawnDedupe,
+    resolveProvenanceWrapGh,
   } = deps
 
   // cwd resolution: explicit cwd wins, then workspaceSlug lookup, then —
@@ -2242,6 +2256,32 @@ export async function spawnAgentSession(
       // `resolved` is guaranteed non-null here — the `input.sandbox ===
       // undefined` branch above already returned `adapter_not_found`
       // otherwise.
+      //
+      // Opt-in `gh` provenance shim (provenance.wrapGh): when enabled, prepend
+      // a shim dir to this session's PATH so any `gh pr create` it — or an
+      // adapter subprocess shelling out — runs gets the daemon's provenance
+      // footer stamped onto the created PR's body (see `gh-provenance-shim.ts`).
+      // Off by default; only the local (non-sandbox) branch — a sandbox spawn
+      // runs on the box's own daemon, which owns its own provenance.
+      let ghProvenanceEnv: Record<string, string> = {}
+      try {
+        const wrapGh = await (resolveProvenanceWrapGh ?? loadProvenanceWrapGh)()
+        if (wrapGh) {
+          const shimDir = await ensureGhShimDir()
+          ghProvenanceEnv = buildGhShimEnv({
+            shimDir,
+            basePath: process.env.PATH ?? "",
+            adapter: input.harness ?? input.adapter,
+            ...(input.model ?? resolved?.defaultModel
+              ? { model: input.model ?? resolved?.defaultModel }
+              : {}),
+          })
+        }
+      } catch {
+        // Stamping is cosmetic — a shim-preparation failure must never block a
+        // spawn. Fall through with no PATH shim (unchanged behaviour).
+        ghProvenanceEnv = {}
+      }
       agentSession = await resolved!.startSession({
         cwd,
         ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
@@ -2266,6 +2306,10 @@ export async function spawnAgentSession(
         // exec's. `agent_start` has no caller-facing `env` passthrough to
         // collide with, so this is the entire env for this spawn.
         env: {
+          // Provenance shim env FIRST (PATH + adapter/model) so the identity
+          // vars below always win — they must never be forgeable or shadowed,
+          // and `ghProvenanceEnv` never carries an identity var anyway.
+          ...ghProvenanceEnv,
           [SESSION_ID_ENV]: mintedSessionId,
           [WORKSPACE_SLUG_ENV]: resolvedSlug,
           // Lineage (PARENT_SESSION_ID_ENV's doc, sessions.ts) — mirrors
