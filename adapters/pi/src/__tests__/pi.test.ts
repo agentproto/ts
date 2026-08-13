@@ -85,7 +85,7 @@ describe("mapPiEvent", () => {
       type: "message_update",
       assistantMessageEvent: { type: "text_delta", delta: "Hello" },
     }
-    expect(mapPiEvent(event, SID, state)).toEqual([
+    expect(mapPiEvent(event, SID, state, undefined)).toEqual([
       { kind: "text-delta", sessionId: SID, text: "Hello" },
     ])
   })
@@ -96,7 +96,7 @@ describe("mapPiEvent", () => {
       type: "message_update",
       assistantMessageEvent: { type: "thinking_delta", delta: "reasoning..." },
     }
-    expect(mapPiEvent(event, SID, state)).toEqual([
+    expect(mapPiEvent(event, SID, state, undefined)).toEqual([
       { kind: "thought", sessionId: SID, text: "reasoning..." },
     ])
   })
@@ -109,7 +109,7 @@ describe("mapPiEvent", () => {
       toolName: "bash",
       args: { command: "ls" },
     }
-    expect(mapPiEvent(event, SID, state)).toEqual([
+    expect(mapPiEvent(event, SID, state, undefined)).toEqual([
       {
         kind: "tool-call",
         sessionId: SID,
@@ -129,7 +129,7 @@ describe("mapPiEvent", () => {
       result: "file.txt",
       isError: false,
     }
-    expect(mapPiEvent(ok, SID, state)).toEqual([
+    expect(mapPiEvent(ok, SID, state, undefined)).toEqual([
       { kind: "tool-result", sessionId: SID, toolCallId: "tc1", result: "file.txt", isError: false },
     ])
     const bad: PiSessionEvent = {
@@ -139,12 +139,12 @@ describe("mapPiEvent", () => {
       result: "boom",
       isError: true,
     }
-    expect(mapPiEvent(bad, SID, state)).toEqual([
+    expect(mapPiEvent(bad, SID, state, undefined)).toEqual([
       { kind: "tool-result", sessionId: SID, toolCallId: "tc2", result: "boom", isError: true },
     ])
   })
 
-  it("emits usage_update from turn_end assistant usage", () => {
+  it("emits usage_update with the resolved model context window as size, NOT the token total", () => {
     const state = createPiMapperState()
     const event: PiSessionEvent = {
       type: "turn_end",
@@ -154,11 +154,41 @@ describe("mapPiEvent", () => {
         usage: { input: 100, output: 20, totalTokens: 120, cost: { total: 0.0021 } },
       },
     }
-    expect(mapPiEvent(event, SID, state)).toEqual([
+    // contextWindow resolved (e.g. by client.ts from @agentproto/model-catalog) —
+    // `size` must be the real window, never the turn's own token total (that
+    // was the bug: size === used pinned contextPct at 100% on turn 1).
+    expect(mapPiEvent(event, SID, state, 262144)).toEqual([
       {
         kind: "usage_update",
         sessionId: SID,
-        size: 120,
+        size: 262144,
+        used: 120,
+        cost: { amount: 0.0021, currency: "USD" },
+        tokensIn: 100,
+        tokensOut: 20,
+      },
+    ])
+  })
+
+  it("sends size: 0 (unknown-window sentinel) when the model's context window isn't resolvable", () => {
+    const state = createPiMapperState()
+    const event: PiSessionEvent = {
+      type: "turn_end",
+      message: {
+        role: "assistant",
+        stopReason: "stop",
+        usage: { input: 100, output: 20, totalTokens: 120, cost: { total: 0.0021 } },
+      },
+    }
+    // contextWindow undefined (unknown model) — size must NOT fall back to
+    // totalTokens (or any other used-derived number); it must be the
+    // explicit 0 sentinel the runtime's usage_update ingestion (`evt.size >
+    // 0` guard, packages/runtime/src/sessions.ts) knows to ignore.
+    expect(mapPiEvent(event, SID, state, undefined)).toEqual([
+      {
+        kind: "usage_update",
+        sessionId: SID,
+        size: 0,
         used: 120,
         cost: { amount: 0.0021, currency: "USD" },
         tokensIn: 100,
@@ -173,8 +203,9 @@ describe("mapPiEvent", () => {
       { type: "message_update", assistantMessageEvent: { type: "done", reason: "stop" } },
       SID,
       state,
+      undefined,
     )
-    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state)).toEqual([
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
       { kind: "turn-end", sessionId: SID, reason: "completed" },
     ])
   })
@@ -185,8 +216,9 @@ describe("mapPiEvent", () => {
       { type: "message_update", assistantMessageEvent: { type: "error", reason: "aborted" } },
       SID,
       state,
+      undefined,
     )
-    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state)).toEqual([
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
       { kind: "turn-end", sessionId: SID, reason: "cancelled" },
     ])
   })
@@ -197,8 +229,9 @@ describe("mapPiEvent", () => {
       { type: "turn_end", message: { role: "assistant", stopReason: "length" } },
       SID,
       state,
+      undefined,
     )
-    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state)).toEqual([
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
       { kind: "turn-end", sessionId: SID, reason: "max_turns" },
     ])
   })
@@ -212,11 +245,12 @@ describe("mapPiEvent", () => {
       },
       SID,
       state,
+      undefined,
     )
     expect(err).toEqual([
       { kind: "error", sessionId: SID, error: { message: "rate limited" } },
     ])
-    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state)).toEqual([
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
       { kind: "turn-end", sessionId: SID, reason: "error" },
     ])
   })
@@ -225,23 +259,23 @@ describe("mapPiEvent", () => {
     expect(mapStopReason(undefined)).toBe("completed")
     expect(mapStopReason("toolUse")).toBe("completed")
     const state = createPiMapperState()
-    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state)).toEqual([
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
       { kind: "turn-end", sessionId: SID, reason: "completed" },
     ])
   })
 
   it("ignores lifecycle-only events (and agent_settled, which pi never streams)", () => {
     const state = createPiMapperState()
-    expect(mapPiEvent({ type: "agent_start" }, SID, state)).toEqual([])
-    expect(mapPiEvent({ type: "turn_start" }, SID, state)).toEqual([])
-    expect(mapPiEvent({ type: "agent_settled" }, SID, state)).toEqual([])
+    expect(mapPiEvent({ type: "agent_start" }, SID, state, undefined)).toEqual([])
+    expect(mapPiEvent({ type: "turn_start" }, SID, state, undefined)).toEqual([])
+    expect(mapPiEvent({ type: "agent_settled" }, SID, state, undefined)).toEqual([])
   })
 
   it("does NOT close the turn on a willRetry agent_end (auto-retry continues)", () => {
     const state = createPiMapperState()
-    expect(mapPiEvent({ type: "agent_end", willRetry: true }, SID, state)).toEqual([])
+    expect(mapPiEvent({ type: "agent_end", willRetry: true }, SID, state, undefined)).toEqual([])
     // The eventual terminal agent_end closes it.
-    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state)).toEqual([
+    expect(mapPiEvent({ type: "agent_end", willRetry: false }, SID, state, undefined)).toEqual([
       { kind: "turn-end", sessionId: SID, reason: "completed" },
     ])
   })
