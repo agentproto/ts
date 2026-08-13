@@ -631,8 +631,14 @@ export interface AgentCliPrintConfig {
    *   "result"), the payload is nested under a matching key, and the
    *   session id is a nested `conversation_id` — so it needs its own
    *   mapper, not the Claude one.
+   * - `"jcode-ndjson"` — jcode's `run --ndjson` taxonomy. Lines are
+   *   discriminated by a `type` field ("start" | "text_delta" |
+   *   "tool_start" | "tool_input" | "tool_exec" | "tool_done" |
+   *   "tokens" | "done" | connection noise), with tool arguments
+   *   streamed as JSON-string `tool_input` deltas between `tool_start`
+   *   and `tool_exec`.
    */
-  event_schema?: "claude-stream-json" | "mastra-jsonl" | "antigravity-stream-json"
+  event_schema?: "claude-stream-json" | "mastra-jsonl" | "antigravity-stream-json" | "jcode-ndjson"
 }
 
 /**

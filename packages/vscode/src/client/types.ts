@@ -579,6 +579,10 @@ export interface AdapterInstallResult {
   command?: string
   exitCode?: number
   status?: "supported" | "available" | "ready" | "unresolvable"
+  /** Install failed only because a setup step needs an interactive
+   *  terminal the daemon doesn't have — offer a PTY running
+   *  `agentproto setup <slug>` instead of a bare error. */
+  needsInteractiveSetup?: boolean
 }
 
 /** An installed app's UI panel declaration (`defineApp({ ui })` →

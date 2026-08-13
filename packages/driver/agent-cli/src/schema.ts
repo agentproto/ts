@@ -408,7 +408,7 @@ const printConfigSchema = z.object({
     flag: z.string(),
     kind: z.enum(["value", "boolean"]),
   }).strict().optional(),
-  event_schema: z.enum(["claude-stream-json", "mastra-jsonl", "antigravity-stream-json"]).optional(),
+  event_schema: z.enum(["claude-stream-json", "mastra-jsonl", "antigravity-stream-json", "jcode-ndjson"]).optional(),
 }).strict().optional()
 
 export const agentCliFrontmatterSchema = z
