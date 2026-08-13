@@ -2379,6 +2379,34 @@ export interface SessionsRegistry {
    *  policy state — never touches the live agent. Throws when the id is
    *  unknown. */
   setKeepAlive(id: string, keepAlive: boolean): SessionDescriptor
+  /**
+   * Manually override `awaitingInput`/`awaitingQuestion` (the
+   * `session_flag_status` MCP verb) — the ONE write path for this pair
+   * besides the internal heuristic (`deriveHeuristicQuestion`) and a
+   * driver-reported `agent-prompt`, both of which only ever run inside a
+   * live turn. Lets a human, another agent, or the session watchdog correct
+   * a missed real question (`awaitingInput:true`, optionally attaching
+   * `question`) or clear a false positive (`awaitingInput:false`).
+   * `awaitingInput:false` ALWAYS clears `awaitingQuestion` too, regardless
+   * of what `question` was passed — a question cannot outlive its
+   * awaiting-input flag. When `question` is given alongside `true`, it's
+   * stored as `{ text: question, source: "structured" }` (an explicit
+   * override is at least as authoritative as a driver-reported prompt).
+   * Guard mirrors the INVERSE of `archiveSession`'s: only a LIVE session
+   * (running/starting) may be flagged — a terminal session has no turn left
+   * to be "awaiting" anything, so correcting it there would be fiction with
+   * nothing downstream (`session_monitor`, the webhook notifier) to observe
+   * it. Persists via `schedulePersist` and emits
+   * `session:awaiting-input-flagged` (carrying the required `reason`) so
+   * the correction is visible via `session_events_poll` same as every other
+   * lifecycle event. Cleared automatically like any other awaiting-input
+   * signal on the session's next prompt/turn start. Throws when the id is
+   * unknown or the session is terminal.
+   */
+  flagAwaitingInput(
+    id: string,
+    patch: { awaitingInput: boolean; question?: string; reason: string },
+  ): SessionDescriptor
   /** Subscribe to a session's output. Returns an unsubscribe fn.
    *  Initial backfill: synchronously invokes `onLine` once for each
    *  line currently in the ring buffer so attaches show context. */
@@ -6692,6 +6720,43 @@ export function createSessionsRegistry(opts?: {
       if (!rt) throw new Error(`setKeepAlive: no session "${id}"`)
       rt.desc.keepAlive = keepAlive
       schedulePersist()
+      stampProcessAlive(rt.desc)
+      return rt.desc
+    },
+    flagAwaitingInput(id, patch) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`flagAwaitingInput: no session "${id}"`)
+      // Inverse of archiveSession's guard: only a LIVE session has a turn
+      // that can meaningfully be "awaiting" anything — a terminal session's
+      // classification is stale by definition, and there's nothing
+      // downstream (session_monitor, the webhook notifier) left to observe
+      // a correction on a row that's already done.
+      const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
+      if (!isAlive) {
+        throw new Error(
+          `flagAwaitingInput: session "${id}" is ${rt.desc.status}, not live — only a ` +
+            "running/starting session's awaiting-input classification can be corrected."
+        )
+      }
+      rt.desc.awaitingInput = patch.awaitingInput
+      // false ALWAYS clears the question too — a question cannot outlive
+      // its awaiting-input flag. `source: "structured"` because an explicit
+      // human/orchestrator override is at least as authoritative as a
+      // driver-reported prompt (the other "structured" producer).
+      rt.desc.awaitingQuestion =
+        patch.awaitingInput && patch.question !== undefined
+          ? { text: patch.question, source: "structured" }
+          : undefined
+      schedulePersist()
+      sessionEvents?.emit({
+        type: "session:awaiting-input-flagged",
+        sessionId: id,
+        awaitingInput: patch.awaitingInput,
+        reason: patch.reason,
+        ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
       stampProcessAlive(rt.desc)
       return rt.desc
     },
