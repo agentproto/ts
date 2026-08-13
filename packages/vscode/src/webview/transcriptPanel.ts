@@ -789,6 +789,10 @@ export function buildHtml(
     .tstatus { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
     .tstatus:empty, .tstatus.quiet { background: transparent; border: 1px solid var(--vscode-descriptionForeground); }
     .tstatus.busy { background: var(--vscode-charts-green, #4caf50); }
+    /* A busy session the turn-liveness watchdog has flagged silent past its
+       threshold (#601-adjacent) — distinct from plain busy (green) and from
+       awaiting (yellow) so a wedged session stops masquerading as working. */
+    .tstatus.stalled { background: var(--vscode-charts-red, #e51400); }
     .tstatus.delegating { background: transparent; border: 2px solid var(--vscode-charts-green, #4caf50); }
     .tstatus.awaiting { background: var(--vscode-charts-yellow, #d7a600); }
     .tstatus.parked { background: var(--vscode-descriptionForeground); }
@@ -2836,7 +2840,11 @@ export function buildHtml(
         if (titleStatus) {
           const st = titleStatusState(session);
           titleStatus.className = 'tstatus ' + st;
-          titleStatus.title = st === 'delegating' ? 'Delegating — waiting on its busy subtree'
+          titleStatus.title = st === 'stalled'
+              ? 'Stalled' + (typeof session.stalledSinceMs === 'number'
+                  ? ' — no output for ' + formatDuration(Math.max(0, Date.now() - session.stalledSinceMs))
+                  : '') + ' — the agent may be stuck'
+            : st === 'delegating' ? 'Delegating — waiting on its busy subtree'
             : st === 'parked' ? 'Parked — supervised, will be re-prompted'
             : st === 'awaiting' ? 'Awaiting your input'
             : st === 'busy' ? 'Working' : 'Quiet';

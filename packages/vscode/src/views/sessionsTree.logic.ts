@@ -278,7 +278,7 @@ export function isStalled(session: SessionDescriptor, now: number): boolean {
  */
 export type SessionActivity =
   | "needs-you" // awaiting input or a permission decision — blocked ON THE HUMAN
-  | "stalled" // mid-turn but silent past STALL_AFTER_MS — busy in name only
+  | "stalled" // mid-turn but silent past STALL_AFTER_MS — busy in name only — OR idle after the adapter's own last turn reported failure (lastTurnErroredAt)
   | "parked-bg" // ended its turn with background tasks still pending — a silent dead end unless someone re-prompts
   | "working" // a turn is in flight (model generating, or a tool running)
   | "idle" // alive, no turn — parked, ready for a prompt
@@ -344,6 +344,14 @@ export function activityFor(session: SessionDescriptor, now?: number): SessionAc
   // — in flight, leave it alone — and a 16px glyph is the wrong place to
   // spend a distinction nobody acts on.
   if (session.busy) return "working"
+  // The adapter's OWN last turn reported failure in-band (see
+  // SessionDescriptor.lastTurnErroredAt's docblock) — process is alive, no
+  // turn in flight, but the last thing this session did needs a look, not a
+  // re-prompt on faith. Folded into the same "stalled" treatment a mid-turn
+  // stall gets rather than a new state. Checked AFTER busy so a session that
+  // has already started retrying reads as working, not stalled — the marker
+  // clears itself once that retry completes cleanly.
+  if (session.lastTurnErroredAt) return "stalled"
   // Alive, no turn in flight, but background tasks from the last turn are
   // still outstanding — parked with work pending, a silent dead end unless
   // someone re-prompts. Checked AFTER busy so a session that IS still working
@@ -606,6 +614,11 @@ export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
   // the row's suffix summarizes.
   if ((session.pendingBgTasks ?? 0) > 0) {
     fields.push({ label: "bg tasks pending", value: String(session.pendingBgTasks) })
+  }
+  // The adapter's own last turn reported failure in-band — the marker behind
+  // the "stalled" read the row now shows for an otherwise-idle session.
+  if (session.lastTurnErroredAt) {
+    fields.push({ label: "last turn errored", value: session.lastTurnErroredAt })
   }
   if (typeof session.costUsd === "number") {
     fields.push({ label: "cost", value: `$${session.costUsd.toFixed(4)}` })

@@ -129,11 +129,18 @@ describe("titleStatusState", () => {
   const s = (over: Partial<SessionDescriptor>): SessionDescriptor => ({
     id: "s", kind: "agent-cli", workspaceSlug: "w", command: "c", pid: 1, status: "running", startedAt: "t", ...over,
   })
-  it("applies the precedence busy > delegating > awaiting > parked > quiet", () => {
-    expect(titleStatusState(s({ busy: true, childrenBusy: 2, awaitingInput: true }))).toBe("busy")
-    expect(titleStatusState(s({ status: "starting" }))).toBe("busy")
-    expect(titleStatusState(s({ busy: false, childrenBusy: 1, awaitingInput: true }))).toBe("delegating")
+  it("applies the precedence awaiting > stalled > busy > delegating > parked > quiet", () => {
+    // Awaiting your input outranks everything — including a busy flag and a
+    // busy subtree — because it's the one state that genuinely needs YOU.
+    expect(titleStatusState(s({ busy: true, childrenBusy: 2, awaitingInput: true }))).toBe("awaiting")
+    expect(titleStatusState(s({ busy: false, childrenBusy: 1, awaitingInput: true }))).toBe("awaiting")
     expect(titleStatusState(s({ busy: false, awaitingInput: true, watchers: 3 }))).toBe("awaiting")
+    // A busy session flagged by the turn-liveness watchdog (#601-adjacent) is
+    // "stalled", not "busy" — it stopped masquerading as working.
+    expect(titleStatusState(s({ busy: true, stalledSinceMs: 1_000 }))).toBe("stalled")
+    expect(titleStatusState(s({ busy: true }))).toBe("busy")
+    expect(titleStatusState(s({ status: "starting" }))).toBe("busy")
+    expect(titleStatusState(s({ busy: false, childrenBusy: 1 }))).toBe("delegating")
     expect(titleStatusState(s({ busy: false, watchers: 1 }))).toBe("parked")
     expect(titleStatusState(s({ busy: false }))).toBe("quiet")
   })

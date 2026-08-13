@@ -140,6 +140,54 @@ describe("buildStatusText", () => {
   })
 })
 
+describe("parked-bg vs stalled (#601-adjacent)", () => {
+  /** Alive, idle (turn ended), with background work from the last turn still
+   *  outstanding — a healthy dead end, not a stall. */
+  function parkedBg(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
+    return session({ busy: false, pendingBgTasks: 2, ...over })
+  }
+
+  it("counts a parked-bg session separately from a genuinely stalled one", () => {
+    const summary = summarizeLive(
+      [
+        parkedBg(),
+        working({ id: "s2", lastActivityAt: new Date(NOW - STALL_AFTER_MS - 1_000).toISOString() }),
+      ],
+      NOW,
+    )
+    expect(summary.parkedBg).toBe(1)
+    expect(summary.stalled).toBe(1)
+  })
+
+  it("never lets a healthy parked-bg backlog inflate the 'stuck' count", () => {
+    const summary = summarizeLive([parkedBg(), parkedBg({ id: "s2" }), parkedBg({ id: "s3" })], NOW)
+    expect(summary.stalled).toBe(0)
+    expect(summary.parkedBg).toBe(3)
+    expect(buildStatusCounts(summary)).toBe("3 awaiting bg")
+  })
+
+  it("gives parked-bg its own status-bar segment, distinct from 'stuck'", () => {
+    const summary = summarizeLive(
+      [
+        parkedBg(),
+        working({ id: "s2", lastActivityAt: new Date(NOW - STALL_AFTER_MS - 1_000).toISOString() }),
+      ],
+      NOW,
+    )
+    expect(buildStatusCounts(summary)).toBe("1 stuck · 1 awaiting bg")
+  })
+
+  it("ranks stalled ahead of parked-bg for the dominant icon, both ahead of idle", () => {
+    expect(dominantActivity(summarizeLive([parkedBg()], NOW))).toBe("parked-bg")
+    expect(statusBarIcon(summarizeLive([parkedBg()], NOW))).toBe("clock")
+    const both = summarizeLive(
+      [parkedBg(), working({ id: "s2", lastActivityAt: new Date(NOW - STALL_AFTER_MS - 1_000).toISOString() })],
+      NOW,
+    )
+    expect(dominantActivity(both)).toBe("stalled")
+  })
+})
+
 describe("machine-origin sessions (gate reviews)", () => {
   // The incident this covers: 77 live `gate-review` sessions piled up and
   // inflated "working" as if the operator had 77 things mid-turn.

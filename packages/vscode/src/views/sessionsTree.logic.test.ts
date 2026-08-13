@@ -391,6 +391,38 @@ describe("activityFor", () => {
     expect(activityFor(session({ status: "exited", exitCode: 0, pendingBgTasks: 2 }))).toBe("done")
     expect(activityFor(session({ status: "killed", pendingBgTasks: 2 }))).toBe("stopped")
   })
+
+  it("an idle session whose last turn errored in-band reads as stalled, not idle", () => {
+    // The adapter's OWN turn-end reported failure while the process stayed
+    // alive — status never left "running" — so nothing else would flag it.
+    expect(activityFor(session({ lastTurnErroredAt: "2026-01-01T00:05:00Z" }))).toBe("stalled")
+  })
+
+  it("a busy session retrying after a prior turn error reads as working, not stalled", () => {
+    // The marker survives until the retry's own turn-end clears it — while
+    // that retry is in flight, busy outranks the stale marker.
+    expect(activityFor(session({ busy: true, lastTurnErroredAt: "2026-01-01T00:05:00Z" }))).toBe(
+      "working",
+    )
+  })
+
+  it("needs-you and mid-turn stall both outrank a stale turn-error marker", () => {
+    expect(
+      activityFor(session({ awaitingInput: true, lastTurnErroredAt: "2026-01-01T00:05:00Z" })),
+    ).toBe("needs-you")
+  })
+
+  it("a turn-error marker outranks parked-bg", () => {
+    expect(
+      activityFor(session({ pendingBgTasks: 2, lastTurnErroredAt: "2026-01-01T00:05:00Z" })),
+    ).toBe("stalled")
+  })
+
+  it("a turn-error marker never applies to a terminal session", () => {
+    expect(
+      activityFor(session({ status: "exited", exitCode: 0, lastTurnErroredAt: "2026-01-01T00:05:00Z" })),
+    ).toBe("done")
+  })
 })
 
 describe("iconFor", () => {
@@ -632,6 +664,15 @@ describe("tooltipFieldsFor", () => {
     )
     expect(tooltipFieldsFor(session())).not.toContainEqual(
       expect.objectContaining({ label: "bg tasks pending" }),
+    )
+  })
+  it("carries a last-turn-errored row only when the adapter's own last turn reported failure", () => {
+    expect(tooltipFieldsFor(session({ lastTurnErroredAt: "2026-01-01T00:05:00Z" }))).toContainEqual({
+      label: "last turn errored",
+      value: "2026-01-01T00:05:00Z",
+    })
+    expect(tooltipFieldsFor(session())).not.toContainEqual(
+      expect.objectContaining({ label: "last turn errored" }),
     )
   })
   it("formats tokens in/out together, defaulting missing side to 0", () => {
