@@ -449,8 +449,13 @@ export function createAgentCliRuntime(
           })
         })
         if (spawnFailure) {
+          const isEnoent =
+            (spawnFailure as NodeJS.ErrnoException).code === "ENOENT"
+          const enoentHint = isEnoent
+            ? `\n'${execBin}' was not found on the daemon's PATH. If it works in your own terminal, the daemon's environment may be stale — try \`agentproto daemon restart\`.`
+            : ""
           throw new Error(
-            `agent-cli '${definition.id}': failed to spawn '${execBin} ${execArgs.join(" ")}': ${spawnFailure.message}`,
+            `agent-cli '${definition.id}': failed to spawn '${execBin} ${execArgs.join(" ")}': ${spawnFailure.message}${enoentHint}`,
           )
         }
         // The spawn itself succeeded — keep a listener attached for the
