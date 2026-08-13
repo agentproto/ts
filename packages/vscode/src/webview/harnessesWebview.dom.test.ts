@@ -6,9 +6,10 @@
  * rendered markup or the click/keydown wiring fails this suite, not just a
  * hand-rolled model of it.
  *
- * Covers the button redesign: one labeled action per row in a stable slot
- * (no ✓ glyph, no hover-swap), row-level click/Enter triggering that action,
- * and the disabled spinner "Installing…" state.
+ * Covers the button redesign: a stable action slot per row (no ✓ glyph, no
+ * hover-swap) holding labeled Install/Installing… verbs pre-install and the
+ * conversation/terminal icon pair once installed, row-level click/Enter
+ * triggering the row's action, and the disabled spinner "Installing…" state.
  */
 import type { DomDocument, DomElement, DomWindow } from "jsdom"
 import { JSDOM } from "jsdom"
@@ -126,15 +127,17 @@ describe("harnesses webview — render", () => {
     for (const r of rows) expect(htmlEl(r).getAttribute("tabindex")).toBe("0")
   })
 
-  it("renders a labeled ▶ Start button for an installed harness — no bare ✓ glyph anywhere", () => {
+  it("renders a conversation icon button for an installed harness — no bare ✓ glyph anywhere", () => {
     const panel = renderPanel()
     send(panel, modelMessage([START_ROW]))
     const list = el(panel, "list")
     expect(list.innerHTML).not.toContain("✓")
     const btn = htmlEl(list.querySelector('button[data-act="start"]'))
     expect(btn.tagName).toBe("BUTTON")
-    expect(btn.textContent).toContain("Start")
-    expect(btn.getAttribute("title")).toBe("Start a session with Claude Code")
+    // Icon-only: the verb lives in title + aria-label, the glyph is an SVG.
+    expect(btn.querySelector("svg")).toBeTruthy()
+    expect(btn.getAttribute("title")).toBe("Start a conversation with Claude Code")
+    expect(btn.getAttribute("aria-label")).toBe("Start a conversation with Claude Code")
     expect((btn as unknown as HTMLButtonElement).disabled).toBe(false)
   })
 
@@ -157,12 +160,11 @@ describe("harnesses webview — render", () => {
     expect(row.querySelector(".spin")).toBeTruthy()
   })
 
-  it("gives every row the same minimum action width so the layout never jumps between states", () => {
+  it("renders exactly one primary action per row across all three states", () => {
     const panel = renderPanel()
     send(panel, modelMessage([START_ROW, INSTALL_ROW, INSTALLING_ROW]))
     // Scoped to the primary action slot — the Terminal button (also `.act`,
-    // but `.term`) intentionally opts out of the shared min-width so it stays
-    // compact next to Start rather than stretching to match it.
+    // but `.term`) is a secondary sibling, never the row's own action.
     const buttons = [...el(panel, "list").querySelectorAll("button.act:not(.term)")]
     expect(buttons).toHaveLength(3)
   })
@@ -200,7 +202,7 @@ describe("harnesses webview — render", () => {
     expect(more.textContent).toBe("+2")
   })
 
-  it("renders a Terminal button to the left of Start when canOpenTerminal is true", () => {
+  it("renders a terminal icon button to the left of the conversation button when canOpenTerminal is true", () => {
     const panel = renderPanel()
     send(panel, modelMessage([START_ROW]))
     const actions = el(panel, "list").querySelector(".actions")!
@@ -208,7 +210,9 @@ describe("harnesses webview — render", () => {
     expect(actionsHtml.indexOf("termbtn")).toBeGreaterThanOrEqual(0)
     expect(actionsHtml.indexOf("termbtn")).toBeLessThan(actionsHtml.indexOf('data-act="start"'))
     const termBtn = htmlEl(actions.querySelector(".termbtn"))
-    expect(termBtn.textContent).toContain("Terminal")
+    expect(termBtn.querySelector("svg")).toBeTruthy()
+    expect(termBtn.getAttribute("title")).toBe("Open Claude Code in a terminal")
+    expect(termBtn.getAttribute("aria-label")).toBe("Open Claude Code in a terminal")
     expect(termBtn.getAttribute("data-slug")).toBe("claude-code")
   })
 

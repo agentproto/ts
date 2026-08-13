@@ -3,8 +3,10 @@
  * TreeView (`agentproto.harnessesView === "webview"`, see package.json's
  * mutually-exclusive `when` clauses). Mirrors the Sessions webview's row
  * grammar: hairline separators, 7x7px status dots, real adapter logos in the
- * second column, and one labeled action button (Install / Installing… /
- * ▶ Start) that never changes slot or swaps on hover.
+ * second column, and a stable action slot that never swaps on hover: labeled
+ * Install / Installing… while not ready, then an icon pair once installed —
+ * conversation (managed session) + terminal (native TUI, when the harness
+ * has one).
  */
 
 import { randomBytes } from "node:crypto"
@@ -27,7 +29,8 @@ import {
 const VIEW_TYPE = "agentproto.harnessesWebview"
 
 /** Adapter slugs with a verified native terminal/TUI launch path — static,
- *  mirrors `NATIVE_LAUNCH_ARGV`'s own coverage (claude-code, hermes today). */
+ *  mirrors `NATIVE_LAUNCH_ARGV`'s own coverage (every harness with an
+ *  interactive CLI arm; see that map for the deliberate exclusions). */
 const NATIVE_TERMINAL_SLUGS = new Set(Object.keys(NATIVE_LAUNCH_ARGV))
 
 type RenderLogo =
@@ -342,11 +345,17 @@ export function buildHtml(nonce: string, cspSource: string): string {
       min-width: 64px;
     }
     .act.primary { color: var(--vscode-foreground); opacity: 0.85; }
-    .act.term { min-width: 0; padding: 3px 8px; }
+    /* Icon actions — the installed-state pair (conversation / terminal).
+       Square, borderless ghosts so 19 rows don't read as a wall of bordered
+       buttons; the border + hover treatment stays on the labeled verbs
+       (Install / Installing…), which are transient and need the emphasis. */
+    .act.icon { min-width: 0; width: 26px; height: 24px; padding: 0; border-color: transparent; }
+    .act.icon svg { display: block; }
     .row:hover .act, .act:hover, .act:focus-visible { opacity: 1; color: var(--vscode-foreground); border-color: var(--vscode-foreground); }
+    .row:hover .act.icon { border-color: transparent; }
+    .act.icon:hover, .act.icon:focus-visible { border-color: var(--vscode-panel-border, rgba(128,128,128,0.35)); background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15)); }
     .act:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
     .act[disabled] { cursor: default; }
-    .act .tri { font-size: 8px; }
     .spin {
       width: 10px; height: 10px; border: 1.5px solid var(--vscode-descriptionForeground);
       border-top-color: var(--vscode-foreground); border-radius: 50%;
@@ -392,9 +401,15 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return '<span class="logo img"><img src="' + escapeHtml(logo.uri) + '" alt="" /></span>';
       }
 
+      // Inline SVGs (stroke = currentColor) instead of unicode glyphs — the
+      // old ▶/⌨ rendered at platform-font mercy; these stay crisp and themed.
+      var CHAT_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.75 3h10.5c.41 0 .75.34.75.75v6.5c0 .41-.34.75-.75.75H8.4L5.5 13.4V11H2.75A.75.75 0 0 1 2 10.25v-6.5C2 3.34 2.34 3 2.75 3Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+      var TERMINAL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4.2 6l2.4 2-2.4 2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.6 10.6h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+
       function actionHTML(r) {
         if (r.action === 'start') {
-          return '<button class="act primary" data-act="start" title="Start a session with ' + escapeHtml(r.name) + '"><span class="tri">▶</span>Start</button>';
+          var startLabel = 'Start a conversation with ' + escapeHtml(r.name);
+          return '<button class="act icon primary" data-act="start" title="' + startLabel + '" aria-label="' + startLabel + '">' + CHAT_ICON + '</button>';
         }
         if (r.action === 'installing') {
           return '<button class="act" disabled><span class="spin"></span>Installing…</button>';
@@ -404,7 +419,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
 
       function terminalHTML(r) {
         if (!r.canOpenTerminal) return '';
-        return '<button class="act term termbtn" data-slug="' + escapeHtml(r.slug) + '" title="Open a real terminal session with ' + escapeHtml(r.name) + '">⌨ Terminal</button>';
+        var termLabel = 'Open ' + escapeHtml(r.name) + ' in a terminal';
+        return '<button class="act icon term termbtn" data-slug="' + escapeHtml(r.slug) + '" title="' + termLabel + '" aria-label="' + termLabel + '">' + TERMINAL_ICON + '</button>';
       }
 
       function walletBadgeHTML(r) {
