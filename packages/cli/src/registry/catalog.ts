@@ -107,6 +107,15 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "grok-cli",
+    name: "Grok",
+    description:
+      "xAI's official Grok Build CLI in ACP mode (`grok agent stdio`). Native billing-auth: \"use my existing Grok login\".",
+    packageName: "@agentproto/adapter-grok-cli",
+    hint: "xai · ACP · resumable",
+  },
+  {
+    type: "agent-cli",
     slug: "hermes",
     name: "Hermes",
     description:
