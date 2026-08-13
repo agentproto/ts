@@ -13,6 +13,7 @@ This installs the `agentproto` executable on your `PATH`.
 ```text
 agentproto auth         <login|status|logout> [--host <url>]        authenticate against a remote host
 agentproto config       <show|path|get|set|unset|edit>              read/write ~/.agentproto/config.json
+agentproto app          <pack|unpack|serve>                         package or serve an agentproto app bundle
 agentproto daemon       <install|uninstall|start|restart|stop|status|logs>  manage launchd/systemd service
 agentproto install      <slug> [--force] [--dry-run] [--allow-unverified]  install an adapter's underlying CLI
 agentproto plugins      <list|show|install|uninstall|enable|disable> manage runtime plugins
@@ -151,7 +152,7 @@ Schema (all fields optional; see [`docs/cli/reference/config-schema.md`](../../d
   "terminalPresets": {
     "terra": { "argv": ["bash", "-l"], "env": { "TERM": "xterm-256color" } }
   },
-  "features": { "pty": true }
+  "features": { "pty": true, "llmEndpoint": false }
 }
 ```
 
@@ -405,6 +406,11 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 | `mcp_imported_tool_list` / `mcp_imported_call` | Proxy the imported MCP's tools         |
 | `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` | Install and run `@agentproto/app-kit` apps as live sessions |
 | `app_apply` / `app_unapply` / `app_list_applied` | Mount / unmount apps to scopes with dependency validation |
+| `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane (read/write/list + legacy migration) |
+| `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets |
+| `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (BM25) |
+| `conversation_export` | Export a daemon transcript to a target adapter's native store (claude-code today) |
+| `llm_endpoint_start` / `llm_endpoint_stop` / `llm_endpoint_status` / `llm_endpoint_set_upstream_link` / `llm_endpoint_list_links` | Local LLM Endpoint proxy sidecar (requires `features.llmEndpoint`) |
 
 The terminal tools let one agent **orchestrate** other sessions: an agent in a structured ACP session can call `terminal_start({argv: ["bash"]})`, then drive it turn-by-turn with `terminal_input` + `terminal_output`. Same surface backs the future `wire`/`tee` primitive for cross-session piping.
 
@@ -420,6 +426,7 @@ The terminal tools let one agent **orchestrate** other sessions: an agent in a s
 - `@agentproto/adapter-opencode` — OpenCode
 - `@agentproto/adapter-openclaw` — OpenClaw
 - `@agentproto/adapter-antigravity` — Google Antigravity (`agy`, print/headless, multi-model)
+- `@agentproto/adapter-jcode` — jcode (Rust coding agent, print/headless, multi-provider)
 - `@agentproto/adapter-mastra` / `adapter-mastra-agent` / `adapter-mastracode` / `adapter-mastracode-inprocess` — Mastra-based agents
 - `@agentproto/adapter-browser` — browser / CDP session adapter
 - `@agentproto/adapter-pi` — pi

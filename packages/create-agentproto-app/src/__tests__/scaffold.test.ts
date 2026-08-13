@@ -48,18 +48,21 @@ async function readAllFiles(root: string): Promise<Map<string, string>> {
 }
 
 describe("template source tree", () => {
-  it("ships _agentproto/ (escaped), never a literal .agentproto/", async () => {
-    // The monorepo root .gitignore ignores `.agentproto/` at any depth, so a
-    // dot-named template tree exists locally but silently never reaches git —
-    // CI then scaffolds apps with no APP.md. The template must ship the
-    // escaped name and rely on the copy-time rename in template.ts.
-    const { readdir } = await import("node:fs/promises")
-    const { fileURLToPath } = await import("node:url")
-    const templateDir = fileURLToPath(new URL("../../templates/react-ts", import.meta.url))
-    const entries = await readdir(templateDir)
-    expect(entries).toContain("_agentproto")
-    expect(entries).not.toContain(".agentproto")
-  })
+  it.each(["react-ts", "vanilla"] as const)(
+    "%s ships _agentproto/ (escaped), never a literal .agentproto/",
+    async (template) => {
+      // The monorepo root .gitignore ignores `.agentproto/` at any depth, so a
+      // dot-named template tree exists locally but silently never reaches git —
+      // CI then scaffolds apps with no APP.md. The template must ship the
+      // escaped name and rely on the copy-time rename in template.ts.
+      const { readdir } = await import("node:fs/promises")
+      const { fileURLToPath } = await import("node:url")
+      const templateDir = fileURLToPath(new URL(`../../templates/${template}`, import.meta.url))
+      const entries = await readdir(templateDir)
+      expect(entries).toContain("_agentproto")
+      expect(entries).not.toContain(".agentproto")
+    },
+  )
 })
 
 describe("scaffoldApp", () => {
@@ -110,9 +113,25 @@ describe("scaffoldApp", () => {
 
     const files = await readAllFiles(target)
     for (const [path, contents] of files) {
-      expect(path, `token left in path ${path}`).not.toMatch(/__APP_(ID|NAME|SLUG)__/)
-      expect(contents, `token left in ${path}`).not.toMatch(/__APP_(ID|NAME|SLUG)__/)
+      expect(path, `token left in path ${path}`).not.toMatch(/__APP_(ID|NAME|SLUG|CLIENT_VERSION)__/)
+      expect(contents, `token left in ${path}`).not.toMatch(/__APP_(ID|NAME|SLUG|CLIENT_VERSION)__/)
     }
+  })
+
+  it("stamps ui/package.json's @agentproto/app-client dep with the installed version", async () => {
+    const root = await mktmp()
+    const target = join(root, "version-stamp")
+    const outcome = await scaffoldApp({ targetDir: target })
+    expect(outcome.ok).toBe(true)
+
+    const { fileURLToPath } = await import("node:url")
+    const appClientPkgPath = fileURLToPath(
+      new URL("../../../app-client/package.json", import.meta.url),
+    )
+    const appClientVersion = JSON.parse(await readFile(appClientPkgPath, "utf8")).version
+
+    const uiPkg = JSON.parse(await readFile(join(target, "ui", "package.json"), "utf8"))
+    expect(uiPkg.dependencies["@agentproto/app-client"]).toBe(`^${appClientVersion}`)
   })
 
   it("substitutes __APP_ID__/__APP_NAME__/__APP_SLUG__ with the resolved values", async () => {
@@ -215,5 +234,79 @@ describe("scaffoldApp", () => {
     expect(outcome.ok).toBe(false)
     if (outcome.ok) return
     expect(outcome.reason).toBe("unknown-template")
+  })
+})
+
+describe("scaffoldApp with --template vanilla", () => {
+  it("writes the frozen vanilla file set — no ui/, no root package.json", async () => {
+    const root = await mktmp()
+    const target = join(root, "vanilla-app")
+
+    const outcome = await scaffoldApp({ targetDir: target, template: "vanilla" })
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+
+    expect(outcome.result.template).toBe("vanilla")
+
+    const files = await readAllFiles(target)
+    for (const expected of [
+      ".gitignore",
+      ".agentproto/APP.md",
+      ".agentproto/agents/vanilla-app-assistant/AGENT.md",
+      ".agentproto/workflows/vanilla-app-flow/WORKFLOW.md",
+      ".agentproto/ui/index.html",
+    ]) {
+      expect(files.has(expected), `missing ${expected}`).toBe(true)
+    }
+    expect(files.has("_gitignore")).toBe(false)
+    expect(files.has("package.json")).toBe(false)
+    expect(files.has("pnpm-workspace.yaml")).toBe(false)
+    expect(files.has("ui/package.json")).toBe(false)
+    for (const path of files.keys()) {
+      expect(path.startsWith("ui/"), `unexpected ui/ file ${path}`).toBe(false)
+    }
+  })
+
+  it("leaves no __APP_ tokens in any written file (content or path)", async () => {
+    const root = await mktmp()
+    const target = join(root, "vanilla-token-check")
+    const outcome = await scaffoldApp({
+      targetDir: target,
+      template: "vanilla",
+      name: "Vanilla Token Check",
+    })
+    expect(outcome.ok).toBe(true)
+
+    const files = await readAllFiles(target)
+    for (const [path, contents] of files) {
+      expect(path, `token left in path ${path}`).not.toMatch(/__APP_(ID|NAME|SLUG|CLIENT_VERSION)__/)
+      expect(contents, `token left in ${path}`).not.toMatch(/__APP_(ID|NAME|SLUG|CLIENT_VERSION)__/)
+    }
+  })
+
+  it("APP.md frontmatter parses via gray-matter", async () => {
+    const root = await mktmp()
+    const target = join(root, "vanilla-parsed")
+    const outcome = await scaffoldApp({ targetDir: target, template: "vanilla" })
+    expect(outcome.ok).toBe(true)
+
+    const raw = await readFile(join(target, ".agentproto", "APP.md"), "utf8")
+    const { data } = matter(raw)
+    expect(data.schema).toBe("app/v1")
+    expect(data.id).toBe("vanilla-parsed")
+    expect(data.ui.path).toBe(".agentproto/ui/index.html")
+  })
+
+  // The CLI behavior of `app build` no-opping is covered in
+  // packages/cli/src/__tests__/app-build.test.ts — this just asserts the
+  // scaffolded shape it depends on (no ui/package.json to build).
+  it("has no ui/package.json, so `app build` will no-op against it", async () => {
+    const root = await mktmp()
+    const target = join(root, "vanilla-buildless")
+    const outcome = await scaffoldApp({ targetDir: target, template: "vanilla" })
+    expect(outcome.ok).toBe(true)
+
+    const files = await readAllFiles(target)
+    expect(files.has("ui/package.json")).toBe(false)
   })
 })

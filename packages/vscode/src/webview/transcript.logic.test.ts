@@ -295,4 +295,50 @@ describe("watcherBannerFor", () => {
     expect(watcherBannerFor(2, 2)).toBeUndefined()
     expect(watcherBannerFor(undefined, undefined)).toBeUndefined()
   })
+
+  it("names the newest watcher + wait condition when identity is available", () => {
+    const detail = { watcherSessionId: "sup1", watcherLabel: "orchestrator-lead", event: "turn-end", since: "t0" }
+    expect(watcherBannerFor(0, 1, { nextDetails: [detail] })).toBe(
+      "A watcher attached — orchestrator-lead — until turn-end",
+    )
+  })
+
+  it("includes the timeout in the wait condition when the daemon reported one", () => {
+    const detail = { watcherLabel: "supervisor", event: "any", timeoutMs: 7_200_000, since: "t0" }
+    expect(watcherBannerFor(0, 1, { nextDetails: [detail] })).toBe(
+      "A watcher attached — supervisor — for any change, 2h timeout",
+    )
+  })
+
+  it("falls back to a session id when no label was resolved", () => {
+    const detail = { watcherSessionId: "sess_abc123", event: "awaiting-input", since: "t0" }
+    expect(watcherBannerFor(0, 1, { nextDetails: [detail] })).toBe(
+      "A watcher attached — sess_abc123 — until it asks for input",
+    )
+  })
+
+  it("appends a total when more than one watcher is attached", () => {
+    const a = { watcherLabel: "first", event: "exited", since: "t0" }
+    const b = { watcherLabel: "second", event: "turn-end", since: "t1" }
+    expect(watcherBannerFor(1, 2, { nextDetails: [a, b] })).toBe(
+      "A watcher attached — second — until turn-end (2 waiting total)",
+    )
+  })
+
+  it("falls back to bare-count wording for an anonymous waiter (no identity)", () => {
+    const detail = { event: "turn-end", since: "t0" }
+    expect(watcherBannerFor(0, 1, { nextDetails: [detail] })).toBe("A watcher attached — 1 waiting on this session")
+    expect(watcherBannerFor(0, 1)).toBe("A watcher attached — 1 waiting on this session")
+  })
+
+  it("names the departing watcher when exactly one was attached before the drop to zero", () => {
+    const detail = { watcherLabel: "orchestrator-lead", event: "turn-end", since: "t0" }
+    expect(watcherBannerFor(1, 0, { prevDetails: [detail] })).toBe("Watcher detached — orchestrator-lead")
+  })
+
+  it("stays generic on the last-watcher-leaving banner when there were several (can't say who)", () => {
+    const a = { watcherLabel: "first", event: "turn-end", since: "t0" }
+    const b = { watcherLabel: "second", event: "turn-end", since: "t1" }
+    expect(watcherBannerFor(2, 0, { prevDetails: [a, b] })).toBe("Watcher detached")
+  })
 })

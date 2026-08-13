@@ -255,11 +255,12 @@ export interface SessionStallClearedEvent {
  * is the counter AFTER the attach (read back from the registry, so a
  * concurrent waiter is already reflected). `watcherSessionId` names the
  * supervising session when the wait was initiated by one (the scoped
- * orchestrator's `callerScope.ownerSessionId`); absent for an anonymous
- * CLI/HTTP waiter. Same bus distribution as every other lifecycle event
- * (`session_events_poll`, the webhook notifier, the routine engine,
- * `session_monitor`). Paired with `session:watcher-detached` when the wait
- * resolves or times out.
+ * orchestrator's `callerScope.ownerSessionId`); `label` is that session's
+ * label/title, resolved once at attach time (a best-effort snapshot, not
+ * live). Both absent for an anonymous CLI/HTTP waiter. Same bus distribution
+ * as every other lifecycle event (`session_events_poll`, the webhook
+ * notifier, the routine engine, `session_monitor`). Paired with
+ * `session:watcher-detached` when the wait resolves or times out.
  */
 export interface SessionWatcherAttachedEvent {
   type: "session:watcher-attached"

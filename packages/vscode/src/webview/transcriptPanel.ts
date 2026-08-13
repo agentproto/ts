@@ -759,6 +759,22 @@ export function buildHtml(
     .metrics-pill #context-btn[hidden] + #context-popover { display: none; }
     /* When there's no context figure yet, the trailing separator would dangle. */
     .metrics-pill:has(#context-btn[hidden]) .metrics-sep { display: none; }
+    /* Watcher presence chip (#session-visibility) — a persistent eye+count in
+       the header, shown only while session.watchers is greater than zero.
+       Hover (title) gives a quick summary; click opens the popover with one
+       row per waiter (who + what they're waiting for). Calm/monochrome,
+       matching the cost pill's register rather than an alarm color — being
+       watched isn't a warning. */
+    #watchers-wrap[hidden] { display: none; }
+    #watchers-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));
+      border-radius: 999px; padding: 1px 9px;
+      color: var(--vscode-descriptionForeground);
+    }
+    #watchers-list .popover-row { justify-content: flex-start; gap: 8px; }
+    #watchers-list .popover-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground); }
+    #watchers-list .watcher-wait { color: var(--vscode-descriptionForeground); white-space: nowrap; }
     /* View segmented control — shows WHERE YOU ARE, active segment filled. */
     .segmented { display: inline-flex; border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35)); border-radius: 6px; overflow: hidden; }
     .segmented[hidden] { display: none; }
@@ -2100,6 +2116,12 @@ export function buildHtml(
           <div class="popover-row"><span class="popover-label">Size</span><span id="popover-context-size"></span></div>
         </div>
       </div>
+      <div id="watchers-wrap" class="header-action" hidden>
+        <button id="watchers-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <div id="watchers-popover" class="popover" hidden>
+          <div id="watchers-list"></div>
+        </div>
+      </div>
       <button id="open-terminal-btn" class="header-action term-btn" type="button" title="Open a real VS Code terminal for this session" hidden>
         <span class="term-glyph" aria-hidden="true">&gt;_</span>Terminal
       </button>
@@ -2197,6 +2219,10 @@ export function buildHtml(
       const ctxPct = document.getElementById('ctx-pct');
       const popoverContextUsed = document.getElementById('popover-context-used');
       const popoverContextSize = document.getElementById('popover-context-size');
+      const watchersWrap = document.getElementById('watchers-wrap');
+      const watchersBtn = document.getElementById('watchers-btn');
+      const watchersPopover = document.getElementById('watchers-popover');
+      const watchersList = document.getElementById('watchers-list');
       const blockedNote = document.getElementById('blocked-note');
       const bgChips = document.getElementById('bg-chips');
       const transcript = document.getElementById('transcript');
@@ -2645,6 +2671,75 @@ export function buildHtml(
         popoverAuth.textContent = accessIdentity(session);
       }
 
+      // Mirrors watcherIdentity/describeWaitCondition in transcript.logic.ts —
+      // this inline script has no module system to import them from, so the
+      // small pure formatting is duplicated here (same rationale as
+      // displayName above) and the two must stay in sync.
+      var WATCHER_WAIT_PHRASES = { 'turn-end': 'until turn-end', 'awaiting-input': 'until it asks for input', 'exited': 'until it exits', 'any': 'for any change' };
+      function watcherWaitDuration(ms) {
+        var seconds = Math.floor(ms / 1000);
+        if (seconds < 60) return seconds + 's';
+        var minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return minutes + 'min';
+        var hours = Math.floor(minutes / 60);
+        if (hours < 24) return hours + 'h';
+        return Math.floor(hours / 24) + 'd';
+      }
+      function watcherWaitPhrase(detail) {
+        var phrase = WATCHER_WAIT_PHRASES[detail.event] || ('until ' + detail.event);
+        return typeof detail.timeoutMs === 'number' ? (phrase + ', ' + watcherWaitDuration(detail.timeoutMs) + ' timeout') : phrase;
+      }
+      function watcherIdentity(detail) {
+        return detail.watcherLabel || detail.watcherSessionId || 'an anonymous waiter';
+      }
+
+      // Persistent header presence chip (#session-visibility) — eye + count,
+      // shown only while someone is actually watching. Hover (title) gives a
+      // one-line summary; click opens the popover with one row per waiter.
+      // Built via DOM APIs + textContent (not innerHTML): a watcher's label
+      // is a renamed session's title, i.e. arbitrary user text, and
+      // textContent is what the rest of this header already relies on to
+      // stay injection-safe (see displayName/headerTitle above).
+      function renderWatchers(session) {
+        var count = typeof session.watchers === 'number' ? session.watchers : 0;
+        watchersWrap.hidden = count === 0;
+        if (count === 0) {
+          watchersPopover.hidden = true;
+          return;
+        }
+        watchersBtn.textContent = '\\uD83D\\uDC41 ' + count;
+        var details = session.watcherDetails || [];
+        if (details.length === 1) {
+          watchersBtn.title = watcherIdentity(details[0]) + ' — ' + watcherWaitPhrase(details[0]);
+        } else {
+          watchersBtn.title = count + ' waiters attached — click for detail';
+        }
+        watchersList.textContent = '';
+        if (details.length === 0) {
+          var fallbackRow = document.createElement('div');
+          fallbackRow.className = 'popover-row';
+          var fallbackLabel = document.createElement('span');
+          fallbackLabel.className = 'popover-label';
+          fallbackLabel.textContent = count + ' waiter' + (count === 1 ? '' : 's');
+          fallbackRow.appendChild(fallbackLabel);
+          watchersList.appendChild(fallbackRow);
+          return;
+        }
+        details.forEach(function(d) {
+          var row = document.createElement('div');
+          row.className = 'popover-row';
+          var label = document.createElement('span');
+          label.className = 'popover-label';
+          label.textContent = watcherIdentity(d);
+          var wait = document.createElement('span');
+          wait.className = 'watcher-wait';
+          wait.textContent = watcherWaitPhrase(d);
+          row.appendChild(label);
+          row.appendChild(wait);
+          watchersList.appendChild(row);
+        });
+      }
+
       // Mirrors sessionDisplayName in client/sessionName.ts — this inline
       // script has no module system to import it from, so the precedence
       // (user-renamed-label, then the derived title, then a spawn label, then a
@@ -2736,6 +2831,7 @@ export function buildHtml(
         costBtn.textContent = formatCostShort(session.costUsd);
         costBtn.title = typeof session.costUsd === 'number' ? '$' + session.costUsd.toFixed(4) : 'No cost recorded yet';
         renderCostPopover(session);
+        renderWatchers(session);
         // Title status dot — the visibility state at a glance.
         if (titleStatus) {
           const st = titleStatusState(session);
@@ -4525,7 +4621,7 @@ export function buildHtml(
       // A webview has no VS Code popover API, so this is plain DOM: toggle
       // on the button, dismiss on Escape or a click outside, and never more
       // than one open — opening either one closes the other first.
-      const popovers = [costPopover, contextPopover];
+      const popovers = [costPopover, contextPopover, watchersPopover];
       function closeAllPopovers() {
         for (const p of popovers) p.hidden = true;
       }
@@ -4588,9 +4684,14 @@ export function buildHtml(
         e.stopPropagation();
         togglePopover(contextPopover);
       });
+      watchersBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        togglePopover(watchersPopover);
+      });
       document.addEventListener('click', function(e) {
         if (!costPopover.contains(e.target) && e.target !== costBtn) costPopover.hidden = true;
         if (!contextPopover.contains(e.target) && e.target !== contextBtn) contextPopover.hidden = true;
+        if (!watchersPopover.contains(e.target) && e.target !== watchersBtn) watchersPopover.hidden = true;
       });
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') closeAllPopovers();

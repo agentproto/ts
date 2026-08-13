@@ -20,6 +20,7 @@ import { codeTeam } from "../code-team/index.js"
 import { contentTeam } from "../content-team/index.js"
 import { mailTriage } from "../mail-triage/index.js"
 import { mediaViewer } from "../media-viewer/index.js"
+import { sessionViewer } from "../session-viewer/index.js"
 
 interface CatalogEntry {
   readonly appId: string
@@ -34,6 +35,7 @@ const APPS: readonly { readonly slug: string; readonly category: string; readonl
   { slug: "content-team", category: "team", handle: contentTeam },
   { slug: "mail-triage", category: "app", handle: mailTriage },
   { slug: "media-viewer", category: "app", handle: mediaViewer },
+  { slug: "session-viewer", category: "app", handle: sessionViewer },
 ]
 
 export async function syncApps(baseDir: string): Promise<CatalogEntry[]> {

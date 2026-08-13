@@ -35,6 +35,7 @@ import type {
   SessionDescriptor,
   SessionEventRecord,
   SessionStreamLine,
+  SessionWatcherInfo,
 } from "../client/types.js"
 import { isRouteSwitchable } from "../commands/sessionConfig.logic.js"
 import type { SessionStore } from "../services/sessionStore.js"
@@ -318,6 +319,10 @@ export class TranscriptPanelController {
    *  "a watcher attached/detached" banner. Seeded from the initial
    *  descriptor so hydration doesn't announce a count the panel opened with. */
   private prevWatchers: number
+  /** `watcherDetails` on the PREVIOUS descriptor — lets the detach banner
+   *  name who just left when exactly one watcher was attached before the
+   *  drop to zero. Same seeding rationale as `prevWatchers`. */
+  private prevWatcherDetails: readonly SessionWatcherInfo[]
   /** Live auto-dismiss timer for the transient info banner, if one's up. */
   private infoBannerTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -336,6 +341,7 @@ export class TranscriptPanelController {
     this.sendRetryDelayMs = opts.sendRetryDelayMs ?? 3000
     this.infoBannerAutoDismissMs = opts.infoBannerAutoDismissMs ?? 10_000
     this.prevWatchers = opts.initialSession.watchers ?? 0
+    this.prevWatcherDetails = opts.initialSession.watcherDetails ?? []
     this.exited = isExited(opts.initialSession.status)
     // Open the raw stream up front so pre-ready lines are buffered for the
     // raw fallback. In structured mode these are ignored (see onLine).
@@ -354,17 +360,22 @@ export class TranscriptPanelController {
   onSessionUpdate(session: SessionDescriptor): void {
     this.exited = isExited(session.status)
     this.currentSession = session
-    // Cross-session visibility (E3): the watcher-count diff rides the
-    // descriptor the panel already receives — the bus attach/detach events
-    // never reach the structured record feed, so the panel diffs the count.
-    // Identity is NOT available here (count-only wording); see
+    // Cross-session visibility (E3): the watcher-count (+ per-waiter detail)
+    // diff rides the descriptor the panel already receives — the bus
+    // attach/detach events never reach the structured record feed, so the
+    // panel diffs `watchers`/`watcherDetails` instead. `watcherDetails` names
+    // the waiter (label + wait condition) when the daemon resolved one; see
     // watcherBannerFor. Runs even pre-init so the diff base advances (an
     // update that lands before init just folds into `pendingSessionUpdate`;
     // a banner fired pre-init is still posted — the webview holds it).
-    const watcherText = watcherBannerFor(this.prevWatchers, session.watchers)
+    const watcherText = watcherBannerFor(this.prevWatchers, session.watchers, {
+      prevDetails: this.prevWatcherDetails,
+      nextDetails: session.watcherDetails,
+    })
     this.prevWatchers = session.watchers ?? 0
+    this.prevWatcherDetails = session.watcherDetails ?? []
     if (watcherText !== undefined) {
-      this.postInfoBanner("watcher", watcherText, { autoDismiss: watcherText === "Watcher detached" })
+      this.postInfoBanner("watcher", watcherText, { autoDismiss: watcherText.startsWith("Watcher detached") })
     }
     // Fetch the catalog once (fire-and-forget); until it lands, routeSwitchable
     // is left undefined (chip stays active). Once cached, we re-post so the

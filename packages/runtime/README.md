@@ -53,6 +53,22 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | SSE attach        | `GET /sessions/:id/stream`               | Line-by-line text events                              |
 | Kill / forget / gc | `POST /sessions/:id/kill`, `DELETE /sessions/:id`, `POST /sessions/gc` | SIGTERM, drop from registry, bulk archive terminal sessions |
 
+### MCP tool surface
+
+The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated families:
+
+| Tool family | Notes |
+|-------------|-------|
+| `agent_start` / `agent_prompt` / `agent_output` / `agent_kill` / `agent_interrupt` | Long-lived ACP agent lifecycle |
+| `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Raw PTY sessions |
+| `session_list` / `session_tree` / `session_usage` / `session_restart` / `session_rename` | Session management |
+| `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` / `app_apply` / `app_unapply` / `app_list_applied` | App-kit apps |
+| `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane (new) |
+| `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets (new) |
+| `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (new) |
+| `conversation_export` | Export a daemon transcript to a target adapter's native store, e.g. `claude-code` (new) |
+| `llm_endpoint_*` (`start`, `stop`, `status`, `set_upstream_link`, `list_links`) | Local LLM Endpoint proxy sidecar — only when `features.llmEndpoint` is enabled (new) |
+
 ### Auth model
 
 - `Authorization: Bearer <token>` required on **mutating** `/sessions/*` routes (POST/PATCH/DELETE) and the PTY WS upgrade.

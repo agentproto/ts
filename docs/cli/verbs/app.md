@@ -31,6 +31,22 @@ survive the round-trip.
 
 ## Subverbs
 
+### `serve [appDir] [--port <n>] [--json]`
+
+Serve an agentproto app's `.agentproto/ui/` as a standalone webapp with a
+working `window.McpApp` bridge wired to the daemon's `/mcp` endpoint. The same
+HTML dashboard that renders inside an MCP-Apps panel now runs in a plain
+browser tab with full MCP connectivity.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `appDir` | current directory | Directory holding `.agentproto/APP.md` + `.agentproto/ui/`. |
+| `--port <n>` | declared `ui.port` in `APP.md`, else OS-assigned | Port to bind. A declared `ui.port` that is already taken falls back to auto-assign; an explicit `--port` that is taken is a hard error. |
+| `--json` | `false` | Print `{ url, appDir, daemonMcpUrl }` on stdout instead of a human summary. |
+
+Start the daemon first (`agentproto serve`); the bridge proxies tool calls to
+`http://127.0.0.1:<daemon.port>/mcp`.
+
 ### `pack <appDir> [--out <path.agentapp>] [--json]`
 
 Reads `<appDir>/.agentproto/APP.md`, walks the entire app dir, computes an
@@ -111,6 +127,14 @@ bridge server's port (default: OS-assigned). The dev server child is spawned
 with `AGENTPROTO_BRIDGE_URL=http://127.0.0.1:<bridgePort>` in its
 environment, so a scaffolded `vite.config.ts` can proxy `/__agentproto` to
 it. Extra args after `--` are forwarded to `<pm> run dev`.
+
+When APP.md declares `ui.port` (the same frontmatter `serve` reads) and no
+`-- <viteArgs>` were passed at all, `dev` appends `--port <declared>` to the
+`<pm> run dev` invocation itself, so the ui dev server's own URL is stable
+and matches the app's declared surface — this is unrelated to the `--port`
+flag above, which only controls the bridge server. Passing any explicit
+`viteArgs` disables the hint entirely: you're steering the dev server
+directly, so nothing gets merged on top of your flags.
 
 Ctrl-C or the dev server child exiting tears both servers down; `app dev`
 exits with the child's exit code. `--json` prints
