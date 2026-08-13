@@ -8,11 +8,16 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot, openrouter, requesty, deepseek, xai-anthropic, llm-endpoint, xai, openai and openai-direct", () => {
+  it("exposes the full endpoint catalog (anthropic-flavored gateways + openai-flavored direct providers)", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
+      "deepinfra",
       "deepseek",
+      "groq",
+      "huggingface",
       "llm-endpoint",
+      "mistral",
       "moonshot",
+      "nebius",
       "openai",
       "openai-direct",
       "openrouter",
@@ -37,8 +42,10 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
         // Conventionally a `<PROVIDER>_API_KEY` var — except the local
         // llm-endpoint proxy, whose client bearer IS the proxy's own inbound
         // shared-secret gate var (`LLM_ENDPOINT_ACCESS_TOKENS`), so one value
-        // serves both sides of the localhost loop.
-        expect(preset.keyEnv).toMatch(/(_API_KEY|_ACCESS_TOKENS)$/)
+        // serves both sides of the localhost loop — and Hugging Face, whose
+        // ecosystem-wide convention is `HF_TOKEN` (what every HF tool reads);
+        // inventing an HF_API_KEY here would break ambient-credential pickup.
+        expect(preset.keyEnv).toMatch(/(_API_KEY|_ACCESS_TOKENS|_TOKEN)$/)
         expect(["anthropic", "openai"]).toContain(preset.schemaFlavor)
       })
 
@@ -109,6 +116,26 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
 
   it("openrouter ships no pinned default model (operator picks via model option)", () => {
     expect(getAnthropicGatewayPreset("openrouter").defaultModel).toBeUndefined()
+  })
+
+  it("mistral pins its own stable -latest alias as default model", () => {
+    const m = getAnthropicGatewayPreset("mistral")
+    expect(m.defaultModel).toBe("mistral-large-latest")
+    expect(m.schemaFlavor).toBe("openai")
+    expect(m.baseUrl).toBe("https://api.mistral.ai/v1")
+  })
+
+  it("rotating-lineup direct providers ship no pinned default model", () => {
+    // groq/nebius/huggingface/deepinfra lineups churn; a pinned default would
+    // rot into a 404 the way a hardcoded model id always does. The operator
+    // picks via the model option against GET /models.
+    for (const id of ["groq", "nebius", "huggingface", "deepinfra"] as const) {
+      expect(getAnthropicGatewayPreset(id).defaultModel).toBeUndefined()
+    }
+  })
+
+  it("huggingface keeps the ecosystem HF_TOKEN convention as keyEnv", () => {
+    expect(getAnthropicGatewayPreset("huggingface").keyEnv).toBe("HF_TOKEN")
   })
 
   it("xai-anthropic points directly at xAI with no /v1 suffix and Anthropic flavor", () => {
