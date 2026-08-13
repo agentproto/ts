@@ -437,11 +437,32 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
  * Bare (non-resume) launch argv for a provider's native terminal/TUI — the
  * "start fresh" counterpart to `attachArgv`, used to open a NEW native
  * session (e.g. a harness card's "Terminal" button) rather than reattach an
- * existing conversation. Mirrors `attachArgv`'s exact coverage: only
- * claude-code and hermes have a native terminal at all — every other store
- * is export/read-only and has no entry here.
+ * existing conversation.
+ *
+ * Coverage is deliberately BROADER than `attachArgv`'s: reattach needs a
+ * documented resume flag, but a fresh launch only needs the CLI's
+ * interactive arm. npx-spawned adapters use the same npx form here so the
+ * terminal works wherever the adapter itself works, PATH binary or not.
+ *
+ * Absent on purpose (no interactive arm to launch):
+ *  - `mastracode-inprocess` — in-process SDK, nothing to exec
+ *  - `mastra-agent`, `claude-sdk` — first-party ACP servers, no TUI
+ *  - `antigravity` — `agy` is headless-only (`-p`/stream-json), no TUI
  */
 export const NATIVE_LAUNCH_ARGV: Record<string, string[]> = {
   "claude-code": ["claude"],
   hermes: ["hermes", "--tui"],
+  // Bare arm of the same npx package the adapter spawns IS the TUI.
+  opencode: ["npx", "-y", "opencode-ai"],
+  mastracode: ["npx", "-y", "mastracode"],
+  // The adapter bundles the codex-acp wrapper (ACP-only); the interactive
+  // Codex TUI lives in @openai/codex, fetched by npx on first use.
+  codex: ["npx", "-y", "@openai/codex"],
+  // ACP arms add flags/subcommands to these binaries; bare is interactive.
+  gemini: ["gemini"],
+  "grok-cli": ["grok"],
+  pi: ["pi"],
+  jcode: ["jcode"],
+  // `openclaw chat` = "Open a local terminal UI (alias for tui --local)".
+  openclaw: ["openclaw", "chat"],
 }
