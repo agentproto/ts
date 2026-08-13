@@ -22,6 +22,7 @@ describe("adapterLogoFor", () => {
     expect(adapterLogoFor("deepseek")).toEqual({ kind: "icon", file: "deepseek.svg" })
     expect(adapterLogoFor("gemini")).toEqual({ kind: "icon", file: "gemini.svg" })
     expect(adapterLogoFor("gemini-cli")).toEqual({ kind: "icon", file: "gemini.svg" })
+    expect(adapterLogoFor("grok-cli")).toEqual({ kind: "icon", file: "grok.svg" })
     expect(adapterLogoFor("mistral-vibe")).toEqual({ kind: "icon", file: "mistral.svg" })
     expect(adapterLogoFor("openrouter")).toEqual({ kind: "icon", file: "openrouter.svg" })
     expect(adapterLogoFor("qwen-code")).toEqual({ kind: "icon", file: "qwen.svg" })

@@ -1308,6 +1308,9 @@ importers:
       '@agentproto/adapter-gemini':
         specifier: workspace:*
         version: link:../../adapters/gemini
+      '@agentproto/adapter-grok-cli':
+        specifier: workspace:*
+        version: link:../../adapters/grok-cli
       '@agentproto/adapter-hermes':
         specifier: workspace:*
         version: link:../../adapters/hermes

@@ -27,6 +27,7 @@ const ICON_FILES: Readonly<Record<string, string>> = {
   deepseek: "deepseek.svg",
   gemini: "gemini.svg",
   "gemini-cli": "gemini.svg",
+  "grok-cli": "grok.svg",
   "mistral-vibe": "mistral.svg",
   openrouter: "openrouter.svg",
   "qwen-code": "qwen.svg",
