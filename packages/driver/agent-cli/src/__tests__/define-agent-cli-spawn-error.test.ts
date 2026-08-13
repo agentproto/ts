@@ -119,6 +119,30 @@ describe("createAgentCliRuntime(...).start() — spawn failure never crashes the
     nextSpawnError = undefined
   })
 
+  it("appends an actionable PATH hint for ENOENT spawn failures", async () => {
+    nextSpawnError = Object.assign(new Error("spawn node ENOENT"), {
+      code: "ENOENT",
+      syscall: "spawn node",
+      path: "node",
+    })
+    await expect(createAgentCliRuntime(nodeBinDef).start({ cwd: "/tmp" })).rejects.toThrow(
+      /was not found on the daemon's PATH.*agentproto daemon restart/s,
+    )
+    nextSpawnError = undefined
+  })
+
+  it("does not append the PATH hint for a non-ENOENT spawn failure (e.g. EACCES)", async () => {
+    nextSpawnError = Object.assign(new Error("spawn node EACCES"), {
+      code: "EACCES",
+      syscall: "spawn node",
+      path: "node",
+    })
+    const call = createAgentCliRuntime(nodeBinDef).start({ cwd: "/tmp" })
+    await expect(call).rejects.toThrow(/spawn node EACCES/)
+    await expect(call).rejects.not.toThrow(/daemon's PATH/)
+    nextSpawnError = undefined
+  })
+
   it("resolves a bare 'node' bin to process.execPath, not a PATH-dependent lookup", async () => {
     nextSpawnError = undefined
     spawnCalls.length = 0
