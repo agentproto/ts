@@ -181,6 +181,32 @@ export function registerTerminalSwitch(
       }
     }),
     vscode.commands.registerCommand("agentproto.moveTerminalLocation", () => terminalSwitch.moveLocation()),
+    vscode.commands.registerCommand(
+      "agentproto.spawnHarnessTerminal",
+      async (slug: unknown, argv: unknown) => {
+        if (typeof slug !== "string" || !Array.isArray(argv) || argv.length === 0) return
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+        if (!cwd) {
+          void vscode.window.showWarningMessage(
+            "agentproto: open a workspace folder before starting a terminal session.",
+          )
+          return
+        }
+        try {
+          const session = await client.spawnTerminal({
+            argv: argv as string[],
+            cwd,
+            label: slug,
+          })
+          await store.refreshAll()
+          terminalSwitch.open(session)
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `agentproto: could not start a terminal session for '${slug}' — ${describeError(err)}`,
+          )
+        }
+      },
+    ),
   )
 
   return terminalSwitch

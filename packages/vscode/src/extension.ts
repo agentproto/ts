@@ -62,7 +62,7 @@ import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
 import { registerAppPanels } from "./webview/appPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
 import { registerConfigurationLabWebview } from "./webview/configurationLabPanel.js"
-import { registerAuthModelMindmap } from "./webview/authModelMindmapPanel.js"
+import { registerAuthModelMindmap, type AuthModelFocusTarget } from "./webview/authModelMindmapPanel.js"
 import { registerAuthExplorer } from "./webview/authExplorerPanel.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
@@ -170,8 +170,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.commands.registerCommand("agentproto.openConfigurationLab", () =>
       vscode.commands.executeCommand("agentproto.configurationLab.focus"),
     ),
-    vscode.commands.registerCommand("agentproto.openAuthModel", () =>
-      authModelMindmap.open(),
+    vscode.commands.registerCommand("agentproto.openAuthModel", (arg?: unknown) =>
+      authModelMindmap.open(isAuthModelFocusTarget(arg) ? arg : undefined),
     ),
     vscode.commands.registerCommand("agentproto.openAuthExplorer", () =>
       authExplorer.open(),
@@ -215,6 +215,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       },
     ),
   )
+}
+
+function isAuthModelFocusTarget(value: unknown): value is AuthModelFocusTarget {
+  if (typeof value !== "object" || value === null) return false
+  const v = value as { kind?: unknown; key?: unknown }
+  return (v.kind === "harness" || v.kind === "provider") && typeof v.key === "string"
 }
 
 async function showHealth(client: DaemonClient): Promise<void> {

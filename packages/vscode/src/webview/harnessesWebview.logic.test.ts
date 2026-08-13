@@ -148,22 +148,9 @@ describe("buildHarnessesWebviewModel", () => {
   })
 })
 
-describe("buildHarnessesWebviewModel — manifest facts + reach strip", () => {
+describe("buildHarnessesWebviewModel — reach strip", () => {
   const anthropicSub = profile({ id: "sub", endpoint: "anthropic", method: "oauth-bearer", source: "claude-code-oauth" })
   const moonshotKey = profile({ id: "key", endpoint: "moonshot", method: "api-key" })
-
-  it("carries manifest facts straight from the mind map's HarnessView", () => {
-    const model = buildHarnessesWebviewModel(
-      [claudeCodeAdapter],
-      "",
-      new Set(),
-      [claudeCodeCap],
-      [anthropicSub, moonshotKey],
-      null,
-    )
-    const row = model.rows[0]!
-    expect(row.manifest).toEqual({ speaks: "Anthropic", route: "free", acceptsBaseUrl: true })
-  })
 
   it("matches reach() exactly for every provider in the strip — single source of truth", () => {
     const model = buildHarnessesWebviewModel(
@@ -184,19 +171,98 @@ describe("buildHarnessesWebviewModel — manifest facts + reach strip", () => {
     expect(row.reach.find(e => e.endpoint === "moonshot")?.state).toBe("via-router")
   })
 
-  it("falls back to fixed/derived manifest facts and an empty reach strip when the daemon reports no capabilities", () => {
+  it("falls back to an empty reach strip when the daemon reports no capabilities", () => {
     const model = buildHarnessesWebviewModel([adapter({ slug: "unknown-harness" })], "", new Set(), [], [], null)
     const row = model.rows[0]!
-    expect(row.manifest).toEqual({ speaks: "derived", route: "fixed", acceptsBaseUrl: false })
     expect(row.reach).toEqual([])
     expect(row.hiddenReachCount).toBe(0)
   })
 
   it("defaults capabilities/profiles/router so existing two-arg callers keep working", () => {
     const model = buildHarnessesWebviewModel([claudeCodeAdapter], "")
-    // No profiles ⇒ buildProviders() has no provider columns ⇒ nothing to
-    // reach, even though the adapter itself still resolves manifest facts.
-    expect(model.rows[0]?.manifest).toEqual({ speaks: "Anthropic", route: "free", acceptsBaseUrl: true })
+    // No profiles ⇒ buildProviders() has no provider columns ⇒ nothing to reach.
     expect(model.rows[0]?.reach).toEqual([])
+  })
+})
+
+describe("buildHarnessesWebviewModel — wallet badge", () => {
+  const anthropicSub = profile({ id: "sub", endpoint: "anthropic", method: "oauth-bearer", source: "claude-code-oauth" })
+  const moonshotKey = profile({ id: "key", endpoint: "moonshot", method: "api-key" })
+
+  it("shows the sole wallet's label when the harness reaches exactly one connected wallet", () => {
+    const model = buildHarnessesWebviewModel(
+      [claudeCodeAdapter],
+      "",
+      new Set(),
+      [claudeCodeCap],
+      [anthropicSub],
+      null,
+    )
+    const row = model.rows[0]!
+    expect(row.walletBadge).toEqual({ label: anthropicSub.id, endpoint: "anthropic" })
+  })
+
+  it("shows a wallet count and anchors on the busiest reachable endpoint when several wallets are connected", () => {
+    const model = buildHarnessesWebviewModel(
+      [claudeCodeAdapter],
+      "",
+      new Set(),
+      [claudeCodeCap],
+      [anthropicSub, moonshotKey],
+      null,
+    )
+    const row = model.rows[0]!
+    expect(row.walletBadge).toEqual({ label: "2 wallets", endpoint: "anthropic" })
+  })
+
+  it("has no navigation target when the harness reaches no provider at all", () => {
+    const model = buildHarnessesWebviewModel([adapter({ slug: "unknown-harness" })], "", new Set(), [], [], null)
+    expect(model.rows[0]?.walletBadge).toEqual({ label: "no reachable provider", endpoint: null })
+  })
+})
+
+describe("buildHarnessesWebviewModel — canOpenTerminal", () => {
+  it("is false by default even for an installed harness (no nativeTerminalSlugs passed)", () => {
+    const model = buildHarnessesWebviewModel([adapter({ slug: "claude-code", status: "ready" })], "")
+    expect(model.rows[0]?.canOpenTerminal).toBe(false)
+  })
+
+  it("is true for an installed harness whose slug is in nativeTerminalSlugs", () => {
+    const model = buildHarnessesWebviewModel(
+      [adapter({ slug: "claude-code", status: "ready" })],
+      "",
+      new Set(),
+      [],
+      [],
+      null,
+      new Set(["claude-code"]),
+    )
+    expect(model.rows[0]?.canOpenTerminal).toBe(true)
+  })
+
+  it("is false for a not-yet-installed harness even when its slug is in nativeTerminalSlugs", () => {
+    const model = buildHarnessesWebviewModel(
+      [adapter({ slug: "claude-code", status: "available" })],
+      "",
+      new Set(),
+      [],
+      [],
+      null,
+      new Set(["claude-code"]),
+    )
+    expect(model.rows[0]?.canOpenTerminal).toBe(false)
+  })
+
+  it("is false for an installed harness whose slug is not in nativeTerminalSlugs", () => {
+    const model = buildHarnessesWebviewModel(
+      [adapter({ slug: "codex", status: "ready" })],
+      "",
+      new Set(),
+      [],
+      [],
+      null,
+      new Set(["claude-code"]),
+    )
+    expect(model.rows[0]?.canOpenTerminal).toBe(false)
   })
 })
