@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { MEDIA_VIEWER_HTML, MEDIA_VIEWER_TOOLS } from "../media-viewer/ui.js"
 import { MAIL_TRIAGE_HTML, MAIL_TRIAGE_TOOLS, MAIL_TRIAGE_MCP_ALIASES } from "../mail-triage/ui.js"
+import { SESSION_VIEWER_HTML, SESSION_VIEWER_TOOLS } from "../session-viewer/ui.js"
 
 describe("media-viewer UI panel", () => {
   it("is a non-empty self-contained HTML document using the McpApp bridge", () => {
@@ -43,5 +44,24 @@ describe("mail-triage UI panel", () => {
     for (const tool of ["mailbox_list", "mailbox_search", "mailbox_triage_plan", "mailbox_triage_apply", "app_run", "app_status", "agent_output", "app_list"]) {
       expect(MAIL_TRIAGE_HTML).toContain(tool)
     }
+  })
+})
+
+describe("session-viewer UI panel", () => {
+  it("is a non-empty self-contained HTML document using the McpApp bridge", () => {
+    expect(SESSION_VIEWER_HTML.length).toBeGreaterThan(0)
+    expect(SESSION_VIEWER_HTML).toContain("<!DOCTYPE html>")
+    expect(SESSION_VIEWER_HTML).toContain("McpApp.connect")
+  })
+
+  it("declares the read-only session/conversation tools it dispatches through app_tool_call", () => {
+    expect(SESSION_VIEWER_TOOLS).toEqual(["session_list", "conversation_read"])
+    for (const tool of SESSION_VIEWER_TOOLS) {
+      expect(SESSION_VIEWER_HTML).toContain(tool)
+    }
+  })
+
+  it("never talks to the daemon outside the McpApp bridge", () => {
+    expect(SESSION_VIEWER_HTML).not.toMatch(/\bfetch\s*\(/)
   })
 })
