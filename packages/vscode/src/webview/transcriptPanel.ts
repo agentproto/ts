@@ -1514,6 +1514,7 @@ export function buildHtml(
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .queued-item-send { flex: 0 0 auto; }
     .queued-item-cancel { flex: 0 0 auto; }
     #composer {
       position: relative;
@@ -2187,7 +2188,7 @@ export function buildHtml(
         </span>
         <span id="send-hint" class="send-hint">⏎ send · ⇧⏎ newline</span>
         <span id="send-status"></span>
-        <button id="interrupt-send" hidden title="Interrupt the current turn and send the next queued message now">Interrupt &amp; send</button>
+        <button id="interrupt-send" hidden title="Interrupt the current turn and send now — the typed text, or the next queued message">Interrupt &amp; send</button>
         <button id="restart-btn" hidden title="Restart this session — resumes the conversation in a new session">↻ Restart</button>
         <button id="send" title="Send (Enter)">↵</button>
         <button id="stop" hidden title="Stop the current turn">■</button>
@@ -2452,11 +2453,12 @@ export function buildHtml(
         sendBtn.hidden = busy && !exited;
         stopBtn.hidden = !busy || exited;
         stopBtn.disabled = isStopping;
-        // "Interrupt & send" acts on the FRONT of the queue — it exists to
-        // force a message the agent hasn't taken yet, so it appears only
-        // when there IS one waiting, not merely whenever the agent is busy.
-        interruptBtn.hidden = queuedItems.length === 0 || exited;
-        interruptBtn.disabled = !live;
+        // "Interrupt & send" is the stop-and-go affordance: mid-turn it
+        // forces the text being typed (cutting the current turn short), or —
+        // composer empty — the FRONT of the queue. Shown whenever the agent
+        // is busy; inert until there is actually something to force.
+        interruptBtn.hidden = !busy || exited;
+        interruptBtn.disabled = !live || (!hasText && queuedItems.length === 0);
         // The one useful action left once a session has exited — shown
         // beside the now-disabled input rather than replacing it, so the
         // last message typed (if any) stays visible instead of vanishing.
@@ -2488,11 +2490,17 @@ export function buildHtml(
           const oneLine = item.text.replace(/\\s+/g, ' ').trim();
           label.textContent = oneLine.length > 90 ? oneLine.slice(0, 90) + '…' : oneLine;
           row.appendChild(label);
+          const localId = item.localId;
+          const sendNow = document.createElement('button');
+          sendNow.className = 'queued-item-send';
+          sendNow.title = 'Interrupt the current turn and send this message now';
+          sendNow.textContent = '\\u25B6';
+          sendNow.addEventListener('click', function() { flushQueuedItem(localId); });
+          row.appendChild(sendNow);
           const cancel = document.createElement('button');
           cancel.className = 'queued-item-cancel';
           cancel.title = 'Discard this queued message';
           cancel.textContent = '\\u2715';
-          const localId = item.localId;
           cancel.addEventListener('click', function() { removeQueuedItem(localId); });
           row.appendChild(cancel);
           queuedRow.appendChild(row);
@@ -2554,19 +2562,24 @@ export function buildHtml(
         if (byUser) dismissedInfoBannerIds.add(id);
       }
 
-      /** "Interrupt & send": cancel the current turn and hand the FRONT
-       *  queued item to the agent right away — the rest of the queue stays
-       *  put, still in order, behind whatever this dispatches. Removes the
-       *  item from the local queue view immediately; if the daemon hadn't
-       *  confirmed a real id for it yet, removeQueuedItem records the
-       *  cancel so the eventual ack tidies it up server-side too (it is
-       *  about to be sent by an independent interruptSend, not drained from
-       *  the FIFO — leaving it queued would send it TWICE). */
-      function flushFrontQueued() {
-        const item = queuedItems[0];
+      /** Cancel the current turn and hand ONE queued item to the agent
+       *  right away — the rest of the queue stays put, still in order,
+       *  behind whatever this dispatches. Removes the item from the local
+       *  queue view immediately; if the daemon hadn't confirmed a real id
+       *  for it yet, removeQueuedItem records the cancel so the eventual
+       *  ack tidies it up server-side too (it is about to be sent by an
+       *  independent interruptSend, not drained from the FIFO — leaving it
+       *  queued would send it TWICE). */
+      function flushQueuedItem(localId) {
+        const item = queuedItems.find(function(q) { return q.localId === localId; });
         if (!item) return;
         removeQueuedItem(item.localId);
         vscode.postMessage({ type: 'interruptSend', text: item.text });
+      }
+
+      function flushFrontQueued() {
+        const item = queuedItems[0];
+        if (item) flushQueuedItem(item.localId);
       }
 
       // "busy" said nothing: it covered an agent writing a reply and an agent
@@ -4688,15 +4701,19 @@ export function buildHtml(
       });
       sendBtn.addEventListener('click', function() { send(false); });
       // Abandon the in-flight turn, send nothing — distinct from "Interrupt &
-      // send" below, which takes the queued message NOW instead of waiting.
+      // send" below, which sends something (typed text or queued message) NOW.
       stopBtn.addEventListener('click', function() {
         isStopping = true;
         refreshComposer();
         vscode.postMessage({ type: 'stop' });
       });
-      // Interrupt acts on the FRONT of the queue — the rest stays queued,
-      // in order, behind whatever this dispatches.
-      interruptBtn.addEventListener('click', flushFrontQueued);
+      // Stop-and-go: the typed text wins (interrupt the turn and send it
+      // now); with an empty composer it forces the FRONT of the queue
+      // instead — the rest stays queued, in order, behind it.
+      interruptBtn.addEventListener('click', function() {
+        if (composePrompt()) { send(true); return; }
+        flushFrontQueued();
+      });
       // The host resolves which session to restart from the CONTROLLER, not
       // from anything this message carries — see protocol.ts's restart doc.
       restartBtn.addEventListener('click', function() {
@@ -4891,10 +4908,15 @@ export function buildHtml(
             if (msg.localId) removeQueuedItem(msg.localId);
             break;
           case 'queued':
-            // The daemon confirmed this landed in its FIFO. Fill in the
-            // real id on the optimistic row send() already added (keyed by
-            // localId) — unless the user already cancelled it while the
-            // ack was in flight, in which case cancel it server-side now.
+            // The send arc is over: the daemon confirmed the prompt landed in
+            // its FIFO. Without this the composer stays stuck on "Sending…"
+            // forever — every mid-turn send resolves as 'queued', not
+            // 'sendAck', so this arm MUST clear isSending too (input dead,
+            // interrupt disabled — the exact lock-up shipped with #967).
+            setSending(false);
+            // Fill in the real id on the optimistic row send() already added
+            // (keyed by localId) — unless the user already cancelled it while
+            // the ack was in flight, in which case cancel it server-side now.
             if (cancelledLocalIds.has(msg.localId)) {
               cancelledLocalIds.delete(msg.localId);
               vscode.postMessage({ type: 'cancelQueued', queueId: msg.queueId });

@@ -617,10 +617,24 @@ describe("transcriptPanel webview — composer", () => {
     expect(send.classList.contains("has-text")).toBe(true)
   })
 
-  it("hides interrupt until a message is actually waiting — busy alone is not enough", () => {
+  it("shows interrupt while busy but keeps it inert until there is something to force", () => {
     const panel = renderPanel()
     init(panel, { busy: true })
-    // The agent is working, but nothing is queued: there is nothing to force.
+    const interrupt = btn(panel, "interrupt-send")
+    // The agent is working: the stop-and-go affordance is offered, but with
+    // nothing typed and nothing queued there is nothing to force yet.
+    expect(interrupt.hidden).toBe(false)
+    expect(interrupt.disabled).toBe(true)
+
+    const input = btn(panel, "input")
+    input.value = "change of plan"
+    input.dispatchEvent(new panel.window.Event("input"))
+    expect(interrupt.disabled).toBe(false)
+  })
+
+  it("hides interrupt entirely when the agent is idle — nothing to interrupt", () => {
+    const panel = renderPanel()
+    init(panel, { busy: false })
     expect(btn(panel, "interrupt-send").hidden).toBe(true)
   })
 
@@ -1483,6 +1497,58 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
 
     expect(posted).toContainEqual({ type: "interruptSend", text: "stop and do this" })
     expect(el(panel, "queued").hidden).toBe(true)
+  })
+
+  it("interrupt & send sends the TYPED text when the composer has content — stop and go", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "drop that, do this instead")
+
+    el(panel, "interrupt-send").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "interruptSend", text: "drop that, do this instead" })
+    // Sent, not queued — and the composer is ready for the next thought.
+    expect(el(panel, "input").value).toBe("")
+    expect(el(panel, "queued").hidden).toBe(true)
+  })
+
+  it("clears the Sending… state when the ack is 'queued', not just sendAck — the composer must not stay locked (regression: stuck Sending after the FIFO queue landed)", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "next task")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    // The host announces the send arc, then confirms FIFO placement — the
+    // mid-turn path resolves as 'queued', never 'sendAck'.
+    panel.send({ type: "sending" })
+    expect(el(panel, "send-status").textContent).toBe("Sending…")
+    const localId = (
+      posted.find(m => (m as { type: string }).type === "send") as { localId: string }
+    ).localId
+    panel.send({ type: "queued", localId, queueId: "q_1", text: "next task", queuePosition: 1 })
+
+    expect(el(panel, "send-status").textContent).toBe("")
+    expect(el(panel, "input").disabled).toBe(false)
+    expect(el(panel, "interrupt-send").disabled).toBe(false)
+  })
+
+  it("each queued row has a send-now button that interrupt-sends THAT message, leaving the rest queued", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "first")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    type(panel, "second")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    const sendButtons = Array.from(el(panel, "queued").querySelectorAll(".queued-item-send"))
+    expect(sendButtons).toHaveLength(2)
+    sendButtons[1]?.dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "interruptSend", text: "second" })
+    expect(el(panel, "queued").textContent).toContain("first")
+    expect(el(panel, "queued").textContent).not.toContain("second")
   })
 
   it("cancelling a queued item drops it locally and it is never resurrected by a later drain", () => {
