@@ -128,15 +128,33 @@ export function contextRingLevel(
 
 /**
  * The visibility state for the title status dot (#session-visibility), with the
- * approved precedence busy > delegating > awaiting-input > parked > quiet. A
- * starting session counts as busy (a turn is coming). Pure — injected.
+ * precedence awaiting > stalled > busy > delegating > parked > quiet — the same
+ * order the tree's own `activityFor` uses for a session's OWN state (needs-you
+ * before stalled before working), not the different "busy > awaiting" order
+ * `subtreeBusiestActivity` uses to roll up a whole subtree. The previous
+ * `busy > delegating > awaiting-input > parked > quiet` order borrowed that
+ * subtree-rollup precedence for this single-session dot, so a busy session
+ * masked its own more-urgent awaiting/stalled state (#601-adjacent).
+ *
+ * `stalled` reads `stalledSinceMs` — the daemon's turn-liveness watchdog flag
+ * (stall-watchdog.ts), stamped once an agent-cli session goes silent mid-turn
+ * past its threshold. That is the one "claims busy longer than expected"
+ * surface (also consumed by the sessions webview's ⚠ badge); this dot is
+ * self-contained (stringified into the webview via `.toString()`, per this
+ * file's header) so it just reads the field rather than recomputing a
+ * silence threshold locally. A starting session counts as busy (a turn is
+ * coming). Pure — injected.
  */
 export function titleStatusState(
-  session: Pick<SessionDescriptor, "busy" | "status" | "childrenBusy" | "awaitingInput" | "watchers">,
-): "busy" | "delegating" | "awaiting" | "parked" | "quiet" {
-  if (session.busy || session.status === "starting") return "busy"
-  if ((session.childrenBusy ?? 0) > 0) return "delegating"
+  session: Pick<
+    SessionDescriptor,
+    "busy" | "status" | "childrenBusy" | "awaitingInput" | "watchers" | "stalledSinceMs"
+  >,
+): "busy" | "stalled" | "delegating" | "awaiting" | "parked" | "quiet" {
   if (session.awaitingInput) return "awaiting"
+  if (session.busy) return session.stalledSinceMs !== undefined ? "stalled" : "busy"
+  if (session.status === "starting") return "busy"
+  if ((session.childrenBusy ?? 0) > 0) return "delegating"
   if ((session.watchers ?? 0) > 0) return "parked"
   return "quiet"
 }

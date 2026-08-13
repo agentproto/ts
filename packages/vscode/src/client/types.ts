@@ -220,6 +220,12 @@ export interface SessionDescriptor {
    *  activity (a silent dead end unless someone re-prompts) and the webview's
    *  bg chip. */
   pendingBgTasks?: number
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.lastTurnErroredAt — ISO
+   *  8601 timestamp of the last turn that ended because the adapter's OWN
+   *  turn-end event reported failure, while the process stayed alive. Drives
+   *  the tree's `stalled` activity for an otherwise-idle session. Cleared the
+   *  moment a later turn completes without one. */
+  lastTurnErroredAt?: string
   /** Mirrors `@agentproto/runtime` SessionDescriptor.childrenBusy — how many
    *  descendant sessions are currently mid-turn (subtree rollup,
    *  #session-visibility). Drives the "delegating" row state for an idle parent
@@ -419,6 +425,10 @@ export interface SessionSummary {
    *  still pending — the session parked itself with work outstanding. Ephemeral,
    *  stamped at read time; 0/absent ⇒ none. Drives the webview's `⏳ N bg` chip. */
   pendingBgTasks?: number
+  /** Adapter-reported turn-error marker — see
+   *  `SessionDescriptor.lastTurnErroredAt` above. Stamped at turn-end,
+   *  cleared on the next turn that completes without one. */
+  lastTurnErroredAt?: string
   /** Busy-descendant count (#session-visibility, subtree rollup) — drives the
    *  "delegating" state for an idle parent waiting on its busy subtree. */
   childrenBusy?: number

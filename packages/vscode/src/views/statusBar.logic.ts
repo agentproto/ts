@@ -14,7 +14,7 @@
  *
  * A machine-origin session (isMachineOrigin, e.g. `gate` — an automated
  * push-gate reviewer) is deliberately excluded from needsYou/stalled/
- * working/idle: it's genuinely live and genuinely working, but it's the
+ * parkedBg/working/idle: it's genuinely live and genuinely working, but it's the
  * gate's bookkeeping, not the operator's own work, and folding it into
  * "working" is exactly what made a 77-session gate-review pile-up read as
  * "77 things I'm mid-turn on" instead of "a leak nobody noticed". It is NOT
@@ -32,7 +32,7 @@ import { activityFor, type SessionActivity } from "./sessionsTree.logic.js"
 
 export interface LiveSummary {
   /** Alive, human-origin sessions — the operator's own agents, and the only
-   *  ones folded into needsYou/stalled/working/idle below (a finished
+   *  ones folded into needsYou/stalled/parkedBg/working/idle below (a finished
    *  session is history either way, so only "the process is up" counts as
    *  alive at all). */
   live: SessionDescriptor[]
@@ -41,7 +41,18 @@ export interface LiveSummary {
    *  mistaken for the operator's own work. */
   machineLive: SessionDescriptor[]
   needsYou: number
+  /** Mid-turn and silent past `activityFor`'s stall threshold — genuinely
+   *  wedged, busy in name only. Distinct from `parkedBg` (#601-adjacent): a
+   *  session that already ended its turn with background work outstanding is
+   *  healthy and just needs a re-prompt, not the same "something may be
+   *  stuck" alarm as a stall. */
   stalled: number
+  /** Parked with background tasks still pending from the last turn — alive,
+   *  quiet, not stuck; it ended its turn cleanly and is waiting to be
+   *  re-prompted. Counted separately from `stalled` so a healthy backlog of
+   *  parked-bg sessions doesn't inflate the "stuck" bucket a genuinely wedged
+   *  session belongs in. */
+  parkedBg: number
   working: number
   idle: number
   /** Alive sessions with ≥1 live supervisor waiting on them right now
@@ -68,6 +79,7 @@ export function summarizeLive(
     machineLive,
     needsYou: 0,
     stalled: 0,
+    parkedBg: 0,
     working: 0,
     idle: 0,
     watched: allLive.filter(s => (s.watchers ?? 0) > 0).length,
@@ -79,11 +91,13 @@ export function summarizeLive(
         summary.needsYou++
         break
       case "stalled":
-      // Parked with background tasks pending is the same KIND of attention as
-      // a stall — a live session that will never finish on its own — so the
-      // bar counts it in the same bucket rather than inventing a sixth number.
-      case "parked-bg":
         summary.stalled++
+        break
+      // Parked with background tasks pending is a healthy dead end, not a
+      // stall — counted separately so it never inflates the "stuck" bucket
+      // (#601-adjacent).
+      case "parked-bg":
+        summary.parkedBg++
         break
       case "working":
         summary.working++
@@ -106,6 +120,7 @@ export function summarizeLive(
 export function dominantActivity(summary: LiveSummary): SessionActivity {
   if (summary.needsYou > 0) return "needs-you"
   if (summary.stalled > 0) return "stalled"
+  if (summary.parkedBg > 0) return "parked-bg"
   if (summary.working > 0) return "working"
   return "idle"
 }
@@ -117,6 +132,8 @@ export function statusBarIcon(summary: LiveSummary): string {
       return "question"
     case "stalled":
       return "warning"
+    case "parked-bg":
+      return "clock"
     case "working":
       return "loading~spin"
     default:
@@ -130,6 +147,13 @@ export function statusBarIcon(summary: LiveSummary): string {
  * Idle is always shown when there are live (human) sessions at all, so the
  * bar never implies the daemon is empty when it isn't.
  *
+ * "N stuck" is `stalled` only — a session the turn-liveness watchdog
+ * considers wedged. `parkedBg` gets its own "N awaiting bg" segment
+ * (#601-adjacent): it's a healthy dead end (turn ended cleanly, background
+ * work outstanding), not the same alarm as a stall, so folding it into
+ * "stuck" would inflate that bucket with sessions that just need a
+ * re-prompt.
+ *
  * A trailing `N gate` segment reports `machineLive` — always present when
  * non-zero, even when every human count above it is zero, so a stalled
  * automated reviewer is never silently dropped just because nothing else is
@@ -142,6 +166,7 @@ export function buildStatusCounts(summary: LiveSummary): string {
   } else {
     if (summary.needsYou > 0) parts.push(`${summary.needsYou} need${summary.needsYou === 1 ? "s" : ""} you`)
     if (summary.stalled > 0) parts.push(`${summary.stalled} stuck`)
+    if (summary.parkedBg > 0) parts.push(`${summary.parkedBg} awaiting bg`)
     if (summary.working > 0) parts.push(`${summary.working} working`)
     if (summary.idle > 0) parts.push(`${summary.idle} idle`)
   }

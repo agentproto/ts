@@ -788,6 +788,24 @@ export interface SessionDescriptor {
    *  session exit. Emits `session:bg-tasks-parked` /
    *  `session:bg-tasks-cleared`. */
   pendingBgTasks?: number
+  /** ISO 8601 timestamp of the last turn that ended because the ADAPTER
+   *  ITSELF reported a failure — `runAgentTurn` observed a `turn-end` event
+   *  with `reason:"error"` (session-event-bus.ts's `SessionTurnEndEvent`,
+   *  e.g. a refused/errored ACP `stopReason` — see adapters/mastra-agent's
+   *  host) — as opposed to a thrown/rejected adapter stream, which flips
+   *  `status` to `"error"` directly (a genuinely terminal row the existing
+   *  crash/error handling already catches). This is the twin gap for a
+   *  turn that fails IN-BAND while the process stays alive: `status` stays
+   *  `"running"`, `lastError` stays unset (reserved for `markCrashed`), and
+   *  nothing else distinguishes the session from one that simply finished
+   *  a clean turn and is idle. Folded into the same "stalled" activity/UI
+   *  treatment a mid-turn stall gets (see sessionsTree.logic.ts's
+   *  `activityFor`) rather than a new state, on the theory that both mean
+   *  "the last thing this session did needs a look, not a re-prompt on
+   *  faith". Stamped at turn-end when `turnEndReason === "error"`; cleared
+   *  the moment a LATER turn completes without one (same reset shape as
+   *  `resumeAttempts`/`restartAttempts`). Detection + signal only. */
+  lastTurnErroredAt?: string
   /** DERIVED, read-time only (never persisted — stripped by `snapshotRows`,
    *  stamped by `stampInterrupted` in list()/get()/findByIdOrName). True when
    *  this session died with a turn in flight under a daemon restart —
@@ -1378,6 +1396,10 @@ export interface SessionSummary {
    *  `SessionDescriptor.pendingBgTasks`. Stamped at turn-end, cleared on the
    *  next turn start / exit. */
   pendingBgTasks?: number
+  /** Adapter-reported turn-error marker — see
+   *  `SessionDescriptor.lastTurnErroredAt`. Stamped at turn-end, cleared on
+   *  the next turn that completes without one. */
+  lastTurnErroredAt?: string
   origin?: string
   parentSessionId?: string
   depth?: number
@@ -1444,6 +1466,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     blockedOn: desc.blockedOn,
     stalledSinceMs: desc.stalledSinceMs,
     pendingBgTasks: desc.pendingBgTasks,
+    lastTurnErroredAt: desc.lastTurnErroredAt,
     origin: desc.origin,
     parentSessionId: desc.parentSessionId,
     depth: desc.depth,
@@ -4774,6 +4797,23 @@ export function createSessionsRegistry(opts?: {
           delete rt.desc.lastRestartAt
           delete rt.desc.nextRestartAt
           delete rt.desc.recentRestartAts
+        }
+
+        // ── Turn-level adapter error (crash-reaper's twin for a turn that
+        // fails IN-BAND while the process stays alive — see
+        // `SessionDescriptor.lastTurnErroredAt`'s docblock). `turnEndReason`
+        // is only ever "error" here (inside `turnCompleted`) when the
+        // adapter's OWN turn-end event reported it — the thrown/rejected
+        // stream path is the separate `catch` branch above, which already
+        // flips `status` to `"error"`. A later turn that completes WITHOUT
+        // one proves recovery, so it clears the marker — same reset shape
+        // as `resumeAttempts`/`restartAttempts` above.
+        if (turnEndReason === "error") {
+          rt.desc.lastTurnErroredAt = new Date().toISOString()
+          schedulePersist()
+        } else if (rt.desc.lastTurnErroredAt !== undefined) {
+          delete rt.desc.lastTurnErroredAt
+          schedulePersist()
         }
 
         // ── Cost refresh (best-effort) ───────────────────────────────
