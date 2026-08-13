@@ -17,6 +17,7 @@ import type { TaskStatus } from "./task-ledger.js"
 export type SessionEventType =
   | "session:turn-end"
   | "session:awaiting-input"
+  | "session:awaiting-input-flagged"
   | "session:permission-request"
   | "session:permission-resolved"
   | "session:exited"
@@ -127,6 +128,40 @@ export interface SessionAwaitingInputEvent {
   sessionId: string
   label?: string
   ts: string
+  question?: SessionAwaitingQuestion
+}
+
+/**
+ * Emitted by `SessionsRegistry.flagAwaitingInput` (the `session_flag_status`
+ * MCP verb) when something EXTERNAL — a human, another agent, the future
+ * session watchdog — manually corrects a session's `awaitingInput`/
+ * `awaitingQuestion` classification, overriding (or confirming) what the
+ * internal heuristic (`deriveHeuristicQuestion`) or a driver-reported
+ * `agent-prompt` last set. Distinct from `session:awaiting-input` (which only
+ * ever fires when the flag flips TRUE, from the daemon's own turn-end
+ * detection): this fires for BOTH directions of a manual override, always
+ * carries the mandatory `reason` the caller gave (audit trail — this is the
+ * one write path for this field with no automatic sensor behind it), and
+ * `awaitingInput` states the value the override just set rather than being
+ * implied by the event firing at all. Same bus distribution as every other
+ * lifecycle event (`session_events_poll`, the webhook notifier, the routine
+ * engine, `session_monitor`).
+ */
+export interface SessionAwaitingInputFlaggedEvent {
+  type: "session:awaiting-input-flagged"
+  sessionId: string
+  awaitingInput: boolean
+  /** Required justification the caller passed to `session_flag_status` —
+   *  why this override was made. */
+  reason: string
+  label?: string
+  ts: string
+  /** Present only when `awaitingInput:true` and a `question` was attached —
+   *  mirrors the descriptor's `awaitingQuestion` after the override, same
+   *  shape as every other site that sets it (`source: "structured"`, since a
+   *  manual override is at least as authoritative as a driver-reported
+   *  prompt). Absent when `awaitingInput:false` (the override always clears
+   *  any prior question in that case) or when no `question` was given. */
   question?: SessionAwaitingQuestion
 }
 
@@ -603,6 +638,7 @@ export interface TaskChangedEvent {
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
+  | SessionAwaitingInputFlaggedEvent
   | SessionPermissionRequestEvent
   | SessionPermissionResolvedEvent
   | SessionExitedEvent

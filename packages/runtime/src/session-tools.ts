@@ -2211,6 +2211,141 @@ export function registerSessionTools(
     }
   )
 
+  // ── session_flag_status ───────────────────────────────────────────
+  // The ONE external write path over `awaitingInput`/`awaitingQuestion` —
+  // otherwise set only by the internal heuristic (`deriveHeuristicQuestion`
+  // in sessions.ts) or a driver-reported `agent-prompt`, and cleared
+  // automatically on the next prompt/turn start. Lets a human, another
+  // agent, or the future session watchdog correct a missed real question or
+  // clear a false positive. `flagAwaitingInput` carries its own liveness
+  // guard (sessions.ts) — the inverse of `session_archive`'s terminal-only
+  // one — so this handler's job is just lookup + subtree scoping +
+  // cross-field validation + translating the thrown error.
+  server.tool(
+    "session_flag_status",
+    "Manually correct a session's `awaitingInput`/`awaitingQuestion` " +
+      "classification. This is the ONLY write path for that pair besides " +
+      "the daemon's own internal heuristic (which guesses from the tail of " +
+      "the transcript) and a driver-reported structured prompt — use this " +
+      "when the heuristic missed a real question (set `awaitingInput:true`, " +
+      "optionally attaching `question`) or flagged a false positive (set " +
+      "`awaitingInput:false`, which also clears any attached " +
+      "`awaitingQuestion` — a question can't outlive its awaiting-input " +
+      "flag). `reason` is required — a short justification that rides on " +
+      "the emitted `session:awaiting-input-flagged` event, visible via " +
+      "`session_events_poll`, for audit. Only allowed on a LIVE session " +
+      "(running/starting) — mirrors the inverse of `session_archive`'s " +
+      "terminal-only guard: a terminal session has no turn left to be " +
+      "awaiting anything. The override itself is NOT sticky — it's cleared " +
+      "automatically like any other awaiting-input signal on the session's " +
+      "next prompt/turn start.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name to flag — from `session_list`, must be live."),
+      awaitingInput: z
+        .boolean()
+        .describe(
+          "New value for the session's awaiting-input classification — true " +
+            "if it's actually blocked on a question/decision the heuristic " +
+            "missed, false to clear a false positive."
+        ),
+      question: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "The question text to attach when `awaitingInput:true` — stored as " +
+            '`awaitingQuestion` (`source:"structured"`). Only meaningful ' +
+            "alongside `awaitingInput:true`; passing it with " +
+            "`awaitingInput:false` is a validation error."
+        ),
+      reason: z
+        .string()
+        .min(1)
+        .describe(
+          "Required short justification for this override — audit/log only, " +
+            "rides on the emitted `session:awaiting-input-flagged` event."
+        ),
+    },
+    async input => {
+      if (!input.awaitingInput && input.question !== undefined) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error:
+                  "session_flag_status: `question` is only meaningful when " +
+                  "`awaitingInput:true` (got `awaitingInput:false` with a " +
+                  "`question` set).",
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_archive.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_flag_status: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only flag sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const desc = registry.flagAwaitingInput(prev.id, {
+          awaitingInput: input.awaitingInput,
+          ...(input.question !== undefined ? { question: input.question } : {}),
+          reason: input.reason,
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_flag_status: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
   // ── session_rename ──────────────────────────────────────────────
   // The headless twin of the VS Code rename UX + `PATCH /sessions/:id`.
   // Pure display state (the descriptor's `title`/`label`) — never touches the
