@@ -13,6 +13,13 @@
  * captures that snapshot. Re-run `install` after any config change
  * to refresh the plist.
  *
+ * The plist's `EnvironmentVariables.PATH` is different: `install` captures a
+ * one-time snapshot too, but `start`/`restart` self-heal it on every
+ * kickstart by probing a login shell for the current PATH and rewriting the
+ * plist if it changed — see the "PATH self-heal" section below
+ * (`computeFreshDaemonPath`, `refreshPlistPathIfNeeded`). No manual
+ * `uninstall`/`install` cycle needed after installing a new CLI tool.
+ *
  * Logs go to `~/.agentproto/daemon.log` (stdout + stderr merged).
  *
  * Sub-verbs:
@@ -33,7 +40,11 @@ import { promises as fs } from "node:fs"
 import { homedir, platform as osPlatform } from "node:os"
 import { dirname, join } from "node:path"
 import { parseArgs } from "node:util"
-import { loadConfig, CONFIG_FILE_PATH } from "@agentproto/runtime/config"
+import {
+  loadConfig,
+  CONFIG_FILE_PATH,
+  type AgentprotoConfig,
+} from "@agentproto/runtime/config"
 
 import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
 
@@ -118,16 +129,12 @@ function paths(): Paths {
   }
 }
 
-async function runInstall(args: readonly string[]): Promise<number> {
-  const { values } = parseArgs({
-    args: [...args],
-    allowPositionals: false,
-    strict: true,
-    options: { "dry-run": { type: "boolean" } },
-  })
-  const cfg = await loadConfig()
+/** Builds the `serve` argv from `daemon.*` config keys — shared between the
+ *  one-time `install` snapshot and the PATH self-heal on `start`/`restart`,
+ *  which re-derives the same argv rather than parsing it back out of the
+ *  existing plist's XML. */
+function buildServeArgv(cfg: AgentprotoConfig): string[] {
   const daemon = cfg.daemon ?? {}
-  const p = paths()
   const argv = ["serve"]
   if (daemon.workspace) argv.push("--workspace", daemon.workspace)
   if (typeof daemon.port === "number") argv.push("--port", String(daemon.port))
@@ -139,12 +146,30 @@ async function runInstall(args: readonly string[]): Promise<number> {
   const tunnelHost = cfg.tunnel?.host
   const autoconnect = cfg.tunnel?.autoconnect === true
   if (tunnelHost && autoconnect) argv.push("--connect", tunnelHost)
+  return argv
+}
+
+async function runInstall(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: { "dry-run": { type: "boolean" } },
+  })
+  const cfg = await loadConfig()
+  const p = paths()
+  const argv = buildServeArgv(cfg)
 
   const plist = renderPlist({
     label: LABEL,
     // `node /path/to/cli.mjs` first, then the serve verb + flags.
     fullArgv: [...p.argv, ...argv],
     logPath: p.log,
+    // One-time capture of the installing invocation's PATH — this is the
+    // documented "re-run install after any config change" behavior.
+    // `start`/`restart` self-heal a fresher PATH on every kickstart instead
+    // of relying on this ever being re-run; see `refreshPlistPathIfNeeded`.
+    path: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
   })
 
   if (values["dry-run"]) {
@@ -280,6 +305,210 @@ function printLifecycleInfo(verb: string, info: DaemonHealthInfo | null): void {
   )
 }
 
+// ---------------------------------------------------------------------------
+// PATH self-heal
+//
+// `install` bakes the plist's EnvironmentVariables.PATH from whatever PATH
+// the `agentproto daemon install` invocation happened to have — captured
+// ONCE. A CLI installed afterwards (e.g. `uv tool install mistral-vibe`,
+// landing in ~/.local/bin via a line sourced only for interactive shells)
+// is invisible to the daemon forever, even across `daemon restart`, because
+// `kickstart` alone never re-renders the plist. The fix: recompute PATH and
+// rewrite the plist BEFORE every `start`/`restart` kickstart, so the daemon
+// self-heals without requiring a manual `uninstall` + `install`.
+// ---------------------------------------------------------------------------
+
+/** Extra bin dirs that commonly aren't picked up even by a login-shell probe
+ *  (e.g. a shell profile that only conditionally sources them). Appended
+ *  after the probed PATH, deduped, existing entries win. */
+export const EXTRA_PATH_DIRS: readonly string[] = [
+  "~/.local/bin",
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "~/.cargo/bin",
+]
+
+function expandTilde(p: string): string {
+  return p === "~" || p.startsWith("~/") ? join(homedir(), p.slice(1)) : p
+}
+
+/**
+ * Dedup a `:`-joined PATH (order-preserving, first occurrence wins), then
+ * append any of `extraDirs` not already present. Pure — no I/O — this is the
+ * unit-testable core of the self-heal.
+ */
+export function computeDaemonPath(
+  basePath: string,
+  extraDirs: readonly string[] = EXTRA_PATH_DIRS,
+): string {
+  const seen = new Set<string>()
+  const parts: string[] = []
+  const push = (dir: string) => {
+    if (dir && !seen.has(dir)) {
+      seen.add(dir)
+      parts.push(dir)
+    }
+  }
+  for (const raw of basePath.split(":")) push(raw)
+  for (const dir of extraDirs) push(expandTilde(dir))
+  return parts.join(":")
+}
+
+/** Only rewrite the plist when the computed PATH actually differs from
+ *  what's currently there — avoids `bootout`/`bootstrap` churn on every
+ *  restart when nothing changed. `currentPath` is `null` when the plist
+ *  doesn't exist yet or has no PATH entry (never mid-way "needs a refresh"
+ *  in that case — there's nothing installed to refresh). */
+export function pathNeedsRefresh(currentPath: string | null, freshPath: string): boolean {
+  return currentPath !== null && currentPath !== freshPath
+}
+
+/** Injectable probe for the login-shell PATH — mirrors {@link LaunchctlFn}
+ *  so tests can stub it without spawning a real shell. `null` means the
+ *  probe failed/timed out/returned nothing usable. */
+export type ShellProbeFn = () => Promise<string | null>
+
+/**
+ * Spawn a login shell (`$SHELL`, falling back to `/bin/zsh`) and capture
+ * `$PATH` the way an interactive terminal would see it — profile-sourced
+ * dirs like `~/.local/bin` from `uv tool install` included. `process.env.PATH`
+ * of the CLI invocation itself is deliberately NOT used here: a script or
+ * non-interactive caller (cron, another tool, launchd itself) can have a
+ * minimal PATH, which is exactly today's staleness bug in miniature.
+ * Returns `null` on spawn error, non-zero exit, empty output, or timeout so
+ * the caller can fall back to `process.env.PATH` instead of crashing.
+ */
+export function probeLoginShellPath(timeoutMs = 3000): Promise<string | null> {
+  const shell = process.env.SHELL && process.env.SHELL.trim() !== "" ? process.env.SHELL : "/bin/zsh"
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (result: string | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(shell, ["-lc", 'echo -n "$PATH"'], { stdio: ["ignore", "pipe", "pipe"] })
+    } catch {
+      resolve(null)
+      return
+    }
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(null)
+    }, timeoutMs)
+    let stdout = ""
+    child.stdout?.setEncoding("utf8").on("data", c => (stdout += c))
+    child.on("error", () => finish(null))
+    child.on("exit", code => {
+      const trimmed = stdout.trim()
+      finish(code === 0 && trimmed ? trimmed : null)
+    })
+  })
+}
+
+/** Probe the login shell for PATH (falling back to `process.env.PATH` on
+ *  failure) and run it through {@link computeDaemonPath}. */
+export async function computeFreshDaemonPath(
+  probe: ShellProbeFn = probeLoginShellPath,
+): Promise<string> {
+  const base = (await probe()) ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"
+  return computeDaemonPath(base)
+}
+
+function xmlUnescape(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+}
+
+/** Pull the current `EnvironmentVariables.PATH` value back out of a
+ *  previously-rendered plist's XML — `null` when the plist has no such key
+ *  (shouldn't happen for a plist we wrote, but be defensive). */
+function extractPlistPathValue(xml: string): string | null {
+  const m = xml.match(/<key>PATH<\/key><string>([^<]*)<\/string>/)
+  return m && m[1] !== undefined ? xmlUnescape(m[1]) : null
+}
+
+interface RefreshPlistPathOpts {
+  plistPath: string
+  /** Raw XML of the currently-installed plist, or `null` if there isn't
+   *  one (nothing to refresh — `kickstart` will fail with its own
+   *  "run install first" hint). */
+  currentXml: string | null
+  fullArgv: string[]
+  logPath: string
+  freshPath: string
+  run: LaunchctlFn
+  writeFile?: (path: string, data: string) => Promise<void>
+}
+
+/**
+ * Core gating + action for the PATH self-heal, factored out so it's
+ * testable without touching real files or spawning real `launchctl`/shells:
+ * given the plist's current XML and a freshly-computed PATH, rewrite (via
+ * {@link renderPlist}) and re-bootstrap ONLY if the PATH actually changed.
+ * Returns whether it rewrote.
+ */
+export async function refreshPlistPathIfNeeded(opts: RefreshPlistPathOpts): Promise<boolean> {
+  if (opts.currentXml === null) return false
+  const currentPath = extractPlistPathValue(opts.currentXml)
+  if (!pathNeedsRefresh(currentPath, opts.freshPath)) return false
+
+  const plist = renderPlist({
+    label: LABEL,
+    fullArgv: opts.fullArgv,
+    logPath: opts.logPath,
+    path: opts.freshPath,
+  })
+  const writeFile = opts.writeFile ?? (async (path, data) => fs.writeFile(path, data, "utf8"))
+  await writeFile(opts.plistPath, plist)
+
+  // Re-bootstrap so the running launchd job picks up the rewritten plist —
+  // `kickstart` alone reloads the PROGRAM, not the job DEFINITION. Mirrors
+  // `runInstall`'s bootout-then-bootstrap sequence.
+  const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
+  await opts.run(["bootout", target])
+  await opts.run(["bootstrap", `gui/${process.getuid?.() ?? 0}`, opts.plistPath])
+  return true
+}
+
+/** Real wiring for {@link refreshPlistPathIfNeeded}: reads the actual plist
+ *  off disk, probes a real login shell, reloads config for the argv. Never
+ *  throws — this is best-effort and must never block a `start`/`restart`. */
+async function selfHealDaemonPath(run: LaunchctlFn): Promise<boolean> {
+  try {
+    const p = paths()
+    let currentXml: string | null
+    try {
+      currentXml = await fs.readFile(p.plist, "utf8")
+    } catch {
+      currentXml = null
+    }
+    if (currentXml === null) return false
+
+    const [freshPath, cfg] = await Promise.all([computeFreshDaemonPath(), loadConfig()])
+    return await refreshPlistPathIfNeeded({
+      plistPath: p.plist,
+      currentXml,
+      fullArgv: [...p.argv, ...buildServeArgv(cfg)],
+      logPath: p.log,
+      freshPath,
+      run,
+    })
+  } catch {
+    return false
+  }
+}
+
+/** Injectable sync step ahead of `kickstart` — see the PATH self-heal
+ *  section above. */
+export type PathSyncFn = (run: LaunchctlFn) => Promise<boolean>
+
 /**
  * `start` — idempotent launch. `kickstart` WITHOUT `-k` asks launchd to start
  * the service if it isn't running and is a no-op if it already is; it never
@@ -292,7 +521,9 @@ export async function runStart(
   run: LaunchctlFn = launchctl,
   health: HealthFetchFn = fetchHealth,
   probeAttempts = 20,
+  syncPath: PathSyncFn = selfHealDaemonPath,
 ): Promise<number> {
+  await syncPath(run).catch(() => false)
   const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
   const out = await run(["kickstart", target])
   if (out.code !== 0) {
@@ -316,7 +547,9 @@ export async function runRestart(
   run: LaunchctlFn = launchctl,
   health: HealthFetchFn = fetchHealth,
   probeAttempts = 20,
+  syncPath: PathSyncFn = selfHealDaemonPath,
 ): Promise<number> {
+  await syncPath(run).catch(() => false)
   const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
   const out = await run(["kickstart", "-k", target])
   if (out.code !== 0) {
@@ -508,6 +741,11 @@ interface PlistOpts {
   /** Full argv launchd execs — `[node, cli.mjs, serve, …]`. */
   fullArgv: string[]
   logPath: string
+  /** `EnvironmentVariables.PATH` to bake into the plist. Callers decide how
+   *  to compute this — `runInstall` captures `process.env.PATH` once, the
+   *  `start`/`restart` self-heal recomputes it fresh each time (see
+   *  `computeFreshDaemonPath`). */
+  path: string
 }
 
 export function renderPlist(opts: PlistOpts): string {
@@ -538,7 +776,7 @@ ${argEls}
   <key>StandardErrorPath</key><string>${xmlEscape(opts.logPath)}</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>${xmlEscape(process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin")}</string>
+    <key>PATH</key><string>${xmlEscape(opts.path)}</string>
     <key>HOME</key><string>${xmlEscape(process.env.HOME ?? homedir())}</string>
   </dict>
 </dict>
