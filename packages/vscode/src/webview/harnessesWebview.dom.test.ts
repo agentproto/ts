@@ -75,9 +75,10 @@ const START_ROW = {
   installable: false,
   action: "start",
   logo: { kind: "lettermark", text: "C" },
-  manifest: { speaks: "Anthropic", route: "free", acceptsBaseUrl: true },
+  walletBadge: { label: "2 wallets", endpoint: "anthropic" },
   reach: [{ endpoint: "anthropic", state: "native" }, { endpoint: "moonshot", state: "via-router" }],
   hiddenReachCount: 0,
+  canOpenTerminal: true,
 }
 
 const INSTALL_ROW = {
@@ -88,9 +89,10 @@ const INSTALL_ROW = {
   installable: true,
   action: "install",
   logo: { kind: "lettermark", text: "X" },
-  manifest: { speaks: "OpenAI", route: "fixed", acceptsBaseUrl: false },
+  walletBadge: { label: "no reachable provider", endpoint: null },
   reach: [{ endpoint: "openai", state: "native" }],
   hiddenReachCount: 2,
+  canOpenTerminal: false,
 }
 
 const INSTALLING_ROW = {
@@ -158,17 +160,28 @@ describe("harnesses webview — render", () => {
   it("gives every row the same minimum action width so the layout never jumps between states", () => {
     const panel = renderPanel()
     send(panel, modelMessage([START_ROW, INSTALL_ROW, INSTALLING_ROW]))
-    const buttons = [...el(panel, "list").querySelectorAll("button.act")]
+    // Scoped to the primary action slot — the Terminal button (also `.act`,
+    // but `.term`) intentionally opts out of the shared min-width so it stays
+    // compact next to Start rather than stretching to match it.
+    const buttons = [...el(panel, "list").querySelectorAll("button.act:not(.term)")]
     expect(buttons).toHaveLength(3)
   })
 
-  it("renders the manifest facts line", () => {
+  it("renders a clickable wallet badge when the harness has a navigable provider", () => {
     const panel = renderPanel()
     send(panel, modelMessage([START_ROW]))
-    const manifest = el(panel, "list").querySelector(".manifest")!
-    expect(manifest.textContent).toContain("speaks Anthropic")
-    expect(manifest.textContent).toContain("route free")
-    expect(manifest.textContent).toContain("accepts custom base_url")
+    const badge = htmlEl(el(panel, "list").querySelector(".walletbadge")!)
+    expect(badge.tagName).toBe("BUTTON")
+    expect(badge.textContent).toBe("2 wallets")
+    expect(badge.getAttribute("data-endpoint")).toBe("anthropic")
+  })
+
+  it("renders a non-interactive wallet badge when the harness reaches no provider", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([INSTALL_ROW]))
+    const badge = htmlEl(el(panel, "list").querySelector(".walletbadge")!)
+    expect(badge.tagName).toBe("SPAN")
+    expect(badge.textContent).toBe("no reachable provider")
   })
 
   it("renders a reach chip per reachable provider plus a folded '+N' chip", () => {
@@ -187,11 +200,22 @@ describe("harnesses webview — render", () => {
     expect(more.textContent).toBe("+2")
   })
 
-  it("gives every row an 'open in map' icon button", () => {
+  it("renders a Terminal button to the left of Start when canOpenTerminal is true", () => {
     const panel = renderPanel()
-    send(panel, modelMessage([START_ROW, INSTALL_ROW]))
-    const mapBtns = [...el(panel, "list").querySelectorAll(".mapbtn")]
-    expect(mapBtns).toHaveLength(2)
+    send(panel, modelMessage([START_ROW]))
+    const actions = el(panel, "list").querySelector(".actions")!
+    const actionsHtml = htmlEl(actions).innerHTML
+    expect(actionsHtml.indexOf("termbtn")).toBeGreaterThanOrEqual(0)
+    expect(actionsHtml.indexOf("termbtn")).toBeLessThan(actionsHtml.indexOf('data-act="start"'))
+    const termBtn = htmlEl(actions.querySelector(".termbtn"))
+    expect(termBtn.textContent).toContain("Terminal")
+    expect(termBtn.getAttribute("data-slug")).toBe("claude-code")
+  })
+
+  it("omits the Terminal button when canOpenTerminal is false", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([INSTALL_ROW]))
+    expect(el(panel, "list").querySelector(".termbtn")).toBeNull()
   })
 })
 
@@ -244,11 +268,27 @@ describe("harnesses webview — interactions", () => {
     expect(panel.posted).toEqual([])
   })
 
-  it("clicking the map button posts openMap instead of install/spawn", () => {
+  it("clicking the wallet badge posts openWallet with its anchor endpoint, not install/spawn", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([START_ROW]))
+    panel.posted.length = 0
+    click(panel, el(panel, "list").querySelector(".walletbadge")!)
+    expect(panel.posted).toEqual([{ type: "openWallet", endpoint: "anthropic" }])
+  })
+
+  it("a non-clickable wallet badge (no endpoint) falls through to the row's own action, not openWallet", () => {
     const panel = renderPanel()
     send(panel, modelMessage([INSTALL_ROW]))
     panel.posted.length = 0
-    click(panel, el(panel, "list").querySelector(".mapbtn")!)
-    expect(panel.posted).toEqual([{ type: "openMap" }])
+    click(panel, el(panel, "list").querySelector(".walletbadge")!)
+    expect(panel.posted).toEqual([{ type: "install", slug: "codex" }])
+  })
+
+  it("clicking the Terminal button posts terminal with its slug, not spawn", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([START_ROW]))
+    panel.posted.length = 0
+    click(panel, el(panel, "list").querySelector(".termbtn")!)
+    expect(panel.posted).toEqual([{ type: "terminal", slug: "claude-code" }])
   })
 })

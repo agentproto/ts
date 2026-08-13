@@ -432,3 +432,16 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
     read: readPi,
   },
 }
+
+/**
+ * Bare (non-resume) launch argv for a provider's native terminal/TUI — the
+ * "start fresh" counterpart to `attachArgv`, used to open a NEW native
+ * session (e.g. a harness card's "Terminal" button) rather than reattach an
+ * existing conversation. Mirrors `attachArgv`'s exact coverage: only
+ * claude-code and hermes have a native terminal at all — every other store
+ * is export/read-only and has no entry here.
+ */
+export const NATIVE_LAUNCH_ARGV: Record<string, string[]> = {
+  "claude-code": ["claude"],
+  hermes: ["hermes", "--tui"],
+}

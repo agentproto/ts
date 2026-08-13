@@ -34,11 +34,17 @@ import { buildAuthModel, type AuthModelView } from "./authModelMindmap.logic.js"
 
 const VIEW_TYPE = "agentproto.authModel"
 
-/** host → webview */
-interface ModelMessage {
-  type: "model"
-  view: AuthModelView
+/** A specific node to select on open — mirrors the map's own click-to-focus
+ *  (`focusHarness`/`focusProvider`), driven from outside instead of a click.
+ *  Used by the Harnesses webview's wallet badge to land on a harness's
+ *  billing provider instead of the default overview drawer. */
+export interface AuthModelFocusTarget {
+  kind: "harness" | "provider"
+  key: string
 }
+
+/** host → webview */
+type HostMessage = { type: "model"; view: AuthModelView } | { type: "focus"; target: AuthModelFocusTarget }
 /** webview → host */
 type WebviewToHostMessage = { type: "ready" } | { type: "refresh" }
 
@@ -52,7 +58,7 @@ function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
 }
 
 export interface AuthModelPanel {
-  open(): void
+  open(focus?: AuthModelFocusTarget): void
 }
 
 export function registerAuthModelMindmap(
@@ -60,6 +66,10 @@ export function registerAuthModelMindmap(
   client: DaemonClient,
 ): AuthModelPanel {
   let panel: vscode.WebviewPanel | undefined
+  // Set by open() when the panel doesn't exist yet — the webview isn't ready
+  // to receive a `focus` message until its first `ready`/model round-trip, so
+  // this rides along with the first post() rather than firing blind.
+  let pendingFocus: AuthModelFocusTarget | undefined
 
   async function fetchView(): Promise<AuthModelView> {
     const [adapters, capabilities, profiles, router] = await Promise.all([
@@ -74,15 +84,22 @@ export function registerAuthModelMindmap(
   async function post(): Promise<void> {
     if (!panel) return
     const view = await fetchView()
-    void panel.webview.postMessage({ type: "model", view } satisfies ModelMessage)
+    void panel.webview.postMessage({ type: "model", view } satisfies HostMessage)
+  }
+
+  function postFocus(target: AuthModelFocusTarget): void {
+    if (!panel) return
+    void panel.webview.postMessage({ type: "focus", target } satisfies HostMessage)
   }
 
   return {
-    open(): void {
+    open(focus?: AuthModelFocusTarget): void {
       if (panel) {
         panel.reveal(vscode.ViewColumn.One, false)
+        if (focus) postFocus(focus)
         return
       }
+      pendingFocus = focus
       panel = vscode.window.createWebviewPanel(
         VIEW_TYPE,
         "Auth & model map",
@@ -93,7 +110,14 @@ export function registerAuthModelMindmap(
       panel.webview.onDidReceiveMessage(
         (raw: unknown) => {
           if (!isWebviewToHostMessage(raw)) return
-          if (raw.type === "ready" || raw.type === "refresh") void post()
+          if (raw.type === "ready" || raw.type === "refresh") {
+            void post().then(() => {
+              if (raw.type === "ready" && pendingFocus) {
+                postFocus(pendingFocus)
+                pendingFocus = undefined
+              }
+            })
+          }
         },
         undefined,
         ctx.subscriptions,
@@ -514,6 +538,17 @@ export function buildAuthModelHtml(nonce: string): string {
     window.addEventListener('message', function(evt){
       var msg = evt.data;
       if(msg && msg.type === 'model'){ view = msg.view; render(); }
+      else if(msg && msg.type === 'focus' && msg.target && view){
+        if(msg.target.kind === 'harness'){ focusHarness(msg.target.key); }
+        else if(msg.target.kind === 'provider'){
+          // A focus target can name a folded (non-primary) provider — expand
+          // before focusing so its node actually exists in nodeEls.
+          var isPrimary = view.providers.some(function(p){ return p.endpoint === msg.target.key && p.primary; });
+          var exists = view.providers.some(function(p){ return p.endpoint === msg.target.key; });
+          if(!isPrimary && exists && !showAllProviders){ showAllProviders = true; render(); }
+          focusProvider(msg.target.key);
+        }
+      }
     });
 
     defaultDrawer();

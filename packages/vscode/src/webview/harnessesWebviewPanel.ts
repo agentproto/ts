@@ -13,17 +13,22 @@ import * as vscode from "vscode"
 
 import type { AdapterInfo, AuthProfileSummary, HarnessCapabilities } from "../client/types.js"
 import type { DaemonClient } from "../client/daemonClient.js"
+import { NATIVE_LAUNCH_ARGV } from "../../../runtime/src/conversation-store.js"
 import type { HarnessNode } from "../views/harnessesTree.logic.js"
 import type { HarnessesTreeProvider } from "../views/harnessesTree.js"
 import {
   buildHarnessesWebviewModel,
-  type HarnessManifestFacts,
   type HarnessReachEntry,
+  type HarnessWalletBadge,
   type HarnessWebviewRow,
   type HarnessesWebviewModel,
 } from "./harnessesWebview.logic.js"
 
 const VIEW_TYPE = "agentproto.harnessesWebview"
+
+/** Adapter slugs with a verified native terminal/TUI launch path — static,
+ *  mirrors `NATIVE_LAUNCH_ARGV`'s own coverage (claude-code, hermes today). */
+const NATIVE_TERMINAL_SLUGS = new Set(Object.keys(NATIVE_LAUNCH_ARGV))
 
 type RenderLogo =
   | { kind: "icon"; file: string; uri: string }
@@ -37,9 +42,10 @@ interface RenderRow {
   installable: boolean
   action: HarnessWebviewRow["action"]
   logo: RenderLogo
-  manifest: HarnessManifestFacts
+  walletBadge: HarnessWalletBadge
   reach: HarnessReachEntry[]
   hiddenReachCount: number
+  canOpenTerminal: boolean
 }
 
 interface ModelMessage {
@@ -57,7 +63,8 @@ type WebviewToHostMessage =
   | { type: "filter"; search: string }
   | { type: "install"; slug: string }
   | { type: "spawn"; slug: string }
-  | { type: "openMap" }
+  | { type: "openWallet"; endpoint: string }
+  | { type: "terminal"; slug: string }
 
 function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   if (typeof value !== "object" || value === null) return false
@@ -135,8 +142,8 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
         this.search = msg.search
         this.post()
         return
-      case "openMap": {
-        void vscode.commands.executeCommand("agentproto.openAuthModel")
+      case "openWallet": {
+        void vscode.commands.executeCommand("agentproto.openAuthModel", { kind: "provider", key: msg.endpoint })
         return
       }
       case "install": {
@@ -160,6 +167,13 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
         }
         return
       }
+      case "terminal": {
+        const argv = NATIVE_LAUNCH_ARGV[msg.slug]
+        if (argv) {
+          void vscode.commands.executeCommand("agentproto.spawnHarnessTerminal", msg.slug, argv)
+        }
+        return
+      }
     }
   }
 
@@ -172,6 +186,7 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
       this.capabilities,
       this.profiles,
       null,
+      NATIVE_TERMINAL_SLUGS,
     )
     const message: ModelMessage = {
       type: "model",
@@ -231,9 +246,10 @@ function toRenderRow(row: HarnessWebviewRow, webview: vscode.Webview, extensionU
     installable: row.installable,
     action: row.action,
     logo: toRenderLogo(row.logo, webview, extensionUri),
-    manifest: row.manifest,
+    walletBadge: row.walletBadge,
     reach: row.reach,
     hiddenReachCount: row.hiddenReachCount,
+    canOpenTerminal: row.canOpenTerminal,
   }
 }
 
@@ -305,19 +321,19 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .name { font-size: 12.5px; font-weight: 550; letter-spacing: -0.01em; color: var(--vscode-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .desc { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
     .desc .pipe { opacity: 0.5; margin: 0 4px; }
-    .manifest { font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.7; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .walletbadge {
+      font: inherit; font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.8; margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+      background: transparent; border: none; padding: 0; text-align: left; display: block;
+    }
+    button.walletbadge { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
+    button.walletbadge:hover, button.walletbadge:focus-visible { opacity: 1; color: var(--vscode-textLink-foreground, #8fc2ff); }
     .reachstrip { display: flex; gap: 4px; margin-top: 3px; flex-wrap: wrap; }
     .rchip { font-size: 8.5px; font-weight: 600; letter-spacing: 0.02em; padding: 1px 5px; border-radius: 99px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); color: var(--vscode-descriptionForeground); white-space: nowrap; }
     .rchip.native { color: var(--vscode-charts-green, #2ea043); border-color: currentColor; }
     .rchip.via-router { color: var(--vscode-editorWarning-foreground, #cca700); border-color: currentColor; }
     .rchip.more { opacity: 0.6; }
     .actions { display: flex; align-items: center; gap: 6px; }
-    .mapbtn {
-      width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--vscode-descriptionForeground);
-      background: transparent; color: var(--vscode-descriptionForeground); opacity: 0.6;
-      cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 11px;
-    }
-    .row:hover .mapbtn, .mapbtn:hover, .mapbtn:focus-visible { opacity: 1; color: var(--vscode-foreground); border-color: var(--vscode-foreground); }
     .act {
       font-family: var(--vscode-font-family); font-size: 11px; line-height: 1;
       padding: 3px 10px; border-radius: 4px; border: 1px solid var(--vscode-descriptionForeground);
@@ -326,6 +342,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
       min-width: 64px;
     }
     .act.primary { color: var(--vscode-foreground); opacity: 0.85; }
+    .act.term { min-width: 0; padding: 3px 8px; }
     .row:hover .act, .act:hover, .act:focus-visible { opacity: 1; color: var(--vscode-foreground); border-color: var(--vscode-foreground); }
     .act:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
     .act[disabled] { cursor: default; }
@@ -385,10 +402,17 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return '<button class="act" data-act="install">Install</button>';
       }
 
-      function manifestHTML(r) {
-        var parts = ['speaks ' + r.manifest.speaks, 'route ' + r.manifest.route];
-        if (r.manifest.acceptsBaseUrl) parts.push('accepts custom base_url');
-        return '<div class="manifest">' + escapeHtml(parts.join(' · ')) + '</div>';
+      function terminalHTML(r) {
+        if (!r.canOpenTerminal) return '';
+        return '<button class="act term termbtn" data-slug="' + escapeHtml(r.slug) + '" title="Open a real terminal session with ' + escapeHtml(r.name) + '">⌨ Terminal</button>';
+      }
+
+      function walletBadgeHTML(r) {
+        var b = r.walletBadge;
+        if (b.endpoint === null) {
+          return '<span class="walletbadge">' + escapeHtml(b.label) + '</span>';
+        }
+        return '<button class="walletbadge" data-endpoint="' + escapeHtml(b.endpoint) + '" title="Open wallets for ' + escapeHtml(b.endpoint) + '">' + escapeHtml(b.label) + '</button>';
       }
 
       function reachStripHTML(r) {
@@ -412,11 +436,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
           '<div class="mid">' +
             '<div class="name">' + escapeHtml(r.name) + '</div>' +
             '<div class="desc">' + escapeHtml(r.description).replace(/ · /g, '<span class="pipe">·</span>') + '</div>' +
-            manifestHTML(r) +
+            walletBadgeHTML(r) +
             reachStripHTML(r) +
           '</div>' +
           '<div class="actions">' +
-            '<button class="mapbtn" title="Open in Auth &amp; Model Map">↗</button>' +
+            terminalHTML(r) +
             actionHTML(r) +
           '</div>' +
         '</div>';
@@ -469,9 +493,14 @@ export function buildHtml(nonce: string, cspSource: string): string {
       }
 
       listEl.addEventListener('click', function (e) {
-        var mapBtn = e.target.closest('.mapbtn');
-        if (mapBtn) {
-          vscode.postMessage({ type: 'openMap' });
+        var walletBtn = e.target.closest('.walletbadge');
+        if (walletBtn && walletBtn.tagName === 'BUTTON') {
+          vscode.postMessage({ type: 'openWallet', endpoint: walletBtn.getAttribute('data-endpoint') });
+          return;
+        }
+        var termBtn = e.target.closest('.termbtn');
+        if (termBtn) {
+          vscode.postMessage({ type: 'terminal', slug: termBtn.getAttribute('data-slug') });
           return;
         }
         fireRow(e.target.closest('.row'));
