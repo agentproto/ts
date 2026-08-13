@@ -214,6 +214,8 @@ export const jcodeCapabilities: CapabilityStrategy = async (def, ctx) => {
   }))
   return {
     ...base,
+    source: "discovered",
+    discoverable: "live",
     providers,
     application: { modelApply: "arg", postureApply: "arg", coupled: false },
   }

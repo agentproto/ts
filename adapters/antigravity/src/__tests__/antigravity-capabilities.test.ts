@@ -14,6 +14,12 @@ function makeCtx(overrides?: Partial<DiscoverCtx>): DiscoverCtx {
 }
 
 describe("antigravityCapabilities", () => {
+  it("reports the strategy as discovered, but declared (no live/parse probing)", async () => {
+    const caps = await antigravityCapabilities(antigravity, makeCtx())
+    expect(caps.source).toBe("discovered")
+    expect(caps.discoverable).toBe("declared")
+  })
+
   it("keeps the manifest-derived models and authStores", async () => {
     const caps = await antigravityCapabilities(antigravity, makeCtx())
     const declared = deriveDeclaredCapabilities(antigravity)

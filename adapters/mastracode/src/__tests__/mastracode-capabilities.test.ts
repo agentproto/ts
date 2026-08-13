@@ -14,6 +14,12 @@ function makeCtx(overrides?: Partial<DiscoverCtx>): DiscoverCtx {
 }
 
 describe("mastracodeCapabilities", () => {
+  it("reports the strategy as discovered and live (probes env presence)", async () => {
+    const caps = await mastracodeCapabilities(mastracode, makeCtx())
+    expect(caps.source).toBe("discovered")
+    expect(caps.discoverable).toBe("live")
+  })
+
   it("keeps the manifest-derived models and authStores", async () => {
     const caps = await mastracodeCapabilities(mastracode, makeCtx())
     const declared = deriveDeclaredCapabilities(mastracode)
