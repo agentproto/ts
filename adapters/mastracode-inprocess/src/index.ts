@@ -191,12 +191,17 @@ export function mastracodeInprocessRuntime(): AgentCliRuntime {
  * as SDK call args (`modelApply:"config"`, no argv), and posture is
  * switched via the composed `AGENTPROTO_MASTRACODE_MODE` env var
  * (`postureApply:"env"`). `coupled:true` because this arm runs in-process —
- * there is no subprocess boundary between the daemon and the agent.
+ * there is no subprocess boundary between the daemon and the agent. The
+ * strategy ran and returned real (non-manifest) adapter knowledge, so
+ * `source` is `"discovered"` — but nothing here came from probing
+ * disk/env/process, so `discoverable` stays `"declared"`.
  */
 export const mastracodeInprocessCapabilities: CapabilityStrategy = async (def) => {
   const base = deriveDeclaredCapabilities(def)
   return {
     ...base,
+    source: "discovered",
+    discoverable: "declared",
     application: { modelApply: "config", postureApply: "env", coupled: true },
   }
 }

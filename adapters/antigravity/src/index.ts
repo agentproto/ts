@@ -216,15 +216,21 @@ export function antigravityRuntime(): AgentCliRuntime {
 /**
  * Antigravity exposes no per-provider api-key store to discover (auth is a
  * keyring-backed Google login), so there are no providers to enrich — the
- * capability report stays the manifest projection. The one honest override is
- * the print arm's application contract: model/posture are baked into the spawn
- * argv (`--model`, options), applied per fresh subprocess, so a live switch is
- * `arg`-based and uncoupled — same as the `mastracode` print arm.
+ * manifest projection for providers/models/authStores stays untouched. The
+ * one honest override is the print arm's application contract: model/posture
+ * are baked into the spawn argv (`--model`, options), applied per fresh
+ * subprocess, so a live switch is `arg`-based and uncoupled — same as the
+ * `mastracode` print arm. The strategy still ran and returned real adapter
+ * knowledge (not a caught throw), so `source` is `"discovered"` — but nothing
+ * here came from probing disk/env/process, so `discoverable` stays
+ * `"declared"`.
  */
 export const antigravityCapabilities: CapabilityStrategy = async (def) => {
   const base = deriveDeclaredCapabilities(def)
   return {
     ...base,
+    source: "discovered",
+    discoverable: "declared",
     application: { modelApply: "arg", postureApply: "arg", coupled: false },
   }
 }
