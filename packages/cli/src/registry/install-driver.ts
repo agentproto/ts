@@ -30,6 +30,7 @@ import type { AdapterInstallResult } from "@agentproto/runtime"
 import { listAdaptersWithAcp, type AdapterListing } from "./resolve.js"
 import { CATALOG } from "./catalog.js"
 import { runInstall } from "../commands/install.js"
+import { EXIT_SETUP_NEEDS_TTY } from "../commands/setup.js"
 import {
   KNOWN_INSTALL_COMMANDS,
   parseNpmPackageFromHint,
@@ -314,7 +315,9 @@ export async function installAdapter(
     if (!ok) {
       failureDetail = res.timedOut
         ? ` (timed out after ${INSTALL_TIMEOUT_MS / 60_000}m)`
-        : ` (exit ${res.code})`
+        : res.code === EXIT_SETUP_NEEDS_TTY
+          ? ` — a setup step needs an interactive terminal; run \`agentproto setup ${slug}\` in a real terminal to finish`
+          : ` (exit ${res.code})`
     }
   }
 
@@ -338,6 +341,7 @@ export async function installAdapter(
       ? `installed '${slug}' via \`${command}\`${freshStatus ? ` (now ${freshStatus})` : ""}.`
       : `install of '${slug}' failed${failureDetail}. Ran: \`${command}\`.`,
     ...(freshStatus ? { status: freshStatus } : {}),
+    ...(exitCode === EXIT_SETUP_NEEDS_TTY ? { needsInteractiveSetup: true } : {}),
   }
 }
 

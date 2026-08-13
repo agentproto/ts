@@ -5,7 +5,14 @@
  * (Claude, OpenAI, Gemini, OpenRouter, Copilot, DeepSeek, Groq, Mistral,
  * Ollama, and OpenAI-compatible endpoints). No ACP mode is documented, so
  * this is a `protocol: "print"` (headless) arm: we spawn `jcode run
- * "<prompt>"` per turn and capture stdout.
+ * --ndjson "<prompt>"` per turn and map its NDJSON stream (see the
+ * `jcode-ndjson` mapper in the driver's print-arm).
+ *
+ * Argv order matters: `run` is a clap SUBCOMMAND, so it lives in
+ * `bin_args` (the spawn base) — every composed flag (`--ndjson`,
+ * `--model`, `--resume`) must come AFTER it or jcode rejects the argv
+ * (`error: unexpected argument '--json' found`). The prompt is
+ * positional, not a flag.
  *
  *   import { jcode, jcodeRuntime } from "@agentproto/adapter-jcode"
  *   const session = await jcodeRuntime().start({
@@ -74,9 +81,13 @@ export const jcode: AgentCliHandle = defineAgentCli({
     "1jehuang/jcode — RAM-efficient Rust coding agent with semantic memory, " +
     "multi-agent swarm, and broad provider support (Claude, OpenAI, Gemini, " +
     "OpenRouter, Copilot, DeepSeek, Groq, Mistral, Ollama). Spawned via " +
-    "`jcode run` in headless mode. No ACP; print/headless arm.",
+    "`jcode run --ndjson` in headless mode. No ACP; print/headless arm.",
   version: "0.1.0",
   bin: "jcode",
+  // `run` is a clap subcommand — it must precede every composed flag, so it
+  // lives in the spawn base rather than as a print `prompt_flag` (which
+  // would land AFTER `--ndjson`/`--model` and be rejected by jcode).
+  bin_args: ["run"],
   install: [
     { method: "brew", package: "1jehuang/jcode/jcode" },
     { method: "curl", url: "https://jcode.sh/install" },
@@ -106,10 +117,11 @@ export const jcode: AgentCliHandle = defineAgentCli({
   sandbox: "./SANDBOX.md",
   protocol: "print",
   print: {
-    prompt_flag: "run",
-    output_format: [],
+    // No prompt_flag: the message is positional after `run` (in bin_args).
+    output_format: ["--ndjson"],
     pre_prompt: [],
     resume: { flag: "--resume", kind: "value" },
+    event_schema: "jcode-ndjson",
   },
   session: {
     mode: "ephemeral",

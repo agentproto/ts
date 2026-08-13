@@ -188,6 +188,10 @@ export function createPrintSession(
           eventSchema === "mastra-jsonl"
             ? createMastraMapperState()
             : undefined
+        const jcodeState =
+          eventSchema === "jcode-ndjson"
+            ? createJcodeMapperState()
+            : undefined
 
         // ── Decouple pipe draining from downstream consumption ────────
         // A `for await (const line of rl)` loop backpressures onto
@@ -221,7 +225,7 @@ export function createPrintSession(
           if (csid) capturedSessionId = csid
 
           const sid = capturedSessionId || sessionId || ""
-          const mapped = mapEvent(evt, sid, stderrLines, eventSchema, mastraState)
+          const mapped = mapEvent(evt, sid, stderrLines, eventSchema, mastraState, jcodeState)
           // A single wire line can fan out to several StreamEvents — e.g. an
           // Antigravity tool step carries both the call and its result, and its
           // terminal `result` line carries usage + turn-end together.
@@ -249,7 +253,9 @@ export function createPrintSession(
               ? "mastracode"
               : eventSchema === "antigravity-stream-json"
                 ? "agy"
-                : "claude"
+                : eventSchema === "jcode-ndjson"
+                  ? "jcode"
+                  : "claude"
           const errEvt: StreamEvent = {
             kind: "error",
             error: {
@@ -498,6 +504,17 @@ function captureSessionId(
       )
         return evt.threadId
       return null
+    case "jcode-ndjson":
+      // jcode stamps `session_id` on the opening `start` line (available
+      // before any text — so a mid-turn crash still resumes) and again on
+      // the terminal `done` line, which re-confirms it.
+      if (
+        (evt.type === "start" || evt.type === "done") &&
+        typeof evt.session_id === "string" &&
+        evt.session_id
+      )
+        return evt.session_id
+      return null
   }
 }
 
@@ -509,6 +526,7 @@ function mapEvent(
   stderrLines: string[],
   schema: PrintEventSchema,
   mastraState?: MastraMapperState,
+  jcodeState?: JcodeMapperState,
 ): StreamEvent | StreamEvent[] | null {
   switch (schema) {
     case "claude-stream-json":
@@ -522,6 +540,8 @@ function mapEvent(
       }
       return mapMastraEvent(evt, sessionId, stderrLines, mastraState)
     }
+    case "jcode-ndjson":
+      return mapJcodeEvent(evt, sessionId, jcodeState ?? createJcodeMapperState())
     default:
       return mapClaudeEvent(evt, sessionId, stderrLines)
   }
@@ -766,6 +786,128 @@ function mapAntigravityUsage(
     used: 0,
     ...(tokensIn !== undefined ? { tokensIn } : {}),
     ...(tokensOut !== undefined ? { tokensOut } : {}),
+  }
+}
+
+// ── jcode NDJSON mapper ─────────────────────────────────────────────
+
+/**
+ * Mutable per-stream state for the jcode NDJSON mapper. Tool arguments
+ * arrive as JSON-string `tool_input` deltas between `tool_start` and
+ * `tool_exec`, so the pending call accumulates here until complete.
+ */
+export interface JcodeMapperState {
+  pending?: { id: string; name: string; input: string }
+}
+
+export function createJcodeMapperState(): JcodeMapperState {
+  return {}
+}
+
+/**
+ * Maps a single `jcode run --ndjson` line to this repo's
+ * {@link StreamEvent} taxonomy. Wire shape verified against a live
+ * `jcode run --ndjson` (2026-08-14):
+ *
+ *   {type:"start", session_id, model, provider}          → session capture
+ *   {type:"status_detail"|"connection_phase"|
+ *    "connection_type"|"message_end", …}                 → dropped (noise)
+ *   {type:"text_delta", text}                            → text-delta
+ *   {type:"tool_start", id, name}                        → open pending call
+ *   {type:"tool_input", delta}                           → accumulate args
+ *   {type:"tool_exec", id, name}                         → tool-call
+ *   {type:"tool_done", id, name, output, error}          → tool-result
+ *   {type:"tokens", input, output, cache_read_input, …}  → usage_update
+ *   {type:"done", text, session_id, usage}               → turn-end
+ *
+ * `tokens` fires once per upstream API call (a tool round-trip produces
+ * several), so usage arrives as successive updates, not one total.
+ */
+export function mapJcodeEvent(
+  evt: Record<string, unknown>,
+  sessionId: string,
+  state: JcodeMapperState,
+): StreamEvent | StreamEvent[] | null {
+  switch (evt.type) {
+    case "text_delta":
+      return typeof evt.text === "string"
+        ? { kind: "text-delta", sessionId, text: evt.text }
+        : null
+
+    case "tool_start":
+      state.pending = {
+        id: typeof evt.id === "string" ? evt.id : "",
+        name: typeof evt.name === "string" ? evt.name : "?",
+        input: "",
+      }
+      return null
+
+    case "tool_input":
+      if (state.pending && typeof evt.delta === "string")
+        state.pending.input += evt.delta
+      return null
+
+    case "tool_exec":
+      return flushPendingJcodeCall(state, sessionId)
+
+    case "tool_done": {
+      // Defensive: if `tool_exec` never arrived, flush the call here so
+      // the result is never orphaned from its call.
+      const call = flushPendingJcodeCall(state, sessionId)
+      const result: StreamEvent = {
+        kind: "tool-result",
+        sessionId,
+        toolCallId: typeof evt.id === "string" ? evt.id : "",
+        result: evt.output ?? null,
+        isError: evt.error !== null && evt.error !== undefined,
+      }
+      return call ? [call, result] : result
+    }
+
+    case "tokens": {
+      const tokensIn = typeof evt.input === "number" ? evt.input : undefined
+      const tokensOut = typeof evt.output === "number" ? evt.output : undefined
+      if (tokensIn === undefined && tokensOut === undefined) return null
+      // jcode reports no context-window size/used here, so those stay 0
+      // (the daemon's projector guards on >0 and never clobbers a real
+      // size) — same contract as the antigravity usage mapper.
+      return {
+        kind: "usage_update",
+        sessionId,
+        size: 0,
+        used: 0,
+        ...(tokensIn !== undefined ? { tokensIn } : {}),
+        ...(tokensOut !== undefined ? { tokensOut } : {}),
+      }
+    }
+
+    case "done":
+      return { kind: "turn-end", sessionId, reason: "completed" }
+
+    default:
+      return null
+  }
+}
+
+function flushPendingJcodeCall(
+  state: JcodeMapperState,
+  sessionId: string,
+): StreamEvent | null {
+  const pending = state.pending
+  state.pending = undefined
+  if (!pending) return null
+  let args: unknown
+  try {
+    args = JSON.parse(pending.input)
+  } catch {
+    args = { raw: pending.input }
+  }
+  return {
+    kind: "tool-call",
+    sessionId,
+    toolCallId: pending.id,
+    toolName: pending.name,
+    arguments: args,
   }
 }
 

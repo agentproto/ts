@@ -462,6 +462,12 @@ export interface AdapterInstallResult {
    *  post-install re-list failed (the install itself may still have
    *  succeeded — read `ok`). */
   status?: "supported" | "available" | "ready" | "unresolvable"
+  /** True when the install failed ONLY because a manifest setup step
+   *  declares `interactive: true` and this process has no TTY to run it
+   *  in (e.g. openclaw's `onboard --install-daemon` TUI). The remedy is a
+   *  real terminal — `agentproto setup <slug>` — which a UI can offer
+   *  directly as a PTY terminal session. */
+  needsInteractiveSetup?: boolean
 }
 
 /**
