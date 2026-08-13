@@ -315,14 +315,22 @@ export function mapStopReason(
   }
 }
 
-function usageUpdate(sessionId: string, usage: PiUsage): StreamEvent {
+function usageUpdate(
+  sessionId: string,
+  usage: PiUsage,
+  contextWindow: number | undefined,
+): StreamEvent {
   return {
     kind: "usage_update",
     sessionId,
     // Pi's per-message `Usage` reports token totals but not a context-window
-    // size; `totalTokens` is surfaced as both `size` and `used` (documented
-    // gap in PI-RPC.md). Cost is pi's own computed USD figure.
-    size: usage.totalTokens,
+    // size, so the caller resolves one out-of-band (model catalog, by model
+    // id — see client.ts `connect()`). `size: 0` is this codebase's "unknown
+    // window" sentinel (mirrors the `agy` mapper in print-arm.ts): the
+    // runtime's usage_update ingestion only applies `size` when it's `> 0`,
+    // so an unresolved window leaves `contextSize` untouched rather than
+    // being defaulted to `totalTokens` (see PI-RPC.md).
+    size: contextWindow ?? 0,
     used: usage.totalTokens,
     cost: { amount: usage.cost.total, currency: "USD" },
     tokensIn: usage.input,
@@ -333,6 +341,11 @@ function usageUpdate(sessionId: string, usage: PiUsage): StreamEvent {
 /**
  * Translate one pi session event into zero or more {@link StreamEvent}s,
  * updating `state` in place. Pure aside from the state mutation.
+ *
+ * `contextWindow` is the model's real context-window size (resolved by the
+ * caller from `@agentproto/model-catalog`, once per connection — pi's own
+ * per-message `Usage` carries no window figure). `undefined` when the
+ * model isn't in the catalog; threaded straight into `usageUpdate`.
  *
  * `agent_end` (with `willRetry` false) is the turn terminator: it flushes a
  * `turn-end` whose reason reflects the stop reason accumulated over the turn.
@@ -346,6 +359,7 @@ export function mapPiEvent(
   event: PiSessionEvent,
   sessionId: string,
   state: PiMapperState,
+  contextWindow: number | undefined,
 ): StreamEvent[] {
   switch (event.type) {
     case "message_update": {
@@ -400,7 +414,7 @@ export function mapPiEvent(
         state.lastStopReason = message.stopReason
       }
       if (message?.usage !== undefined) {
-        return [usageUpdate(sessionId, message.usage)]
+        return [usageUpdate(sessionId, message.usage, contextWindow)]
       }
       return []
     }
