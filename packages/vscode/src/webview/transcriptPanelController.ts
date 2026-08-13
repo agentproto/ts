@@ -837,7 +837,7 @@ export class TranscriptPanelController {
     return this.client.setSessionModel(this.sessionId, model)
   }
 
-  async onSend(text: string, interrupt: boolean): Promise<void> {
+  async onSend(text: string, interrupt: boolean, force?: boolean, localId?: string): Promise<void> {
     if (this.isSending) return
     this.isSending = true
     // Sending to a terminal-status session triggers the daemon's lazy resume
@@ -854,9 +854,9 @@ export class TranscriptPanelController {
       // resume/slow adapter can push the POST past the client timeout — the
       // daemon often completes the send a beat later, which is exactly why a
       // manual retry "worked". Automate that ONE retry on a timeout
-      // classification; a genuine refusal (busy/not-alive/other) never
-      // retries. isSending stays true for the whole arc so a concurrent
-      // onSend is still suppressed during the wait.
+      // classification; a genuine refusal (not-alive/other) never retries.
+      // isSending stays true for the whole arc so a concurrent onSend is
+      // still suppressed during the wait.
       const maxAttempts = 2
       for (let attempt = 1; ; attempt++) {
         try {
@@ -864,21 +864,43 @@ export class TranscriptPanelController {
             // A PTY/terminal session has no agent `prompt` route (that 400s
             // for kind=terminal) — reply flows through the terminal-input
             // broker instead. A terminal has no mid-turn ACP queue, so
-            // `interrupt` is a no-op here and is ignored. The native autoPoll
-            // reflects the reply back on its own (see
+            // `interrupt`/`queue`/`force` are all no-ops here. The native
+            // autoPoll reflects the reply back on its own (see
             // pollOnce/fetchNewNativeRecords) — nothing else to do.
             await this.client.writeTerminalInput(this.sessionId, text)
-          } else {
-            await this.client.prompt(this.sessionId, text, { interrupt, wait: false })
+            this.messenger.postMessage({ type: "sendAck" })
+            return
           }
-          this.messenger.postMessage({ type: "sendAck" })
+          // `queue: true` is ALWAYS set (not just when the composer already
+          // knows it's busy): the daemon's own busy check is the source of
+          // truth, not a client-side snapshot that can race it. A no-op on
+          // an idle session — the prompt dispatches immediately either way
+          // (see `SessionsRegistry.enqueuePrompt`'s doc). `interrupt` still
+          // wins outright when both are set.
+          const result = await this.client.prompt(this.sessionId, text, {
+            interrupt,
+            force,
+            queue: true,
+            wait: false,
+          })
+          if (result.pending && result.queueId !== undefined) {
+            this.messenger.postMessage({
+              type: "queued",
+              localId: localId ?? result.queueId,
+              queueId: result.queueId,
+              text,
+              queuePosition: result.queuePosition ?? 0,
+            })
+          } else {
+            this.messenger.postMessage({ type: "sendAck", localId })
+          }
           return
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
-          // Echo the text back alongside a classification: a mid-turn
-          // rejection is not an error the user should see, it's a cue to
-          // queue the text and send it when the turn ends (see
-          // classifySendFailure).
+          // Echo the text back alongside a classification: "busy" is now
+          // unreachable here (queue: true above means a mid-turn session
+          // queues instead of 409ing) — kept for whatever else still hits
+          // the bare mid-turn rejection (see classifySendFailure).
           const kind = classifySendFailure(message)
           if (kind === "timeout" && attempt < maxAttempts) {
             // First timeout: never leave the user staring at silence — say
@@ -898,12 +920,12 @@ export class TranscriptPanelController {
             // prompt anyway (that's the mechanism behind the timeout), and
             // this retry is what got refused. Treating the 409 as proof the
             // text was delivered — ack and stop here. Posting the busy
-            // sendError instead would make the webview QUEUE the same text
-            // and re-send it at turn-end, executing the instruction TWICE.
-            // Trade-off: in the rare case the turn belongs to a concurrent
-            // third-party prompt, the user sees no reply and resends —
-            // strictly better than a silent double execution.
-            this.messenger.postMessage({ type: "sendAck" })
+            // sendError instead would make the webview show a SECOND queued
+            // entry for the same text. Trade-off: in the rare case the turn
+            // belongs to a concurrent third-party prompt, the user sees no
+            // reply and resends — strictly better than a silent double
+            // execution.
+            this.messenger.postMessage({ type: "sendAck", localId })
             return
           }
           this.messenger.postMessage({
@@ -912,12 +934,27 @@ export class TranscriptPanelController {
             kind,
             title: sendFailureTitle(kind),
             text,
+            localId,
           })
           return
         }
       }
     } finally {
       this.isSending = false
+    }
+  }
+
+  /** Cancel one not-yet-dispatched item from the daemon's prompt FIFO — the
+   *  queued-messages block's per-item remove button. Best-effort: the
+   *  webview has already removed it from its own list optimistically by the
+   *  time this fires (same as `queuedCancel` on the old single-slot queue),
+   *  so a failure here (already dispatched, network hiccup) is silently
+   *  swallowed rather than resurrecting an entry the user already dismissed. */
+  async onCancelQueued(queueId: string): Promise<void> {
+    try {
+      await this.client.removeQueuedPrompt(this.sessionId, queueId)
+    } catch {
+      // best-effort — see doc comment above
     }
   }
 

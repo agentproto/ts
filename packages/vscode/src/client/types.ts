@@ -340,6 +340,11 @@ export interface SessionDescriptor {
   awaitingPermission?: boolean
   turnsCompleted?: number
   busy?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.promptQueue — prompts
+   *  that arrived mid-turn and were queued (FIFO, or front-inserted with
+   *  `force`) instead of rejected. Drains one at a time as turns end; the
+   *  transcript panel's queued-messages block reads straight off this. */
+  promptQueue?: Array<{ id: string; message: unknown; queuedAt: string; source?: string }>
   blockedOn?: "subagent" | "command"
   /** Mirrors `@agentproto/runtime` SessionDescriptor.stalledSinceMs — epoch
    *  ms of the last known adapter activity at the moment the turn-liveness

@@ -114,13 +114,14 @@ export function formatSubtitle(session: Pick<SessionDescriptor, "adapterSlug" | 
 /**
  * Why a prompt POST was refused.
  *
- * `busy` is NOT a failure the user should ever see as an error: the daemon
- * allows one turn at a time per session and rejects a prompt sent mid-turn
- * with 409 (`validateAgentTurn`, sessions.ts — "is mid-turn — wait for it to
- * finish or cancel"). Despite its name `enqueuePrompt` does not queue; only
- * `interrupt: true` gets through. Typing while the agent works is completely
- * normal, so the panel holds the message and sends it when the turn ends —
- * this classification is what tells it to queue instead of shouting.
+ * `busy` names the daemon's bare mid-turn 409 (`validateAgentTurn`,
+ * sessions.ts — "is mid-turn — wait for it to finish or cancel"), but the
+ * transcript panel's own sends no longer trigger it: `onSend` always sets
+ * `queue: true` (`SessionsRegistry.enqueuePrompt`'s FIFO opt — see its doc),
+ * so a mid-turn session queues the prompt daemon-side instead of rejecting
+ * it, and `queued`/`sendAck` cover that outcome, not `sendError`. This kind
+ * is kept for whatever else still hits the bare rejection without opting
+ * into the queue.
  */
 export type SendFailureKind = "busy" | "not-alive" | "timeout" | "other"
 
