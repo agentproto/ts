@@ -61,6 +61,7 @@ function createMockMessenger(): {
 
 type MockClient = DaemonClient & {
   prompt: ReturnType<typeof vi.fn>
+  removeQueuedPrompt: ReturnType<typeof vi.fn>
   writeTerminalInput: ReturnType<typeof vi.fn>
   kill: ReturnType<typeof vi.fn>
   interrupt: ReturnType<typeof vi.fn>
@@ -77,7 +78,8 @@ function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {})
   return {
     url: "http://127.0.0.1:18790",
     authHeaders: undefined,
-    prompt: vi.fn().mockResolvedValue(undefined),
+    prompt: vi.fn().mockResolvedValue({ ok: true, id: "s1", queued: true }),
+    removeQueuedPrompt: vi.fn().mockResolvedValue({ ok: true, id: "s1", queueId: "q1", removed: true }),
     writeTerminalInput: vi.fn().mockResolvedValue({ ok: true }),
     kill: vi.fn().mockResolvedValue(undefined),
     interrupt: vi.fn().mockResolvedValue({ ok: true, id: "s1", wasBusy: true }),
@@ -865,7 +867,12 @@ describe("TranscriptPanelController — ready & send safety", () => {
     const client = createMockClient()
     const { controller, messenger } = make(client)
     await controller.onSend("hello", false)
-    expect(client.prompt).toHaveBeenCalledWith("s1", "hello", { interrupt: false, wait: false })
+    expect(client.prompt).toHaveBeenCalledWith("s1", "hello", {
+      interrupt: false,
+      force: undefined,
+      queue: true,
+      wait: false,
+    })
     expect(messenger.messages.map(m => m.type)).toEqual(["sending", "sendAck"])
   })
 
@@ -873,31 +880,46 @@ describe("TranscriptPanelController — ready & send safety", () => {
     const client = createMockClient({ prompt: vi.fn().mockRejectedValue(new Error("boom")) })
     const { controller, messenger } = make(client)
     await controller.onSend("hello", true)
-    expect(client.prompt).toHaveBeenCalledWith("s1", "hello", { interrupt: true, wait: false })
+    expect(client.prompt).toHaveBeenCalledWith("s1", "hello", {
+      interrupt: true,
+      force: undefined,
+      queue: true,
+      wait: false,
+    })
     expect(messenger.messages[0]).toMatchObject({ type: "sending" })
     expect(messenger.messages[1]).toMatchObject({ type: "sendError", message: "boom" })
   })
 
   it("suppresses concurrent sends until the admission promise settles", async () => {
-    let resolvePrompt: (() => void) | undefined
-    const promptPromise = new Promise<void>(r => { resolvePrompt = r })
+    let resolvePrompt: ((v: { ok: true; id: string; queued: true }) => void) | undefined
+    const promptPromise = new Promise(r => { resolvePrompt = r })
     const client = createMockClient({ prompt: vi.fn(() => promptPromise) })
     const { controller, messenger } = make(client)
 
     const send1 = controller.onSend("first", false)
     const send2 = controller.onSend("second", false)
     expect(client.prompt).toHaveBeenCalledTimes(1)
-    expect(client.prompt).toHaveBeenLastCalledWith("s1", "first", { interrupt: false, wait: false })
+    expect(client.prompt).toHaveBeenLastCalledWith("s1", "first", {
+      interrupt: false,
+      force: undefined,
+      queue: true,
+      wait: false,
+    })
     expect(messenger.messages.filter(m => m.type === "sending")).toHaveLength(1)
 
-    resolvePrompt!()
+    resolvePrompt!({ ok: true, id: "s1", queued: true })
     await send1
     await send2
     expect(messenger.messages.map(m => m.type)).toEqual(["sending", "sendAck"])
 
     await controller.onSend("third", true)
     expect(client.prompt).toHaveBeenCalledTimes(2)
-    expect(client.prompt).toHaveBeenLastCalledWith("s1", "third", { interrupt: true, wait: false })
+    expect(client.prompt).toHaveBeenLastCalledWith("s1", "third", {
+      interrupt: true,
+      force: undefined,
+      queue: true,
+      wait: false,
+    })
   })
 })
 
@@ -906,14 +928,22 @@ describe("TranscriptPanelController — send timeout retry", () => {
 
   it("retries a timeout exactly once, then acks — never an error the user has to act on", async () => {
     const client = createMockClient({
-      prompt: vi.fn().mockRejectedValueOnce(new Error(TIMEOUT_MSG)).mockResolvedValueOnce(undefined),
+      prompt: vi
+        .fn()
+        .mockRejectedValueOnce(new Error(TIMEOUT_MSG))
+        .mockResolvedValueOnce({ ok: true, id: "s1", queued: true }),
     })
     const { controller, messenger } = make(client, { sendRetryDelayMs: 0 })
 
     await controller.onSend("hello", false)
 
     expect(client.prompt).toHaveBeenCalledTimes(2)
-    expect(client.prompt).toHaveBeenLastCalledWith("s1", "hello", { interrupt: false, wait: false })
+    expect(client.prompt).toHaveBeenLastCalledWith("s1", "hello", {
+      interrupt: false,
+      force: undefined,
+      queue: true,
+      wait: false,
+    })
     const types = messenger.messages.map(m => m.type)
     expect(types).toEqual(["sending", "sending", "sendAck"])
     expect(messenger.messages[0]).toEqual({ type: "sending" })
@@ -988,7 +1018,10 @@ describe("TranscriptPanelController — send timeout retry", () => {
     vi.useFakeTimers()
     try {
       const client = createMockClient({
-        prompt: vi.fn().mockRejectedValueOnce(new Error(TIMEOUT_MSG)).mockResolvedValueOnce(undefined),
+        prompt: vi
+          .fn()
+          .mockRejectedValueOnce(new Error(TIMEOUT_MSG))
+          .mockResolvedValueOnce({ ok: true, id: "s1", queued: true }),
       })
       const { controller, messenger } = make(client, { sendRetryDelayMs: 3000 })
 
@@ -1005,7 +1038,12 @@ describe("TranscriptPanelController — send timeout retry", () => {
       // The second send never reached the daemon — only the original text's
       // two attempts did.
       expect(client.prompt).toHaveBeenCalledTimes(2)
-      expect(client.prompt).toHaveBeenLastCalledWith("s1", "first", { interrupt: false, wait: false })
+      expect(client.prompt).toHaveBeenLastCalledWith("s1", "first", {
+        interrupt: false,
+        force: undefined,
+        queue: true,
+        wait: false,
+      })
       expect(messenger.messages.filter(m => m.type === "sendAck")).toHaveLength(1)
     } finally {
       vi.useRealTimers()
@@ -1023,6 +1061,84 @@ describe("TranscriptPanelController — send timeout retry", () => {
 
     expect(messenger.messages[0]).toEqual({ type: "sending", note: "Waking session…" })
     expect(messenger.messages.some(m => m.type === "sendAck")).toBe(true)
+  })
+})
+
+describe("TranscriptPanelController — onSend queue/force opts", () => {
+  it("posts a 'queued' ack (not sendAck) when the daemon reports the prompt is pending in its FIFO", async () => {
+    const client = createMockClient({
+      prompt: vi.fn().mockResolvedValue({
+        ok: true,
+        id: "s1",
+        queued: true,
+        pending: true,
+        queueId: "q_1",
+        queuePosition: 2,
+      }),
+    })
+    const { controller, messenger } = make(client)
+
+    await controller.onSend("later", false, false, "local_0")
+
+    expect(client.prompt).toHaveBeenCalledWith("s1", "later", {
+      interrupt: false,
+      force: false,
+      queue: true,
+      wait: false,
+    })
+    expect(messenger.messages.some(m => m.type === "sendAck")).toBe(false)
+    expect(messenger.messages).toContainEqual({
+      type: "queued",
+      localId: "local_0",
+      queueId: "q_1",
+      text: "later",
+      queuePosition: 2,
+    })
+  })
+
+  it("posts a plain sendAck (echoing localId) when the prompt dispatches immediately instead of queueing", async () => {
+    const client = createMockClient({
+      prompt: vi.fn().mockResolvedValue({ ok: true, id: "s1", queued: true }),
+    })
+    const { controller, messenger } = make(client)
+
+    await controller.onSend("now", false, false, "local_0")
+
+    expect(messenger.messages).toContainEqual({ type: "sendAck", localId: "local_0" })
+  })
+
+  it("threads force through to client.prompt", async () => {
+    const client = createMockClient()
+    const { controller } = make(client)
+
+    await controller.onSend("jump the line", false, true, "local_1")
+
+    expect(client.prompt).toHaveBeenCalledWith("s1", "jump the line", {
+      interrupt: false,
+      force: true,
+      queue: true,
+      wait: false,
+    })
+  })
+})
+
+describe("TranscriptPanelController — onCancelQueued", () => {
+  it("calls client.removeQueuedPrompt with the session id and queueId", async () => {
+    const client = createMockClient()
+    const { controller } = make(client)
+
+    await controller.onCancelQueued("q_1")
+
+    expect(client.removeQueuedPrompt).toHaveBeenCalledWith("s1", "q_1")
+  })
+
+  it("swallows a removeQueuedPrompt failure — the webview already removed the row optimistically", async () => {
+    const client = createMockClient({
+      removeQueuedPrompt: vi.fn().mockRejectedValue(new Error("already dispatched")),
+    })
+    const { controller } = make(client)
+
+    await expect(controller.onCancelQueued("q_1")).resolves.toBeUndefined()
   })
 })
 
@@ -1206,7 +1322,12 @@ describe("TranscriptPanelController — onSend routing (FIX 1)", () => {
 
     await controller.onSend("hi agent", true)
 
-    expect(client.prompt).toHaveBeenCalledWith("s1", "hi agent", { interrupt: true, wait: false })
+    expect(client.prompt).toHaveBeenCalledWith("s1", "hi agent", {
+      interrupt: true,
+      force: undefined,
+      queue: true,
+      wait: false,
+    })
     expect(client.writeTerminalInput).not.toHaveBeenCalled()
     expect(messenger.messages.some(m => m.type === "sendAck")).toBe(true)
   })

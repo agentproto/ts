@@ -87,6 +87,10 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url?.startsWith("/sessions/s1/restart") && req.method === "POST") return { status: 200, body: { id: "s2", kind: "agent-cli", status: "running", command: "c", pid: 9, startedAt: "t", workspaceSlug: "ws", resumedFrom: "s1", resumeVia: "resumed via ACP" } }
       if (req.url?.startsWith("/sessions/ghostwallet/restart") && req.method === "POST") return { status: 400, body: { error: "restart_override_invalid", message: "unknown access profile", sessionId: "ghostwallet" } }
       if (req.url?.startsWith("/sessions/s1/prompt") && req.method === "POST") return { status: 200, body: { ok: true } }
+      if (req.url?.startsWith("/sessions/s1/queue/") && req.method === "DELETE") {
+        const queueId = req.url.split("/").pop()!
+        return { status: 200, body: { ok: true, id: "s1", queueId, removed: true } }
+      }
       if (req.url === "/sessions/s1" && req.method === "PATCH") {
         const patch = req.body as { title?: string | null; label?: string | null }
         return { status: 200, body: { id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws", ...(patch.label ? { label: patch.label } : {}), ...(patch.title ? { title: patch.title } : {}) } }
@@ -233,6 +237,26 @@ describe("DaemonClient — URL + auth header mapping", () => {
     await client().prompt("s1", "go", { interrupt: true })
     const last = daemon.requests[daemon.requests.length - 1]!
     expect(last.body).toMatchObject({ prompt: "go", interrupt: true })
+  })
+
+  it("prompt queue:true and force:true are sent in the body", async () => {
+    await client().prompt("s1", "go", { queue: true, force: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ prompt: "go", queue: true, force: true })
+  })
+
+  it("prompt omits queue/force from the body when not set — no accidental FIFO opt-in", async () => {
+    await client().prompt("s1", "go")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toEqual({ prompt: "go" })
+  })
+
+  it("DELETE /sessions/:id/queue/:queueId cancels a queued item", async () => {
+    const res = await client().removeQueuedPrompt("s1", "q_abc")
+    expect(res).toEqual({ ok: true, id: "s1", queueId: "q_abc", removed: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("DELETE")
+    expect(last.url).toBe("/sessions/s1/queue/q_abc")
   })
 
   it("POST /sessions/:id/kill returns { ok, sessionId }", async () => {

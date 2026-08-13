@@ -641,6 +641,25 @@ export interface SessionWatcherInfo {
   since: string
 }
 
+/** One prompt waiting in `SessionDescriptor.promptQueue` — see that
+ *  field's doc for the FIFO/force ordering contract. */
+export interface QueuedPrompt {
+  /** Stable id, assigned at queue time (by the HTTP layer for
+   *  `POST /sessions/:id/prompt`'s `queue` arm so the caller can echo it
+   *  straight back in the response, or minted here for any other
+   *  caller). Used by `removeQueuedPrompt` to cancel this one item
+   *  before it dispatches. */
+  id: string
+  /** Same shape `runAgentTurn`'s `message` parameter accepts — a raw
+   *  string or an ACP content block/array. */
+  message: unknown
+  /** ISO 8601 timestamp this item was queued. */
+  queuedAt: string
+  /** Same as `enqueuePrompt`'s `opts.source` — carried through to the
+   *  turn this item eventually becomes. */
+  source?: string
+}
+
 export interface SessionDescriptor {
   id: string
   kind: SessionKind
@@ -1196,6 +1215,23 @@ export interface SessionDescriptor {
    *  message (`runAgentTurn`) — so delivery survives a busy parent without
    *  ever cancelling its in-flight work. Absent when nothing is queued. */
   pendingChildCrashNotices?: string[]
+  /** FIFO of prompts that arrived while this session was mid-turn and
+   *  asked to be QUEUED rather than rejected (`enqueuePrompt`'s
+   *  `opts.queue` arm — see its doc comment). Index 0 is next to
+   *  dispatch. A plain queued item is appended to the back; a
+   *  `force`-queued one is inserted at the front, jumping everything
+   *  already waiting WITHOUT cancelling the live turn (that's what
+   *  `interrupt` is for). Drained one item at a time, in this order, by
+   *  `dispatchQueuedPrompt` at the end of every `runAgentTurn` — never
+   *  by the caller that queued it, which already returned. Always
+   *  replaced with a NEW array reference on every mutation (push, drain,
+   *  removal), never mutated in place — the VS Code webview's
+   *  `sessionDescriptorsEqual` diff is a shallow `!==` per field, so an
+   *  in-place `.shift()` here would silently stop propagating queue
+   *  changes to the transcript panel. `[]` (not absent) once anything
+   *  has ever been queued, matching `pendingChildCrashNotices`'s
+   *  convention above. */
+  promptQueue?: QueuedPrompt[]
   /** Best-effort context-handoff digest (Fix D), stashed on a descriptor
    *  whose resume degraded to a BLANK spawn — the adapter's own
    *  conversation store was missing, or the adapter declared `resumable:
@@ -2091,12 +2127,43 @@ export interface SessionsRegistry {
    *  `false` reproduces today's mid-turn rejection byte-for-byte. */
   /** `opts.source` on either prompt verb is the turn's provenance
    *  (`agent:<sessionId>` when another session injected it — see
-   *  `SessionObserver.recordPrompt`); recording-only, never behavioral. */
+   *  `SessionObserver.recordPrompt`); recording-only, never behavioral.
+   *
+   *  `opts.queue` is the FIFO arm (additive, opt-in — omitted/false
+   *  reproduces the byte-for-byte busy rejection above, unchanged):
+   *  when the session is mid-turn AND `queue` is true, the prompt is
+   *  appended to `SessionDescriptor.promptQueue` instead of being
+   *  rejected, and this resolves immediately WITHOUT dispatching
+   *  anything — `dispatchQueuedPrompt` fires it once the current (and
+   *  any earlier-queued) turns finish. `opts.force` only matters
+   *  alongside `queue`: it inserts at the FRONT of the queue instead of
+   *  the back, jumping everything already waiting, but — unlike
+   *  `interrupt` — never touches the live turn. `opts.queueId` lets the
+   *  caller pin the queued item's id up front (the HTTP layer does this
+   *  so it can echo the id straight back in its response); omitted, one
+   *  is minted here. On an IDLE session `queue`/`force`/`queueId` are
+   *  no-ops — admission falls straight through to the normal dispatch
+   *  path below, identical to `queue` omitted. `interrupt` is checked
+   *  first: an `{interrupt: true, queue: true}` pair interrupts (never
+   *  queues) exactly like `interrupt` alone. */
   enqueuePrompt(
     id: string,
     message: unknown,
-    opts?: { interrupt?: boolean; source?: string }
+    opts?: {
+      interrupt?: boolean
+      source?: string
+      queue?: boolean
+      force?: boolean
+      queueId?: string
+    }
   ): Promise<void>
+  /** Cancel one not-yet-dispatched item in `SessionDescriptor.promptQueue`
+   *  by id — the composer's per-item "remove" action. Idempotent: an
+   *  unknown session or an id that's already gone (dispatched, already
+   *  removed, or never existed) resolves `{removed: false}` rather than
+   *  throwing, same shape as `interruptSession`'s no-op-is-not-an-error
+   *  contract. */
+  removeQueuedPrompt(id: string, queueId: string): { removed: boolean }
   /** Eagerly resume ONE dead-but-resumable agent-cli session IN PLACE,
    *  WITHOUT a prompt — the boot-time counterpart to the lazy resume that
    *  `sendPrompt`/`enqueuePrompt` trigger on the first prompt after a restart
@@ -4112,6 +4179,45 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
+   * Drain one item off `SessionDescriptor.promptQueue` — called at the
+   * very end of `runAgentTurn`'s finally, so this runs after EVERY turn,
+   * normal or abnormal. Re-validates via `validateAgentTurn` before
+   * dispatching (a queued item may have sat through a crash/restart): a
+   * session that's no longer alive drops the item with a logged
+   * `[error]` line instead of dispatching into a dead connection. Fire-
+   * and-forget, same shape as `enqueuePrompt`'s own dispatch — nothing
+   * is awaiting this. Recurses through `runAgentTurn`'s own finally on
+   * the turn it fires, so a burst of N queued prompts drains one at a
+   * time, in order, without unbounded call-stack growth (each dispatch
+   * is a fresh microtask via the `void (async () => ...)()` below, not
+   * a direct recursive call).
+   */
+  const dispatchQueuedPrompt = (rt: SessionRuntime): void => {
+    const queue = rt.desc.promptQueue
+    const next = queue?.[0]
+    if (!queue || !next) return
+    rt.desc.promptQueue = queue.slice(1)
+    schedulePersist()
+    void (async () => {
+      try {
+        await maybeResumeAgent(rt)
+        const liveRt = validateAgentTurn(rt.desc.id, "queue-drain")
+        await runAgentTurn(
+          liveRt,
+          next.message,
+          next.source ? { promptSource: next.source } : undefined
+        )
+      } catch (err) {
+        appendLine(
+          rt,
+          `[error] queued prompt dropped — ${err instanceof Error ? err.message : String(err)}`,
+          "stderr"
+        )
+      }
+    })()
+  }
+
+  /**
    * Record one FAILED in-place resume attempt (§5 cap/backoff): bump the
    * persisted `resumeAttempts` counter and stamp `lastResumeAt`. Persisted (not
    * in-memory) so the cap survives a daemon restart — a crash-looping daemon
@@ -4961,6 +5067,13 @@ export function createSessionsRegistry(opts?: {
           })
         }
       }
+
+      // ── FIFO queue drain (session-queue-ux) ──────────────────────
+      // Runs after every turn, normal or abnormal — see
+      // `dispatchQueuedPrompt`'s doc for why re-dispatching into a
+      // no-longer-alive session is safe (it re-validates and drops with
+      // a logged error rather than throwing here).
+      dispatchQueuedPrompt(rt)
     }
   }
 
@@ -5735,6 +5848,27 @@ export function createSessionsRegistry(opts?: {
       if (opts?.interrupt && rtPre.busy) {
         await interruptInFlightTurn(rtPre, id, "enqueuePrompt")
       }
+      // Queue arm (additive, opt-in — see this method's doc comment):
+      // reached only when the caller explicitly asked to queue AND the
+      // session is STILL busy after the interrupt arm above (an
+      // `{interrupt: true, queue: true}` pair already settled the turn,
+      // so `rtPre.busy` is false here and this is skipped — interrupt
+      // wins). Resolves immediately without touching admission or
+      // dispatch; `dispatchQueuedPrompt` (in `runAgentTurn`'s finally)
+      // is what eventually fires it.
+      if (opts?.queue && rtPre.busy) {
+        const item: QueuedPrompt = {
+          id: opts.queueId ?? `q_${randomUUID().slice(0, 8)}`,
+          message,
+          queuedAt: new Date().toISOString(),
+          ...(opts.source ? { source: opts.source } : {}),
+        }
+        rtPre.desc.promptQueue = opts.force
+          ? [item, ...(rtPre.desc.promptQueue ?? [])]
+          : [...(rtPre.desc.promptQueue ?? []), item]
+        schedulePersist()
+        return
+      }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
       // Execution phase — fire-and-forget from here on. Errors during
@@ -5749,6 +5883,17 @@ export function createSessionsRegistry(opts?: {
           "stderr"
         )
       })
+    },
+    removeQueuedPrompt(id, queueId) {
+      const rt = sessions.get(id)
+      if (!rt?.desc.promptQueue?.length) return { removed: false }
+      const next = rt.desc.promptQueue.filter(p => p.id !== queueId)
+      const removed = next.length !== rt.desc.promptQueue.length
+      if (removed) {
+        rt.desc.promptQueue = next
+        schedulePersist()
+      }
+      return { removed }
     },
     async resumeOnBoot(id) {
       const rt = sessions.get(id)

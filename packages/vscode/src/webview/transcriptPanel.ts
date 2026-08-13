@@ -293,10 +293,13 @@ export async function handleWebviewMessage(
       })
       return
     case "send":
-      await controller.onSend(msg.text, false)
+      await controller.onSend(msg.text, false, msg.force, msg.localId)
       return
     case "interruptSend":
       await controller.onSend(msg.text, true)
+      return
+    case "cancelQueued":
+      await controller.onCancelQueued(msg.queueId)
       return
     case "stop":
       await controller.onStop()
@@ -1475,9 +1478,17 @@ export function buildHtml(
       color: var(--vscode-badge-foreground);
       background: var(--vscode-badge-background);
     }
-    /* ── Queued message ───────────────────────────────────────────────
-       A prompt typed mid-turn is held here rather than rejected. */
+    /* ── Queued messages ──────────────────────────────────────────────
+       Prompts typed mid-turn are held here (daemon-side FIFO — see
+       SessionsRegistry.enqueuePrompt's queue opt) rather than rejected.
+       One row per pending item, oldest (next to dispatch) on top. */
     #queued {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #queued[hidden] { display: none; }
+    .queued-item {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -1487,15 +1498,19 @@ export function buildHtml(
       font-size: 0.9em;
       color: var(--vscode-descriptionForeground);
     }
-    #queued[hidden] { display: none; }
-    #queued-label {
+    .queued-item-position {
+      flex: 0 0 auto;
+      font-variant-numeric: tabular-nums;
+      opacity: 0.7;
+    }
+    .queued-item-label {
       flex: 1 1 auto;
       min-width: 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    #queued-cancel { flex: 0 0 auto; }
+    .queued-item-cancel { flex: 0 0 auto; }
     #composer {
       position: relative;
       display: flex;
@@ -2152,11 +2167,7 @@ export function buildHtml(
       </div>
       <button id="ib-dismiss" title="Dismiss">✕</button>
     </div>
-    <div id="queued" hidden>
-      <span id="queued-icon">&#9203;</span>
-      <span id="queued-label"></span>
-      <button id="queued-cancel" title="Discard the queued message">✕</button>
-    </div>
+    <div id="queued" hidden></div>
     <div id="composer">
       <div id="mention-popup" hidden></div>
       <div id="composer-attachments" hidden></div>
@@ -2172,7 +2183,7 @@ export function buildHtml(
         </span>
         <span id="send-hint" class="send-hint">⏎ send · ⇧⏎ newline</span>
         <span id="send-status"></span>
-        <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
+        <button id="interrupt-send" hidden title="Interrupt the current turn and send the next queued message now">Interrupt &amp; send</button>
         <button id="restart-btn" hidden title="Restart this session — resumes the conversation in a new session">↻ Restart</button>
         <button id="send" title="Send (Enter)">↵</button>
         <button id="stop" hidden title="Stop the current turn">■</button>
@@ -2253,8 +2264,6 @@ export function buildHtml(
       const blockedNoteText = document.getElementById('blocked-note-text');
       const blockedNoteDismiss = document.getElementById('blocked-note-dismiss');
       const queuedRow = document.getElementById('queued');
-      const queuedLabel = document.getElementById('queued-label');
-      const queuedCancel = document.getElementById('queued-cancel');
       const attachmentsRow = document.getElementById('composer-attachments');
       const mentionPopup = document.getElementById('mention-popup');
       const ptyView = document.getElementById('pty-view');
@@ -2313,12 +2322,25 @@ export function buildHtml(
        *  Guards updateHeader from wiping the input on a mid-edit sessionUpdate. */
       let isEditingTitle = false;
       /**
-       * Text typed while the agent was mid-turn. The daemon takes ONE turn at
-       * a time and rejects anything else with a 409, so instead of firing that
-       * at the user we hold the message here and flush it the moment the turn
-       * ends — or immediately, if they choose to interrupt.
+       * Messages typed while the agent was mid-turn, oldest (next to
+       * dispatch) first. The daemon holds these in its own FIFO
+       * (SessionsRegistry.enqueuePrompt's queue opt) and drains them one at
+       * a time as turns end — this array just mirrors that for display.
+       * Each entry is { localId, queueId, text }: localId is minted HERE
+       * the instant send() fires (for the optimistic row shown before the
+       * daemon's ack arrives); queueId is the daemon-assigned id, filled in
+       * once the 'queued' ack lands (see the message-switch below) and
+       * null until then. Reconciliation in applySession keys on queueId
+       * once it exists; a still-null one is left alone (it hasn't landed
+       * in session.promptQueue yet either).
        */
-      let queuedText = null;
+      let queuedItems = [];
+      let queuedLocalIdSeq = 0;
+      // A cancelQueued click that races an in-flight 'queued' ack (the
+      // user cancelled before the daemon confirmed the id) — the ack
+      // handler consults this to fire the DELETE immediately instead of
+      // resurrecting a row the user already dismissed.
+      const cancelledLocalIds = new Set();
       // PTY-mode state (live xterm.js view fed by the host-side WS bridge).
       let ptyTerm = null;
       let ptyFitAddon = null;
@@ -2426,10 +2448,10 @@ export function buildHtml(
         sendBtn.hidden = busy && !exited;
         stopBtn.hidden = !busy || exited;
         stopBtn.disabled = isStopping;
-        // "Interrupt & send" exists to force a message the agent hasn't taken
-        // yet — so it appears only when there IS one waiting, not merely
-        // whenever the agent is busy.
-        interruptBtn.hidden = queuedText === null || exited;
+        // "Interrupt & send" acts on the FRONT of the queue — it exists to
+        // force a message the agent hasn't taken yet, so it appears only
+        // when there IS one waiting, not merely whenever the agent is busy.
+        interruptBtn.hidden = queuedItems.length === 0 || exited;
         interruptBtn.disabled = !live;
         // The one useful action left once a session has exited — shown
         // beside the now-disabled input rather than replacing it, so the
@@ -2443,15 +2465,51 @@ export function buildHtml(
       }
 
       function renderQueued() {
-        queuedRow.hidden = queuedText === null;
-        if (queuedText === null) return;
-        // \\s, not \s: this script lives in a template literal, where an
-        // unrecognised escape collapses to its own letter — /\s+/ would ship
-        // as /s+/ and blank out every "s" in the user's message.
-        const oneLine = queuedText.replace(/\\s+/g, ' ').trim();
-        const clipped = oneLine.length > 90 ? oneLine.slice(0, 90) + '…' : oneLine;
-        queuedLabel.textContent = 'Queued · ' + clipped;
-        queuedRow.title = queuedText;
+        queuedRow.hidden = queuedItems.length === 0;
+        queuedRow.textContent = '';
+        for (let i = 0; i < queuedItems.length; i++) {
+          const item = queuedItems[i];
+          const row = document.createElement('div');
+          row.className = 'queued-item';
+          row.title = item.text;
+          const position = document.createElement('span');
+          position.className = 'queued-item-position';
+          position.textContent = '#' + (i + 1);
+          row.appendChild(position);
+          const label = document.createElement('span');
+          label.className = 'queued-item-label';
+          // \\s, not \s: this script lives in a template literal, where an
+          // unrecognised escape collapses to its own letter — /\s+/ would
+          // ship as /s+/ and blank out every "s" in the user's message.
+          const oneLine = item.text.replace(/\\s+/g, ' ').trim();
+          label.textContent = oneLine.length > 90 ? oneLine.slice(0, 90) + '…' : oneLine;
+          row.appendChild(label);
+          const cancel = document.createElement('button');
+          cancel.className = 'queued-item-cancel';
+          cancel.title = 'Discard this queued message';
+          cancel.textContent = '\\u2715';
+          const localId = item.localId;
+          cancel.addEventListener('click', function() { removeQueuedItem(localId); });
+          row.appendChild(cancel);
+          queuedRow.appendChild(row);
+        }
+      }
+
+      /** Drop one item from the local queue view and, if the daemon has
+       *  already confirmed a real id for it, cancel it there too. A cancel
+       *  that races the 'queued' ack (no real id yet) is recorded in
+       *  cancelledLocalIds so the ack handler cancels it server-side the
+       *  moment the id actually arrives, instead of resurrecting the row. */
+      function removeQueuedItem(localId) {
+        const item = queuedItems.find(function(q) { return q.localId === localId; });
+        queuedItems = queuedItems.filter(function(q) { return q.localId !== localId; });
+        refreshComposer();
+        if (!item) return;
+        if (item.queueId) {
+          vscode.postMessage({ type: 'cancelQueued', queueId: item.queueId });
+        } else {
+          cancelledLocalIds.add(localId);
+        }
       }
 
       function showError(title, message) {
@@ -2492,14 +2550,19 @@ export function buildHtml(
         if (byUser) dismissedInfoBannerIds.add(id);
       }
 
-      /** Hand the queued text to the agent, optionally cutting its turn short. */
-      function flushQueued(interrupt) {
-        if (queuedText === null) return;
-        const text = queuedText;
-        queuedText = null;
-        renderQueued();
-        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: text });
-        refreshComposer();
+      /** "Interrupt & send": cancel the current turn and hand the FRONT
+       *  queued item to the agent right away — the rest of the queue stays
+       *  put, still in order, behind whatever this dispatches. Removes the
+       *  item from the local queue view immediately; if the daemon hadn't
+       *  confirmed a real id for it yet, removeQueuedItem records the
+       *  cancel so the eventual ack tidies it up server-side too (it is
+       *  about to be sent by an independent interruptSend, not drained from
+       *  the FIFO — leaving it queued would send it TWICE). */
+      function flushFrontQueued() {
+        const item = queuedItems[0];
+        if (!item) return;
+        removeQueuedItem(item.localId);
+        vscode.postMessage({ type: 'interruptSend', text: item.text });
       }
 
       // "busy" said nothing: it covered an agent writing a reply and an agent
@@ -2558,13 +2621,24 @@ export function buildHtml(
         // The turn is over (however it ended) — Stop's job is done.
         if (wasBusy && !nowBusy) isStopping = false;
         if (typeof session.tokensOut === 'number') lastTokensOut = session.tokensOut;
+        // Drop any locally-shown item the daemon no longer lists as
+        // pending — it was either dispatched (drained by the daemon's own
+        // FIFO) or cancelled from elsewhere. This is the SOLE removal path
+        // for a normally-drained item: the daemon does the draining now,
+        // not this webview — see the doc comment on queuedItems above. An
+        // item still awaiting its 'queued' ack (no queueId yet) is left
+        // alone; it isn't in session.promptQueue yet either, so a naive
+        // presence check would drop it right after it was optimistically
+        // added.
+        if (Array.isArray(session.promptQueue)) {
+          const liveIds = new Set(session.promptQueue.map(function(p) { return p.id; }));
+          queuedItems = queuedItems.filter(function(item) {
+            return item.queueId === null || liveIds.has(item.queueId);
+          });
+        }
         refreshComposer();
         refreshWorking();
         refreshBlockedNote();
-        // The turn just ended — the daemon will accept a prompt again, so hand
-        // over whatever was typed during it. This is the whole point of the
-        // queue: the user types when they think of it, not when the agent is ready.
-        if (wasBusy && !nowBusy && !exited && queuedText !== null) flushQueued(false);
         // The book's live chapter, pause card, and "$ now:" line derive from
         // session state, so repaint them on any descriptor change.
         renderBook();
@@ -4171,7 +4245,11 @@ export function buildHtml(
         return parts.join(' ');
       }
 
-      function send(interrupt) {
+      // force (only meaningful mid-turn, ignored otherwise) jumps this
+      // message to the FRONT of the daemon's FIFO instead of the back —
+      // see SessionsRegistry.enqueuePrompt's force opt. Bound to
+      // Cmd/Ctrl+Enter below; plain Enter appends to the back.
+      function send(interrupt, force) {
         const composed = composePrompt();
         if (!composed) return;
         input.value = '';
@@ -4183,14 +4261,32 @@ export function buildHtml(
         // Pushed here, not per-arm below: a queued message IS sent, just
         // later, so it belongs in history the moment the user commits to it.
         historyState = pushHistoryEntry(historyState, composed);
-        // Mid-turn and not explicitly interrupting: hold it rather than POST a
-        // prompt the daemon will refuse with a 409. It goes out on turn-end.
+        // Mid-turn and not explicitly interrupting: show it in the queued
+        // block right away (optimistic — queueId fills in once the
+        // 'queued' ack lands) rather than waiting on the round trip. The
+        // daemon's OWN busy check (not this snapshot) decides whether it
+        // actually lands in the FIFO — always sending queue: true (see
+        // TranscriptPanelController.onSend) means a race where the turn
+        // ended between this check and the POST just dispatches it
+        // immediately instead, and the sendAck handler below drops the
+        // optimistic row again when that happens.
+        let localId = null;
         if (busy && !interrupt) {
-          queuedText = composed;
+          localId = 'local_' + (queuedLocalIdSeq++);
+          const item = { localId: localId, queueId: null, text: composed };
+          queuedItems = force ? [item].concat(queuedItems) : queuedItems.concat([item]);
           refreshComposer();
-          return;
         }
-        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: composed });
+        if (interrupt) {
+          vscode.postMessage({ type: 'interruptSend', text: composed });
+        } else {
+          vscode.postMessage({
+            type: 'send',
+            text: composed,
+            force: force || undefined,
+            localId: localId || undefined,
+          });
+        }
         refreshComposer();
       }
 
@@ -4308,7 +4404,10 @@ export function buildHtml(
         }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          send(false);
+          // Cmd/Ctrl+Enter mid-turn jumps this message to the FRONT of the
+          // queue instead of the back (force — a no-op when idle, since
+          // there is no queue to jump).
+          send(false, e.metaKey || e.ctrlKey);
         }
       });
 
@@ -4587,19 +4686,15 @@ export function buildHtml(
         refreshComposer();
         vscode.postMessage({ type: 'stop' });
       });
-      // Interrupt only ever acts on the queued message — it's the only thing
-      // waiting, and it's what the button offers to stop waiting for.
-      interruptBtn.addEventListener('click', function() { flushQueued(true); });
+      // Interrupt acts on the FRONT of the queue — the rest stays queued,
+      // in order, behind whatever this dispatches.
+      interruptBtn.addEventListener('click', flushFrontQueued);
       // The host resolves which session to restart from the CONTROLLER, not
       // from anything this message carries — see protocol.ts's restart doc.
       restartBtn.addEventListener('click', function() {
         isRestarting = true;
         refreshComposer();
         vscode.postMessage({ type: 'restart' });
-      });
-      queuedCancel.addEventListener('click', function() {
-        queuedText = null;
-        refreshComposer();
       });
       ebDismiss.addEventListener('click', clearError);
       // The info banner's X dismisses by user choice (remembered so a same-id
@@ -4780,6 +4875,27 @@ export function buildHtml(
             break;
           case 'sendAck':
             setSending(false);
+            // A localId means this send WAS shown optimistically in the
+            // queued block (see send()) but dispatched immediately instead
+            // (turn ended between the client's busy check and the POST, or
+            // interrupt/timeout-race path) — drop the now-stale row rather
+            // than leaving a "queued" entry for a message that already sent.
+            if (msg.localId) removeQueuedItem(msg.localId);
+            break;
+          case 'queued':
+            // The daemon confirmed this landed in its FIFO. Fill in the
+            // real id on the optimistic row send() already added (keyed by
+            // localId) — unless the user already cancelled it while the
+            // ack was in flight, in which case cancel it server-side now.
+            if (cancelledLocalIds.has(msg.localId)) {
+              cancelledLocalIds.delete(msg.localId);
+              vscode.postMessage({ type: 'cancelQueued', queueId: msg.queueId });
+              break;
+            }
+            queuedItems = queuedItems.map(function(item) {
+              return item.localId === msg.localId ? Object.assign({}, item, { queueId: msg.queueId }) : item;
+            });
+            refreshComposer();
             break;
           case 'infoBanner':
             showInfoBanner(msg.id, msg.text, msg.tooltip);
@@ -4804,14 +4920,10 @@ export function buildHtml(
             break;
           case 'sendError':
             setSending(false);
-            if (msg.kind === 'busy') {
-              // Lost the race: the turn started between our busy check and the
-              // POST. Not an error — re-queue and let turn-end flush it, which
-              // is exactly what would have happened had we seen busy in time.
-              queuedText = msg.text || queuedText;
-              refreshComposer();
-              break;
-            }
+            // A genuine failure — the optimistic row (if any) never landed
+            // in the daemon's FIFO, so it comes back out of the local view
+            // too, not just the error banner.
+            if (msg.localId) removeQueuedItem(msg.localId);
             showError(msg.title || 'Send failed', msg.message || '');
             break;
           case 'stopError':

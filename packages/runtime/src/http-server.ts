@@ -20,6 +20,7 @@
  * tool calls become a real use case.
  */
 
+import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
@@ -3772,7 +3773,7 @@ async function handleSessions(
   }
 
   // Send a follow-up turn to a live agent session.
-  // Body: { prompt: string | ContentBlock | ContentBlock[], interrupt?: boolean }
+  // Body: { prompt: string | ContentBlock | ContentBlock[], interrupt?: boolean, queue?: boolean, force?: boolean }
   //   - string                → auto-wrapped to a single text block by
   //                             the registry (legacy / convenience).
   //   - ContentBlock          → e.g. `{type:"image", source:{...}}`
@@ -3785,6 +3786,20 @@ async function handleSessions(
   //                             this prompt on the same session instead
   //                             of the usual mid-turn rejection. No-op
   //                             on an idle session. Default false.
+  //   - queue                 → when true and the session is mid-turn
+  //                             (and `interrupt` didn't already settle
+  //                             it), append this prompt to the
+  //                             session's FIFO instead of the usual
+  //                             mid-turn rejection — dispatched once
+  //                             the current (and any earlier-queued)
+  //                             turns finish. No-op on an idle session.
+  //                             Default false — omitted reproduces the
+  //                             busy rejection byte-for-byte.
+  //   - force                 → only meaningful alongside `queue`:
+  //                             insert at the FRONT of the FIFO instead
+  //                             of the back, jumping everything already
+  //                             waiting WITHOUT touching the live turn
+  //                             (that's `interrupt`'s job). Default false.
   //
   // Validation is intentionally loose — we accept anything object-
   // shaped + non-empty arrays + non-empty strings. The adapter will
@@ -3794,9 +3809,9 @@ async function handleSessions(
   // Query: ?wait=false → fire-and-forget (return 202 after sync
   //   validation; output streams via /sessions/:id/stream). Default
   //   wait=true keeps the call blocking until the turn drains, which
-  //   is what curl scripts + the MCP bridge expect. `interrupt` only
-  //   takes effect on this fire-and-forget arm (mirroring MCP
-  //   `agent_prompt`, which always calls `enqueuePrompt`).
+  //   is what curl scripts + the MCP bridge expect. `interrupt` /
+  //   `queue` / `force` only take effect on this fire-and-forget arm
+  //   (mirroring MCP `agent_prompt`, which always calls `enqueuePrompt`).
   const promptMatch = path.match(/^\/sessions\/([^/]+)\/prompt$/)
   if (promptMatch && req.method === "POST") {
     const id = promptMatch[1]
@@ -3804,6 +3819,8 @@ async function handleSessions(
     const body = await readJsonBody(req)
     const prompt = (body as { prompt?: unknown } | null)?.prompt
     const interrupt = (body as { interrupt?: unknown } | null)?.interrupt === true
+    const queue = (body as { queue?: unknown } | null)?.queue === true
+    const force = (body as { force?: unknown } | null)?.force === true
     const validPrompt =
       (typeof prompt === "string" && prompt.length > 0) ||
       (Array.isArray(prompt) &&
@@ -3832,13 +3849,32 @@ async function handleSessions(
         // reporting `queued: true` for a prompt nothing will dispatch.
         // `interrupt: true` lets a mid-turn session redirect instead of
         // rejecting — see `SessionsRegistry.enqueuePrompt`'s doc comment.
-        await registry.enqueuePrompt(id, prompt, { interrupt })
-        json(202, { ok: true, id, queued: true })
+        // `queueId` is minted here (not by the registry) so it can be
+        // echoed straight back in the response below without a second
+        // round-trip to read the descriptor back for it.
+        const queueId = queue ? `q_${randomUUID().slice(0, 8)}` : undefined
+        await registry.enqueuePrompt(id, prompt, { interrupt, queue, force, queueId })
+        const promptQueue = queueId ? registry.get(id)?.promptQueue : undefined
+        const queuePosition = promptQueue?.findIndex(p => p.id === queueId) ?? -1
+        json(202, {
+          ok: true,
+          id,
+          queued: true,
+          // Present only when this prompt actually landed in the FIFO
+          // (busy + `queue: true`) rather than dispatching immediately —
+          // an idle session's `queueId` never appears in `promptQueue`,
+          // so `queuePosition` stays -1 and this is omitted.
+          ...(queuePosition >= 0
+            ? { pending: true, queueId, queuePosition: queuePosition + 1 }
+            : {}),
+        })
       } else {
         // `interrupt` used to be parsed and then silently DROPPED on this
         // arm — it only took effect under ?wait=false. A caller asking to
         // redirect a mid-turn session got the busy 409 it explicitly asked
-        // not to get. Both arms now honour it identically.
+        // not to get. Both arms now honour it identically. `queue`/`force`
+        // are NOT supported here — a blocking caller can't be told "your
+        // prompt is waiting" without a second read; use ?wait=false.
         await registry.sendPrompt(id, prompt, { interrupt })
         json(200, { ok: true, id })
       }
@@ -3859,6 +3895,21 @@ async function handleSessions(
             : 500
       json(status, { error: "send_prompt_failed", message: msg })
     }
+    return true
+  }
+
+  // Cancel one not-yet-dispatched item in a session's prompt FIFO before
+  // it fires — the composer's per-item "remove" action. Idempotent: an
+  // id that's already gone (dispatched, already removed, or never
+  // existed) still returns 200 with `removed: false` rather than 404 —
+  // same no-op-is-not-an-error shape as `POST /sessions/:id/interrupt`.
+  const queueItemMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)$/)
+  if (queueItemMatch && req.method === "DELETE") {
+    const id = queueItemMatch[1]
+    const queueId = queueItemMatch[2]
+    if (!id || !queueId) return false
+    const { removed } = registry.removeQueuedPrompt(id, queueId)
+    json(200, { ok: true, id, queueId, removed })
     return true
   }
 

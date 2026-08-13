@@ -146,6 +146,25 @@ export interface PromptOptions {
   interrupt?: boolean
   /** wait=true blocks until the turn ends; wait=false is fire-and-forget. */
   wait?: boolean
+  /** Append to the daemon's FIFO instead of the mid-turn 409 rejection when
+   *  the session is busy — see `SessionsRegistry.enqueuePrompt`'s `queue`
+   *  opt. A no-op on an idle session (dispatches immediately either way). */
+  queue?: boolean
+  /** Only meaningful alongside `queue`: insert at the FRONT of the FIFO
+   *  instead of the back. Never touches the live turn — that's `interrupt`. */
+  force?: boolean
+}
+
+/** `POST /sessions/:id/prompt?wait=false`'s response body — `pending` (with
+ *  `queueId`/`queuePosition`) is present only when the prompt genuinely
+ *  landed in the FIFO rather than dispatching immediately. */
+export interface PromptResult {
+  ok: boolean
+  id: string
+  queued: boolean
+  pending?: boolean
+  queueId?: string
+  queuePosition?: number
 }
 
 export interface WaitOptions {
@@ -313,14 +332,16 @@ export class DaemonClient {
     id: string,
     prompt: string,
     opts: PromptOptions = {},
-  ): Promise<unknown> {
+  ): Promise<PromptResult> {
     const wait = opts.wait ?? true
     const url = `/sessions/${encodeURIComponent(id)}/prompt?wait=${wait ? "true" : "false"}`
-    return this.postJson<unknown>(
+    return this.postJson<PromptResult>(
       url,
       {
         prompt,
         ...(opts.interrupt ? { interrupt: true } : {}),
+        ...(opts.queue ? { queue: true } : {}),
+        ...(opts.force ? { force: true } : {}),
       },
       // The prompt route AWAITS registry.enqueuePrompt even in wait=false
       // (fire-and-forget) mode, because admission includes the lazy resume
@@ -332,6 +353,16 @@ export class DaemonClient {
       // other route keeps the 30s default.
       { timeoutMs: 120_000 },
     )
+  }
+
+  /** Cancel one not-yet-dispatched item from a session's prompt FIFO —
+   *  `DELETE /sessions/:id/queue/:queueId`. Idempotent: an already-gone id
+   *  (dispatched, already removed) still resolves `{removed: false}`. */
+  async removeQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; removed: boolean }> {
+    return this.deleteJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}`)
   }
 
   /**

@@ -1426,7 +1426,7 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     input.dispatchEvent(new panel.window.Event("input"))
   }
 
-  it("holds a message typed mid-turn rather than posting a prompt the daemon would 409", () => {
+  it("shows a message typed mid-turn in the queued block right away, and posts it to the host with a localId (queue: true is the host's job)", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
     init(panel, { busy: true })
@@ -1434,10 +1434,16 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     type(panel, "also fix the tests")
     el(panel, "send").dispatchEvent(new panel.window.Event("click"))
 
-    // Nothing went to the daemon — the agent is mid-turn.
-    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    const sendMsgs = posted.filter(m => (m as { type: string }).type === "send") as Array<{
+      type: string
+      text: string
+      localId?: string
+    }>
+    expect(sendMsgs).toHaveLength(1)
+    expect(sendMsgs[0]?.text).toBe("also fix the tests")
+    expect(typeof sendMsgs[0]?.localId).toBe("string")
     expect(el(panel, "queued").hidden).toBe(false)
-    expect(el(panel, "queued-label").textContent).toBe("Queued · also fix the tests")
+    expect(el(panel, "queued").textContent).toContain("also fix the tests")
     // No error anywhere: typing while it works is normal.
     expect(el(panel, "error-banner").hidden).toBe(true)
     // ...and NOW there is something to force.
@@ -1445,22 +1451,28 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     expect(el(panel, "input").value).toBe("")
   })
 
-  it("flushes the queued message when the turn ends", () => {
+  it("drops the queued row once the daemon's own FIFO no longer lists it — the daemon drains it, not the webview", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
     init(panel, { busy: true })
     type(panel, "next task")
     el(panel, "send").dispatchEvent(new panel.window.Event("click"))
-    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    const localId = (
+      posted.find(m => (m as { type: string }).type === "send") as { localId: string }
+    ).localId
 
-    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+    // The host's `queued` ack fills in the daemon-assigned id.
+    panel.send({ type: "queued", localId, queueId: "q_1", text: "next task", queuePosition: 1 })
+    expect(el(panel, "queued").hidden).toBe(false)
 
-    expect(posted).toContainEqual({ type: "send", text: "next task" })
+    // Turn ends; the daemon's own drain removed it from promptQueue.
+    panel.send({ type: "sessionUpdate", session: session({ busy: false, promptQueue: [] }) })
+
     expect(el(panel, "queued").hidden).toBe(true)
     expect(el(panel, "interrupt-send").hidden).toBe(true)
   })
 
-  it("interrupt & send forces the queued message immediately", () => {
+  it("interrupt & send forces the front queued message immediately", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
     init(panel, { busy: true })
@@ -1473,23 +1485,26 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     expect(el(panel, "queued").hidden).toBe(true)
   })
 
-  it("cancelling the queued message drops it — it must not fire on turn-end", () => {
+  it("cancelling a queued item drops it locally and it is never resurrected by a later drain", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
     init(panel, { busy: true })
     type(panel, "never mind")
     el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "queued").hidden).toBe(false)
 
-    el(panel, "queued-cancel").dispatchEvent(new panel.window.Event("click"))
-    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+    const cancelBtn = el(panel, "queued").querySelector(".queued-item-cancel")
+    expect(cancelBtn).toBeTruthy()
+    cancelBtn?.dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "queued").hidden).toBe(true)
 
-    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    panel.send({ type: "sessionUpdate", session: session({ busy: false, promptQueue: [] }) })
     expect(el(panel, "queued").hidden).toBe(true)
   })
 
-  it("re-queues rather than erroring when a 409 wins the race against the busy check", () => {
+  it("surfaces the busy error banner if a bare mid-turn rejection ever reaches sendError (queue: true normally prevents this)", () => {
     const panel = renderPanel()
-    init(panel, { busy: false }) // idle as far as the panel knows, so it posts
+    init(panel, { busy: false })
     panel.send({
       type: "sendError",
       kind: "busy",
@@ -1497,8 +1512,9 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
       message: 'HTTP 409 ... is mid-turn — wait for it to finish or cancel',
       text: "raced message",
     })
-    expect(el(panel, "error-banner").hidden).toBe(true)
-    expect(el(panel, "queued-label").textContent).toBe("Queued · raced message")
+    expect(el(panel, "error-banner").hidden).toBe(false)
+    expect(el(panel, "eb-title").textContent).toBe("Agent is mid-turn")
+    expect(el(panel, "queued").hidden).toBe(true)
   })
 
   it("shows a REAL failure in the banner, with the daemon's full message intact", () => {

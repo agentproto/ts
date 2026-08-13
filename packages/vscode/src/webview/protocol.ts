@@ -165,15 +165,38 @@ export type ExtMessage =
        */
       note?: string
     }
-  | { type: "sendAck" }
+  /** `localId` is echoed back from the `send` message that triggered this —
+   *  absent for a plain (non-queued) send, present when this ack corresponds
+   *  to a queued-item POST whose `queued` ack (below) hasn't landed yet (a
+   *  race the webview treats as "nothing to reconcile"). */
+  | { type: "sendAck"; localId?: string }
   /**
    * A prompt POST was refused. `kind` decides the panel's reaction: "busy"
-   * means the agent is mid-turn, which is normal — the panel re-queues `text`
-   * and flushes it when the turn ends rather than surfacing an error. Anything
-   * else is a real failure and earns the banner. `text` is echoed back so the
-   * queue can be rebuilt without the webview having to hold in-flight copies.
+   * is now unreachable from the composer's own sends (it always sets `queue:
+   * true` — see TranscriptPanelController.onSend — so a mid-turn session
+   * queues instead of 409ing) but is kept for any other caller that still
+   * hits the bare mid-turn rejection. Anything else is a real failure and
+   * earns the banner. `text` is echoed back for the "busy" arm's legacy
+   * re-queue path; `localId` (present for a queued send) lets the webview
+   * drop the right optimistic placeholder on a genuine failure.
    */
-  | { type: "sendError"; message: string; kind: SendFailureKind; title: string; text: string }
+  | {
+      type: "sendError"
+      message: string
+      kind: SendFailureKind
+      title: string
+      text: string
+      localId?: string
+    }
+  /**
+   * A `send`/`interruptSend` with a mid-turn session landed in the daemon's
+   * FIFO (`SessionsRegistry.enqueuePrompt`'s `queue` arm) instead of
+   * dispatching immediately. `localId` echoes the webview's own optimistic
+   * placeholder id (see `WebviewMessage.send.localId`) so it can be
+   * reconciled with the daemon-assigned `queueId` — the id `cancelQueued`
+   * and `SessionDescriptor.promptQueue` both key on from here on.
+   */
+  | { type: "queued"; localId: string; queueId: string; text: string; queuePosition: number }
   /**
    * A pasted image finished uploading — `path` is the absolute on-disk path the
    * agent's Read tool can pick up. The webview inserts it into the composer as
@@ -252,8 +275,25 @@ export type ExtMessage =
  */
 export type WebviewMessage =
   | { type: "ready" }
-  | { type: "send"; text: string }
+  /**
+   * `force`, on a MID-TURN session, jumps this prompt to the front of the
+   * daemon's FIFO instead of the back — see `SessionsRegistry.enqueuePrompt`'s
+   * `force` opt. Ignored on an idle session (dispatches immediately either
+   * way) and ignored when `interruptSend` is used instead (that bypasses the
+   * queue entirely). `localId` is the webview's own optimistic placeholder id
+   * for a send issued while busy — absent for an idle send, where there's no
+   * placeholder to reconcile (see `ExtMessage.queued`/`sendError.localId`).
+   */
+  | { type: "send"; text: string; force?: boolean; localId?: string }
   | { type: "interruptSend"; text: string }
+  /**
+   * Cancel one not-yet-dispatched item from the composer's queued-messages
+   * block (`DELETE /sessions/:id/queue/:queueId`). The webview removes it
+   * from its own list optimistically the instant the user clicks — this is
+   * fire-and-forget from the webview's side, same as the old single-slot
+   * queue's cancel button.
+   */
+  | { type: "cancelQueued"; queueId: string }
   | { type: "stop" }
   /**
    * The composer's "Restart" button (shown only once the session has
@@ -413,8 +453,15 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "openTerminal":
       return true
     case "send":
+      return (
+        typeof m.text === "string" &&
+        (m.force === undefined || typeof m.force === "boolean") &&
+        (m.localId === undefined || typeof m.localId === "string")
+      )
     case "interruptSend":
       return typeof m.text === "string"
+    case "cancelQueued":
+      return typeof m.queueId === "string"
     case "openToolIo":
       return typeof m.segmentId === "string" && (m.field === "input" || m.field === "output")
     case "openBlock":
