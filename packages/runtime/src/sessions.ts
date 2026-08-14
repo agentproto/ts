@@ -1709,6 +1709,27 @@ function stampProcessAlive(desc: SessionDescriptor): void {
   }
 }
 
+/** SIGTERM/SIGKILL a session's OS child, but ONLY if it actually
+ *  spawned. A ChildProcess whose spawn FAILED (bad cwd, missing binary
+ *  — `pid` is `undefined` and the async "error" event may not have
+ *  fired yet) still holds a live libuv handle whose internal pid is 0,
+ *  and `.kill()` on it becomes `kill(0, sig)`: a signal to the CALLER'S
+ *  OWN PROCESS GROUP — the daemon and every process it spawned.
+ *  (Discovered 2026-08-14: the shutdown kill-loop hitting such a child
+ *  SIGTERM'd an entire vitest worker tree.) */
+function killChildIfSpawned(
+  child: ChildProcess | undefined,
+  signal: NodeJS.Signals,
+): void {
+  if (!child) return
+  if (typeof child.pid !== "number" || child.pid <= 0) return
+  try {
+    child.kill(signal)
+  } catch {
+    // already gone
+  }
+}
+
 /** Compute the DERIVED `desc.interrupted` marker (§4 interrupted-turn
  *  contract): true iff the session died with a turn in flight under a daemon
  *  restart (`killedMidTurn && endedReason === "daemon-restart"`). Mutates
@@ -3613,7 +3634,7 @@ export function createSessionsRegistry(opts?: {
   }
 
   const schedulePersist = (): void => {
-    if (!persist) return
+    if (!persist || shutdownDone) return
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => {
       void persistSnapshot()
@@ -3703,9 +3724,19 @@ export function createSessionsRegistry(opts?: {
 
   const persistOnce = async (): Promise<void> => {
     try {
+      // The sync flush in `shutdownImpl` is the FINAL word on disk. Any
+      // async round still alive past that point is working from a
+      // registry that `shutdownImpl` has since cleared (or is about to),
+      // and its writes would land after the flush — the 2026-08-14
+      // evening wipe: a child killed at shutdown re-armed the debounce
+      // timer, and the round it fired wrote `sessions: []` over every
+      // bucket. Checked per bucket, not just at entry, so a round that
+      // was mid-loop when shutdown started stops writing immediately.
+      if (shutdownDone) return
       const savedAt = new Date().toISOString()
       if (partitioned) {
         for (const [slug, rows] of groupRowsByBucket()) {
+          if (shutdownDone) return
           await writeBucketSnapshot(bucketsRoot, slug, {
             savedAt,
             sessions: rowsToWrite(slug, rows),
@@ -3738,6 +3769,7 @@ export function createSessionsRegistry(opts?: {
   let persistRunning = false
   let persistRerun = false
   const persistSnapshot = async (): Promise<void> => {
+    if (shutdownDone) return
     if (persistRunning) {
       persistRerun = true
       return
@@ -3747,7 +3779,12 @@ export function createSessionsRegistry(opts?: {
       do {
         persistRerun = false
         await persistOnce()
-      } while (persistRerun)
+        // A rerun coalesced before shutdown must not execute after it:
+        // `shutdownImpl` runs synchronously between this round's awaits,
+        // clears the sessions Map, and a post-clear `groupRowsByBucket()`
+        // would persist that emptiness verbatim into every boot-loaded
+        // bucket (same wipe as the timer path — see `persistOnce`).
+      } while (persistRerun && !shutdownDone)
     } finally {
       persistRunning = false
     }
@@ -6492,7 +6529,7 @@ export function createSessionsRegistry(opts?: {
         }
         void terminalTranscriptWriter.close(rt.desc.id)
       }
-      rt.child?.kill(signal)
+      killChildIfSpawned(rt.child, signal)
       if (rt.browserStop) {
         void rt.browserStop().catch(() => undefined)
       }
@@ -6543,7 +6580,7 @@ export function createSessionsRegistry(opts?: {
       // No PTY/child for an agent-cli row spawned via spawnAgent (the driver
       // owns the process, torn down by close() above), but a registered/adopted
       // one may carry a child — SIGTERM it best-effort, same as kill().
-      rt.child?.kill("SIGTERM")
+      killChildIfSpawned(rt.child, "SIGTERM")
       schedulePersist()
       const banner =
         "── reaped after being idle past the threshold; the adapter process was " +
@@ -6927,7 +6964,7 @@ export function createSessionsRegistry(opts?: {
             // already exited
           }
         }
-        rt.child?.kill("SIGTERM")
+        killChildIfSpawned(rt.child, "SIGTERM")
         emitExited(rt)
       }
     }
