@@ -34,6 +34,7 @@ export type SessionEventType =
   | "session:model-changed"
   | "session:config-changed"
   | "session:renamed"
+  | "session:pinned-changed"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -504,6 +505,25 @@ export interface SessionRenamedEvent {
 }
 
 /**
+ * Emitted when an operator pins or unpins a session for list visibility
+ * (`POST /sessions/:id/pin`, the `session_set_pinned` MCP verb). Like
+ * `session:renamed`, this is NOT a `SessionConfig` axis — pinning never
+ * touches the live agent, the idle-reaper, or any notification path, it's
+ * purely a `SessionDescriptor.pinned` display/sort flag — so it rides its
+ * own event rather than `session:config-changed`. `pinned` carries the value
+ * now on the descriptor. Same bus distribution as every other lifecycle event
+ * (`session_events_poll`, the webhook notifier, the routine engine), which is
+ * how a live UI (the VS Code sessions webview) learns to resort its list
+ * without waiting for its next snapshot poll.
+ */
+export interface SessionPinnedEvent {
+  type: "session:pinned-changed"
+  sessionId: string
+  pinned: boolean
+  ts: string
+}
+
+/**
  * Emitted when a session is first registered in the registry (WP-R3) — both
  * the agent-cli spawn path (`spawnAgent`) and the terminal path (`spawnPty`).
  * The lineage-attribution signal a live UI (the VS Code sessions tree) uses to
@@ -655,6 +675,7 @@ export type SessionEvent =
   | SessionModelChangedEvent
   | SessionConfigChangedEvent
   | SessionRenamedEvent
+  | SessionPinnedEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
   | PolicyCommitReadyEvent

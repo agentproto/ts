@@ -442,6 +442,14 @@ export interface WebviewRow {
   /** True when the session is kept alive (idle-reaper exempt) — the daemon's
    *  own keepAlive flag. Distinct from BOTH watch signals: not the local eye. */
   watched: boolean
+  /** True when the operator PINNED this session (`session.pinned`) —
+   *  server-persisted, list-visibility-only. A pinned row is lifted into its
+   *  own dedicated "Pinned" group at the top of the list (see
+   *  {@link buildSessionsWebviewModel}) rather than staying in its normal
+   *  attention section. Deliberately distinct from `watched` (keepAlive) and
+   *  `locallyWatched` (the VS Code-only eye) — pin has no operational
+   *  side effects, it's purely sort/display. */
+  pinned: boolean
   /** True when the operator pinned the LOCAL watch eye on this session
    *  (WatchedSessions service) — renders the plain 👁 (no count), with the
    *  "you get a notification" tooltip. Same glyph as the tree's watched prefix. */
@@ -532,9 +540,16 @@ export function sectionFor(session: SessionSummary, now?: number): SectionKey {
   return SECTION_BY_STATUS[webviewRowStatus(session, now)]
 }
 
-/** One rendered, collapsible group — an attention section (Agents lane) or an Auto subgroup. */
+/** Stable key + label for the dedicated "Pinned" pseudo-group — see
+ *  {@link buildSessionsWebviewModel}. A pinned row is lifted here and out of
+ *  its normal attention section/Auto subgroup, so it never appears twice. */
+export const PINNED_GROUP_KEY = "pinned" as const
+export const PINNED_GROUP_LABEL = "Pinned"
+
+/** One rendered, collapsible group — the dedicated Pinned group, an
+ *  attention section (Agents lane), or an Auto subgroup. */
 export interface WebviewGroup {
-  key: SectionKey | AutoGroupKind
+  key: SectionKey | AutoGroupKind | typeof PINNED_GROUP_KEY
   label: string
   hint: string | undefined
   rows: WebviewRow[]
@@ -648,6 +663,7 @@ function toRow(
     runs: undefined,
     approved: gateApproved(session),
     watched: session.keepAlive === true,
+    pinned: session.pinned === true,
     locallyWatched: watchedIds?.has(session.id) === true,
     watcherCount: session.watchers ?? 0,
     pendingBgTasks: session.pendingBgTasks ?? 0,
@@ -740,7 +756,23 @@ export function buildSessionsWebviewModel(
     .sort((a, b) => compareSessions(a, b))
   const rows = scope.map(s => toRow(s, opts.now, workspaces, opts.colorOverrides, opts.watchedIds))
 
-  const groups = opts.lane === "agents" ? buildSections(rows) : buildAutoGroups(rows)
+  // Pinned rows are lifted into their own dedicated group at the very top of
+  // the list, ahead of every attention section / Auto subgroup — "stays
+  // visible at the top" reads unambiguously as a standalone group rather than
+  // a sort-within-group (which a collapsed section would hide). A pinned row
+  // is REMOVED from its normal group so it never renders twice; its own
+  // status dot/section membership is otherwise unaffected — pin is purely
+  // where it's grouped, not what it is.
+  const pinnedRows = rows.filter(r => r.pinned)
+  const restRows = rows.filter(r => !r.pinned)
+  const baseGroups = opts.lane === "agents" ? buildSections(restRows) : buildAutoGroups(restRows)
+  const groups =
+    pinnedRows.length > 0
+      ? [
+          { key: PINNED_GROUP_KEY, label: PINNED_GROUP_LABEL, hint: undefined, rows: nestByLineage(pinnedRows) },
+          ...baseGroups,
+        ]
+      : baseGroups
   const shownCount = groups.reduce((n, g) => n + g.rows.length, 0)
 
   return {

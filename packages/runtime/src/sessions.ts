@@ -951,6 +951,17 @@ export interface SessionDescriptor {
    *  `session_set_keepalive` (`registry.setKeepAlive`). Absent (not `false`)
    *  for every session that hasn't opted in. */
   keepAlive?: boolean
+  /** Server-persisted, list-visibility-only favorite flag — set/cleared via
+   *  `session_set_pinned` (`registry.setPinned`) or `POST /sessions/:id/pin`.
+   *  Purely a sort/display concern: pinned sessions sort to the top of the
+   *  session list (CLI table, VS Code webview's dedicated "Pinned" group).
+   *  Deliberately orthogonal to — and must NEVER be confused with —
+   *  `keepAlive` (idle-reaper exemption, operational), the VS Code
+   *  extension's client-side-only "watch" eye (toast notifications, never
+   *  persisted here), or `watchers` (live supervisor wait count). No side
+   *  effects on reaping, notifications, or anything else. Absent (not
+   *  `false`) for every session that hasn't been pinned. */
+  pinned?: boolean
   /** True when the session was spawned under a real PTY (node-pty)
    *  instead of `child_process.spawn`. PTY sessions carry raw ANSI
    *  bytes (alt-screen, key bindings, colors); attach goes through
@@ -1406,6 +1417,7 @@ export interface SessionSummary {
   activitySummary?: SessionActivitySummary
   archived?: boolean
   keepAlive?: boolean
+  pinned?: boolean
   pty?: boolean
   name?: string
   argv?: readonly string[]
@@ -1479,6 +1491,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     activitySummary: desc.activitySummary,
     archived: desc.archived,
     keepAlive: desc.keepAlive,
+    pinned: desc.pinned,
     pty: desc.pty,
     name: desc.name,
     argv: desc.argv,
@@ -2379,6 +2392,16 @@ export interface SessionsRegistry {
    *  policy state — never touches the live agent. Throws when the id is
    *  unknown. */
   setKeepAlive(id: string, keepAlive: boolean): SessionDescriptor
+  /** Set or clear a session's list-visibility pin (the `session_set_pinned`
+   *  MCP verb / `POST /sessions/:id/pin`). `true` flips
+   *  `SessionDescriptor.pinned` on — pure sort/display state for the CLI
+   *  table and the VS Code webview's list, which sort a pinned session to
+   *  the top. `false` clears it. Persists via the same `schedulePersist`
+   *  every descriptor mutation uses and emits `session:pinned-changed` so a
+   *  live UI resorts without waiting for its next snapshot poll. NEVER
+   *  touches `keepAlive`, reaper eligibility, or any notification path —
+   *  pin is quiet, structural state only. Throws when the id is unknown. */
+  setPinned(id: string, pinned: boolean): SessionDescriptor
   /**
    * Manually override `awaitingInput`/`awaitingQuestion` (the
    * `session_flag_status` MCP verb) — the ONE write path for this pair
@@ -6720,6 +6743,20 @@ export function createSessionsRegistry(opts?: {
       if (!rt) throw new Error(`setKeepAlive: no session "${id}"`)
       rt.desc.keepAlive = keepAlive
       schedulePersist()
+      stampProcessAlive(rt.desc)
+      return rt.desc
+    },
+    setPinned(id, pinned) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setPinned: no session "${id}"`)
+      rt.desc.pinned = pinned
+      schedulePersist()
+      sessionEvents?.emit({
+        type: "session:pinned-changed",
+        sessionId: id,
+        pinned,
+        ts: new Date().toISOString(),
+      })
       stampProcessAlive(rt.desc)
       return rt.desc
     },

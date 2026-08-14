@@ -3002,6 +3002,11 @@ export function deliverRecordsExactlyOnce(opts: {
  *                                    event=turn-end|awaiting-input|exited|any (default any),
  *                                    since=<cursor>, timeoutMs=<n> (default 25000, cap 55000).
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
+ *   POST   /sessions/:id/pin      → set/clear the list-visibility pin, body
+ *                                    {pinned: boolean}; returns {ok, sessionId,
+ *                                    pinned}. Pure sort/display state — the
+ *                                    HTTP twin of the `session_set_pinned`
+ *                                    MCP verb, never touches keepAlive/reaper.
  *   POST   /sessions/:id/interrupt → cancel the in-flight turn, leave the
  *                                    session alive and idle; returns
  *                                    {ok, id, wasBusy}. No-op (wasBusy:
@@ -4308,7 +4313,7 @@ async function handleSessions(
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/preview|\/export|\/conversation|\/events|\/wait)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -4686,6 +4691,41 @@ async function handleSessions(
   if (suffix === "/kill" && req.method === "POST") {
     const ok = registry.kill(id)
     json(ok ? 200 : 404, { ok, sessionId: id })
+    return true
+  }
+
+  // Pin/unpin — the HTTP twin of the `session_set_pinned` MCP verb, so the
+  // CLI's `agentproto sessions pin`/`unpin` doesn't need to go through the
+  // MCP JSON-RPC path for a simple toggle. Body: `{ pinned: boolean }`
+  // (tolerates a stringified boolean, same convention as `keepAlive` on the
+  // spawn route). Purely a sort/display flag — never touches the idle-reaper
+  // or emits any notification.
+  if (suffix === "/pin" && req.method === "POST") {
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const pinned =
+      typeof b.pinned === "boolean"
+        ? b.pinned
+        : b.pinned === "true"
+          ? true
+          : b.pinned === "false"
+            ? false
+            : undefined
+    if (pinned === undefined) {
+      json(400, { error: "invalid_body", message: "`pinned` must be a boolean" })
+      return true
+    }
+    try {
+      registry.setPinned(id, pinned)
+      json(200, { ok: true, sessionId: id, pinned })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(msg.includes("no session") ? 404 : 500, { error: "set_pinned_failed", message: msg })
+    }
     return true
   }
 

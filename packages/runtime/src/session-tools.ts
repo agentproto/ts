@@ -2542,6 +2542,90 @@ export function registerSessionTools(
     }
   )
 
+  // ── session_set_pinned ──────────────────────────────────────────
+  // A quiet, structural list-visibility flag — lets an operator favorite a
+  // session so it sorts to the top of the CLI table / VS Code webview list.
+  // Modeled EXACTLY on session_set_keepalive (itself modeled on
+  // session_rename): resolve + subtree-scope + delegate to the registry,
+  // which flips the field and persists. Deliberately does NOT touch
+  // keepAlive, reaper eligibility, or any notification path — see
+  // `SessionDescriptor.pinned`'s doc for why pin is distinct from those.
+  server.tool(
+    "session_set_pinned",
+    "Set or clear a session's list-visibility pin. When `pinned` is true, " +
+      "the session sorts to the top of `agentproto sessions` and the VS Code " +
+      "sessions webview's dedicated Pinned group. Set false to clear it. " +
+      "Persists across daemon restarts. Purely a sort/display flag — does " +
+      "NOT touch the idle-reaper, keepAlive, or emit any notification, and " +
+      "does NOT touch the running agent.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name to update — from `session_list`."),
+      pinned: mcpBool.describe(
+        "true to pin this session to the top of the list, false to unpin it.",
+      ),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_rename / session_set_keepalive
+      // — a scoped orchestrator may only touch sessions it (transitively)
+      // spawned.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_set_pinned: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only update sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const desc = registry.setPinned(prev.id, input.pinned)
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_set_pinned: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
   server.tool(
     "terminal_start",
     "Spawn a process under a real PTY (node-pty) on the host. Bytes (including " +

@@ -427,6 +427,58 @@ describe("buildSessionsWebviewModel — attention sections", () => {
   })
 })
 
+describe("buildSessionsWebviewModel — pinned group", () => {
+  it("lifts a pinned session into its own group at the very top, ahead of Needs you", () => {
+    const sessions = [
+      session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
+      session({ id: "pinned-idle", cwd: "/Code/studio", busy: false, pinned: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups.map(g => g.key)).toEqual(["pinned", "needs-you"])
+    expect(model.groups[0]!.label).toBe("Pinned")
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["pinned-idle"])
+  })
+
+  it("removes a pinned row from its normal attention section — never rendered twice", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", awaitingInput: true, pinned: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups.map(g => g.key)).toEqual(["pinned"])
+    expect(model.groups.find(g => g.key === "needs-you")).toBeUndefined()
+    expect(model.shownCount).toBe(1)
+  })
+
+  it("marks the row itself pinned:true", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", pinned: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups[0]!.rows[0]!.pinned).toBe(true)
+  })
+
+  it("omits the Pinned group entirely when nothing is pinned", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", busy: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups.some(g => g.key === "pinned")).toBe(false)
+  })
+
+  it("also lifts a pinned session in the auto lane, ahead of its subgroup", () => {
+    const sessions = [
+      session({ id: "gate", cwd: "/Code/studio", origin: "gate", status: "exited" }),
+      session({ id: "cron-pinned", cwd: "/Code/studio", origin: "cron", label: "cron:cron_abc", status: "exited", pinned: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ lane: "auto" }))
+    expect(model.groups.map(g => g.key)).toEqual(["pinned", "gate"])
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["cron-pinned"])
+  })
+
+  it("keeps pinned rows' incoming recency order among themselves", () => {
+    const sessions = [
+      session({ id: "newer", cwd: "/Code/studio", pinned: true, lastActivityAt: "2026-01-02T00:00:00Z" }),
+      session({ id: "older", cwd: "/Code/studio", pinned: true, lastActivityAt: "2026-01-01T00:00:00Z" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["newer", "older"])
+  })
+})
+
 // ─── Design B: Agents | Auto split ──────────────────────────────────────────
 describe("buildSessionsWebviewModel — lane split", () => {
   const mixed = [

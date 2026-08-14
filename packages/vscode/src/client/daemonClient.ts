@@ -430,6 +430,16 @@ export class DaemonClient {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/kill`, {})
   }
 
+  /**
+   * Set or clear a session's list-visibility pin — `POST /sessions/:id/pin`,
+   * the HTTP twin of the `session_set_pinned` MCP verb. Pure sort/display
+   * state: never touches keepAlive, the idle-reaper, or emits any
+   * notification. See `SessionDescriptor.pinned`.
+   */
+  async setPinned(id: string, pinned: boolean): Promise<{ ok: boolean; sessionId: string; pinned: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/pin`, { pinned })
+  }
+
   /** Cancel the in-flight turn on a live agent session and leave the
    *  session itself alive and idle — unlike `kill()`, which ends it. */
   async interrupt(id: string): Promise<{ ok: boolean; id: string; wasBusy: boolean }> {

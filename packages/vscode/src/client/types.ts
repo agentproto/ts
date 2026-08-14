@@ -284,6 +284,15 @@ export interface SessionDescriptor {
    *  the idle-reaper never retires this session regardless of idle time.
    *  Set at spawn time or toggled via `session_set_keepalive`. */
   keepAlive?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.pinned — a
+   *  server-persisted, list-visibility-only favorite flag toggled via
+   *  `session_set_pinned` / `POST /sessions/:id/pin`. Pinned sessions sort to
+   *  the top of the session list (CLI table, the webview's dedicated
+   *  "Pinned" group). Deliberately distinct from `keepAlive` (idle-reaper
+   *  exemption), the extension's client-side-only "watch" eye (toast
+   *  notifications, never persisted on the descriptor), and `watchers` (live
+   *  supervisor wait count) — pin has no operational side effects. */
+  pinned?: boolean
   pty?: boolean
   name?: string
   argv?: readonly string[]
@@ -447,6 +456,9 @@ export interface SessionSummary {
   }
   archived?: boolean
   keepAlive?: boolean
+  /** Mirrors `@agentproto/runtime` SessionSummary.pinned — see the
+   *  SessionDescriptor field above for the full doc. */
+  pinned?: boolean
   pty?: boolean
   name?: string
   argv?: readonly string[]
