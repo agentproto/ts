@@ -77,8 +77,14 @@ export interface LLMPricing {
 import { OPENROUTER_ROUTES } from "./openrouter-routes.generated.js"
 import { pricingRegistry, CC_USD_RATE } from "../pricing/index.js"
 import { CONTEXT_WINDOWS, type ContextWindowEntry } from "./context-windows.generated.js"
+import { MISTRAL_GENERATED_PRICING } from "./mistral-pricing.generated.js"
+import { MOONSHOT_GENERATED_PRICING } from "./moonshot-pricing.generated.js"
 
 export const LLM_PRICING_CATALOG = {
+  // Generated Mistral pricing (see mistral-pricing.generated.ts); hand-maintained entries below override.
+  ...MISTRAL_GENERATED_PRICING,
+  // Generated Moonshot pricing (see moonshot-pricing.generated.ts); hand-maintained entries below override.
+  ...MOONSHOT_GENERATED_PRICING,
   // ── Anthropic ──────────────────────────────────────────────────────────
   // Catalog keys MUST be valid Anthropic model ids — `resolveAlias` returns
   // the catalog key as the API model id, and Anthropic 404s on anything
