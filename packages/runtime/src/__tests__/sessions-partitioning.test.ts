@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -379,6 +379,40 @@ describe("sessions registry — per-workspace partitioning", () => {
     const ids = bucketIds("alpha")
     expect(ids).toHaveLength(13)
     for (const prior of priorRows) expect(ids).toContain(prior.id)
+  })
+
+  it("quarantines a malformed bucket file instead of letting the next persist destroy it", async () => {
+    registerWorkspaces("alpha")
+    // A truncated snapshot — what a write that died mid-flight leaves
+    // behind. Before the quarantine, boot ignored it but still counted
+    // the bucket as authoritatively loaded, so the first persist
+    // overwrote these bytes with the live-only view: the 2026-08-14
+    // registry wipe.
+    const corrupt = '{"savedAt":"2026-08-14T00:00:00.000Z","sessions":[{"id":"a1"'
+    mkdirSync(join(bucketsRoot, "alpha"), { recursive: true })
+    writeFileSync(bucketSessionsFile(bucketsRoot, "alpha"), corrupt)
+
+    const registry = createSessionsRegistry({})
+    // Nothing loadable — but nothing silently destroyed either.
+    expect(registry.list()).toEqual([])
+    const quarantined = readdirSync(join(bucketsRoot, "alpha")).filter(f =>
+      f.startsWith("sessions.json.corrupt-"),
+    )
+    expect(quarantined).toHaveLength(1)
+    expect(
+      readFileSync(join(bucketsRoot, "alpha", quarantined[0]!), "utf8"),
+    ).toBe(corrupt)
+
+    // The persist that used to clobber now writes a fresh, valid file —
+    // and the quarantined bytes survive it.
+    await registry.shutdown()
+    const written = JSON.parse(
+      readFileSync(bucketSessionsFile(bucketsRoot, "alpha"), "utf8"),
+    ) as { sessions: unknown[] }
+    expect(written.sessions).toEqual([])
+    expect(
+      readFileSync(join(bucketsRoot, "alpha", quarantined[0]!), "utf8"),
+    ).toBe(corrupt)
   })
 
   it("forgetting a session in a never-boot-loaded bucket does NOT resurrect it on the next persist", async () => {
