@@ -58,20 +58,14 @@ agentproto-browser remove     # unregister (leaves the clone on disk)
 
 ## Claude Code skill (optional)
 
-The package ships a Claude Code skill at `skill/local-browser/SKILL.md`
-that teaches agents when to drive the browser, which of the 29 tools
-to reach for, and the safety rails to apply. Drop it into your project
-or user skills dir:
+The `local-browser` skill — teaching agents when to drive the browser,
+which of the 29 tools to reach for, and the safety rails to apply — ships
+as part of the `@agentproto/skill-pack-bureau` pack, alongside this
+plugin's browser-family siblings:
 
 ```bash
-PKG=$(npm root -g)/@agentproto/plugin-local-browser
-cp -r "$PKG/skill/local-browser" .claude/skills/local-browser
-# or, for cross-project use:
-cp -r "$PKG/skill/local-browser" ~/.claude/skills/local-browser
+agentproto install skill/local-browser --pack bureau-plugin
 ```
-
-After that, `/local-browser` (or any conversation that triggers the
-description) loads the guidance into context.
 
 ## Security
 
