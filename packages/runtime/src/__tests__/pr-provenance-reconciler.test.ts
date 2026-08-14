@@ -179,7 +179,7 @@ describe("createPrProvenanceReconciler", () => {
     expect(resolveOpenPr).not.toHaveBeenCalled()
   })
 
-  it("records but does not re-edit when the PR body already carries the marker", async () => {
+  it("neither re-edits nor records when the PR body already carries the marker", async () => {
     const { reg, recorded } = fakeRegistry([execSession(), SUPER])
     const editCalls: number[] = []
     const run: GhRunner = async args => {
@@ -199,7 +199,9 @@ describe("createPrProvenanceReconciler", () => {
     await flush()
 
     expect(editCalls).toHaveLength(0)
-    expect(recorded).toHaveLength(1)
+    // An already-marked body belongs to whichever session stamped it first —
+    // recording it on THIS session would misattribute it (the phantom-PR bug).
+    expect(recorded).toHaveLength(0)
   })
 
   it("never throws out of a handler when gh fails", async () => {

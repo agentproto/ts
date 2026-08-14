@@ -156,14 +156,17 @@ export async function stampFooterOnPr(input: {
       if (edit.exitCode !== 0) {
         return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
       }
+      // Record the opened PR against the executor session (idempotent per
+      // URL) — but ONLY on a real stamp. An already-marked body means the PR
+      // was already attributed to its rightful session; recording it here too
+      // would misattribute it onto whichever session happened to re-resolve
+      // the same PR (e.g. the reconciler polling a shared cwd).
+      input.registry.recordOpenedPr(input.session.id, {
+        adapter: input.session.harness ?? input.session.adapterSlug ?? "gh",
+        number: input.prNumber,
+        url: input.prUrl,
+      })
     }
-
-    // Record the opened PR against the executor session (idempotent per URL).
-    input.registry.recordOpenedPr(input.session.id, {
-      adapter: input.session.harness ?? input.session.adapterSlug ?? "gh",
-      number: input.prNumber,
-      url: input.prUrl,
-    })
 
     return {
       stamped: true,

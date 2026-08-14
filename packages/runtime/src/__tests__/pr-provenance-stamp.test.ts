@@ -103,8 +103,9 @@ describe("stampPrProvenance", () => {
     })
     expect(outcome).toMatchObject({ stamped: true, alreadyStamped: true })
     expect((run as ReturnType<typeof vi.fn>).mock.calls.some(([a]) => a[1] === "edit")).toBe(false)
-    // Still records the PR (idempotent on the registry side).
-    expect(reg.recorded).toHaveLength(1)
+    // An already-marked body was already attributed to its rightful session —
+    // recording it again here would misattribute it onto this one.
+    expect(reg.recorded).toHaveLength(0)
   })
 
   it("skips a non-create command without touching gh", async () => {
@@ -281,7 +282,8 @@ describe("stampFooterOnPr", () => {
     })
     expect(outcome).toMatchObject({ stamped: true, alreadyStamped: true })
     expect((run as ReturnType<typeof vi.fn>).mock.calls.some(([a]) => a[1] === "edit")).toBe(false)
-    expect(reg.recorded).toHaveLength(1)
+    // No re-record on an already-stamped body — see the idempotency test above.
+    expect(reg.recorded).toHaveLength(0)
   })
 
   it("does not edit when the body read fails", async () => {
