@@ -725,22 +725,40 @@ export const LLM_PRICING_CATALOG = {
     vendor: "mistral",
     provider: "mistral",
   },
-  "mistral-small-creative-latest": {
-    inputPer1M: 0.1,
-    outputPer1M: 0.3,
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "mistral-small-2501": {
-    inputPer1M: 0.05,
-    outputPer1M: 0.08,
-    vendor: "mistral",
-    provider: "mistral",
-  },
   "mistral-small-latest": {
     inputPer1M: 0.06,
     outputPer1M: 0.18,
     cacheReadMultiplier: 0.5,
+    vendor: "mistral",
+    provider: "mistral",
+  },
+  "mistral-medium-latest": {
+    inputPer1M: 0.5, // TODO verify pricing
+    outputPer1M: 1.5, // TODO verify pricing
+    vendor: "mistral",
+    provider: "mistral",
+  },
+  "mistral-medium-3-5": {
+    inputPer1M: 0.5, // TODO verify pricing
+    outputPer1M: 1.5, // TODO verify pricing
+    vendor: "mistral",
+    provider: "mistral",
+  },
+  "codestral-latest": {
+    inputPer1M: 0.5, // TODO verify pricing
+    outputPer1M: 1.5, // TODO verify pricing
+    vendor: "mistral",
+    provider: "mistral",
+  },
+  "ministral-8b-latest": {
+    inputPer1M: 0.06, // TODO verify pricing
+    outputPer1M: 0.18, // TODO verify pricing
+    vendor: "mistral",
+    provider: "mistral",
+  },
+  "devstral-medium-latest": {
+    inputPer1M: 0.5, // TODO verify pricing
+    outputPer1M: 1.5, // TODO verify pricing
     vendor: "mistral",
     provider: "mistral",
   },
@@ -818,6 +836,11 @@ export const MODEL_ALIASES = {
   // Mistral
   "mistralai/mistral-large-latest": "mistral-large-latest",
   "mistralai/mistral-small-latest": "mistral-small-latest",
+  "mistralai/mistral-medium-latest": "mistral-medium-latest",
+  "mistralai/mistral-medium-3-5": "mistral-medium-3-5",
+  "mistralai/codestral-latest": "codestral-latest",
+  "mistralai/ministral-8b-latest": "ministral-8b-latest",
+  "mistralai/devstral-medium-latest": "devstral-medium-latest",
   // xAI — alias grok-latest to grok-4.3 (current default).
   "grok-latest": "grok-4.3",
 } satisfies Record<string, string>
