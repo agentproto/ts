@@ -465,4 +465,10 @@ export const NATIVE_LAUNCH_ARGV: Record<string, string[]> = {
   jcode: ["jcode"],
   // `openclaw chat` = "Open a local terminal UI (alias for tui --local)".
   openclaw: ["openclaw", "chat"],
+  // Generic ACP catalog CLIs whose ACP arm is a separate binary/subcommand;
+  // the bare bin is the interactive TUI.
+  "gemini-cli": ["gemini"],
+  "qwen-code": ["qwen"],
+  "mistral-vibe": ["vibe"],
+  "kimi-cli": ["kimi"],
 }
