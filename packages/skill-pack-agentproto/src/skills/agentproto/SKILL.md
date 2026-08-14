@@ -82,18 +82,10 @@ user config         ~/.agentproto/               (per-machine)
 The tunnel (Cloudflare) exposes `127.0.0.1:18790` on a public URL with a bearer
 token. Without it, the daemon is reachable only from the local machine.
 
-**One-command restart** (after VS Code reboot or daemon crash):
-
-```bash
-# From repo root — builds workspace + starts daemon (local profile) + starts guilde-tunnel :3600
-./dev-up.sh
-
-# Flags:
-./dev-up.sh --no-build   # skip rebuild (use last build)
-./dev-up.sh --no-tunnel  # daemon only, no guilde-tunnel
-```
-
-Then reconnect the MCP server in Claude Desktop / Claude Code settings.
+**Restart** (after VS Code reboot or daemon crash): launch the profile script
+directly (`~/.agentproto/start-daemon-local.sh` — exact commands in the health
+check below), then reconnect the MCP server in Claude Desktop / Claude Code
+settings.
 
 Health check, in order:
 
@@ -128,23 +120,22 @@ workspace).
 > makes the bridge fail with "Unable to connect". Always use
 > `start-daemon-local.sh` when the goal is fixing the Claude Desktop MCP tools.
 
-**Persistence across restarts** — the daemon (post-2026-06-19) writes two files
-at shutdown and reads them at boot:
+**Persistence across restarts** — the daemon writes a per-session transcript
+and reads it back at boot:
 
 ```
-~/.agentproto/transcripts/<sessionId>.json   # ring buffer + cursor metadata per session
-~/.agentproto/command-results.json            # done/cancelled async commands (24 h TTL)
+~/.agentproto/sessions/<sessionId>/events.jsonl   # per-session transcript (events, one JSON per line)
 ```
 
 After restart: `agent_output` on a ghost session returns the saved transcript
-(not `[]`), and `command_log_tail { commandId }` resolves finished commands.
-Sessions that were alive before the fix was deployed have no transcript file —
-they stay empty until the next clean shutdown. 3. After daemon is up, the **MCP
-connection** in Claude Desktop must be manually reconnected (settings →
-disconnect/reconnect on the `agentproto` server). The `mcp__agentproto__*` tools
-reappear once reconnected. 4. Imported tools missing? Check
-`~/.agentproto/imported-mcps.json`, then `mcp_imported_status` /
-`mcp_imported_tool_list` once connected.
+(not `[]`). Sessions that were alive before the fix was deployed have no
+transcript file — they stay empty until the next clean shutdown.
+
+3. After daemon is up, the **MCP connection** in Claude Desktop must be manually
+   reconnected (settings → disconnect/reconnect on the `agentproto` server).
+   The `mcp__agentproto__*` tools reappear once reconnected.
+4. Imported tools missing? Check `~/.agentproto/imported-mcps.json`, then
+   `mcp_imported_status` / `mcp_imported_tool_list` once connected.
 
 ## CLI cheat-sheet
 
@@ -317,26 +308,27 @@ The daemon at `http://127.0.0.1:18790/mcp` exposes these tools directly:
 
 **Filesystem** (workspace-scoped):
 
-- `read_file { path }` · `write_file { path, content }` ·
-  `list_directory { path? }`
-- `get_file_info { path }` · `create_directory { path }` ·
-  `delete_file { path }`
+- `file_read { path }` · `file_write { path, content }` ·
+  `directory_list { path? }`
+- `file_info { path }` · `directory_create { path }` ·
+  `file_delete { path }`
 
 **Shell execution** (allowlist-gated via `.agentproto/allowed-commands.json`):
 
 - `command_execute { command, args?, cwd?, stdin?, timeoutMs?, async? }` → sync:
   `{ exitCode, stdout, stderr, durationMs }` · async: `{ commandId }` · blocked
   (not in allowlist): `{ commandId, status: "pending_approval" }`
-- `get_command_output { commandId }` →
+- `command_log_tail { commandId }` →
   `{ status, stdout, stderr, exitCode?, durationMs }`
-- `cancel_command { commandId }` → SIGTERM a running async command
+- There is no command-cancel verb — a running async command cannot be cancelled
+  through the daemon tools.
 
 **Async pattern** (use for builds, `claude -p`, tests — MCP transport timeout is
 ~60 s):
 
 ```
 r = command_execute { command: "pnpm", args: ["test"], async: true }
-loop: out = get_command_output { commandId: r.commandId }; break if out.status != "running"
+loop: out = command_log_tail { commandId: r.commandId }; break if out.status != "running"
 ```
 
 **Command permission flow** (when a command is blocked by the allowlist):
@@ -396,12 +388,16 @@ agent ended its last turn with text (a question or confirmation request) rather
 than a tool call. Check it after `waitForTurnEnd: true` returns; use
 `permissions_respond` to reply.
 
-**`permissions_respond` decisions**: | `decision` | Sent to agent | |---|---| |
-`approve` | `"Yes, proceed."` | | `deny` | `"No, do not proceed."` | | `always`
-| `"Yes, proceed. You can do this automatically in the future."` | | `custom` |
-`note` verbatim (required) |
+**`permissions_respond` decisions**:
 
-Optional `note` appended to `allow`/`deny`/`always` for context.
+| `decision` | Effect                                       |
+| ---------- | -------------------------------------------- |
+| `approve`  | Selects an allow option — proceed.           |
+| `deny`     | Selects a reject option (or cancels).        |
+
+These are the only two decisions. Optional `scope: "once" | "always"` (default
+`"once"`) — with `approve`, `"always"` prefers allow-always when the request
+offers it. There is no `note` field.
 
 **Permission scope by source** — three kinds of approvals, three different
 paths:
@@ -423,11 +419,11 @@ requests as `awaitingInput` is a planned but not yet implemented feature.
 **Cursor pattern** (no polling needed):
 
 ```
-out = get_agent_session_output { sessionId, lastN: 20 }   # seed
+out = agent_output { sessionId, lastN: 20 }   # seed
 cursor = out.nextCursor
-prompt_agent_session { sessionId, prompt: "…" }
-out = get_agent_session_output { sessionId, since: cursor, waitForTurnEnd: true }
-# out.awaitingInput == true  →  permissions_respond { sessionId, decision: "allow" }
+agent_prompt { sessionId, prompt: "…" }
+out = agent_output { sessionId, since: cursor, waitForTurnEnd: true }
+# out.awaitingInput == true  →  permissions_respond { id, decision: "approve" }
 # out.lines = only the new lines from that turn; cursor = out.nextCursor
 ```
 
@@ -467,18 +463,15 @@ Persist slots: `{ env: "VAR_NAME" }` → ledger `envValues` (runner injects at
 spawn) · `{ secret_slug }` → external vault reference · `{ cmd }` → piped to
 config command.
 
-| What each adapter sets up automatically: | Slug                       | Setup steps |
-| ---------------------------------------- | -------------------------- | ----------- |
-| `claude-code`                            | 1. Install Claude Code CLI |
+**What each adapter sets up automatically:**
 
-(`npm i -g @anthropic-ai/claude-code`)<br>2. `claude auth login` (browser OAuth)
-— skipped if `ANTHROPIC_API_KEY` set | | `opencode` | Prompt for
-`ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` / `OPENROUTER_API_KEY` /
-`GROQ_API_KEY`) | | `codex` | Prompt for `OPENAI_API_KEY` or `CODEX_API_KEY` | |
-`hermes` | 1. Prompt for `OPENROUTER_API_KEY` (recommended)<br>2. Fallback
-prompt for `ANTHROPIC_API_KEY` | | `openclaw` | 1.
-`openclaw onboard --install-daemon` (skipped if `openclaw gateway probe`
-succeeds)<br>2. Gateway probe readiness check |
+| Slug          | Setup steps                                                                                                                                     |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude-code` | 1. Install Claude Code CLI (`npm i -g @anthropic-ai/claude-code`)<br>2. `claude auth login` (browser OAuth) — skipped if `ANTHROPIC_API_KEY` set |
+| `opencode`    | Prompt for `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `GROQ_API_KEY`)                                                    |
+| `codex`       | Prompt for `OPENAI_API_KEY` or `CODEX_API_KEY`                                                                                                  |
+| `hermes`      | 1. Prompt for `OPENROUTER_API_KEY` (recommended)<br>2. Fallback prompt for `ANTHROPIC_API_KEY`                                                  |
+| `openclaw`    | 1. `openclaw onboard --install-daemon` (skipped if `openclaw gateway probe` succeeds)<br>2. Gateway probe readiness check                        |
 
 **Bundled catalog** — `agentproto install` (no slug) launches an interactive
 `@clack/prompts` picker:
@@ -497,7 +490,7 @@ Programmatic access:
 Query before composing a slash-command turn instead of hard-coding syntax:
 
 ```
-list_adapter_commands { adapter: "claude-code" }
+command_list { adapter: "claude-code" }
 # → { adapter: "claude-code", commands: [
 #     { command: "/compact",  description: "…", protocols: ["acp"] },
 #     { command: "/clear",    description: "…", protocols: ["acp"] },
@@ -515,7 +508,7 @@ Key fields per entry:
 - `args` — positional args to append after the token
 - `protocols` — which protocol variants support it (omitted = all)
 
-`list_adapters {}` includes the same `commands[]` array per adapter entry (empty
+`adapter_list {}` includes the same `commands[]` array per adapter entry (empty
 for `"supported"` entries).
 
 **Commands by adapter** (declared in each adapter's
@@ -531,11 +524,11 @@ for `"supported"` entries).
 
 **PTY terminal sessions**:
 
-- `start_terminal_session { argv, cwd?, cols?, rows?, name?, label? }` →
+- `terminal_start { argv, cwd?, cols?, rows?, name?, label? }` →
   `{ sessionId }`
-- `write_terminal_input { sessionId, text }` ·
-  `read_terminal_output { sessionId, lastBytes? }` (base64)
-- `kill_terminal_session { sessionId }`
+- `terminal_input { sessionId, text }` ·
+  `terminal_output { sessionId, lastBytes? }` (base64)
+- `terminal_kill { sessionId }` · `terminal_sessions_list {}`
 
 **Remote tunnel**:
 
@@ -558,8 +551,8 @@ infra component — unrelated.
 **Imported MCP proxy** — reach proxied MCPs (local-browser, etc.) through:
 
 - `mcp_imported_status {}` → health of every alias
-- `list_imported_mcps {}` · `list_discovered_mcps {}`
-- `import_mcp { sourceMcpId, alias? }` · `remove_imported_mcp { id }`
+- `mcp_imported_list {}` · `mcp_discovered_list {}`
+- `mcp_import { sourceMcpId, alias? }` · `mcp_imported_remove { id }`
 - `mcp_imported_tool_list { alias }` → tool list from that alias
 - `mcp_imported_call { alias, toolName, args? }` → invoke tool
 
