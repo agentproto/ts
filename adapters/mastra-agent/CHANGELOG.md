@@ -1,5 +1,30 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.5.1
+
+### Patch Changes
+
+- e418ec7: Documentation updates for new jcode adapter, MCP tool families, configuration enhancements, and Mastra adapter API changes.
+- 6d216da: Fix: drop reasoning-only assistant messages instead of injecting empty text blocks. The Mastra adapter was filtering out trailing reasoning blocks but then injecting empty text blocks as a fallback, which violates Anthropic's API contract ("text content blocks must be non-empty"). Now reasoning-only messages are properly dropped entirely, which is safe because they carry no tool calls.
+- Updated dependencies [e418ec7]
+- Updated dependencies [2e24a7e]
+- Updated dependencies [27a22ca]
+- Updated dependencies [59d23d1]
+- Updated dependencies [2120494]
+- Updated dependencies [42ca610]
+- Updated dependencies [6b04734]
+- Updated dependencies [0b4a84b]
+- Updated dependencies [231f015]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [4474e5e]
+- Updated dependencies [5de8be3]
+- Updated dependencies [f96dc2a]
+- Updated dependencies [cbe11c2]
+- Updated dependencies [a0558d4]
+- Updated dependencies [140874a]
+  - @agentproto/runtime@2.7.0
+  - @agentproto/driver-agent-cli@2.3.0
+
 ## 0.5.0
 
 ### Minor Changes

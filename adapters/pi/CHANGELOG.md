@@ -1,5 +1,15 @@
 # @agentproto/adapter-pi
 
+## 0.3.6
+
+### Patch Changes
+
+- 2120494: Report the pi adapter's real context window instead of the running token total, so context-continuity hard-stops trigger at the actual limit.
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
 ## 0.3.5
 
 ### Patch Changes

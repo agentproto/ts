@@ -1,5 +1,59 @@
 # @agentproto/runtime
 
+## 2.7.0
+
+### Minor Changes
+
+- 2e24a7e: Enhance daemon lifecycle management with health reporting and shutdown statistics.
+
+  **@agentproto/cli changes:**
+  - New `runStop()` function exported for daemon stop command with pre-shutdown stats gathering
+  - `runStart()` and `runRestart()` now accept optional `health: HealthFetchFn` and `probeAttempts` parameters for testability
+  - New `DaemonHealthInfo` and `DaemonStopStats` interfaces enable rich metadata tracking
+  - Lifecycle info blocks report daemon version, uptime, workspace, binary path, and activity metrics (sessions, token counts, spend estimates)
+  - Enhanced `humaniseUptime()` to show nested units (e.g., `3h12m` instead of `3h`)
+  - Added `formatDuration()` helper for shutdown messages
+
+  **@agentproto/runtime changes:**
+  - `/health` endpoint now reports daemon version, process ID, node executable path, and entry point
+  - Added `startedAt` ISO timestamp to `/health` for debugging
+  - These metadata fields enable lifecycle tooling to accurately report "what is actually running"
+
+- 27a22ca: Persistent per-session isolated adapter config directories to enable native resume after adapter respawns.
+
+  Previously, the isolated `CLAUDE_CONFIG_DIR` was a throwaway mkdtemp recreated on every spawn. This meant the SDK's conversation store (projects/<cwd-slug>/<uuid>.jsonl) was lost on respawn, causing resumeSessionId to degrade to a digest fallback every time an adapter process was reaped and restarted.
+
+  The fix introduces `SessionDescriptor.adapterConfigDir` to persist the config location across respawns, keyed by the first session id in a lineage (`~/.agentproto/adapter-config/<sessionId>`). The runtime threads this through all spawn paths (agent_start, session_restart, lazy resume, cron, judges, webhooks, workflow steps), and the driver preserves the SDK's own state when reusing a persistent dir while always re-asserting `mcpServers: {}` to prevent ambient leaks from mid-session `claude mcp add` commands.
+
+  Backward compatible: legacy rows without the new field keep today's digest-fallback behavior.
+
+- 59d23d1: Enhance session visibility by tracking watcher metadata (who's watching and what they're waiting for) alongside the watchers count. New optional `SessionWatcherInfo` type captures waiter identity, event, timeout, and attach timestamp. Adds "awaiting-bg" section for sessions with pending background tasks. All changes maintain backward compatibility.
+- 0b4a84b: Daemon-side FIFO prompt queue with force semantics: `enqueuePrompt` gains `queue`/`force` options, new `removeQueuedPrompt` method and `QueuedPrompt` type, and an HTTP `DELETE /queue/:id` endpoint. Messages arriving mid-turn are held in an ordered queue and dispatched sequentially as turns complete.
+- 231f015: Add native terminal/TUI launching for harnesses and redesigned harness card UI. New `NATIVE_LAUNCH_ARGV` export in runtime maps harness slugs to their launch arguments. VS Code package now shows a wallet badge (replacing manifest facts) for quick navigation to billing providers, adds a Terminal button to spawn native sessions, and supports programmatic auth model focus targeting for direct provider navigation.
+- 5de8be3: Add `session_flag_status` MCP tool and `SessionsRegistry.flagAwaitingInput` method for manual correction of a session's `awaitingInput`/`awaitingQuestion` classification. This is the first external write path for these fields (otherwise set only by internal heuristics or driver-reported prompts). Includes new `session:awaiting-input-flagged` event type emitted on the session event bus for audit trail visibility via `session_events_poll`, webhook notifier, and session monitor.
+- cbe11c2: Fix jcode print arm: add `--ndjson` output format and move `run` subcommand to `bin_args` so composed flags land after it (not before). Add comprehensive jcode NDJSON event mapper with full test coverage. Implement fail-fast TTY handling for interactive setup steps: refuse pre-spawn when stdin is not a TTY, return distinct `EXIT_SETUP_NEEDS_TTY (78)` to surface the condition separately from real failures. Add `needsInteractiveSetup` flag to `AdapterInstallResult` and VS Code install action to offer "Open Setup Terminal" for TTY-blocked installs.
+- a0558d4: Add session pinning — a server-persisted, list-visibility-only favorite flag. Pinned sessions sort to the top of `agentproto sessions` table and the VS Code webview's dedicated "Pinned" group. Includes new CLI `pin`/`unpin` subcommands, the `session_set_pinned` MCP verb, HTTP route `POST /sessions/:id/pin`, and dedicated UI in VS Code. Deliberately orthogonal to `keepAlive`, reaper eligibility, and notifications — pin is a quiet, structural sort/display flag with zero operational side effects.
+- 140874a: Add optional `provider` field to ACP agent specifications. This allows generic ACP adapters (Mistral Vibe, Google Gemini CLI, Moonshot Kimi CLI) to declare their billing endpoints, enabling clients to link the harness to that provider's wallets even when no model list is declared. The provider is projected through AdapterInfo and integrated into VSCode wallet linking logic.
+
+### Patch Changes
+
+- e418ec7: Documentation updates for new jcode adapter, MCP tool families, configuration enhancements, and Mastra adapter API changes.
+- 2120494: Report the pi adapter's real context window instead of the running token total, so context-continuity hard-stops trigger at the actual limit.
+- 42ca610: Add in-band adapter turn-error tracking and refactor session status precedence. Introduces `lastTurnErroredAt` field to distinguish adapter-reported failures (status stays "running") from thrown/rejected streams (status→"error"). Reorders status dot precedence to awaiting > stalled > busy and separates healthy parked-bg sessions from genuinely stuck ones in the status bar.
+- 6b04734: Test isolation: the runtime test package now runs with an isolated `$HOME` (vitest config/setup), so tests no longer read the real `~/.agentproto/*`. No runtime behavior change.
+- 4474e5e: Expand terminal launch coverage to every harness with an interactive CLI arm by broadening NATIVE_LAUNCH_ARGV beyond attachArgv's resume-specific gates. Redesign harness card action buttons from platform-font glyphs to crisp SVG icons (conversation bubble + terminal glyph) with title and aria-label for accessibility.
+- f96dc2a: Add opt-in `gh` provenance PATH shim for local agent sessions. When `provenance.wrapGh` is enabled, spawned sessions get a shim directory prepended to PATH so `gh pr create` (or adapter subprocesses) automatically append the daemon's deterministic `@agentproto-bot` provenance footer to PR bodies, matching cloud runner behavior.
+- Updated dependencies [e418ec7]
+- Updated dependencies [27a22ca]
+- Updated dependencies [545752b]
+- Updated dependencies [0bdd564]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/app-kit@0.6.1
+  - @agentproto/driver-agent-cli@2.3.0
+  - @agentproto/workspace-brain@0.2.1
+  - @agentproto/provider-presets@0.6.0
+
 ## 2.6.0
 
 ### Minor Changes
