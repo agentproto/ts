@@ -295,6 +295,25 @@ describe("laneOf / autoGroupOf", () => {
     expect(autoGroupOf(session({ origin: "cron", kind: "command" }))).toBe("cron")
     expect(autoGroupOf(session({ origin: "gate", parentSessionId: "p" }))).toBe("gate")
   })
+  it("follows the lineage root when the pool is given (#996 attached children)", () => {
+    const pool = (...sessions: SessionSummary[]) => new Map(sessions.map(s => [s.id, s]))
+    const human = session({ id: "human" })
+    const cron = session({ id: "cron", origin: "cron" })
+    const child = session({ id: "child", parentSessionId: "human" })
+    const grandchild = session({ id: "grandchild", parentSessionId: "child" })
+    const cronChild = session({ id: "cron-child", parentSessionId: "cron" })
+    // Children of a human chat root stay in the agents lane, any depth down.
+    expect(autoGroupOf(child, pool(human, child))).toBeUndefined()
+    expect(laneOf(child, pool(human, child))).toBe("agents")
+    expect(laneOf(grandchild, pool(human, child, grandchild))).toBe("agents")
+    // Children of a machine root, or orphans whose parent isn't loaded, are Tasks.
+    expect(autoGroupOf(cronChild, pool(cron, cronChild))).toBe("task")
+    expect(autoGroupOf(child, pool(child))).toBe("task")
+    // A parentSessionId cycle can't loop — it reads as no human root.
+    const a = session({ id: "a", parentSessionId: "b" })
+    const b = session({ id: "b", parentSessionId: "a" })
+    expect(autoGroupOf(a, pool(a, b))).toBe("task")
+  })
 })
 
 // ─── Design B: attention sections ───────────────────────────────────────────
@@ -487,23 +506,27 @@ describe("buildSessionsWebviewModel — lane split", () => {
     session({ id: "cron", cwd: "/Code/studio", origin: "cron", label: "cron:cron_abc12345", status: "exited" }),
     session({ id: "cmd", cwd: "/Code/studio", kind: "command", status: "exited" }),
     session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "human" }),
+    session({ id: "orphan", cwd: "/Code/studio", busy: true, parentSessionId: "not-loaded" }),
   ]
 
   it("counts both lanes regardless of the selected lane", () => {
     const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "agents" }))
-    expect(model.laneCounts).toEqual({ agents: 1, auto: 4 })
+    expect(model.laneCounts).toEqual({ agents: 2, auto: 4 })
   })
 
-  it("shows only human-origin sessions in the agents lane", () => {
+  it("keeps a chat session's attached child in the agents lane, nested under it", () => {
     const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "agents" }))
     const ids = model.groups.flatMap(g => g.rows.map(r => r.id))
-    expect(ids).toEqual(["human"])
+    expect(ids).toEqual(["human", "child"])
+    const child = model.groups.flatMap(g => g.rows).find(r => r.id === "child")!
+    expect(child.depth).toBe(1)
   })
 
   it("groups the auto lane into Gate reviews / Crons / Commands / Tasks, in order", () => {
     const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "auto" }))
     expect(model.groups.map(g => g.key)).toEqual(["gate", "cron", "command", "task"])
     expect(model.groups.map(g => g.label)).toEqual(["Gate reviews", "Crons", "Commands", "Tasks"])
+    expect(model.groups.find(g => g.key === "task")!.rows.map(r => r.id)).toEqual(["orphan"])
   })
 
   it("cleans up the machine-session name (cron · shortId, command · shortId, gate-review)", () => {
@@ -738,15 +761,22 @@ describe("buildSessionsWebviewModel — filtering + totals", () => {
     expect(model.groups[0]!.rows[0]!.watched).toBe(true)
   })
 
-  it("routes a subagent (parentSessionId set) to the auto lane's Tasks group (item 6)", () => {
+  it("nests a subagent under its loaded human spawner in the agents lane (#996)", () => {
     const sessions = [
       session({ id: "parent", cwd: "/Code/studio", busy: true }),
       session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "parent" }),
     ]
     const agentsModel = buildSessionsWebviewModel(sessions, studioConfig, opts())
     const running = agentsModel.groups.find(g => g.key === "running")!
-    expect(running.rows.map(r => r.id)).toEqual(["parent"])
+    expect(running.rows.map(r => r.id)).toEqual(["parent", "child"])
+    expect(running.rows.map(r => r.depth)).toEqual([0, 1])
 
+    const autoModel = buildSessionsWebviewModel(sessions, studioConfig, opts({ lane: "auto" }))
+    expect(autoModel.groups.find(g => g.key === "task")).toBeUndefined()
+  })
+
+  it("routes a subagent whose parent isn't loaded to the auto lane's Tasks group", () => {
+    const sessions = [session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "gone" })]
     const autoModel = buildSessionsWebviewModel(sessions, studioConfig, opts({ lane: "auto" }))
     const tasks = autoModel.groups.find(g => g.key === "task")!
     expect(tasks.rows[0]!.id).toBe("child")

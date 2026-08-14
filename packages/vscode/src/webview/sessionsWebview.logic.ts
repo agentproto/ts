@@ -310,6 +310,36 @@ export type SessionLane = "agents" | "auto"
 /** Auto-lane subgroups, in display order. */
 export type AutoGroupKind = "gate" | "cron" | "command" | "task"
 
+/** The lineage fields lane classification reads — a subset of SessionSummary. */
+type LaneSubject = Pick<SessionSummary, "id" | "origin" | "kind" | "parentSessionId">
+
+/** Machine tell on the session's OWN fields only (lineage-blind). */
+function ownAutoGroupOf(session: Pick<SessionSummary, "origin" | "kind">): Exclude<AutoGroupKind, "task"> | undefined {
+  if (isMachineOrigin(session.origin)) return "gate"
+  if (session.origin === "cron") return "cron"
+  if (session.kind === "command") return "command"
+  return undefined
+}
+
+/**
+ * Whether a child session's lineage root is a human chat session. Walks
+ * `parentSessionId` up through `byId`; an unreachable ancestor (parent not
+ * loaded / archived / retired by a resume chain) or a cycle counts as NOT
+ * human — the child then falls back to the Auto lane's Tasks group, where it
+ * at least stays visible instead of nesting under a row that isn't there.
+ */
+function lineageRootIsHuman(session: LaneSubject, byId: ReadonlyMap<string, LaneSubject>): boolean {
+  const seen = new Set<string>([session.id])
+  let cur = session
+  while (cur.parentSessionId) {
+    const parent = byId.get(cur.parentSessionId)
+    if (!parent || seen.has(parent.id)) return false
+    seen.add(parent.id)
+    cur = parent
+  }
+  return ownAutoGroupOf(cur) === undefined
+}
+
 /**
  * The Auto-lane subgroup a machine-origin session belongs to, or undefined
  * when the session is human-origin (an "Agents"-lane session). Reuses the
@@ -317,18 +347,26 @@ export type AutoGroupKind = "gate" | "cron" | "command" | "task"
  * tells the webview needs to separate — a cron-fired session (`origin` is
  * `"cron"`, stamped by the cron scheduler) and a raw command execution
  * (`kind === "command"`). No daemon change: these are all existing fields.
+ *
+ * A session with a `parentSessionId` follows its LINEAGE ROOT when `byId` is
+ * given: a subagent spawned under a human chat session stays in the Agents
+ * lane (nested under its spawner by `nestByLineage`), while a child of a
+ * machine root — or an orphan whose parent isn't loaded — lands in the Auto
+ * lane's Tasks group. Without `byId` (lineage unknown) every child is a
+ * "task", the pre-#996 reading, kept for lone-session call sites.
  */
-export function autoGroupOf(session: Pick<SessionSummary, "origin" | "kind" | "parentSessionId">): AutoGroupKind | undefined {
-  if (isMachineOrigin(session.origin)) return "gate"
-  if (session.origin === "cron") return "cron"
-  if (session.kind === "command") return "command"
-  if (session.parentSessionId) return "task"
+export function autoGroupOf(session: LaneSubject, byId?: ReadonlyMap<string, LaneSubject>): AutoGroupKind | undefined {
+  const own = ownAutoGroupOf(session)
+  if (own) return own
+  if (session.parentSessionId) {
+    return byId && lineageRootIsHuman(session, byId) ? undefined : "task"
+  }
   return undefined
 }
 
 /** Human-origin ("agents") vs machine-origin ("auto") — the segmented-control axis. */
-export function laneOf(session: Pick<SessionSummary, "origin" | "kind" | "parentSessionId">): SessionLane {
-  return autoGroupOf(session) === undefined ? "agents" : "auto"
+export function laneOf(session: LaneSubject, byId?: ReadonlyMap<string, LaneSubject>): SessionLane {
+  return autoGroupOf(session, byId) === undefined ? "agents" : "auto"
 }
 
 const AUTO_GROUP_LABELS: Readonly<Record<AutoGroupKind, string>> = {
@@ -636,6 +674,7 @@ function toRow(
   config: WorkspacesConfig,
   colorOverrides: WorkspaceColorOverrides | undefined,
   watchedIds: ReadonlySet<string> | undefined,
+  byId: ReadonlyMap<string, LaneSubject> | undefined,
 ): WebviewRow {
   const pctStr = contextPercent(session.contextUsed, session.contextSize)
   const ws = workspaceFor(config, session)
@@ -649,7 +688,7 @@ function toRow(
     id: session.id,
     session,
     status: webviewRowStatus(session, now),
-    lane: laneOf(session),
+    lane: laneOf(session, byId),
     name: identity.name,
     idMono: identity.idMono,
     message: previewTextFor(session),
@@ -731,6 +770,11 @@ export function buildSessionsWebviewModel(
     : sessions.filter(s => s.archived !== true)
   const visible = collapseResumeChains(pool)
 
+  // Lane identity is intrinsic, so lineage is resolved over EVERY loaded
+  // session (not just the visible survivors): a child whose parent is
+  // archived or collapsed away still knows which lane it belongs to.
+  const byId: ReadonlyMap<string, LaneSubject> = new Map(sessions.map(s => [s.id, s]))
+
   // 1. Search filter (reused predicate).
   const baseState: SessionFilterState = { ...EMPTY_FILTER, search: opts.search }
   const searchSurvivors = filterSessions(visible, baseState, workspaces)
@@ -738,7 +782,7 @@ export function buildSessionsWebviewModel(
   // 2. Project rail — counts per project within the CURRENT lane, independent
   //    of the current project selection (the rail IS the selector). A chip
   //    lights its ochre dot when it holds a session awaiting the human.
-  const railScope = searchSurvivors.filter(s => laneOf(s) === opts.lane)
+  const railScope = searchSurvivors.filter(s => laneOf(s, byId) === opts.lane)
   const rail = buildRail(railScope, workspaces, opts.now, opts.colorOverrides)
 
   // 3. Segmented-control counts — within the selected project.
@@ -747,14 +791,14 @@ export function buildSessionsWebviewModel(
       ? searchSurvivors
       : searchSurvivors.filter(s => projectSlugOf(workspaces, s) === opts.project)
   const laneCounts: Record<SessionLane, number> = { agents: 0, auto: 0 }
-  for (const s of projectSurvivors) laneCounts[laneOf(s)] += 1
+  for (const s of projectSurvivors) laneCounts[laneOf(s, byId)] += 1
 
   // 4. The list itself — selected lane, sorted recency-first.
   const scope = projectSurvivors
-    .filter(s => laneOf(s) === opts.lane)
+    .filter(s => laneOf(s, byId) === opts.lane)
     .slice()
     .sort((a, b) => compareSessions(a, b))
-  const rows = scope.map(s => toRow(s, opts.now, workspaces, opts.colorOverrides, opts.watchedIds))
+  const rows = scope.map(s => toRow(s, opts.now, workspaces, opts.colorOverrides, opts.watchedIds, byId))
 
   // Pinned rows are lifted into their own dedicated group at the very top of
   // the list, ahead of every attention section / Auto subgroup — "stays
