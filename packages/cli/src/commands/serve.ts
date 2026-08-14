@@ -669,6 +669,21 @@ export async function runServe(args: readonly string[]): Promise<number> {
         name: "agentproto-serve",
         // Surfaced over MCP and `/health` — what is actually running.
         version: __CLI_VERSION__,
+        // Build identity: sha + builtAt were stamped into this bundle at
+        // build time; `source` is judged here from where the entry actually
+        // lives, because the version string alone cannot distinguish a
+        // workspace dist from the published tarball of the same release.
+        build: {
+          sha: __CLI_BUILD_SHA__,
+          builtAt: __CLI_BUILT_AT__,
+          source: (() => {
+            const entry = process.argv[1] ?? ""
+            if (!entry) return "unknown"
+            return entry.includes("/node_modules/") || entry.includes("/.npm/")
+              ? "published"
+              : "workspace"
+          })(),
+        },
         // BOOT.md is silly for a tunnel daemon — skip it.
         boot: false,
         // Opt-in eager resume-on-boot (§5, PR-4). Resolved from
