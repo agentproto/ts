@@ -197,6 +197,19 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
     bin: "kimi",
     bin_args: ["acp"],
     provider: "moonshot",
+    models: {
+      default: "kimi-k3",
+      allowed: [
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-thinking-turbo",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+      ],
+    },
     install_hint: "uv tool install --python 3.13 kimi-cli",
   },
 ] as const
