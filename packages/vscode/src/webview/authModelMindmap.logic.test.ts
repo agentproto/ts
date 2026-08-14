@@ -95,6 +95,13 @@ describe("reach — grounded in routeSelection + provider set, never hand-set", 
   it("uses the adapter modelDetails provider set when capabilities are absent", () => {
     expect(reach(claudeCodeAdapter, undefined, "moonshot")).toBe("via-router")
   })
+  it("uses the adapter-level provider when no models and no capabilities are declared", () => {
+    // A generic ACP adapter (e.g. mistral-vibe) declares no model list — its
+    // spec-level billing provider alone must link it to that endpoint.
+    const vibe: AdapterInfo = { slug: "mistral-vibe", modelDetails: [], provider: "mistral" }
+    expect(reach(vibe, undefined, "mistral")).toBe("native")
+    expect(reach(vibe, undefined, "anthropic")).toBeNull()
+  })
 })
 
 // ── buildProviders ────────────────────────────────────────────────────────────

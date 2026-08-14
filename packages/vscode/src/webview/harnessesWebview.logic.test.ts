@@ -219,6 +219,19 @@ describe("buildHarnessesWebviewModel — wallet badge", () => {
     const model = buildHarnessesWebviewModel([adapter({ slug: "unknown-harness" })], "", new Set(), [], [], null)
     expect(model.rows[0]?.walletBadge).toEqual({ label: "no reachable provider", endpoint: null })
   })
+
+  it("links a generic ACP adapter to its wallet via the adapter-level provider (no model list)", () => {
+    const mistralKey = profile({ id: "mistral-api", endpoint: "mistral", method: "api-key" })
+    const model = buildHarnessesWebviewModel(
+      [adapter({ slug: "mistral-vibe", provider: "mistral", modelDetails: [] })],
+      "",
+      new Set(),
+      [],
+      [mistralKey],
+      null,
+    )
+    expect(model.rows[0]?.walletBadge).toEqual({ label: "mistral-api", endpoint: "mistral" })
+  })
 })
 
 describe("buildHarnessesWebviewModel — canOpenTerminal", () => {

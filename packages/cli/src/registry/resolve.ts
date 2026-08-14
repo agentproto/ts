@@ -154,6 +154,15 @@ export interface AdapterInfo {
    * from the auth-derivation axis (`modelDerivedApiKey`).
    */
   routeSelection?: AgentCliRouteSelection
+  /**
+   * Billing endpoint this adapter's own auth bills (manifest-level
+   * `provider`, or an ACP spec's `provider`), e.g. "mistral" for
+   * mistral-vibe. Lets a client link the harness to that provider's
+   * wallets even when the adapter declares no model list. Undefined when
+   * the adapter's billing target isn't a single stated endpoint — never
+   * guessed here.
+   */
+  provider?: string
 }
 
 /** One entry of an adapter's declared model menu, projected from a
@@ -904,6 +913,7 @@ function toAdapterInfo(slug: string, resolved: ResolvedAdapter): AdapterInfo {
     ...(toRouteSelection(handle.routeSelection)
       ? { routeSelection: toRouteSelection(handle.routeSelection) }
       : {}),
+    ...(typeof handle.provider === "string" ? { provider: handle.provider } : {}),
   }
 }
 
@@ -1299,6 +1309,7 @@ export async function listAdaptersWithCatalog(
       modelDetails: e.info?.modelDetails ?? [],
       modelApply: e.info?.modelApply ?? "config",
       ...(e.info?.routeSelection ? { routeSelection: e.info.routeSelection } : {}),
+      ...(e.info?.provider ? { provider: e.info.provider } : {}),
       status: stale ? ("unresolvable" as const) : e.status,
       ...(stale
         ? {
