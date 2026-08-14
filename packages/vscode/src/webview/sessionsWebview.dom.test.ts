@@ -453,6 +453,53 @@ describe("sessions webview — interactions", () => {
     expect(panel.posted).toEqual([{ type: "unarchive", id: "s2" }])
   })
 
+  it("renders an unpinned row's pin button alongside its lifecycle action, not in place of it", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, pinned: false }])] }))
+    const row = el(panel, "list").querySelector('[data-id="s1"]')!
+    const pinBtn = htmlEl(row.querySelector('[data-pin="s1"]'))
+    expect(pinBtn.getAttribute("aria-label")).toBe("Pin session")
+    expect(pinBtn.className).toContain("abtn")
+    expect(pinBtn.className).toContain("pin")
+    expect(pinBtn.className).not.toContain("on")
+    // The stop action button is still present — pin is additive, not exclusive.
+    expect(row.querySelector('[data-stop="s1"]')).toBeTruthy()
+  })
+
+  it("renders a pinned row's button as the filled/unpin variant", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("pinned", "Pinned", [{ ...ROW_A, pinned: true }])] }))
+    const unpinBtn = htmlEl(el(panel, "list").querySelector('[data-unpin="s1"]'))
+    expect(unpinBtn.getAttribute("aria-label")).toBe("Unpin session")
+    expect(unpinBtn.className).toContain("pin")
+    expect(unpinBtn.className).toContain("on")
+    expect(el(panel, "list").querySelector('[data-pin="s1"]')).toBeNull()
+  })
+
+  it("clicking pin posts {type:'pin', id, pinned:true}", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, pinned: false }])] }))
+    panel.posted.length = 0
+    click(panel, el(panel, "list").querySelector('[data-pin="s1"]')!)
+    expect(panel.posted).toEqual([{ type: "pin", id: "s1", pinned: true }])
+  })
+
+  it("clicking unpin posts {type:'pin', id, pinned:false}", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("pinned", "Pinned", [{ ...ROW_A, pinned: true }])] }))
+    panel.posted.length = 0
+    click(panel, el(panel, "list").querySelector('[data-unpin="s1"]')!)
+    expect(panel.posted).toEqual([{ type: "pin", id: "s1", pinned: false }])
+  })
+
+  it("renders a dedicated Pinned group header distinct from the attention sections", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("pinned", "Pinned", [{ ...ROW_A, pinned: true }]), group("running", "Running", [ROW_A])] }))
+    const heads = [...el(panel, "list").querySelectorAll(".ghead")]
+    expect(heads.map(h => htmlEl(h).getAttribute("data-key"))).toEqual(["pinned", "running"])
+    expect(heads[0]!.textContent).toContain("Pinned")
+  })
+
   it("clicking a segment posts the lane switch", () => {
     const panel = renderPanel()
     click(panel, el(panel, "seg").querySelector('[data-lane="auto"]')!)

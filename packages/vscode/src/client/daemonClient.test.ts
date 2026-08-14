@@ -79,6 +79,7 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url === "/sessions/agent" && req.method === "POST") return { status: 201, body: { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url === "/sessions/terminal" && req.method === "POST") return { status: 201, body: { id: "t1", kind: "terminal", status: "running", command: "claude --resume X", pid: 3, startedAt: "t", workspaceSlug: "ws", pty: true, argv: ["claude", "--resume", "X"], cwd: "/ws" } }
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
+      if (req.url?.startsWith("/sessions/s1/pin") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1", pinned: (req.body as { pinned: boolean }).pinned } }
       if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
       if (req.url?.startsWith("/sessions/s1/model") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, model: (req.body as { model?: string }).model } }
       if (req.url?.startsWith("/sessions/s1/effort") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, effort: (req.body as { effort?: string }).effort } }
@@ -262,6 +263,17 @@ describe("DaemonClient — URL + auth header mapping", () => {
   it("POST /sessions/:id/kill returns { ok, sessionId }", async () => {
     const res = await client().kill("s1")
     expect(res).toEqual({ ok: true, sessionId: "s1" })
+  })
+
+  it("POST /sessions/:id/pin sends { pinned } and returns { ok, sessionId, pinned }", async () => {
+    const res = await client().setPinned("s1", true)
+    expect(res).toEqual({ ok: true, sessionId: "s1", pinned: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url.split("?")[0]).toBe("/sessions/s1/pin")
+    expect(last.body).toEqual({ pinned: true })
+
+    const unpin = await client().setPinned("s1", false)
+    expect(unpin).toEqual({ ok: true, sessionId: "s1", pinned: false })
   })
 
   it("POST /sessions/:id/interrupt returns { ok, id, wasBusy }", async () => {

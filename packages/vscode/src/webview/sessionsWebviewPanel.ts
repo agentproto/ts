@@ -123,6 +123,7 @@ interface RenderRow {
   runs: number | undefined
   approved: boolean
   watched: boolean
+  pinned: boolean
   locallyWatched: boolean
   watcherCount: number
   pendingBgTasks: number
@@ -175,6 +176,7 @@ type WebviewToHostMessage =
   | { type: "stop"; id: string }
   | { type: "archive"; id: string }
   | { type: "unarchive"; id: string }
+  | { type: "pin"; id: string; pinned: boolean }
   | { type: "loadMore" }
   | { type: "toggleArchived" }
   /** From the rail chip's swatch popover — `index: null` resets to the hash default. */
@@ -221,6 +223,7 @@ function toRenderRow(
     runs: row.runs,
     approved: row.approved,
     watched: row.watched,
+    pinned: row.pinned,
     locallyWatched: row.locallyWatched,
     watcherCount: row.watcherCount,
     pendingBgTasks: row.pendingBgTasks,
@@ -369,6 +372,9 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       case "unarchive":
         void this.runSessionAction(msg.id, "unarchive")
         return
+      case "pin":
+        void this.togglePin(msg.id, msg.pinned)
+        return
       case "loadMore":
         void this.loadMore()
         return
@@ -461,6 +467,28 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       }
     } catch (err) {
       vscode.window.showErrorMessage(`agentproto: ${action} failed — ${describeError(err)}`)
+    }
+  }
+
+  /**
+   * Toggle a session's list-visibility pin (`session_set_pinned` /
+   * `POST /sessions/:id/pin`). Purely a sort/display flag — quiet by design,
+   * no confirmation toast (unlike stop/archive/unarchive): NEVER touches
+   * keepAlive, the idle-reaper, or emits any notification. `store.refreshAll`
+   * re-fetches the daemon snapshot, which cascades into `refresh()` via the
+   * store's `onDidChange` subscription (registerSessionsWebview) so the row
+   * moves into/out of the Pinned group on the next paint.
+   */
+  private async togglePin(id: string, pinned: boolean): Promise<void> {
+    if (isPendingSession({ id })) {
+      vscode.window.showWarningMessage(`agentproto: session ${id} is still starting.`)
+      return
+    }
+    try {
+      await this.client.setPinned(id, pinned)
+      await this.store.refreshAll()
+    } catch (err) {
+      vscode.window.showErrorMessage(`agentproto: pin failed — ${describeError(err)}`)
     }
   }
 
@@ -827,6 +855,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .abtn { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--dim); cursor: pointer; border-radius: 4px; padding: 0; }
     .abtn:hover { background: #2e2e30; color: var(--fg); }
     .abtn.stop:hover { color: var(--stop-hot); }
+    /* Pinned state — a calm, always-on tell (once .acts is revealed) that
+       this row is favorited, same ochre register as "needs you" since pin is
+       an intentional operator choice, not an alarm. */
+    .abtn.pin.on { color: var(--awaiting); }
     .abtn svg { width: 15px; height: 15px; display: block; }
     .spin { width: 12px; height: 12px; border: 1.5px solid var(--faint); border-top-color: var(--fg); border-radius: 50%; animation: agentproto-rot 0.8s linear infinite; }
     @keyframes agentproto-rot { to { transform: rotate(360deg); } }
@@ -906,8 +938,12 @@ export function buildHtml(nonce: string, cspSource: string): string {
       const collapsed = {};
 
       const STOP_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.4" y="5.4" width="5.2" height="5.2" rx="1" fill="currentColor"/></svg>';
-      const ARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5M6 7.5h4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M5 2.8h6l1 2.2H4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
+      const ARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5M6 7.5h4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 2.8h6l1 2.2H4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
       const UNARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M8 11V6.5M6 8l2-2 2 2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      // Pin (outline, unpinned → "click to pin") / PIN_FILLED_SVG (pinned →
+      // "click to unpin") — same viewBox/size convention as STOP_SVG/ARCH_SVG.
+      const PIN_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="6" r="3.2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 9.2V14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+      const PIN_FILLED_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="6" r="3.2" fill="currentColor"/><path d="M8 9.2V14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
 
       archToggleEl.innerHTML = ARCH_SVG;
 
@@ -928,6 +964,17 @@ export function buildHtml(nonce: string, cspSource: string): string {
           return '<button class="abtn unarchive" type="button" title="Unarchive session" aria-label="Unarchive session" data-unarchive="' + escapeHtml(r.id) + '" data-action>' + UNARCH_SVG + '</button>';
         }
         return '';
+      }
+
+      // Pin toggle — independent of actionButton's single stop/archive/
+      // unarchive slot (a live session can be both stoppable AND pinnable),
+      // so it's a SEPARATE button always present in .acts, not folded into
+      // actionButton's exclusive branches.
+      function pinButton(r) {
+        if (r.pinned) {
+          return '<button class="abtn pin on" type="button" title="Unpin session" aria-label="Unpin session" data-unpin="' + escapeHtml(r.id) + '" data-action>' + PIN_FILLED_SVG + '</button>';
+        }
+        return '<button class="abtn pin" type="button" title="Pin session" aria-label="Pin session" data-pin="' + escapeHtml(r.id) + '" data-action>' + PIN_SVG + '</button>';
       }
 
       function logoHtml(logo) {
@@ -1008,7 +1055,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠</span>' : '') +
           (r.approved ? '<span class="ok">✓</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + '</span>' : '');
-        var acts = actionButton(r);
+        var acts = pinButton(r) + actionButton(r);
         // Indent nested subagents; base padding-left is 12px (see .row CSS).
         var indent = depth > 0 ? ' style="padding-left:' + (12 + depth * 16) + 'px"' : '';
         var wsStyle = r.workspace ? ' style="--ws:' + escapeHtml(r.workspace.css) + '"' : '';
@@ -1248,6 +1295,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
           } else if (action.hasAttribute('data-unarchive')) {
             row.classList.add('gone');
             vscode.postMessage({ type: 'unarchive', id: action.getAttribute('data-unarchive') });
+          } else if (action.hasAttribute('data-pin')) {
+            vscode.postMessage({ type: 'pin', id: action.getAttribute('data-pin'), pinned: true });
+          } else if (action.hasAttribute('data-unpin')) {
+            vscode.postMessage({ type: 'pin', id: action.getAttribute('data-unpin'), pinned: false });
           }
           return;
         }

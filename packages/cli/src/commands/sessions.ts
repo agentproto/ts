@@ -91,6 +91,12 @@ Usage:
   agentproto sessions story <id-or-name> [--json] [--no-color]
                              [--source auto|native|daemon]
   agentproto sessions stop <id-or-name> [--json]
+  agentproto sessions pin <id-or-name> [--json]
+  agentproto sessions unpin <id-or-name> [--json]
+                              (list-visibility only — pinned sessions sort to
+                               the top of the table, marked with a PIN
+                               indicator. No effect on keepAlive/reaper/
+                               notifications.)
   agentproto sessions gc [--older-than-days <n>] [--forget] [--json]
                               (archive terminal sessions by default; --forget
                                DROPS descriptors instead. Never touches live.)
@@ -182,6 +188,8 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   const sub = args[0]
   if (sub === "start") return runStart(args.slice(1))
   if (sub === "stop") return runStop(args.slice(1))
+  if (sub === "pin") return runPin(args.slice(1), true)
+  if (sub === "unpin") return runPin(args.slice(1), false)
   if (sub === "gc") return runGc(args.slice(1))
   if (sub === "terminal") return runTerminal(args.slice(1))
   if (sub === "export") return runExport(args.slice(1))
@@ -516,6 +524,83 @@ async function runStop(args: readonly string[]): Promise<number> {
       return 2
     }
     process.stderr.write(`agentproto sessions stop: ${msg}\n`)
+    return 1
+  }
+}
+
+/**
+ * `agentproto sessions pin <id-or-name> [--json]` / `sessions unpin` — CLI
+ * parity for the `session_set_pinned` MCP verb. Structurally identical to
+ * `runStop`: resolve the daemon, POST the mutation, print/return the result.
+ * Pure list-visibility toggle — pinned sessions sort to the top of
+ * `printTable`'s output with a PIN marker. No effect on keepAlive, the
+ * idle-reaper, or notifications.
+ */
+async function runPin(args: readonly string[], pinned: boolean): Promise<number> {
+  const verb = pinned ? "pin" : "unpin"
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id) {
+    process.stderr.write(
+      `agentproto sessions ${verb}: missing session id.\n` +
+        `  Try: agentproto sessions ${verb} <id-or-name>  (find ids with \`agentproto sessions\`)\n`
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions ${verb}: unexpected extra positionals: ${positionals
+        .slice(1)
+        .join(" ")}\n`
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, `agentproto sessions ${verb}`)
+    return 2
+  }
+  const endpoint = report.found
+
+  try {
+    const result = await httpPostJson<{ ok: boolean; sessionId: string; pinned: boolean }>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/pin`,
+      { pinned },
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } else {
+      process.stdout.write(
+        result.ok
+          ? `agentproto sessions ${verb}: ${id} ${pinned ? "pinned" : "unpinned"}\n`
+          : `agentproto sessions ${verb}: ${id} not found\n`
+      )
+    }
+    return result.ok ? 0 : 1
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 401/.test(msg)) {
+      process.stderr.write(
+        (await explain401(endpoint, `agentproto sessions ${verb}`)) + "\n",
+      )
+      return 1
+    }
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(
+        `agentproto sessions ${verb}: no session "${id}".\n`
+      )
+      return 2
+    }
+    process.stderr.write(`agentproto sessions ${verb}: ${msg}\n`)
     return 1
   }
 }
@@ -1367,24 +1452,38 @@ function worktreeCell(s: SessionDescriptor): string {
   return s.worktreePath ? truncate(basename(s.worktreePath), WORKTREE_COL_MAX) : "—"
 }
 
+/** Pinned sessions first, each side keeping its incoming relative order —
+ *  a stable sort on a single boolean key (`Array.prototype.sort` is
+ *  guaranteed stable since ES2019). Exported for direct unit coverage. */
+export function sortPinnedFirst(rows: readonly SessionDescriptor[]): SessionDescriptor[] {
+  return rows
+    .slice()
+    .sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0))
+}
+
 function printTable(rows: SessionDescriptor[]): void {
   if (rows.length === 0) {
     process.stdout.write("No sessions.\n")
     return
   }
+  // Pinned sessions surface at the top of the table — see sortPinnedFirst.
+  const sorted = sortPinnedFirst(rows)
   // The WORKTREE column earns its width only when something is actually in a
   // worktree — a column of em-dashes is noise for the (common) case of a
   // daemon whose sessions all run in plain checkouts.
-  const showWorktree = rows.some(r => r.worktreePath !== undefined)
+  const showWorktree = sorted.some(r => r.worktreePath !== undefined)
   const widths = {
-    id: Math.max(...rows.map(r => r.id.length), 4),
-    kind: Math.max(...rows.map(r => r.kind.length), 4),
-    workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
-    worktree: Math.max(...rows.map(r => worktreeCell(r).length), 8),
-    status: Math.max(...rows.map(r => statusLabel(r).length), 8),
+    pin: 3,
+    id: Math.max(...sorted.map(r => r.id.length), 4),
+    kind: Math.max(...sorted.map(r => r.kind.length), 4),
+    workspace: Math.max(...sorted.map(r => r.workspaceSlug.length), 9),
+    worktree: Math.max(...sorted.map(r => worktreeCell(r).length), 8),
+    status: Math.max(...sorted.map(r => statusLabel(r).length), 8),
     age: 8,
   }
   const header =
+    pad("PIN", widths.pin) +
+    "  " +
     pad("ID", widths.id) +
     "  " +
     pad("KIND", widths.kind) +
@@ -1398,11 +1497,13 @@ function printTable(rows: SessionDescriptor[]): void {
     "  COMMAND"
   process.stdout.write(`\x1b[2m${header}\x1b[0m\n`)
   const now = Date.now()
-  for (const r of rows) {
+  for (const r of sorted) {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
     const tone = statusColour(r)
     process.stdout.write(
-      pad(r.id, widths.id) +
+      pad(r.pinned === true ? "●" : "", widths.pin) +
+        "  " +
+        pad(r.id, widths.id) +
         "  " +
         pad(r.kind, widths.kind) +
         "  " +
