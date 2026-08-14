@@ -460,6 +460,70 @@ describe("sessions registry — per-workspace partitioning", () => {
     await registry.shutdown()
     expect(bucketIds("alpha")).toEqual([])
   }, 10_000)
+
+  it("a child killed at shutdown cannot re-arm persistence and wipe the buckets", async () => {
+    // The 2026-08-14 evening wipe: `shutdownImpl` sync-flushes and then
+    // clears the sessions Map, but the children it SIGTERMs emit their
+    // "exit" events on later ticks — and that handler calls
+    // `schedulePersist()`, arming a fresh debounce timer that nothing
+    // cancels. A daemon that stays alive past the debounce (graceful
+    // `gateway.stop()`, a slow OS shutdown) then runs a full persist
+    // round over the CLEARED registry and writes `sessions: []` into
+    // every boot-loaded bucket, on top of the correct final flush.
+    //
+    // Real timers for the same reason as the forget test above.
+    registerWorkspaces("alpha")
+    writeBucket("alpha", [row("a1", "alpha", "2026-07-01T00:00:00.000Z")])
+
+    const registry = createSessionsRegistry({})
+    expect(registry.list().map(s => s.id)).toEqual(["a1"])
+
+    // A long-lived real child for the shutdown kill-loop to SIGTERM.
+    registry.spawn({
+      kind: "command",
+      workspaceSlug: "alpha",
+      cwd: home,
+      argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"],
+    })
+
+    await registry.shutdown()
+    // The final flush is intact: ghost row still home.
+    expect(bucketIds("alpha")).toContain("a1")
+
+    // Now outlive the debounce the child-exit handler may have armed.
+    // Pre-fix this is exactly when the wipe lands.
+    await new Promise(resolve => setTimeout(resolve, PERSIST_DEBOUNCE_MS + 800))
+    expect(bucketIds("alpha")).toContain("a1")
+  }, 10_000)
+
+  it("shutting down over a FAILED spawn must not signal the daemon's own process group", async () => {
+    // A ChildProcess whose spawn failed (bad cwd here) has `pid`
+    // undefined but still holds a live libuv handle with internal pid
+    // 0 until its async "error" event lands. `.kill()` on it in that
+    // window becomes `kill(0, SIGTERM)` — a signal to the CALLER'S own
+    // process group. In the daemon that means shutdown kills every
+    // session it owns; in this suite it SIGTERM'd the whole vitest
+    // worker tree (how the bug was found). The registry must skip the
+    // kill for a child that never spawned.
+    registerWorkspaces("alpha")
+    writeBucket("alpha", [row("a1", "alpha", "2026-07-01T00:00:00.000Z")])
+    const registry = createSessionsRegistry({})
+
+    registry.spawn({
+      kind: "command",
+      workspaceSlug: "alpha",
+      cwd: join(home, "does-not-exist"),
+      argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"],
+    })
+    // Same tick — the spawn-error event has NOT fired yet, so the row
+    // still reads "starting" and the shutdown kill-loop targets it.
+    await registry.shutdown()
+
+    // Surviving to this line IS the assertion (pre-fix, SIGTERM tears
+    // the test process down before it gets here). The flush also still
+    // has the ghost row.
+    expect(bucketIds("alpha")).toContain("a1")
+  }, 10_000)
 })
 
 describe("isolated-HOME A/B — a workspace's state lands in its own bucket", () => {
