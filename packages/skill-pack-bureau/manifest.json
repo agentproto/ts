@@ -10,7 +10,8 @@
     "instagram",
     "tiktok",
     "news-media",
-    "leboncoin"
+    "leboncoin",
+    "local-browser"
   ],
   "sourceDir": "./src/skills",
   "author": { "name": "Jeremy — fabrikapp" },
