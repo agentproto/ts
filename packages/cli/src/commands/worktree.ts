@@ -56,6 +56,7 @@ import {
   cleanupWorktreeTool,
   worktreeProvider,
   createForgeClient,
+  type ForgeClient,
   parseGithubOwnerRepo,
   FileVerdictMemoStore,
   listWorktreeStatuses,
@@ -520,14 +521,24 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
  * `null` ("no PR right now"), never a throw (the reconciler is best-effort).
  * The PR url is built from the `origin` remote so no extra `gh` call is needed.
  */
-export function makeOpenPrResolver(): OpenPrResolver {
+export function makeOpenPrResolver(deps?: {
+  /** Test seam — defaults to {@link createForgeClient}. */
+  createForge?: (repoRoot: string) => Promise<Pick<ForgeClient, "pullRequestsForBranch">>
+}): OpenPrResolver {
   return async (cwd: string): Promise<{ number: number; url: string } | null> => {
     try {
       const repoRoot = repoRootOf(resolve(cwd))
       if (!repoRoot) return null
       const branch = worktreeBranch(cwd)
       if (!branch) return null
-      const forge = await createForgeClient(repoRoot)
+      // "The open PR whose head is this cwd's branch" is only a meaningful
+      // question on a topic branch. On the repo's default branch it turns
+      // into a trap: any open PR whose head happens to BE the default branch
+      // (they exist — e.g. a demo PR from a fork-less clone) would be
+      // attributed to every session sitting at the repo root, stamping the
+      // wrong session into its footer and polluting descriptors.
+      if (branch === (await detectDefaultBranch(repoRoot))) return null
+      const forge = await (deps?.createForge ?? createForgeClient)(repoRoot)
       const open = (await forge.pullRequestsForBranch(branch))
         .filter(pr => pr.state === "open")
         .sort((a, b) => a.number - b.number)[0]
