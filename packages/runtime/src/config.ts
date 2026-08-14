@@ -339,6 +339,12 @@ export interface AcpAgentConfigEntry {
   resumable?: boolean
   /** Known model ids for the agent (informational + validation hints). */
   models?: { default?: string; allowed?: string[] }
+  /** Billing endpoint this CLI's own auth bills (e.g. "mistral",
+   *  "moonshot", "google") — the provider whose wallet/auth-profile the
+   *  agent consumes. Lets clients link the harness to that provider's
+   *  wallets even when no model list is declared. Unset when the CLI's
+   *  billing target isn't a single known endpoint. */
+  provider?: string
   /** Shown when `bin` is missing from PATH (how to install the CLI). */
   install_hint?: string
 }

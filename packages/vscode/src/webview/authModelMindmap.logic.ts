@@ -147,11 +147,15 @@ function nativeLabel(endpoint: string, apiMode: "anthropic" | "chat_completions"
 }
 
 /** The set of billing endpoints a harness can reach, unioned from its live
- *  capability providers and its adapter's model-detail providers. */
+ *  capability providers, its adapter's model-detail providers, and the
+ *  adapter-level `provider` (the endpoint the CLI's own auth bills — how a
+ *  generic ACP adapter with no model list, e.g. mistral-vibe, still links
+ *  to its provider's wallets). */
 function providerSet(adapter: AdapterInfo | undefined, cap: HarnessCapabilities | undefined): Set<string> {
   const out = new Set<string>()
   for (const pr of cap?.providers ?? []) out.add(pr.billingEndpoint ?? pr.id)
   for (const md of adapter?.modelDetails ?? []) if (md.provider) out.add(md.provider)
+  if (adapter?.provider) out.add(adapter.provider)
   return out
 }
 

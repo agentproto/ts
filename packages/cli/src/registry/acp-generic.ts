@@ -159,6 +159,7 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
       "Google's Gemini CLI in ACP mode (`gemini --experimental-acp`). Open-source terminal agent; drives Gemini models over the Agent Client Protocol.",
     bin: "gemini",
     bin_args: ["--experimental-acp"],
+    provider: "google",
     install_hint: "npm install -g @google/gemini-cli",
   },
   {
@@ -185,6 +186,7 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
     description:
       "Mistral AI's Vibe coding CLI, driven over the Agent Client Protocol via its bundled `vibe-acp` binary. Auth via MISTRAL_API_KEY (`vibe --setup`).",
     bin: "vibe-acp",
+    provider: "mistral",
     install_hint: "uv tool install mistral-vibe",
   },
   {
@@ -194,6 +196,7 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
       "Moonshot AI's Kimi CLI in ACP server mode (`kimi acp`), driven over the Agent Client Protocol. Requires `kimi login` once beforehand.",
     bin: "kimi",
     bin_args: ["acp"],
+    provider: "moonshot",
     install_hint: "uv tool install --python 3.13 kimi-cli",
   },
 ] as const
@@ -339,11 +342,16 @@ export async function listAcpGenericAdapters(opts?: {
       commands: [],
       models: spec.models?.allowed ?? [],
       modes: [],
-      // Generic ACP config entries (`~/.agentproto/config.json`) declare only
-      // bare id strings (AcpAgentConfigEntry.models.allowed) — no
-      // provider/mode binding surface, so every entry states an unstated
-      // provider, same as a bare string in an AIP-45 manifest would.
-      modelDetails: (spec.models?.allowed ?? []).map((id) => ({ id })),
+      // Generic ACP entries declare bare id strings
+      // (AcpAgentConfigEntry.models.allowed) with no per-model binding
+      // surface; the spec-level `provider` (the endpoint the CLI's own
+      // auth bills) is stamped onto each so clients can link the harness
+      // to that provider's wallets.
+      modelDetails: (spec.models?.allowed ?? []).map((id) => ({
+        id,
+        ...(spec.provider ? { provider: spec.provider } : {}),
+      })),
+      ...(spec.provider ? { provider: spec.provider } : {}),
       status: present ? "ready" : "supported",
       source,
       ...(spec.install_hint ? { hint: spec.install_hint } : {}),

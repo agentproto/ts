@@ -573,6 +573,14 @@ export interface AdapterInfo {
    * fixed single-provider adapter.
    */
   routeSelection?: "free" | "derived-from-model"
+  /**
+   * Billing endpoint this adapter's own auth bills (manifest-level
+   * `provider`, or an ACP spec's `provider` — e.g. "mistral" for
+   * mistral-vibe). Links the harness to that provider's wallets even when
+   * the adapter declares no model list. Absent when unstated (never
+   * guessed) or on an older daemon that predates this projection.
+   */
+  provider?: string
 }
 
 /** Mirrors @agentproto/runtime AdapterInstallResult — the outcome of an

@@ -212,6 +212,23 @@ describe("listAcpGenericAdapters", () => {
     expect(entries.find((e) => e.slug === ACP_CATALOG[0]!.slug)).toBeUndefined()
   })
 
+  it("projects the spec-level billing provider onto the listing and its model details", async () => {
+    const config: AgentprotoConfig = {
+      acpAgents: {
+        "billed-agent": { bin: "billed", provider: "mistral", models: { allowed: ["m-large"] } },
+      },
+    }
+    const entries = await listAcpGenericAdapters({ config })
+    const vibe = entries.find((e) => e.slug === "mistral-vibe")
+    expect(vibe?.provider).toBe("mistral")
+    const billed = entries.find((e) => e.slug === "billed-agent")
+    expect(billed?.provider).toBe("mistral")
+    expect(billed?.modelDetails).toEqual([{ id: "m-large", provider: "mistral" }])
+    // No provider declared → none invented.
+    const iflow = entries.find((e) => e.slug === "iflow-cli")
+    expect(iflow?.provider).toBeUndefined()
+  })
+
   const specForType: AcpAgentSpec = { slug: "type-check", bin: "type-check" }
   it("spec type stays assignable (compile-time guard)", () => {
     expect(specForType.slug).toBe("type-check")
