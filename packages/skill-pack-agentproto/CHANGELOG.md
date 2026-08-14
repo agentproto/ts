@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.6.0
+
+### Minor Changes
+
+- 5cfe945: Add agentproto-apps skill for building and operating AIP-42 agent apps
+
 ## 0.5.3
 
 ### Patch Changes

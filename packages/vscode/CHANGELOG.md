@@ -1,5 +1,43 @@
 # agentproto-vscode
 
+## 0.9.0
+
+### Minor Changes
+
+- a9798c1: Add model status indicators to curated model chips in wallet cards. Users now see colored dots and tooltips explaining why a model is active, inactive, unbillable, or unlisted before spawning. Also moves wallet actions from hover-gated to inline and adds a filter input to the allowed-models dialog for better usability.
+- 506f829: Add Auth & Models Explorer — an editable webview for managing auth profiles, wallet curation, and model routing. Features vendor-grouped model allowlists, per-wallet enable/disable, provider connection flows, and local-router upstream link management.
+- 0aa54c5: Add interactive permission-ask UI with clickable option buttons. Introduces `resolveQuestion` webview message type for permission responses and updates daemon integration to handle structured permission decisions via toolCallId.
+- 59d23d1: Enhance session visibility by tracking watcher metadata (who's watching and what they're waiting for) alongside the watchers count. New optional `SessionWatcherInfo` type captures waiter identity, event, timeout, and attach timestamp. Adds "awaiting-bg" section for sessions with pending background tasks. All changes maintain backward compatibility.
+- 231f015: Add native terminal/TUI launching for harnesses and redesigned harness card UI. New `NATIVE_LAUNCH_ARGV` export in runtime maps harness slugs to their launch arguments. VS Code package now shows a wallet badge (replacing manifest facts) for quick navigation to billing providers, adds a Terminal button to spawn native sessions, and supports programmatic auth model focus targeting for direct provider navigation.
+- cbe11c2: Fix jcode print arm: add `--ndjson` output format and move `run` subcommand to `bin_args` so composed flags land after it (not before). Add comprehensive jcode NDJSON event mapper with full test coverage. Implement fail-fast TTY handling for interactive setup steps: refuse pre-spawn when stdin is not a TTY, return distinct `EXIT_SETUP_NEEDS_TTY (78)` to surface the condition separately from real failures. Add `needsInteractiveSetup` flag to `AdapterInstallResult` and VS Code install action to offer "Open Setup Terminal" for TTY-blocked installs.
+- a0558d4: Add session pinning — a server-persisted, list-visibility-only favorite flag. Pinned sessions sort to the top of `agentproto sessions` table and the VS Code webview's dedicated "Pinned" group. Includes new CLI `pin`/`unpin` subcommands, the `session_set_pinned` MCP verb, HTTP route `POST /sessions/:id/pin`, and dedicated UI in VS Code. Deliberately orthogonal to `keepAlive`, reaper eligibility, and notifications — pin is a quiet, structural sort/display flag with zero operational side effects.
+- 140874a: Add optional `provider` field to ACP agent specifications. This allows generic ACP adapters (Mistral Vibe, Google Gemini CLI, Moonshot Kimi CLI) to declare their billing endpoints, enabling clients to link the harness to that provider's wallets even when no model list is declared. The provider is projected through AdapterInfo and integrated into VSCode wallet linking logic.
+
+### Patch Changes
+
+- bbc0495: Add distinct erlenmeyer-flask icon for the Agentproto Lab activity-bar container to improve visual distinction from the CLI mark in the VS Code activity bar.
+- 9c27cfe: Improve Sessions webview row presentation: show workspace labels as location tags for in-place sessions (replacing generic "in-place" text), reposition background tasks chip from name line to right side under timestamp, and add hover details showing cwd and isolation posture.
+- 42ca610: Add in-band adapter turn-error tracking and refactor session status precedence. Introduces `lastTurnErroredAt` field to distinguish adapter-reported failures (status stays "running") from thrown/rejected streams (status→"error"). Reorders status dot precedence to awaiting > stalled > busy and separates healthy parked-bg sessions from genuinely stuck ones in the status bar.
+- 100d074: Wire grok-cli adapter into the CLI package's static CATALOG and VS Code extension's icon mappings. The adapter was previously installable via `agentproto install` but invisible to adapter discovery UI (MCP adapter_list, VS Code Harnesses panel) because it was only found via workspace scan, not the bundled catalog. Adds catalog entry with xAI branding metadata, SVG icon, and adapter icon → file mapping for VS Code.
+- bc737ba: Fix: composer stuck on "Sending…" after mid-turn send — clear `isSending` on `queued` ack (regression from #967). UX: "Interrupt & send" now shows whenever the agent is busy and implements stop-and-go behavior (interrupts current turn and sends typed text, or forces the front of the queue when empty). Each queued row gains a per-item "send now" button.
+- 4474e5e: Expand terminal launch coverage to every harness with an interactive CLI arm by broadening NATIVE_LAUNCH_ARGV beyond attachArgv's resume-specific gates. Redesign harness card action buttons from platform-font glyphs to crisp SVG icons (conversation bubble + terminal glyph) with title and aria-label for accessibility.
+- Updated dependencies [e418ec7]
+- Updated dependencies [2e24a7e]
+- Updated dependencies [27a22ca]
+- Updated dependencies [59d23d1]
+- Updated dependencies [2120494]
+- Updated dependencies [42ca610]
+- Updated dependencies [6b04734]
+- Updated dependencies [0b4a84b]
+- Updated dependencies [231f015]
+- Updated dependencies [4474e5e]
+- Updated dependencies [5de8be3]
+- Updated dependencies [f96dc2a]
+- Updated dependencies [cbe11c2]
+- Updated dependencies [a0558d4]
+- Updated dependencies [140874a]
+  - @agentproto/runtime@2.7.0
+
 ## 0.8.0
 
 ### Minor Changes

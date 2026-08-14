@@ -1,5 +1,11 @@
 # @agentproto/workspace-brain
 
+## 0.2.1
+
+### Patch Changes
+
+- 545752b: Fix concurrent write race condition in brain-state.json persistence. Serialize all `record()`/`forget()` operations via an enqueue function and add per-call write counters to prevent file corruption when multiple ingests finish inside the same debounce batch.
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,5 +1,15 @@
 # @agentproto/adapter-mastracode
 
+## 0.3.6
+
+### Patch Changes
+
+- a30db02: Stamp source/discoverable fields on capability strategy results
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
 ## 0.3.5
 
 ### Patch Changes

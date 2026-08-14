@@ -1,5 +1,58 @@
 # @agentproto/cli
 
+## 0.13.0
+
+### Minor Changes
+
+- 2e24a7e: Enhance daemon lifecycle management with health reporting and shutdown statistics.
+
+  **@agentproto/cli changes:**
+  - New `runStop()` function exported for daemon stop command with pre-shutdown stats gathering
+  - `runStart()` and `runRestart()` now accept optional `health: HealthFetchFn` and `probeAttempts` parameters for testability
+  - New `DaemonHealthInfo` and `DaemonStopStats` interfaces enable rich metadata tracking
+  - Lifecycle info blocks report daemon version, uptime, workspace, binary path, and activity metrics (sessions, token counts, spend estimates)
+  - Enhanced `humaniseUptime()` to show nested units (e.g., `3h12m` instead of `3h`)
+  - Added `formatDuration()` helper for shutdown messages
+
+  **@agentproto/runtime changes:**
+  - `/health` endpoint now reports daemon version, process ID, node executable path, and entry point
+  - Added `startedAt` ISO timestamp to `/health` for debugging
+  - These metadata fields enable lifecycle tooling to accurately report "what is actually running"
+
+- c33e432: Add `@agentproto/app-client` — a typed client for the `window.McpApp` bridge with TanStack Query React hooks supporting host/bridge/standalone mode fallback.
+
+  Add `create-agentproto-app` — a CLI scaffolder for new agentproto agent apps with Vite + React + TanStack Router/Query UI.
+
+  Add `app build`, `app dev`, `app pack`, `app serve` CLI verbs to build, develop, package, and serve agent apps. Refactor `app-serve.ts` exports to share bridge logic with `app dev`.
+
+- 6e9b67b: Add file upload endpoint (`/__agentproto/upload`) to `agentproto app serve`, enabling browser UIs to upload files to an `inbox/` directory. Exports new utility functions: `sanitizeUploadName()` for security-focused filename validation, `resolveInboxTarget()` for collision-resistant path resolution, and `UploadSizeTracker` class for enforcing 200 MB size limits.
+- f3fa4e6: Add --template vanilla, stamp app-client version, honour ui.port in app dev
+- 7083baa: Implement PATH self-healing for daemon start/restart. The daemon's plist now automatically refreshes its `EnvironmentVariables.PATH` on every `kickstart` by probing a login shell and rewriting the plist if the PATH changed, eliminating the need to manually re-run `daemon install` after installing new CLI tools (e.g., via `uv tool install`).
+- cbe11c2: Fix jcode print arm: add `--ndjson` output format and move `run` subcommand to `bin_args` so composed flags land after it (not before). Add comprehensive jcode NDJSON event mapper with full test coverage. Implement fail-fast TTY handling for interactive setup steps: refuse pre-spawn when stdin is not a TTY, return distinct `EXIT_SETUP_NEEDS_TTY (78)` to surface the condition separately from real failures. Add `needsInteractiveSetup` flag to `AdapterInstallResult` and VS Code install action to offer "Open Setup Terminal" for TTY-blocked installs.
+- d69e120: Add `agentproto sessions prompt` subcommand to message already-running sessions via the daemon's `POST /sessions/:id/prompt` endpoint. Supports fire-and-forget queuing (default), blocking mode (`--wait`), interrupt (`--interrupt`), and queue-jumping (`--force`).
+- a0558d4: Add session pinning — a server-persisted, list-visibility-only favorite flag. Pinned sessions sort to the top of `agentproto sessions` table and the VS Code webview's dedicated "Pinned" group. Includes new CLI `pin`/`unpin` subcommands, the `session_set_pinned` MCP verb, HTTP route `POST /sessions/:id/pin`, and dedicated UI in VS Code. Deliberately orthogonal to `keepAlive`, reaper eligibility, and notifications — pin is a quiet, structural sort/display flag with zero operational side effects.
+- 140874a: Add optional `provider` field to ACP agent specifications. This allows generic ACP adapters (Mistral Vibe, Google Gemini CLI, Moonshot Kimi CLI) to declare their billing endpoints, enabling clients to link the harness to that provider's wallets even when no model list is declared. The provider is projected through AdapterInfo and integrated into VSCode wallet linking logic.
+
+### Patch Changes
+
+- e418ec7: Documentation updates for new jcode adapter, MCP tool families, configuration enhancements, and Mastra adapter API changes.
+- 8a05833: Add CORS header support to the app-serve tool-call bridge, enabling cross-origin requests from embedded viewers to reach the server.
+- 27a22ca: Persistent per-session isolated adapter config directories to enable native resume after adapter respawns.
+
+  Previously, the isolated `CLAUDE_CONFIG_DIR` was a throwaway mkdtemp recreated on every spawn. This meant the SDK's conversation store (projects/<cwd-slug>/<uuid>.jsonl) was lost on respawn, causing resumeSessionId to degrade to a digest fallback every time an adapter process was reaped and restarted.
+
+  The fix introduces `SessionDescriptor.adapterConfigDir` to persist the config location across respawns, keyed by the first session id in a lineage (`~/.agentproto/adapter-config/<sessionId>`). The runtime threads this through all spawn paths (agent_start, session_restart, lazy resume, cron, judges, webhooks, workflow steps), and the driver preserves the SDK's own state when reusing a persistent dir while always re-asserting `mcpServers: {}` to prevent ambient leaks from mid-session `claude mcp add` commands.
+
+  Backward compatible: legacy rows without the new field keep today's digest-fallback behavior.
+
+- 446d313: Fix semantic accuracy of generic ACP agent status: report installed agents as 'ready' (bin on PATH, no setup/auth pending) instead of 'available' (which implies pending setup/auth). Eliminates UX bug where VS Code offered "Install" forever on already-installed CLIs.
+- 100d074: Wire grok-cli adapter into the CLI package's static CATALOG and VS Code extension's icon mappings. The adapter was previously installable via `agentproto install` but invisible to adapter discovery UI (MCP adapter_list, VS Code Harnesses panel) because it was only found via workspace scan, not the bundled catalog. Adds catalog entry with xAI branding metadata, SVG icon, and adapter icon → file mapping for VS Code.
+- a001a4f: Increase test timeout for all-adapters harness-capabilities test from vitest's 5s default to 30s. The test imports all installed adapters including heavy @mastra/core graph modules on a cold worker, causing it to exceed the default timeout under parallel test runs on loaded machines.
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
 ## 0.12.0
 
 ### Minor Changes

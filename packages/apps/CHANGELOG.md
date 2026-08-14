@@ -1,5 +1,16 @@
 # @agentproto/apps
 
+## 0.7.0
+
+### Minor Changes
+
+- 85c391c: Add `session-viewer` app — a read-only conversation viewer for daemon sessions with a live-polling UI panel and plain-English narrator agent.
+
+### Patch Changes
+
+- Updated dependencies [e418ec7]
+  - @agentproto/app-kit@0.6.1
+
 ## 0.6.0
 
 ### Minor Changes

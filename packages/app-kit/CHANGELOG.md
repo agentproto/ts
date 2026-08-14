@@ -1,5 +1,11 @@
 # @agentproto/app-kit
 
+## 0.6.1
+
+### Patch Changes
+
+- e418ec7: Documentation updates for new jcode adapter, MCP tool families, configuration enhancements, and Mastra adapter API changes.
+
 ## 0.6.0
 
 ### Minor Changes
