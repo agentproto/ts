@@ -141,6 +141,16 @@ describe("buildBook — titles", () => {
     expect(chapter.title).toBe("The zsh -ic fix worked")
   })
 
+  it("titles from ALL narration blocks joined, so a split fragment never titles a chapter alone", () => {
+    // Defense in depth for the debounce-split bug: even if a reducer upstream
+    // left a sentence split around a tool card, the title sees the joined
+    // narration — never just the first (fragment) block.
+    const chapter = buildBook([
+      assistantTurn("turn-1", [text("s1", "Bien re"), tool("t1"), text("s2", "çu — suite.")]),
+    ])[0]!
+    expect(chapter.title).toBe("Bien re çu — suite")
+  })
+
   it("never titles a chapter with the ask — a no-narration chapter shows the generic marker", () => {
     // The human's prompt is its own pinned block above the chapter; a response
     // chapter that hasn't narrated yet must not borrow the user's words as its

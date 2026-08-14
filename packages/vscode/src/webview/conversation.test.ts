@@ -145,6 +145,54 @@ describe("reduceConversation", () => {
     expect((asst.segments[3] as { text: string }).text).toBe("Done\n")
   })
 
+  it("rejoins an unterminated fragment split by an interleaved tool-call (mid-word debounce flush)", () => {
+    freshSeq()
+    // Real shape from a recorded session: the model paused >250ms mid-word
+    // while emitting a tool_use block, so the transcript debounce flushed
+    // "Bien re", the tool-call record landed, then the continuation arrived.
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "go" }),
+      rec({ kind: "text-delta", text: "Bien re" }), // no trailing "\n" — mid-line
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash", arguments: { command: "ls" } }),
+      rec({ kind: "text-delta", text: "çu — suite." }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+    const asst = conv.turns[1]!
+    // ONE sentence, not two paragraphs — and the tool card keeps its slot.
+    expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool"])
+    expect(asst.segments[0]).toMatchObject({ kind: "assistant-text", text: "Bien reçu — suite." })
+    expect(asst.segments[1]).toMatchObject({ kind: "tool", toolCallId: "t1" })
+  })
+
+  it("does NOT rejoin across a tool-call when the earlier line was terminated (control)", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "go" }),
+      rec({ kind: "text-delta", text: "done.\n" }), // terminated — carries its "\n"
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash" }),
+      rec({ kind: "text-delta", text: "Next thing." }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+    const asst = conv.turns[1]!
+    expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool", "assistant-text"])
+    expect(asst.segments[0]).toMatchObject({ text: "done.\n" })
+    expect(asst.segments[2]).toMatchObject({ text: "Next thing." })
+  })
+
+  it("treats a `partial`-flagged flush as unterminated even when it happens to end in a newline", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "go" }),
+      rec({ kind: "text-delta", text: "list:\n", partial: true }),
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash" }),
+      rec({ kind: "text-delta", text: "- item one\n" }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+    const asst = conv.turns[1]!
+    expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool"])
+    expect(asst.segments[0]).toMatchObject({ text: "list:\n- item one\n" })
+  })
+
   it("correlates a tool-result with its earlier tool-call by toolCallId", () => {
     freshSeq()
     const conv = reduceConversation("s1", [

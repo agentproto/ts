@@ -47,6 +47,11 @@ interface RowBase {
 export interface TextRow extends RowBase {
   kind: "text"
   text: string
+  /** Reducer-internal continuation hint: true when the LATEST record folded
+   *  into this row was flagged `partial` (an explicitly unterminated flush).
+   *  Most unterminated debounce flushes carry no flag today, so the
+   *  endsWith("\n") check in the reducer is the load-bearing signal. */
+  partial?: boolean
 }
 
 export interface ToolCallRow extends RowBase {
@@ -86,6 +91,15 @@ function rowId(record: TimelineEventRecord, rows: readonly TimelineRow[]): strin
   return record.seq != null ? `${record.kind}-${record.seq}` : `${record.kind}-${rows.length}`
 }
 
+/** Fold a text-delta record into an existing row (fresh object — the reducer
+ *  is pure), keeping the row's `partial` hint in step with the latest record. */
+function mergeTextDelta(row: TextRow, record: TimelineEventRecord): TextRow {
+  const merged: TextRow = { ...row, text: row.text + (record.text ?? ""), seq: record.seq, ts: record.ts }
+  if (record.partial === true) merged.partial = true
+  else delete merged.partial
+  return merged
+}
+
 /**
  * Reduce one `events.jsonl` record into the next timeline state. Pure: never
  * mutates `state` or the record, always returns a fresh state object (or the
@@ -97,8 +111,27 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
     case "text-delta": {
       const last = state.rows[state.rows.length - 1]
       if (last && last.kind === "text" && last.sessionId === record.sessionId) {
-        const merged: TextRow = { ...last, text: last.text + (record.text ?? ""), seq: record.seq, ts: record.ts }
-        return { rows: [...state.rows.slice(0, -1), merged] }
+        return { rows: [...state.rows.slice(0, -1), mergeTextDelta(last, record)] }
+      }
+      // The daemon's transcript debounce can flush an unterminated mid-word
+      // fragment ("Bien re"), let a tool-call record land, then flush the
+      // continuation ("çu — …"). Terminated lines carry their trailing "\n"
+      // (transcript-writer contract) — so look back within the same turn
+      // (bounded by this session's last turn-end) for that session's most
+      // recent text row; if it does not end in "\n" (or was explicitly
+      // flagged `partial`), continue it in place rather than splitting the
+      // sentence into a second row after the interleave.
+      for (let i = state.rows.length - 1; i >= 0; i--) {
+        const prior = state.rows[i]!
+        if (prior.sessionId !== record.sessionId) continue
+        if (prior.kind === "turn-end") break
+        if (prior.kind !== "text") continue
+        if (prior.partial === true || !prior.text.endsWith("\n")) {
+          const rows = [...state.rows]
+          rows[i] = mergeTextDelta(prior, record)
+          return { rows }
+        }
+        break
       }
       const row: TextRow = {
         kind: "text",
@@ -107,6 +140,7 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
         ts: record.ts,
         sessionId: record.sessionId,
         text: record.text ?? "",
+        ...(record.partial === true ? { partial: true } : {}),
       }
       return { rows: [...state.rows, row] }
     }

@@ -174,9 +174,11 @@ ${panelBridgeScript("agentproto-live-session")}
 // ============================================================
 // INLINED REDUCER COPY — hand-kept mirror of live-session-app.logic.ts.
 // Plain JS, same semantics: coalesce consecutive text-delta of the same
-// session, pair tool-call/tool-result by toolCallId, pass through
-// turn-end/usage_update, ignore unknown kinds. Keep in sync with the
-// TS module; the TS module is the one the test suite imports.
+// session (and rejoin an unterminated mid-line fragment split by an
+// interleaved record — see the TS module's text-delta arm), pair
+// tool-call/tool-result by toolCallId, pass through turn-end/usage_update,
+// ignore unknown kinds. Keep in sync with the TS module; the TS module is
+// the one the test suite imports.
 // ============================================================
 
 function initialTimelineState() {
@@ -187,22 +189,50 @@ function rowId(record, rows) {
   return record.seq != null ? (record.kind + '-' + record.seq) : (record.kind + '-' + rows.length);
 }
 
+// Fold a text-delta record into an existing row (fresh object), keeping the
+// row's "partial" hint in step with the latest record — see mergeTextDelta in
+// the TS module.
+function mergeTextDelta(row, record) {
+  var merged = Object.assign({}, row, {
+    text: row.text + (record.text || ''),
+    seq: record.seq,
+    ts: record.ts,
+  });
+  if (record.partial === true) merged.partial = true;
+  else delete merged.partial;
+  return merged;
+}
+
 function reduceEvent(state, record) {
   switch (record.kind) {
     case 'text-delta': {
       var last = state.rows[state.rows.length - 1];
       if (last && last.kind === 'text' && last.sessionId === record.sessionId) {
-        var merged = Object.assign({}, last, {
-          text: last.text + (record.text || ''),
-          seq: record.seq,
-          ts: record.ts,
-        });
-        return { rows: state.rows.slice(0, -1).concat([merged]) };
+        return { rows: state.rows.slice(0, -1).concat([mergeTextDelta(last, record)]) };
+      }
+      // Debounce can flush an unterminated mid-word fragment, let a tool-call
+      // land, then flush the continuation. Terminated lines carry their
+      // trailing newline (transcript-writer contract) — look back within the
+      // same turn (bounded by this session's last turn-end) for that
+      // session's most recent text row; if unterminated (or flagged
+      // partial), continue it in place instead of splitting the sentence.
+      for (var i = state.rows.length - 1; i >= 0; i--) {
+        var prior = state.rows[i];
+        if (prior.sessionId !== record.sessionId) continue;
+        if (prior.kind === 'turn-end') break;
+        if (prior.kind !== 'text') continue;
+        if (prior.partial === true || !prior.text.endsWith('\\n')) {
+          var patched = state.rows.slice();
+          patched[i] = mergeTextDelta(prior, record);
+          return { rows: patched };
+        }
+        break;
       }
       var row = {
         kind: 'text', id: rowId(record, state.rows), seq: record.seq, ts: record.ts,
         sessionId: record.sessionId, text: record.text || '',
       };
+      if (record.partial === true) row.partial = true;
       return { rows: state.rows.concat([row]) };
     }
     case 'tool-call': {
