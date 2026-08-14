@@ -1,72 +1,73 @@
 ---
 name: agent-session-orchestration-agentproto
 description:
-  "Piloter et SUPERVISER d'autres agents de code (claude-code, hermes, …) via le
-  daemon agentproto depuis une session cowork : lancer des sessions, babysitter
-  un agent débutant pas-à-pas, exporter une conversation d'agent en markdown
-  lisible, reprendre (resume) une session avec son contexte, et orchestrer
-  plusieurs agents en parallèle (launch-and-leave). Déclenche ce skill quand
-  l'utilisateur veut « lancer un agent / claude code / hermes », « superviser un
-  agent », « continuer/reprendre une session », « exporter une session », « voir
-  où un agent s'est arrêté », « babysitter un agent », ou orchestrer un workflow
-  long avec un agent qui code pendant qu'un autre (ou Claude) joue l'humain."
+  "Drive and SUPERVISE other coding agents (claude-code, hermes, …) via the
+  agentproto daemon from a cowork session: launch sessions, babysit a
+  beginner agent step-by-step, export an agent conversation to readable
+  markdown, resume a session with its context, and orchestrate several
+  agents in parallel (launch-and-leave). Trigger this skill when the user
+  wants to 'launch an agent / claude code / hermes', 'supervise an agent',
+  'continue/resume a session', 'export a session', 'see where an agent
+  stopped', 'babysit an agent', or orchestrate a long workflow with one agent
+  coding while another (or Claude) plays the human."
 ---
 
 # Agent Session Orchestration (agentproto)
 
-Méthodologie + commandes concrètes pour piloter d'autres agents de code via le
-daemon **agentproto** (tools MCP `mcp__agentproto__*`). Issu d'une session
-réelle.
+Methodology + concrete commands for driving other coding agents via the
+**agentproto** daemon (MCP tools `mcp__agentproto__*`). Drawn from a real
+session.
 
-## Principe
+## Principle
 
-L'orchestrateur (toi, dans cowork) **ne code pas** : il **lance, supervise,
-exporte, reprend** des sessions d'agents (claude-code, hermes). Les agents font
-le travail ; l'orchestrateur découpe en petites étapes, relit chaque diff, et
-donne l'étape suivante.
+The orchestrator (you, in cowork) **does not code**: it **launches,
+supervises, exports, resumes** agent sessions (claude-code, hermes). The
+agents do the work; the orchestrator breaks it into small steps, re-reads
+every diff, and hands out the next step.
 
-Avant de déléguer, colle le Brief Contract de `supervisor-session` dans chaque
+Before delegating, paste `supervisor-session`'s Brief Contract into every
 brief.
 
-## Tools agentproto essentiels
+## Essential agentproto tools
 
-- `adapter_list({filter})` — adapters connus + statut (`supported` pas installé,
-  `available` installé, `ready` setup fait). Appelle avant de spawner.
+- `adapter_list({filter})` — known adapters + status (`supported` not
+  installed, `available` installed, `ready` setup done). Call before
+  spawning.
 - `agent_start({ adapter, cwd, label?, model?, prompt?, workspaceSlug? })` —
-  spawn une session persistante. **`cwd` doit être un chemin absolu HÔTE** (le
-  daemon tourne sur la machine de l'utilisateur), sinon erreur « no cwd
-  resolvable ». Renvoie `{ id: sess_xxx, adapterSessionId, cwd, … }`.
-- `agent_prompt({ sessionId, prompt })` — tour suivant (multi-tours).
-- `agent_output({ sessionId, since?, lastN?, waitForTurnEnd?, timeoutMs? })` —
-  lit la sortie. Passe `since: nextCursor` pour ne lire que le neuf.
-- `session_list({ kind?, onlyAlive?, status? })` — inventaire.
+  spawn a persistent session. **`cwd` must be an absolute HOST path** (the
+  daemon runs on the user's machine), otherwise error "no cwd resolvable".
+  Returns `{ id: sess_xxx, adapterSessionId, cwd, … }`.
+- `agent_prompt({ sessionId, prompt })` — next turn (multi-turn).
+- `agent_output({ sessionId, since?, lastN?, waitForTurnEnd?, timeoutMs? })`
+  — read the output. Pass `since: nextCursor` to read only what's new.
+- `session_list({ kind?, onlyAlive?, status? })` — inventory.
 - `agent_kill`, `command_list`, `command_execute` (host shell, basenames
-  allowlistés dans `<workspace>/.agentproto/allowed-commands.json` — typiquement
-  `node, ls, cat, git, pnpm, npm, npx, gh, …`).
+  allowlisted in `<workspace>/.agentproto/allowed-commands.json` —
+  typically `node, ls, cat, git, pnpm, npm, npx, gh, …`).
 
-## Adapters (vérifié)
+## Adapters (verified)
 
-- **claude-code** : `available`. Spawné en ACP
-  (`npx @agentclientprotocol/claude-agent-acp`). Resume natif câblé dans
-  agentproto. **Tools intégrés** (Read, Write, Bash, Edit) — n'a PAS besoin de
-  `mcpServers` pour coder.
-- **hermes** (binaire `tirith`, Nous Research) : `available`. Spawné
-  `hermes acp`. **Modèle par défaut `x-ai/grok-4.3` → exige des crédits Nous** ;
-  sinon `HTTP 404: requires available credits`. Solutions : ajouter des crédits,
-  ou passer `model: "anthropic/claude-sonnet-4-6"` au spawn / `/model …` en
-  cours.
+- **claude-code**: `available`. Spawned over ACP
+  (`npx @agentclientprotocol/claude-agent-acp`). Native resume wired into
+  agentproto. **Built-in tools** (Read, Write, Bash, Edit) — does NOT need
+  `mcpServers` to code.
+- **hermes** (binary `tirith`, Nous Research): `available`. Spawned as
+  `hermes acp`. **Default model `x-ai/grok-4.3` → requires Nous credits**;
+  otherwise `HTTP 404: requires available credits`. Fixes: add credits, or
+  pass `model: "anthropic/claude-sonnet-4-6"` at spawn / `/model …` mid-run.
 
-### ⚠️ CRITIQUE — hermes SANS mcpServers = chat-only (aucun tool)
+### ⚠️ CRITICAL — hermes WITHOUT mcpServers = chat-only (no tools)
 
-**Piège n°1, vécu en vrai.** `claude-code` a des tools intégrés (Read, Write,
-Bash, Edit) — il code out of the box. **hermes n'en a AUCUN en ACP** — il faut
-les monter explicitement via `mcpServers` au spawn.
+**Pitfall #1, learned the hard way.** `claude-code` has built-in tools
+(Read, Write, Bash, Edit) — it codes out of the box. **hermes has NONE over
+ACP** — you must mount them explicitly via `mcpServers` at spawn time.
 
-Sans `mcpServers`, hermes reçoit le prompt, switched model, echo le brief,
-`turn-end (completed)` — mais **0 tool calls**. Il ne lit aucun fichier, n'écrit
-rien, ne lance aucune commande. On dirait qu'il comprend mais ne fait rien.
+Without `mcpServers`, hermes receives the prompt, switches model, echoes
+the brief, `turn-end (completed)` — but **0 tool calls**. It reads no
+files, writes nothing, runs no commands. It looks like it understands but
+does nothing.
 
-**Fix obligatoire pour hermes** :
+**Mandatory fix for hermes**:
 
 ```json
 {
@@ -81,316 +82,321 @@ rien, ne lance aucune commande. On dirait qu'il comprend mais ne fait rien.
 }
 ```
 
-Donne à hermes `read_file`, `write_file`, `execute_command`, etc. depuis le
+Gives hermes `read_file`, `write_file`, `execute_command`, etc. from the
 daemon.
 
-**Vérification** : après spawn, `agent_output` — si tu vois `[tool] read` ou
-`[tool] execute`, ça marche. Si tu ne vois que du texte + `turn-end`, les
-mcpServers manquent.
+**Verification**: after spawn, `agent_output` — if you see `[tool] read` or
+`[tool] execute`, it works. If you only see text + `turn-end`, the
+mcpServers are missing.
 
-**Note** : le spawn avec `mcpServers` peut prendre ~40s (le daemon monte le MCP
-dans le process hermes). Timeout ≥ 120s sur l'appel MCP `agent_start`.
+**Note**: spawning with `mcpServers` can take ~40s (the daemon mounts the
+MCP inside the hermes process). Timeout ≥ 120s on the `agent_start` MCP
+call.
 
-## Pattern 1 — Launch-and-leave (orchestration légère, zéro polling)
+## Pattern 1 — Launch-and-leave (light orchestration, zero polling)
 
-1. Lance la/les session(s), **note les `sess_xxx`** (et `nextCursor`).
-2. **Ne poll PAS en boucle** (ça brûle des tokens dans TON contexte).
-   Ré-engage-toi sur : un ping utilisateur, un event notify, ou un check espacé.
-3. Au ré-engagement : `agent_output({ sessionId, since: <curseur> })` → lignes
-   neuves seulement. Les transcripts persistent → rien perdu après restart.
-4. `agent_output({ waitForTurnEnd:true, timeoutMs:45000 })` **uniquement ≤ 45
-   s** et seulement quand tu attends activement une complétion imminente. La
-   requête MCP coupe à ~60 s : au-delà tu obtiens « Request timed out », pas un
-   retour.
+1. Launch the session(s), **note the `sess_xxx`** (and `nextCursor`).
+2. **Do NOT poll in a loop** (it burns tokens in YOUR context). Re-engage
+   on: a user ping, a notify event, or a spaced-out check.
+3. On re-engagement: `agent_output({ sessionId, since: <cursor> })` → new
+   lines only. Transcripts persist → nothing lost after a restart.
+4. `agent_output({ waitForTurnEnd:true, timeoutMs:45000 })` **only for ≤ 45
+   s** and only when you're actively waiting for an imminent completion.
+   The MCP request cuts off at ~60 s: beyond that you get "Request timed
+   out", not a result.
 
-## Pattern 2 — Babysitter un agent débutant pas-à-pas
+## Pattern 2 — Babysitting a beginner agent step-by-step
 
-Pour un agent qui « s'arrête souvent en chemin » (ex. hermes/grok) :
+For an agent that "stalls often along the way" (e.g. hermes/grok):
 
-1. **Amorce** une session fraîche avec le `cwd` du repo + le contexte exact
-   (fichier, objectif, pattern à suivre, liste des étapes).
-2. **Une étape par tour** : « migre UNIQUEMENT la méthode X, puis STOP et rends
-   un compte-rendu + statut compile. Ne fais rien d'autre. »
-3. `waitForTurnEnd` → **relis le diff** → valide ou corrige → `agent_prompt`
-   avec l'étape suivante. Répète.
-4. Règle d'or du superviseur : tu **lis** (le code, l'état) mais tu **ne codes
-   pas**.
+1. **Seed** a fresh session with the repo's `cwd` + the exact context
+   (file, goal, pattern to follow, list of steps).
+2. **One step per turn**: "migrate ONLY method X, then STOP and report back
+   + compile status. Do nothing else."
+3. `waitForTurnEnd` → **re-read the diff** → approve or correct →
+   `agent_prompt` with the next step. Repeat.
+4. Supervisor's golden rule: you **read** (the code, the state) but you
+   **don't code**.
 
-## Pattern 3 — Voir où une session s'est arrêtée SANS payer un resume
+## Pattern 3 — Seeing where a session stopped WITHOUT paying for a resume
 
-Le resume recharge tout l'historique dans le contexte (coûteux). Pour juste
-**relire** où ça en est, lis la source persistée :
+Resume reloads the whole history into context (expensive). To just
+**re-read** where things stand, read the persisted source:
 
-- **hermes** : `~/.hermes/state.db` (SQLite). Via `node:sqlite` en lecture seule
-  :
+- **hermes**: `~/.hermes/state.db` (SQLite). Via read-only `node:sqlite`:
   ```js
   const { DatabaseSync } = require("node:sqlite")
   const db = new DatabaseSync(process.env.HOME + "/.hermes/state.db", {
     readOnly: true,
   })
-  // dernières lignes d'une session :
+  // last lines of a session:
   db.prepare(
     "select role,tool_name,substr(content,1,600) c from messages where session_id=? order by id desc limit 8"
   ).all(id)
   ```
-  Tables : `sessions` (méta :
+  Tables: `sessions` (meta:
   `title, model, message_count, input_tokens, output_tokens, estimated_cost_usd, …`) +
   `messages` (`role, content, tool_calls, tool_name, reasoning, timestamp`).
-- **claude-code** : `~/.claude/projects/<cwd-encodé>/<sessionId>.jsonl`
-  (cwd-encodé = `cwd.replace(/\//g,"-")`), format messages Anthropic (blocs
-  `text` / `tool_use` / `tool_result`), un event JSON par ligne.
+- **claude-code**: `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`
+  (encoded-cwd = `cwd.replace(/\//g,"-")`), Anthropic message format
+  (`text` / `tool_use` / `tool_result` blocks), one JSON event per line.
 
-## Pattern 4 — Exporter une session en markdown lisible
+## Pattern 4 — Exporting a session to readable markdown
 
-Le flux ACP live (`agent_output`) est bruité (ANSI, `[thought]`, `[tool]`). Pour
-de l'**archivage/lecture**, lis la source propre persistée et rends du markdown.
-Script de référence fourni : **`scripts/hermes-export.mjs`** (hermes → markdown
-: en-tête méta, tours 🧑/🤖/🔧, raisonnement en `<details>`, tool calls, sorties
-tronquées). Usage : `node scripts/hermes-export.mjs <sessionId> [out.md]`.
+The live ACP stream (`agent_output`) is noisy (ANSI, `[thought]`, `[tool]`).
+For **archiving/reading**, read the clean persisted source and render
+markdown. Reference script provided: **`scripts/hermes-export.mjs`**
+(hermes → markdown: meta header, turns 🧑/🤖/🔧, reasoning in `<details>`,
+tool calls, truncated outputs). Usage:
+`node scripts/hermes-export.mjs <sessionId> [out.md]`.
 
-Hermes a aussi un export natif (JSONL only) :
-`hermes sessions export --session-id <id> -` et `hermes sessions list`.
+Hermes also has a native export (JSONL only):
+`hermes sessions export --session-id <id> -` and `hermes sessions list`.
 
-## Pattern 5 — Reprendre (resume) une session avec son contexte
+## Pattern 5 — Resuming a session with its context
 
-- **hermes** (CLI natif) : `hermes --resume <id>` / `-r <id>` (par id ou titre),
-  `hermes --continue` / `-c` (dernière, ou par nom). Recharge tout depuis
-  state.db.
-- **claude-code** : `claude --resume <id>` (câblé dans agentproto via
+- **hermes** (native CLI): `hermes --resume <id>` / `-r <id>` (by id or
+  title), `hermes --continue` / `-c` (latest, or by name). Reloads
+  everything from state.db.
+- **claude-code**: `claude --resume <id>` (wired into agentproto via
   `RESUME_STRATEGIES`).
-- Mapping clé : dans les deux stores, l'id source == l'`adapterSessionId` du
-  `SessionDescriptor` agentproto (hermes en ACP enregistre la session sous le
-  même UUID, `source='acp'`).
-- **Resume = continuer (coûteux, recharge le contexte) ; Export = relire
-  (gratuit, read-only).** Choisis selon le besoin.
+- Key mapping: in both stores, the source id == the `adapterSessionId` of
+  the agentproto `SessionDescriptor` (hermes over ACP records the session
+  under the same UUID, `source='acp'`).
+- **Resume = continuing (expensive, reloads context); Export = re-reading
+  (free, read-only).** Choose based on the need.
 
-## Pattern 6 — Orchestration durable (cible long terme)
+## Pattern 6 — Durable orchestration (long-term target)
 
-Le vrai « babysitter » fiable ne vit pas dans cowork (dépend de l'app ouverte)
-mais **dans agentproto** : un moteur qui s'abonne in-process aux events de
-session (`turn-end`, `awaiting-input`, `exited`), enchaîne les étapes, répond
-aux questions selon une policy, et **n'escalade à l'humain (webhook `notifyUrl`)
-que quand c'est vraiment bloqué**. Livré via `workflow_*`
-(`workflow_start`/`workflow_status`/`workflow_cancel`/
-`workflow_escalation_resolve`) — `routine_start` et le reste de `routine_*`
-ont été **retirés** (l'ancien moteur impératif `RoutineRunner` puis son
-alias ont disparu en Phase B2/B3). Surfaces à exposer : `session_monitor({sessionIds})`,
-`session_events_poll({since})`, webhook de notification. C'est « un agent qui
-babysit un autre agent en jouant l'humain », sans polling tokenivore.
+A truly reliable "babysitter" doesn't live in cowork (depends on the app
+staying open) but **inside agentproto**: an engine that subscribes
+in-process to session events (`turn-end`, `awaiting-input`, `exited`),
+chains steps, answers questions per a policy, and **only escalates to a
+human (`notifyUrl` webhook) when genuinely stuck**. Delivered via
+`workflow_*` (`workflow_start`/`workflow_status`/`workflow_cancel`/
+`workflow_escalation_resolve`) — `routine_start` and the rest of
+`routine_*` have been **removed** (the old imperative `RoutineRunner`
+engine, then its alias, disappeared in Phase B2/B3). Surfaces to expose:
+`session_monitor({sessionIds})`, `session_events_poll({since})`,
+notification webhook. It's "an agent babysitting another agent by playing
+the human", with no token-hungry polling.
 
 ## Pattern 7 — Multi-session supervision (session_monitor)
 
-**Mise à jour 2026-07-02 : `wait_for_any` a été renommé `session_monitor`**
-(même shape — `sessionIds`, `timeoutMs`, `event` — plus un paramètre `since` en
-plus, cf. gotcha ci-dessous). Le nom `wait_for_any` n'existe plus côté daemon ;
-si un outil/skill le référence encore, c'est du texte obsolète, pas un tool à
-chercher.
+**2026-07-02 update: `wait_for_any` was renamed `session_monitor`** (same
+shape — `sessionIds`, `timeoutMs`, `event` — plus an additional `since`
+parameter, see gotcha below). The name `wait_for_any` no longer exists on
+the daemon side; if a tool/skill still references it, that's stale text,
+not a tool to look for.
 
-Pour surveiller N sessions en parallèle sans polling tokenivore :
+To watch N sessions in parallel without token-hungry polling:
 
-1. Spawn tes N sessions, note les `sess_xxx`.
-2. Appelle
+1. Spawn your N sessions, note the `sess_xxx`.
+2. Call
    `session_monitor({ sessionIds: [...], timeoutMs: 45000, event: "turn-end" })`.
-3. Dès qu'une session finit son tour, tu récupères son output, puis rappelle
-   `session_monitor` sur les sessions restantes.
-4. Ne construis PAS de script de polling custom en `execute_code` — c'est
-   exactement ce que `session_monitor` fait nativement (multiplexed long-poll
-   sur l'event bus du daemon).
+3. As soon as a session finishes its turn, retrieve its output, then call
+   `session_monitor` again on the remaining sessions.
+4. Do NOT build a custom polling script in `execute_code` — that's exactly
+   what `session_monitor` does natively (multiplexed long-poll on the
+   daemon's event bus).
 
-**Limitation actuelle** : `session_monitor` retourne sur le PREMIER hit
-seulement (même limite que l'ancien `wait_for_any` — le renommage n'a pas changé
-cette sémantique). Pour un monitoring qui retourne TOUTES les sessions fired +
-les pending en un seul appel, il n'existe toujours pas d'équivalent bloquant
-unique — la manière correcte de couvrir ça aujourd'hui est de combiner :
-`session_monitor` pour bloquer sur le premier hit, puis
-`session_events_poll({ since })` juste après pour rafler d'un coup, sans
-bloquer, tout ce qui s'est aussi déclenché entre-temps sur les autres sessions
-(au lieu de reboucler `session_monitor` une par une). `since` prend le curseur
-retourné par un appel `session_events_poll` précédent.
+**Current limitation**: `session_monitor` returns on the FIRST hit only
+(same limit as the old `wait_for_any` — the rename didn't change this
+semantics). For monitoring that returns ALL fired sessions + pendings in a
+single call, there is still no single blocking equivalent — the correct
+way to cover this today is to combine: `session_monitor` to block on the
+first hit, then `session_events_poll({ since })` right after to sweep up,
+non-blocking, everything else that also fired in the meantime on the other
+sessions (instead of re-looping `session_monitor` one at a time). `since`
+takes the cursor returned by a previous `session_events_poll` call.
 
-## Pattern 7-bis — Attendre en CLI sans le drop 45 s (`agentproto sessions wait`)
+## Pattern 7-bis — Waiting from the CLI without the 45 s drop (`agentproto sessions wait`)
 
-`session_monitor` (MCP) bloque **au max ~45-49 s** puis timeout — sous le
-plafond de requête MCP. Sur un tour long (un agent qui code 20 min sans turn-end
-intermédiaire), tu dois donc le **re-lancer en boucle au premier plan**, ce qui
-crame le contexte de l'orchestrateur (vécu : ~15 re-appels sur un seul tour
-deepseek).
+`session_monitor` (MCP) blocks for **at most ~45-49 s** then times out —
+under the MCP request ceiling. On a long turn (an agent coding for 20 min
+with no intermediate turn-end), you'd have to **re-launch it in a
+foreground loop**, which burns the orchestrator's context (real case: ~15
+re-calls on a single deepseek turn).
 
-La CLI a l'équivalent SANS ce plafond :
+The CLI has the equivalent WITHOUT that ceiling:
 
 ```bash
 agentproto sessions wait <sessionId|name> \
   --until turn-end|awaiting-input|exited|any \
-  --timeout 1800000 --json         # budget total 30 min, pas 45 s
-# ou : --policy <policyId>  → attend la résolution d'une policy au lieu d'un event
+  --timeout 1800000 --json         # total budget 30 min, not 45 s
+# or: --policy <policyId>  → waits for a policy to resolve instead of an event
 ```
 
-En interne il **enchaîne des tranches serveur de ~50 s avec un curseur `since`
-qui avance** jusqu'à épuiser le budget `--timeout` — donc UN seul appel attend
-30 min (ou plus). Deux gains décisifs :
+Internally it **chains ~50 s server slices with an advancing `since`
+cursor** until the `--timeout` budget is exhausted — so ONE call waits 30
+min (or more). Two decisive gains:
 
-1. **Lance-le en arrière-plan** (depuis cowork : une tâche Bash background). Tu
-   es notifié quand ça fire, **zéro polling au premier plan, zéro contexte
-   brûlé**. C'est LA bonne façon d'attendre un tour long.
-2. **Robuste au daemon qui tombe** : si le daemon meurt en cours d'attente, la
-   requête HTTP échoue et la commande sort (non-zéro) → tu es notifié de la
-   panne aussi, au lieu de rester bloqué.
+1. **Run it in the background** (from cowork: a background Bash task).
+   You're notified when it fires, **zero foreground polling, zero context
+   burned**. This is THE right way to wait for a long turn.
+2. **Robust to the daemon going down**: if the daemon dies mid-wait, the
+   HTTP request fails and the command exits (non-zero) → you're notified
+   of the outage too, instead of staying stuck.
 
-Quand utiliser quoi : `session_monitor` (MCP) pour un check multiplexé rapide
-DANS un tour (N sessions, premier hit) ; `agentproto sessions wait` (CLI,
-backgroundé) pour une **longue** attente d'un tour/session sans tenir le
-contexte. Codes de sortie : `0` = event matché, non-zéro = timeout budget /
-session absente / daemon injoignable.
+When to use which: `session_monitor` (MCP) for a quick multiplexed check
+WITHIN a turn (N sessions, first hit); `agentproto sessions wait` (CLI,
+backgrounded) for a **long** wait on a turn/session without holding
+context. Exit codes: `0` = event matched, non-zero = budget timeout /
+session missing / daemon unreachable.
 
-## Pattern 8 — Déléguer un vrai PR-worktree (implémentation → PR mergée)
+## Pattern 8 — Delegating a real PR-worktree (implementation → merged PR)
 
-Vécu en vrai sur une session d'orchestration complète, 2026-07-01 : 4 plans
-implémentés en parallèle, 8 worktrees, 6 PR mergées, plusieurs conflits en
-cascade. Ce pattern couvre le cycle complet spawn → PR mergée, au-delà du
-Pattern 1 (launch-and-leave, qui ne couvre que le spawn).
+Learned in a real full orchestration session, 2026-07-01: 4 plans
+implemented in parallel, 8 worktrees, 6 merged PRs, several cascading
+conflicts. This pattern covers the full spawn → merged PR cycle, beyond
+Pattern 1 (launch-and-leave, which only covers the spawn).
 
-1. **Worktree dédié, toujours** (déjà couvert ailleurs, rappel) :
-   `_agentproto-worktrees/<feature>/` + branche `feat/<feature>` off `main`,
-   jamais dans l'arbre principal.
-2. **PLAN.md ne doit JAMAIS être commité.** Chaque worktree qui écrit un PLAN.md
-   à la racine (convention établie) entre en collision avec TOUT AUTRE PLAN.md
-   déjà mergé sur main sous le même nom — vécu 4× la même session
-   (cron-scheduler vs session-liveness, #142's plan vs cron's, etc.).
-   Instruction à donner explicitement à chaque session : garder PLAN.md
-   untracked (ou `git rm` s'il a été commité par erreur dans une phase de
-   planning antérieure), et plier le contenu utile dans le corps de la PR
-   (`gh pr create --body`) plutôt que dans un fichier commité.
-3. **Aucune attribution IA dans les commits/PR.** Les sessions claude-code
-   ajoutent par défaut `Co-authored-by: Claude...` aux commits et
-   `🤖 Generated with...` au corps de PR — même défaut que Claude Code lui-même.
-   Si tu veux des commits/PR qui lisent comme du travail humain ordinaire,
-   l'instruction doit être **explicite dans CHAQUE prompt de spawn** (rien ne la
-   retient au niveau daemon aujourd'hui) : "no Co-authored-by trailer, no
-   Generated-with footer." Nettoyer un corps de PR déjà mergé est sans risque
-   (`gh pr edit --body-file`, pure édition de texte GitHub) ; ne JAMAIS réécrire
-   un historique de commit déjà mergé pour ça (rebase + force-push
-   disproportionnés pour un fix cosmétique).
-4. **Ne JAMAIS faire confiance à un "done" sans vérification indépendante.**
-   Toujours re-dériver la vérité via
+1. **Dedicated worktree, always** (covered elsewhere already, reminder):
+   `_agentproto-worktrees/<feature>/` + branch `feat/<feature>` off `main`,
+   never in the main tree.
+2. **PLAN.md must NEVER be committed.** Any worktree that writes a PLAN.md
+   at the root (an established convention) collides with EVERY OTHER
+   PLAN.md already merged to main under the same name — seen 4× in the
+   same session (cron-scheduler vs session-liveness, #142's plan vs
+   cron's, etc.). Instruction to give explicitly to every session: keep
+   PLAN.md untracked (or `git rm` it if it was accidentally committed in
+   an earlier planning phase), and fold the useful content into the PR
+   body (`gh pr create --body`) rather than a committed file.
+3. **No AI attribution in commits/PRs.** claude-code sessions add
+   `Co-authored-by: Claude...` to commits and `🤖 Generated with...` to the
+   PR body by default — the same default as Claude Code itself. If you
+   want commits/PRs that read as ordinary human work, the instruction must
+   be **explicit in EVERY spawn prompt** (nothing holds it back at the
+   daemon level today): "no Co-authored-by trailer, no Generated-with
+   footer." Cleaning up an already-merged PR body is risk-free (`gh pr
+   edit --body-file`, a pure GitHub text edit); NEVER rewrite an
+   already-merged commit history for this (rebase + force-push are
+   disproportionate for a cosmetic fix).
+4. **NEVER trust a "done" without independent verification.** Always
+   re-derive the truth via
    `git log`/`git merge-base --is-ancestor origin/main HEAD`/`gh pr view --json mergeable,mergeStateStatus, reviewDecision`/`gh pr checks`
-   — PAS juste lire le résumé texte de la session. Vécu : un bot CI ("Auto-fix
-   from review") a rapporté `pass` sans rien pousser ; un review automatique a
-   d'abord flaggé un vrai bug puis deux reviews suivantes l'ont incorrectement
-   "approuvé" sans que le code ait changé — la seule façon de trancher était de
-   lire le diff soi-même.
-5. **Conflits en cascade = attendu, pas exceptionnel.** Plusieurs branches
-   soeurs partageant des fichiers-carrefour (`http-server.ts`,
-   `orchestration-tools.ts`, `index.ts`, `define-agent-cli.ts` côté
-   agentproto/ts) entrent en conflit **séquentiellement** à mesure que chacune
-   merge avant les autres. Écris un brief de résolution précis (quel bloc
-   garder, pourquoi, quel côté est juste un artefact textuel vs une vraie
-   divergence de logique) plutôt que de laisser la session deviner — surtout
-   quand deux branches ont indépendamment implémenté la même plomberie de façon
-   textuellement différente mais sémantiquement identique.
-6. **Piège spécifique : "cherry-pick une branche soeur non-mergée pour ne pas
-   attendre" garantit un second conflit, plus dur, une fois que cette branche
-   merge réellement via GitHub** (le commit de merge GitHub a un hash/forme
-   différent du merge brut branche-à-branche, même si le contenu logique est
-   identique). C'est un vrai compromis (démarrer plus tôt vs. conflit garanti
-   plus tard), pas une erreur en soi — mais le documenter/l'anticiper dans le
-   prompt de la session qui devra le résoudre, plutôt que d'être surpris.
-7. **Avant de croire que du code mergé sur `main` est "en prod" côté daemon
-   local : vérifie que le daemon tourne un build frais.**
-   `ps aux | grep agentproto` → note le PID et l'heure de démarrage ; compare à
-   `ls -la packages/runtime/dist` (mtime du build). Un daemon démarré avant tes
-   derniers merges tourne un vieux build — aucune des features fraîchement
-   mergées n'est réellement testable via les tools MCP tant que tu n'as pas
-   rebuild + relancé (voir Gotcha "Post-reboot" ci-dessous). **Ne relance PAS le
-   daemon s'il supervise une session encore active** — ça la tue sans
-   récupération propre (le resume recharge le contexte, ce n'est pas gratuit).
+   — NOT just reading the session's text summary. Real case: a CI bot
+   ("Auto-fix from review") reported `pass` without pushing anything; an
+   automated review first flagged a real bug and then two subsequent
+   reviews incorrectly "approved" it without the code having changed — the
+   only way to settle it was to read the diff yourself.
+5. **Cascading conflicts = expected, not exceptional.** Several sibling
+   branches sharing crossroads files (`http-server.ts`,
+   `orchestration-tools.ts`, `index.ts`, `define-agent-cli.ts` on the
+   agentproto/ts side) conflict **sequentially** as each one merges before
+   the others. Write a precise resolution brief (which block to keep, why,
+   which side is just a textual artifact vs. a real logic divergence)
+   rather than leaving the session to guess — especially when two branches
+   independently implemented the same plumbing in textually different but
+   semantically identical ways.
+6. **Specific pitfall: "cherry-pick an unmerged sibling branch to avoid
+   waiting" guarantees a second, harder conflict once that branch actually
+   merges via GitHub** (the GitHub merge commit has a different
+   hash/shape than a raw branch-to-branch merge, even when the logical
+   content is identical). This is a real trade-off (starting sooner vs. a
+   guaranteed later conflict), not a mistake in itself — but document/
+   anticipate it in the prompt for the session that will have to resolve
+   it, rather than being surprised.
+7. **Before believing that code merged to `main` is "in prod" on the local
+   daemon: verify the daemon is running a fresh build.**
+   `ps aux | grep agentproto` → note the PID and start time; compare to
+   `ls -la packages/runtime/dist` (build mtime). A daemon started before
+   your latest merges is running an old build — none of the freshly merged
+   features are actually testable through the MCP tools until you've
+   rebuilt + relaunched (see the "Post-reboot" gotcha below). **Do NOT
+   restart the daemon if it's supervising a still-active session** — that
+   kills it with no clean recovery (resume reloads the context, it isn't
+   free).
 
-## Pattern 9 — Ressusciter une session killed AVEC continuité (session_restart)
+## Pattern 9 — Resurrecting a killed session WITH continuity (session_restart)
 
-Vécu en vrai 2026-07-01/02 : un restart du daemon tue des sessions en plein
-travail (`error: "session absent at reload"`), mais **la conversation n'est pas
-perdue** — `adapterSessionId` reste dans le descriptor même `killed`, et
-claude-code/hermes ont persisté leur état côté adaptateur.
+Learned in real use 2026-07-01/02: a daemon restart kills sessions mid-work
+(`error: "session absent at reload"`), but **the conversation isn't
+lost** — `adapterSessionId` stays in the descriptor even when `killed`, and
+claude-code/hermes have persisted their state on the adapter side.
 
-- **CLI** (dispo depuis longtemps, seule voie tant que #151 n'était pas mergé) :
-  `agentproto sessions restart <id-or-name>` — relit le descriptor (mémoire OU
-  historique), choisit la stratégie de resume (PTY-native > ACP resume via
-  `adapterSessionId` > PTY plain > erreur pour une session `command` générique),
-  et spawn un NOUVEAU `sess_xxx` qui reprend le fil. Prouvé en vrai : deux
-  sessions tuées par un restart daemon, relancées via cette commande, reprises
-  avec leur brief complet.
-- **MCP** `session_restart({ idOrName, cols?, rows? })` — même logique
-  in-process (PR #151, mergé 2026-07-02), pour un orchestrateur qui n'a pas
-  accès shell. Retourne `{ id, resumedFrom, resumeVia }`. **Racine `/mcp`
-  uniquement, pas dans le subset scopé par défaut** (même posture que
-  `terminal_start`/`command_execute` — privilégié). Vérifié en vrai avec un vrai
-  appel : `resumedFrom` + `resumeVia:"resumed via ACP"` corrects, même
-  `adapterSessionId` que la session d'origine.
-- **Avant #151**, un orchestrateur MCP-only (pas d'accès Bash/CLI) n'avait
-  **aucun moyen** de ressusciter une session avec continuité — juste
-  `agent_start` frais, sans le fil de la conversation. C'est maintenant comblé.
+- **CLI** (available for a while, the only route until #151 was merged):
+  `agentproto sessions restart <id-or-name>` — re-reads the descriptor
+  (memory OR history), picks the resume strategy (PTY-native > ACP resume
+  via `adapterSessionId` > plain PTY > error for a generic `command`
+  session), and spawns a NEW `sess_xxx` that picks up the thread. Proven in
+  real use: two sessions killed by a daemon restart, relaunched via this
+  command, resumed with their full brief.
+- **MCP** `session_restart({ idOrName, cols?, rows? })` — same in-process
+  logic (PR #151, merged 2026-07-02), for an orchestrator with no shell
+  access. Returns `{ id, resumedFrom, resumeVia }`. **Root `/mcp` only, not
+  in the default scoped subset** (same posture as
+  `terminal_start`/`command_execute` — privileged). Verified in real use
+  with a real call: `resumedFrom` + `resumeVia:"resumed via ACP"` correct,
+  same `adapterSessionId` as the original session.
+- **Before #151**, an MCP-only orchestrator (no Bash/CLI access) had **no
+  way** to resurrect a session with continuity — just a fresh
+  `agent_start`, without the conversation thread. That's now covered.
 
-## Gotchas (vécus)
+## Gotchas (learned the hard way)
 
-- **Modèle** : l'enum de `model` dépend du daemon ; vérifie via l'erreur si
-  rejeté.
-- **Post-reboot** : `agentproto serve` peut relancer un vieux build publié.
-  Refaire `pnpm -r build` (dans `projects/agentproto/ts`) + relancer le daemon
-  en `--cli workspace` + reconnecter le connecteur.
-- **`awaitingInput` sur-signale** : il vaut « tour fini, j'attends » aussi bien
-  que « bloqué sur une question ». Pour distinguer, lis la dernière ligne de
-  contenu (une vraie question finit souvent par `?` / « valider / décision / ok
-  pour toi »).
-- **Sessions killed** : ne badge `awaitingInput` que sur les sessions `running`.
-- **`node:sqlite`** : Node ≥ 22, API expérimentale ; ouvre toujours
-  `{readOnly:true}` (la DB est verrouillée par hermes en cours d'usage ; gère
+- **Model**: the `model` enum depends on the daemon; check via the error
+  message if rejected.
+- **Post-reboot**: `agentproto serve` can relaunch an old published build.
+  Redo `pnpm -r build` (in `projects/agentproto/ts`) + relaunch the daemon
+  with `--cli workspace` + reconnect the connector.
+- **`awaitingInput` over-signals**: it means "turn finished, I'm waiting"
+  just as much as "stuck on a question". To tell them apart, read the last
+  content line (a real question often ends with `?` / "confirm / decision /
+  ok for you").
+- **Killed sessions**: only badge `awaitingInput` on `running` sessions.
+- **`node:sqlite`**: Node ≥ 22, experimental API; always open with
+  `{readOnly:true}` (the DB is locked by hermes while in use; handle
   `SQLITE_BUSY`).
-- **MCP HTTP Accept header** : le daemon MCP exige
-  `Accept: application/json, text/event-stream`. Sans les deux, erreur
-  `Not Acceptable`. Si tu fais du curl/Python direct.
-- **`session_monitor` boucle sur session déjà idle** : si une session a déjà
-  fini son tour avant le premier appel, le tool retourne immédiatement
-  (race-free replay via le ring). Mais en boucle, il peut retourner la MÊME
-  session déjà idle à chaque itération si tu ne passes pas `since` — filtre les
-  sessions déjà traitées dans ton code, ou mieux, passe le `nextCursor` du
-  dernier `session_events_poll`/`session_monitor` en `since` pour que le daemon
-  ne replay que ce qui est vraiment nouveau.
-- **Un changeset avec un nom de fichier copié = conflit garanti.** Vécu
-  2026-07-02 : une session briefée "ajoute un changeset" a vu
-  `.changeset/pr-147-review.md` (déjà mergé sur main, ajouté par le bot reviewer
-  d'une AUTRE PR) et a réutilisé **le même nom littéral** au lieu d'un slug
-  unique — collision add/add au merge (`mergeable: CONFLICTING`). Le nom
-  `pr-<N>-review.md` est LE nom que le bot reviewer génère lui-même par PR, pas
-  une convention à copier à la main. Instruction à donner : soit laisser
-  `pnpm changeset` générer un nom aléatoire, soit choisir explicitement un slug
-  propre à la feature (`fix-<feature>.md`).
-- **`gh pr view --json mergeable` : `CONFLICTING` peut être un artefact
-  transitoire de cache GitHub, pas un vrai conflit.** Vécu 2× (PR #134
-  changeset-release après un force-push, PR #147 juste après merge) :
-  `mergeable`/`mergeStateStatus` affichent un état incohérent pendant quelques
-  secondes après un push/force-push, avant que GitHub ne recalcule. Avant de
-  conclure à un vrai conflit : `git merge-tree <base> <ours> <theirs>` (zéro
-  `<<<<<<<` = mécaniquement clean) et re-check quelques secondes après. Idem
-  pour `statusCheckRollup` : un contexte nommé "Agentic review" peut apparaître
-  en double (FAILURE stale + SUCCESS frais) sur des commits successifs de la
-  même PR — l'unique source de vérité propre est
-  `gh api repos/<repo>/commits/<sha>/status` sur le HEAD sha exact, ou le run CI
-  déclenché par le `push` sur `main` après merge (pas le rollup PR).
-- **APPROVED + checks verts ≠ mergé.** Ce repo a une couche "maintainer" (judge
-  IA, `.github/agentic-review.json` → `merge.maintainer:true`) qui peut retenir
-  l'auto-merge sur un changement jugé conséquent (refactor de logique partagée,
-  gros nouveau script) même après une review APPROVED — elle poste un
-  commentaire explicite
-  `🛑 Auto-merge withheld by the maintainer — @<escalateTo> please review` et
-  attend un merge humain manuel. Ne pas assumer "review OK + CI vert = ça va
-  merger tout seul" ; check les commentaires de la PR pour ce message avant de
-  conclure qu'une PR est bloquée par une vraie erreur.
-- **`pnpm -r build` + relancer le daemon dans la foulée peut se courir la course
-  avec l'écriture du dist.** Vécu 2026-07-02 : un restart lancé quasi en même
-  temps qu'un `pnpm -r build` a démarré le daemon sur un dist pas encore
-  totalement à jour (uptime du process ≈ mtime du dist à quelques secondes près)
-  — un tool fraîchement ajouté (`session_restart`, PR #151) n'apparaissait pas
-  dans `tools/list` malgré un code source propre et un commit mergé. Pas un bug
-  de wiring — juste un restart trop précoce. Vérifie TOUJOURS via le
-  `tools/list` du daemon lui-même (`POST /mcp` `{"method":"tools/list"}`) après
-  un restart post-merge, plutôt que de faire confiance au ToolSearch côté client
-  (qui peut lui-même être caché sur un ancien manifest).
+- **MCP HTTP Accept header**: the MCP daemon requires
+  `Accept: application/json, text/event-stream`. Without both, error `Not
+  Acceptable`. If you do raw curl/Python.
+- **`session_monitor` looping on an already-idle session**: if a session
+  already finished its turn before the first call, the tool returns
+  immediately (race-free replay via the ring). But in a loop, it can
+  return the SAME already-idle session on every iteration if you don't
+  pass `since` — filter already-processed sessions in your code, or
+  better, pass the `nextCursor` from the last
+  `session_events_poll`/`session_monitor` as `since` so the daemon only
+  replays what's genuinely new.
+- **A changeset with a copied filename = guaranteed conflict.** Seen
+  2026-07-02: a session briefed to "add a changeset" saw
+  `.changeset/pr-147-review.md` (already merged to main, added by the
+  reviewer bot on ANOTHER PR) and reused **the exact same literal name**
+  instead of a unique slug — add/add collision at merge time
+  (`mergeable: CONFLICTING`). The `pr-<N>-review.md` name is THE name the
+  reviewer bot generates itself per PR, not a convention to copy by hand.
+  Instruction to give: either let `pnpm changeset` generate a random name,
+  or explicitly pick a feature-specific slug (`fix-<feature>.md`).
+- **`gh pr view --json mergeable`: `CONFLICTING` can be a transient GitHub
+  cache artifact, not a real conflict.** Seen 2×: (PR #134
+  changeset-release after a force-push, PR #147 right after a merge):
+  `mergeable`/`mergeStateStatus` show an inconsistent state for a few
+  seconds after a push/force-push, before GitHub recomputes. Before
+  concluding there's a real conflict: `git merge-tree <base> <ours>
+  <theirs>` (zero `<<<<<<<` = mechanically clean) and re-check a few
+  seconds later. Same for `statusCheckRollup`: a context named "Agentic
+  review" can appear duplicated (stale FAILURE + fresh SUCCESS) on
+  successive commits of the same PR — the one clean source of truth is
+  `gh api repos/<repo>/commits/<sha>/status` on the exact HEAD sha, or the
+  CI run triggered by the `push` to `main` after the merge (not the PR
+  rollup).
+- **APPROVED + green checks ≠ merged.** This repo has a "maintainer" layer
+  (AI judge, `.github/agentic-review.json` → `merge.maintainer:true`) that
+  can withhold auto-merge on a change judged consequential (a shared-logic
+  refactor, a large new script) even after an APPROVED review — it posts
+  an explicit comment
+  `🛑 Auto-merge withheld by the maintainer — @<escalateTo> please review`
+  and waits for a manual human merge. Don't assume "review OK + CI green =
+  it'll merge on its own"; check the PR comments for this message before
+  concluding a PR is blocked by a real error.
+- **`pnpm -r build` + relaunching the daemon right after can race the dist
+  write.** Seen 2026-07-02: a restart launched almost simultaneously with
+  a `pnpm -r build` started the daemon on a not-yet-fully-updated dist
+  (process uptime ≈ dist mtime within a few seconds) — a freshly added
+  tool (`session_restart`, PR #151) didn't show up in `tools/list` despite
+  clean source code and a merged commit. Not a wiring bug — just too early
+  a restart. ALWAYS verify via the daemon's own `tools/list` (`POST /mcp`
+  `{"method":"tools/list"}`) after a post-merge restart, rather than
+  trusting the client-side ToolSearch (which can itself be cached on an
+  old manifest).
