@@ -25,7 +25,7 @@ agentproto models       [adapter] [--json]                          runnable mod
 agentproto run-swarm    --manifest <path> [--once] [--interval ...]  run a swarm manifest
 agentproto serve        [--port <n>] [--workspace <dir>] [--connect <wss>]  local daemon
 agentproto workspace    <add|list|remove|use>                       register spawn workspaces
-agentproto sessions     [start|terminal|mirror|stop|...]            browse / control live sessions
+agentproto sessions     [start|terminal|mirror|prompt|stop|...]     browse / control live sessions
 agentproto browser      <install|start|list|stop|status>            manage browser sessions
 agentproto tunnel       <create|list|stop|status>                   public URL tunnels
 agentproto provider-preset list [--json]                            provider gateway definitions
@@ -255,6 +255,7 @@ What `serve` exposes:
 | Adapter discovery | `GET /adapters`                           | Globally-installed `@agentproto/adapter-*` packages    |
 | Sessions (list)   | `GET /sessions` / `GET /sessions/:id`     | id-or-name in `:id`                                   |
 | Agent spawn       | `POST /sessions/agent`                    | Long-lived ACP agent (multi-turn)                     |
+| Send prompt       | `POST /sessions/:id/prompt`               | Message a running session — `?wait=false` to queue/fire-and-forget |
 | Interrupt turn    | `POST /sessions/:id/interrupt`            | Cancel the in-flight turn and leave the session alive |
 | Terminal input    | `POST /sessions/:id/terminal/input`       | Write raw input into a live PTY session               |
 | Rename session    | `PATCH /sessions/:id`                     | Set or clear the session's user-facing `title`/`label`|
@@ -355,6 +356,12 @@ agentproto sessions start hermes --label "ops on-call"
 agentproto sessions terminal --name claude-tui --attach -- claude
 agentproto sessions terminal --name shell --cwd /tmp -- bash -l
 agentproto sessions terminal --name htop --workspace my-project -- htop
+
+# Message an already-running session (default: fire-and-forget, queued
+# behind any in-flight turn — read the reply back with `sessions story`)
+agentproto sessions prompt claude-tui --prompt "go check the PR review comments"
+agentproto sessions prompt claude-tui --prompt "redirect now" --interrupt
+agentproto sessions prompt claude-tui --prompt "one more thing" --wait
 
 # Stop by id or name
 agentproto sessions stop claude-tui

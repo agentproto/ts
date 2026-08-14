@@ -13,6 +13,8 @@
  *   agentproto sessions --attach <id>    SSE-stream a session's output
  *   agentproto sessions start <slug>     POST /sessions/agent to spawn
  *                                        a persistent agent-cli session
+ *   agentproto sessions prompt <id> -p .. POST /sessions/:id/prompt to send a
+ *                                        message into an already-running session
  *   agentproto sessions stop <id>        POST /sessions/:id/kill (SIGTERM)
  *
  * The TUI is intentionally minimal — raw stdin keypresses, no inquirer
@@ -90,6 +92,18 @@ Usage:
                              [--source auto|native|daemon]
   agentproto sessions story <id-or-name> [--json] [--no-color]
                              [--source auto|native|daemon]
+  agentproto sessions prompt <id-or-name> --prompt <text>
+                              [--wait] [--interrupt] [--force] [--json]
+                              (default: fire-and-forget, queued behind any
+                               in-flight turn — the reply isn't printed,
+                               read it back with 'sessions story'/'export'.
+                               --wait blocks until the turn this prompt
+                               starts finishes (still no reply text — just
+                               confirms the turn drained). --interrupt
+                               cancels a mid-turn session and dispatches
+                               immediately instead of queuing. --force
+                               jumps the queue — only meaningful without
+                               --wait.)
   agentproto sessions stop <id-or-name> [--json]
   agentproto sessions gc [--older-than-days <n>] [--forget] [--json]
                               (archive terminal sessions by default; --forget
@@ -181,6 +195,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   // parser — they take positionals the flag parser would reject.
   const sub = args[0]
   if (sub === "start") return runStart(args.slice(1))
+  if (sub === "prompt") return runPrompt(args.slice(1))
   if (sub === "stop") return runStop(args.slice(1))
   if (sub === "gc") return runGc(args.slice(1))
   if (sub === "terminal") return runTerminal(args.slice(1))
@@ -450,6 +465,117 @@ async function runStart(args: readonly string[]): Promise<number> {
     })
   }
   return 0
+}
+
+/**
+ * `agentproto sessions prompt <id-or-name> --prompt <text> [--wait] [--interrupt]
+ *                              [--force] [--json]`
+ *
+ * CLI parity for the daemon's `POST /sessions/:id/prompt` — the same route
+ * `agent_prompt` (MCP) and the VS Code panel already use to send a follow-up
+ * message into a session that's already running, but which had no `sessions`
+ * verb of its own. Without it, reaching a live session from the shell meant
+ * hand-crafting a `curl -X POST .../sessions/:id/prompt` against daemon
+ * internals (endpoint discovery + bearer token) that every other verb here
+ * already wraps.
+ *
+ * Default is fire-and-forget + queued (`?wait=false`, `queue: true`): safe
+ * against a busy session (appends to its FIFO instead of the 409 a bare
+ * `queue: false` admission would hit) and doesn't block the CLI on however
+ * long the session's turn takes. `--wait` switches to the blocking route
+ * (`sendPrompt`, no `queue`/`force` — see the HTTP route's own comment for
+ * why those are blocking-mode-incompatible) for callers who want the command
+ * to return only once the turn this prompt starts has drained.
+ */
+async function runPrompt(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      prompt: { type: "string", short: "p" },
+      wait: { type: "boolean" },
+      interrupt: { type: "boolean" },
+      force: { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id || !values.prompt) {
+    process.stderr.write(
+      "agentproto sessions prompt: missing session id or --prompt.\n" +
+        "  Try: agentproto sessions prompt <id-or-name> --prompt \"go check X\"\n" +
+        "       agentproto sessions prompt <id-or-name> --prompt \"redirect now\" --interrupt\n" +
+        "       agentproto sessions prompt <id-or-name> --prompt \"...\" --wait\n",
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions prompt: unexpected extra positionals: ${positionals
+        .slice(1)
+        .join(" ")}\n`,
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions prompt")
+    return 2
+  }
+  const endpoint = report.found
+
+  const url = values.wait
+    ? `${endpoint.url}/sessions/${encodeURIComponent(id)}/prompt`
+    : `${endpoint.url}/sessions/${encodeURIComponent(id)}/prompt?wait=false`
+  const body: Record<string, unknown> = { prompt: values.prompt }
+  if (values.interrupt) body.interrupt = true
+  // queue/force are blocking-mode-incompatible server-side (see the route's
+  // own comment) — only sent on the fire-and-forget arm.
+  if (!values.wait) {
+    body.queue = true
+    if (values.force) body.force = true
+  }
+
+  try {
+    const result = await httpPostJson<Record<string, unknown>>(url, body, endpoint.token)
+    if (values.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } else if (values.wait) {
+      process.stdout.write(`agentproto sessions prompt: ${id} turn complete\n`)
+    } else {
+      const pending = result.pending === true
+      process.stdout.write(
+        pending
+          ? `agentproto sessions prompt: queued for ${id}` +
+              ` (position ${String(result.queuePosition)})\n`
+          : `agentproto sessions prompt: sent to ${id}\n`,
+      )
+    }
+    return 0
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 401/.test(msg)) {
+      process.stderr.write(
+        (await explain401(endpoint, "agentproto sessions prompt")) + "\n",
+      )
+      return 1
+    }
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(`agentproto sessions prompt: no session "${id}".\n`)
+      return 2
+    }
+    if (/HTTP 409/.test(msg)) {
+      process.stderr.write(
+        `agentproto sessions prompt: ${id} is not alive or mid-turn` +
+          " (retry with --interrupt or --wait, or omit --wait to queue).\n",
+      )
+      return 1
+    }
+    process.stderr.write(`agentproto sessions prompt: ${msg}\n`)
+    return 1
+  }
 }
 
 async function runStop(args: readonly string[]): Promise<number> {
