@@ -189,9 +189,23 @@ export interface BucketSnapshot {
 const serialize = (snapshot: BucketSnapshot): string =>
   JSON.stringify(snapshot, null, 2) + "\n"
 
-/** Atomic-ish bucket write (tmp + rename), mirroring
- *  `saveWorkspacesConfig` — a concurrent reader never sees half a JSON
- *  object. */
+/** Monotonic per-process sequence for tmp-file names. A pid-only suffix
+ *  is NOT unique within one process: two in-flight writes to the same
+ *  bucket share the path, and the interleaving `A:write → B:write(O_TRUNC)
+ *  → A:rename` promotes B's half-written file to `sessions.json` (B's
+ *  own rename then fails ENOENT — the observed "persist failed" storm,
+ *  2026-08-14 registry wipe). If the process dies before B finishes, the
+ *  truncated JSON is what the next boot reads. pid+seq makes every write
+ *  own its tmp file, so a rename can only ever promote a fully-written
+ *  snapshot. */
+let tmpSeq = 0
+
+const tmpPathFor = (target: string): string =>
+  `${target}.tmp.${process.pid}.${++tmpSeq}`
+
+/** Atomic bucket write (tmp + rename), mirroring `saveWorkspacesConfig`
+ *  — a concurrent reader never sees half a JSON object, and concurrent
+ *  writers never share a tmp path (see `tmpSeq`). */
 export async function writeBucketSnapshot(
   root: string,
   slug: string,
@@ -200,7 +214,7 @@ export async function writeBucketSnapshot(
   const dir = bucketDir(root, slug)
   await fsp.mkdir(dir, { recursive: true })
   const target = bucketSessionsFile(root, slug)
-  const tmp = `${target}.tmp.${process.pid}`
+  const tmp = tmpPathFor(target)
   await fsp.writeFile(tmp, serialize(snapshot), "utf8")
   await fsp.rename(tmp, target)
 }
@@ -214,7 +228,7 @@ export function writeBucketSnapshotSync(
   const dir = bucketDir(root, slug)
   mkdirSync(dir, { recursive: true })
   const target = bucketSessionsFile(root, slug)
-  const tmp = `${target}.tmp.${process.pid}`
+  const tmp = tmpPathFor(target)
   writeFileSync(tmp, serialize(snapshot), "utf8")
   renameSync(tmp, target)
 }
