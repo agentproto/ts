@@ -1,79 +1,79 @@
 ---
 name: hermes-headless-background
 description:
-  "Déléguer une tâche (audit, recherche, grunt-work) à une session hermes sur un
-  modèle PAS CHER (glm-5.2/deepseek/kimi via OpenRouter) en CLI DIRECT,
-  headless, en arrière-plan — SANS le daemon agentproto ni les tools MCP.
-  Déclenche ce skill quand les tools `mcp__agentproto__*` sont absents de la
-  session, quand l'utilisateur dit « lance un agent hermes/glm/deepseek en
-  background », « fais auditer ça par un modèle pas cher pendant qu'on continue
-  », ou quand tu veux un second avis indépendant bon marché sans cramer
-  l'abonnement. Complète agent-session-orchestration-agentproto (qui, lui,
-  suppose le daemon MCP)."
+  "Delegate a task (audit, research, grunt-work) to a hermes session on a
+  CHEAP model (glm-5.2/deepseek/kimi via OpenRouter) in DIRECT CLI, headless,
+  in the background — WITHOUT the agentproto daemon or the MCP tools.
+  Trigger this skill when `mcp__agentproto__*` tools are absent from the
+  session, when the user says 'launch a hermes/glm/deepseek agent in the
+  background', 'have this audited by a cheap model while we keep going', or
+  when you want a cheap independent second opinion without burning the
+  subscription. Complements agent-session-orchestration-agentproto (which
+  assumes the MCP daemon)."
 ---
 
-# Hermes headless en background (sans daemon MCP)
+# Hermes headless in the background (without the MCP daemon)
 
-Pattern réel, prouvé en session : faire tourner une session **hermes** sur un
-modèle bon marché (OpenRouter) **en CLI direct**, headless, en arrière-plan,
-quand le daemon agentproto / les tools `mcp__agentproto__*` ne sont PAS chargés
-dans la session (démarrer le daemon en cours de route ne réinjecte pas ses tools
-MCP). On parle au binaire `hermes` directement.
+Real pattern, proven in session: running a **hermes** session on a cheap
+model (OpenRouter) **in direct CLI**, headless, in the background, when the
+agentproto daemon / the `mcp__agentproto__*` tools are NOT loaded in the
+session (starting the daemon mid-session doesn't re-inject its MCP tools).
+You talk to the `hermes` binary directly.
 
-Pour le chemin MCP (daemon présent) voir
-`agent-session-orchestration-agentproto` et `light-coder-orchestration`. Le
-présent skill = le **fallback CLI**.
+For the MCP path (daemon present) see
+`agent-session-orchestration-agentproto` and `light-coder-orchestration`.
+This skill is the **CLI fallback**.
 
-## Quand l'utiliser
+## When to use it
 
-- `ToolSearch "agentproto agent_start"` ne ramène aucun `mcp__agentproto__*`.
-- Tâche déléguable à un modèle pas cher (audit READ-ONLY, recherche,
-  classification, bulk) — pas du frontier-judgment. Voir
+- `ToolSearch "agentproto agent_start"` returns no `mcp__agentproto__*`.
+- A task that's delegable to a cheap model (READ-ONLY audit, research,
+  classification, bulk work) — not frontier-judgment work. See
   `feedback_delegate_to_cheap_agentproto`.
-- Tu veux continuer à bosser pendant que ça tourne → background.
+- You want to keep working while it runs → background it.
 
-## Recette (end-to-end)
+## Recipe (end-to-end)
 
-### 0. Pré-vol
+### 0. Pre-flight
 
 ```bash
-which hermes            # ex: ~/.local/bin/hermes  (sinon: stop)
+which hermes            # e.g.: ~/.local/bin/hermes  (if not: stop)
 hermes status 2>&1 | grep -iE "openrouter|provider|model"   # provider authed ✓ ?
 ```
 
-`hermes --help` : flags clés = `-z PROMPT` (headless one-shot), `-m MODEL`,
-`--provider PROVIDER`, `--yolo` (pas de confirmations), `--resume SESSION`.
+`hermes --help`: key flags = `-z PROMPT` (headless one-shot), `-m MODEL`,
+`--provider PROVIDER`, `--yolo` (no confirmations), `--resume SESSION`.
 
-### 1. VÉRIFIER LE MODÈLE D'ABORD (si l'utilisateur a nommé un modèle précis)
+### 1. VERIFY THE MODEL FIRST (if the user named a specific model)
 
-Consigne fréquente : « si tu n'arrives pas à avoir le modèle, tu STOP ».
-`hermes model` est juste un sélecteur interactif — il ne liste pas. Le seul test
-fiable = un probe minimal + lire la colonne `model` de `state.db` :
+Frequent instruction: "if you can't get the model, STOP." `hermes model` is
+just an interactive picker — it doesn't list. The only reliable test is a
+minimal probe + reading the `model` column from `state.db`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 hermes -z "Reply with exactly: PONG" -m z-ai/glm-5.2 --provider openrouter --yolo 2>&1 | tail -5
 sqlite3 ~/.hermes/state.db "select model, estimated_cost_usd from sessions order by rowid desc limit 1;"
-# La sortie DOIT montrer model = z-ai/glm-5.2 (pas le défaut deepseek-v4-pro). Sinon → STOP.
+# Output MUST show model = z-ai/glm-5.2 (not the default deepseek-v4-pro). Otherwise → STOP.
 ```
 
-Alias modèles courants (OpenRouter, ~$0.01-0.5/run) : **`z-ai/glm-5.2`** («
-glm-z2 » / « zlm g2 ») et **`deepseek/deepseek-v4-pro`**. hermes IGNORE le model
-de session ACP mais l'adapter envoie un `/model <id>` → d'où la vérif via
-state.db.
+Common model aliases (OpenRouter, ~$0.01-0.5/run): **`z-ai/glm-5.2`**
+("glm-z2" / "zlm g2") and **`deepseek/deepseek-v4-pro`**. hermes IGNORES
+the ACP session model but the adapter sends a `/model <id>` — hence the
+check via state.db.
 
-### 2. Écrire le brief dans un fichier (pas inline)
+### 2. Write the brief to a file (not inline)
 
-Les prompts longs cassent l'escaping shell. Écris le brief dans le scratchpad,
-passe-le avec `"$(cat …)"`. Pour un AUDIT, le brief DOIT contenir :
+Long prompts break shell escaping. Write the brief to the scratchpad, pass
+it with `"$(cat …)"`. For an AUDIT, the brief MUST contain:
 
-- **READ-ONLY** explicite (« Do NOT edit, deploy, git-write, DB-write »).
-- Le contexte + tes conclusions à **CHALLENGER avec preuves** (file:line), pas à
-  gober.
-- La liste des fichiers à lire + les livrables (verdict par claim, ce qui
-  manque, plan rangé).
+- Explicit **READ-ONLY** ("Do NOT edit, deploy, git-write, DB-write").
+- The context + your conclusions to **CHALLENGE with evidence** (file:line),
+  not to accept blindly.
+- The list of files to read + the deliverables (verdict per claim, what's
+  missing, an organized plan).
 
-### 3. Lancer en background
+### 3. Launch in the background
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"; cd <repo-root>
@@ -81,50 +81,51 @@ hermes -z "$(cat <scratchpad>/brief.md)" -m z-ai/glm-5.2 --provider openrouter -
   > <scratchpad>/audit-out.log 2>&1
 ```
 
-→ outil Bash avec `run_in_background: true`. Tu es **notifié à la fin**
-(`<task-notification>`). **Ne poll PAS en boucle** (ça crame TON contexte) —
-attends la notif, puis `Read` le `.log`.
+→ Bash tool with `run_in_background: true`. You're **notified when it's
+done** (`<task-notification>`). **Do NOT poll in a loop** (it burns YOUR
+context) — wait for the notification, then `Read` the `.log`.
 
-### 4. Lire le résultat + le coût
+### 4. Read the result + the cost
 
 ```bash
 sqlite3 ~/.hermes/state.db \
   "select model, estimated_cost_usd, input_tokens, output_tokens from sessions order by rowid desc limit 1;"
 ```
 
-Colonnes utiles de `sessions` :
+Useful `sessions` columns:
 `model, estimated_cost_usd, actual_cost_usd, input_tokens, output_tokens, cache_read_tokens, end_reason, tool_call_count`.
 
-### 5. FILET DE VÉRIFICATION (non négociable)
+### 5. VERIFICATION SAFETY NET (non-negotiable)
 
-Un modèle léger **hallucine des file:line** et se trompe sur les calculs. Avant
-de relayer : re-vérifie toi-même chaque claim actionnable (grep/sed les
-file:line cités, refais l'arithmétique). Relaye en marquant CONFIRMÉ / corrigé /
-réfuté.
+A lightweight model **hallucinates file:line references** and gets
+calculations wrong. Before relaying the result: re-verify every actionable
+claim yourself (grep/sed the cited file:lines, redo the arithmetic). Relay
+it marking each claim CONFIRMED / corrected / refuted.
 
-## Gotchas (tous rencontrés en vrai)
+## Gotchas (all encountered for real)
 
-- **Pas de `mcp__agentproto__*`** → inutile de lancer le daemon en cours de
-  session pour les récupérer ; les serveurs MCP se chargent au boot. Reste en
-  CLI direct.
-- **macOS n'a pas `timeout`** (`command not found` → toute la ligne
-  court-circuite, hermes ne tourne jamais). N'enrobe PAS avec `timeout`.
-  `hermes -z` est one-shot et sort seul ; pour borner, utilise le `timeout` de
-  l'outil Bash ou `run_in_background`.
-- **Le classifier auto-mode bloque les secrets en clair** sur la ligne de
-  commande (clé API inline = « Credential Leakage »). Source depuis un fichier
-  env : `export X="$(grep -E '^X=' envs/…/.env | cut -d= -f2-)"`, jamais la
-  valeur en dur, jamais un `echo`/`cat` qui la matérialise dans le transcript.
-- **`state.db` s'écrit ~après le turn-end** — si la colonne `model`/coût semble
-  vide, relire après une courte attente.
-- Le modèle par défaut hermes (`~/.hermes`) est `deepseek-v4-pro` ; si tu ne
-  passes pas `-m`, c'est lui qui tourne. Toujours expliciter
+- **No `mcp__agentproto__*`** → no point starting the daemon mid-session to
+  get them; MCP servers load at boot. Stay in direct CLI.
+- **macOS has no `timeout`** (`command not found` → the whole line
+  short-circuits, hermes never runs). Do NOT wrap with `timeout`. `hermes
+  -z` is one-shot and exits on its own; to bound it, use the Bash tool's
+  own `timeout` or `run_in_background`.
+- **The auto-mode classifier blocks plaintext secrets** on the command
+  line (an inline API key = "Credential Leakage"). Source from an env
+  file: `export X="$(grep -E '^X=' envs/…/.env | cut -d= -f2-)"`, never the
+  hardcoded value, never an `echo`/`cat` that materializes it in the
+  transcript.
+- **`state.db` is written ~after turn-end** — if the `model`/cost column
+  looks empty, re-read after a short wait.
+- Hermes' default model (`~/.hermes`) is `deepseek-v4-pro`; if you don't
+  pass `-m`, that's what runs. Always be explicit with
   `-m … --provider …`.
-- Reprendre une session : `hermes -r <sessionId>` (id = `sessions.id` dans
+- Resuming a session: `hermes -r <sessionId>` (id = `sessions.id` in
   state.db).
 
-## Pourquoi
+## Why
 
-OpenRouter pay-per-token (centimes), séparé de l'abonnement Claude — pour le
-grunt/audit/recherche, déléguer ici plutôt que brûler un subagent Opus/Sonnet.
-Réserve le `Agent` tool / Claude au frontier-judgment et à la passe de vérif.
+OpenRouter is pay-per-token (cents), separate from the Claude subscription
+— for grunt/audit/research work, delegate here rather than burning an
+Opus/Sonnet subagent. Reserve the `Agent` tool / Claude for
+frontier-judgment work and the verification pass.
