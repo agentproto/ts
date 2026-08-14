@@ -204,8 +204,20 @@ export function buildSessionPrFooter(
  * a second footer.
  */
 export function appendFooterOnce(body: string, footer: string): string {
-  if (body.includes(MARKER)) return body
+  if (hasProvenanceFooter(body)) return body
   return `${body}${footer}`
+}
+
+/**
+ * Whether a PR/review body already carries a RENDERED provenance footer — the
+ * `<sub>…@agentproto-bot…</sub>` line {@link buildFooter} emits — as opposed
+ * to merely MENTIONING the marker in prose. The distinction matters: a PR
+ * whose description discusses the provenance machinery itself (they exist —
+ * #999 explains a footer bug and quotes the marker) would otherwise read as
+ * "already stamped" forever and never receive its real footer.
+ */
+export function hasProvenanceFooter(body: string): boolean {
+  return new RegExp(`<sub>[^\\n]*${MARKER}`).test(body)
 }
 
 /**
@@ -230,6 +242,37 @@ export function parseGhPrCreate(
   let match: RegExpExecArray | null
   let last: { url: string; number: number } | null = null
   while ((match = re.exec(stdout)) !== null) {
+    last = { url: match[0], number: Number(match[1]) }
+  }
+  return last
+}
+
+/**
+ * String-form counterpart of {@link parseGhPrCreate} for the in-agent tool
+ * lane: an ACP harness's Bash-style tool reports ONE shell string (possibly
+ * compound — `git push && gh pr create … | tail -1`), not an argv, so the
+ * argv parser above can't see it. Detects "this call created a PR" from the
+ * command string plus the call's recorded result text, and returns the
+ * created PR (LAST `…/pull/<n>` match in the result, same shadowing rule as
+ * {@link parseGhPrCreate} — `gh pr create` prints its URL after any notices).
+ *
+ * Quoted spans are stripped before matching so a command that merely
+ * MENTIONS the phrase — `grep "gh pr create" src/` over a result that quotes
+ * a PR url — can never read as a create. Best-effort by design: the caller
+ * additionally gates on the call's own `isError` (a failed create whose
+ * stderr cites an existing PR must not attribute that PR here).
+ */
+export function detectShellPrCreate(
+  command: string | undefined,
+  resultText: string | undefined,
+): { url: string; number: number } | null {
+  if (!command || !resultText) return null
+  const unquoted = command.replace(/'[^']*'/g, " ").replace(/"(?:[^"\\]|\\.)*"/g, " ")
+  if (!/(^|[\s;&|({])gh\s+pr\s+create(\s|$)/.test(unquoted)) return null
+  const re = /https?:\/\/\S+?\/pull\/(\d+)/g
+  let match: RegExpExecArray | null
+  let last: { url: string; number: number } | null = null
+  while ((match = re.exec(resultText)) !== null) {
     last = { url: match[0], number: Number(match[1]) }
   }
   return last

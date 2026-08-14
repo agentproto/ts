@@ -18,6 +18,8 @@ import {
   buildSessionPrFooter,
   MARKER,
   parseGhPrCreate,
+  detectShellPrCreate,
+  hasProvenanceFooter,
   pickExecutorSession,
   sessionFooterProvenance,
   type FooterSession,
@@ -273,5 +275,56 @@ describe("appendFooterOnce", () => {
     const once = appendFooterOnce("Body text.", footer)
     expect(once).toBe("Body text." + footer)
     expect(appendFooterOnce(once, footer)).toBe(once)
+  })
+})
+
+describe("detectShellPrCreate", () => {
+  it("detects a plain and a compound shell create, taking the LAST pull url", () => {
+    expect(
+      detectShellPrCreate("gh pr create --title t --body b", "https://github.com/o/r/pull/7"),
+    ).toEqual({ url: "https://github.com/o/r/pull/7", number: 7 })
+    expect(
+      detectShellPrCreate(
+        'git push -u origin fix/x && gh pr create --title "t" | tail -1 && git checkout main',
+        "Warning: see https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/998\nSwitched to branch 'main'",
+      ),
+    ).toEqual({ url: "https://github.com/o/r/pull/998", number: 998 })
+  })
+
+  it("ignores commands that only QUOTE the phrase (grep/echo) or aren't a create", () => {
+    expect(
+      detectShellPrCreate('grep -rn "gh pr create" src/', "src/x.ts: https://github.com/o/r/pull/42"),
+    ).toBeNull()
+    expect(
+      detectShellPrCreate("echo 'gh pr create'", "https://github.com/o/r/pull/42"),
+    ).toBeNull()
+    expect(
+      detectShellPrCreate("gh pr view 42", "https://github.com/o/r/pull/42"),
+    ).toBeNull()
+    expect(detectShellPrCreate("gh pr createx", "https://github.com/o/r/pull/42")).toBeNull()
+  })
+
+  it("returns null without a command, a result, or a pull url in the result", () => {
+    expect(detectShellPrCreate(undefined, "https://github.com/o/r/pull/1")).toBeNull()
+    expect(detectShellPrCreate("gh pr create", undefined)).toBeNull()
+    expect(detectShellPrCreate("gh pr create", "no url printed")).toBeNull()
+  })
+})
+
+describe("hasProvenanceFooter", () => {
+  it("detects only a RENDERED footer, not a prose mention of the marker", () => {
+    const footer = buildFooter({ prov: { sessionId: "sess_x" }, kind: "PR" })
+    expect(hasProvenanceFooter(`Body.${footer}`)).toBe(true)
+    // A PR body DISCUSSING the provenance machinery (e.g. #999) quotes the
+    // marker without carrying a footer — it must still be stampable.
+    expect(hasProvenanceFooter("This PR fixes the `@agentproto-bot` footer stamper.")).toBe(false)
+    expect(hasProvenanceFooter("Plain body.")).toBe(false)
+  })
+
+  it("appendFooterOnce appends to a body that only mentions the marker in prose", () => {
+    const footer = buildFooter({ prov: { sessionId: "sess_x" }, kind: "PR" })
+    const prose = "Explains the @agentproto-bot marker."
+    expect(appendFooterOnce(prose, footer)).toBe(prose + footer)
+    expect(appendFooterOnce(prose + footer, footer)).toBe(prose + footer)
   })
 })

@@ -320,3 +320,29 @@ describe("stampFooterOnPr", () => {
     expect(outcome).toEqual({ stamped: false, reason: "boom" })
   })
 })
+
+describe("stampFooterOnPr — prose marker mention", () => {
+  it("still stamps a body that MENTIONS the marker in prose (no rendered footer)", async () => {
+    const reg = fakeRegistry([EXECUTOR])
+    const calls: Array<readonly string[]> = []
+    const run: GhRunner = vi.fn(async args => {
+      calls.push(args)
+      if (args[1] === "view")
+        return { exitCode: 0, stdout: "This PR fixes the `@agentproto-bot` stamper.\n" }
+      return { exitCode: 0, stdout: "" }
+    })
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: null,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/w",
+      run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, alreadyStamped: false })
+    const editCall = calls.find(c => c[1] === "edit")!
+    expect(editCall[4] as string).toContain("<sub>")
+    expect(reg.recorded).toHaveLength(1)
+  })
+})

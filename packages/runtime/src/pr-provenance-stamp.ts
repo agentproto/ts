@@ -26,7 +26,7 @@ import { hostname } from "node:os"
 import {
   appendFooterOnce,
   buildSessionPrFooter,
-  MARKER,
+  hasProvenanceFooter,
   parseGhPrCreate,
   pickExecutorSession,
   type FooterSession,
@@ -124,8 +124,10 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
  * branch). Reads the current body first so the footer is APPENDED, not
  * clobbered — `gh pr edit --body` replaces the whole body — and never edits
  * when the read fails, so a failed read can't overwrite a real body with just
- * the footer. Idempotent by the `MARKER` guard; never throws (every failure is
- * swallowed into the returned {@link StampOutcome}).
+ * the footer. Idempotent by the rendered-footer guard ({@link
+ * hasProvenanceFooter} — a body that merely MENTIONS the marker in prose
+ * still gets its footer); never throws (every failure is swallowed into the
+ * returned {@link StampOutcome}).
  */
 export async function stampFooterOnPr(input: {
   registry: StampRegistry
@@ -149,7 +151,7 @@ export async function stampFooterOnPr(input: {
     if (view.exitCode !== 0) return { stamped: false, reason: `gh pr view exit ${view.exitCode}` }
     const body = view.stdout.replace(/\n+$/, "")
 
-    const alreadyStamped = body.includes(MARKER)
+    const alreadyStamped = hasProvenanceFooter(body)
     if (!alreadyStamped) {
       const newBody = appendFooterOnce(body, footer)
       const edit = await run(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)

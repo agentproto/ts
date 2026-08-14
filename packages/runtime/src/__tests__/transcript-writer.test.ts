@@ -170,6 +170,65 @@ describe("createTranscriptWriter", () => {
     })
   })
 
+  it("marks a successful shell gh pr create's tool-call-record with the created PR (exact provenance)", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", {
+      kind: "tool-call",
+      toolCallId: "t1",
+      toolName: "bash",
+      arguments: { command: 'git push && gh pr create --title "t" --body "b" | tail -1' },
+    })
+    writer.recordEvent("sess_1", {
+      kind: "tool-result",
+      toolCallId: "t1",
+      result: "Warning: 2 uncommitted changes\nhttps://github.com/o/r/pull/998",
+      isError: false,
+    })
+    await writer.close("sess_1")
+
+    const record = readLines("sess_1").find(l => l.kind === "tool-call-record")
+    expect(record).toMatchObject({
+      createdPrUrl: "https://github.com/o/r/pull/998",
+      createdPrNumber: 998,
+    })
+  })
+
+  it("does not mark a command that merely QUOTES gh pr create, nor a failed create", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", {
+      kind: "tool-call",
+      toolCallId: "t1",
+      toolName: "bash",
+      arguments: { command: 'grep -rn "gh pr create" src/' },
+    })
+    writer.recordEvent("sess_1", {
+      kind: "tool-result",
+      toolCallId: "t1",
+      result: "src/x.ts: // see https://github.com/o/r/pull/42",
+      isError: false,
+    })
+    writer.recordEvent("sess_1", {
+      kind: "tool-call",
+      toolCallId: "t2",
+      toolName: "bash",
+      arguments: { command: "gh pr create --title t" },
+    })
+    writer.recordEvent("sess_1", {
+      kind: "tool-result",
+      toolCallId: "t2",
+      result: "a pull request for branch already exists: https://github.com/o/r/pull/43",
+      isError: true,
+    })
+    await writer.close("sess_1")
+
+    const records = readLines("sess_1").filter(l => l.kind === "tool-call-record")
+    expect(records).toHaveLength(2)
+    for (const record of records) {
+      expect(record).not.toHaveProperty("createdPrUrl")
+      expect(record).not.toHaveProperty("createdPrNumber")
+    }
+  })
+
   it("records an agent-prompt then its permission-resolved outcome, correlated by toolCallId", async () => {
     const writer = createTranscriptWriter({ baseDir: tmp })
     writer.recordEvent("sess_1", {
