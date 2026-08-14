@@ -85,7 +85,8 @@ describe("createPrProvenanceReconciler", () => {
       return { exitCode: 0, stdout: "" }
     }
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -109,7 +110,8 @@ describe("createPrProvenanceReconciler", () => {
     let call = 0
     const resolveOpenPr: OpenPrResolver = async () => (call++ === 0 ? A : B)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -128,7 +130,8 @@ describe("createPrProvenanceReconciler", () => {
     }
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -143,7 +146,8 @@ describe("createPrProvenanceReconciler", () => {
     const { recorded, reg } = fakeRegistry([execSession()])
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -156,7 +160,8 @@ describe("createPrProvenanceReconciler", () => {
     const { reg } = fakeRegistry([execSession()])
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -171,7 +176,8 @@ describe("createPrProvenanceReconciler", () => {
     const { reg } = fakeRegistry([execSession(), execSession({ id: "sess_cmd", kind: "command" })])
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec", true)) // empty turn
     bus.emit(turnEnd("sess_cmd")) // not agent-cli
@@ -191,6 +197,7 @@ describe("createPrProvenanceReconciler", () => {
     const bus = createSessionEventBus()
     createPrProvenanceReconciler({
       registry: reg,
+      listToolCalls: async () => [],
       sessionEvents: bus,
       resolveOpenPr: async () => PR,
       run,
@@ -210,6 +217,7 @@ describe("createPrProvenanceReconciler", () => {
     const bus = createSessionEventBus()
     createPrProvenanceReconciler({
       registry: reg,
+      listToolCalls: async () => [],
       sessionEvents: bus,
       resolveOpenPr: async () => PR,
       run: async () => {
@@ -228,7 +236,8 @@ describe("createPrProvenanceReconciler", () => {
     const { reg } = fakeRegistry([execSession()])
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
     const bus = createSessionEventBus()
-    const reconciler = createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    const reconciler = createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     reconciler.dispose()
     bus.emit(turnEnd("sess_exec"))

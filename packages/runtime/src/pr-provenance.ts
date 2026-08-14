@@ -204,8 +204,20 @@ export function buildSessionPrFooter(
  * a second footer.
  */
 export function appendFooterOnce(body: string, footer: string): string {
-  if (body.includes(MARKER)) return body
+  if (hasProvenanceFooter(body)) return body
   return `${body}${footer}`
+}
+
+/**
+ * Whether a PR/review body already carries a RENDERED provenance footer — the
+ * `<sub>…@agentproto-bot…</sub>` line {@link buildFooter} emits — as opposed
+ * to merely MENTIONING the marker in prose. The distinction matters: a PR
+ * whose description discusses the provenance machinery itself (they exist —
+ * #999 explains a footer bug and quotes the marker) would otherwise read as
+ * "already stamped" forever and never receive its real footer.
+ */
+export function hasProvenanceFooter(body: string): boolean {
+  return new RegExp(`<sub>[^\\n]*${MARKER}`).test(body)
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   MARKER,
   parseGhPrCreate,
   detectShellPrCreate,
+  hasProvenanceFooter,
   pickExecutorSession,
   sessionFooterProvenance,
   type FooterSession,
@@ -307,5 +308,23 @@ describe("detectShellPrCreate", () => {
     expect(detectShellPrCreate(undefined, "https://github.com/o/r/pull/1")).toBeNull()
     expect(detectShellPrCreate("gh pr create", undefined)).toBeNull()
     expect(detectShellPrCreate("gh pr create", "no url printed")).toBeNull()
+  })
+})
+
+describe("hasProvenanceFooter", () => {
+  it("detects only a RENDERED footer, not a prose mention of the marker", () => {
+    const footer = buildFooter({ prov: { sessionId: "sess_x" }, kind: "PR" })
+    expect(hasProvenanceFooter(`Body.${footer}`)).toBe(true)
+    // A PR body DISCUSSING the provenance machinery (e.g. #999) quotes the
+    // marker without carrying a footer — it must still be stampable.
+    expect(hasProvenanceFooter("This PR fixes the `@agentproto-bot` footer stamper.")).toBe(false)
+    expect(hasProvenanceFooter("Plain body.")).toBe(false)
+  })
+
+  it("appendFooterOnce appends to a body that only mentions the marker in prose", () => {
+    const footer = buildFooter({ prov: { sessionId: "sess_x" }, kind: "PR" })
+    const prose = "Explains the @agentproto-bot marker."
+    expect(appendFooterOnce(prose, footer)).toBe(prose + footer)
+    expect(appendFooterOnce(prose + footer, footer)).toBe(prose + footer)
   })
 })
