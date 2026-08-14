@@ -20,6 +20,10 @@ agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                           [--cols <n>] [--rows <n>]
                                           [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
+agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
+                                          [--force] [--json]
+agentproto sessions pin      <id-or-name> [--json]
+agentproto sessions unpin    <id-or-name> [--json]
 agentproto sessions mirror   <id-or-name> [--no-color]
 agentproto sessions story    <id-or-name> [--json] [--no-color]
                                           [--source auto|native|daemon]
@@ -74,11 +78,15 @@ agentproto sessions --json
 Prints a table:
 
 ```text
-ID         KIND       WORKSPACE  STATUS    AGE       COMMAND
-ses_abc12  agent-cli  my-proj    running   3m        claude --print --output-format=json
-ses_def34  pty        my-proj    running   1m        bash
-ses_ghi56  agent-cli  my-proj    exited    1h        claude --print …
+PIN ID         KIND       WORKSPACE  STATUS    AGE       COMMAND
+●   ses_abc12  agent-cli  my-proj    running   3m        claude --print --output-format=json
+    ses_def34  pty        my-proj    running   1m        bash
+    ses_ghi56  agent-cli  my-proj    exited    1h        claude --print …
 ```
+
+Pinned sessions sort to the top and are marked with `●` in the `PIN`
+column. Pinning is list-visibility only — it does not affect
+keep-alive, the idle reaper, or notifications.
 
 When any session was spawned inside a git worktree, a `WORKTREE` column is
 inserted between `WORKSPACE` and `STATUS` showing the worktree's leaf directory
@@ -416,6 +424,39 @@ an axis). This is the way to apply an axis that a [live switch](#config-axes-mcp
 reported as `requires-restart`. Only agent-CLI sessions have axes to override —
 a PTY/command restart with overrides is rejected `400`.
 
+### `prompt <id-or-name>`
+
+```bash
+agentproto sessions prompt claude-tui --prompt "check the PR comments"
+agentproto sessions prompt claude-tui --prompt "stop and fix this" --interrupt
+agentproto sessions prompt claude-tui --prompt "one more thing" --wait
+```
+
+POSTs `/sessions/:id/prompt` to send a follow-up message into an
+already-running session. Default is fire-and-forget and queued behind any
+in-flight turn — the reply is not printed; read it back with
+[`story`](#story-id-or-name) or [`export`](#export-id-or-name).
+
+| Flag | Purpose |
+|------|---------|
+| `--prompt <text>`, `-p` | Message to send (required). |
+| `--wait` | Block until the turn this prompt starts has drained. |
+| `--interrupt` | Cancel the in-flight turn and dispatch immediately instead of queuing. |
+| `--force` | Jump the prompt queue (only meaningful without `--wait`). |
+| `--json` | Emit the raw server response as JSON. |
+
+### `pin <id-or-name>` / `unpin <id-or-name>`
+
+```bash
+agentproto sessions pin claude-tui
+agentproto sessions unpin ses_abc12
+```
+
+POSTs `/sessions/:id/pin`. A pinned session sorts to the top of the
+`sessions` table and the VS Code "Pinned" group, marked with a `PIN`
+indicator. Pinning is list-visibility only — it has no effect on
+keep-alive, the idle reaper, or notifications.
+
 ### `mirror <id-or-name>`
 
 ```bash
@@ -555,12 +596,14 @@ readable/importable) via `POST /sessions/gc`. Pass `--forget` to drop the
 descriptors instead (the native conversation on disk survives). `--older-than-days`
 keeps anything more recent. Live sessions are never touched.
 
-## Interrupting a live session (MCP/HTTP only)
+## Interrupting a live session
 
-There is no `agentproto sessions` subverb for this — it's exposed on
-the MCP `agent_prompt` tool and the HTTP prompt route only:
+Use `agentproto sessions prompt <id> --prompt "..." --interrupt`, or call
+the same capability through the MCP `agent_prompt` tool and the HTTP prompt
+route:
 
 ```text
+CLI:  agentproto sessions prompt <id-or-name> --prompt "..." --interrupt
 MCP:  agent_prompt { sessionId, prompt, interrupt: true }
 HTTP: POST /sessions/:id/prompt?wait=false  { "prompt": "...", "interrupt": true }
 ```

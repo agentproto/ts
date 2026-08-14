@@ -48,8 +48,8 @@ for the honest split below.
 
 This repo ships two very different things under one name:
 
-- **Tier 1 — live, verified hands-on:** the daemon, the CLI, thirteen agent
-  adapters (Claude Code, Claude SDK, Codex, Gemini, Hermes, jcode, opencode, Mastra Code +
+- **Tier 1 — live, verified hands-on:** the daemon, the CLI, fourteen agent
+  adapters (Claude Code, Claude SDK, Codex, Gemini, Grok CLI, Hermes, jcode, opencode, Mastra Code +
   in-process, Mastra Agent, OpenClaw, browser-as-agent, Antigravity, pi), durable policy gates,
   nested orchestration with role gating, fan-in monitoring, workflows/cron,
   and an MCP surface (~90 tools) on the daemon itself.
@@ -127,7 +127,8 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `conversation_read` | Read the provider-native conversation behind any session (agent-cli or PTY) |
 | `session_list` / `session_tree` / `session_usage` / `session_restart` | Canonical session list, hierarchy, usage, and resume |
 | `session_archive` / `session_unarchive` | Hide / restore sessions from the canonical list (VS Code "show archived" toggle) |
-| `session_rename` | Set or clear a session's user-facing `title` / `label` |
+| `session_rename` / `session_set_pinned` | Set or clear a session's user-facing `title` / `label`, or toggle its pinned sort flag |
+| `session_flag_status` | Manually correct a session's `awaitingInput` / `awaitingQuestion` classification |
 | `worktree_gc` | Plan/apply garbage collection of linked git worktrees |
 | `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Drive raw PTY sessions |
 | `command_log_tail` | Read the JSONL audit log for `command_execute` |

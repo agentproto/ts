@@ -2,7 +2,7 @@
 
 The `agentproto` binary is the reference host for AgentProto agent-CLI
 adapters. It installs adapter packages (`claude-code`, `claude-sdk`,
-`hermes`, `opencode`, `jcode`, `codex`, `mastra-agent`, `openclaw`, `antigravity`, …), runs them locally
+`hermes`, `opencode`, `jcode`, `codex`, `mastra-agent`, `openclaw`, `antigravity`, `grok-cli`, …), runs them locally
 for a single turn or a long-lived session, exposes them as a daemon over
 an outbound WebSocket tunnel, and orchestrates multi-agent swarms
 through the runtime kernel.
