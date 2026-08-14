@@ -91,6 +91,50 @@ describe("continueAgentSessionFresh", () => {
     expect(input.prompt).toContain("[continued session")
   })
 
+  it("strips the retired session's own callerSessionId stamp from carried mcpServers so the spawn re-stamps with the fresh id", async () => {
+    // The spawn path respects an entry that already carries a
+    // callerSessionId — copying prev's stamped mount verbatim would pin the
+    // NEW session's outbound identity (and its children's auto-attach
+    // lineage) to the dead id. Only OUR stale stamp is stripped: a foreign
+    // pin someone set on purpose, non-daemon entries, and stdio entries all
+    // ride through untouched.
+    const prev = makePrev()
+    prev.mcpServers = [
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: "http://127.0.0.1:18790/mcp?callerSessionId=sess_prev",
+      },
+      {
+        name: "pinned",
+        transport: "http",
+        ref: "http://127.0.0.1:18790/mcp?callerSessionId=someone-else",
+      },
+      { name: "local", transport: "stdio", ref: "some-command" },
+    ]
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.mcpServers).toEqual([
+      { name: "agentproto", transport: "http", ref: "http://127.0.0.1:18790/mcp" },
+      {
+        name: "pinned",
+        transport: "http",
+        ref: "http://127.0.0.1:18790/mcp?callerSessionId=someone-else",
+      },
+      { name: "local", transport: "stdio", ref: "some-command" },
+    ])
+  })
+
   it("links provenance both ways", async () => {
     const prev = makePrev()
     const newDesc = { id: "sess_new" } as SessionDescriptor

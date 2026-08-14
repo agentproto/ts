@@ -531,6 +531,38 @@ export type BuildOrchestratorMcp = (opts: {
   bindLifecycle: (sessionId: string) => () => void
 }
 
+/**
+ * Should this spawn get the daemon's own `/mcp` gateway mounted by default
+ * (caller supplied no `mcpServers`)? Pure — the per-adapter reasoning lives
+ * here so the injection site and its tests share one decision.
+ *
+ *  - `hermes`: always. It has zero built-in tools — without a mount it
+ *    silently spawns chat-only. Sandbox spawns keep the historical
+ *    behaviour (inject) — the box's own daemon re-resolves the spawn on
+ *    its side anyway.
+ *  - `claude-code`: on-host spawns only. The mount is about IDENTITY, not
+ *    capability: ambient MCP config (project `.mcp.json` / global claude
+ *    config) already points these sessions at the daemon but can never
+ *    carry a per-session `callerSessionId`, leaving every spawn they make
+ *    an anonymous depth-0 orphan (observed in production: 0 of 663
+ *    sessions ever carried a `parentSessionId`). The injected same-named
+ *    entry shadows the ambient one at the SDK layer and carries the stamp.
+ *    A sandbox spawn is excluded — the box cannot reach this daemon's
+ *    loopback gateway, and unlike hermes there is no historical behaviour
+ *    to preserve.
+ *  - everything else: never. Mounting the daemon into adapters that never
+ *    had it (codex, gemini, …) would be a capability grant, not a fix —
+ *    those callers opt in explicitly via `mcpServers`.
+ */
+export function shouldInjectDaemonSelfMount(
+  adapter: string,
+  sandbox: unknown,
+): boolean {
+  if (adapter === "hermes") return true
+  if (adapter === "claude-code") return sandbox === undefined
+  return false
+}
+
 /** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
  *  turn frames + `[thought]` / `[tool]` lines) so the lines read as plain,
  *  human-friendly text. Used by `agent_output({clean})` and the
@@ -1462,12 +1494,27 @@ export async function spawnAgentSession(
   // `spawnAgent` via `SpawnAgentInput.id` so the descriptor ends up with
   // this exact id rather than a second, different one (PR 7 / Gap 7).
   const mintedSessionId = mintSessionId()
-  // hermes (unlike claude-code) has zero built-in tools — without an
-  // explicit `mcpServers`, it silently spawns as a chat-only session
-  // with no error. Default it to the daemon's own gateway so it's no
-  // longer possible to get this wrong by omission. An explicit `[]`
-  // is a deliberate opt-out and must be respected as such, so this
-  // only fires when the caller passed no `mcpServers` at all.
+  // Default the daemon's own gateway onto spawns that supplied no
+  // `mcpServers` — two distinct rationales, one mechanism (see
+  // `shouldInjectDaemonSelfMount` for the per-adapter reasoning):
+  //   - hermes: CAPABILITY — it has zero built-in tools; without an
+  //     explicit `mcpServers` it silently spawns as a chat-only session
+  //     with no error. The default makes that impossible by omission.
+  //   - claude-code: IDENTITY — its sessions typically reach this same
+  //     daemon anyway through ambient MCP config (a project `.mcp.json` /
+  //     the operator's global claude config), but those static mounts can
+  //     never carry a per-session `callerSessionId`, so every spawn such a
+  //     session made landed as an anonymous depth-0 orphan —
+  //     `spawn-attach.ts`'s auto-parent had nothing to derive from, and
+  //     origin grouping had no lineage to walk. The injected entry reuses
+  //     the same `agentproto` server name, and a session-level entry
+  //     SHADOWS an ambient same-named one at the SDK layer (verified live:
+  //     the child sees only the session-level server's tools), so the
+  //     child keeps the daemon toolset it already had — now with identity
+  //     baked in, its own spawns auto-attaching, and the ambient unstamped
+  //     mount neutralized in one move.
+  // An explicit `[]` is a deliberate opt-out and must be respected as
+  // such, so this only fires when the caller passed no `mcpServers` at all.
   //
   // HARD GATE: when the resolved role denies delegation, the injected
   // gateway URL carries `denyTools=<DELEGATION_TOOL_NAMES>` so the
@@ -1479,7 +1526,7 @@ export async function spawnAgentSession(
   // `command_execute` call this child makes back through that URL can be
   // attributed to it (PR 7 / Gap 7) — `handleMcp` (http-server.ts) reads
   // the query param and threads it into `registerCommandTools`.
-  if (!mcpServers && input.adapter === "hermes" && daemonMcpUrl) {
+  if (!mcpServers && shouldInjectDaemonSelfMount(input.adapter, input.sandbox) && daemonMcpUrl) {
     let ref = delegationDenied
       ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
       : daemonMcpUrl
@@ -1555,7 +1602,10 @@ export async function spawnAgentSession(
   // default allowlist, and any daemon-targeting `/mcp` entry (the hermes
   // default above, or caller-supplied) reaches the root gateway, where the
   // tool is registered and never deny-gated. The remaining case is a child
-  // with a parent and NO gateway at all (e.g. a plain claude-code leaf):
+  // with a parent and NO gateway at all (an adapter outside the default
+  // self-mount set — a plain codex/gemini leaf — or a daemon running
+  // without `daemonMcpUrl`; claude-code leaves land here only in the
+  // latter case now that they get the full default mount):
   // mint a scope narrowed to `message_parent` only, riding the same
   // token/lifecycle machinery as a full orchestrator scope (revoked when
   // the child exits). This grants NO delegation — the scope's tool set has

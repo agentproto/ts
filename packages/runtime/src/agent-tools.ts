@@ -159,13 +159,17 @@ export interface RegisterAgentToolsOptions {
    *  clear "not configured" error pointing at the host wiring. */
   listCatalogModels?: CatalogModelsLister
   /** The daemon's own plain `/mcp` gateway URL (e.g.
-   *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` for a
-   *  `hermes` adapter with no caller-supplied `mcpServers` defaults to
-   *  mounting this gateway — unlike claude-code, hermes has zero
-   *  built-in tools, so omitting `mcpServers` silently produces a
-   *  chat-only session with no error. An explicit `mcpServers: []` is
-   *  still respected as a deliberate opt-out. Omitted → no default
-   *  (today's behaviour). */
+   *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` with no
+   *  caller-supplied `mcpServers` defaults to mounting this gateway for
+   *  the adapters in `shouldInjectDaemonSelfMount` (session-spawn.ts):
+   *  hermes (capability — it has zero built-in tools, so omitting
+   *  `mcpServers` silently produced a chat-only session) and on-host
+   *  claude-code (identity — the injected entry carries
+   *  `callerSessionId=<own id>` and shadows the ambient unstamped
+   *  project/global mount of the same name, so the session's spawns
+   *  auto-attach instead of landing as anonymous orphans). An explicit
+   *  `mcpServers: []` is still respected as a deliberate opt-out.
+   *  Omitted → no default. */
   daemonMcpUrl?: string
   /** Optional orchestrator-injection builder (WP3). When wired, the
    *  `orchestrator` field on `agent_start` mints a scoped

@@ -80,6 +80,7 @@ import {
   spawnAgentSession,
   cleanAgentLines,
   gcSpawnClaims,
+  shouldInjectDaemonSelfMount,
   type SpawnAgentSessionDeps,
   type SpawnAgentSessionResult,
   type SpawnClaim,
@@ -625,7 +626,9 @@ describe("spawnAgentSession", () => {
     expect(captured[0]?.mcpServers).toEqual([])
   })
 
-  it("(c) does not default mcpServers for a non-hermes adapter", async () => {
+  it("(c) does not default mcpServers for an adapter outside the self-mount set", async () => {
+    // Mounting the daemon into adapters that never had it (codex, gemini, …)
+    // would be a capability grant, not an identity fix — they stay opt-in.
     const captured: { mcpServers?: AcpMcpServer[] }[] = []
     const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
       captured.push({ mcpServers: opts.mcpServers })
@@ -636,9 +639,68 @@ describe("spawnAgentSession", () => {
       daemonMcpUrl: "http://127.0.0.1:18790/mcp",
     })
 
-    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp" })
+    const result = await spawnAgentSession(deps, { adapter: "codex", cwd: "/tmp" })
     expect(result.ok).toBe(true)
     expect(captured[0]?.mcpServers).toBeUndefined()
+  })
+
+  it("(c) defaults mcpServers to the stamped daemon gateway for a claude-code spawn with none supplied", async () => {
+    // The identity arm of the default self-mount: claude-code sessions used
+    // to reach the daemon only through ambient project/global MCP config,
+    // which can never carry a per-session `callerSessionId` — so every spawn
+    // they made landed as an anonymous depth-0 orphan (spawn-attach.ts had
+    // no auto-parent to derive). The injected same-named entry shadows the
+    // ambient mount at the SDK layer and bakes the identity in.
+    const captured: { mcpServers?: AcpMcpServer[] }[] = []
+    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
+      captured.push({ mcpServers: opts.mcpServers })
+      return fakeAgentSession()
+    })
+    const daemonMcpUrl = "http://127.0.0.1:18790/mcp"
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      daemonMcpUrl,
+    })
+
+    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
+    expect(captured[0]?.mcpServers).toEqual([
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${ownId}` },
+    ])
+  })
+
+  it("(c) respects an explicit empty mcpServers opt-out for claude-code — no default injected", async () => {
+    const captured: { mcpServers?: AcpMcpServer[] }[] = []
+    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
+      captured.push({ mcpServers: opts.mcpServers })
+      return fakeAgentSession()
+    })
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      daemonMcpUrl: "http://127.0.0.1:18790/mcp",
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      mcpServers: [],
+    })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers).toEqual([])
+  })
+
+  it("(c) shouldInjectDaemonSelfMount: hermes always, claude-code on-host only, others never", () => {
+    // hermes keeps its historical behaviour even for a sandbox spawn (the
+    // box's own daemon re-resolves the spawn on its side); claude-code's
+    // mount is identity-only and a box can't reach this daemon's loopback
+    // gateway, so a sandbox spawn is excluded.
+    expect(shouldInjectDaemonSelfMount("hermes", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("hermes", "e2b")).toBe(true)
+    expect(shouldInjectDaemonSelfMount("claude-code", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("claude-code", "e2b")).toBe(false)
+    expect(shouldInjectDaemonSelfMount("codex", undefined)).toBe(false)
+    expect(shouldInjectDaemonSelfMount("gemini", undefined)).toBe(false)
   })
 
   it("(c) stamps callerSessionId onto a CALLER-provided mcpServers entry that targets the daemon (identity ≠ capability)", async () => {
@@ -1434,6 +1496,29 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
 
     const result = await spawnAgentSession(deps, {
       adapter: "hermes",
+      cwd: "/tmp",
+      role: "executor",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.mcpServers).toEqual([
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&callerSessionId=${result.descriptor.id}`,
+        },
+      ])
+    }
+  })
+
+  it("executor (explicit) gates the claude-code default-gateway injection with denyTools too", async () => {
+    // The identity mount obeys the same delegation hard-gate as the hermes
+    // capability mount — an executor claude-code child gets the daemon's
+    // tools minus agent_start/agent_prompt.
+    const { deps } = baseDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
       cwd: "/tmp",
       role: "executor",
     })
