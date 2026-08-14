@@ -785,6 +785,12 @@ export interface RuntimeHttpServerOptions {
      *  `agentproto serve`). Surfaced via `/health` so lifecycle tooling can
      *  report what is actually RUNNING, not what is installed on disk. */
     version?: string
+    /** Build identity of the binary actually serving — sha + builtAt are
+     *  stamped into the CLI at build time, `source` is the serve command's
+     *  runtime judgement ("workspace" | "published" | "unknown"). Version
+     *  alone can't distinguish a workspace dist from the published tarball
+     *  of the same release; this can. */
+    build?: { sha?: string; builtAt?: string; source?: string }
     /** Effective `daemon.resumeSessionsOnBoot` knob (§5, PR-4). Kept in sync
      *  with the `daemon_health` MCP tool's field of the same name. */
     resumeSessionsOnBoot?: boolean
@@ -1229,6 +1235,7 @@ export async function startHttpServer(
         // node+entry pair launchd (or the shell) exec'd. Lifecycle tooling
         // (`agentproto daemon start/stop/status`) reports these.
         version: opts.meta.version ?? null,
+        build: opts.meta.build ?? null,
         pid: process.pid,
         node: process.execPath,
         entry: process.argv[1] ?? null,
