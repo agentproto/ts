@@ -24,7 +24,7 @@ import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
 import type { SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
-import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync } from "node:fs"
+import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
@@ -3701,7 +3701,7 @@ export function createSessionsRegistry(opts?: {
           heldIdsByBucket.get(slug) ?? EMPTY_ID_SET,
         )
 
-  const persistSnapshot = async (): Promise<void> => {
+  const persistOnce = async (): Promise<void> => {
     try {
       const savedAt = new Date().toISOString()
       if (partitioned) {
@@ -3723,6 +3723,33 @@ export function createSessionsRegistry(opts?: {
           err instanceof Error ? err.message : String(err)
         }`
       )
+    }
+  }
+
+  // Serialize persist rounds. `schedulePersist` debounces only the START
+  // of a round — under churn a new debounce timer fires while the
+  // previous (async, multi-await) round is still writing, and the two
+  // rounds then interleave writes to the same bucket files. With the
+  // old shared tmp path that interleaving truncated snapshots (the
+  // 2026-08-14 registry wipe); with unique tmp names it "only" wastes
+  // writes and can land an older round's rename after a newer one's.
+  // One round in flight at a time, with a single coalesced re-run for
+  // every request that arrived mid-round, removes the overlap entirely.
+  let persistRunning = false
+  let persistRerun = false
+  const persistSnapshot = async (): Promise<void> => {
+    if (persistRunning) {
+      persistRerun = true
+      return
+    }
+    persistRunning = true
+    try {
+      do {
+        persistRerun = false
+        await persistOnce()
+      } while (persistRerun)
+    } finally {
+      persistRunning = false
     }
   }
 
@@ -7014,9 +7041,26 @@ function loadHistorySnapshot(
   try {
     parsed = JSON.parse(raw)
   } catch {
-    console.warn(
-      `[sessions] history file ${persistPath} is malformed — ignoring`,
-    )
+    // QUARANTINE, don't just ignore: this bucket still counts as
+    // boot-loaded, so the first persist will overwrite `persistPath`
+    // verbatim with the live-only view — if the corrupt bytes (usually a
+    // truncated snapshot from a write that died mid-flight) stay at the
+    // canonical path, that overwrite is the moment the user's history
+    // becomes unrecoverable. Moving them aside costs a rename and keeps
+    // the raw material a manual restore needs (2026-08-14 registry wipe).
+    const quarantine = `${persistPath}.corrupt-${Date.now()}`
+    try {
+      renameSync(persistPath, quarantine)
+      console.warn(
+        `[sessions] history file ${persistPath} is malformed — ` +
+          `quarantined to ${quarantine} and starting this bucket empty`,
+      )
+    } catch {
+      console.warn(
+        `[sessions] history file ${persistPath} is malformed and could ` +
+          `not be quarantined — ignoring`,
+      )
+    }
     return
   }
   if (!Array.isArray(parsed.sessions)) return

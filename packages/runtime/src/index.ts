@@ -693,6 +693,21 @@ export interface CreateGatewayOptions {
   name?: string
   /** Server version advertised over MCP. */
   version?: string
+  /** Build identity of the binary actually serving — surfaced verbatim via
+   *  `/health` and `daemon_health` so an operator can tell a workspace dist
+   *  from the published tarball of the same version. `sha`/`builtAt` are
+   *  stamped into the CLI at build time (tsup `define`); `source` is the
+   *  serve command's runtime judgement of where its own entry lives. */
+  build?: {
+    /** Short git sha of the checkout the dist was built from ("" when the
+     *  build ran outside git). */
+    sha?: string
+    /** ISO timestamp of the build. */
+    builtAt?: string
+    /** "workspace" (a checkout's dist), "published" (npm/npx install), or
+     *  "unknown". */
+    source?: string
+  }
   /**
    * Run BOOT.md once at startup. Pass `false` to disable. Defaults to
    * `true`. The boot file is plain markdown — frontmatter-free; the
@@ -1678,6 +1693,8 @@ export async function createGateway(
       crashDetectIntervalMs,
       restartSweepIntervalMs,
       turnStallAfterMs,
+      ...(opts.version ? { version: opts.version } : {}),
+      ...(opts.build ? { build: opts.build } : {}),
     })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
@@ -2136,6 +2153,7 @@ export async function createGateway(
       registered,
       startedAt,
       ...(opts.version ? { version: opts.version } : {}),
+      ...(opts.build ? { build: opts.build } : {}),
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,

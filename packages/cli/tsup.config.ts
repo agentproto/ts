@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
@@ -5,8 +6,30 @@ const { version } = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8")
 )
 
+// Build identity, embedded so a running daemon can say WHICH build it is
+// (version alone can't: a workspace dist and the published tarball of the
+// same release both report e.g. "0.13.0"). Best-effort: a tarball rebuild
+// outside git gets empty strings, and consumers render that as "unknown".
+const gitSha = (() => {
+  try {
+    return execSync("git rev-parse --short HEAD", {
+      cwd: new URL(".", import.meta.url).pathname,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim()
+  } catch {
+    return ""
+  }
+})()
+const builtAt = new Date().toISOString()
+
 export default createTsupConfig({
-  define: { __CLI_VERSION__: JSON.stringify(version) },
+  define: {
+    __CLI_VERSION__: JSON.stringify(version),
+    __CLI_BUILD_SHA__: JSON.stringify(gitSha),
+    __CLI_BUILT_AT__: JSON.stringify(builtAt),
+  },
   banner: `/**
  * @agentproto/cli v${version}
  * The \`agentproto\` binary — install / run / serve AIP-45 agent CLIs.

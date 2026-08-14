@@ -239,11 +239,25 @@ async function runUninstall(): Promise<number> {
 export interface DaemonHealthInfo {
   url: string
   version?: string | null
+  /** Build identity of the running binary — see the runtime's meta.build. */
+  build?: { sha?: string; builtAt?: string; source?: string } | null
   pid?: number
   node?: string
   entry?: string | null
   workspace?: string
   uptimeMs?: number
+}
+
+/** " (workspace abc1234, built …)" — or "" when the daemon predates the
+ *  `build` field. Shared by `start` and `status` so both render the same. */
+export function renderBuild(build: DaemonHealthInfo["build"]): string {
+  if (!build) return ""
+  const parts = [
+    build.source,
+    build.sha || undefined,
+    build.builtAt ? `built ${build.builtAt}` : undefined,
+  ].filter((p): p is string => typeof p === "string" && p.length > 0)
+  return parts.length > 0 ? ` (${parts.join(", ")})` : ""
 }
 
 /** Single `/health` attempt against the configured bind/port — null when
@@ -297,7 +311,7 @@ function printLifecycleInfo(verb: string, info: DaemonHealthInfo | null): void {
   }
   process.stdout.write(
     `agentproto daemon: ${verb}\n` +
-      `  version:   ${info.version ?? "?"} · pid ${info.pid ?? "?"} · up ${humaniseUptime(info.uptimeMs ?? 0)}\n` +
+      `  version:   ${info.version ?? "?"}${renderBuild(info.build)} · pid ${info.pid ?? "?"} · up ${humaniseUptime(info.uptimeMs ?? 0)}\n` +
       `  bin:       ${tilde(info.node)} ${tilde(info.entry)}\n` +
       `  url:       ${info.url}\n` +
       `  workspace: ${tilde(info.workspace)}\n` +
@@ -677,9 +691,10 @@ async function runStatus(): Promise<number> {
         workspace?: string
         uptimeMs?: number
         version?: string | null
+        build?: DaemonHealthInfo["build"]
       }
       health =
-        `ok${body.version ? ` · v${body.version}` : ""}` +
+        `ok${body.version ? ` · v${body.version}` : ""}${renderBuild(body.build)}` +
         ` · workspace=${body.workspace ?? "?"} · up ${humaniseUptime(body.uptimeMs ?? 0)}`
     } else {
       health = `HTTP ${res.status}`
