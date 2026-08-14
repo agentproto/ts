@@ -636,6 +636,12 @@ export interface DaemonHealth {
   workspace: string
   registered: readonly string[]
   uptimeMs?: number
+  /** Daemon build version. Absent on daemons predating the field. */
+  version?: string | null
+  /** Build identity of the running binary — `source` says workspace dist
+   *  vs published tarball, `sha`/`builtAt` pin the exact build (the
+   *  version string alone can't). Absent on daemons predating the field. */
+  build?: { sha?: string; builtAt?: string; source?: string } | null
   /** Effective `daemon.resumeSessionsOnBoot` knob — the live boot-behavior the
    *  daemon is actually running with (runtime http-server `handleHealth`).
    *  Absent on daemons predating the field. */

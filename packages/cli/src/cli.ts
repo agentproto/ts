@@ -204,7 +204,10 @@ async function main(argv: readonly string[]): Promise<number> {
 
   if (verbIdx === -1) {
     if (argv.includes("--version") || argv.includes("-v")) {
-      process.stdout.write(`agentproto ${__CLI_VERSION__}\n`)
+      const build = __CLI_BUILD_SHA__
+        ? ` (${__CLI_BUILD_SHA__}, built ${__CLI_BUILT_AT__})`
+        : ""
+      process.stdout.write(`agentproto ${__CLI_VERSION__}${build}\n`)
       return 0
     }
     if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) {

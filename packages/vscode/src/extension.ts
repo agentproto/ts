@@ -230,8 +230,13 @@ async function showHealth(client: DaemonClient): Promise<void> {
       typeof health.uptimeMs === "number"
         ? `${Math.round(health.uptimeMs / 1000)}s`
         : "—"
+    const build = health.build
+      ? ` · ${[health.build.source, health.build.sha, health.build.builtAt ? `built ${health.build.builtAt}` : undefined]
+          .filter((p): p is string => typeof p === "string" && p.length > 0)
+          .join(" ")}`
+      : ""
     vscode.window.showInformationMessage(
-      `agentproto daemon: ${health.status} · workspace ${health.workspace} · uptime ${uptime}`,
+      `agentproto daemon: ${health.status}${health.version ? ` · v${health.version}` : ""}${build} · workspace ${health.workspace} · uptime ${uptime}`,
     )
   } catch (err) {
     vscode.window.showErrorMessage(
