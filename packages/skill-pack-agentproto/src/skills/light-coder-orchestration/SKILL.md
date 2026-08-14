@@ -1,145 +1,147 @@
 ---
 name: light-coder-orchestration
 description: >-
-  Orchestrer des modèles de code "légers"/économiques (glm-5.2, deepseek-v4-pro,
-  kimi, qwen… via hermes/OpenRouter, ou claude-code) depuis une session cowork
-  via le daemon agentproto, avec un FILET DE VÉRIFICATION Sonnet. Déclenche ce
-  skill quand l'utilisateur veut « faire coder une tâche par un modèle pas cher
-  », « tester glm / deepseek / un autre modèle sur du vrai code », « lancer
-  plusieurs agents en parallèle sur des WP », « babysitter un agent », ou
-  industrialiser un découpage tâche → exécution modèle léger → vérif. Complète
-  le skill agent-session-orchestration-agentproto en ajoutant :
-  choix/branchement des modèles légers, gate vert systématique, passe de vérif
-  Sonnet, parallélisme prudent, et discipline de commit.
+  Orchestrate "light"/economical coding models (glm-5.2, deepseek-v4-pro,
+  kimi, qwen… via hermes/OpenRouter, or claude-code) from a cowork session
+  via the agentproto daemon, with a Sonnet VERIFICATION SAFETY NET. Trigger
+  this skill when the user wants "have a task coded by a cheap model", "try
+  glm / deepseek / another model on real code", "launch several agents in
+  parallel on work packages", "babysit an agent", or industrialize a
+  breakdown of task → light-model execution → verification. Complements the
+  agent-session-orchestration-agentproto skill by adding: light-model
+  selection/wiring, a systematic green gate, a Sonnet verification pass,
+  careful parallelism, and commit discipline.
 ---
 
-# Light-coder orchestration (modèles économiques + filet Sonnet)
+# Light-coder orchestration (economical models + Sonnet safety net)
 
-Méthodologie éprouvée sur un vrai projet (extraction monorepo, ~10 WP livrés
-verts). **L'orchestrateur (toi, dans cowork) ne code pas** : il découpe en WP
-bornés, fait exécuter par un modèle léger via agentproto, et fait **vérifier par
-Sonnet**. Les modèles légers sont bons en implémentation bornée mais ont des
-angles morts → la vérif Sonnet n'est pas optionnelle.
+Methodology proven on a real project (monorepo extraction, ~10 work
+packages delivered green). **The orchestrator (you, in cowork) doesn't
+code**: it breaks work into bounded work packages, has them executed by a
+light model via agentproto, and has them **verified by Sonnet**. Light
+models are good at bounded implementation but have blind spots → the
+Sonnet verification isn't optional.
 
-## Principe en une ligne
+## Principle in one line
 
-`brief borné → exécution (modèle léger) → gate vert (check-types/tests) → passe de vérif Sonnet → commit`
+`bounded brief → execution (light model) → green gate (check-types/tests) → Sonnet verification pass → commit`
 
-## 1. Brancher un modèle léger (hermes via OpenRouter)
+## 1. Wiring up a light model (hermes via OpenRouter)
 
-- Adapters via `adapter_list`. `claude-code` et `hermes` sont en ACP.
-- **hermes** route plein de modèles OpenRouter (glm-5.2, deepseek-v4-pro, kimi,
-  qwen, grok, gpt-5.x…). Sélection : `agent_start(adapter:"hermes")` **puis**
-  envoie `/model <id>` comme **premier prompt** — `/model` fonctionne en ACP
-  hermes (≠ claude-code où `/model` est bloqué et sans param `model` au spawn).
-  Vérifie la sortie : `Model switched to: … · Provider: openrouter`.
-- **Prérequis daemon** : la clé du provider doit être dans l'environnement du
-  **daemon** (ex. `OPENROUTER_API_KEY`) — `hermes acp` hérite de l'env du
-  daemon. Symptôme si absente : « No LLM provider configured » au `/model`. (La
-  sélection faite dans le TUI hermes interactif n'est PAS héritée par les
-  sessions ACP.)
-- grok-4.3 marche souvent par défaut (OAuth Nous, fichier
-  `~/.hermes/auth.json`), les autres modèles passent par leur clé d'env.
+- Adapters via `adapter_list`. `claude-code` and `hermes` are over ACP.
+- **hermes** routes to plenty of OpenRouter models (glm-5.2, deepseek-v4-pro,
+  kimi, qwen, grok, gpt-5.x…). Selection: `agent_start(adapter:"hermes")`
+  **then** send `/model <id>` as the **first prompt** — `/model` works over
+  hermes ACP (≠ claude-code, where `/model` is blocked and there's no
+  `model` param at spawn). Check the output:
+  `Model switched to: … · Provider: openrouter`.
+- **Daemon prerequisite**: the provider's key must be in the **daemon's**
+  environment (e.g. `OPENROUTER_API_KEY`) — `hermes acp` inherits the
+  daemon's env. Symptom if missing: "No LLM provider configured" on
+  `/model`. (A selection made in the interactive hermes TUI is NOT
+  inherited by ACP sessions.)
+- grok-4.3 often works by default (Nous OAuth, `~/.hermes/auth.json`
+  file), other models go through their own env key.
 
-## 2. Le brief (borné, autoportant)
+## 2. The brief (bounded, self-contained)
 
-Un bon brief de WP :
+A good work-package brief has:
 
-- **Périmètre de fichiers explicite** + interdits clairs (« ne touche pas X »).
-- **Contexte récent** que le modèle ne peut pas deviner (migrations récentes,
-  renommages d'API…).
-- **Gate** : les commandes exactes qui doivent être vertes (`check-types`,
-  `test`).
-- **STOP-si-fork** : « si choix de design non trivial, STOP et demande » + nomme
-  les forks probables et la valeur par défaut souhaitée.
-- Demande un **compte-rendu final** : fichiers touchés, choix de design, exit
-  codes.
-- Avant de déléguer, colle le Brief Contract de `supervisor-session` dans
-  chaque brief.
+- **Explicit file scope** + clear prohibitions ("don't touch X").
+- **Recent context** the model can't guess (recent migrations, API
+  renames…).
+- **Gate**: the exact commands that must be green (`check-types`, `test`).
+- **STOP-if-fork**: "if a non-trivial design choice comes up, STOP and
+  ask" + name the likely forks and the desired default.
+- Ask for a **final report**: files touched, design choices, exit codes.
+- Before delegating, paste `supervisor-session`'s Brief Contract into
+  every brief.
 
-## 3. Autonome vs babysit
+## 3. Autonomous vs babysit
 
-- **Autonome** (launch-and-leave) pour les WP à faible risque, additifs, gated
-  par les tests : un seul brief complet → le modèle déroule → tu vérifies à la
-  fin. C'est là qu'on voit vraiment la qualité d'un modèle.
-- **Babysit** (pas-à-pas) pour le risqué/ambigu : 1 étape par tour, tu **relis
-  le diff** entre chaque, puis donne l'étape suivante. Le babysitting masque les
-  faiblesses du modèle (il l'empêche de partir en vrille) — utile pour livrer,
-  trompeur pour évaluer.
+- **Autonomous** (launch-and-leave) for low-risk, additive work packages
+  gated by tests: a single complete brief → the model runs it through →
+  you check at the end. This is where you really see a model's quality.
+- **Babysit** (step-by-step) for anything risky/ambiguous: 1 step per
+  turn, **re-read the diff** between each, then hand out the next step.
+  Babysitting masks a model's weaknesses (it keeps it from spiraling) —
+  useful for delivering, misleading for evaluating.
 
-## 4. Le filet de vérification Sonnet (à la fin) — NON optionnel
+## 4. The Sonnet verification safety net (at the end) — NOT optional
 
-Après qu'un modèle léger rend « vert », lance une **session Sonnet (claude-code)
-séparée** qui :
+Once a light model reports "green", launch a **separate Sonnet
+(claude-code) session** that:
 
-1. **Relance** `check-types` + `test` (exit codes réels — ne crois pas le
-   compte-rendu sur parole).
-2. **Cause racine** de tout échec : bug introduit par le WP vs pré-existant —
-   **exige une preuve**, pas une affirmation. (N'utilise PAS `git stash` sur un
-   repo partagé.)
-3. **Revue de scope** : `git diff --stat` — rien hors périmètre, pas de secret.
-4. **Régression** : les invariants/tests existants tiennent toujours.
+1. **Re-runs** `check-types` + `test` (real exit codes — don't take the
+   report at its word).
+2. **Root-causes** any failure: bug introduced by the work package vs.
+   pre-existing — **demands proof**, not an assertion. (Do NOT use `git
+   stash` on a shared repo.)
+3. **Scope review**: `git diff --stat` — nothing out of scope, no secrets.
+4. **Regression**: existing invariants/tests still hold.
 
-Pourquoi : les modèles légers (a) écrivent parfois un **test bogué** puis
-**mal-diagnostiquent** l'échec (« c'est pré-existant ») et partent en impasse ;
-(b) calent sur l'**infra de test** (devDep vitest manquante, dist pas rebuild) ;
-(c) peuvent **se dégrader** (format d'outil qui bave). Sonnet attrape tout ça en
-quelques minutes.
+Why: light models (a) sometimes write a **buggy test** then
+**misdiagnose** the failure ("it's pre-existing") and go down a dead end;
+(b) stumble on **test infra** (missing vitest devDep, dist not rebuilt);
+(c) can **degrade** (a tool-call format that garbles). Sonnet catches all
+of this in a few minutes.
 
-## 5. Parallélisme prudent
+## 5. Careful parallelism
 
-- Lance plusieurs WP en parallèle **seulement sur des périmètres de fichiers
-  disjoints**. Donne à chacun la consigne « ignore les erreurs confinées aux
-  fichiers que tu ne touches pas (travail parallèle) ».
-- **Point partagé inévitable** (ex. un `index.ts` de package que deux WP
-  exportent) → fais une **passe de consolidation** unique (un seul writer) qui
-  réconcilie et relance le gate combiné. Sans ça, le dernier writer écrase
-  l'autre.
+- Launch several work packages in parallel **only over disjoint file
+  scopes**. Give each one the instruction "ignore errors confined to
+  files you don't touch (parallel work)".
+- **Unavoidable shared point** (e.g. a package's `index.ts` that two work
+  packages both export from) → do a single **consolidation pass** (one
+  writer) that reconciles and re-runs the combined gate. Without this,
+  the last writer overwrites the other.
 
-## 6. Gotchas (vécus)
+## 6. Gotchas (real-world)
 
-- **Un prompt en file n'interrompt pas un tour en cours** → pour stopper un
-  agent qui déraille, il faut le **kill**, pas lui prompter « stop ». Le code
-  déjà écrit est sur disque, donc rien de perdu à killer.
-- **Les sessions se font tuer par vagues** (cleanup d'env / sessions
-  concurrentes) → travaille en t'appuyant sur le **disque** (vérité =
-  `git status`/fichiers), pas sur l'état en mémoire d'une session.
-- **Mode autonome : le modèle s'arrête souvent en chemin** → un nudge «
-  continue, finis, passe le gate jusqu'au vert » suffit en général.
-- **Migrations** : schéma → `db:generate` (jamais hand-écrire le `.sql`).
-  Vérifie la cohérence `snapshot`/`_journal`.
-- **Commit** : passe par une **session hôte** (claude-code), pas le sandbox (le
-  hook husky + les perms `.git/objects` cassent dans le sandbox).
-- **Repo partagé entre agents** : les `git add` larges des sessions concurrentes
-  **aspirent** tes fichiers dans leurs commits → commits entremêlés. Parade :
-  lance les agents en **worktree isolé**, ou stage **ciblé**
-  (`git add <chemins>` jamais `-A`) + commit rapidement.
-- **Ne pas committer les docs de travail/plans** sauf demande ; commit = code.
+- **Queuing a prompt doesn't interrupt an in-progress turn** → to stop an
+  agent that's going off the rails, you have to **kill** it, not prompt it
+  "stop". Code already written is on disk, so nothing is lost by killing
+  it.
+- **Sessions get killed in waves** (env cleanup / concurrent sessions) →
+  work off of **disk** as the source of truth (`git status`/files), not a
+  session's in-memory state.
+- **Autonomous mode: the model often stalls partway through** → a nudge
+  "continue, finish, get the gate to green" is usually enough.
+- **Migrations**: schema → `db:generate` (never hand-write the `.sql`).
+  Check `snapshot`/`_journal` consistency.
+- **Commit**: go through a **host session** (claude-code), not the
+  sandbox (the husky hook + `.git/objects` perms break in the sandbox).
+- **Repo shared between agents**: broad `git add`s from concurrent
+  sessions **suck up** your files into their commits → interleaved
+  commits. Workaround: launch agents in an **isolated worktree**, or stage
+  **narrowly** (`git add <paths>`, never `-A`) + commit promptly.
+- **Don't commit working docs/plans** unless asked; commit = code.
 
-## 7. Discipline de commit
+## 7. Commit discipline
 
-- Stage **ciblé** (chemins explicites), jamais `git add -A` sur un tree partagé.
-- Exclure les `.md`/plans si l'utilisateur veut « code only ».
-- Vérifier `git diff --cached --name-only` (0 fichier hors périmètre, 0 secret).
-- Commit **sans push** sauf go explicite.
+- Stage **narrowly** (explicit paths), never `git add -A` on a shared
+  tree.
+- Exclude `.md`/plans if the user wants "code only".
+- Check `git diff --cached --name-only` (0 files out of scope, 0 secrets).
+- Commit **without pushing** unless explicitly told to.
 
-## 8. Choisir le modèle
+## 8. Choosing the model
 
-- Pas de gagnant absolu parmi les légers : tous bons en impl bornée, tous
-  capables d'un angle mort. **Le différenciateur, c'est le filet Sonnet**, pas
-  le modèle.
-- Gros contexte (ex. glm-5.2 ~1M) = utile pour les tâches qui brassent beaucoup
-  de fichiers.
-- Pour **livrer** vite et sûr : Sonnet exécute + Sonnet/toi vérifie. Pour
-  **économiser** : modèle léger exécute + Sonnet vérifie.
+- No absolute winner among the light models: all are good at bounded
+  implementation, all capable of a blind spot. **The differentiator is
+  the Sonnet safety net**, not the model.
+- Large context (e.g. glm-5.2 ~1M) = useful for tasks that touch a lot of
+  files.
+- To **deliver** fast and safe: Sonnet executes + Sonnet/you verify. To
+  **save cost**: light model executes + Sonnet verifies.
 
-## Checklist par WP
+## Checklist per work package
 
-- [ ] Brief borné (périmètre, interdits, gate, STOP-si-fork, compte-rendu)
-- [ ] Modèle branché (`/model` confirmé) si modèle léger
-- [ ] Exécution (autonome ou babysit selon le risque)
-- [ ] Nudge si arrêt prématuré
-- [ ] **Passe de vérif Sonnet** (re-run gate + cause racine + scope +
-      régression)
-- [ ] Consolidation si périmètres partagés
-- [ ] Commit ciblé (host, scoped, no push) — ou worktree isolé
+- [ ] Bounded brief (scope, prohibitions, gate, STOP-if-fork, report)
+- [ ] Model wired up (`/model` confirmed) if light model
+- [ ] Execution (autonomous or babysit depending on risk)
+- [ ] Nudge if it stalls prematurely
+- [ ] **Sonnet verification pass** (re-run gate + root cause + scope +
+      regression)
+- [ ] Consolidation if scopes overlap
+- [ ] Scoped commit (host, scoped, no push) — or isolated worktree
