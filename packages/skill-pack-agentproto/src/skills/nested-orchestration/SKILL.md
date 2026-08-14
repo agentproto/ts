@@ -85,7 +85,7 @@ Brief type donné au parent :
    bornée passée via l'arg `prompt`. Donne à chacun un `label` distinct. »
 2. « Fan-in : appelle `session_monitor({ sessionIds:[tous], event:"turn-end" })`
    et répète jusqu'à ce que les N aient rendu `turn-end`. »
-3. « Pour chaque enfant, `get_agent_session_output` → extrais le résultat. »
+3. « Pour chaque enfant, `agent_output` → extrais le résultat. »
 4. « `session_tree` → confirme : toi (parent) `isOrchestrator:true` depth 0, N
    enfants depth 1, chacun `parentSessionId` = ton id. »
 

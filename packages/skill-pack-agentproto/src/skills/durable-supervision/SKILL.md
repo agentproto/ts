@@ -61,7 +61,7 @@ policy_attach({
 Le gate shell est `{ command, args?, cwd?, timeoutMs? }`, exit 0 = pass. **Deux
 pièges prouvés en live** :
 
-1. **Allowlist.** Le gate passe par la même allowlist que `execute_command`
+1. **Allowlist.** Le gate passe par la même allowlist que `command_execute`
    (`<workspace>/.agentproto/allowed-commands.json`, default-deny). Un gate
    `test -f x` a échoué avec `gate command 'test' not in allowlist` → policy
    `blocked`. Utilise un binaire allowlisté (`ls`, `cat`, `git`, `node`, `pnpm`,
@@ -210,7 +210,7 @@ Vécu en vrai 2026-07-01/02, question directe de l'utilisateur : « comment êtr
 SÛR que tu continues à bosser sans que je repasse te relancer ? ». Distinction
 cruciale entre deux notions d'« attendre » :
 
-- **`session_monitor`/`poll_events`/`agentproto sessions wait` appelés
+- **`session_monitor`/`session_events_poll`/`agentproto sessions wait` appelés
   directement** : bloquent au mieux ~45-49s par appel (le transport MCP coupe à
   ~60s côté serveur) — et surtout, ce blocage vit **dans TON tour actif**. Dès
   que ton tour se termine, plus aucune attente ne tourne ; rien ne te redonne la
@@ -226,7 +226,7 @@ cruciale entre deux notions d'« attendre » :
   `agentproto sessions wait <id-or-name> [--policy <policyId>] --timeout <ms> --json`
   fait exactement la même boucle de tranches ~50s en interne (même endpoint REST
   `/policies/:id/wait` / `/sessions/:id/wait` que
-  `session_monitor`/`poll_events` — **pas de capacité serveur différente**,
+  `session_monitor`/`session_events_poll` — **pas de capacité serveur différente**,
   juste le fait que c'est UN PROCESSUS OS autonome que tu peux backgrounder),
   mais comme c'est un processus séparé, le harnais te notifie quand il sort,
   MÊME entre deux tours.

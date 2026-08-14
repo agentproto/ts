@@ -129,7 +129,7 @@ sous-gateway) pour qu'un agent **distant** s'y connecte, ou exposer un
 - **Secret one-way** : `setup_*` ne réaffiche jamais la valeur. Ne construis pas
   de flux qui suppose pouvoir la relire ; raisonne sur le statut `ready`.
 - **`tunnel_status` accepte le name** : pas besoin de retenir l'UUID si tu as
-  passé un `name` au `create_tunnel`.
+  passé un `name` au `tunnel_create`.
 - **targetHost** : `127.0.0.1` par défaut ; un service bind-IPv6-only ne
   répondra qu'avec `localhost` — sinon le tunnel proxifie dans le vide.
 
