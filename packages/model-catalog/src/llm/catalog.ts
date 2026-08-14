@@ -756,6 +756,18 @@ export const LLM_PRICING_CATALOG = {
     vendor: "mistral",
     provider: "mistral",
   },
+  "devstral-latest": {
+    inputPer1M: 0.5, // TODO verify pricing
+    outputPer1M: 1.5, // TODO verify pricing
+    vendor: "mistral",
+    provider: "mistral",
+  },
+  "magistral-small-latest": {
+    inputPer1M: 0.06, // TODO verify pricing
+    outputPer1M: 0.18, // TODO verify pricing
+    vendor: "mistral",
+    provider: "mistral",
+  },
   "devstral-medium-latest": {
     inputPer1M: 0.5, // TODO verify pricing
     outputPer1M: 1.5, // TODO verify pricing
@@ -840,6 +852,8 @@ export const MODEL_ALIASES = {
   "mistralai/mistral-medium-3-5": "mistral-medium-3-5",
   "mistralai/codestral-latest": "codestral-latest",
   "mistralai/ministral-8b-latest": "ministral-8b-latest",
+  "mistralai/devstral-latest": "devstral-latest",
+  "mistralai/magistral-small-latest": "magistral-small-latest",
   "mistralai/devstral-medium-latest": "devstral-medium-latest",
   // xAI — alias grok-latest to grok-4.3 (current default).
   "grok-latest": "grok-4.3",
