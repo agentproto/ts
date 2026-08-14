@@ -15,6 +15,7 @@ import {
   type ReconcilerSession,
 } from "../pr-provenance-reconciler.js"
 import type { GhRunner } from "../pr-provenance-stamp.js"
+import type { ToolCallRecord } from "../tool-call-record.js"
 import { MARKER } from "../pr-provenance.js"
 
 const flush = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
@@ -235,5 +236,163 @@ describe("createPrProvenanceReconciler", () => {
     await flush()
 
     expect(resolveOpenPr).not.toHaveBeenCalled()
+  })
+})
+
+// ─── Lane A: exact attribution from recorded tool calls ─────────────────────
+describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
+  const createRecord = (sessionId: string, number: number): ToolCallRecord => ({
+    sessionId,
+    tool: "bash",
+    command: `gh pr create --title t-${number}`,
+    isError: false,
+    createdPrUrl: `https://github.com/o/r/pull/${number}`,
+    createdPrNumber: number,
+    ts: "t",
+  })
+
+  it("stamps from the session's own record even when the branch no longer resolves (chat back on main)", async () => {
+    // The blind spot this lane closes: the session branched, opened the PR,
+    // and checked the shared main checkout back out within one turn — so by
+    // turn-end the branch resolver answers null. The record still names it.
+    const { reg, recorded } = fakeRegistry([execSession(), SUPER])
+    const editBodies: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
+      editBodies.push(String(args[4]))
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => null,
+      listToolCalls: async id => (id === "sess_exec" ? [createRecord("sess_exec", 77)] : []),
+      run,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(recorded).toEqual([
+      { sessionId: "sess_exec", number: 77, url: "https://github.com/o/r/pull/77" },
+    ])
+    expect(editBodies).toHaveLength(1)
+    expect(editBodies[0]).toContain(MARKER)
+    expect(editBodies[0]).toContain("`sess_exec`")
+  })
+
+  it("attributes each PR to ITS author when two different sessions share one cwd", async () => {
+    // Two chat sessions in the same repo-root checkout, each opened its own
+    // PR mid-turn. Branch resolution answers null for both (default-branch
+    // guard) — the records keep the attributions apart.
+    const a = execSession({ id: "sess_a", parentSessionId: undefined })
+    const b = execSession({ id: "sess_b", parentSessionId: undefined })
+    const { reg, recorded } = fakeRegistry([a, b])
+    const editBodies: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
+      editBodies.push(String(args[4]))
+      return { exitCode: 0, stdout: "" }
+    }
+    const records: Record<string, ToolCallRecord[]> = {
+      sess_a: [createRecord("sess_a", 101)],
+      sess_b: [createRecord("sess_b", 102)],
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => null,
+      listToolCalls: async id => records[id] ?? [],
+      run,
+    })
+
+    bus.emit(turnEnd("sess_b"))
+    await flush()
+    bus.emit(turnEnd("sess_a"))
+    await flush()
+
+    expect(recorded).toEqual([
+      { sessionId: "sess_b", number: 102, url: "https://github.com/o/r/pull/102" },
+      { sessionId: "sess_a", number: 101, url: "https://github.com/o/r/pull/101" },
+    ])
+    expect(editBodies).toHaveLength(2)
+    expect(editBodies[0]).toContain("`sess_b`")
+    expect(editBodies[1]).toContain("`sess_a`")
+  })
+
+  it("does not let a same-cwd sibling steal a PR another session already stamped via lane B", async () => {
+    // sess_a stamps its PR from its record; later sess_b's turn ends while
+    // the shared cwd's branch still resolves to sess_a's PR — the shared
+    // per-PR dedupe must stop lane B from restamping it as sess_b's.
+    const a = execSession({ id: "sess_a", parentSessionId: undefined })
+    const b = execSession({ id: "sess_b", parentSessionId: undefined })
+    const { reg, recorded } = fakeRegistry([a, b])
+    const editBodies: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
+      editBodies.push(String(args[4]))
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => ({ number: 101, url: "https://github.com/o/r/pull/101" }),
+      listToolCalls: async id => (id === "sess_a" ? [createRecord("sess_a", 101)] : []),
+      run,
+    })
+
+    bus.emit(turnEnd("sess_a"))
+    await flush()
+    bus.emit(turnEnd("sess_b"))
+    await flush()
+
+    expect(recorded).toEqual([
+      { sessionId: "sess_a", number: 101, url: "https://github.com/o/r/pull/101" },
+    ])
+    expect(editBodies).toHaveLength(1)
+    expect(editBodies[0]).toContain("`sess_a`")
+  })
+
+  it("skips a recorded PR already on the descriptor without touching gh", async () => {
+    const { reg, recorded } = fakeRegistry([
+      execSession({ openedPrs: [{ url: "https://github.com/o/r/pull/77" }] }),
+    ])
+    const run = vi.fn<GhRunner>(async () => ({ exitCode: 0, stdout: "" }))
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => null,
+      listToolCalls: async () => [createRecord("sess_exec", 77)],
+      run,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(run).not.toHaveBeenCalled()
+    expect(recorded).toHaveLength(0)
+  })
+
+  it("still falls back to branch resolution for a session with no usable records", async () => {
+    const { reg, recorded } = fakeRegistry([execSession(), SUPER])
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      listToolCalls: async () => [
+        { sessionId: "sess_exec", tool: "bash", command: "ls", isError: false, ts: "t" },
+      ],
+      run: okRun,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(recorded).toEqual([{ sessionId: "sess_exec", number: 42, url: PR.url }])
   })
 })

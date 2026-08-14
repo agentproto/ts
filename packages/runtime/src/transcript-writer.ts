@@ -23,6 +23,7 @@ import { join } from "node:path"
 import type { SessionObserver } from "./session-observer.js"
 import type { AgentStreamEvent } from "./sessions.js"
 import { extractCommandArgs } from "./tool-call-record.js"
+import { detectShellPrCreate } from "./pr-provenance.js"
 import type { SessionUsage } from "./usage.js"
 
 /** Debounce window for flushing a buffered text-delta/thought fragment
@@ -354,6 +355,18 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           const meta = evt.toolCallId ? state.toolCallMeta.get(evt.toolCallId) : undefined
           if (evt.toolCallId) state.toolCallMeta.delete(evt.toolCallId)
           const { command, args } = extractCommandArgs(meta?.arguments)
+          // Exact PR-creation provenance, captured at the only moment both
+          // halves exist together (command + result text) — see the
+          // `createdPrUrl` field's doc in tool-call-record.ts. Some harnesses
+          // surface the shell string as the tool NAME rather than in
+          // arguments, so fall back to that.
+          const createdPr =
+            (evt.isError ?? false)
+              ? null
+              : detectShellPrCreate(
+                  command ?? meta?.toolName,
+                  typeof evt.result === "string" ? evt.result : undefined,
+                )
           writeRecord(sessionId, state, {
             kind: "tool-call-record",
             sessionId,
@@ -362,6 +375,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             ...(args !== undefined ? { args } : {}),
             isError: evt.isError ?? false,
             ...(meta ? { durationMs: Date.now() - meta.startedAt } : {}),
+            ...(createdPr ? { createdPrUrl: createdPr.url, createdPrNumber: createdPr.number } : {}),
           })
           break
         }

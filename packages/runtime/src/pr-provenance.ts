@@ -235,6 +235,37 @@ export function parseGhPrCreate(
   return last
 }
 
+/**
+ * String-form counterpart of {@link parseGhPrCreate} for the in-agent tool
+ * lane: an ACP harness's Bash-style tool reports ONE shell string (possibly
+ * compound — `git push && gh pr create … | tail -1`), not an argv, so the
+ * argv parser above can't see it. Detects "this call created a PR" from the
+ * command string plus the call's recorded result text, and returns the
+ * created PR (LAST `…/pull/<n>` match in the result, same shadowing rule as
+ * {@link parseGhPrCreate} — `gh pr create` prints its URL after any notices).
+ *
+ * Quoted spans are stripped before matching so a command that merely
+ * MENTIONS the phrase — `grep "gh pr create" src/` over a result that quotes
+ * a PR url — can never read as a create. Best-effort by design: the caller
+ * additionally gates on the call's own `isError` (a failed create whose
+ * stderr cites an existing PR must not attribute that PR here).
+ */
+export function detectShellPrCreate(
+  command: string | undefined,
+  resultText: string | undefined,
+): { url: string; number: number } | null {
+  if (!command || !resultText) return null
+  const unquoted = command.replace(/'[^']*'/g, " ").replace(/"(?:[^"\\]|\\.)*"/g, " ")
+  if (!/(^|[\s;&|({])gh\s+pr\s+create(\s|$)/.test(unquoted)) return null
+  const re = /https?:\/\/\S+?\/pull\/(\d+)/g
+  let match: RegExpExecArray | null
+  let last: { url: string; number: number } | null = null
+  while ((match = re.exec(resultText)) !== null) {
+    last = { url: match[0], number: Number(match[1]) }
+  }
+  return last
+}
+
 /** `session.cwd == cwd || one contains the other` — the executor's cwd is
  *  usually the worktree root while the command may run in a subdir (or vice
  *  versa), so containment is checked in both directions. */

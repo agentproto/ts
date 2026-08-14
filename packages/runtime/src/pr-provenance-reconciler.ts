@@ -9,12 +9,22 @@
  * footer is never applied.
  *
  * This closes that gap tool-agnostically: it subscribes to the session event
- * bus and, at each executor session's turn-end / exit, resolves the OPEN PR for
- * that session's branch (via the injected {@link OpenPrResolver} port) and
- * stamps the same `@agentproto-bot` footer if it's missing — reusing
- * {@link stampFooterOnPr}. Turn-end/exit are only poll checkpoints, never an
- * assertion the PR is ready: the real predicate is "does an open PR for this
- * branch now exist?", answered by the resolver, not by timing.
+ * bus and, at each executor session's turn-end / exit, checks two lanes in
+ * order and stamps the same `@agentproto-bot` footer if it's missing —
+ * reusing {@link stampFooterOnPr}:
+ *
+ *   A. EXACT — the session's own recorded tool calls: the transcript writer
+ *      marks a successful `gh pr create` with the created PR's url/number
+ *      (`ToolCallRecord.createdPrUrl`), naming the author session directly.
+ *      Immune to branch switches and shared checkouts.
+ *   B. BRANCH — resolve the OPEN PR for the session cwd's current branch
+ *      (via the injected {@link OpenPrResolver} port), the fallback for
+ *      adapters whose tool calls aren't recorded.
+ *
+ * Turn-end/exit are only poll checkpoints, never an assertion the PR is
+ * ready: the real predicate is "did this session create a PR / does an open
+ * PR for this branch now exist?", answered by the records and resolver, not
+ * by timing.
  *
  * Strictly best-effort: every handler is wrapped so a missing session, an
  * unreachable forge, or a failed `gh` can never throw out of a bus callback.
@@ -28,6 +38,8 @@
 import type { SessionEventBus } from "./session-event-bus.js"
 import { stampFooterOnPr, type GhRunner } from "./pr-provenance-stamp.js"
 import type { FooterSession } from "./pr-provenance.js"
+import { readToolCallRecords } from "./tool-call-log.js"
+import type { ToolCallRecord } from "./tool-call-record.js"
 
 /**
  * Resolve the OPEN pull request for a session's working directory — i.e. the
@@ -70,6 +82,10 @@ export function createPrProvenanceReconciler(opts: {
   registry: ReconcilerRegistry
   sessionEvents: SessionEventBus
   resolveOpenPr: OpenPrResolver
+  /** Session's recorded tool calls, the exact-attribution source (lane A).
+   *  Defaults to reading the session's own events.jsonl via
+   *  {@link readToolCallRecords}; injectable for tests. */
+  listToolCalls?: (sessionId: string) => Promise<ToolCallRecord[]>
   run?: GhRunner
   host?: string
 }): PrProvenanceReconciler {
@@ -96,17 +112,18 @@ export function createPrProvenanceReconciler(opts: {
       lastPollAt.set(sessionId, Date.now())
     }
 
-    const pr = await opts.resolveOpenPr(cwd)
-    if (!pr) return
-
-    // Per-PR dedupe: skip a PR already stamped this run, or one already recorded
-    // on the descriptor (a prior daemon generation, or the command_execute
-    // path). A session may legitimately open more than one PR — each distinct
-    // url is stamped exactly once.
-    if (stampedPrUrls.has(pr.url)) return
-    if (desc.openedPrs && desc.openedPrs.some(recorded => recorded.url === pr.url)) {
-      stampedPrUrls.add(pr.url)
-      return
+    // Per-PR dedupe shared by both lanes: skip a PR already stamped this run,
+    // or one already recorded on the descriptor (a prior daemon generation, or
+    // the command_execute path). A session may legitimately open more than one
+    // PR — each distinct url is stamped exactly once. Returns true when the
+    // caller should stamp.
+    const shouldStamp = (url: string): boolean => {
+      if (stampedPrUrls.has(url)) return false
+      if (desc.openedPrs && desc.openedPrs.some(recorded => recorded.url === url)) {
+        stampedPrUrls.add(url)
+        return false
+      }
+      return true
     }
 
     const supervisor =
@@ -114,20 +131,45 @@ export function createPrProvenanceReconciler(opts: {
         ? opts.registry.get(desc.parentSessionId) ?? { id: desc.parentSessionId }
         : null
 
-    const outcome = await stampFooterOnPr({
-      registry: opts.registry,
-      session: desc,
-      supervisor,
-      prNumber: pr.number,
-      prUrl: pr.url,
-      cwd,
-      ...(opts.run ? { run: opts.run } : {}),
-      ...(opts.host ? { host: opts.host } : {}),
-    })
-    // Record this PR as stamped only on a real stamp (or an already-stamped
-    // body). A transient `gh` failure leaves it unstamped so a later event
-    // retries.
-    if (outcome.stamped) stampedPrUrls.add(pr.url)
+    const stamp = async (pr: { number: number; url: string }): Promise<void> => {
+      const outcome = await stampFooterOnPr({
+        registry: opts.registry,
+        session: desc,
+        supervisor,
+        prNumber: pr.number,
+        prUrl: pr.url,
+        cwd,
+        ...(opts.run ? { run: opts.run } : {}),
+        ...(opts.host ? { host: opts.host } : {}),
+      })
+      // Record this PR as stamped only on a real stamp (or an already-stamped
+      // body). A transient `gh` failure leaves it unstamped so a later event
+      // retries.
+      if (outcome.stamped) stampedPrUrls.add(pr.url)
+    }
+
+    // Lane A — EXACT attribution from the session's own recorded tool calls.
+    // The transcript writer marks a successful shell-shaped `gh pr create`
+    // with the created PR's url/number on its `tool-call-record` line (see
+    // tool-call-record.ts `createdPrUrl`), so the session whose log holds the
+    // record IS the creator — no branch inference, immune to the two failure
+    // modes of lane B: a chat session that branches → PRs → checks the shared
+    // main checkout back out within one turn (the PR's branch is gone by
+    // turn-end), and two sessions sharing one cwd (branch→PR answers the same
+    // for both; the record answers only for the real author).
+    const records = await (opts.listToolCalls ?? readToolCallRecords)(sessionId)
+    for (const record of records) {
+      if (!record.createdPrUrl || record.createdPrNumber === undefined) continue
+      if (!shouldStamp(record.createdPrUrl)) continue
+      await stamp({ number: record.createdPrNumber, url: record.createdPrUrl })
+    }
+
+    // Lane B — branch→PR reconciliation, the fallback for adapters whose tool
+    // calls aren't recorded (or a PR opened by a path no record captured).
+    const pr = await opts.resolveOpenPr(cwd)
+    if (!pr) return
+    if (!shouldStamp(pr.url)) return
+    await stamp(pr)
   }
 
   const safeReconcile = (sessionId: string, terminal: boolean): void => {
