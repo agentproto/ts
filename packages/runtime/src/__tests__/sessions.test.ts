@@ -1839,6 +1839,123 @@ describe("createSessionsRegistry", () => {
       reg.shutdown()
     })
 
+    // A restarted PTY that dies before its first turn (e.g. a `claude
+    // --resume <id>` the provider rejects) used to leave `status: "exited"`
+    // with no `lastError` — indistinguishable from a normal graceful exit,
+    // and completely silent in daemon.log. These drive the fix: an abnormal
+    // exit (nonzero code / signal, and not an operator-targeted kill()) must
+    // surface a readable cause.
+    describe("spawnPty(): abnormal-exit observability", () => {
+      function controllablePtyFactory(): {
+        factory: PtyFactory
+        emitData: (chunk: string) => void
+        emitExit: (evt: { exitCode: number; signal?: number }) => void
+      } {
+        let onData: ((chunk: string) => void) | undefined
+        let onExit: ((evt: { exitCode: number; signal?: number }) => void) | undefined
+        const factory: PtyFactory = (): PtyProcess => ({
+          pid: process.pid,
+          write() {},
+          resize() {},
+          kill() {},
+          onData: cb => {
+            onData = cb
+          },
+          onExit: cb => {
+            onExit = cb
+          },
+        })
+        return {
+          factory,
+          emitData: chunk => onData?.(chunk),
+          emitExit: evt => onExit?.(evt),
+        }
+      }
+
+      it("a nonzero exit with captured output sets status:error and a readable lastError", () => {
+        const { factory, emitData, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["claude", "--resume", "c643a525-5d7a-4a45-a9a0-666215eb6e77"],
+          cols: 80,
+          rows: 24,
+        })
+        // The real-world failure this regresses: claude's TUI prints an
+        // ANSI-decorated rejection line, then exits nonzero.
+        emitData(
+          "\x1b[?25l\x1b[91mNo conversation found with session ID: c643a525-5d7a-4a45-a9a0-666215eb6e77\x1b[39m\r\n"
+        )
+        emitExit({ exitCode: 1 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("error")
+        expect(after?.exitCode).toBe(1)
+        expect(after?.lastError).toContain(
+          "No conversation found with session ID: c643a525-5d7a-4a45-a9a0-666215eb6e77"
+        )
+        reg.shutdown()
+      })
+
+      it("a clean zero-code exit stays status:exited with no lastError", () => {
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["bash"],
+          cols: 80,
+          rows: 24,
+        })
+        emitExit({ exitCode: 0 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("exited")
+        expect(after?.lastError).toBeUndefined()
+        reg.shutdown()
+      })
+
+      it("an operator-targeted kill() is never relabeled — status stays killed, no lastError", () => {
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["bash"],
+          cols: 80,
+          rows: 24,
+        })
+        reg.kill(desc.id)
+        // The real pty later reports its own exit — after SIGTERM, most
+        // shells exit nonzero (128+signal) or with a signal set.
+        emitExit({ exitCode: 143, signal: 15 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("killed")
+        expect(after?.lastError).toBeUndefined()
+        reg.shutdown()
+      })
+
+      it("a nonzero exit with no captured output still sets a diagnosable lastError", () => {
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["false"],
+          cols: 80,
+          rows: 24,
+        })
+        emitExit({ exitCode: 1 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("error")
+        expect(after?.lastError).toContain("code 1")
+        reg.shutdown()
+      })
+    })
+
     it("two agent-cli sessions spawned back to back each get a distinct minted id via recordCommand's `id` passthrough", () => {
       // Exercises the same "own id, not a shared/parent one" contract
       // recordCommand-backed spawners (command_execute, cron) rely on:
