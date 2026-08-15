@@ -91,6 +91,7 @@ export function createBrainManager(config: BrainConfig): BrainManager {
       const records = await state.read()
       const entries = Object.values(records)
       const totalBytes = entries.reduce((sum, r) => sum + (r.bytes || 0), 0)
+      const totalChunks = entries.reduce((sum, r) => sum + (r.sourceIds?.length ?? 1), 0)
       const lastIngestedAt = entries
         .map(r => r.ingestedAt)
         .sort()
@@ -118,6 +119,7 @@ export function createBrainManager(config: BrainConfig): BrainManager {
         workspace: config.workspace,
         brainDir: config.brainDir,
         sourceCount: entries.length,
+        totalChunks,
         totalBytes,
         pendingSessions,
         ...(lastIngestedAt ? { lastIngestedAt } : {}),

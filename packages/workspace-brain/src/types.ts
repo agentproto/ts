@@ -28,14 +28,22 @@ export interface ExportedSessionLike {
 /** One ingested session, as recorded in `brain-state.json`. */
 export interface BrainStateRecord {
   readonly sessionId: string
-  /** Stable source slug the transcript was ingested under (== stableSlug of
-   *  the session id for ordinary ids — `sess-abc123` → `sources/sess-abc123.md`). */
+  /** The FIRST chunk's source id (== stableSlug of the session id for
+   *  ordinary ids — `sess-abc123` → `sources/sess-abc123.md`). Kept even
+   *  though {@link sourceIds} is the complete list, so a record written
+   *  before chunking existed (a single monolithic source) still round-trips:
+   *  its `sourceId` alone identifies its one file. */
   readonly sourceId: string
+  /** Every chunk's source id, in chunk order (`sourceIds[0] === sourceId`).
+   *  Absent on a record written before chunking existed — treat that as a
+   *  single-chunk session (`[sourceId]`). */
+  readonly sourceIds?: readonly string[]
   readonly title?: string
   /** ISO-8601 ingest timestamp. */
   readonly ingestedAt: string
+  /** Total non-empty turns across the whole session (not one chunk). */
   readonly turnCount: number
-  /** Content bytes written to disk. */
+  /** Content bytes written to disk, summed across every chunk. */
   readonly bytes: number
 }
 
@@ -108,10 +116,13 @@ export interface BrainConfig {
 export interface IngestResult {
   readonly sessionId: string
   readonly ok: boolean
-  /** Set on success — the knowledge source the transcript landed as. */
+  /** Set on success — the first chunk's knowledge source id. */
   readonly sourceId?: string
   readonly title?: string
   readonly turnCount?: number
+  /** Set on success — how many chunks the transcript was split into (1 for a
+   *  small transcript that fits in a single chunk). */
+  readonly chunkCount?: number
   /** Present when already ingested (and not forced). */
   readonly skipped?: "already-ingested"
   /** Present when `readSession` returned nothing usable. */
@@ -136,6 +147,10 @@ export interface BrainStats {
   readonly brainDir: string
   /** Sessions ingested into the index. */
   readonly sourceCount: number
+  /** Total chunks on disk across every ingested session (== `sourceCount`
+   *  for a brain dir that predates chunking, since each session was then
+   *  exactly one chunk). */
+  readonly totalChunks: number
   /** Total content bytes on disk across sources. */
   readonly totalBytes: number
   /** Sessions that are known (from `listSessionRefs`) but not yet ingested. */

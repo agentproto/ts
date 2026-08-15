@@ -9,8 +9,10 @@
  * the default config is a single `files` provider, exactly the pre-
  * multi-provider behavior. Pure engine: it never reads a real conversation
  * store itself — the host injects the transcript reader through
- * {@link BrainConfig.readSession}. Reuses the `IKnowledgeProvider` contract,
- * corpus's `ConversationImporter`, and the zero-dep files adapter.
+ * {@link BrainConfig.readSession}. Each transcript is split into turn-bounded
+ * chunks (`chunking.ts`) before ingest, so retrieval ranks and snippets a
+ * long session's individual passages instead of the whole document. Reuses
+ * the `IKnowledgeProvider` contract and the zero-dep files adapter.
  */
 
 // Types
@@ -42,6 +44,17 @@ export {
 
 // Import loop
 export { IngestPipeline, type IngestPipelineOptions } from "./ingest-pipeline.js"
+
+// Turn-bounded transcript chunking
+export {
+  chunkTurns,
+  chunkUri,
+  renderChunkBody,
+  renderChunkMarkdown,
+  DEFAULT_CHUNK_MAX_BYTES,
+  type TranscriptChunk,
+  type ChunkMarkdownInput,
+} from "./chunking.js"
 
 // Knowledge provider resolution (config → live adapters)
 export {

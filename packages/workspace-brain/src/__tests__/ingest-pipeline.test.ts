@@ -5,7 +5,7 @@
  * exercised for real, not stubbed.
  */
 
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -22,6 +22,32 @@ function transcript(title: string, body: string): ExportedSessionLike {
       { role: "assistant", text: body, ts: 1700000001000 },
     ],
   }
+}
+
+function shortTranscript(title: string, keyword: string): ExportedSessionLike {
+  return {
+    meta: { title },
+    messages: [
+      { role: "user", text: "hi", ts: 1700000000000 },
+      { role: "assistant", text: `${keyword} short answer`, ts: 1700000001000 },
+    ],
+  }
+}
+
+/** A many-turn transcript whose LAST turn carries a keyword that appears
+ *  nowhere else — so a query for it can only be satisfied by the chunk that
+ *  covers the transcript's tail, never the first chunk. */
+function longTranscript(title: string, turnCount: number, keyword: string): ExportedSessionLike {
+  const messages: Array<{ role: string; text: string; ts: number }> = []
+  for (let i = 0; i < turnCount; i++) {
+    const role = i % 2 === 0 ? "user" : "assistant"
+    const text =
+      i === turnCount - 1
+        ? `filler filler filler filler ${keyword} unique to the final turn`
+        : `filler filler filler filler turn number ${i} padding padding`
+    messages.push({ role, text, ts: 1700000000000 + i * 1000 })
+  }
+  return { meta: { title }, messages }
 }
 
 describe("IngestPipeline", () => {
@@ -134,5 +160,115 @@ describe("IngestPipeline", () => {
   it("ingestPending is a no-op without a session lister", async () => {
     const report = await pipeline.ingestPending()
     expect(report.attempted).toBe(0)
+  })
+
+  it("a small transcript ingests as exactly one chunk", async () => {
+    const result = await pipeline.ingest("sess-abc123")
+    expect(result.chunkCount).toBe(1)
+  })
+
+  describe("chunked retrieval", () => {
+    it("splits a long transcript into multiple sources and finds a LATE chunk via a real query", async () => {
+      const tight = new IngestPipeline({
+        workspace: "test-ws",
+        readSession: async () => longTranscript("Long session", 20, "zzzlatekeyword"),
+        state,
+        getProvider,
+        chunkMaxBytes: 150,
+      })
+
+      const result = await tight.ingest("sess-long")
+      expect(result.ok).toBe(true)
+      expect(result.chunkCount).toBeGreaterThan(1)
+
+      // Every chunk landed as its own file under sources/.
+      const files = await readdir(path.join(brainDir, "knowledge", "sources"))
+      expect(files.length).toBe(result.chunkCount)
+
+      // A later chunk's frontmatter correctly attributes it to the session.
+      const laterChunkFile = files.find(f => f !== "sess-long.md")
+      expect(laterChunkFile).toBeDefined()
+      const laterContent = await readFile(
+        path.join(brainDir, "knowledge", "sources", laterChunkFile!),
+        "utf8",
+      )
+      expect(laterContent).toContain("sessionId: sess-long")
+      expect(laterContent).toMatch(/chunkIndex: [1-9]/)
+      expect(laterContent).toContain(`chunkCount: ${result.chunkCount}`)
+
+      // The regression case: a query for text that only exists in the
+      // transcript's tail must hit a chunk-level doc, not the whole
+      // document — and its snippet must actually contain the match.
+      const query = await adapter.query({ query: "zzzlatekeyword" })
+      expect(query.hits.length).toBeGreaterThan(0)
+      const hit = query.hits[0]!
+      expect(hit.text).toContain("zzzlatekeyword")
+      expect(hit.sourceId).not.toBe("sess-long")
+      expect(hit.chunkId).toBe(hit.sourceId)
+      expect(hit.metadata.sessionId).toBe("sess-long")
+    })
+
+    it("reindex grow: chunk 0 keeps its original path, new tail chunks are added", async () => {
+      const tight = new IngestPipeline({
+        workspace: "test-ws",
+        readSession: () => readSessionImpl("sess-grow"),
+        state,
+        getProvider,
+        chunkMaxBytes: 150,
+      })
+
+      readSessionImpl = async () => shortTranscript("Grow session", "growkeyword")
+      const first = await tight.ingest("sess-grow")
+      expect(first.chunkCount).toBe(1)
+      expect(await adapter.query({ query: "growkeyword" }).then(r => r.hits.length)).toBeGreaterThan(0)
+
+      readSessionImpl = async () => longTranscript("Grow session", 20, "growkeyword")
+      const second = await tight.ingest("sess-grow", true)
+      expect(second.ok).toBe(true)
+      expect(second.chunkCount!).toBeGreaterThan(1)
+
+      const files = await readdir(path.join(brainDir, "knowledge", "sources"))
+      expect(files).toContain("sess-grow.md")
+      expect(files.length).toBe(second.chunkCount)
+
+      // The keyword moved to the transcript's tail — a query still finds it,
+      // now via a later chunk rather than chunk 0.
+      const query = await adapter.query({ query: "growkeyword" })
+      expect(query.hits.length).toBeGreaterThan(0)
+      expect(query.hits[0]!.sourceId).not.toBe("sess-grow")
+    })
+
+    it("reindex shrink: tombstones chunks the smaller re-ingest no longer produces (no ghost duplicates)", async () => {
+      const tight = new IngestPipeline({
+        workspace: "test-ws",
+        readSession: () => readSessionImpl("sess-shrink"),
+        state,
+        getProvider,
+        chunkMaxBytes: 150,
+      })
+
+      readSessionImpl = async () => longTranscript("Shrink session", 20, "zzzshrinkkeyword")
+      const first = await tight.ingest("sess-shrink")
+      expect(first.chunkCount!).toBeGreaterThan(1)
+      expect(await adapter.query({ query: "zzzshrinkkeyword" }).then(r => r.hits.length)).toBeGreaterThan(0)
+
+      readSessionImpl = async () => shortTranscript("Shrink session", "keptkeyword")
+      const second = await tight.ingest("sess-shrink", true)
+      expect(second.ok).toBe(true)
+      expect(second.chunkCount).toBe(1)
+
+      // The old tail chunk (still on disk from the first ingest) must no
+      // longer be part of the index — otherwise it's a ghost duplicate that
+      // never stops matching a keyword the session no longer contains.
+      const stale = await adapter.query({ query: "zzzshrinkkeyword" })
+      expect(stale.hits).toEqual([])
+
+      const fresh = await adapter.query({ query: "keptkeyword" })
+      expect(fresh.hits.length).toBeGreaterThan(0)
+
+      // Bookkeeping reflects only the current (single) chunk.
+      const recorded = await state.read()
+      expect(recorded["sess-shrink"]!.sourceIds).toEqual(["sess-shrink"])
+    })
   })
 })

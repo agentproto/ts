@@ -4,14 +4,30 @@
  *
  * For each session not yet ingested (or forced), the pipeline:
  *   1. resolves its exported transcript through the injected `readSession`,
- *   2. feeds it to corpus's `ConversationImporter` via a
- *      {@link BrainSessionSourcePort} (yielding a source with slug, title,
- *      rendered body and turn stats),
- *   3. renders a markdown document (frontmatter + transcript body) and routes
- *      it through `provider.ingest()`, which writes
- *      `<brain>/knowledge/sources/<session-id>.md` AND invalidates the engine's
+ *   2. flattens it to turns through a {@link BrainSessionSourcePort} (which
+ *      also strips the leading harness/system preamble — see that file),
+ *   3. splits those turns into byte-bounded chunks (`chunking.ts`) — never
+ *      mid-turn — and renders each chunk as its own markdown document,
+ *   4. routes each chunk through `provider.ingest()`, which writes
+ *      `<brain>/knowledge/sources/<chunk-id>.md` AND invalidates the engine's
  *      BM25 cache (so a subsequent query sees it immediately),
- *   4. records the ingestion in `brain-state.json`.
+ *   5. records every chunk's source id against the session in
+ *      `brain-state.json`.
+ *
+ * Chunking exists because one 800-turn session as a single BM25 doc ranks
+ * poorly (length dilutes term frequency) and its snippet is always near the
+ * START of the doc — usually not the relevant passage. Splitting on turn
+ * boundaries into right-sized chunks makes each chunk independently
+ * rankable, with a snippet that actually lands near the match. Chunk 0
+ * always uses the bare session id as its uri, so a session that fits in one
+ * chunk (the common case) writes to the exact path this pipeline used before
+ * chunking existed — an existing brain dir full of monolithic one-chunk
+ * "sessions" needs no migration, and mixes freely with newly-chunked ones.
+ *
+ * A forced reindex may shrink the chunk count (e.g. new content is shorter,
+ * or preamble stripping now removes more). Chunk indices the new ingest
+ * doesn't reuse are tombstoned (overwritten with empty content, same as the
+ * files adapter's own `deleteSource`) so no stale chunk lingers in the index.
  *
  * Every failure is contained per-session: a session with no readable
  * transcript, with an empty transcript, or that throws mid-ingest is reported
@@ -19,8 +35,15 @@
  * later run retries it.
  */
 
-import { ConversationImporter } from "@agentproto/corpus"
+import type { ConversationTurn } from "@agentproto/corpus"
 import type { IKnowledgeProvider, KnowledgeSource } from "@agentproto/knowledge-engine"
+import {
+  chunkTurns,
+  chunkUri,
+  DEFAULT_CHUNK_MAX_BYTES,
+  renderChunkBody,
+  renderChunkMarkdown,
+} from "./chunking.js"
 import type { BrainState } from "./brain-state.js"
 import { BrainSessionSourcePort } from "./session-source-port.js"
 import type {
@@ -40,6 +63,8 @@ export interface IngestPipelineOptions {
   /** Lazy accessor for the backing knowledge provider (rooted at
    *  `brain/knowledge/`, so `ingest()` writes the expected source file). */
   readonly getProvider: () => IKnowledgeProvider
+  /** Byte ceiling per chunk. Defaults to {@link DEFAULT_CHUNK_MAX_BYTES}. */
+  readonly chunkMaxBytes?: number
   /** Optional — enumerate every session ref the workspace knows about.
    *  Omitted → `ingestPending` ingests nothing. */
   listSessionRefs?(): Promise<readonly string[]>
@@ -52,12 +77,13 @@ export class IngestPipeline {
   async ingest(sessionId: string, force = false): Promise<IngestResult> {
     const { state, readSession, getProvider } = this.opts
 
+    const existing = await state.read()
+    const previous = existing[sessionId]
     if (!force) {
-      const already = await state.read()
-      if (already[sessionId]) {
+      if (previous) {
         return { sessionId, ok: true, skipped: "already-ingested" }
       }
-    } else {
+    } else if (previous) {
       await state.forget(sessionId)
     }
 
@@ -74,37 +100,74 @@ export class IngestPipeline {
     }
 
     try {
-      const source = await this.importSingle(sessionId)
-      if (!source) {
+      const loaded = await this.loadSession(sessionId)
+      if (!loaded) {
         return { sessionId, ok: false, skippedReason: "empty-transcript" }
       }
 
-      const markdown = renderSourceMarkdown(source, sessionId)
-      const ingested: KnowledgeSource = await getProvider().ingest({
-        kind: "text",
-        uri: sessionId,
-        title: source.title,
-        content: markdown,
-        mimeType: "text/markdown",
-        metadata: { sessionId, sourceKind: "conversation" },
-      })
+      const chunks = chunkTurns(loaded.turns, this.opts.chunkMaxBytes ?? DEFAULT_CHUNK_MAX_BYTES)
+      const chunkCount = chunks.length
+      const provider = getProvider()
+      const sourceIds: string[] = []
+      let totalBytes = 0
+
+      for (const chunk of chunks) {
+        const markdown = renderChunkMarkdown({
+          title: loaded.title,
+          sessionId,
+          chunkIndex: chunk.index,
+          chunkCount,
+          turnStart: chunk.turnStart,
+          turnEnd: chunk.turnEnd,
+          sessionTurnCount: loaded.turns.length,
+          body: renderChunkBody(chunk.turns),
+        })
+        const ingested: KnowledgeSource = await provider.ingest({
+          kind: "text",
+          uri: chunkUri(sessionId, chunk.index),
+          title: loaded.title,
+          content: markdown,
+          mimeType: "text/markdown",
+          metadata: { sessionId, sourceKind: "conversation" },
+        })
+        sourceIds.push(ingested.id)
+        totalBytes += ingested.bytes
+      }
+
+      // A shrinking reindex leaves old chunk indices >= the new count
+      // orphaned on disk. Their uris are deterministic (chunkUri is a pure
+      // function of sessionId + index), so regenerate and tombstone them —
+      // no need to have recorded them anywhere beyond the old chunk count.
+      const oldChunkCount = previous?.sourceIds?.length ?? (previous ? 1 : 0)
+      for (let i = chunkCount; i < oldChunkCount; i++) {
+        await provider.ingest({
+          kind: "text",
+          uri: chunkUri(sessionId, i),
+          title: loaded.title,
+          content: "",
+          mimeType: "text/markdown",
+          metadata: { sessionId, sourceKind: "conversation" },
+        })
+      }
 
       const record: BrainStateRecord = {
         sessionId,
-        sourceId: ingested.id,
-        ...(source.title ? { title: source.title } : {}),
+        sourceId: sourceIds[0]!,
+        sourceIds,
+        ...(loaded.title ? { title: loaded.title } : {}),
         ingestedAt: new Date().toISOString(),
-        turnCount: source.turnCount,
-        bytes: ingested.bytes,
+        turnCount: loaded.turns.length,
+        bytes: totalBytes,
       }
       await state.record(record)
 
       return {
         sessionId,
         ok: true,
-        sourceId: ingested.id,
-        title: source.title,
-        turnCount: source.turnCount,
+        sourceId: sourceIds[0]!,
+        title: loaded.title,
+        turnCount: loaded.turns.length,
+        chunkCount,
       }
     } catch (err) {
       return {
@@ -149,53 +212,17 @@ export class IngestPipeline {
     }
   }
 
-  /** Run the importer for a single session and return the first yielded
-   *  source, or `null` when the transcript was empty/unusable. */
-  private async importSingle(
+  /** Resolve a session to its title + flattened (preamble-stripped,
+   *  non-empty) turns, or `null` when nothing usable came back. */
+  private async loadSession(
     sessionId: string,
-  ): Promise<
-    | { title: string; body: string; turnCount: number; slug: string }
-    | null
-  > {
+  ): Promise<{ title: string; turns: readonly ConversationTurn[] } | null> {
     const port = new BrainSessionSourcePort({ readSession: this.opts.readSession })
-    const importer = new ConversationImporter({ source: port })
-
-    for await (const src of importer.enumerate({
-      importerId: "workspace-brain",
-      config: { refs: [sessionId] },
-    })) {
-      const meta = (src.corpusMetadata ?? {}) as { turnCount?: number }
-      return {
-        title: src.title,
-        body: src.body,
-        turnCount: typeof meta.turnCount === "number" ? meta.turnCount : 0,
-        slug: src.slug,
-      }
+    const doc = await port.fetchConversation(sessionId)
+    if (!doc || doc.turns.length === 0) return null
+    return {
+      title: (doc.title ?? `Conversation ${sessionId}`).slice(0, 200),
+      turns: doc.turns,
     }
-    return null
   }
-}
-
-/** Minimal renderer for an ingested session's source document — matches the
- *  adapter's `parseFrontmatterMetadata` (flat `key: value` frontmatter), so
- *  `query`/`listSources`/`getSource` surface session provenance on every hit. */
-function renderSourceMarkdown(
-  source: { title: string; body: string; slug: string; turnCount: number },
-  sessionId: string,
-): string {
-  const lines = [
-    "---",
-    `title: ${source.title.replace(/:/g, " -")}`,
-    `sessionId: ${sessionId}`,
-    `slug: ${source.slug}`,
-    "sourceKind: conversation",
-    `turnCount: ${source.turnCount}`,
-    "---",
-    "",
-    `# ${source.title}`,
-    "",
-    source.body,
-    "",
-  ]
-  return lines.join("\n")
 }
