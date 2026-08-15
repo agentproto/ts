@@ -111,6 +111,11 @@ Usage:
   agentproto cron      list [--json]
   agentproto cron      remove <id>
   agentproto cron      run    <id>
+  agentproto pack      skill --manifest <path> [--source <dir>] [--version <semver>]
+                             [--bump patch|minor|major] [--dry-run] [--out <dir>]
+  agentproto pack      build [dir]             build a skill-pack package: flat skills/ +
+                                               .claude-plugin/ at the package root, plus
+                                               dist/<name>-v<version>/ bundle + .zip
   agentproto worktree  ls      [--repo <dir>] [--json]
   agentproto worktree  archive <path> [--base <ref>] [--keep-branch] [--json]
   agentproto policy    attach (--session <id>|--sessions <id,id,…>) [--then emit|commit]

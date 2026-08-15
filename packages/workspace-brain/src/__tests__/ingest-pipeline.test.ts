@@ -138,6 +138,65 @@ describe("IngestPipeline", () => {
     expect(result.skippedReason).toBe("no-transcript")
   })
 
+  it("records a no-transcript skip in brain-state.json", async () => {
+    readSessionImpl = async () => null
+    await pipeline.ingest("sess-missing")
+    const skips = await state.readSkips()
+    expect(skips["sess-missing"]).toMatchObject({
+      sessionId: "sess-missing",
+      reason: "no-transcript",
+    })
+  })
+
+  it("records an empty-transcript skip in brain-state.json", async () => {
+    readSessionImpl = async () => ({ messages: [{ role: "tool", text: " " }] })
+    await pipeline.ingest("sess-empty")
+    const skips = await state.readSkips()
+    expect(skips["sess-empty"]).toMatchObject({
+      sessionId: "sess-empty",
+      reason: "empty-transcript",
+    })
+  })
+
+  it("explicit re-ingest retries a previously skipped session regardless of the skip", async () => {
+    readSessionImpl = async () => null
+    await pipeline.ingest("sess-flaky")
+    expect((await state.readSkips())["sess-flaky"]).toBeDefined()
+
+    // The session later gets a real transcript (e.g. resumed) — a plain
+    // (non-forced) re-ingest by id must still attempt it, not treat the
+    // skip as a tombstone.
+    readSessionImpl = async () => transcript("Fixed", "now it has a transcript")
+    const result = await pipeline.ingest("sess-flaky")
+    expect(result.ok).toBe(true)
+    expect((await state.readSkips())["sess-flaky"]).toBeUndefined()
+    expect((await state.read())["sess-flaky"]).toBeDefined()
+  })
+
+  it("ingestPending excludes sessions recorded as skipped from the backlog", async () => {
+    readSessionImpl = async ref =>
+      ref === "sess-ok" ? transcript("Fine", "all good") : null
+
+    const withRefs = new IngestPipeline({
+      workspace: "test-ws",
+      readSession: ref => readSessionImpl(ref),
+      state,
+      getProvider,
+      listSessionRefs: async () => ["sess-ok", "sess-bash-pty"],
+    })
+
+    const first = await withRefs.ingestPending()
+    expect(first.attempted).toBe(2)
+    expect(first.ingested).toBe(1)
+    expect((await state.readSkips())["sess-bash-pty"]).toBeDefined()
+
+    // sess-bash-pty is now recorded as skipped — a second backlog run must
+    // not re-attempt it (only the already-ingested sess-ok would otherwise
+    // also be excluded, but it's excluded via `recorded`, not `skips`).
+    const second = await withRefs.ingestPending()
+    expect(second.attempted).toBe(0)
+  })
+
   it("ingestPending only ingests sessions not yet recorded", async () => {
     const withRefs = new IngestPipeline({
       workspace: "test-ws",

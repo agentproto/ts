@@ -88,4 +88,33 @@ describe("createBrainManager", () => {
     expect(result.skippedReason).toBe("no-transcript")
     expect((await brain.status()).sourceCount).toBe(0)
   })
+
+  it("excludes a skipped session from pendingSessions and surfaces skippedSessions", async () => {
+    sessionRefs = ["sess-abc123", "sess-bash-pty"]
+    await brain.ingestSession("sess-abc123")
+    await brain.ingestSession("sess-bash-pty") // readSession → null → skip
+
+    const status = await brain.status()
+    expect(status.sourceCount).toBe(1)
+    expect(status.pendingSessions).toBe(0)
+    expect(status.skippedSessions).toBe(1)
+  })
+
+  it("clears a skip once the same session later ingests successfully", async () => {
+    sessionRefs = ["sess-abc123", "sess-flaky"]
+    await brain.ingestSession("sess-flaky") // no reader entry → skip
+    expect((await brain.status()).skippedSessions).toBe(1)
+
+    const second = createBrainManager({
+      workspace: "test-ws",
+      brainDir,
+      readSession: async () => transcript("Recovered", "now has a transcript"),
+      listSessionRefs: async () => sessionRefs,
+    })
+    const result = await second.ingestSession("sess-flaky")
+    expect(result.ok).toBe(true)
+
+    const status = await second.status()
+    expect(status.skippedSessions).toBe(0)
+  })
 })

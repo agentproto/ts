@@ -89,6 +89,7 @@ export function createBrainManager(config: BrainConfig): BrainManager {
     },
     async status() {
       const records = await state.read()
+      const skips = await state.readSkips()
       const entries = Object.values(records)
       const totalBytes = entries.reduce((sum, r) => sum + (r.bytes || 0), 0)
       const totalChunks = entries.reduce((sum, r) => sum + (r.sourceIds?.length ?? 1), 0)
@@ -102,7 +103,7 @@ export function createBrainManager(config: BrainConfig): BrainManager {
         try {
           const refs = await config.listSessionRefs()
           const recordedIds = new Set(entries.map(r => r.sessionId))
-          pendingSessions = refs.filter(id => !recordedIds.has(id)).length
+          pendingSessions = refs.filter(id => !recordedIds.has(id) && !skips[id]).length
         } catch {
           pendingSessions = 0
         }
@@ -122,6 +123,7 @@ export function createBrainManager(config: BrainConfig): BrainManager {
         totalChunks,
         totalBytes,
         pendingSessions,
+        skippedSessions: Object.keys(skips).length,
         ...(lastIngestedAt ? { lastIngestedAt } : {}),
         ready,
       }

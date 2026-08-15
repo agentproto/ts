@@ -93,15 +93,18 @@ export class IngestPipeline {
     } catch {
       // A throwing reader is the same as an unreadable session — contained
       // per-session, never aborts the batch.
+      await this.recordSkip(sessionId, "no-transcript")
       return { sessionId, ok: false, skippedReason: "no-transcript" }
     }
     if (!session) {
+      await this.recordSkip(sessionId, "no-transcript")
       return { sessionId, ok: false, skippedReason: "no-transcript" }
     }
 
     try {
-      const loaded = await this.loadSession(sessionId)
-      if (!loaded) {
+      const source = await this.importSingle(sessionId)
+      if (!source) {
+        await this.recordSkip(sessionId, "empty-transcript")
         return { sessionId, ok: false, skippedReason: "empty-transcript" }
       }
 
@@ -178,7 +181,10 @@ export class IngestPipeline {
     }
   }
 
-  /** Ingest every session the workspace knows about that isn't recorded yet. */
+  /** Ingest every session the workspace knows about that isn't recorded yet
+   *  and isn't recorded as skipped (see `BrainStateSkip`) — a skip is
+   *  retried only by an explicit `ingest(sessionId)` call, never by the
+   *  backlog. */
   async ingestPending(): Promise<IngestReport> {
     const listSessionRefs = this.opts.listSessionRefs
     if (!listSessionRefs) {
@@ -192,8 +198,11 @@ export class IngestPipeline {
       }
     }
     const refs = await listSessionRefs()
-    const recorded = await this.opts.state.read()
-    const pending = refs.filter(id => !recorded[id])
+    const [recorded, skips] = await Promise.all([
+      this.opts.state.read(),
+      this.opts.state.readSkips(),
+    ])
+    const pending = refs.filter(id => !recorded[id] && !skips[id])
 
     const results: IngestResult[] = []
     for (const id of pending) {
@@ -212,9 +221,23 @@ export class IngestPipeline {
     }
   }
 
-  /** Resolve a session to its title + flattened (preamble-stripped,
-   *  non-empty) turns, or `null` when nothing usable came back. */
-  private async loadSession(
+  /** Best-effort — persisting a skip is a courtesy for `pendingSessions`
+   *  bookkeeping, not something a caller should see fail an ingest attempt
+   *  that already has a perfectly good `skippedReason` to report. */
+  private async recordSkip(
+    sessionId: string,
+    reason: "no-transcript" | "empty-transcript",
+  ): Promise<void> {
+    try {
+      await this.opts.state.recordSkip(sessionId, reason)
+    } catch {
+      // ignore — see above
+    }
+  }
+
+  /** Run the importer for a single session and return the first yielded
+   *  source, or `null` when the transcript was empty/unusable. */
+  private async importSingle(
     sessionId: string,
   ): Promise<{ title: string; turns: readonly ConversationTurn[] } | null> {
     const port = new BrainSessionSourcePort({ readSession: this.opts.readSession })
