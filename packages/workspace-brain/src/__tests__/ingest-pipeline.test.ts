@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { FilesKnowledgeAdapter, LocalFs } from "@agentproto/adapter-knowledge-files"
 import { createBrainState } from "../brain-state.js"
 import { IngestPipeline } from "../ingest-pipeline.js"
+import { PIPELINE_VERSION } from "../pipeline-version.js"
 import type { ExportedSessionLike } from "../types.js"
 
 function transcript(title: string, body: string): ExportedSessionLike {
@@ -224,6 +225,73 @@ describe("IngestPipeline", () => {
   it("a small transcript ingests as exactly one chunk", async () => {
     const result = await pipeline.ingest("sess-abc123")
     expect(result.chunkCount).toBe(1)
+  })
+
+  it("stamps a fresh ingest with the current pipeline version", async () => {
+    const result = await pipeline.ingest("sess-abc123")
+    expect(result.pipelineVersion).toBe(PIPELINE_VERSION)
+    const recorded = await state.read()
+    expect(recorded["sess-abc123"]!.pipelineVersion).toBe(PIPELINE_VERSION)
+  })
+
+  describe("stale pipeline version signal", () => {
+    it("ingestPending reports staleSources for already-recorded sessions stamped with an older version", async () => {
+      // Simulate data ingested before versioning existed (no pipelineVersion field).
+      await state.record({
+        sessionId: "sess-legacy",
+        sourceId: "sess-legacy",
+        ingestedAt: "2020-01-01T00:00:00.000Z",
+        turnCount: 2,
+        bytes: 42,
+      })
+
+      const withRefs = new IngestPipeline({
+        workspace: "test-ws",
+        readSession: ref => readSessionImpl(ref),
+        state,
+        getProvider,
+        listSessionRefs: async () => ["sess-legacy"],
+      })
+
+      const report = await withRefs.ingestPending()
+      // sess-legacy is already recorded, so the backlog run doesn't touch it.
+      expect(report.attempted).toBe(0)
+      expect(report.staleSources).toBe(1)
+      expect(report.currentPipelineVersion).toBe(PIPELINE_VERSION)
+    })
+
+    it("reindexStale force-reingests stale sessions and clears the stale count", async () => {
+      await state.record({
+        sessionId: "sess-legacy",
+        sourceId: "sess-legacy",
+        ingestedAt: "2020-01-01T00:00:00.000Z",
+        turnCount: 2,
+        bytes: 42,
+      })
+      readSessionImpl = async () => transcript("Refreshed", "new pipeline content")
+
+      const withRefs = new IngestPipeline({
+        workspace: "test-ws",
+        readSession: ref => readSessionImpl(ref),
+        state,
+        getProvider,
+        listSessionRefs: async () => ["sess-legacy"],
+      })
+
+      const report = await withRefs.ingestPending({ reindexStale: true })
+      expect(report.attempted).toBe(1)
+      expect(report.ingested).toBe(1)
+      expect(report.staleSources).toBe(0)
+
+      const recorded = await state.read()
+      expect(recorded["sess-legacy"]!.pipelineVersion).toBe(PIPELINE_VERSION)
+    })
+
+    it("ingestPending without a session lister still reports zero staleSources", async () => {
+      const report = await pipeline.ingestPending()
+      expect(report.staleSources).toBe(0)
+      expect(report.currentPipelineVersion).toBe(PIPELINE_VERSION)
+    })
   })
 
   describe("chunked retrieval", () => {

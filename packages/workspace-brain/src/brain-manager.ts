@@ -19,6 +19,7 @@ import type { IKnowledgeProvider } from "@agentproto/knowledge-engine"
 import { createBrainState } from "./brain-state.js"
 import { FederatedKnowledgeProvider } from "./federated-provider.js"
 import { IngestPipeline } from "./ingest-pipeline.js"
+import { isStaleRecord, PIPELINE_VERSION } from "./pipeline-version.js"
 import { resolveKnowledgeProviders } from "./provider-resolver.js"
 import type {
   BrainConfig,
@@ -40,8 +41,11 @@ export const DEFAULT_KNOWLEDGE_CONFIG: KnowledgeConfig = Object.freeze({
 export interface BrainManager {
   /** Ingest one session. `force` re-ingests even if already recorded. */
   ingestSession(sessionId: string, force?: boolean): Promise<IngestResult>
-  /** Ingest every known-but-unrecorded session for this workspace. */
-  ingestPending(): Promise<IngestReport>
+  /** Ingest every known-but-unrecorded session for this workspace. When
+   *  `reindexStale` is set, also force-reingests every already-recorded
+   *  session whose pipeline version is behind the current code (see
+   *  `pipeline-version.ts`). */
+  ingestPending(opts?: { readonly reindexStale?: boolean }): Promise<IngestReport>
   /** Snapshot of what the brain holds + how current it is. */
   status(): Promise<BrainStats>
   /** The queryable provider (lazily created). */
@@ -84,8 +88,8 @@ export function createBrainManager(config: BrainConfig): BrainManager {
     async ingestSession(sessionId, force = false) {
       return pipeline.ingest(sessionId, force)
     },
-    async ingestPending() {
-      return pipeline.ingestPending()
+    async ingestPending(opts) {
+      return pipeline.ingestPending(opts)
     },
     async status() {
       const records = await state.read()
@@ -93,6 +97,7 @@ export function createBrainManager(config: BrainConfig): BrainManager {
       const entries = Object.values(records)
       const totalBytes = entries.reduce((sum, r) => sum + (r.bytes || 0), 0)
       const totalChunks = entries.reduce((sum, r) => sum + (r.sourceIds?.length ?? 1), 0)
+      const staleSources = entries.filter(isStaleRecord).length
       const lastIngestedAt = entries
         .map(r => r.ingestedAt)
         .sort()
@@ -124,6 +129,8 @@ export function createBrainManager(config: BrainConfig): BrainManager {
         totalBytes,
         pendingSessions,
         skippedSessions: Object.keys(skips).length,
+        staleSources,
+        currentPipelineVersion: PIPELINE_VERSION,
         ...(lastIngestedAt ? { lastIngestedAt } : {}),
         ready,
       }
