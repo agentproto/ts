@@ -41,7 +41,7 @@ down, projection stays in the consumer.
 | `ANTHROPIC_GATEWAY_PRESETS` | `Record<id, ProviderPreset>` — the registry |
 | `anthropicGatewayPresetList` | flat `ProviderPreset[]` for catalog UIs |
 | `getAnthropicGatewayPreset(id)` | lookup; throws on unknown id (loud at load, not a silent no-baseUrl mode) |
-| `AnthropicGatewayPresetId` | `"moonshot" \| "openrouter" \| "requesty" \| "deepseek" \| "xai-anthropic" \| "llm-endpoint" \| "xai" \| "openai" \| "openai-direct"` (and any adapter-declared preset `id`) |
+| `AnthropicGatewayPresetId` | `"moonshot" \| "openrouter" \| "requesty" \| "deepseek" \| "xai-anthropic" \| "llm-endpoint" \| "xai" \| "openai" \| "openai-direct" \| "mistral" \| "groq" \| "nebius" \| "huggingface" \| "deepinfra"` (and any adapter-declared preset `id`) |
 | `ProviderPreset` | the data shape |
 
 ## Stage
@@ -58,8 +58,9 @@ down, projection stays in the consumer.
 Built-in presets (this registry) are for **public, fixed-endpoint** gateways —
 Moonshot, OpenRouter, Requesty, DeepSeek, and xAI all expose one canonical
 Anthropic-compatible (or, for xAI, OpenAI-compatible) URL. The registry also
-includes the local `llm-endpoint` Anthropic-compatible proxy and the `xai-anthropic`
-Anthropic-compatible xAI gateway.
+includes the local `llm-endpoint` Anthropic-compatible proxy, the `xai-anthropic`
+Anthropic-compatible xAI gateway, and OpenAI-flavored direct presets for
+Mistral, Groq, Nebius, Hugging Face, and DeepInfra.
 That fixed `baseUrl` is exactly what makes them safe to ship as a preset: it's
 the source of truth, no operator input needed.
 

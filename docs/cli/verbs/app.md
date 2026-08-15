@@ -47,6 +47,11 @@ browser tab with full MCP connectivity.
 Start the daemon first (`agentproto serve`); the bridge proxies tool calls to
 `http://127.0.0.1:<daemon.port>/mcp`.
 
+`app serve` also exposes a same-origin file-upload endpoint for app UIs:
+`POST /__agentproto/upload?filename=<name>` with the raw file bytes as the
+body. Files land in `<appDir>/inbox/` with a sanitized, collision-avoided
+name, and the endpoint returns `{ path, bytes }`. Uploads are capped at 200 MB.
+
 ### `pack <appDir> [--out <path.agentapp>] [--json]`
 
 Reads `<appDir>/.agentproto/APP.md`, walks the entire app dir, computes an

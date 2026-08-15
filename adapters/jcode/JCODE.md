@@ -6,8 +6,15 @@ coordination, and broad provider support.
 
 ## Protocol
 
-`print` — spawns `jcode run "<prompt>"` per turn. No ACP or structured JSON
-streaming mode is currently documented; stdout is captured as raw text.
+`print` — spawns `jcode run --ndjson "<prompt>"` per turn and parses the
+NDJSON event stream (`jcode-stream-json` schema). No ACP or interactive
+mode is currently documented.
+
+If the adapter cannot spawn `jcode` because a required interactive setup
+step needs a TTY, the spawn fails fast with exit code `78`
+(`EXIT_SETUP_NEEDS_TTY`) and the install result carries
+`needsInteractiveSetup: true` so callers can offer an "Open Setup Terminal"
+option.
 
 ## Installation
 
@@ -50,6 +57,5 @@ Interactive login is also available: `jcode login --provider <name>`.
 ## Known gaps
 
 - No ACP mode — adapter uses print/headless arm
-- No structured JSON streaming output — events are raw text
 - Swarm coordination not yet wired into the adapter
 - Browser tool (Firefox Agent Bridge) not exposed

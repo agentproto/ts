@@ -94,6 +94,11 @@ killing the port. Crash-only `KeepAlive` means launchd only respawns the
 daemon when it exits non-zero; `daemon stop` sends a single SIGTERM and
 exits.
 
+`start`/`restart` also **self-heal the plist's `EnvironmentVariables.PATH`**:
+each kickstart probes a login shell for the current PATH and rewrites the
+plist if it changed. This removes the need to re-run `daemon install` after
+installing new CLI tools (for example via `uv tool install`).
+
 ### `status`
 
 ```bash
@@ -106,7 +111,7 @@ Prints a four-line summary:
 agentproto daemon status
   plist:     installed (/Users/me/Library/LaunchAgents/sh.agentproto.plist)
   launchd:   loaded · pid=12345 · state=running
-  /health:   ok · workspace=/Users/me/code · up 2h  (http://127.0.0.1:18790)
+  /health:   ok · v0.13.0 · workspace=/Users/me/code · up 2h  (http://127.0.0.1:18790)
   config:    /Users/me/.agentproto/config.json
   logs:      /Users/me/.agentproto/daemon.log
 

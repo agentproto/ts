@@ -13,7 +13,7 @@ This installs the `agentproto` executable on your `PATH`.
 ```text
 agentproto auth         <login|status|logout> [--host <url>]        authenticate against a remote host
 agentproto config       <show|path|get|set|unset|edit>              read/write ~/.agentproto/config.json
-agentproto app          <pack|unpack|serve>                         package or serve an agentproto app bundle
+agentproto app          <pack|unpack|serve|build|dev>                         package or serve an agentproto app bundle
 agentproto daemon       <install|uninstall|start|restart|stop|status|logs>  manage launchd/systemd service
 agentproto install      <slug> [--force] [--dry-run] [--allow-unverified]  install an adapter's underlying CLI
 agentproto plugins      <list|show|install|uninstall|enable|disable> manage runtime plugins
@@ -249,7 +249,7 @@ What `serve` exposes:
 
 | Surface           | URL                                       | Notes                                                  |
 |-------------------|-------------------------------------------|--------------------------------------------------------|
-| Health            | `GET /health`                             | Workspace + uptime — always public                     |
+| Health            | `GET /health`                             | Daemon status: workspace, uptime, `startedAt`, version, pid, node path, entry point — always public |
 | Events (SSE)      | `GET /events`                             | RuntimeEvents stream                                   |
 | MCP               | `POST /mcp` (Streamable HTTP)             | Adapter spawn, terminal sessions, fs/exec, …          |
 | Adapter discovery | `GET /adapters`                           | Globally-installed `@agentproto/adapter-*` packages    |
@@ -363,6 +363,10 @@ agentproto sessions prompt claude-tui --prompt "go check the PR review comments"
 agentproto sessions prompt claude-tui --prompt "redirect now" --interrupt
 agentproto sessions prompt claude-tui --prompt "one more thing" --wait
 
+# Pin / unpin a session (list visibility only)
+agentproto sessions pin claude-tui
+agentproto sessions unpin ses_abc12
+
 # Stop by id or name
 agentproto sessions stop claude-tui
 ```
@@ -405,6 +409,8 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 | **`terminal_output`**         | Snapshot the recent byte buffer (base64)                  |
 | **`terminal_kill`**           | SIGTERM a PTY session                                     |
 | `session_rename`              | Set or clear a session's user-facing `title`/`label`      |
+| `session_set_pinned`          | Pin or unpin a session so it sorts first in lists         |
+| `session_flag_status`         | Manually correct a session's `awaitingInput` / `awaitingQuestion` classification |
 | `adapter_list`                | Enumerate installed `@agentproto/adapter-*` packages      |
 | `mcp_discovered_list`         | MCP servers configured in claude / cursor / goose         |
 | `mcp_imported_list`           | The user's curated MCP set                                |
@@ -429,6 +435,7 @@ The terminal tools let one agent **orchestrate** other sessions: an agent in a s
 - `@agentproto/adapter-claude-sdk` — Anthropic Claude Agent SDK
 - `@agentproto/adapter-codex` — OpenAI Codex
 - `@agentproto/adapter-gemini` — Google Gemini CLI (`gemini --experimental-acp`)
+- `@agentproto/adapter-grok-cli` — xAI Grok Build CLI (`grok agent stdio`)
 - `@agentproto/adapter-hermes` — Hermes (protocol: ACP)
 - `@agentproto/adapter-opencode` — OpenCode
 - `@agentproto/adapter-openclaw` — OpenClaw
