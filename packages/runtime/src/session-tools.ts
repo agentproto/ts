@@ -334,6 +334,7 @@ export function registerSessionTools(
     resolveAgentAdapter,
     listWorktreeStatuses,
     runWorktreeGc,
+    listCatalogModels,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -712,6 +713,7 @@ export function registerSessionTools(
         ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
         ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
         ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
       }
       try {
         const result = await continueAgentSessionFresh(spawnDeps, desc)
@@ -1841,6 +1843,7 @@ export function registerSessionTools(
           const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
             forceAgentResume: true,
             overrides,
+            ...(listCatalogModels ? { listCatalogModels } : {}),
           })
           return {
             content: [

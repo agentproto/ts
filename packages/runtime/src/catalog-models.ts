@@ -924,6 +924,88 @@ export function checkModelWalletEligibility(
   return { ok: false, suggestedRoutes: serviceable.filter(r => r !== walletRoute) }
 }
 
+/** Verdict of the spawn-time adapter-capability guard
+ *  ({@link checkModelAdapterEligibility}). */
+export interface ModelAdapterEligibility {
+  ok: boolean
+  /** Other installed adapters whose catalog row already curates this exact
+   *  model on this exact route — the actionable set to re-spawn onto. Empty
+   *  when `ok`, or when NO installed adapter (this one included) curates the
+   *  combination — nobody has proven it reachable at all, so this guard has
+   *  nothing to reject on. */
+  compatibleAdapters: string[]
+}
+
+/**
+ * Adapter-capability spawn guard: the money-safety guard above
+ * ({@link checkModelWalletEligibility}) proves the resolved ROUTE can bill
+ * `model`; it says nothing about whether THIS adapter's own manifest can
+ * actually reach it there. A fixed hand-curated client (claude-code's ACP
+ * wrapper validates every model id against its own live selector and 404s on
+ * anything it doesn't recognize) can be routeSelection:"free" — genuinely able
+ * to reach several gateways — while still only supporting a small, explicitly
+ * vetted model list on each one. A pass-through client (opencode/mastracode/
+ * hermes/jcode, routeSelection:"derived-from-model") instead auto-derives a
+ * broad curated list straight from the pricing catalog, so it ends up
+ * supporting far more of a gateway's models without needing a per-model
+ * allowlist maintained by hand.
+ *
+ * Takes the SAME `CatalogModelsResponse` shape `buildCatalogModels` (and
+ * therefore `catalog_models`) produces — reusing that exact join, never a
+ * parallel per-adapter table — and looks up whether `adapterSlug` is among
+ * the resolved (vendor, product, route) row's `adapters`.
+ *
+ * `ok:true` when EITHER no installed adapter's catalog row covers this exact
+ * model+route (nobody has proven it servable at all — the same never-reject-
+ * an-unknown-combination stance {@link checkModelWalletEligibility} takes), OR
+ * `adapterSlug` is already among the row's adapters. `ok:false` only when the
+ * row exists and excludes `adapterSlug` — a proven "wrong client for this
+ * model" mismatch, with the row's other adapters (if any) as the actionable
+ * alternative.
+ */
+export function checkModelAdapterEligibility(
+  catalog: CatalogModelsResponse,
+  adapterSlug: string,
+  model: string,
+  route: string,
+): ModelAdapterEligibility {
+  const target = resolveModelId(model)
+  const routeEntry = catalog.vendors
+    .find(v => v.vendor === target.vendor)
+    ?.products.find(p => p.product === target.product)
+    ?.routes.find(r => r.route === route)
+  if (!routeEntry) return { ok: true, compatibleAdapters: [] }
+  if (routeEntry.adapters.includes(adapterSlug)) return { ok: true, compatibleAdapters: [] }
+  return { ok: false, compatibleAdapters: routeEntry.adapters }
+}
+
+/**
+ * The actionable fail-fast message for {@link checkModelAdapterEligibility} —
+ * names the adapters that DO already curate the model on this route (when any
+ * do) so the operator can re-spawn without opening the catalog by hand. Never
+ * auto-switches adapters for the operator; only rejects.
+ */
+export function modelAdapterIncompatibleMessage(opts: {
+  prefix: string
+  adapter: string
+  model: string
+  route: string
+  compatibleAdapters: string[]
+}): string {
+  const alternative =
+    opts.compatibleAdapters.length > 0
+      ? `Adapters that already support it on "${opts.route}": ${opts.compatibleAdapters
+          .map(a => `"${a}"`)
+          .join(", ")} — re-spawn with one of those instead.`
+      : `No installed adapter currently supports it on "${opts.route}" either — check ` +
+        `\`catalog_models\` for a route this model IS servable on.`
+  return (
+    `${opts.prefix}: adapter "${opts.adapter}" does not declare support for model "${opts.model}" ` +
+    `on route "${opts.route}" and would 404/reject upstream even though that route can bill it. ` +
+    `${alternative} This guard only rejects; it never switches adapters for you.`
+  )
+}
+
 /**
  * The actionable fail-fast message shared by both spawn paths (session-spawn +
  * session-restart-core) so they never drift. Names the wallet that couldn't
