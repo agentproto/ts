@@ -39,6 +39,23 @@ export interface BrainStateRecord {
   readonly bytes: number
 }
 
+/**
+ * One skipped session, as recorded in `brain-state.json` — a session whose
+ * transcript could not be ingested as of the last attempt (no transcript
+ * reachable, or an empty one). NOT a tombstone: an explicit
+ * `workspace_brain_ingest` for this `sessionId` retries it regardless of this
+ * entry, and any later successful ingest clears it. Recording skips exists so
+ * `pendingSessions` can converge to 0 for sessions that will never have a
+ * transcript (bash PTYs, GC'd transcripts) instead of being retried forever
+ * by every backlog run.
+ */
+export interface BrainStateSkip {
+  readonly sessionId: string
+  readonly reason: "no-transcript" | "empty-transcript"
+  /** ISO-8601 timestamp of the skip. */
+  readonly skippedAt: string
+}
+
 // ── Knowledge provider configuration ──────────────────────────────────
 //
 // A workspace can declaratively pick WHICH knowledge backends back its
@@ -138,8 +155,13 @@ export interface BrainStats {
   readonly sourceCount: number
   /** Total content bytes on disk across sources. */
   readonly totalBytes: number
-  /** Sessions that are known (from `listSessionRefs`) but not yet ingested. */
+  /** Sessions that are known (from `listSessionRefs`) but not yet ingested
+   *  and not recorded as skipped. */
   readonly pendingSessions: number
+  /** Sessions recorded as permanently-unavailable-for-now (see
+   *  {@link BrainStateSkip}) — excluded from `pendingSessions` so the backlog
+   *  can converge, but surfaced here so nothing is silently hidden. */
+  readonly skippedSessions: number
   readonly lastIngestedAt?: string
   readonly ready: boolean
 }
