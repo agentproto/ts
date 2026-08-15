@@ -252,23 +252,26 @@ describe("sessions webview — render", () => {
     expect(row.querySelector(".dot.bg")).toBeTruthy()
   })
 
-  it("renders a subtle '⏳2' text tell in the metadata line for pending background tasks, dot uses its own awaiting-bg color", () => {
+  it("renders a small pulsing dot (no icon/count) after cost for pending background tasks, dot uses its own awaiting-bg color", () => {
     const panel = renderPanel()
-    send(panel, modelMessage({ groups: [group("awaiting-bg", "Awaiting bg", [{ ...ROW_A, status: "awaiting-bg", pendingBgTasks: 2 }])] }))
+    // awaiting-bg sessions share the same "quiet" list as everything else —
+    // no dedicated section/group of their own.
+    send(panel, modelMessage({ groups: [group("quiet", "Quiet", [{ ...ROW_A, status: "awaiting-bg", pendingBgTasks: 2 }])] }))
     const row = el(panel, "list").querySelector('[data-id="s1"]')!
-    const chip = row.querySelector(".bgcount")!
-    expect(chip.textContent).toBe("⏳2")
+    const chip = row.querySelector(".bgdot")!
+    expect(chip.textContent).toBe("")
     expect(chip.querySelector("img, svg")).toBeNull()
+    expect(htmlEl(chip).getAttribute("title")).toBe("2 background tasks pending")
     // No standalone badge/pill class anymore, and no loud overlay dot class —
     // the dedicated .dot.awaiting-bg CSS rule supplies the amber color.
     expect(row.querySelector(".bgtasks")).toBeNull()
     expect(row.querySelector(".dot.bg")).toBeNull()
     expect(row.querySelector(".dot.awaiting-bg")).toBeTruthy()
-    // Lives in the metadata line, alongside model/cost — not the title line,
+    // Lives in the metadata line, right after cost — not the title line,
     // not a separate bottom-right badge.
-    expect(row.querySelector(".meta .bgcount")).toBeTruthy()
-    expect(row.querySelector(".name .bgcount")).toBeNull()
-    expect(row.querySelector(".right .bgcount")).toBeNull()
+    expect(row.querySelector(".meta .bgdot")).toBeTruthy()
+    expect(row.querySelector(".name .bgdot")).toBeNull()
+    expect(row.querySelector(".right .bgdot")).toBeNull()
 
     click(panel, chip)
     expect(panel.posted).toContainEqual({ type: "open", id: "s1" })
@@ -303,10 +306,10 @@ describe("sessions webview — render", () => {
     expect(list.querySelector('[data-id="s3"] .dot.bg')).toBeNull()
   })
 
-  it("omits the bg chip when no background tasks are pending", () => {
+  it("omits the bg dot when no background tasks are pending", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ groups: [group("running", "Running", [ROW_A])] }))
-    expect(el(panel, "list").querySelector('[data-id="s1"] .bgcount')).toBeNull()
+    expect(el(panel, "list").querySelector('[data-id="s1"] .bgdot')).toBeNull()
   })
 
   it("marks the row whose transcript tab is open with .open", () => {

@@ -3,9 +3,8 @@
  * TreeView (`agentproto.sessionsView === "webview"`). Implements DESIGN B,
  * "Attention-first sections" (validated 2026-08-07): the seven status tabs are
  * gone. Status is no longer a control — it is the sort order the list
- * organizes itself into. Every session falls into one of six fixed-priority
- * sections (Needs you → Awaiting bg → Running → Attention → Quiet → Earlier),
- * and navigation
+ * organizes itself into. Every session falls into one of five fixed-priority
+ * sections (Needs you → Running → Attention → Quiet → Earlier), and navigation
  * collapses to two axes: a top PROJECT RAIL (All + per-workspace chips, each
  * with a count and an ochre "awaiting" dot) and an `Agents | Auto` SEGMENTED
  * CONTROL (human- vs machine-origin, the latter grouped into Gate reviews /
@@ -784,8 +783,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .dot.delegating { background: transparent; border: 2px solid var(--ws, var(--working)); }
     .dot.awaiting { background: var(--awaiting); }
     /* Awaiting bg — same filled-dot shape as .dot.awaiting, amber instead of
-       ochre: distinguishable at a glance from "needs a human" while reading as
-       the same tier of "needs a look" rather than a lesser Quiet tell. */
+       ochre: distinguishable at a glance from "needs a human" even though the
+       row itself sits in the same Quiet section as any other idle session. */
     .dot.awaiting-bg { background: var(--bg-task); }
     .dot.stalled, .dot.failed { background: var(--stalled); }
     .dot.parked { background: var(--ws, var(--faint)); opacity: 0.5; }
@@ -797,7 +796,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
        row itself is actively working or needs you (those signals stay put). */
     .dot.bg { background: var(--bg-task); border-color: var(--bg-task); opacity: 1; }
     @keyframes agentproto-pulse { 50% { opacity: 0.4; } }
-    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .spin { animation: none !important; } }
+    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .spin { animation: none !important; } .bgdot { animation: none; } }
     .mid { flex: 1; min-width: 0; }
     .name { font-weight: 600; font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; min-width: 0; }
     .name .id { font-weight: 400; color: var(--dim); }
@@ -833,11 +832,12 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .meta .logo.img img { width: 12px; height: 12px; object-fit: contain; border-radius: 2px; }
     .meta .logo.mono { width: 12px; height: 12px; border-radius: 50%; background: rgba(255, 255, 255, 0.08); font-size: 8px; font-weight: 700; line-height: 12px; text-align: center; letter-spacing: -0.02em; }
     .meta .model { color: var(--dim); }
-    /* Background tasks pending — folded into the metadata line as a subtle
-       icon + count, same weight as model/cost, deliberately NOT a bordered
-       badge: presence is secondary information, not a signal competing with
-       the row's name or its section/dot. */
-    .meta .bgcount { color: var(--bg-task); }
+    /* Background tasks pending — a small dot after the cost tag that fades in
+       and out, deliberately NOT an icon, count, or bordered badge: presence is
+       secondary/ambient information, not a signal competing with the row's
+       name or its section/dot. */
+    .meta .bgdot { width: 6px; height: 6px; border-radius: 50%; background: var(--bg-task); display: inline-block; animation: agentproto-bg-fade 1.4s ease-in-out infinite; }
+    @keyframes agentproto-bg-fade { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
     /* Origin chip — the source channel (cowork/vscode/cron) on a root row,
        folded into the metadata line alongside model/cost rather than
        crowding the title. Faint, uppercase-ish tag so lineage attribution
@@ -1023,10 +1023,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
           parts.push('<span class="ctxbar"><span class="track"><span class="fill" style="width:' + r.ctxPercent + '%"></span></span>' + r.ctxPercent + '%</span>');
         }
         if (r.cost) parts.push('<span class="cost">' + escapeHtml(r.cost) + '</span>');
-        // Background tasks pending — a subtle icon + count, not a badge; the
-        // section/dot already carries the "needs attention" signal.
+        // Background tasks pending — a small pulsing dot after cost, not an
+        // icon or badge; the section/dot already carries the "needs
+        // attention" signal, this is a quiet ambient tell.
         if (r.pendingBgTasks > 0) {
-          parts.push('<span class="bgcount" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending">⏳' + r.pendingBgTasks + '</span>');
+          parts.push('<span class="bgdot" title="' + r.pendingBgTasks + ' background task' + (r.pendingBgTasks === 1 ? '' : 's') + ' pending"></span>');
         }
         // Origin chip — only on root rows, folded into the metadata line
         // rather than the title.
