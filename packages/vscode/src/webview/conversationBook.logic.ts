@@ -190,8 +190,10 @@ export function activityFailed(activity: PresentedActivitySegment): number {
 }
 
 /**
- * The folded-row title: the first sentence of the chapter's first narration
- * block, trimmed to ~70 chars. It is titled by the agent's OWN narration only —
+ * The folded-row title: the first sentence of the chapter's narration (ALL
+ * blocks joined, so a text segment split by an interleaved tool card can
+ * never title the chapter with a bare fragment), trimmed to ~70 chars. It is
+ * titled by the agent's OWN narration only —
  * it NEVER falls back to the ask. The human's prompt is its own persistent block
  * pinned above the chapter (see the ask card in transcriptPanel), so a chapter
  * must not double as, or be titled by, the human's words. A response chapter
@@ -199,7 +201,7 @@ export function activityFailed(activity: PresentedActivitySegment): number {
  * it builds. Never empty.
  */
 export function chapterTitle(chapter: BookChapter): string {
-  const source = chapter.narration.length > 0 ? htmlToText(chapter.narration[0]!.html) : ""
+  const source = chapter.narration.map(n => htmlToText(n.html)).join(" ")
   const title = clampTitle(firstSentence(source))
   return title || "Working…"
 }
