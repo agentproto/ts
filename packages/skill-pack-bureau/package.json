@@ -38,7 +38,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node node_modules/@agentproto/cli/dist/cli.mjs pack build",
     "clean": "rm -rf dist skills .claude-plugin",
     "test": "vitest run --passWithNoTests"
   },
