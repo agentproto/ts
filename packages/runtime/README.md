@@ -37,7 +37,7 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 
 | Surface           | URL                                      | Notes                                                  |
 |-------------------|------------------------------------------|--------------------------------------------------------|
-| Health            | `GET /health`                            | Workspace + uptime — always public                     |
+| Health            | `GET /health`                            | Daemon status: workspace, uptime, `startedAt`, version, build identity (`sha`, `builtAt`, `source`), pid, node path, entry point — always public                     |
 | Events (SSE)      | `GET /events`                            | RuntimeEvents stream                                   |
 | MCP               | `POST /mcp` (Streamable HTTP)            | Stateless mode; per-request transport                  |
 | Conversations     | `GET /conversations` / `GET /conversations/<id>` | Markdown bodies                                |
