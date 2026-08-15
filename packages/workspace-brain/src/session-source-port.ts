@@ -14,6 +14,15 @@
  * Returning `null` lets the importer skip-with-warning; a thrown error from
  * `readSession` is caught and converted to `null` so one unreadable session
  * never aborts a batch.
+ *
+ * Also strips the harness/system preamble: a LEADING run of `role: "system"`
+ * messages at the very start of the transcript. Every session's exported
+ * transcript embeds the same boilerplate instruction text there (identical
+ * across hundreds of sessions), which pollutes BM25 with shared vocabulary
+ * and skews document length/IDF — see AGENTS.md's chunked-retrieval brief.
+ * Only a LEADING run is dropped; a system-role turn appearing later (e.g. a
+ * daemon `[plan]`/`[error]`/notice annotation mid-conversation) is real
+ * signal and stays.
  */
 
 import type {
@@ -40,8 +49,15 @@ export class BrainSessionSourcePort implements ConversationSourcePort {
     }
     if (!session) return null
 
+    // Drop the leading run of system-role messages (the harness preamble) —
+    // stop at the first non-system message, whatever role it is.
+    let bodyStart = 0
+    while (bodyStart < session.messages.length && session.messages[bodyStart]!.role === "system") {
+      bodyStart++
+    }
+
     const turns: ConversationTurn[] = []
-    for (const m of session.messages) {
+    for (const m of session.messages.slice(bodyStart)) {
       const text = m.text?.trim()
       // Skip tool rows with no readable text and empty turns — the importer's
       // `renderTranscript` drops empty turns anyway; filtering here avoids

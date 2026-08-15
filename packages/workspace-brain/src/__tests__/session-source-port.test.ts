@@ -68,6 +68,61 @@ describe("BrainSessionSourcePort", () => {
     expect(await port.fetchConversation("sess-x")).toBeNull()
   })
 
+  it("strips a leading system-role preamble block", async () => {
+    const port = new BrainSessionSourcePort({
+      readSession: async () => ({
+        meta: { title: "Fix auth outage" },
+        messages: [
+          { role: "system", text: "You are Claude Code, a harness preamble repeated across every session." },
+          { role: "user", text: "investigate the auth 401s" },
+          { role: "assistant", text: "I found the bug in handle.ts" },
+        ],
+      }),
+    })
+    const doc = await port.fetchConversation("sess-x")
+    expect(doc!.turns.map(t => t.role)).toEqual(["user", "assistant"])
+    expect(doc!.turns.some(t => t.text.includes("harness preamble"))).toBe(false)
+  })
+
+  it("strips a multi-message leading system preamble run", async () => {
+    const port = new BrainSessionSourcePort({
+      readSession: async () => ({
+        messages: [
+          { role: "system", text: "preamble part 1" },
+          { role: "system", text: "preamble part 2" },
+          { role: "user", text: "hello" },
+        ],
+      }),
+    })
+    const doc = await port.fetchConversation("sess-x")
+    expect(doc!.turns).toEqual([{ role: "user", text: "hello" }])
+  })
+
+  it("keeps a system-role turn that appears mid-conversation (not a leading preamble)", async () => {
+    const port = new BrainSessionSourcePort({
+      readSession: async () => ({
+        messages: [
+          { role: "user", text: "start the task" },
+          { role: "assistant", text: "working on it" },
+          { role: "system", text: "[plan] 1/3 done" },
+          { role: "assistant", text: "finished" },
+        ],
+      }),
+    })
+    const doc = await port.fetchConversation("sess-x")
+    expect(doc!.turns.map(t => t.role)).toEqual(["user", "assistant", "system", "assistant"])
+    expect(doc!.turns.some(t => t.text.includes("[plan]"))).toBe(true)
+  })
+
+  it("returns null when the whole transcript is only a system preamble", async () => {
+    const port = new BrainSessionSourcePort({
+      readSession: async () => ({
+        messages: [{ role: "system", text: "just preamble, nothing else" }],
+      }),
+    })
+    expect(await port.fetchConversation("sess-x")).toBeNull()
+  })
+
   it("omits `at` when the message has no usable timestamp", async () => {
     const port = new BrainSessionSourcePort({
       readSession: async () => ({
