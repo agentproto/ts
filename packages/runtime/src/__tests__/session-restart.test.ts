@@ -12,7 +12,7 @@
  *   - unsupported (generic `command` session)
  */
 
-import { afterEach, describe, it, expect } from "vitest"
+import { afterEach, beforeEach, describe, it, expect } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, utimesSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -126,12 +126,40 @@ function makeFakePtyFactory(): PtyFactory {
   })
 }
 
+/** Records the argv + env every PTY spawn actually received — used by the
+ *  env-threading tests below, which need to see what `session_restart`'s
+ *  `pty-native`/`pty-plain` branch passed `registry.spawnPty`, not just the
+ *  resulting descriptor (the descriptor doesn't echo `env`). */
+function makeRecordingPtyFactory(): {
+  factory: PtyFactory
+  calls: Array<{ argv: string[]; env: Record<string, string> | undefined }>
+} {
+  const calls: Array<{ argv: string[]; env: Record<string, string> | undefined }> = []
+  const factory: PtyFactory = opts => {
+    calls.push({ argv: [opts.command, ...opts.args], env: opts.env })
+    return {
+      pid: 4242,
+      write: () => {},
+      resize: () => {},
+      kill: () => {},
+      onData: () => {},
+      onExit: () => {},
+    }
+  }
+  return { factory, calls }
+}
+
 async function buildHarness(
   resolverOpts: Parameters<typeof makeResolver>[0] = {},
   // Real persistence (round-trip through sessions.json) only when a caller
   // passes a path — the reload/persistence tests below need it, everything
   // else stays in-memory-only like before.
   persistPath?: string,
+  // Override the PTY factory — the env-threading tests need
+  // `makeRecordingPtyFactory()` to see what `session_restart` actually
+  // passed `registry.spawnPty`. Defaults to the plain fake used everywhere
+  // else so existing call sites are unaffected.
+  ptyFactory?: PtyFactory,
 ): Promise<{
   client: Client
   registry: SessionsRegistry
@@ -143,7 +171,7 @@ async function buildHarness(
   const registry = createSessionsRegistry({
     sessionEvents,
     ...(persistPath ? { persistPath } : { persist: false }),
-    spawnPty: makeFakePtyFactory(),
+    spawnPty: ptyFactory ?? makeFakePtyFactory(),
   })
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
 
@@ -765,6 +793,171 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     const err = toolJson(result)
     expect(err.status).toBe(400)
     expect(err.error).toBe("restart_override_invalid")
+
+    await close()
+    registry.shutdown()
+  })
+})
+
+/**
+ * Root-cause regression: a `pty-native` restart used to spawn
+ * `claude --resume <id>` with NO env override at all, so the resumed PTY
+ * inherited the daemon's ambient (or no) `CLAUDE_CONFIG_DIR` instead of the
+ * dead session's own isolated config dir — the dir the transcript for
+ * `<id>` actually lives under since #824. The provider then can't find its
+ * own conversation and exits immediately with "No conversation found ...",
+ * before the restarted session's first turn — silently, because a normal
+ * PTY exit never used to set `lastError` either (see sessions.test.ts's
+ * "abnormal-exit observability" tests for that half of the fix).
+ *
+ * These tests drive the fix: `session_restart`'s pty-native branch must
+ * thread `{ CLAUDE_CONFIG_DIR: <adapterConfigDir> }` into the resumed PTY's
+ * env, and a LATER `pty-plain` restart of that same (now bare-PTY) session
+ * must keep replaying the same env rather than silently losing it.
+ */
+describe("session_restart — pty-native/pty-plain env threading (CLAUDE_CONFIG_DIR)", () => {
+  // `spawnPty` always merges `process.env` underneath the caller's `env`
+  // override (node-pty forwards the daemon's own env by default) — an
+  // ambient `CLAUDE_CONFIG_DIR` in the process running THIS test suite
+  // (e.g. a Claude Code session testing its own isolation) would otherwise
+  // leak in and mask the "no override" assertion below.
+  let prevAmbientConfigDir: string | undefined
+
+  beforeEach(() => {
+    prevAmbientConfigDir = process.env.CLAUDE_CONFIG_DIR
+    delete process.env.CLAUDE_CONFIG_DIR
+  })
+
+  afterEach(() => {
+    if (prevAmbientConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = prevAmbientConfigDir
+  })
+
+  it("pty-native: threads CLAUDE_CONFIG_DIR from the dead session's adapterConfigDir into the resumed PTY's env", async () => {
+    const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
+    const { client, registry, close } = await buildHarness(
+      { nativeTerminalResume: true },
+      undefined,
+      factory,
+    )
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+      adapterConfigDir: "/fake/agentproto/adapter-config/sess_16c43292",
+    })
+    prev.resumeMetadata = { claudeResumeId: "c643a525-5d7a-4a45-a9a0-666215eb6e77" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+    expect(desc.kind).toBe("terminal")
+
+    expect(ptyCalls).toHaveLength(1)
+    expect(ptyCalls[0]?.argv).toEqual([
+      "claude",
+      "--resume",
+      "c643a525-5d7a-4a45-a9a0-666215eb6e77",
+    ])
+    expect(ptyCalls[0]?.env?.CLAUDE_CONFIG_DIR).toBe(
+      "/fake/agentproto/adapter-config/sess_16c43292",
+    )
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("pty-native: no adapterConfigDir on the descriptor → no CLAUDE_CONFIG_DIR override (legacy row, unchanged behaviour)", async () => {
+    const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
+    const { client, registry, close } = await buildHarness(
+      { nativeTerminalResume: true },
+      undefined,
+      factory,
+    )
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+    })
+    prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+
+    expect(ptyCalls).toHaveLength(1)
+    expect(ptyCalls[0]?.env?.CLAUDE_CONFIG_DIR).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("pty-plain: a restart-of-a-restart replays the SAME env the first pty-native hop recorded", async () => {
+    const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
+    const { client, registry, close } = await buildHarness(
+      { nativeTerminalResume: true },
+      undefined,
+      factory,
+    )
+
+    const original = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+      adapterConfigDir: "/fake/agentproto/adapter-config/sess_16c43292",
+    })
+    original.resumeMetadata = { claudeResumeId: "c643a525-5d7a-4a45-a9a0-666215eb6e77" }
+    registry.kill(original.id)
+
+    // First hop: agent-cli -> pty-native. Confirms env was threaded (same
+    // as the test above) and gives us the resulting bare-PTY descriptor.
+    const firstRestart = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: original.id },
+    })
+    const firstDesc = toolJson(firstRestart)
+    expect(ptyCalls).toHaveLength(1)
+    expect(ptyCalls[0]?.env?.CLAUDE_CONFIG_DIR).toBe(
+      "/fake/agentproto/adapter-config/sess_16c43292",
+    )
+    // The bare-PTY row from the first hop has no adapterSlug/adapterConfigDir
+    // (by design — see those fields' docs) — decideRestartStrategy can only
+    // route it through pty-plain from here on.
+    expect(firstDesc.adapterSlug).toBeUndefined()
+    registry.kill(String(firstDesc.id))
+
+    // Second hop: pty-plain restart of the now-bare PTY row. Without the
+    // fix, this silently dropped CLAUDE_CONFIG_DIR and repeated the exact
+    // same "No conversation found" failure forever.
+    const secondRestart = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: String(firstDesc.id) },
+    })
+    expect(secondRestart.isError).toBeFalsy()
+    expect(ptyCalls).toHaveLength(2)
+    expect(ptyCalls[1]?.argv).toEqual([
+      "claude",
+      "--resume",
+      "c643a525-5d7a-4a45-a9a0-666215eb6e77",
+    ])
+    expect(ptyCalls[1]?.env?.CLAUDE_CONFIG_DIR).toBe(
+      "/fake/agentproto/adapter-config/sess_16c43292",
+    )
 
     await close()
     registry.shutdown()

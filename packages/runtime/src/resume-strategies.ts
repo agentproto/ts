@@ -92,6 +92,12 @@ export interface ResumeStrategy {
    *  When omitted, the daemon falls back to ACP-level resume via
    *  the agent-cli protocol instead of the provider's native CLI. */
   spawnArgs?(id: string): string[]
+  /** Env var the resumed PTY needs pointed at the session's isolated
+   *  provider config dir to find ITS OWN conversation store — see
+   *  `ConversationStore.configDirEnvVar`'s doc (conversation-store.ts) for
+   *  why this exists and what silently omitting it breaks. Undefined for
+   *  a provider with no config-dir-isolated store. */
+  configDirEnvVar?: string
 }
 
 // Project every conversation store that declares a native PTY attach argv
@@ -110,6 +116,7 @@ export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = Object.fromEntr
         {
           outputHint: store.outputHint,
           storeAs: store.storeAs,
+          ...(store.configDirEnvVar ? { configDirEnvVar: store.configDirEnvVar } : {}),
           fsProbe: async (cwd, prevStartedAt, expectedId, configDir) => {
             const candidates = await s.discover({
               cwd,

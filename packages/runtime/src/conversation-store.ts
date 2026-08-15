@@ -77,6 +77,18 @@ export interface ConversationStore {
   /** argv that attaches a NATIVE PTY to an existing conversation.
    *  Omitted ⇒ this provider has no native attach path. */
   attachArgv?(conversationId: string): string[]
+  /** The env var `attachArgv`'s spawned PTY reads to find its conversation
+   *  store, when the store is keyed off a per-session isolated config dir
+   *  (`DiscoverInput.configDir`'s doc — today only claude-code's
+   *  `CLAUDE_CONFIG_DIR`; see #824). When set, `session_restart`'s
+   *  `pty-native` branch (session-tools.ts) passes
+   *  `{ [configDirEnvVar]: descriptor.adapterConfigDir }` to the resumed
+   *  PTY's env — omitting it is what leaves a `claude --resume <id>`
+   *  looking in the global `~/.claude` for a transcript that only exists
+   *  under the session's isolated dir, failing with "No conversation
+   *  found" before the resumed session's first turn. Omitted for stores
+   *  with no config-dir isolation (hermes: global store only). */
+  configDirEnvVar?: string
   /** Find conversations in the provider's native store. `[]` = none —
    *  a normal answer (e.g. the PTY is a bash shell). Never throws for
    *  "nothing found"; throws only on a genuinely unreadable store. */
@@ -415,6 +427,7 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
     // (default). Example: `claude --resume 0e483f81-1a44-4bec-9667-b37158450296`
     outputHint: /claude\s+--resume\s+([0-9a-f-]{8,})/i,
     attachArgv: (conversationId: string) => ["claude", "--resume", conversationId],
+    configDirEnvVar: "CLAUDE_CONFIG_DIR",
     discover: discoverClaudeCode,
     read: readClaudeCode,
   },
