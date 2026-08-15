@@ -54,6 +54,11 @@
       "import": "./dist/media-viewer.mjs",
       "default": "./dist/media-viewer.mjs"
     },
+    "./ops-panel": {
+      "types": "./dist/ops-panel/index.d.ts",
+      "import": "./dist/ops-panel.mjs",
+      "default": "./dist/ops-panel.mjs"
+    },
     "./session-viewer": {
       "types": "./dist/session-viewer/index.d.ts",
       "import": "./dist/session-viewer.mjs",

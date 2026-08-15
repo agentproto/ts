@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { MEDIA_VIEWER_HTML, MEDIA_VIEWER_TOOLS } from "../media-viewer/ui.js"
 import { MAIL_TRIAGE_HTML, MAIL_TRIAGE_TOOLS, MAIL_TRIAGE_MCP_ALIASES } from "../mail-triage/ui.js"
+import { OPS_PANEL_HTML, OPS_PANEL_TOOLS } from "../ops-panel/ui.js"
 import { SESSION_VIEWER_HTML, SESSION_VIEWER_TOOLS } from "../session-viewer/ui.js"
 
 describe("media-viewer UI panel", () => {
@@ -63,5 +64,38 @@ describe("session-viewer UI panel", () => {
 
   it("never talks to the daemon outside the McpApp bridge", () => {
     expect(SESSION_VIEWER_HTML).not.toMatch(/\bfetch\s*\(/)
+  })
+})
+
+describe("ops-panel UI panel", () => {
+  it("is a non-empty self-contained HTML document using the McpApp bridge", () => {
+    expect(OPS_PANEL_HTML.length).toBeGreaterThan(0)
+    expect(OPS_PANEL_HTML).toContain("<!DOCTYPE html>")
+    expect(OPS_PANEL_HTML).toContain("McpApp.connect")
+  })
+
+  it("declares every daemon tool it dispatches through app_tool_call", () => {
+    expect(OPS_PANEL_TOOLS).toEqual([
+      "daemon_health",
+      "session_list",
+      "agent_start",
+      "agent_prompt",
+      "agent_kill",
+      "session_restart",
+      "session_archive",
+      "session_gc",
+      "cron_list",
+      "cron_create",
+      "cron_delete",
+      "cron_run",
+      "worktree_gc",
+    ])
+    for (const tool of OPS_PANEL_TOOLS) {
+      expect(OPS_PANEL_HTML).toContain(tool)
+    }
+  })
+
+  it("never talks to the daemon outside the McpApp bridge", () => {
+    expect(OPS_PANEL_HTML).not.toMatch(/\bfetch\s*\(/)
   })
 })
