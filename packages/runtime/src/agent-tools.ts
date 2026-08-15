@@ -989,6 +989,7 @@ export function registerAgentTools(
           resolveSandboxProvider,
           ...(provisionWorktree ? { provisionWorktree } : {}),
           ...(resolveWorktreeIsolation ? { resolveWorktreeIsolation } : {}),
+          ...(listCatalogModels ? { listCatalogModels } : {}),
         },
         {
           ...spawnInput,
