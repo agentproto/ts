@@ -11,7 +11,7 @@ metadata:
 # Instagram — recon plan (web private API)
 
 > ✅ **Instagram adapter** — `SOCIAL_PLATFORMS.instagram` in
-> `@agstudio/browser-social` (`instagram.adapter.ts`): profile · authored ·
+> `@agstudio/browser-social` (`sites/instagram/adapter.ts`): profile · authored ·
 > connection (followers/following) · engagement-received (commenters — the only
 > IG edge; likers 403), as a `SocialSourcePort`. In-page `igFetch`
 > (x-ig-app-id + x-csrftoken) + re-focus drift defense. **Graph ingest:**
