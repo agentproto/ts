@@ -1,5 +1,36 @@
 # agentproto-vscode
 
+## 0.10.0
+
+### Minor Changes
+
+- da57681: Add build identity tracking to CLI and runtime. Captures git SHA and build timestamp at build time, and judges source (workspace vs published) at runtime. This enables operators to distinguish between workspace distributions and published tarballs of the same version via `daemon start`/`status` output and `/health` endpoint.
+
+  New exports:
+  - `renderBuild()` from `@agentproto/cli/commands/daemon`
+
+  New optional fields:
+  - `DaemonHealthInfo.build`
+  - `CreateGatewayOptions.build`
+  - `RuntimeHttpServerOptions.build`
+  - `DaemonHealth.build` (VS Code)
+
+- 9fe9f66: Fix session lineage handling in the webview: subagents spawned under human chat sessions now stay in the agents lane (nested under their spawner) rather than routing to the auto lane's Tasks group. Orphans and children of machine-origin sessions correctly fall back to Tasks. Includes cycle detection to prevent infinite loops in parent chain traversal.
+
+### Patch Changes
+
+- 3740171: Fix transcript debounce-split bug where mid-word fragments split by interleaved tool-call records would create artificial paragraph breaks. Adds `partial` flag to track explicitly unterminated flushes and updates reducers to rejoin text-delta records that haven't reached newline termination, keeping sentences coherent across tool interactions.
+- Updated dependencies [afa1796]
+- Updated dependencies [3740171]
+- Updated dependencies [d63cd31]
+- Updated dependencies [bfd7daf]
+- Updated dependencies [1bb03c4]
+- Updated dependencies [da57681]
+- Updated dependencies [949c6c7]
+- Updated dependencies [463d345]
+- Updated dependencies [d1b4aa4]
+  - @agentproto/runtime@2.8.0
+
 ## 0.9.0
 
 ### Minor Changes

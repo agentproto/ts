@@ -1,5 +1,41 @@
 # @agentproto/cli
 
+## 0.14.0
+
+### Minor Changes
+
+- 7c1d7f5: Add `agentproto pack build [dir]` command to centralize skill-pack build logic, eliminating per-package duplicate scripts. The command builds both a flat npm layout and a versioned bundle for the Anthropic consumer, with version sourced from the package's own package.json (aligned with changesets).
+- da57681: Add build identity tracking to CLI and runtime. Captures git SHA and build timestamp at build time, and judges source (workspace vs published) at runtime. This enables operators to distinguish between workspace distributions and published tarballs of the same version via `daemon start`/`status` output and `/health` endpoint.
+
+  New exports:
+  - `renderBuild()` from `@agentproto/cli/commands/daemon`
+
+  New optional fields:
+  - `DaemonHealthInfo.build`
+  - `CreateGatewayOptions.build`
+  - `RuntimeHttpServerOptions.build`
+  - `DaemonHealth.build` (VS Code)
+
+### Patch Changes
+
+- 8b75d61: Declare a model list on the kimi-cli generic-ACP spec (default kimi-k3 plus
+  the moonshot allow-list) so its launch picker offers real models instead of
+  only "custom".
+- 7b28edf: Refresh the Mistral model catalog from the live /v1/models list (adds the
+  medium tier, codestral, devstral, ministral, magistral; drops retired ids)
+  and declare a model list on the mistral-vibe generic-ACP spec so its launch
+  picker offers real models instead of only "custom".
+- 99fb2fb: Accuracy pass on skill documentation and AGENTS.md. Fixes ~20 tool names in skill documentation to match current runtime API (agent*output, command_log_tail, file*_, terminal\__, etc.). Corrects permissions_respond schema documentation. Removes diverged duplicate SKILL.md file from packages/cli/skill/ (never imported by code but shipped in npm tarball). Updates reference documentation paths and line numbers.
+- 132ffe5: Documentation updates for CLI enhancements, adapter protocol changes, and provider preset expansion.
+  - **@agentproto/adapter-jcode**: Updated protocol documentation to reflect NDJSON streaming support and added exit code semantics for setup requiring TTY (code 78).
+  - **@agentproto/cli**: Documented new session commands (`prompt`, `pin`, `unpin`), daemon capabilities (PATH self-healing, version reporting in `/health`), file upload endpoint for `app serve`, and added grok-cli adapter reference.
+  - **@agentproto/provider-presets**: Added documentation for new provider presets: OpenAI, Mistral, Groq, Nebius, Hugging Face, and DeepInfra.
+
+- d1b4aa4: Fix phantom-PR regression where sessions at the repo root would incorrectly attribute open PRs that happen to be on the default branch. Add default-branch guard to `makeOpenPrResolver` and only record PRs when actually stamped for the first time, preventing misattribution on idempotent re-reads.
+- Updated dependencies [7b28edf]
+- Updated dependencies [e8d39e8]
+  - @agentproto/model-catalog@0.8.4
+
 ## 0.13.0
 
 ### Minor Changes

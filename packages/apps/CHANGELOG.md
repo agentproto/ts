@@ -1,5 +1,11 @@
 # @agentproto/apps
 
+## 0.8.0
+
+### Minor Changes
+
+- 1bd4dbd: Add ops-panel app — daemon operations cockpit bundling Session Watchdog (cron-ticked health checks, observe-only) and Sessions Manager (durable coordinator) agents with comprehensive UI panel for session lifecycle management, housekeeping, and cron administration.
+
 ## 0.7.0
 
 ### Minor Changes

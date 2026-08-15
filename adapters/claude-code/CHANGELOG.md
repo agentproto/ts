@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-code
 
+## 2.1.6
+
+### Patch Changes
+
+- 9473480: Bump @agentclientprotocol/claude-agent-acp from 0.59.0 to 0.67.0 to track Claude Code 2.1.x. Includes fixes for denied-tool resolution and ExitPlanMode single-tool representation, improving plan-mode rendering reliability. Changes are backward compatible; new session capabilities (fork/list/resume/delete) are additive.
+- Updated dependencies [132ffe5]
+  - @agentproto/provider-presets@0.6.1
+
 ## 2.1.5
 
 ### Patch Changes
