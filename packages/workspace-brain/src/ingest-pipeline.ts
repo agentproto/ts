@@ -102,8 +102,8 @@ export class IngestPipeline {
     }
 
     try {
-      const source = await this.importSingle(sessionId)
-      if (!source) {
+      const loaded = await this.importSingle(sessionId)
+      if (!loaded) {
         await this.recordSkip(sessionId, "empty-transcript")
         return { sessionId, ok: false, skippedReason: "empty-transcript" }
       }
