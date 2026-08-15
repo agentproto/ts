@@ -8,6 +8,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createBrainManager, type BrainManager } from "../brain-manager.js"
+import { createBrainState } from "../brain-state.js"
+import { PIPELINE_VERSION } from "../pipeline-version.js"
 import type { ExportedSessionLike } from "../types.js"
 
 function transcript(title: string, body: string): ExportedSessionLike {
@@ -46,6 +48,7 @@ describe("createBrainManager", () => {
   it("ingests a session and reports it in status", async () => {
     const result = await brain.ingestSession("sess-abc123")
     expect(result.ok).toBe(true)
+    expect(result.pipelineVersion).toBe(PIPELINE_VERSION)
 
     const status = await brain.status()
     expect(status.workspace).toBe("test-ws")
@@ -53,6 +56,44 @@ describe("createBrainManager", () => {
     expect(status.sourceCount).toBe(1)
     expect(status.pendingSessions).toBe(0)
     expect(status.ready).toBe(true)
+    expect(status.staleSources).toBe(0)
+    expect(status.currentPipelineVersion).toBe(PIPELINE_VERSION)
+  })
+
+  it("reports a source ingested under an older pipeline version as stale in status", async () => {
+    // Write a record directly, as if ingested before pipeline versioning
+    // existed — status() must flag it rather than silently counting it as
+    // current, since ingestPending's convergence would otherwise never
+    // revisit it after a chunking/pipeline fix ships.
+    const state = createBrainState(brainDir)
+    await state.record({
+      sessionId: "sess-legacy",
+      sourceId: "sess-legacy",
+      ingestedAt: "2020-01-01T00:00:00.000Z",
+      turnCount: 1,
+      bytes: 10,
+    })
+
+    const status = await brain.status()
+    expect(status.sourceCount).toBe(1)
+    expect(status.staleSources).toBe(1)
+    expect(status.currentPipelineVersion).toBe(PIPELINE_VERSION)
+  })
+
+  it("ingestPending's reindexStale option clears a stale record and the staleSources count", async () => {
+    const state = createBrainState(brainDir)
+    await state.record({
+      sessionId: "sess-abc123",
+      sourceId: "sess-abc123",
+      ingestedAt: "2020-01-01T00:00:00.000Z",
+      turnCount: 1,
+      bytes: 10,
+    })
+    expect((await brain.status()).staleSources).toBe(1)
+
+    const report = await brain.ingestPending({ reindexStale: true })
+    expect(report.staleSources).toBe(0)
+    expect((await brain.status()).staleSources).toBe(0)
   })
 
   it("exposes a queryable provider over the ingested content", async () => {
