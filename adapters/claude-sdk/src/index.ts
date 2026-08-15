@@ -275,6 +275,7 @@ export {
   buildQueryOptions,
   mapAcpMcpServers,
   DEFAULT_MODEL,
+  UnroutedGatewayModelError,
   type ClaudeSdkConfig,
 } from "./options.js"
 export {
