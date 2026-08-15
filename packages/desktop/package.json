@@ -3,7 +3,7 @@
   "displayName": "agentproto desktop",
   "description": "Native desktop shell for the agentproto daemon — sessions, health, spawn/drive/stop from a standalone window.",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "scripts": {
     "dev": "vite",

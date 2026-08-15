@@ -1,5 +1,11 @@
 # agentproto-desktop
 
+## 0.2.4
+
+### Patch Changes
+
+- 3740171: Fix transcript debounce-split bug where mid-word fragments split by interleaved tool-call records would create artificial paragraph breaks. Adds `partial` flag to track explicitly unterminated flushes and updates reducers to rejoin text-delta records that haven't reached newline termination, keeping sentences coherent across tool interactions.
+
 ## 0.2.3
 
 ### Patch Changes

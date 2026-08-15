@@ -1,5 +1,40 @@
 # @agentproto/runtime
 
+## 2.8.0
+
+### Minor Changes
+
+- da57681: Add build identity tracking to CLI and runtime. Captures git SHA and build timestamp at build time, and judges source (workspace vs published) at runtime. This enables operators to distinguish between workspace distributions and published tarballs of the same version via `daemon start`/`status` output and `/health` endpoint.
+
+  New exports:
+  - `renderBuild()` from `@agentproto/cli/commands/daemon`
+
+  New optional fields:
+  - `DaemonHealthInfo.build`
+  - `CreateGatewayOptions.build`
+  - `RuntimeHttpServerOptions.build`
+  - `DaemonHealth.build` (VS Code)
+
+### Patch Changes
+
+- afa1796: Enhance PR provenance with exact attribution from tool-call records. The reconciler now checks two lanes in order: lane A reads successful `gh pr create` calls from the session's transcript (immune to branch switches and shared checkouts), then falls back to lane B (branch→PR resolution) for adapters whose tool calls aren't recorded.
+- 3740171: Fix transcript debounce-split bug where mid-word fragments split by interleaved tool-call records would create artificial paragraph breaks. Adds `partial` flag to track explicitly unterminated flushes and updates reducers to rejoin text-delta records that haven't reached newline termination, keeping sentences coherent across tool interactions.
+- d63cd31: Add skip-tracking to workspace brain to prevent re-ingestion of permanently-unavailable sessions. Skips are recorded in brain-state.json and excluded from pendingSessions backlog, but are not tombstones — explicit re-ingests and later successful ingests clear them automatically.
+- bfd7daf: Fix transcript discovery for daemon-spawned claude-code sessions with isolated CLAUDE_CONFIG_DIR. Since the #824 MCP-isolation fix, daemon-spawned sessions write their transcripts under their own isolated config directory, not the global ~/.claude. Discovery and read operations now correctly resolve transcripts from the session's isolated directory when available, while maintaining backward compatibility with pre-#824 sessions and native PTY sessions that use the global store.
+- 1bb03c4: Fix critical data loss bugs in sessions registry: add per-write unique tmp file names to prevent concurrent write truncation, serialize persist rounds to prevent interleaved snapshots, and quarantine malformed files instead of silently overwriting them.
+- 949c6c7: Export new identity-stamping functions for daemon MCP gateway: `shouldInjectDaemonSelfMount` (determines which adapters receive default daemon gateway injection) and `stripOwnCallerStamp` (removes stale identity stamps when continuing sessions). Enable on-host claude-code spawns to receive identity-stamped daemon gateway by default, fixing the production issue where spawned sessions lacked parentSessionId lineage attribution.
+- 463d345: Fix shutdown persistence race and failed spawn signal bug. Prevents child process exit handlers from re-arming persistence timers after shutdown (which would wipe session history to disk), and stops accidental SIGTERM signaling to the daemon's own process group when a spawn fails.
+- d1b4aa4: Fix phantom-PR regression where sessions at the repo root would incorrectly attribute open PRs that happen to be on the default branch. Add default-branch guard to `makeOpenPrResolver` and only record PRs when actually stamped for the first time, preventing misattribution on idempotent re-reads.
+- Updated dependencies [7b28edf]
+- Updated dependencies [d63cd31]
+- Updated dependencies [632b011]
+- Updated dependencies [132ffe5]
+- Updated dependencies [e8d39e8]
+  - @agentproto/model-catalog@0.8.4
+  - @agentproto/workspace-brain@0.3.0
+  - @agentproto/provider-presets@0.6.1
+  - @agentproto/providers-store@0.3.7
+
 ## 2.7.0
 
 ### Minor Changes

@@ -1,5 +1,18 @@
 # @agentproto/model-catalog
 
+## 0.8.4
+
+### Patch Changes
+
+- 7b28edf: Refresh the Mistral model catalog from the live /v1/models list (adds the
+  medium tier, codestral, devstral, ministral, magistral; drops retired ids)
+  and declare a model list on the mistral-vibe generic-ACP spec so its launch
+  picker offers real models instead of only "custom".
+- e8d39e8: Add catalog sync scripts for Mistral and Moonshot: ids from each provider's
+  live /v1/models (with OpenRouter fallback for Moonshot), pricing from
+  OpenRouter's public API, emitted as generated files spread beneath the
+  hand-maintained entries so curated pricing always overrides.
+
 ## 0.8.3
 
 ### Patch Changes

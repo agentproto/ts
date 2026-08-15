@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.5.7
+
+### Patch Changes
+
+- a02a5ea: Bump @anthropic-ai/claude-agent-sdk from 0.3.226 to 0.3.232 to align with Claude Code 2.1.232.
+- Updated dependencies [132ffe5]
+  - @agentproto/provider-presets@0.6.1
+
 ## 0.5.6
 
 ### Patch Changes
