@@ -3607,7 +3607,14 @@ export function createSessionsRegistry(opts?: {
     if (!adapterSlug || !adapterSessionId || !cwd) return
     void (async () => {
       try {
-        const native = await resolveNativeLink({ cwd, adapterSlug, adapterSessionId })
+        const native = await resolveNativeLink({
+          cwd,
+          adapterSlug,
+          adapterSessionId,
+          // Config-dir-isolated session (#824): the native transcript lives
+          // under the session's own CLAUDE_CONFIG_DIR, not ~/.claude.
+          ...(desc.adapterConfigDir ? { adapterConfigDir: desc.adapterConfigDir } : {}),
+        })
         const registered = readRegisteredSlugs(workspacesConfigPath)
         const slug = resolveBucketSlug(desc.workspaceSlug, registered)
         const record: ConversationIndexRecord = {
@@ -3616,6 +3623,7 @@ export function createSessionsRegistry(opts?: {
           cwd,
           adapterSlug,
           adapterSessionId,
+          ...(desc.adapterConfigDir ? { adapterConfigDir: desc.adapterConfigDir } : {}),
           ...(native ? { native } : {}),
           agentprotoTranscript: sessionEventsPath(desc.id, transcriptBaseDir),
           ...(desc.title ? { title: desc.title } : {}),

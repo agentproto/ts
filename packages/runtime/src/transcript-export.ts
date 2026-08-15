@@ -30,7 +30,7 @@ import { createInterface } from "node:readline"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import { formatToolCall } from "./tool-presenter.js"
 import { sessionEventsPath } from "./transcript-writer.js"
-import { claudeProjectSlug } from "./conversation-store.js"
+import { claudeCodeProjectDir } from "./conversation-store.js"
 import type { ConversationCandidate } from "./conversation-store.js"
 
 // ── Common model ──────────────────────────────────────────────────────
@@ -188,7 +188,10 @@ export function renderJson(session: ExportedSession): string {
 // ── Exporter interface ────────────────────────────────────────────────
 
 interface ExportStrategy {
-  exportSession(adapterSessionId: string, cwd?: string): Promise<ExportedSession>
+  /** `configDir` = the session's isolated provider config dir
+   *  (`SessionDescriptor.adapterConfigDir`) — only claude-code keys its
+   *  store off it; the other strategies ignore it. */
+  exportSession(adapterSessionId: string, cwd?: string, configDir?: string): Promise<ExportedSession>
 }
 
 // ── claude-code exporter (JSONL) ──────────────────────────────────────
@@ -237,6 +240,7 @@ const IGNORED_CLAUDE_TYPES = new Set([
 export async function exportClaudeCodeSession(
   adapterSessionId: string,
   cwd?: string,
+  configDir?: string,
 ): Promise<ExportedSession> {
   if (!cwd) {
     throw new Error(
@@ -244,8 +248,9 @@ export async function exportClaudeCodeSession(
         "Pass cwd explicitly or use a session id that is in the registry.",
     )
   }
-  const encoded = claudeProjectSlug(cwd)
-  const filePath = join(homedir(), ".claude", "projects", encoded, `${adapterSessionId}.jsonl`)
+  // A config-dir-isolated session (#824) writes its transcripts under its
+  // own CLAUDE_CONFIG_DIR, same projects/<slug> layout as ~/.claude.
+  const filePath = join(claudeCodeProjectDir(cwd, configDir), `${adapterSessionId}.jsonl`)
 
   let stream: ReturnType<typeof createReadStream>
   try {
@@ -1913,6 +1918,7 @@ export async function exportAgentSession(
   let adapterSlug = input.adapter
   let cwd = input.cwd
   let adapterSessionId = sessionId
+  let configDir: string | undefined
 
   const err = (msg: string): ExportAgentSessionResult => ({
     sessionId,
@@ -1929,6 +1935,9 @@ export async function exportAgentSession(
   if (desc) {
     adapterSlug = adapterSlug ?? desc.adapterSlug
     cwd = cwd ?? desc.cwd
+    // A config-dir-isolated session's transcripts live under its own
+    // CLAUDE_CONFIG_DIR, not ~/.claude (#824) — thread it to the exporter.
+    configDir = desc.adapterConfigDir
     // prefer the adapter-native id over the agentproto id
     if (desc.adapterSessionId) adapterSessionId = desc.adapterSessionId
   }
@@ -1948,7 +1957,7 @@ export async function exportAgentSession(
           `Only sessions spawned via claude-code or hermes can be exported.`,
       )
     }
-    return exporter.exportSession(adapterSessionId, cwd)
+    return exporter.exportSession(adapterSessionId, cwd, configDir)
   }
 
   const tryDaemon = (): Promise<ExportedSession> => exportDaemonEventsSession(daemonSessionId, desc)

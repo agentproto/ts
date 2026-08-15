@@ -594,3 +594,107 @@ describe("augmentWithFsResume", () => {
     await expect(augmentWithFsResume(prev)).resolves.toBe(prev)
   })
 })
+
+/**
+ * Config-dir isolation (#824): a daemon-spawned claude-code session runs
+ * with its own CLAUDE_CONFIG_DIR, so its transcript lives under
+ * `<adapterConfigDir>/projects/<slug>/` — NOT `~/.claude/projects/<slug>/`.
+ * The fs probe must look in the isolated dir when the descriptor carries
+ * `adapterConfigDir`, and keep probing ~/.claude when it doesn't (native
+ * PTY / pre-#824 rows). This was the 100%-broken-native-resume bug: the
+ * probe never found the isolated transcript, `claudeResumeId` never got
+ * populated, and every daemon restart fell back to the truncated digest.
+ */
+describe("augmentWithFsResume with an isolated adapterConfigDir", () => {
+  let fakeHome: string
+  let originalHome: string | undefined
+
+  afterEach(() => {
+    if (fakeHome) {
+      rmSync(fakeHome, { recursive: true, force: true })
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+  })
+
+  /** Fake HOME + an isolated config dir shaped like the real
+   *  ~/.agentproto/adapter-config/<sess>/ tree. Both project dirs exist;
+   *  each test chooses where to write the transcript. */
+  function setupIsolated(cwd: string): {
+    configDir: string
+    isolatedSessionsDir: string
+    globalSessionsDir: string
+  } {
+    originalHome = process.env.HOME
+    fakeHome = mkdtempSync(join(tmpdir(), "resume-strategies-configdir-"))
+    process.env.HOME = fakeHome
+    const encoded = cwd.replace(/\//g, "-")
+    const configDir = join(fakeHome, ".agentproto", "adapter-config", "sess_test")
+    const isolatedSessionsDir = join(configDir, "projects", encoded)
+    const globalSessionsDir = join(fakeHome, ".claude", "projects", encoded)
+    mkdirSync(isolatedSessionsDir, { recursive: true })
+    mkdirSync(globalSessionsDir, { recursive: true })
+    return { configDir, isolatedSessionsDir, globalSessionsDir }
+  }
+
+  it("fsProbe(…, configDir) exact-binds a transcript that exists ONLY in the isolated dir", async () => {
+    const cwd = "/my/proj"
+    const { configDir, isolatedSessionsDir } = setupIsolated(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000001"
+    writeFileSync(join(isolatedSessionsDir, `${own}.jsonl`), "")
+    const probe = RESUME_STRATEGIES["claude-code"]!.fsProbe!
+    // Without the config dir the probe searches ~/.claude and misses —
+    // the exact regression this suite pins.
+    await expect(probe(cwd, "1970-01-01T00:00:00Z", own)).resolves.toBeNull()
+    await expect(probe(cwd, "1970-01-01T00:00:00Z", own, configDir)).resolves.toBe(own)
+  })
+
+  it("attaches claudeResumeId from the isolated dir when the descriptor carries adapterConfigDir", async () => {
+    const cwd = "/my/proj"
+    const { configDir, isolatedSessionsDir } = setupIsolated(cwd)
+    const own = "bbbbbbbb-0000-0000-0000-000000000002"
+    writeFileSync(join(isolatedSessionsDir, `${own}.jsonl`), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterSessionId: own,
+      adapterConfigDir: configDir,
+    }
+    const result = await augmentWithFsResume(prev)
+    expect(result.resumeMetadata).toEqual({ claudeResumeId: own })
+  })
+
+  it("without adapterConfigDir the probe keeps finding legacy transcripts under ~/.claude", async () => {
+    const cwd = "/my/proj"
+    const { globalSessionsDir } = setupIsolated(cwd)
+    const own = "cccccccc-0000-0000-0000-000000000003"
+    writeFileSync(join(globalSessionsDir, `${own}.jsonl`), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterSessionId: own,
+    }
+    const result = await augmentWithFsResume(prev)
+    expect(result.resumeMetadata).toEqual({ claudeResumeId: own })
+  })
+
+  it("an isolated session's probe never falls back to a ~/.claude sibling (cross-session safety)", async () => {
+    const cwd = "/my/proj"
+    const { configDir, globalSessionsDir } = setupIsolated(cwd)
+    // A sibling conversation in the GLOBAL store shares the cwd — it must
+    // never be picked up for a config-dir-isolated session.
+    writeFileSync(join(globalSessionsDir, "dddddddd-0000-0000-0000-000000000004.jsonl"), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterConfigDir: configDir,
+    }
+    await expect(augmentWithFsResume(prev)).resolves.toBe(prev)
+  })
+})

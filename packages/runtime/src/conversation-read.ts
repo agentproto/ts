@@ -124,6 +124,9 @@ async function resolveConversationId(desc: SessionDescriptor): Promise<LadderRes
     // with no upper bound — only a dead session's endedAt narrows.
     ...(desc.endedAt ? { until: desc.endedAt } : {}),
     ...(attachmentMode ? { attachmentMode } : {}),
+    // A config-dir-isolated session's store lives under its own
+    // CLAUDE_CONFIG_DIR (#824), not the provider's global dir.
+    ...(desc.adapterConfigDir ? { configDir: desc.adapterConfigDir } : {}),
   })
   if (candidates.length === 0) {
     return {
@@ -217,7 +220,7 @@ export async function readConversation(
     })
   }
   try {
-    const session = await store.read(resolved.conversationId, desc.cwd)
+    const session = await store.read(resolved.conversationId, desc.cwd, desc.adapterConfigDir)
     const content = format === "json" ? renderJson(session) : renderMarkdown(session)
     return {
       conversation: session,
