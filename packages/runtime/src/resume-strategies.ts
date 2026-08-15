@@ -75,11 +75,18 @@ export interface ResumeStrategy {
    *  most-recently-modified, filtered to files at-or-after `prevStartedAt`
    *  (avoids resuming an unrelated prior conversation).
    *
+   *  `configDir` is the session's isolated provider config dir
+   *  (`SessionDescriptor.adapterConfigDir`): a daemon-spawned claude-code
+   *  session (#824) persists its transcripts under that dir, not the
+   *  provider's global store — the probe must look there. Omit for a
+   *  native PTY / pre-#824 session (global store applies).
+   *
    *  Skip when the adapter doesn't persist sessions externally. */
   fsProbe?(
     cwd: string,
     prevStartedAt: string,
     expectedId?: string,
+    configDir?: string,
   ): Promise<string | null>
   /** Return the argv to spawn a PTY that resumes into the given id.
    *  When omitted, the daemon falls back to ACP-level resume via
@@ -103,11 +110,12 @@ export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = Object.fromEntr
         {
           outputHint: store.outputHint,
           storeAs: store.storeAs,
-          fsProbe: async (cwd, prevStartedAt, expectedId) => {
+          fsProbe: async (cwd, prevStartedAt, expectedId, configDir) => {
             const candidates = await s.discover({
               cwd,
               since: prevStartedAt,
               expectedId,
+              configDir,
             })
             return candidates[0]?.conversationId ?? null
           },
@@ -164,6 +172,12 @@ export interface RestartCandidate {
 export interface FsProbeCandidate extends RestartCandidate {
   cwd?: string
   startedAt: string
+  /** The session's isolated provider config dir (`SessionDescriptor.
+   *  adapterConfigDir`) — where a daemon-spawned claude-code session's
+   *  transcripts actually live since #824. A full `SessionDescriptor`
+   *  satisfies this structurally; absent on pre-#824/PTY rows, where the
+   *  provider's global store is the right place to probe. */
+  adapterConfigDir?: string
 }
 
 /**
@@ -293,6 +307,9 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
     prev.cwd,
     prev.startedAt,
     prev.adapterSessionId,
+    // A config-dir-isolated session (#824) persisted its transcript under
+    // its own CLAUDE_CONFIG_DIR — probe there, not the global ~/.claude.
+    prev.adapterConfigDir,
   )
   if (!id) return prev
   return {

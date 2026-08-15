@@ -73,7 +73,7 @@ export async function readSessionForBrain(
     const store = CONVERSATION_STORES[record.adapterSlug]
     if (store) {
       try {
-        const exported = await store.read(record.adapterSessionId, record.cwd)
+        const exported = await store.read(record.adapterSessionId, record.cwd, record.adapterConfigDir)
         if (exported?.messages?.length) return exported
       } catch {
         // native store unreadable — fall through to daemon events

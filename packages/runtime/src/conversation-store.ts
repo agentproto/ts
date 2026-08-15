@@ -56,6 +56,15 @@ export interface DiscoverInput {
    *  Conservative: a candidate with no `lastWriter` is never dropped, and
    *  omitting this field applies no mode filtering at all. */
   attachmentMode?: "native" | "acp"
+  /** The session's isolated provider config dir (`SessionDescriptor.
+   *  adapterConfigDir` — the `CLAUDE_CONFIG_DIR` the daemon spawns
+   *  claude-code with since the #824 MCP-isolation fix). When set, the
+   *  provider wrote its transcripts under THIS dir, not its global
+   *  default (`~/.claude`), so discovery must look there. Omit for a
+   *  native PTY / pre-#824 session — the global store applies. Only
+   *  claude-code keys its store off a config dir; other stores ignore
+   *  this field. */
+  configDir?: string
   /** When set, bind to EXACTLY this conversation or return [].
    *  MUST NOT fall back to a recency guess — see invariants. */
   expectedId?: string
@@ -72,8 +81,9 @@ export interface ConversationStore {
    *  a normal answer (e.g. the PTY is a bash shell). Never throws for
    *  "nothing found"; throws only on a genuinely unreadable store. */
   discover(input: DiscoverInput): Promise<ConversationCandidate[]>
-  /** Read a full conversation into the shared export model. */
-  read(conversationId: string, cwd?: string): Promise<ExportedSession>
+  /** Read a full conversation into the shared export model. `configDir`
+   *  has the same semantics as `DiscoverInput.configDir`. */
+  read(conversationId: string, cwd?: string, configDir?: string): Promise<ExportedSession>
   /** Follow a conversation live. Resolves to an unsubscribe fn.
    *  Omitted ⇒ no live tail for this provider (caller polls `read`). */
   follow?(input: {
@@ -88,7 +98,10 @@ export interface ConversationStore {
 // Native store: ~/.claude/projects/<cwd-encoded>/<uuid>.jsonl, one file per
 // conversation. `<cwd-encoded>` is the absolute cwd run through
 // `claudeProjectSlug` (claude's own convention — see that function's
-// docblock for the empirically-verified rule).
+// docblock for the empirically-verified rule). A daemon-spawned session is
+// config-dir-isolated (#824) and its store root is the session's
+// `CLAUDE_CONFIG_DIR` instead of `~/.claude` — same `projects/<slug>`
+// layout under it; see `DiscoverInput.configDir`.
 
 interface ClaudeJsonlMeta {
   type?: string
@@ -127,9 +140,16 @@ export function claudeProjectSlug(cwd: string): string {
 }
 
 /** Exported so `conversation-index.ts` can resolve the same directory
- *  without re-deriving the slug rule itself. */
-export function claudeCodeProjectDir(cwd: string): string {
-  return resolve(homedir(), ".claude", "projects", claudeProjectSlug(cwd))
+ *  without re-deriving the slug rule itself.
+ *
+ *  `configDir` is the session's isolated `CLAUDE_CONFIG_DIR` (see
+ *  `DiscoverInput.configDir`): the SDK mirrors the global layout under it
+ *  (`<configDir>/projects/<slug>/<uuid>.jsonl`, empirically verified
+ *  against real `~/.agentproto/adapter-config/sess_<id>` trees), so the
+ *  only difference is the base dir. */
+export function claudeCodeProjectDir(cwd: string, configDir?: string): string {
+  const base = configDir ?? resolve(homedir(), ".claude")
+  return resolve(base, "projects", claudeProjectSlug(cwd))
 }
 
 function extractFirstText(content: unknown): string | undefined {
@@ -219,8 +239,8 @@ function claudeEntrypointFor(mode: "native" | "acp"): string {
 }
 
 async function discoverClaudeCode(input: DiscoverInput): Promise<ConversationCandidate[]> {
-  const { cwd, since, until, attachmentMode, expectedId } = input
-  const dir = claudeCodeProjectDir(cwd)
+  const { cwd, since, until, attachmentMode, configDir, expectedId } = input
+  const dir = claudeCodeProjectDir(cwd, configDir)
 
   // Ground truth beats heuristic: bind to exactly the conversation we were
   // asked about, never whichever transcript happens to be newest. Never
@@ -282,7 +302,7 @@ async function discoverClaudeCode(input: DiscoverInput): Promise<ConversationCan
   return scored.map(s => s.candidate)
 }
 
-async function readClaudeCode(conversationId: string, cwd?: string): Promise<ExportedSession> {
+async function readClaudeCode(conversationId: string, cwd?: string, configDir?: string): Promise<ExportedSession> {
   // Dynamic import, not a top-level one: resume-strategies.ts is its own
   // lean tsup entry (splitting:false) and pulls this module in as a value
   // import via CONVERSATION_STORES. esbuild still bundles transcript-
@@ -292,7 +312,7 @@ async function readClaudeCode(conversationId: string, cwd?: string): Promise<Exp
   // the first time `read()` is actually called, not merely by importing
   // resume-strategies.ts. See resume-strategies.ts's splitting:false note.
   const { exportClaudeCodeSession } = await import("./transcript-export.js")
-  return exportClaudeCodeSession(conversationId, cwd)
+  return exportClaudeCodeSession(conversationId, cwd, configDir)
 }
 
 // ── hermes store ────────────────────────────────────────────────────
