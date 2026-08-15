@@ -95,14 +95,21 @@ touches env or `.mcp.json`.
 **A. Agent calls the service in its own code/tool.** Works TODAY: resolve via the
 broker (step 3) and attach the header. Nothing else to wire.
 
-**B. Service exposed as a child MCP the agent mounts.** The clean target is a
-**`credentialRef`** on the child-mcp spec that the daemon resolves via the broker
-at connect-time (the `mcp-header` exposure pattern — `resolveMcpHeaderExposure`
-turns a `credentialPath` into headers via a structural resolver the broker
-satisfies). **Gap:** `agent_start.mcpServers` today carries only
-`{ name, ref, transport }` — no `headers`/`credentialRef` — so brokered auth
-can't yet reach a child MCP at mount. Until that plumbing lands, either use path
-A, or resolve the header at spawn and pass it through your own mount path.
+**B. Service exposed as a child MCP the agent mounts.** `agent_start.mcpServers[]`
+entries carry `{ name, transport, ref?, headers?, credentialRef? }`
+(`packages/runtime/src/agent-tools.ts`). Set `credentialRef` to a broker path
+and `session-spawn.ts`'s `resolveMcpCredentialHeaders` resolves it into
+`headers` at spawn time — merged ON TOP of any static `headers` on the same
+entry, then the `credentialRef` itself is dropped before the child ever sees
+it (the secret never lives in the child's env or config). Runtime stays
+auth-free: it calls a `resolveMcpCredentialHeaders` hook it doesn't implement
+(`packages/runtime/src/mcp-credential-deps.ts`, `setMcpCredentialDeps`); the
+CLI wires that hook to a real `CredentialBroker` in
+`packages/cli/src/commands/serve.ts` (`resolveHeaders({ path: credentialRef,
+audience: "mcp" })`). Resolution failures (missing provider, no keychain,
+expired credential) are caught and logged as warnings — they never kill the
+spawn, so an agent that can't resolve its credential mounts the MCP without
+that header rather than failing to start.
 
 ## Worked example — agentpush
 
@@ -111,9 +118,10 @@ agentpush uses a static Bearer key. Clean-auth wiring:
 2. Move `AGENTPUSH_API_KEY` from the daemon env into the store (step 2).
 3. In-code callers resolve `broker.resolveHeaders({ path: "agentpush" })` (path A) —
    works now, key out of the global env, scoped to this agent.
-4. For agentpush-as-child-MCP (path B), a `credentialRef: "agentpush"` on the
-   child-mcp spec + daemon broker-resolve-at-connect is the north star (reuses
-   everything here; needs the `agent_start.mcpServers` credentialRef plumbing).
+4. For agentpush-as-child-MCP (path B), pass
+   `credentialRef: "agentpush"` on the `agent_start.mcpServers[]` entry —
+   the daemon resolves it to an `Authorization` header at spawn time, no
+   other wiring needed.
 
 ## Common mistakes
 
