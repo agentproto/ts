@@ -1627,6 +1627,7 @@ export async function startHttpServer(
             opts.buildOrchestratorMcp,
             opts.daemonMcpUrl,
             opts.provisionWorktree,
+            opts.listCatalogModels,
           )
           if (handled) return
         }
@@ -3244,6 +3245,7 @@ async function handleSessions(
   buildOrchestratorMcp?: BuildOrchestratorMcp,
   daemonMcpUrl?: string,
   provisionWorktree?: WorktreeProvisioner,
+  listCatalogModels?: CatalogModelsLister,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -3370,6 +3372,7 @@ async function handleSessions(
         buildOrchestratorMcp,
         daemonMcpUrl,
         ...(provisionWorktree ? { provisionWorktree } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
       },
       {
         adapter,
@@ -4108,6 +4111,7 @@ async function handleSessions(
       const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
         forceAgentResume: true,
         overrides,
+        ...(listCatalogModels ? { listCatalogModels } : {}),
       })
       json(200, {
         ...restarted.desc,

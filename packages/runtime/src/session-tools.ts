@@ -29,6 +29,7 @@ import {
   augmentWithFsResume,
   describeResumePath,
   tokenizeCommand,
+  RESUME_STRATEGIES,
 } from "./resume-strategies.js"
 import {
   restartAgentSession,
@@ -333,6 +334,7 @@ export function registerSessionTools(
     resolveAgentAdapter,
     listWorktreeStatuses,
     runWorktreeGc,
+    listCatalogModels,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -711,6 +713,7 @@ export function registerSessionTools(
         ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
         ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
         ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
       }
       try {
         const result = await continueAgentSessionFresh(spawnDeps, desc)
@@ -1840,6 +1843,7 @@ export function registerSessionTools(
           const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
             forceAgentResume: true,
             overrides,
+            ...(listCatalogModels ? { listCatalogModels } : {}),
           })
           return {
             content: [
@@ -1890,6 +1894,24 @@ export function registerSessionTools(
 
       const augmented = await augmentWithFsResume(prev)
       const strategy = decideRestartStrategy(augmented)
+      // Trace WHICH restart path was chosen and why — the branching in
+      // `decideRestartStrategy` depends on state that can differ between two
+      // restarts of the SAME lineage (whether the output sniffer or the fs
+      // probe caught a resume id this time, whether the row is still an
+      // agent-cli descriptor or has already degraded to a bare PTY from a
+      // prior restart), so two consecutive restarts silently landing on
+      // different strategies is expected, not a bug — this line is what
+      // makes that legible in daemon.log instead of only inferable from argv.
+      console.log(
+        `[session_restart] ${prev.id} (kind=${prev.kind}, adapterSlug=${prev.adapterSlug ?? "-"}, ` +
+          `pty=${prev.pty === true}, nativeTerminalResume=${prev.nativeTerminalResume === true}) -> ${strategy.kind}` +
+          (strategy.kind === "pty-native" ? ` argv=${JSON.stringify(strategy.argv)}` : "") +
+          (strategy.kind === "agent"
+            ? ` resumeSessionId=${strategy.resumeSessionId ?? "none"}` +
+              (strategy.resumeFallback ? " (capability-downgrade fallback, no id attempted)" : "")
+            : "") +
+          (strategy.kind === "unsupported" ? ` reason="${strategy.reason}"` : "")
+      )
 
       if (strategy.kind === "unsupported") {
         return {
@@ -1924,6 +1946,38 @@ export function registerSessionTools(
               : Array.isArray(prev.argv) && prev.argv.length > 0
                 ? [...prev.argv]
                 : tokenizeCommand(prev.command)
+          // Thread the adapter's isolated config dir into the resumed PTY's
+          // env so the provider's own native resume looks in the SAME store
+          // its transcript actually lives in (see
+          // `ConversationStore.configDirEnvVar`'s doc) — this is the fix for
+          // the "No conversation found" failure a `claude --resume <id>`
+          // hits when it inherits the daemon's ambient (or no) config dir
+          // instead of the session's isolated one. `pty-native`: `prev` is
+          // still the agent-cli descriptor being restarted, so look up its
+          // strategy fresh. `pty-plain`: `prev` is ALREADY a bare PTY row
+          // (adapterSlug/adapterConfigDir gone by design), so replay
+          // whatever env the earlier hop recorded — see `ptyResumeEnv`'s doc
+          // on why that's the only way this survives more than one restart.
+          const envVarName =
+            strategy.kind === "pty-native" && prev.adapterSlug
+              ? RESUME_STRATEGIES[prev.adapterSlug]?.configDirEnvVar
+              : undefined
+          const ptyEnv: Record<string, string> | undefined =
+            strategy.kind === "pty-native"
+              ? envVarName && augmented.adapterConfigDir
+                ? { [envVarName]: augmented.adapterConfigDir }
+                : undefined
+              : prev.ptyResumeEnv
+          if (strategy.kind === "pty-native") {
+            console.log(
+              `[session_restart] ${prev.id} pty-native env: ` +
+                (ptyEnv
+                  ? `${Object.keys(ptyEnv).join(",")} threaded from adapterConfigDir`
+                  : envVarName
+                    ? "no adapterConfigDir on descriptor — resume may miss the isolated store"
+                    : `adapter "${prev.adapterSlug}" declares no configDirEnvVar — resume uses the global store`)
+            )
+          }
           // Persist the resume lineage onto the STORED descriptor (not just
           // grafted onto this response's JSON, as it used to be) — see
           // `SessionDescriptor.resumedFrom`'s doc for why that matters.
@@ -1933,6 +1987,7 @@ export function registerSessionTools(
             workspaceSlug: prev.workspaceSlug,
             cols: input.cols ?? 80,
             rows: input.rows ?? 24,
+            ...(ptyEnv ? { env: ptyEnv } : {}),
             ...(prev.name ? { name: prev.name } : {}),
             ...(prev.label ? { label: prev.label } : {}),
             // Lineage carry-forward (#session-visibility) — same reasoning as

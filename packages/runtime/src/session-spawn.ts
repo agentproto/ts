@@ -9,7 +9,7 @@
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
-import type { AgentAdapterResolver } from "./http-server.js"
+import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -45,7 +45,9 @@ import {
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
+  checkModelAdapterEligibility,
   checkModelWalletEligibility,
+  modelAdapterIncompatibleMessage,
   modelWalletIneligibleMessage,
   reconcileModelRoute,
   serviceableModelRoutes,
@@ -646,6 +648,14 @@ export interface SpawnAgentSessionDeps {
    *  `loadProvenanceWrapGh` (reads the real config) when omitted; tests
    *  inject a stub to pin it without touching env or the file. */
   resolveProvenanceWrapGh?: () => Promise<boolean>
+  /** Feeds the adapter-capability spawn guard (`checkModelAdapterEligibility`)
+   *  — the SAME `listCatalogModels` the `catalog_models` MCP tool /
+   *  `GET /catalog/models` route already use (`RegisterAgentToolsOptions.
+   *  listCatalogModels`), reused here rather than re-derived. Omitted ⇒ the
+   *  guard is skipped — a spawn that would 404 upstream on an adapter's
+   *  manifest not covering the requested model still reaches the driver,
+   *  same as before this guard existed. */
+  listCatalogModels?: CatalogModelsLister
 }
 
 export interface SpawnAgentSessionInput {
@@ -919,6 +929,7 @@ export type SpawnAgentSessionResult =
         | "access_profile_not_found"
         | "access_profile_ineligible"
         | "model_wallet_ineligible"
+        | "model_adapter_incompatible"
         | "gateway_base_url_unsupported"
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
@@ -1005,6 +1016,7 @@ export async function spawnAgentSession(
     resolveSpawnAttach,
     resolveSpawnDedupe,
     resolveProvenanceWrapGh,
+    listCatalogModels,
   } = deps
 
   // cwd resolution: explicit cwd wins, then workspaceSlug lookup, then —
@@ -1886,6 +1898,58 @@ export async function spawnAgentSession(
             model: authModel,
             walletRoute: resolvedProvider,
             suggestedRoutes: verdict.suggestedRoutes,
+          },
+        }
+      }
+    }
+    // Adapter-capability spawn guard: the money-safety guard above proves the
+    // resolved ROUTE can bill this model; it says nothing about whether THIS
+    // adapter's manifest can actually reach it there. The bug this exists for:
+    // claude-code is routeSelection:"free" (genuinely able to reach several
+    // gateways) but only hand-curates a SMALL vetted model list per gateway —
+    // its ACP wrapper validates every model id against its own live selector
+    // and rejects anything it doesn't recognize. A gateway model outside that
+    // list (e.g. a Mastra-style `openrouter/deepseek/deepseek-v4-flash-0731`
+    // id, never added to claude-code's `models.allowed`) resolves the route
+    // fine (openrouter genuinely bills it) and STILL 404s upstream. Same scope
+    // as the wallet guard immediately above and for the same reason: an
+    // explicit `route.gateway` is the operator deliberately naming a gateway
+    // to route an arbitrary model through via `base_url` + api-key (e.g.
+    // `claude-sonnet-5` via `moonshot`) — this guard must not second-guess
+    // that. Optional dep: a host that hasn't wired `listCatalogModels` (e.g.
+    // `catalog_models` itself is disabled) gets no adapter-capability
+    // protection, same as before this guard existed, rather than a hard
+    // failure.
+    if (
+      input.route?.gateway === undefined &&
+      authModel !== undefined &&
+      resolvedProvider !== undefined &&
+      !resolved.authDescriptor?.modelDerivedApiKey &&
+      listCatalogModels
+    ) {
+      const catalog = await listCatalogModels({})
+      const verdict = checkModelAdapterEligibility(
+        catalog,
+        input.adapter,
+        authModel,
+        resolvedProvider,
+      )
+      if (!verdict.ok) {
+        return {
+          ok: false,
+          code: "model_adapter_incompatible",
+          message: modelAdapterIncompatibleMessage({
+            prefix: "agent_start",
+            adapter: input.adapter,
+            model: authModel,
+            route: resolvedProvider,
+            compatibleAdapters: verdict.compatibleAdapters,
+          }),
+          details: {
+            adapter: input.adapter,
+            model: authModel,
+            route: resolvedProvider,
+            compatibleAdapters: verdict.compatibleAdapters,
           },
         }
       }

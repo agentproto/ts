@@ -54,7 +54,7 @@ import {
   type SessionAuthEcho,
   type SessionAccessProfileEcho,
 } from "./sessions.js"
-import type { AgentAdapterResolver } from "./http-server.js"
+import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
   augmentWithFsResume,
@@ -79,7 +79,9 @@ import { buildResumeContextDigest } from "./resume-context-digest.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
+  checkModelAdapterEligibility,
   checkModelWalletEligibility,
+  modelAdapterIncompatibleMessage,
   modelWalletIneligibleMessage,
   reconcileModelRoute,
 } from "./catalog-models.js"
@@ -260,6 +262,10 @@ export interface ResolveResumeAuthOptions {
   /** Resolve `accessProfileRef` → profile metadata + secret. Defaults to
    *  {@link resolveAccessProfileFromStore}; tests inject a stub. */
   resolveAccessProfile?: AccessProfileResolver
+  /** Same seam as `SpawnAgentSessionDeps.listCatalogModels` in
+   *  session-spawn.ts — feeds the adapter-capability guard
+   *  (`checkModelAdapterEligibility`). Omitted ⇒ the guard is skipped. */
+  listCatalogModels?: CatalogModelsLister
 }
 
 /**
@@ -438,6 +444,30 @@ export async function resolveResumeAuth(
       )
     }
   }
+  // Adapter-capability guard — same rationale/scope as session-spawn.ts's
+  // mirror: the wallet guard above proves the ROUTE can bill this model, not
+  // that THIS adapter's manifest can reach it there. Optional dep; skipped
+  // (no protection, same as before this guard existed) when unwired.
+  if (
+    effRoute?.gateway === undefined &&
+    authModel !== undefined &&
+    resolvedProvider !== undefined &&
+    opts.listCatalogModels
+  ) {
+    const catalog = await opts.listCatalogModels({})
+    const verdict = checkModelAdapterEligibility(catalog, adapterSlug, authModel, resolvedProvider)
+    if (!verdict.ok) {
+      throw new RestartOverrideError(
+        modelAdapterIncompatibleMessage({
+          prefix,
+          adapter: adapterSlug,
+          model: authModel,
+          route: resolvedProvider,
+          compatibleAdapters: verdict.compatibleAdapters,
+        }),
+      )
+    }
+  }
   // Same non-authenticating hint as session-spawn.ts: only when about to
   // hard-fail (enforce "always", no credential) and auth wasn't explicit.
   if (
@@ -504,6 +534,11 @@ export interface RestartAgentSessionOptions {
    *  Defaults to {@link resolveAccessProfileFromStore}; tests inject a stub.
    *  Only consulted when `overrides.access.profileRef` is set. */
   resolveAccessProfile?: AccessProfileResolver
+  /** Same seam as `SpawnAgentSessionDeps.listCatalogModels` in
+   *  session-spawn.ts — feeds the adapter-capability guard
+   *  (`checkModelAdapterEligibility`) via `resolveResumeAuth`. Omitted ⇒ the
+   *  guard is skipped. */
+  listCatalogModels?: CatalogModelsLister
 }
 
 /**
@@ -688,6 +723,7 @@ export async function restartAgentSession(
         : {}),
       prefix: "restart",
       ...(opts.loadDefaultsConfig ? { loadDefaultsConfig: opts.loadDefaultsConfig } : {}),
+      ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
     })
     authSpec = resumeAuth.authSpec
     authEcho = resumeAuth.authEcho

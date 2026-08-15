@@ -45,6 +45,10 @@ export interface BrainStateRecord {
   readonly turnCount: number
   /** Content bytes written to disk, summed across every chunk. */
   readonly bytes: number
+  /** The `PIPELINE_VERSION` (see `pipeline-version.ts`) that produced this
+   *  record. Absent on records written before this field existed — treated
+   *  as version 0 by `isStaleRecord`, i.e. always stale. */
+  readonly pipelineVersion?: number
 }
 
 /**
@@ -140,6 +144,10 @@ export interface IngestResult {
   /** Set on success — how many chunks the transcript was split into (1 for a
    *  small transcript that fits in a single chunk). */
   readonly chunkCount?: number
+  /** Set on success — the pipeline version (see `pipeline-version.ts`) this
+   *  ingest was stamped with. Always the current version; present so a
+   *  caller can see it without a separate `status()` call. */
+  readonly pipelineVersion?: number
   /** Present when already ingested (and not forced). */
   readonly skipped?: "already-ingested"
   /** Present when `readSession` returned nothing usable. */
@@ -156,6 +164,16 @@ export interface IngestReport {
   readonly skipped: number
   readonly failed: number
   readonly results: readonly IngestResult[]
+  /** Count of currently-recorded sources (after this run) ingested under an
+   *  older pipeline version than the code running now — see
+   *  `pipeline-version.ts`. `ingestPending` only ever ingests sessions that
+   *  aren't recorded yet, so a nonzero count here means real data is stale
+   *  and silently staying that way; re-ingest with `reindexStale: true`, or
+   *  a specific session with `{ sessionId, force: true }`. */
+  readonly staleSources: number
+  /** The pipeline version currently running (see `pipeline-version.ts`) —
+   *  context for `staleSources`. */
+  readonly currentPipelineVersion: number
 }
 
 /** Snapshot of what the brain holds — surfaced by `workspace_brain_status`. */
@@ -177,6 +195,16 @@ export interface BrainStats {
    *  {@link BrainStateSkip}) — excluded from `pendingSessions` so the backlog
    *  can converge, but surfaced here so nothing is silently hidden. */
   readonly skippedSessions: number
+  /** Count of ingested sources whose recorded `pipelineVersion` is older
+   *  than {@link currentPipelineVersion} — see `pipeline-version.ts`.
+   *  `ingestPending`'s convergence design (skip anything already recorded)
+   *  means a pipeline/chunking fix does NOT retroactively apply to these;
+   *  this is the signal that would have caught #1012 shipping without a
+   *  backfill. Re-ingest a stale session with `{ sessionId, force: true }`,
+   *  or the whole backlog with `ingestPending({ reindexStale: true })`. */
+  readonly staleSources: number
+  /** The pipeline version currently running — context for `staleSources`. */
+  readonly currentPipelineVersion: number
   readonly lastIngestedAt?: string
   readonly ready: boolean
 }

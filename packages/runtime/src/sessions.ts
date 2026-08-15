@@ -1164,6 +1164,19 @@ export interface SessionDescriptor {
    *  Keys are adapter-specific so future adapters can add their own
    *  ("hermesResumeId", etc.) without changing this type. */
   resumeMetadata?: Record<string, string>
+  /** Extra env this PTY (`kind: "terminal"`) session was spawned with, on
+   *  top of `process.env` — e.g. `{ CLAUDE_CONFIG_DIR: "..." }` for a
+   *  `pty-native` restart of a claude-code session (see
+   *  `ResumeStrategy.configDirEnvVar`, resume-strategies.ts). Once a
+   *  restart lands on a bare PTY row, `adapterSlug`/`adapterConfigDir` are
+   *  gone (undefined for pty/command kinds, by design — see those fields'
+   *  docs), so this is the ONLY way a LATER `pty-plain` restart-of-a-
+   *  restart can still know what env the provider's native resume needs —
+   *  `session_restart`'s pty-plain branch replays it verbatim, the same way
+   *  it already replays `argv`. Absent when the PTY was spawned with no
+   *  extra env (a plain `agentproto sessions terminal`, or a `pty-plain`
+   *  restart of one). */
+  ptyResumeEnv?: Record<string, string>
   /** Set by the orchestration layer when the agent emits an
    *  "awaiting-input" turn-end. Cleared on the next turn start.
    *  Used by `session_monitor` to fast-return without subscribing. */
@@ -1949,6 +1962,26 @@ function worktreeFields(
  *  don't need byte-perfect parsing here. */
 function stripAnsiCodes(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+}
+
+/** Best-effort plain-text tail of a PTY's raw output — used to give an
+ *  abnormal PTY exit (see `spawnPty`'s `pty.onExit`) a readable `lastError`
+ *  instead of a silent "exited". Broader than `stripAnsiCodes` (CSI only):
+ *  raw PTY output also carries OSC window-title sequences and single-char
+ *  cursor-save/charset-select escapes a real terminal would consume
+ *  invisibly, which `deriveHeuristicQuestion`'s narrower pass doesn't need
+ *  to handle since it only ever sees `appendLine`d agent-cli text. */
+function terminalOutputTail(rt: SessionRuntime, maxChars = 500): string {
+  if (rt.recentBytes.length === 0) return ""
+  const text = Buffer.concat(rt.recentBytes, rt.recentBytesSize).toString("utf8")
+  const plain = stripAnsiCodes(text)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC ... BEL/ST
+    .replace(/\x1b[()][A-Za-z0-9]/g, "") // charset designators
+    .replace(/\x1b[0-9A-Za-z=>]/g, "") // single-char ESC sequences (7,8,>,=,c...)
+    .replace(/[\x00-\x09\x0b-\x1f]/g, "") // remaining control chars except \n
+    .trim()
+  if (!plain) return ""
+  return plain.length > maxChars ? plain.slice(-maxChars) : plain
 }
 
 /** Lines the ring buffer itself injects (turn separators, [tool] /
@@ -5764,6 +5797,12 @@ export function createSessionsRegistry(opts?: {
         // can legitimately be "").
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
+        // Carried so a LATER `pty-plain` restart of THIS row can still
+        // replay the same extra env (see `ptyResumeEnv`'s doc) — the only
+        // record of it once this row is no longer an agent-cli descriptor.
+        ...(input.env && Object.keys(input.env).length > 0
+          ? { ptyResumeEnv: input.env }
+          : {}),
       }
       const rt: SessionRuntime = {
         desc,
@@ -5794,11 +5833,34 @@ export function createSessionsRegistry(opts?: {
         appendBytes(rt, Buffer.from(chunk, "utf8"))
       })
       pty.onExit(evt => {
-        if (rt.desc.status !== "killed") {
-          rt.desc.status = "exited"
+        // An operator-targeted kill() already flipped status to "killed"
+        // BEFORE calling pty.kill() — see kill()'s own ordering comment.
+        // Anything else exiting with a nonzero code or a signal is the
+        // process dying on its own, e.g. a `claude --resume <id>` that
+        // rejected the id and quit before ever reaching a turn — nothing
+        // targeted it, so it must never read as the misleadingly-benign
+        // "exited". Surface it the same way markCrashed() does for a dead
+        // agent-cli process: status:"error" + a readable `lastError` + a
+        // real daemon.log line, so a restart that dies before its first
+        // turn is loudly diagnosable instead of a silent, empty transcript.
+        const wasKilled = rt.desc.status === "killed"
+        const abnormal = !wasKilled && (evt.exitCode !== 0 || evt.signal !== undefined)
+        if (!wasKilled) {
+          rt.desc.status = abnormal ? "error" : "exited"
         }
         rt.desc.endedAt = new Date().toISOString()
         if (typeof evt.exitCode === "number") rt.desc.exitCode = evt.exitCode
+        if (abnormal) {
+          const signalPart = evt.signal !== undefined ? `, signal ${evt.signal}` : ""
+          const tail = terminalOutputTail(rt)
+          rt.desc.lastError = tail
+            ? `pty exited with code ${evt.exitCode}${signalPart}: ${tail}`
+            : `pty exited with code ${evt.exitCode}${signalPart} — no output captured`
+          console.error(
+            `[session ${rt.desc.id}] pty '${rt.desc.command}' exited abnormally ` +
+              `(code=${evt.exitCode}${signalPart}): ${rt.desc.lastError}`,
+          )
+        }
         rt.emitter.emit("exit", evt)
         rt.emitter.emit("status", rt.desc.status)
         void terminalTranscriptWriter.close(rt.desc.id)

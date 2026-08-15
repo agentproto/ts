@@ -668,7 +668,13 @@ export function registerAgentTools(
       wait: mcpBool
         .optional()
         .describe(
-          "Block until the spawned session's first turn completes and include the cleaned output in the response. Default false = return the descriptor immediately."
+          "Block until the spawned session's first turn completes and include the cleaned output in the response. Default false = return the descriptor immediately. " +
+            "Note this blocks for the child's ENTIRE first turn (~40-90s+), not just the spawn. " +
+            "Batching several `wait: true` calls in one turn does NOT run them in parallel: harnesses that execute " +
+            "tool calls sequentially serialize them, each wait blocking its slot until its child's turn ends. " +
+            "For parallel fan-out spawn with `wait: false` (all spawns return in seconds), then wait on completion " +
+            "separately via `agentproto sessions wait <id> --until turn-end` (detached/background) or a completion " +
+            "policy via `policy_attach`."
         ),
       maxCostUsd: mcpPositiveNumber
         .optional()
@@ -983,6 +989,7 @@ export function registerAgentTools(
           resolveSandboxProvider,
           ...(provisionWorktree ? { provisionWorktree } : {}),
           ...(resolveWorktreeIsolation ? { resolveWorktreeIsolation } : {}),
+          ...(listCatalogModels ? { listCatalogModels } : {}),
         },
         {
           ...spawnInput,

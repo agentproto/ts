@@ -12,7 +12,10 @@
  *      `<brain>/knowledge/sources/<chunk-id>.md` AND invalidates the engine's
  *      BM25 cache (so a subsequent query sees it immediately),
  *   5. records every chunk's source id against the session in
- *      `brain-state.json`.
+ *      `brain-state.json`, stamped with the running `PIPELINE_VERSION`
+ *      (`pipeline-version.ts`) — see `ingestPending`'s `staleSources` for
+ *      why: `ingestPending`'s convergence design means a version bump does
+ *      NOT retroactively touch already-recorded sessions on its own.
  *
  * Chunking exists because one 800-turn session as a single BM25 doc ranks
  * poorly (length dilutes term frequency) and its snippet is always near the
@@ -45,6 +48,7 @@ import {
   renderChunkMarkdown,
 } from "./chunking.js"
 import type { BrainState } from "./brain-state.js"
+import { isStaleRecord, PIPELINE_VERSION } from "./pipeline-version.js"
 import { BrainSessionSourcePort } from "./session-source-port.js"
 import type {
   BrainStateRecord,
@@ -161,6 +165,7 @@ export class IngestPipeline {
         ingestedAt: new Date().toISOString(),
         turnCount: loaded.turns.length,
         bytes: totalBytes,
+        pipelineVersion: PIPELINE_VERSION,
       }
       await state.record(record)
 
@@ -171,6 +176,7 @@ export class IngestPipeline {
         title: loaded.title,
         turnCount: loaded.turns.length,
         chunkCount,
+        pipelineVersion: PIPELINE_VERSION,
       }
     } catch (err) {
       return {
@@ -184,8 +190,12 @@ export class IngestPipeline {
   /** Ingest every session the workspace knows about that isn't recorded yet
    *  and isn't recorded as skipped (see `BrainStateSkip`) — a skip is
    *  retried only by an explicit `ingest(sessionId)` call, never by the
-   *  backlog. */
-  async ingestPending(): Promise<IngestReport> {
+   *  backlog. When `reindexStale` is set, also force-reingests every
+   *  ALREADY-recorded session whose `pipelineVersion` is behind the code
+   *  running now (see `pipeline-version.ts`) — the backfill this pipeline
+   *  otherwise never does on its own, since convergence treats "already
+   *  recorded" as done regardless of which version did the recording. */
+  async ingestPending(opts?: { readonly reindexStale?: boolean }): Promise<IngestReport> {
     const listSessionRefs = this.opts.listSessionRefs
     if (!listSessionRefs) {
       return {
@@ -195,6 +205,8 @@ export class IngestPipeline {
         skipped: 0,
         failed: 0,
         results: [],
+        staleSources: 0,
+        currentPipelineVersion: PIPELINE_VERSION,
       }
     }
     const refs = await listSessionRefs()
@@ -203,14 +215,33 @@ export class IngestPipeline {
       this.opts.state.readSkips(),
     ])
     const pending = refs.filter(id => !recorded[id] && !skips[id])
+    const staleIds = opts?.reindexStale
+      ? Object.values(recorded)
+          .filter(isStaleRecord)
+          .map(r => r.sessionId)
+      : []
 
     const results: IngestResult[] = []
     for (const id of pending) {
       results.push(await this.ingest(id))
     }
+    for (const id of staleIds) {
+      results.push(await this.ingest(id, true))
+    }
     const ingested = results.filter(r => r.ok).length
     const failed = results.filter(r => !r.ok && r.error).length
     const skipped = results.length - ingested - failed
+
+    const finalRecords = await this.opts.state.read()
+    const staleSources = Object.values(finalRecords).filter(isStaleRecord).length
+    if (staleSources > 0) {
+      console.warn(
+        `[workspace-brain:${this.opts.workspace}] ${staleSources} ingested source(s) ` +
+          `are behind the current pipeline version (v${PIPELINE_VERSION}) — re-ingest ` +
+          `with { sessionId, force: true }, or run ingestPending({ reindexStale: true }).`,
+      )
+    }
+
     return {
       workspace: this.opts.workspace,
       attempted: results.length,
@@ -218,6 +249,8 @@ export class IngestPipeline {
       skipped,
       failed,
       results,
+      staleSources,
+      currentPipelineVersion: PIPELINE_VERSION,
     }
   }
 

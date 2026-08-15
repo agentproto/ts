@@ -213,3 +213,16 @@ real surface, not a placeholder for something else.
   crash-loop cap, resuming its context in place. A crashed child spawned with
   `notifyParentOnCrash` also signals its (idle) parent. Prefer these over any
   timer you hold yourself.
+
+- **`wait: true` serializes a batched fan-out — don't use it for parallel
+  spawns.** Spawning N children with `agent_start(wait: true)` in a single
+  turn does NOT run them in parallel. The daemon is fully concurrent
+  (stateless per-POST MCP transport, no lock in the spawn path; the `wait`
+  barrier in `session-spawn.ts` is per-session only). The serialization is
+  caller-side and structural: harnesses that execute a turn's tool calls one
+  at a time hold each `wait: true` call open until that child's ENTIRE first
+  turn completes (~40-90s+ each). This is a known structural limitation, not a
+  daemon bug. For parallel fan-out, spawn with `wait: false` (every spawn
+  returns in seconds) and wait on completion separately — `agentproto sessions
+  wait <id> --until turn-end` as a detached/background process, or a
+  completion policy via `policy_attach`.

@@ -46,6 +46,9 @@ export {
 // Import loop
 export { IngestPipeline, type IngestPipelineOptions } from "./ingest-pipeline.js"
 
+// Pipeline/chunking version + staleness
+export { PIPELINE_VERSION, isStaleRecord } from "./pipeline-version.js"
+
 // Turn-bounded transcript chunking
 export {
   chunkTurns,
