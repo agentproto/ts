@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { buildQueryOptions, DEFAULT_MODEL, type ClaudeSdkConfig } from "../options.js"
+import {
+  buildQueryOptions,
+  DEFAULT_MODEL,
+  UnroutedGatewayModelError,
+  type ClaudeSdkConfig,
+} from "../options.js"
 
 /** Build options with a controlled base env so assertions on injected
  *  vars don't inherit anything from the test process's `process.env`. */
@@ -136,6 +141,58 @@ describe("buildQueryOptions — gateway auth hygiene", () => {
     )
     expect(opts.env?.CLAUDE_CODE_USE_BEDROCK).toBe("1")
     expect(opts.env?.CLAUDE_CODE_USE_VERTEX).toBe("1")
+  })
+})
+
+describe("buildQueryOptions — unrouted-model guard", () => {
+  it("fails fast on a vendor/product model with no base_url (the dogfooding bug)", () => {
+    expect(() => build({ model: "deepseek/deepseek-v4-flash-0731" })).toThrow(
+      UnroutedGatewayModelError,
+    )
+    expect(() => build({ model: "deepseek/deepseek-v4-flash-0731" })).toThrow(
+      /vendor\/product catalog ref/,
+    )
+  })
+
+  it("names the offending model in the error message", () => {
+    try {
+      build({ model: "z-ai/glm-5.2" })
+      expect.unreachable("expected buildQueryOptions to throw")
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnroutedGatewayModelError)
+      expect((err as Error).message).toContain("z-ai/glm-5.2")
+    }
+  })
+
+  it("does NOT throw once base_url routes the vendor/product model to its gateway", () => {
+    expect(() =>
+      build({
+        model: "deepseek/deepseek-v4-flash-0731",
+        baseUrl: "https://openrouter.ai/api",
+      }),
+    ).not.toThrow()
+  })
+
+  it("does NOT throw for a native claude-* model with no base_url", () => {
+    expect(() => build({ model: "claude-opus-4-8" })).not.toThrow()
+    expect(() => build({})).not.toThrow() // DEFAULT_MODEL is native
+  })
+
+  it("does NOT throw for a bare gateway-native id (no '/') with no base_url", () => {
+    // Ambiguous with a yet-unlisted native id — deliberately out of scope for
+    // this guard (see isVendorProductModelRef's doc). A real spawn always
+    // pairs this shape with a base_url via route.gateway; this only documents
+    // the guard's precise boundary.
+    expect(() => build({ model: "kimi-k2.7-code" })).not.toThrow()
+  })
+
+  it("does NOT throw when a cloud-provider redirect toggle is already active", () => {
+    expect(() =>
+      build(
+        { model: "deepseek/deepseek-v4-flash-0731" },
+        { CLAUDE_CODE_USE_BEDROCK: "1" },
+      ),
+    ).not.toThrow()
   })
 })
 

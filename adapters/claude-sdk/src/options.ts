@@ -169,6 +169,58 @@ function flattenPairs(
 }
 
 /**
+ * Thrown by {@link buildQueryOptions} when a spawn requests a `vendor/product`
+ * catalog-style model with no `base_url` to route it through — see that
+ * function's "unrouted-model guard" doc section for the full rationale.
+ * Distinct class (not a bare `Error`) so a host can pattern-match it if it
+ * ever wants to.
+ */
+export class UnroutedGatewayModelError extends Error {
+  constructor(model: string) {
+    super(
+      `claude-sdk: model "${model}" is a vendor/product catalog ref, but no ` +
+        `base_url is configured to route it — this adapter would otherwise ` +
+        `send it straight to the real Anthropic API, which either 400s ("not ` +
+        `a valid model ID") or silently falls back to a real Claude model, ` +
+        `still billed. Set a base_url that fronts the provider that actually ` +
+        `serves "${model}" (e.g. route.gateway: "openrouter" for an ` +
+        `OpenRouter-hosted model), or request a native claude-* model instead.`,
+    )
+    this.name = "UnroutedGatewayModelError"
+  }
+}
+
+/**
+ * True for a `vendor/product` catalog-style model ref (e.g.
+ * `deepseek/deepseek-v4-flash-0731`, `z-ai/glm-5.2`) — the canonical form this
+ * whole codebase uses for a gateway-routed model (see
+ * `@agentproto/model-catalog/route-identity`'s module doc). Such an id is
+ * NEVER valid on the real Anthropic wire (Anthropic's own ids — `claude-…`,
+ * and every entry this adapter's `models.allowed` declares under `provider:
+ * "anthropic"` — never contain a `/`), so one reaching here with no
+ * `base_url` to route it through is unambiguously a dropped/skipped routing
+ * step upstream, not a legitimate native spawn. A BARE gateway-native id (no
+ * `/`, e.g. Moonshot's `kimi-k2.7-code`) is deliberately NOT flagged here —
+ * that shape is ambiguous with a yet-unlisted native id, so guarding it would
+ * risk a false positive; the `/` form has no such ambiguity. */
+function isVendorProductModelRef(model: string): boolean {
+  return model.includes("/")
+}
+
+/** True when the ambient env has already redirected the SDK to a cloud
+ *  provider (Bedrock/Vertex/Foundry/…) via one of {@link
+ *  CLOUD_PROVIDER_REDIRECT_TOGGLES} — those providers use their OWN model-id
+ *  conventions, some of which DO contain vendor-prefixed segments (e.g.
+ *  Bedrock's `anthropic.claude-…-v1:0` uses `.`, but a Bedrock inference
+ *  profile ARN-style id can contain `/`), so the unrouted-model guard must not
+ *  fire once a cloud redirect is already active. */
+function hasCloudProviderRedirect(
+  env: Record<string, string | undefined>,
+): boolean {
+  return CLOUD_PROVIDER_REDIRECT_TOGGLES.some((key) => Boolean(env[key]))
+}
+
+/**
  * Assemble the SDK `Options` for a single `query()` call.
  *
  * - `sessionId` pins a stable UUID on the FIRST turn so the ACP session id and
@@ -187,6 +239,23 @@ function flattenPairs(
  *   (e.g. Moonshot rejecting `claude-haiku-*`). The
  *   {@link CLOUD_PROVIDER_REDIRECT_TOGGLES} leaked from a Claude-Code parent
  *   shell are also scrubbed so the gateway `base_url` isn't overridden.
+ *
+ * Unrouted-model guard: when `base_url` is UNSET (native mode, or an already-
+ * active cloud-provider redirect) and the model is a `vendor/product`
+ * catalog-style ref (e.g. `deepseek/deepseek-v4-flash-0731` — see {@link
+ * isVendorProductModelRef}), the model reaches the real Anthropic API
+ * verbatim — a routing bug upstream (a gateway model whose `base_url`
+ * injection was dropped, skipped, or never wired), never a legitimate native
+ * spawn (Anthropic's own ids never contain `/`). Sending it anyway is exactly
+ * the failure this guard exists to prevent: real dogfooding turned up THREE
+ * distinct symptoms of it (an empty turn still billed, a 400 "not a valid
+ * model ID" once the mis-prefixed id reached Anthropic, and — worst —
+ * Anthropic silently answering with a real Claude model at full Anthropic
+ * rates while the caller believed it was talking to the requested gateway
+ * model). {@link buildQueryOptions} now fails FAST with {@link
+ * UnroutedGatewayModelError} before any request is made — zero-cost, and the
+ * error message names the exact model/gateway mismatch — rather than risking
+ * any of those three silent-failure shapes.
  */
 export function buildQueryOptions(args: {
   config: ClaudeSdkConfig
@@ -201,6 +270,13 @@ export function buildQueryOptions(args: {
   const { config, abortController, sessionId, resume, mcpServers } = args
   const model = config.model ?? DEFAULT_MODEL
   const baseEnv = args.env ?? process.env
+  if (
+    !config.baseUrl &&
+    isVendorProductModelRef(model) &&
+    !hasCloudProviderRedirect(baseEnv)
+  ) {
+    throw new UnroutedGatewayModelError(model)
+  }
   const env: Record<string, string | undefined> = { ...baseEnv }
   if (config.baseUrl) {
     // Gateway mode (non-Anthropic host). Auth hygiene: an ambient
