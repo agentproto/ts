@@ -1,70 +1,71 @@
 ---
 name: supervisor-session
 description:
-  Conduire une session SUPERVISEUR avec agentproto — l'orchestrateur (Claude,
-  tokens chers) ne code pas mais garde la main. Pipeline prouvé (extension VS
-  Code agentproto, 2026-07-14) - scout recon vérifié-source → SPEC + interfaces
-  gelées → WP briefs disjoints → exécuteurs parallèles (modèles économiques) →
-  vérif disque systématique → consolidation single-writer → verify adversarial +
-  e2e live → PR (« done » lu dans l'AGENTS.md du repo, jamais recopié ici).
-  Déclenche quand l'utilisateur veut "superviser au maximum en gardant la
-  capacité d'agir", faire construire un livrable multi-WP par des modèles pas
-  chers, ou industrialiser scout→brief→exécution→vérif→commit. Complète
-  light-coder-orchestration (choix modèle + filet Sonnet) et durable-supervision
-  (policies in-daemon) - ici c'est la BOUCLE OPÉRATOIRE du superviseur.
+  Run a SUPERVISOR session with agentproto — the orchestrator (Claude,
+  expensive tokens) does not code but keeps its hands on the wheel. Proven
+  pipeline (agentproto VS Code extension, 2026-07-14) - source-verified scout
+  recon → SPEC + frozen interfaces → disjoint WP briefs → parallel executors
+  (cheap models) → systematic disk verification → single-writer consolidation →
+  adversarial verify + live e2e → PR ("done" read from the repo's AGENTS.md,
+  never restated here). Trigger when the user wants to "supervise as much as
+  possible while keeping the ability to act", have a multi-WP deliverable
+  built by cheap models, or industrialize scout→brief→execution→verify→commit.
+  Complements light-coder-orchestration (model choice + Sonnet safety net) and
+  durable-supervision (in-daemon policies) - this is the supervisor's
+  OPERATING LOOP.
 ---
 
 # Supervisor session (agentproto)
 
-**Principe** : le superviseur tient le _plan, les contrats et la vérité disque_
-; les sessions tiennent le _travail_. Tu ne codes pas — SAUF la consolidation et
-les fixes chirurgicaux (1 fichier, cause connue), parce que le worktree est
-local : c'est ça, « garder la capacité d'agir ».
+**Principle**: the supervisor holds the _plan, the contracts, and the disk
+truth_; the sessions hold the _work_. You do not code — EXCEPT for
+consolidation and surgical fixes (1 file, known cause), because the worktree is
+local: that is what "keeping the ability to act" means.
 
-## Pipeline (rôles → artefacts)
+## Pipeline (roles → artifacts)
 
 ```
-scout (modèle 1M ctx, pas cher)   → recon doc VÉRIFIÉ vs source (spot-check grep toi-même)
-toi                               → SPEC.md + contrat d'interfaces GELÉ + matrice de fichiers par WP
-exécuteurs parallèles (cheap)     → WPs sur périmètres DISJOINTS (briefs = fichiers .plans/)
-toi (après chaque turn-end)       → vérif disque + checkpoint commit ciblé
-toi (single writer)               → consolidation (fichiers partagés : extension.ts, package.json…)
-verify session (Sonnet, sub)      → re-gates + revue adversariale du diff (ne fixe pas, rapporte)
-toi                               → e2e LIVE (script tsx contre le vrai daemon) + PR (cf. AGENTS.md du repo)
+scout (1M-ctx model, cheap)       → recon doc VERIFIED against source (spot-check grep it yourself)
+you                               → SPEC.md + FROZEN interface contract + per-WP file matrix
+parallel executors (cheap)        → WPs on DISJOINT scopes (briefs = .plans/ files)
+you (after each turn-end)         → disk verification + targeted checkpoint commit
+you (single writer)               → consolidation (shared files: extension.ts, package.json…)
+verify session (Sonnet, sub)      → re-run gates + adversarial review of the diff (does not fix, reports)
+you                               → LIVE e2e (tsx script against the real daemon) + PR (cf. the repo's AGENTS.md)
 ```
 
-- **WP0 fondation d'abord, seul** : il GÈLE les interfaces (client, store, ids
-  de commandes). Les WP1..N codent contre ces noms sans se coordonner.
-- **Fichiers partagés = à personne.** Chaque brief interdit `package.json` /
-  `extension.ts` (équivalents) et exige dans le rapport final : _les lignes de
-  wiring exactes + snippets de config à merger_. La consolidation (toi) les
-  applique en une passe et résout les collisions (ex. deux WPs revendiquant la
-  même commande → renomme l'un).
-- Briefs = fichiers dans `.plans/<projet>/WPn-brief.md` ; le prompt de session
-  ne contient QUE le pointeur + les overrides (no-git, no-subagents, parallel-
-  aware). Rapport final imposé : fichiers touchés, choix de design, wiring
-  lines, exit codes RÉELS.
+- **WP0 foundation first, alone**: it FREEZES the interfaces (client, store,
+  command ids). WP1..N code against those names without coordinating.
+- **Shared files belong to nobody.** Each brief forbids `package.json` /
+  `extension.ts` (and equivalents) and requires in the final report: _the exact
+  wiring lines + config snippets to merge_. Consolidation (you) applies them in
+  one pass and resolves collisions (e.g. two WPs claiming the same command →
+  rename one).
+- Briefs = files in `.plans/<project>/WPn-brief.md`; the session prompt
+  contains ONLY the pointer + the overrides (no-git, no-subagents, parallel-
+  aware). Mandatory final report: files touched, design choices, wiring
+  lines, REAL exit codes.
 
-## Preflight (avant tout spawn)
+## Preflight (before any spawn)
 
-1. Charge le fichier d'instructions agents du repo CIBLE (pas celui-ci) — le
-   « done » est déclaré là, jamais ici (même discipline qu'en Fin de session :
-   ce skill pointe, il ne recopie pas).
-2. `auth_profile_list` + `adapter_list` AVANT tout spawn : choisis l'auth de
-   l'exécuteur depuis la MÉTHODE du profil — un provider gateway (openrouter,
-   moonshot) veut un profil api-key (`access.profileRef`), jamais
-   `auth:{mode:"subscription"}` (réservé Anthropic/claude-code). Fallback
-   billing quand un provider est mort/flaky : OpenRouter cheap → claude-sdk
-   moonshot (kimi) → claude-code `subscription` + Anthropic cheap (haiku),
-   coût marginal nul. Ne bloque jamais le pipeline sur un provider mort.
+1. Load the TARGET repo's agent-instructions file (not this one) — "done" is
+   declared there, never here (same discipline as in End of session: this
+   skill points, it does not restate).
+2. `auth_profile_list` + `adapter_list` BEFORE any spawn: choose the
+   executor's auth from the profile's METHOD — a gateway provider (openrouter,
+   moonshot) wants an api-key profile (`access.profileRef`), never
+   `auth:{mode:"subscription"}` (reserved for Anthropic/claude-code). Billing
+   fallback when a provider is dead/flaky: OpenRouter cheap → claude-sdk
+   moonshot (kimi) → claude-code `subscription` + cheap Anthropic (haiku),
+   zero marginal cost. Never block the pipeline on a dead provider.
 
-## Brief Contract (à coller verbatim dans chaque brief)
+## Brief Contract (paste verbatim into every brief)
 
-Colle ce bloc tel quel en tête de chaque brief exécuteur/superviseur — c'est
-ce qui fait passer la discipline jusqu'aux modèles qui ne chargent aucun
-skill (hermes, OpenRouter, modèles nus). Ne le paraphrase pas, ne le traduis
-pas : un copier-coller mécanique de skill/doc a déjà corrompu des faits par le
-passé — ce bloc doit voyager identique à sa source.
+Paste this block as-is at the top of every executor/supervisor brief — it is
+what carries the discipline through to models that load no skill at all
+(hermes, OpenRouter, bare models). Do not paraphrase it, do not translate it:
+mechanical re-copying of skill/doc content has already corrupted facts in the
+past — this block must travel identical to its source.
 
 ```
 - Definition of done: POINTER, never restated. Load the target repo's agent-instructions file (agentproto/ts → root AGENTS.md) and obey it verbatim: green local gate + open PR = terminal state; never `gh pr merge`; changeset written by the reviewer, not by hand; no AI attribution in commits/PR.
@@ -75,138 +76,139 @@ passé — ce bloc doit voyager identique à sa source.
 - Executor auth is read from the profile's METHOD, before spawning: `auth_profile_list` + `adapter_list`. Gateway providers (openrouter/moonshot) need an api-key profile via `access.profileRef` — NOT `auth:{mode:"subscription"}`. Billing fallback when a provider is flaky/dead: OpenRouter-cheap → claude-sdk moonshot (kimi) → claude-code `subscription` + cheap Anthropic (haiku), marginal-cost-zero. Never block the pipeline on a dead provider.
 ```
 
-Le premier tiret (« Definition of done ») pointe vers l'AGENTS.md du repo cible
-— il ne le remplace pas ; adapte `agentproto/ts → root AGENTS.md` si le repo
-cible diffère.
+The first bullet ("Definition of done") points to the target repo's AGENTS.md
+— it does not replace it; adapt `agentproto/ts → root AGENTS.md` if the target
+repo differs.
 
-## Worktree natif — provisionne + spawne en UN geste
+## Native worktree — provision + spawn in ONE move
 
-**Le DÉFAUT : ne fais JAMAIS `git worktree add` + `pnpm install` à la main.**
-Passe le champ `worktree` à `agent_start` et le daemon s'en charge :
+**The DEFAULT: NEVER do `git worktree add` + `pnpm install` by hand.**
+Pass the `worktree` field to `agent_start` and the daemon takes care of it:
 
-- `agent_start({ cwd: <repo cible>, worktree: { slug, base: "origin/main" } })`
-  (ou `worktree: true`, slug auto-minté depuis `label`). Le daemon fait
-  `git worktree add -b wt/<slug> … origin/main` **puis joue les setup hooks de
-  l'`agentproto.json` du repo** (pour `agentproto/ts` : `pnpm install
-  --prefer-offline` + `pnpm build`) AVANT de spawner l'adapter dedans. Donc
-  install + build sont AUTOMATIQUES — zéro geste git/pnpm à la main.
-- Le worktree atterrit HORS du monorepo (racine `worktrees.root` du daemon,
-  défaut `~/.agentproto/worktrees/<repo>/<slug>`) — ce qui règle du même coup le
-  piège « worktree sibling de `ts/` → collision de packages pnpm/turbo »
-  (worktree HORS du monorepo par construction).
-- **Root seulement.** Honoré uniquement pour un spawn ROOT ; un enfant spawné
-  VIA cet orchestrateur hérite de l'arbre du parent (pas de second worktree) —
-  ne provisionne donc PAS par-enfant. Ignoré pour un spawn `sandbox` (la box
-  isole déjà). Exige un `cwd` (ou `workspaceSlug`) explicite, sinon
-  `worktree_requires_explicit_repo` (pas de branche coupée au hasard sur le
-  workspace actif). Une policy daemon `worktrees.isolation` (`always` / `never`,
-  env `AGENTPROTO_WORKTREES_ISOLATION` > config) peut forcer/interdire
-  globalement ; défaut `on-request`.
-- **Teardown = à la main APRÈS merge** (le worktree n'est PAS supprimé à la
-  fermeture de session) : `agentproto worktree rm|archive <path|slug>` (`rm`
-  refuse si l'arbre est dirty sauf `--discard-modified/--discard-untracked` ;
-  `archive` snapshot d'abord sous `~/.agentproto/worktree-salvage/`), ou
-  `agentproto worktree gc --apply` pour balayer les merged+clean+idle.
-- **Fallback — worktree local à TOI** (quand le superviseur veut son PROPRE
-  worktree pour consolider/éditer SANS spawner d'agent) :
-  `agentproto worktree new <slug> [--base origin/main]` (crée sous
-  `worktrees.root`, branche `wt/<slug>`, joue les setup hooks — `--no-setup`
-  pour les sauter) — PAS un `git worktree add` brut à la main.
+- `agent_start({ cwd: <target repo>, worktree: { slug, base: "origin/main" } })`
+  (or `worktree: true`, slug auto-minted from `label`). The daemon runs
+  `git worktree add -b wt/<slug> … origin/main` **then plays the setup hooks
+  from the repo's `agentproto.json`** (for `agentproto/ts`: `pnpm install
+  --prefer-offline` + `pnpm build`) BEFORE spawning the adapter inside it. So
+  install + build are AUTOMATIC — zero manual git/pnpm gestures.
+- The worktree lands OUTSIDE the monorepo (daemon's `worktrees.root`, default
+  `~/.agentproto/worktrees/<repo>/<slug>`) — which also settles the
+  "worktree as a sibling of `ts/` → pnpm/turbo package collision" trap
+  (worktree OUTSIDE the monorepo by construction).
+- **Root only.** Honored only for a ROOT spawn; a child spawned THROUGH this
+  orchestrator inherits the parent's tree (no second worktree) — so do NOT
+  provision per-child. Ignored for a `sandbox` spawn (the box already
+  isolates). Requires an explicit `cwd` (or `workspaceSlug`), otherwise
+  `worktree_requires_explicit_repo` (no branch cut at random off the active
+  workspace). A daemon policy `worktrees.isolation` (`always` / `never`,
+  env `AGENTPROTO_WORKTREES_ISOLATION` > config) can force/forbid it
+  globally; default `on-request`.
+- **Teardown = by hand AFTER merge** (the worktree is NOT deleted on session
+  close): `agentproto worktree rm|archive <path|slug>` (`rm` refuses if the
+  tree is dirty unless `--discard-modified/--discard-untracked`; `archive`
+  snapshots first under `~/.agentproto/worktree-salvage/`), or
+  `agentproto worktree gc --apply` to sweep the merged+clean+idle ones.
+- **Fallback — a local worktree of YOUR OWN** (when the supervisor wants its
+  OWN worktree to consolidate/edit WITHOUT spawning an agent):
+  `agentproto worktree new <slug> [--base origin/main]` (creates under
+  `worktrees.root`, branch `wt/<slug>`, plays the setup hooks — `--no-setup`
+  to skip them) — NOT a raw hand-made `git worktree add`.
 
-## Protocole de spawn (hermes / modèles OpenRouter)
+## Spawn protocol (hermes / OpenRouter models)
 
-1. `agent_start` **idle** (pas de prompt initial !), `role: "executor"` (strip
-   agent_start/agent_prompt), `cwd` = le repo cible + `worktree: { slug, base:
-   "origin/main" }` (cf. section précédente — le daemon provisionne + installe ;
-   pas de worktree fait main).
-2. `/model <slug>` seul → attendre turn-end → **vérifier la ligne
-   `Model switched to: <slug> · Provider: …`** dans agent_output.
-3. Ping de vie : `Reply with exactly: READY` → turn non-vide = session saine.
-4. Alors seulement, le brief.
+1. `agent_start` **idle** (no initial prompt!), `role: "executor"` (strips
+   agent_start/agent_prompt), `cwd` = the target repo + `worktree: { slug, base:
+   "origin/main" }` (cf. previous section — the daemon provisions + installs;
+   no hand-made worktree).
+2. `/model <slug>` alone → wait for turn-end → **verify the
+   `Model switched to: <slug> · Provider: …` line** in agent_output.
+3. Liveness ping: `Reply with exactly: READY` → non-empty turn = healthy
+   session.
+4. Only then, the brief.
 
-**Pourquoi** : `/model` en prompt de spawn fait FREELANCER hermes (explore le
-repo sur le modèle par défaut cher — vécu : ~$1.9 le tour pour rien). Et un turn
-vide après switch ≠ session foutue : voir Diagnostic.
+**Why**: `/model` in the spawn prompt makes hermes FREELANCE (it explores the
+repo on the expensive default model — lived: ~$1.9 for one turn, for nothing).
+And an empty turn after the switch ≠ doomed session: see Diagnostics.
 
-Pour claude-code/claude-sdk : `model` + `auth {mode:"subscription"}` (ou
-`mode:"moonshot"` + kimi) **et `worktree`** se pinnent AU SPAWN — pas de danse
-/model, le brief peut partir dans le prompt initial.
+For claude-code/claude-sdk: `model` + `auth {mode:"subscription"}` (or
+`mode:"moonshot"` + kimi) **and `worktree`** are pinned AT SPAWN — no /model
+dance, the brief can go out in the initial prompt.
 
-## Monitoring (économe en tokens superviseur)
+## Monitoring (frugal with supervisor tokens)
 
-- Quick check : `session_monitor` (≤49s), fan-in via `sessionIds: [...]`.
-- Attente longue :
+- Quick check: `session_monitor` (≤49s), fan-in via `sessionIds: [...]`.
+- Long wait:
   `npx agentproto sessions wait <id> --until turn-end --timeout 2400000`
-  **backgroundé** (piège vécu : timeout en **ms** — `900` = 900 ms). Fan-in :
-  une boucle `for s in …; do wait; done` dans UN SEUL background task.
-- Ne JAMAIS lire tout l'output : `agent_output clean lastN 40-60` après
-  turn-end, c'est tout.
+  **backgrounded** (lived trap: timeout is in **ms** — `900` = 900 ms). Fan-in:
+  a `for s in …; do wait; done` loop in ONE SINGLE background task.
+- NEVER read the whole output: `agent_output clean lastN 40-60` after
+  turn-end, that's all.
 
-## Vérité = disque, jamais le rapport
+## Truth = disk, never the report
 
-Après chaque WP « vert » : `git status --porcelain` (scope exact — rien hors
-périmètre), re-run du gate TOI-MÊME (exit codes réels), checkpoint commit
-**ciblé** (`git add <chemins>`, `--no-verify` si hook balaye le WIP, PAS de
-push). Le rapport de l'exécuteur sert à la consolidation, pas à la confiance.
+After each "green" WP: `git status --porcelain` (exact scope — nothing outside
+the perimeter), re-run the gate YOURSELF (real exit codes), **targeted**
+checkpoint commit (`git add <paths>`, `--no-verify` if a hook sweeps up the
+WIP, NO push). The executor's report serves consolidation, not trust.
 
-## Diagnostic des turns vides / sessions « wedged »
+## Diagnosing empty turns / "wedged" sessions
 
-**Avant** toute théorie sur l'état de session : `tail ~/.hermes/logs/errors.log`
-(ou l'events.jsonl de la session). Vécu : 3 modèles différents « wedged »
-simultanément = **OpenRouter 402 Insufficient credits** ; et
-`moonshotai/kimi-k2.7` = 400 invalid model id (slug valide :
-`moonshotai/kimi-k2`). Symptôme identique dans les deux cas :
+**Before** any theory about session state: `tail ~/.hermes/logs/errors.log`
+(or the session's events.jsonl). Lived: 3 different models "wedged"
+simultaneously = **OpenRouter 402 Insufficient credits**; and
+`moonshotai/kimi-k2.7` = 400 invalid model id (valid slug:
+`moonshotai/kimi-k2`). Identical symptom in both cases:
 `[warning] empty turn — cost $null`.
 
-- Un prompt queued n'interrompt PAS un turn ; `interrupt: true` redirige la
-  session sans perdre son contexte ; `agent_kill` si vraiment mort (le code
-  écrit est sur disque, on ne perd rien).
-- Fallback billing quand un provider tombe : OpenRouter cheap → claude-sdk
-  moonshot (kimi-k2.7-code) → claude-code `subscription` (coût marginal nul,
-  Sonnet-5). Ne bloque jamais le pipeline sur un provider mort.
+- A queued prompt does NOT interrupt a turn; `interrupt: true` redirects the
+  session without losing its context; `agent_kill` if truly dead (the written
+  code is on disk, nothing is lost).
+- Billing fallback when a provider goes down: OpenRouter cheap → claude-sdk
+  moonshot (kimi-k2.7-code) → claude-code `subscription` (zero marginal cost,
+  Sonnet-5). Never block the pipeline on a dead provider.
 
-## STOP-si-fork : le rendre réel
+## STOP-on-fork: make it real
 
-Chaque brief : « fork de design non couvert → STOP et demande » + forks
-probables nommés avec leur défaut. Ça marche (vécu : l'exécuteur WP0 a détecté
-que le recon doc inventait des events sur `GET /events` et a proposé 3 options
-au lieu de coder contre un endpoint fantôme). Quand un fork révèle une erreur de
-recon : **corrige le recon doc immédiatement** (bloc CORRECTION daté) pour que
-les WPs suivants n'héritent pas de l'erreur.
+Every brief: "design fork not covered → STOP and ask" + the likely forks named
+with their default. It works (lived: the WP0 executor detected that the recon
+doc invented events on `GET /events` and proposed 3 options instead of coding
+against a phantom endpoint). When a fork reveals a recon error: **fix the
+recon doc immediately** (dated CORRECTION block) so the following WPs don't
+inherit the error.
 
-## Verify final — deux jambes, pas une
+## Final verify — two legs, not one
 
-1. **Session Sonnet adversariale** (subscription) : re-run gates, diff des
-   commits vs briefs, cohérence config/code (commandes déclarées ↔ enregistrées
-   1 fois, menus ↔ contextValues), failure modes classiques des modèles légers
-   (tests qui n'assertent rien, mocks masquants, rejections avalées). Rapporte,
-   ne fixe pas.
-2. **E2E live par toi** : petit script tsx qui importe le VRAI code (pas les
-   mocks) contre le VRAI daemon. Vécu : a attrapé en 1 min un 406 MCP (`Accept`
-   devait inclure `application/json, text/event-stream`) invisible aux 178 tests
-   unitaires. Attention à tes propres probes : vérifie la signature réelle avant
-   d'accuser le produit.
+1. **Adversarial Sonnet session** (subscription): re-run gates, diff the
+   commits vs the briefs, config/code consistency (declared commands ↔
+   registered exactly once, menus ↔ contextValues), classic light-model
+   failure modes (tests that assert nothing, masking mocks, swallowed
+   rejections). Reports, does not fix.
+2. **Live e2e by you**: a small tsx script that imports the REAL code (not the
+   mocks) against the REAL daemon. Lived: caught in 1 min an MCP 406
+   (`Accept` had to include `application/json, text/event-stream`) invisible
+   to the 178 unit tests. Watch out for your own probes: check the real
+   signature before accusing the product.
 
-## Fin de session
+## End of session
 
-**Le « done » est déclaré par le repo, pas par ce skill.** Charge le fichier
-d'instructions agents du repo cible et applique-le tel quel — pour
-`agentproto/ts` c'est `AGENTS.md` à la racine (gate vert + PR ouverte = état
-terminal ; `gh pr merge` jamais ; changeset écrit par le reviewer, pas à la
-main). Ne recopie **pas** la règle ici : ce paragraphe a dit `--draft` pendant
-que le repo était passé à _ready_, et le superviseur du 2026-07-15 a forcé
-`--draft` sur toute une série de PRs en se fiant à ce skill plutôt qu'à la
-source. Un skill qui _restate_ une règle versionnée ailleurs devient un menteur
-à la première évolution — il **pointe**, il ne recopie pas (cf. le même fix
-appliqué à `CLAUDE.md` → `@AGENTS.md`).
+**"Done" is declared by the repo, not by this skill.** Load the target repo's
+agent-instructions file and apply it as-is — for `agentproto/ts` that's
+`AGENTS.md` at the root (green gate + open PR = terminal state; never
+`gh pr merge`; changeset written by the reviewer, not by hand). Do **not**
+restate the rule here: this paragraph used to say `--draft` while the repo had
+moved to _ready_, and the 2026-07-15 supervisor forced `--draft` onto a whole
+series of PRs by trusting this skill over the source. A skill that _restates_
+a rule versioned elsewhere becomes a liar at the first evolution — it
+**points**, it does not restate (cf. the same fix applied to `CLAUDE.md` →
+`@AGENTS.md`).
 
-Plans jamais committés, et **capitalise** : chaque gotcha nouveau → memory ou
-amendement de CE skill. Une session superviseur qui n'apprend rien au suivant
-est ratée.
+Plans are never committed, and **capitalize**: every new gotcha → memory or an
+amendment to THIS skill. A supervisor session that teaches the next one
+nothing is a failed one.
 
-**Chaque session lancée a un terminus.** launched → settled → cleaned. Au
-turn-end : lis la sortie, vérifie le disque, puis `agent_kill`. Une session
-`running`+idle qu'on garde « au cas où » est un orphelin — le 2026-07-15 : 35
-sessions lancées, 0 sorties propres. Ne poll pas à la main : `policy_attach`
-(in-daemon, cf. `durable-supervision`) puis `agentproto policy wait <id>` en
-tâche de fond bloquante — c'est ça, le « push » côté superviseur.
+**Every launched session has a terminus.** launched → settled → cleaned. At
+turn-end: read the output, verify the disk, then `agent_kill`. A
+`running`+idle session kept around "just in case" is an orphan — 2026-07-15:
+35 sessions launched, 0 clean exits. Don't poll by hand: `policy_attach`
+(in-daemon, cf. `durable-supervision`) then `agentproto policy wait <id>` as a
+blocking background task — that is what "push" means on the supervisor side.

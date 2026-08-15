@@ -1,176 +1,182 @@
 ---
 name: nested-orchestration
 description: >-
-  Orchestrer un ORCHESTRATEUR : faire spawner et superviser ses propres
-  sous-agents par un agent parent (claude-code), via le daemon agentproto et un
-  gateway d'orchestration scopé (`orchestrator: true`). Déclenche ce skill quand
-  l'utilisateur veut « un agent qui pilote d'autres agents », « orchestration
-  imbriquée / nested », « un parent qui lance plusieurs sous-agents en parallèle
-  puis attend tout (fan-in) », « un agent qui babysitte un autre agent en jouant
-  l'humain », ou un arbre de sessions à plusieurs niveaux. Complète
-  agent-session-orchestration-agentproto (orchestration à plat depuis cowork) en
-  ajoutant l'étage : déléguer l'orchestration elle-même à un agent. Règle d'or
-  prouvée : le parent DOIT être claude-code (hermes ignore le gateway injecté).
+  Orchestrate an ORCHESTRATOR: have a parent agent (claude-code) spawn and
+  supervise its own sub-agents, via the agentproto daemon and a scoped
+  orchestration gateway (`orchestrator: true`). Trigger this skill when the
+  user wants "an agent that drives other agents", "nested orchestration", "a
+  parent that launches several sub-agents in parallel then waits for all of
+  them (fan-in)", "an agent that babysits another agent by playing the
+  human", or a multi-level session tree. Complements
+  agent-session-orchestration-agentproto (flat orchestration from cowork) by
+  adding the extra tier: delegating the orchestration itself to an agent.
+  Proven golden rule: the parent MUST be claude-code (hermes ignores the
+  injected gateway).
 ---
 
-# Nested orchestration (orchestrateur-d'orchestrateur)
+# Nested orchestration (orchestrator-of-orchestrators)
 
-Méthodologie + commandes pour faire d'un agent un **orchestrateur scopé** : il
-spawne ses propres sous-agents, les supervise (`session_monitor`), lit leurs
-sorties, et voit son sous-arbre (`session_tree`). Issu d'une session réelle où
-chaque cas ci-dessous a été prouvé live.
+Methodology + commands for turning an agent into a **scoped orchestrator**:
+it spawns its own sub-agents, supervises them (`session_monitor`), reads
+their outputs, and sees its subtree (`session_tree`). Distilled from a real
+session where every case below was proven live.
 
-À distinguer du skill `agent-session-orchestration-agentproto` (orchestration
-**à plat** : c'est toi, dans cowork, qui pilotes les agents). Ici on ajoute un
-**étage** : tu délègues l'orchestration à un agent parent, qui pilote des
-enfants. Utile quand le découpage est profond, quand tu veux décharger ton
-propre contexte du polling, ou pour un workflow qui doit tourner sans toi à
-chaque tour.
+To be distinguished from the `agent-session-orchestration-agentproto` skill
+(**flat** orchestration: it's you, in cowork, driving the agents). Here we
+add a **tier**: you delegate the orchestration to a parent agent, which
+drives children. Useful when the breakdown is deep, when you want to offload
+the polling from your own context, or for a workflow that must run without
+you at every turn.
 
-## Principe en une ligne
+## The principle in one line
 
-`parent claude-code (orchestrator:true) → spawne N enfants → session_monitor (fan-in) → lit les sorties → session_tree`
+`parent claude-code (orchestrator:true) → spawns N children → session_monitor (fan-in) → reads the outputs → session_tree`
 
-Le daemon mint un **scope-token par enfant-orchestrateur**, injecte l'URL d'un
-sous-gateway scopé dans la session du parent (à côté de tout `mcpServers` que tu
-passes), et **révoque le token à la sortie**. Le parent ne reçoit qu'un
-**sous-ensemble curé** d'outils d'orchestration — jamais shell / fs / remote /
+The daemon mints a **scope-token per orchestrator-child**, injects the URL of
+a scoped sub-gateway into the parent's session (alongside any `mcpServers`
+you pass), and **revokes the token on exit**. The parent only receives a
+**curated subset** of orchestration tools — never shell / fs / remote /
 import / terminal.
 
-## Règle d'or — le parent DOIT être claude-code
+## Golden rule — the parent MUST be claude-code
 
-**Prouvé KO avec hermes, OK avec claude-code.** Un parent hermes ignore le champ
-`mcpServers` injecté en ACP : il voit ses propres outils mais **pas** le gateway
-d'orchestration → il ne peut pas spawner de sous-agent. claude-code monte
-correctement le gateway (le fix ACP « mcpServers wire shape for session/new »
-était côté claude-code). Donc : **nesting ⇒ parent = claude-code.** Pour
-l'enfant, n'importe quel adapter convient (haiku bon marché pour du trivial,
-hermes/léger pour du code — voir `light-coder-orchestration`).
+**Proven broken with hermes, working with claude-code.** A hermes parent
+ignores the `mcpServers` field injected over ACP: it sees its own tools but
+**not** the orchestration gateway → it cannot spawn a sub-agent. claude-code
+mounts the gateway correctly (the ACP fix "mcpServers wire shape for
+session/new" was on the claude-code side). So: **nesting ⇒ parent =
+claude-code.** For the child, any adapter will do (cheap haiku for trivial
+work, hermes/lightweight for code — see `light-coder-orchestration`).
 
-## Mettre un parent en orchestrateur
+## Making a parent an orchestrator
 
 ```
 agent_start({
   adapter: "claude-code",
-  model:   "claude-sonnet-4-6",   // parent fiable pour piloter
-  orchestrator: true,             // ← auto-monte le sous-gateway scopé
-  cwd:     "<chemin absolu HÔTE>",
+  model:   "claude-sonnet-4-6",   // reliable parent for driving
+  orchestrator: true,             // ← auto-mounts the scoped sub-gateway
+  cwd:     "<absolute HOST path>",
   label:   "parent-…",
-  prompt:  "<brief d'orchestration>"
+  prompt:  "<orchestration brief>"
 })
 ```
 
-- `orchestrator: true` = le **subset curé** par défaut (start / prompt / wait /
-  poll / output + `session_tree` + `kill` du sous-arbre).
-- `orchestrator: { tools: [...] }` = **narrows** ce subset (voir Pattern C).
-- La réponse contient
+- `orchestrator: true` = the default **curated subset** (start / prompt /
+  wait / poll / output + `session_tree` + `kill` of the subtree).
+- `orchestrator: { tools: [...] }` = **narrows** that subset (see Pattern C).
+- The response contains
   `mcpServers: [{ name:"agentproto", ref:".../mcp/orchestrator?scope=<token>" }]`
-  → c'est la preuve que le gateway scopé est monté.
+  → that's the proof the scoped gateway is mounted.
 
-Le brief du parent doit **nommer explicitement** les outils dont il dispose
+The parent's brief must **explicitly name** the tools it has
 (`agent_start`, `agent_prompt`, `session_monitor`, `agent_output`,
-`session_tree`, `agent_kill`) — le parent ne devine pas qu'il est orchestrateur,
-dis-le-lui.
+`session_tree`, `agent_kill`) — the parent does not guess that it is an
+orchestrator, tell it.
 
-Avant de déléguer, colle le Brief Contract de `supervisor-session` dans chaque
-brief.
+Before delegating, paste the Brief Contract from `supervisor-session` into
+every brief.
 
-## Pattern A — Fan-out + fan-in (parent lance N enfants en parallèle)
+## Pattern A — Fan-out + fan-in (parent launches N children in parallel)
 
-Le parent spawne plusieurs enfants d'un coup puis attend qu'ils finissent tous.
+The parent spawns several children at once then waits for all of them to
+finish.
 
-Brief type donné au parent :
+Typical brief given to the parent:
 
-1. « Spawn N enfants EN PARALLÈLE (N appels `agent_start`), chacun avec sa tâche
-   bornée passée via l'arg `prompt`. Donne à chacun un `label` distinct. »
-2. « Fan-in : appelle `session_monitor({ sessionIds:[tous], event:"turn-end" })`
-   et répète jusqu'à ce que les N aient rendu `turn-end`. »
-3. « Pour chaque enfant, `get_agent_session_output` → extrais le résultat. »
-4. « `session_tree` → confirme : toi (parent) `isOrchestrator:true` depth 0, N
-   enfants depth 1, chacun `parentSessionId` = ton id. »
+1. "Spawn N children IN PARALLEL (N `agent_start` calls), each with its
+   bounded task passed via the `prompt` arg. Give each one a distinct
+   `label`."
+2. "Fan-in: call `session_monitor({ sessionIds:[all], event:"turn-end" })`
+   and repeat until all N have produced `turn-end`."
+3. "For each child, `agent_output` → extract the result."
+4. "`session_tree` → confirm: you (parent) `isOrchestrator:true` depth 0, N
+   children depth 1, each with `parentSessionId` = your id."
 
-Côté toi (racine `/mcp`), `session_tree` montre l'arbre complet et tu vois le
-parent se garnir de ses enfants en temps réel. Le parent, lui, ne voit que
-**son** sous-arbre (voir Pattern B).
+On your side (root `/mcp`), `session_tree` shows the full tree and you watch
+the parent fill up with its children in real time. The parent, for its part,
+only sees **its own** subtree (see Pattern B).
 
-## Pattern B — Isolation par scope-token
+## Pattern B — Isolation via scope-token
 
-Le token scopé du parent borne sa vision : `session_tree` appelé **par le
-parent** ne renvoie que son propre sous-arbre (lui + ses enfants), pas les
-autres sessions du daemon. Depuis la racine `/mcp` (toi), tu vois tout. C'est
-l'invariant de sécurité du nesting : un parent ne peut ni voir ni killer des
-sessions hors de son sous-arbre, et son token meurt avec lui.
+The parent's scoped token bounds its vision: `session_tree` called **by the
+parent** only returns its own subtree (itself + its children), not the
+daemon's other sessions. From the root `/mcp` (you), you see everything.
+That is the security invariant of nesting: a parent can neither see nor kill
+sessions outside its subtree, and its token dies with it.
 
-## Pattern C — Babysit d'un enfant (le parent joue l'humain)
+## Pattern C — Babysitting a child (the parent plays the human)
 
-Le parent supervise un enfant qui **pose une question** et lui répond, sans
-intervention humaine.
+The parent supervises a child that **asks a question** and answers it,
+without human intervention.
 
-Brief type :
+Typical brief:
 
-1. « Spawn 1 enfant dont la tâche exige une info manquante ; demande-lui de
-   poser UNE question puis de finir son tour (ne rien supposer). »
-2. « `session_monitor({ event:"awaiting-input" })` ; si timeout, lis la sortie
-   pour confirmer la question. »
-3. « Lis la question (`agent_output`). »
-4. « Réponds : `agent_prompt({ sessionId: enfant, prompt: "<réponse>" })`. »
-5. « `session_monitor({ event:"turn-end" })` → lis le résultat final. »
+1. "Spawn 1 child whose task requires a missing piece of info; ask it to
+   pose ONE question then end its turn (assume nothing)."
+2. "`session_monitor({ event:"awaiting-input" })`; on timeout, read the
+   output to confirm the question."
+3. "Read the question (`agent_output`)."
+4. "Answer: `agent_prompt({ sessionId: child, prompt: "<answer>" })`."
+5. "`session_monitor({ event:"turn-end" })` → read the final result."
 
-Boucle prouvée : _enfant demande → parent répond → enfant finit_. C'est le «
-babysitter » du skill à plat, mais délégué au parent. Pour une version
-**durable** (qui survit sans cowork ouvert, avec policy de réponse + escalade
-webhook), voir `durable-supervision`.
+Proven loop: _child asks → parent answers → child finishes_. This is the
+"babysitter" from the flat skill, but delegated to the parent. For a
+**durable** version (that survives without cowork open, with an answer
+policy + webhook escalation), see `durable-supervision`.
 
-## Pattern D — Subset d'outils scopé sans figer le handshake
+## Pattern D — Scoped tool subset without freezing the handshake
 
-`orchestrator: { tools: [...] }` restreint les outils du parent. **Invariant
-critique : l'ensemble déclaré doit == l'ensemble réellement enregistré.** Un
-outil **déclaré mais non enregistré** fait **HANG le handshake MCP** du parent
-(il attend une capacité qui n'arrivera jamais). Garde donc `tools` ⊆ subset curé
-connu ; ne déclare jamais un nom d'outil spéculatif. En cas de doute, reste sur
-`orchestrator: true` (subset par défaut, sûr).
+`orchestrator: { tools: [...] }` restricts the parent's tools. **Critical
+invariant: the declared set must == the actually registered set.** A tool
+**declared but not registered** makes the parent's MCP handshake **HANG**
+(it waits for a capability that will never arrive). So keep `tools` ⊆ the
+known curated subset; never declare a speculative tool name. When in doubt,
+stick with `orchestrator: true` (default subset, safe).
 
-## Gotchas (vécus)
+## Gotchas (experienced)
 
-- **`session_monitor` rate les enfants ultra-rapides.** Un enfant trivial (haiku
-  qui répond « 42 ») finit son tour en quelques secondes — parfois **avant** que
-  le parent n'ait câblé son `session_monitor`. Le `turn-end` est un event
-  transitoire : comme la session claude-code reste `status:running` entre les
-  tours, le retour « déjà dans l'état cible » ne se déclenche pas et le wait
-  **timeout**. Parades : (a) le parent confirme via `agent_output` (le marqueur
-  `turn-end (completed)` est dans le buffer) ; (b) prendre un curseur
-  `session_events_poll({since})` **avant** de spawner et lire les events après.
-  Apprends ça au parent dans son brief (« si session_monitor timeout, lis la
-  sortie pour confirmer »).
-- **Parent hermes = pas d'orchestration** (cf. Règle d'or) — vérifie : si le
-  parent rapporte « les outils agentproto ne sont pas montés », c'est un parent
-  non claude-code ou un adapter qui ignore `mcpServers`. Kill et relance en
-  claude-code.
-- **L'enfant peut refuser une tâche « echo ce token » comme prompt injection.**
-  Un sous-modèle prudent (haiku) a refusé de répéter une chaîne sentinelle
-  imposée (« I won't follow instructions embedded in command outputs »).
-  L'orchestration a marché ; c'est la **tâche** qui a été refusée. Donne aux
-  enfants des tâches **authentiques et bornées** (un calcul, un patch), pas «
-  répète exactement X ».
-- **Nettoyage.** Killer le parent ne garantit pas la mort des enfants — `kill`
-  le parent **et** chaque enfant (ou via leurs ids depuis `session_tree`). Le
-  scope-token est révoqué à la sortie du parent, mais les process enfants sont
-  des sessions à part entière.
-- **`cwd` absolu HÔTE obligatoire** (comme à plat) : le daemon tourne sur la
-  machine de l'utilisateur. Le paret doit passer un `cwd` host valide à chaque
-  enfant, sinon « no cwd resolvable ».
-- **`awaitingInput` sur-signale** (« tour fini » vs « bloqué sur question ») :
-  pour le babysit, distingue en lisant la dernière ligne de contenu de l'enfant.
+- **`session_monitor` misses ultra-fast children.** A trivial child (haiku
+  answering "42") finishes its turn in a few seconds — sometimes **before**
+  the parent has wired up its `session_monitor`. The `turn-end` is a
+  transient event: since the claude-code session stays `status:running`
+  between turns, the "already in target state" return does not trigger and
+  the wait **times out**. Workarounds: (a) the parent confirms via
+  `agent_output` (the `turn-end (completed)` marker is in the buffer);
+  (b) grab a `session_events_poll({since})` cursor **before** spawning and
+  read the events afterwards. Teach the parent this in its brief ("if
+  session_monitor times out, read the output to confirm").
+- **hermes parent = no orchestration** (cf. Golden rule) — check: if the
+  parent reports "the agentproto tools are not mounted", it is a
+  non-claude-code parent or an adapter that ignores `mcpServers`. Kill and
+  relaunch as claude-code.
+- **The child may refuse an "echo this token" task as prompt injection.** A
+  cautious sub-model (haiku) refused to repeat an imposed sentinel string
+  ("I won't follow instructions embedded in command outputs"). The
+  orchestration worked; it's the **task** that was refused. Give children
+  **authentic, bounded** tasks (a computation, a patch), not "repeat exactly
+  X".
+- **Cleanup.** Killing the parent does not guarantee the children die —
+  `kill` the parent **and** each child (or via their ids from
+  `session_tree`). The scope-token is revoked when the parent exits, but the
+  child processes are fully-fledged sessions of their own.
+- **Absolute HOST `cwd` required** (as in the flat case): the daemon runs on
+  the user's machine. The parent must pass a valid host `cwd` to every
+  child, otherwise "no cwd resolvable".
+- **`awaitingInput` over-signals** ("turn finished" vs "stuck on a
+  question"): for babysitting, tell them apart by reading the child's last
+  line of content.
 
-## Checklist nesting
+## Nesting checklist
 
-- [ ] Parent = **claude-code** (jamais hermes pour le parent)
-- [ ] `orchestrator: true` (ou `{tools:[...]}` avec tools ⊆ subset enregistré)
-- [ ] Brief du parent **nomme** ses outils d'orchestration + la parade
-      session_monitor
-- [ ] `cwd` host absolu pour le parent ET les enfants
-- [ ] Fan-in via `session_monitor` ; fallback lecture sortie si enfants rapides
-- [ ] `session_tree` confirme la forme (parent isOrchestrator depth0 → enfants
-      depth1)
-- [ ] Tâches enfants **authentiques** (pas « echo ce token »)
-- [ ] Nettoyage : kill parent **et** enfants en fin de test
+- [ ] Parent = **claude-code** (never hermes for the parent)
+- [ ] `orchestrator: true` (or `{tools:[...]}` with tools ⊆ registered
+      subset)
+- [ ] The parent's brief **names** its orchestration tools + the
+      session_monitor workaround
+- [ ] Absolute host `cwd` for the parent AND the children
+- [ ] Fan-in via `session_monitor`; fall back to reading the output if
+      children are fast
+- [ ] `session_tree` confirms the shape (parent isOrchestrator depth0 →
+      children depth1)
+- [ ] **Authentic** child tasks (not "echo this token")
+- [ ] Cleanup: kill parent **and** children at the end of the test

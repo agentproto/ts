@@ -1,123 +1,124 @@
 ---
 name: durable-supervision
 description: >-
-  Superviser des agents de façon DURABLE via le moteur de policies in-daemon
-  d'agentproto : attacher une policy de complétion à une session (ou un groupe
-  fan-in), faire tourner un gate (shell ou judge-agent) au turn-end, émettre
-  policy:passed/failed sur le bus d'events, et conditionner un commit hôte à un
-  gate vert avec ack humain (commit-ready → ack → committed). Déclenche ce skill
-  quand l'utilisateur veut « un gate vert comme condition de commit », «
-  attacher une policy à un agent », « committer automatiquement quand les tests
-  passent », « escalader à l'humain seulement si bloqué », « une supervision qui
-  survit sans cowork ouvert », ou parler de RoutineRunner / webhook notifyUrl /
-  judge-gate. Complète nested-orchestration (qui pilote la TOPOLOGIE des agents)
-  en ajoutant la COUCHE DE GOUVERNANCE durable au-dessus des sessions.
+  Supervise agents DURABLY via agentproto's in-daemon policy engine: attach a
+  completion policy to a session (or a fan-in group), run a gate (shell or
+  judge-agent) at turn-end, emit policy:passed/failed on the event bus, and
+  condition a host commit on a green gate with human ack (commit-ready → ack →
+  committed). Trigger this skill when the user wants "a green gate as a commit
+  condition", "attach a policy to an agent", "commit automatically when the
+  tests pass", "escalate to the human only if blocked", "supervision that
+  survives without cowork open", or talks about RoutineRunner / webhook
+  notifyUrl / judge-gate. Complements nested-orchestration (which drives agent
+  TOPOLOGY) by adding the durable GOVERNANCE LAYER on top of sessions.
 ---
 
-# Durable supervision (moteur de policies in-daemon)
+# Durable supervision (in-daemon policy engine)
 
-Le superviseur durable ne vit pas dans cowork (qui dépend de l'app ouverte) mais
-**dans le daemon agentproto**. Il s'abonne aux events de session
-(`turn-end`/`awaiting-input`/`exited`), exécute un **gate** à la fin d'un tour,
-et émet le résultat sur un **bus d'events** que tu lis sans polling tokenivore.
-C'est la couche de gouvernance au-dessus des sessions ; la topologie (qui spawne
-qui) relève de `nested-orchestration`, l'exécution-modèle de
+The durable supervisor does not live in cowork (which depends on the app being
+open) but **in the agentproto daemon**. It subscribes to session events
+(`turn-end`/`awaiting-input`/`exited`), runs a **gate** at the end of a turn,
+and emits the result on an **event bus** that you read without token-hungry
+polling. It is the governance layer on top of sessions; topology (who spawns
+whom) belongs to `nested-orchestration`, model execution to
 `light-coder-orchestration`.
 
-Tout ce qui suit a été **prouvé live** sauf les sections explicitement marquées
-« source » (code-complet + tests unitaires, mais pas ré-exécuté ici).
+Everything below has been **proven live** except the sections explicitly
+marked "source" (code-complete + unit tests, but not re-executed here).
 
-## Principe en une ligne
+## One-line principle
 
-`session → (turn-end) → gate (shell|judge) → policy:passed|failed → [then: emit | commit (ack humain) → policy:committed]`
+`session → (turn-end) → gate (shell|judge) → policy:passed|failed → [then: emit | commit (human ack) → policy:committed]`
 
-Avant de déléguer, colle le Brief Contract de `supervisor-session` dans chaque
-brief.
+Before delegating, paste the Brief Contract from `supervisor-session` into
+every brief.
 
-## 1. Attacher une policy à une session
+## 1. Attach a policy to a session
 
 ```
 policy_attach({
-  sessionId: "sess_xxx",        // OU sessionIds:[...] pour un groupe fan-in
+  sessionId: "sess_xxx",        // OR sessionIds:[...] for a fan-in group
   then: "emit",                  // "emit" → policy:passed/failed ; "commit" → stage+commit
-  gate: { command, args?, cwd?, timeoutMs? },   // shell : exit 0 = pass
-  onFail?: { nudge?, maxRetries? },             // re-prompt N fois puis blocked
-  next?: <policy>                                // DAG : chaîne une policy au done (source)
+  gate: { command, args?, cwd?, timeoutMs? },   // shell: exit 0 = pass
+  onFail?: { nudge?, maxRetries? },             // re-prompt N times then blocked
+  next?: <policy>                                // DAG: chains a policy on done (source)
 })
 ```
 
-- **Cycle de vie** prouvé : `watching` → (turn-end) `gating` → `done` (vert) /
-  `blocked` (rouge, pas de retry restant) / `awaiting-ack` (commit). Lis-le via
-  `policy_status({policyId})` ; inventaire via `policy_list()`.
-- Le gate tourne **après le `turn-end`** de la session surveillée. **Attache la
-  policy AVANT que la session ne finisse son tour** (spawn idle → attach →
-  prompt), sinon tu cours le même risque de race que `wait_for_any` (l'event
-  transitoire peut être manqué).
-- **Gate absent** → la policy passe immédiatement au turn-end (utile pour juste
-  jalonner une complétion sur le bus).
+- **Lifecycle** proven: `watching` → (turn-end) `gating` → `done` (green) /
+  `blocked` (red, no retry left) / `awaiting-ack` (commit). Read it via
+  `policy_status({policyId})`; inventory via `policy_list()`.
+- The gate runs **after the watched session's `turn-end`**. **Attach the
+  policy BEFORE the session finishes its turn** (spawn idle → attach →
+  prompt), otherwise you run the same race risk as `wait_for_any` (the
+  transient event can be missed).
+- **No gate** → the policy passes immediately at turn-end (useful to just
+  milestone a completion on the bus).
 
-## 2. Le gate (shell) — deux invariants vécus
+## 2. The (shell) gate — two lived invariants
 
-Le gate shell est `{ command, args?, cwd?, timeoutMs? }`, exit 0 = pass. **Deux
-pièges prouvés en live** :
+The shell gate is `{ command, args?, cwd?, timeoutMs? }`, exit 0 = pass. **Two
+traps proven live**:
 
-1. **Allowlist.** Le gate passe par la même allowlist que `execute_command`
-   (`<workspace>/.agentproto/allowed-commands.json`, default-deny). Un gate
-   `test -f x` a échoué avec `gate command 'test' not in allowlist` → policy
-   `blocked`. Utilise un binaire allowlisté (`ls`, `cat`, `git`, `node`, `pnpm`,
-   `npm`, `npx`, `gh`, `echo`, `bash`…). Pour « le fichier existe ? » →
-   `ls <fichier>` (pas `test -f`). Pour un gate de tests → `pnpm`/`npm`/`node`
-   selon le projet.
-2. **cwd ancré au workspace.** La cwd du gate **défaute sur la cwd de la session
-   surveillée**, mais elle est **ancrée au workspace** : une session dont la cwd
-   est HORS du workspace fait échouer le gate avec `cwd escapes the workspace`.
-   Parade : lance la session surveillée **dans le workspace**, ou passe une
-   `gate.cwd` workspace-relative explicite (ex. `"."` ou `"sous/dossier"`).
+1. **Allowlist.** The gate goes through the same allowlist as
+   `command_execute` (`<workspace>/.agentproto/allowed-commands.json`,
+   default-deny). A `test -f x` gate failed with
+   `gate command 'test' not in allowlist` → policy `blocked`. Use an
+   allowlisted binary (`ls`, `cat`, `git`, `node`, `pnpm`, `npm`, `npx`,
+   `gh`, `echo`, `bash`…). For "does the file exist?" → `ls <file>` (not
+   `test -f`). For a test gate → `pnpm`/`npm`/`node` depending on the
+   project.
+2. **cwd anchored to the workspace.** The gate's cwd **defaults to the watched
+   session's cwd**, but it is **anchored to the workspace**: a session whose
+   cwd is OUTSIDE the workspace makes the gate fail with
+   `cwd escapes the workspace`. Workaround: launch the watched session
+   **inside the workspace**, or pass an explicit workspace-relative
+   `gate.cwd` (e.g. `"."` or `"sub/folder"`).
 
-Gate vert prouvé : `policy:passed`, status `done`, `lastGate.exitCode:0`.
+Green gate proven: `policy:passed`, status `done`, `lastGate.exitCode:0`.
 
-**⚠️ En pratique (vécu en vrai, répété 2× sur une même session d'orchestration,
-2026-07-01) : pour le pattern dominant "worktree dédié par feature" — désormais
-provisionné NATIVEMENT via `agent_start({ worktree: … })` (le daemon fait
-`git worktree add` + les setup hooks), pas un `git worktree add` fait main ; le
-worktree vit sous `worktrees.root` (défaut `~/.agentproto/worktrees`), cwd absolu
-HORS de `agentik-studio` — les gates shell sont quasiment INUTILISABLES.** Le
-workspace ancré est celui de TON PROPRE contexte appelant (l'orchestrateur), pas
-celui de la session cible — donc
-même un `cwd` absolu explicite au spawn échoue systématiquement, immédiatement
-(`status: blocked`, `retries: 0` — PAS un cas géré par `onFail`, c'est une
-erreur d'infra, pas un exit code). Pire : l'échec est **silencieux** — la policy
-passe à `blocked` sans que tu sois notifié ; tu ne le découvres qu'en rappelant
-`policy_status` toi-même, ce qui annule l'intérêt du primitive (superviser sans
-polling).
+**⚠️ In practice (lived for real, repeated 2× on the same orchestration
+session, 2026-07-01): for the dominant "dedicated worktree per feature"
+pattern — now provisioned NATIVELY via `agent_start({ worktree: … })` (the
+daemon does the `git worktree add` + the setup hooks), not a hand-made
+`git worktree add`; the worktree lives under `worktrees.root` (default
+`~/.agentproto/worktrees`), an absolute cwd OUTSIDE `agentik-studio` — shell
+gates are practically UNUSABLE.** The anchored workspace is that of YOUR OWN
+calling context (the orchestrator), not the target session's — so even an
+explicit absolute `cwd` at spawn fails systematically, immediately
+(`status: blocked`, `retries: 0` — NOT a case handled by `onFail`, it is an
+infra error, not an exit code). Worse: the failure is **silent** — the policy
+goes `blocked` without you being notified; you only discover it by calling
+`policy_status` yourself, which defeats the point of the primitive
+(supervising without polling).
 
-**Ce qui marche à la place, pour tout worktree hors-workspace** :
+**What works instead, for any out-of-workspace worktree**:
 
-1. `policy_attach({ sessionId, then: "emit" })` **sans `gate`** — passe toujours
-   au turn-end, sert juste à savoir QUAND le tour a fini (aucune vérification de
-   contenu).
-2. Vérifie le résultat **toi-même**, hors agentproto, avec tes propres outils
-   shell (`git log`, `git merge-base --is-ancestor`,
-   `gh pr view --json mergeable`, `pnpm test` directement) — PAS avec un gate
-   `policy_attach`.
-3. Ne fais PAS confiance à un self-report de session sans cette vérification
-   indépendante (voir aussi le skill `agent-session-orchestration-agentproto`,
-   section "Déléguer un vrai PR-worktree").
+1. `policy_attach({ sessionId, then: "emit" })` **without `gate`** — always
+   passes at turn-end, only serves to know WHEN the turn finished (no content
+   verification whatsoever).
+2. Verify the result **yourself**, outside agentproto, with your own shell
+   tools (`git log`, `git merge-base --is-ancestor`,
+   `gh pr view --json mergeable`, `pnpm test` directly) — NOT with a
+   `policy_attach` gate.
+3. Do NOT trust a session's self-report without that independent verification
+   (see also the `agent-session-orchestration-agentproto` skill, section
+   "Delegating a real PR-worktree").
 
-## 3. Gate judge-agent (source — WP7)
+## 3. Judge-agent gate (source — WP7)
 
-À la place d'un shell,
-`gate: { judge: { adapter, model?, prompt, timeoutMs? } }` spawne un agent LLM
-court qui juge la sortie de la session surveillée et finit par
-`VERDICT: PASS|FAIL` (dernière occurrence, insensible à la casse). **Fail-safe**
-: timeout ou réponse non parsable = FAIL. Le juge est **toujours killé** quand
-le gate se résout, et il occupe un slot de concurrence pendant qu'il tourne.
-Utile pour un critère qualitatif (« le diff respecte-t-il le style ? ») qu'aucun
-exit code ne capture.
+Instead of a shell,
+`gate: { judge: { adapter, model?, prompt, timeoutMs? } }` spawns a short LLM
+agent that judges the watched session's output and ends with
+`VERDICT: PASS|FAIL` (last occurrence, case-insensitive). **Fail-safe**:
+timeout or unparsable answer = FAIL. The judge is **always killed** when the
+gate resolves, and it occupies a concurrency slot while it runs. Useful for a
+qualitative criterion ("does the diff respect the style?") that no exit code
+captures.
 
-## 4. Gate vert comme condition de commit (prouvé end-to-end)
+## 4. Green gate as a commit condition (proven end-to-end)
 
-`then: "commit"` transforme un gate vert en **commit hôte gouverné** :
+`then: "commit"` turns a green gate into a **governed host commit**:
 
 ```
 policy_attach({
@@ -127,155 +128,157 @@ policy_attach({
 })
 ```
 
-- Stage **strictement** `commit.paths` via `git add -- <paths>` (jamais `-A`,
-  jamais de glob ; `paths` vide = rejeté à l'attache), puis `git commit -m`
-  (argv, `shell:false` — pas d'injection). **Jamais de push, jamais `--force`.**
-- `requireHumanAck: true` (défaut) : gate vert → status `awaiting-ack` + event
-  **`policy:commit-ready`** (avec `paths`, `message`, `commitPlan.cwd`). Le
-  commit **ne part pas** tant que `policy_ack({ policyId, approve:true })` n'est
-  pas appelé → exécute le commit → **`policy:committed` (+ sha)** → `done`.
-  `approve:false` annule sans committer.
-- `requireHumanAck: false` : commit direct au vert (toujours sans push).
-- **Prérequis** : `git` allowlisté + un repo git avec `user.name`/`user.email`
-  configurés à la cwd du commit. Séquence prouvée :
+- Stages **strictly** `commit.paths` via `git add -- <paths>` (never `-A`,
+  never a glob; empty `paths` = rejected at attach time), then `git commit -m`
+  (argv, `shell:false` — no injection). **Never a push, never `--force`.**
+- `requireHumanAck: true` (default): green gate → status `awaiting-ack` +
+  event **`policy:commit-ready`** (with `paths`, `message`,
+  `commitPlan.cwd`). The commit **does not go out** until
+  `policy_ack({ policyId, approve:true })` is called → runs the commit →
+  **`policy:committed` (+ sha)** → `done`. `approve:false` cancels without
+  committing.
+- `requireHumanAck: false`: direct commit on green (still never a push).
+- **Prerequisites**: `git` allowlisted + a git repo with
+  `user.name`/`user.email` configured at the commit's cwd. Proven sequence:
   `gate exit 0 → policy:commit-ready (awaiting-ack) → ack(approve:true) → policy:committed sha=…`,
-  vérifiée par `git log` (1 fichier, 1 insertion).
+  verified via `git log` (1 file, 1 insertion).
 
-## 5. Lire l'avancement sans polling — le bus d'events
+## 5. Reading progress without polling — the event bus
 
-`session_events_poll({ since, types?, sessionIds?, limit? })` : snapshot
-**curseur** des events depuis le dernier appel (pas de transcript, donc bon
-marché). Types utiles : `turn-end`, `awaiting-input`, `exited`, `command-done`,
+`session_events_poll({ since, types?, sessionIds?, limit? })`: **cursor**
+snapshot of the events since the last call (no transcript, so cheap). Useful
+types: `turn-end`, `awaiting-input`, `exited`, `command-done`,
 `policy:passed`, `policy:failed`, `policy:commit-ready`, `policy:committed`.
-Prends un curseur (`nextCursor`) **avant** de déclencher, relis après. Pour
-**bloquer** efficacement sur une complétion imminente, `session_monitor` ; pour
-un **sweep** d'état entre deux actions, `session_events_poll`.
+Take a cursor (`nextCursor`) **before** triggering, re-read after. To
+**block** efficiently on an imminent completion, `session_monitor`; for a
+state **sweep** between two actions, `session_events_poll`.
 
-## 6. Escalade humaine via webhook (source)
+## 6. Human escalation via webhook (source)
 
-`webhook-notifier.ts` POST un event aux URL cibles (per-session `notifyUrl`
-passé au spawn **+** globale `AGENTPROTO_NOTIFY_URL` /
-`~/.agentproto/notify.json`, env gagne, dédupliquées). Fire-and-forget : timeout
-10 s, **un** retry après 2 s sur erreur réseau, aucun retry sur 4xx/5xx, jamais
-d'exception dans le hot-path. Déclenché sur `turn-end` / `awaiting-input` /
-`exited` (payload : `sessionId`, `label`, `event`, `awaitingInput`, `ts`, +
-`exitCode`/`status` à l'exit). C'est le seam « préviens-moi quand un agent
-attend » sans cowork ouvert.
+`webhook-notifier.ts` POSTs an event to the target URLs (per-session
+`notifyUrl` passed at spawn **+** global `AGENTPROTO_NOTIFY_URL` /
+`~/.agentproto/notify.json`, env wins, deduplicated). Fire-and-forget: 10 s
+timeout, **one** retry after 2 s on network error, no retry on 4xx/5xx, never
+an exception in the hot path. Triggered on `turn-end` / `awaiting-input` /
+`exited` (payload: `sessionId`, `label`, `event`, `awaitingInput`, `ts`, +
+`exitCode`/`status` on exit). This is the "notify me when an agent is
+waiting" seam without cowork open.
 
-## 7. Policy d'attente par étape (`workflow_start`)
+## 7. Per-step wait policy (`workflow_start`)
 
-> **RoutineRunner et son shim ont été retirés (Phase B2 puis B3).** Les tools
+> **RoutineRunner and its shim have been removed (Phase B2 then B3).** The
+> tools
 > `routine_start`/`routine_status`/`routine_cancel`/`routine_escalation_resolve`
-> et les routes `/routines/*` de run n'existent plus — utilise
+> and the `/routines/*` run routes no longer exist — use
 > `workflow_start`/`workflow_status`/`workflow_cancel`/
-> `workflow_escalation_resolve`. `waitFor` (fan-in externe) n'a pas
-> d'équivalent workflow ; exprime le fan-in via des stages parallèles.
+> `workflow_escalation_resolve`. `waitFor` (external fan-in) has no workflow
+> equivalent; express fan-in via parallel stages.
 
-Chaque step d'un stage `workflow_start` peut porter une **policy** pour ce qui
-se passe si sa session demande une entrée en cours de stage :
+Each step of a `workflow_start` stage can carry a **policy** for what happens
+if its session asks for input mid-stage:
 
-- `auto-allow` (+`prompt`) : répond tout seul et continue.
-- `escalate` (+`webhookUrl?`, `timeoutMs?` défaut 5 min) : POST le webhook puis
-  attend un `workflow_escalation_resolve({ runId, stageIndex, stepIndex, response })`
-  externe ; timeout = échec.
-- `fail` : marque l'étape/le run en échec.
+- `auto-allow` (+`prompt`): answers on its own and continues.
+- `escalate` (+`webhookUrl?`, `timeoutMs?` default 5 min): POSTs the webhook
+  then waits for an external
+  `workflow_escalation_resolve({ runId, stageIndex, stepIndex, response })`;
+  timeout = failure.
+- `fail`: marks the step/run as failed.
 
-C'est « un agent qui babysit un autre en jouant l'humain **et n'escalade que si
-bloqué** » (cf. le babysit live de `nested-orchestration`, ici rendu durable).
-Les runs sont persistés (`~/.agentproto/workflow-runs.json` par défaut) — un
-restart du daemon ne perd pas un run en cours.
+This is "an agent babysitting another by playing the human **and escalating
+only if blocked**" (cf. the live babysit in `nested-orchestration`, here made
+durable). Runs are persisted (`~/.agentproto/workflow-runs.json` by default)
+— a daemon restart does not lose an in-flight run.
 
-## 8. Quand utiliser quoi
+## 8. When to use what
 
-- **Une complétion à jalonner / un gate de tests** → `policy_attach then:emit` +
+- **A completion to milestone / a test gate** → `policy_attach then:emit` +
   `session_events_poll`.
-- **Commit gouverné par un gate vert** → `policy_attach then:commit` +
+- **Commit governed by a green gate** → `policy_attach then:commit` +
   `requireHumanAck` + `policy_ack`.
-- **Plusieurs étapes enchaînées** → `next` (DAG de policies, pilotable) ou
-  `workflow_start` (stages mono-step) — `routine_start`/`routine_*` (l'ancien
-  RoutineRunner) ont été retirés, voir §7.
-- **Critère qualitatif** → gate `judge`.
-- **Prévenir un humain quand ça attend/bloque** → `notifyUrl` (per-session) ou
-  global.
-- **Rester au travail À TRAVERS plusieurs tours de conversation, sans
-  repromptage utilisateur et sans dérive de replanification** →
-  `agentproto sessions wait --policy <id> --timeout <ms>` dans un
-  `Bash run_in_background:true` (§9) — PAS
-  `session_monitor`/`session_events_poll` en boucle (ça ne survit pas à la fin
-  de ton tour) ni `/loop`+`ScheduleWakeup` seul (auto-replanifié, peut dériver).
+- **Several chained steps** → `next` (policy DAG, steerable) or
+  `workflow_start` (single-step stages) — `routine_start`/`routine_*` (the
+  old RoutineRunner) have been removed, see §7.
+- **Qualitative criterion** → `judge` gate.
+- **Notify a human when something waits/blocks** → `notifyUrl` (per-session)
+  or global.
+- **Staying at work ACROSS several conversation turns, without user
+  re-prompting and without replanning drift** →
+  `agentproto sessions wait --policy <id> --timeout <ms>` in a
+  `Bash run_in_background:true` (§9) — NOT
+  `session_monitor`/`session_events_poll` in a loop (that does not survive
+  the end of your turn) nor `/loop`+`ScheduleWakeup` alone (self-replanned,
+  can drift).
 
-## 9. Attendre À TRAVERS les tours de conversation (pas juste dans un tour)
+## 9. Waiting ACROSS conversation turns (not just within one)
 
-Vécu en vrai 2026-07-01/02, question directe de l'utilisateur : « comment être
-SÛR que tu continues à bosser sans que je repasse te relancer ? ». Distinction
-cruciale entre deux notions d'« attendre » :
+Lived for real 2026-07-01/02, direct question from the user: "how can I be
+SURE you keep working without me having to come back and re-prompt you?".
+Crucial distinction between two notions of "waiting":
 
-- **`session_monitor`/`poll_events`/`agentproto sessions wait` appelés
-  directement** : bloquent au mieux ~45-49s par appel (le transport MCP coupe à
-  ~60s côté serveur) — et surtout, ce blocage vit **dans TON tour actif**. Dès
-  que ton tour se termine, plus aucune attente ne tourne ; rien ne te redonne la
-  main tant que l'utilisateur ne t'envoie pas un nouveau message.
-- **`ScheduleWakeup` (`/loop`)** : donne une vraie ré-invocation autonome, mais
-  **auto-planifiée par toi** — tu dois rappeler le tool à chaque tick, ce qui
-  peut dériver/s'arrêter silencieusement, et ça exige que l'utilisateur ait
-  lancé `/loop` en premier lieu.
-- **Le vrai hook fiable, découvert en le cherchant ce soir : `Bash` avec
-  `run_in_background: true`.** N'importe quelle commande backgroundée déclenche
-  une notification harnais AUTOMATIQUE à sa sortie — mécanisme natif, zéro
-  auto-replanification, zéro dérive.
+- **`session_monitor`/`poll_events`/`agentproto sessions wait` called
+  directly**: block at best ~45-49s per call (the MCP transport cuts off at
+  ~60s server-side) — and above all, that blocking lives **inside YOUR active
+  turn**. As soon as your turn ends, no wait is running anymore; nothing
+  hands you control back until the user sends you a new message.
+- **`ScheduleWakeup` (`/loop`)**: gives a real autonomous re-invocation, but
+  **self-scheduled by you** — you must call the tool again at every tick,
+  which can drift/stop silently, and it requires the user to have started
+  `/loop` in the first place.
+- **The real reliable hook, discovered by hunting for it that evening: `Bash`
+  with `run_in_background: true`.** Any backgrounded command triggers an
+  AUTOMATIC harness notification on exit — a native mechanism, zero
+  self-replanning, zero drift.
   `agentproto sessions wait <id-or-name> [--policy <policyId>] --timeout <ms> --json`
-  fait exactement la même boucle de tranches ~50s en interne (même endpoint REST
-  `/policies/:id/wait` / `/sessions/:id/wait` que
-  `session_monitor`/`poll_events` — **pas de capacité serveur différente**,
-  juste le fait que c'est UN PROCESSUS OS autonome que tu peux backgrounder),
-  mais comme c'est un processus séparé, le harnais te notifie quand il sort,
-  MÊME entre deux tours.
+  runs exactly the same ~50s-slice loop internally (same REST endpoint
+  `/policies/:id/wait` / `/sessions/:id/wait` as
+  `session_monitor`/`poll_events` — **no different server capability**, just
+  the fact that it is an autonomous OS PROCESS you can background), but since
+  it is a separate process, the harness notifies you when it exits, EVEN
+  between two turns.
 
 ```bash
 agentproto sessions wait --policy policy_xxx --timeout 2400000 --json
-# lancé via Bash run_in_background:true → notification automatique au retour,
-# sans /loop, sans repromptage utilisateur, sans dérive de replanification.
+# launched via Bash run_in_background:true → automatic notification on return,
+# without /loop, without user re-prompting, without replanning drift.
 ```
 
-Ce n'est PAS « CLI plutôt que MCP » comme règle générale — c'est spécifique au
-CAS « attendre longtemps, à travers les tours ». Pour tout le reste (spawn,
-prompt, list, attach) MCP reste le bon outil ; c'est seulement cette attente
-longue-durée qui bénéficie d'un process OS backgroundable plutôt qu'un simple
-appel d'outil synchrone dans ton tour.
+This is NOT "CLI rather than MCP" as a general rule — it is specific to the
+"waiting a long time, across turns" CASE. For everything else (spawn, prompt,
+list, attach) MCP remains the right tool; only this long-duration wait
+benefits from a backgroundable OS process rather than a plain synchronous
+tool call inside your turn.
 
-## Gotchas (vécus + source)
+## Gotchas (lived + source)
 
-- **Race d'attache** : attache la policy **avant** le turn-end de la session
-  (spawn idle → attach → prompt). Sinon l'event peut être manqué.
-- **`test` n'est pas allowlisté** ; `ls`/`cat`/`git`/`node`/`pnpm`/`echo`/`bash`
-  le sont. Adapte le gate à l'allowlist du workspace.
-- **`cwd escapes the workspace`** : la session surveillée (ou la `gate.cwd`)
-  doit être **dans** le workspace. Les sessions lancées dans un scratch
-  hors-workspace ne sont pas gateables tel quel. **En pratique pour
-  agentproto/ts (worktree par feature) : n'essaie même pas un gate shell,
-  utilise `then:"emit"` sans `gate` et vérifie toi-même via `git`/`gh`** (voir
-  §2 ci-dessus, gotcha détaillé).
-- **Commit isolé pour tester** : ne teste JAMAIS `then:commit` dans le repo de
-  travail — le workspace root EST souvent un repo réel. Fais `git init` un repo
-  jetable **dans** le workspace (cwd ne s'échappe pas), teste, puis `rm -rf`.
-- **onFail** : sans `onFail`, un gate rouge → `blocked` immédiat. Avec, la
-  session est re-promptée (`nudge`, `{code}` = exit code) jusqu'à `maxRetries`
-  (défaut 2) puis `blocked` — la session doit être **encore running** pour
-  recevoir le nudge.
-- **RoutineRunner retiré** : voir §7 — le moteur impératif (Phase B2) et ses
-  alias `routine_*` (Phase B3) ont tous les deux disparu ; utilise
-  `workflow_*`.
+- **Attach race**: attach the policy **before** the session's turn-end
+  (spawn idle → attach → prompt). Otherwise the event can be missed.
+- **`test` is not allowlisted**; `ls`/`cat`/`git`/`node`/`pnpm`/`echo`/`bash`
+  are. Adapt the gate to the workspace's allowlist.
+- **`cwd escapes the workspace`**: the watched session (or the `gate.cwd`)
+  must be **inside** the workspace. Sessions launched in an out-of-workspace
+  scratch dir are not gateable as-is. **In practice for agentproto/ts
+  (worktree per feature): don't even try a shell gate, use `then:"emit"`
+  without `gate` and verify yourself via `git`/`gh`** (see §2 above, detailed
+  gotcha).
+- **Isolated commit for testing**: NEVER test `then:commit` in the working
+  repo — the workspace root often IS a real repo. `git init` a throwaway repo
+  **inside** the workspace (cwd does not escape), test, then `rm -rf`.
+- **onFail**: without `onFail`, a red gate → immediate `blocked`. With it,
+  the session is re-prompted (`nudge`, `{code}` = exit code) up to
+  `maxRetries` (default 2) then `blocked` — the session must still be
+  **running** to receive the nudge.
+- **RoutineRunner removed**: see §7 — the imperative engine (Phase B2) and
+  its `routine_*` aliases (Phase B3) are both gone; use `workflow_*`.
 
-## Checklist supervision durable
+## Durable supervision checklist
 
-- [ ] Session surveillée **dans le workspace** (cwd ne s'échappe pas)
-- [ ] Gate avec un binaire **allowlisté** (`ls` pas `test`, `pnpm`/`node` pour
-      les tests)
-- [ ] Policy attachée **avant** le turn-end (spawn idle → attach → prompt)
-- [ ] `then:emit` pour jalonner / `then:commit` + `requireHumanAck` pour
-      committer
-- [ ] Commit : `paths` explicites, repo + `user.name/email`, **repo isolé** si
-      test
-- [ ] Suivi via `session_events_poll` (curseur) ; `policy_ack` pour libérer un
+- [ ] Watched session **inside the workspace** (cwd does not escape)
+- [ ] Gate with an **allowlisted** binary (`ls` not `test`, `pnpm`/`node` for
+      tests)
+- [ ] Policy attached **before** turn-end (spawn idle → attach → prompt)
+- [ ] `then:emit` to milestone / `then:commit` + `requireHumanAck` to commit
+- [ ] Commit: explicit `paths`, repo + `user.name/email`, **isolated repo**
+      if testing
+- [ ] Tracking via `session_events_poll` (cursor); `policy_ack` to release a
       commit
-- [ ] Escalade `notifyUrl` seulement si tu veux être prévenu (bloqué/attente)
+- [ ] `notifyUrl` escalation only if you want to be notified (blocked/waiting)
