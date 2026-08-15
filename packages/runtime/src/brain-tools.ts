@@ -115,9 +115,11 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
   server.tool(
     "workspace_brain_status",
     "Report how current a workspace's brain is: how many sessions are indexed, " +
-      "how many known-but-pending remain, total bytes, and whether the index is " +
-      "query-ready. Resolves the workspace as the explicit `workspace` argument, " +
-      "else the calling session's own workspace.",
+      "how many known-but-pending remain, how many were skipped as permanently " +
+      "unavailable (no transcript ever reachable — bash PTYs, GC'd transcripts; " +
+      "retry one explicitly with `workspace_brain_ingest`'s `sessionId`), total " +
+      "bytes, and whether the index is query-ready. Resolves the workspace as " +
+      "the explicit `workspace` argument, else the calling session's own workspace.",
     {
       workspace: z
         .string()

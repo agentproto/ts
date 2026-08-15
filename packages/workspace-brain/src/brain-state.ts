@@ -9,8 +9,15 @@
  * corrupt file reads back as empty rather than throwing — the same
  * degrade-to-empty contract every other on-disk reader in the runtime uses.
  *
- * `record`/`forget` calls against ONE `BrainState` instance are serialized
- * (see `enqueue` below): `workspace-brain-subscriber.ts` fires one
+ * Alongside `ingested`, the file also tracks `skips` — sessions whose
+ * transcript was unavailable on the last attempt (e.g. a bash PTY or a
+ * GC'd transcript, which will never produce one). Recording those keeps
+ * `pendingSessions` from re-counting them forever; it is not a tombstone,
+ * since an explicit re-ingest or a later successful ingest still clears it
+ * (see `record`/`recordSkip` below).
+ *
+ * `record`/`forget`/`recordSkip` calls against ONE `BrainState` instance are
+ * serialized (see `enqueue` below): `workspace-brain-subscriber.ts` fires one
  * `ingest()` per session exiting inside the same debounce batch, all against
  * the same per-workspace `BrainManager`/`BrainState`, with no ordering
  * between them — an unserialized read-modify-write here raced on the tmp
@@ -22,7 +29,7 @@
 
 import { promises as fs } from "node:fs"
 import { dirname, join } from "node:path"
-import type { BrainStateRecord } from "./types.js"
+import type { BrainStateRecord, BrainStateSkip } from "./types.js"
 
 export const BRAIN_STATE_FILENAME = "brain-state.json"
 
@@ -31,6 +38,9 @@ export interface BrainStateFile {
   readonly version: 1
   readonly updatedAt: string
   readonly ingested: Readonly<Record<string, BrainStateRecord>>
+  /** Sessions skipped as permanently-unavailable-for-now. Absent on files
+   *  written before this field existed — treated as `{}` (see `readFile`). */
+  readonly skips: Readonly<Record<string, BrainStateSkip>>
 }
 
 /** The read/write surface the pipeline + manager share. */
@@ -39,10 +49,17 @@ export interface BrainState {
   readonly path: string
   /** All recorded ingestions, keyed by session id. Never throws. */
   read(): Promise<Readonly<Record<string, BrainStateRecord>>>
-  /** Record an ingestion for `sessionId`. Atomic write. */
+  /** Record an ingestion for `sessionId`. Atomic write. Clears any skip
+   *  entry for the same session — a successful ingest is never also
+   *  "skipped". */
   record(record: BrainStateRecord): Promise<void>
   /** Drop an ingestion record (used by a manual re-ingest). */
   forget(sessionId: string): Promise<void>
+  /** All recorded skips, keyed by session id. Never throws. */
+  readSkips(): Promise<Readonly<Record<string, BrainStateSkip>>>
+  /** Record `sessionId` as skipped for `reason`. Atomic write. NOT a
+   *  tombstone — a later `record()` for the same session clears it. */
+  recordSkip(sessionId: string, reason: BrainStateSkip["reason"]): Promise<void>
 }
 
 export const brainStatePath = (brainDir: string): string =>
@@ -70,7 +87,7 @@ export function createBrainState(brainDir: string): BrainState {
     try {
       raw = await fs.readFile(path, "utf8")
     } catch {
-      return { version: 1, updatedAt: "", ingested: {} }
+      return { version: 1, updatedAt: "", ingested: {}, skips: {} }
     }
     try {
       const parsed = JSON.parse(raw) as Partial<BrainStateFile>
@@ -80,23 +97,36 @@ export function createBrainState(brainDir: string): BrainState {
         parsed.ingested &&
         typeof parsed.ingested === "object"
       ) {
-        const ingested = parsed.ingested as Record<string, BrainStateRecord>
-        const clean: Record<string, BrainStateRecord> = {}
-        for (const [id, rec] of Object.entries(ingested)) {
+        const ingestedRaw = parsed.ingested as Record<string, BrainStateRecord>
+        const ingested: Record<string, BrainStateRecord> = {}
+        for (const [id, rec] of Object.entries(ingestedRaw)) {
           if (rec && typeof rec.sessionId === "string" && typeof rec.sourceId === "string") {
-            clean[id] = rec
+            ingested[id] = rec
+          }
+        }
+        // `skips` was added after v1 shipped — a legacy file simply lacks
+        // the field, which parses as "no skips" rather than corrupt.
+        const skipsRaw =
+          parsed.skips && typeof parsed.skips === "object"
+            ? (parsed.skips as Record<string, BrainStateSkip>)
+            : {}
+        const skips: Record<string, BrainStateSkip> = {}
+        for (const [id, rec] of Object.entries(skipsRaw)) {
+          if (rec && typeof rec.sessionId === "string" && typeof rec.reason === "string") {
+            skips[id] = rec
           }
         }
         return {
           version: 1,
           updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
-          ingested: clean,
+          ingested,
+          skips,
         }
       }
     } catch {
       // malformed — degrade to empty
     }
-    return { version: 1, updatedAt: "", ingested: {} }
+    return { version: 1, updatedAt: "", ingested: {}, skips: {} }
   }
 
   // Singletons per workspace; the host Map enforces this. Atomic writes here
@@ -122,7 +152,9 @@ export function createBrainState(brainDir: string): BrainState {
       return enqueue(async () => {
         const file = await readFile()
         const ingested = { ...file.ingested, [record.sessionId]: record }
-        await writeFile({ version: 1, updatedAt: new Date().toISOString(), ingested })
+        const skips = { ...file.skips }
+        delete skips[record.sessionId]
+        await writeFile({ version: 1, updatedAt: new Date().toISOString(), ingested, skips })
       })
     },
     forget(sessionId) {
@@ -131,7 +163,28 @@ export function createBrainState(brainDir: string): BrainState {
         if (!(sessionId in file.ingested)) return
         const ingested = { ...file.ingested }
         delete ingested[sessionId]
-        await writeFile({ version: 1, updatedAt: new Date().toISOString(), ingested })
+        await writeFile({
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          ingested,
+          skips: file.skips,
+        })
+      })
+    },
+    async readSkips() {
+      return (await readFile()).skips
+    },
+    recordSkip(sessionId, reason) {
+      return enqueue(async () => {
+        const file = await readFile()
+        const skip: BrainStateSkip = { sessionId, reason, skippedAt: new Date().toISOString() }
+        const skips = { ...file.skips, [sessionId]: skip }
+        await writeFile({
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          ingested: file.ingested,
+          skips,
+        })
       })
     },
   }

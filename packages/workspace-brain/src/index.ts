@@ -18,6 +18,7 @@ export type {
   BrainConfig,
   BrainStats,
   BrainStateRecord,
+  BrainStateSkip,
   ExportedSessionLike,
   IngestReport,
   IngestResult,
