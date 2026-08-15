@@ -22,6 +22,7 @@ describe("agentproto-apps-sync", () => {
       "@agentproto/content-team",
       "@agentproto/mail-triage",
       "@agentproto/media-viewer",
+      "@agentproto/ops-panel",
       "@agentproto/session-viewer",
     ])
 
@@ -34,7 +35,7 @@ describe("agentproto-apps-sync", () => {
     const raw = await readFile(catalogPath, "utf8")
     const parsed = JSON.parse(raw)
     expect(Array.isArray(parsed.apps)).toBe(true)
-    expect(parsed.apps).toHaveLength(5)
+    expect(parsed.apps).toHaveLength(6)
     expect(parsed.apps[0]).toMatchObject({
       appId: expect.any(String),
       name: expect.any(String),
