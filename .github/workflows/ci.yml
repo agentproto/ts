@@ -16,7 +16,9 @@ on:
 # (including CI's own changeset commit). Workflow-level cancel-in-progress
 # kills the running review → review never posts → changeset commit was
 # pointless. Instead, each job declares its own policy:
-#   - fast deterministic jobs (build/test/hygiene/changeset) may cancel
+#   - fast deterministic jobs (hygiene/changeset) may cancel
+#   - build-and-test does NOT cancel (see its concurrency comment — the
+#     parallel reviewer's changeset push must not kill the running build)
 #   - pr-review NEVER cancels — wait for it to finish
 #   - pr-fix / auto-merge queue behind pr-review's group
 
@@ -120,9 +122,22 @@ jobs:
     if: |
       always() &&
       needs.increment-guard.outputs.skip_build != 'true'
+    # pr-review now runs in parallel with build-and-test. The sandboxed
+    # reviewer pushes its changeset commit during analysis (Phase 2 of the
+    # review session — see .github/agentproto-workflows/lib/sandbox-agent.mjs
+    # and entry.mjs), which would otherwise re-trigger CI and CANCEL this
+    # build via the concurrency group. With cancel-in-progress: false, the
+    # re-triggered build queues behind this one; increment-guard skips it
+    # instantly (the push is 100% chore — only .changeset/*.md), so the
+    # queue drain is effectively zero-cost. The original cancel-on-push
+    # optimization (rapid dev-push cancels the previous build) is
+    # sacrificed: builds now queue rather than cancel, at ~15m per extra
+    # push. The tradeoff is deliberate — the parallelization benefit (review
+    # + build run simultaneously, saving 5-15m wall-clock per PR) outweighs
+    # the occasional wasted build on rapid pushes.
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -502,23 +517,27 @@ jobs:
 
   # On PRs: agentic reviewer — reads the full diff, greps the codebase,
   # writes an accurate changeset, and posts a structured review.
-  # Runs after build-and-test so it never reviews a broken build.
-  # The reviewer writes the changeset; the changeset commit re-triggers CI
-  # so the "Agentic review" check lands on the new HEAD (Part A makes that
-  # re-run idempotent — no second changeset commit is produced).
+  # Starts in PARALLEL with build-and-test: the review analysis no longer
+  # waits for a green build (a review is an opinion about the diff, not a
+  # claim that it compiles). The two SIDE EFFECTS that could move the merge
+  # forward — pushing the changeset commit and posting the green "Agentic
+  # review" status on HEAD — are still held until THIS run's build-and-test
+  # is success or skipped (see the "Wait for Build + test" step), so a red
+  # build still can't green-light a merge. The reviewer writes the changeset;
+  # the changeset commit re-triggers CI so the "Agentic review" check lands
+  # on the new HEAD (Part A makes that re-run idempotent — no second
+  # changeset commit is produced).
   pr-review:
     name: Agentic review
     runs-on: ubuntu-latest
-    needs: [build-and-test]
-    # `always()` + an explicit success-or-skipped check on build-and-test —
-    # not just the implicit `success()` GitHub would otherwise inject.
-    # increment-guard can leave build-and-test `skipped` (chore-only
-    # increment on top of an already-green build); the review must still
-    # run in that case, so `skipped` counts alongside `success`. A genuinely
-    # red build-and-test still holds the review, unchanged from before.
+    # No `needs: [build-and-test]` here — that dependency was what serialized
+    # the review behind a ~15min build. The review now starts immediately.
+    # The `always()` workaround is also gone: with no upstream `needs`,
+    # there is nothing to `always()` against. `increment-guard` leaving
+    # build-and-test `skipped` (chore-only increment on an already-green
+    # build) is handled inside the wait step — `skipped` counts as success
+    # for the wait (see "Wait for Build + test"), so the changeset still lands.
     if: |
-      always() &&
-      (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped') &&
       github.event_name == 'pull_request' &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
     # Own concurrency group — must NOT cancel-in-progress.
@@ -534,6 +553,7 @@ jobs:
       contents: write       # push generated changeset back to the branch
       pull-requests: write  # post review + comments
       statuses: write       # post explicit commit-status on HEAD after push
+      actions: read         # "Wait for Build + test" polls this run's jobs
     steps:
       - uses: actions/checkout@v5 # bootstrap: load the local composite action
 
@@ -1057,10 +1077,90 @@ jobs:
             echo "__ARTIFACTS_EOF__"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Commit changeset (if written by reviewer)
+      # Hold the side effects until THIS run's Build + test is success or
+      # skipped. The review analysis above already ran — that's the whole
+      # point of parallelizing. What must NOT happen is pushing a changeset
+      # or posting a green "Agentic review" status while the build is still
+      # running (or red): the changeset push re-triggers CI, and the status
+      # is what the merge gate trusts, so both wait on the build verdict.
+      #
+      # Poll the build-and-test JOB of this run (github.run_id) rather than
+      # `gh run watch` on the whole run: pr-review IS part of this run, so
+      # watching the run would deadlock on our own job. `skipped` counts as
+      # success — that's the increment-guard chore-increment case, where the
+      # build was legitimately skipped and the review must proceed exactly
+      # as if it had passed.
+      #
+      # A red / cancelled / timed-out build sets build_ok=false: the
+      # changeset is withheld and the "Agentic review" status is downgraded
+      # to neutral (see the gate step), but the review CONTENT is still
+      # posted — a broken build doesn't invalidate the review's opinion.
+      # build-and-test's own timeout is 15m, so 30m of polling is generous
+      # headroom for queue delay + a slow run without ever holding the
+      # merge hostage indefinitely.
+      - name: Wait for Build + test
+        id: buildwait
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
+        timeout-minutes: 35
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          build_ok=false
+          build_result="unknown"
+          errors=0
+          deadline=$((SECONDS + 1800))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if ! JOBS=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs" 2>/dev/null); then
+              errors=$((errors + 1))
+              if [ "$errors" -ge 5 ]; then
+                echo "::warning::gh api for this run's jobs failed 5x — giving up on the build wait (treating as not-ok)."
+                build_result="api-error"
+                break
+              fi
+              sleep 15
+              continue
+            fi
+            errors=0
+            # Same --paginate + `jq -s` recipe as the postcheck step — a
+            # naive `--paginate --jq` evaluates per page and can miscount.
+            JOB=$(printf '%s' "$JOBS" \
+              | jq -s '[.[].jobs[]?] | map(select(.name == "Build + test")) | sort_by(.id) | last // {}')
+            CONCLUSION=$(printf '%s' "$JOB" | jq -r '.conclusion // empty')
+            case "$CONCLUSION" in
+              success)
+                build_ok=true; build_result="success"; break ;;
+              skipped)
+                build_ok=true; build_result="skipped"; break ;;
+              failure|cancelled|timed_out)
+                build_result="$CONCLUSION"; break ;;
+            esac
+            sleep 30
+          done
+          if [ "$build_ok" = "true" ]; then
+            echo "Build + test $build_result — proceeding with changeset + status."
+          else
+            echo "Build + test is $build_result — withholding changeset and downgrading status to neutral."
+          fi
+          echo "build_ok=$build_ok" >> "$GITHUB_OUTPUT"
+          echo "build_result=$build_result" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Build + test gate"
+            echo "- result: $build_result"
+            echo "- changeset commit: $([ "$build_ok" = "true" ] && echo pushed || echo withheld)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit changeset (if written by reviewer)
+        # Only push the changeset once THIS run's build is success or
+        # skipped (buildwait.build_ok) — a red build must not get a
+        # changeset commit that re-triggers CI onto a broken tree.
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.buildwait.outputs.build_ok == 'true'
         id: changeset
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
@@ -1230,12 +1330,27 @@ jobs:
           else
             echo "state=success" >> "$GITHUB_OUTPUT"
           fi
+
+          # A red build must not green-light a merge. The review's opinion
+          # stands (state=success above), but the "Agentic review" STATUS is
+          # downgraded to neutral so the merge gate sees "build failed" rather
+          # than "review passed". The changeset was already withheld by the
+          # same signal (see "Wait for Build + test"). Only `= "false"` —
+          # i.e. the wait step actually ran and reported a red build — never
+          # an empty BUILD_OK (the bypass / merged cases, where the wait step
+          # was skipped and success is the correct mirror). A review that
+          # itself failed stays failure: neutral is reserved for the
+          # build-broke-it case, never a CHANGES_REQUESTED review.
+          if [ "$BUILD_OK" = "false" ] && [ "$state" = "success" ]; then
+            echo "state=neutral" >> "$GITHUB_OUTPUT"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BYPASS: ${{ steps.bypass.outputs.skip }}
           REVIEWER_OUTCOME: ${{ steps.reviewer.outputs.outcome }}
           VERIFY_POSTED: ${{ steps.verify.outputs.posted }}
+          BUILD_OK: ${{ steps.buildwait.outputs.build_ok }}
 
       - name: Post explicit statuses on PR HEAD
         if: steps.prstate.outputs.skip != 'true'
