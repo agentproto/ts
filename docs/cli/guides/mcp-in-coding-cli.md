@@ -183,12 +183,12 @@ agentproto`.
 **Direct MCP tool call** (from any client) — list all sessions:
 
 ```text
-Tool: list_sessions
+Tool: session_list
 Input: {}
 ```
 
 Expected response: an array (possibly empty) of sessions.  Use
-`list_agent_sessions` to filter to agent-only sessions.
+`agent_sessions_list` to filter to agent-only sessions.
 
 **Raw curl smoke test**:
 
@@ -206,8 +206,8 @@ it responds `406 Not Acceptable`. It also streams as SSE (`event: message`
 framing), which is why this pipes through `grep` rather than
 `python3 -m json.tool`.
 
-Expected: tool names including `start_agent_session`, `list_sessions`,
-`prompt_agent_session`, and others.
+Expected: tool names including `agent_start`, `session_list`,
+`agent_prompt`, and others.
 
 ---
 
@@ -218,19 +218,19 @@ coding-CLI orchestration:
 
 | Tool | Purpose |
 |------|---------|
-| `start_agent_session` | Spawn a new adapter session (claude-code, hermes, opencode, …) |
-| `prompt_agent_session` | Send a turn to a running session |
-| `get_agent_session_output` | Read a session's output |
-| `list_sessions` | List all sessions (agent + terminal + browser) |
-| `list_agent_sessions` | List active agent sessions only |
-| `kill_agent_session` | Stop a session |
+| `agent_start` | Spawn a new adapter session (claude-code, hermes, opencode, …) |
+| `agent_prompt` | Send a turn to a running session |
+| `agent_output` | Read a session's output |
+| `session_list` | List all sessions (agent + terminal + browser) |
+| `agent_sessions_list` | List active agent sessions only |
+| `agent_kill` | Stop a session |
 | `session_tree` | Session hierarchy (parent → children) |
-| `session_monitor` | Block until one of a set of sessions fires a lifecycle event (formerly `wait_for_any`) |
-| `poll_events` | Drain runtime events |
-| `list_adapters` | List installed adapter CLIs |
-| `list_discovered_mcps` | MCPs discovered from other CLIs on this machine |
-| `create_tunnel` / `list_tunnels` | Manage reverse tunnels |
-| `read_file` / `write_file` / `list_directory` | Workspace filesystem |
+| `session_monitor` | Block until one of a set of sessions fires a lifecycle event |
+| `session_events_poll` | Drain runtime events |
+| `adapter_list` | List installed adapter CLIs |
+| `mcp_discovered_list` | MCPs discovered from other CLIs on this machine |
+| `tunnel_create` / `tunnel_list` | Manage reverse tunnels |
+| `file_read` / `file_write` / `file_list` | Workspace filesystem |
 | `start_browser` / `stop_browser` | Browser session lifecycle |
 | `session_usage` | Per-session cost + token usage, live |
 | `list_sandbox_providers` | List configured sandbox providers (e.g. e2b) |
@@ -255,7 +255,7 @@ http://127.0.0.1:18790/mcp/orchestrator?scope=<token>
 
 The orchestrator gateway exposes only session-management and policy tools.
 The scoped `<token>` is minted per-child session; it appears in the
-`start_agent_session` response.
+`agent_start` response.
 
 ---
 

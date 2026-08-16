@@ -249,7 +249,7 @@ What `serve` exposes:
 
 | Surface           | URL                                       | Notes                                                  |
 |-------------------|-------------------------------------------|--------------------------------------------------------|
-| Health            | `GET /health`                             | Daemon status: workspace, uptime, `startedAt`, version, pid, node path, entry point — always public |
+| Health            | `GET /health`                             | Daemon status: workspace, uptime, `startedAt`, version, build identity (`sha`, `builtAt`, `source`), pid, node path, entry point — always public |
 | Events (SSE)      | `GET /events`                             | RuntimeEvents stream                                   |
 | MCP               | `POST /mcp` (Streamable HTTP)             | Adapter spawn, terminal sessions, fs/exec, …          |
 | Adapter discovery | `GET /adapters`                           | Globally-installed `@agentproto/adapter-*` packages    |

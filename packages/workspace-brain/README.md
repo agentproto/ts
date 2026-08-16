@@ -20,26 +20,41 @@ engine runs over any source of transcripts (the daemon wires it to
 
 ```
 ~/.agentproto/workspaces/<slug>/brain/
-├── brain-state.json          # which sessions were ingested (atomic, never corrupts)
+├── brain-state.json          # which sessions were ingested or skipped (atomic, never corrupts)
 └── knowledge/
-    └── sources/              # one markdown transcript per ingested session
-        ├── sess-abc123.md
+    └── sources/              # one markdown chunk per ingested chunk
+        ├── sess-abc123.md    # chunk 0 of a session (or a pre-chunking session)
+        ├── sess-abc123#1.md  # chunk 1 of a long session
         └── sess-def456.md
 ```
 
 The `knowledge/` directory is exactly what `@agentproto/adapter-knowledge-files`'
 `FilesKnowledgeAdapter` indexes with BM25 (zero deps, no embeddings, no API key).
 
+Long transcripts are split into **turn-bounded chunks** (default ~3.5 KB) so
+each chunk ranks independently and query snippets land near the matched
+passage. Chunk 0 keeps the bare session id, so a single-chunk session (the
+common case) writes to the same path the pre-chunking pipeline used. A session
+with no readable transcript or an empty transcript is recorded as a **skip** in
+`brain-state.json` so `pendingSessions` converges instead of retrying forever —
+it's not a tombstone; an explicit re-ingest or later successful ingest clears
+it.
+
 ## What's here
 
-- `types.ts` — `BrainStateRecord`, `BrainStats`, `BrainConfig`.
+- `types.ts` — `BrainStateRecord`, `BrainStateSkip`, `BrainStats`, `BrainConfig`.
 - `brain-state.ts` — atomic read/write of `brain-state.json` (tmp+rename, like
   the workspace-bucket snapshot writer; a corrupt file reads back as empty).
+  Also records skipped sessions.
 - `session-source-port.ts` — `BrainSessionSourcePort`, a corpus
   `ConversationSourcePort` that turns an injected exported transcript into
   `ConversationTurn`s.
-- `ingest-pipeline.ts` — the import loop: `ConversationImporter.enumerate()`
-  → markdown → `provider.ingest()` (which also invalidates the BM25 cache).
+- `chunking.ts` — turn-bounded transcript chunking (`chunkTurns`, `chunkUri`,
+  `renderChunkMarkdown`) with a default `DEFAULT_CHUNK_MAX_BYTES` ceiling
+  (~3.5 KB).
+- `ingest-pipeline.ts` — the import loop: enumerate sessions → flatten turns →
+  chunk → markdown per chunk → `provider.ingest()` (which also invalidates the
+  BM25 cache).
 - `brain-manager.ts` — the orchestrator: lazily creates the `FilesKnowledgeAdapter`
   rooted at `brain/knowledge/`, exposes `ingestSession` / `ingestPending` /
   `status` / `getProvider`.
