@@ -105,19 +105,27 @@ installing new CLI tools (for example via `uv tool install`).
 agentproto daemon status
 ```
 
-Prints a four-line summary:
+Prints a multi-line summary:
 
 ```text
 agentproto daemon status
   plist:     installed (/Users/me/Library/LaunchAgents/sh.agentproto.plist)
   launchd:   loaded · pid=12345 · state=running
-  /health:   ok · v0.13.0 · workspace=/Users/me/code · up 2h  (http://127.0.0.1:18790)
+  /health:   ok · v0.14.0 (workspace abc1234, built 2026-08-11T…) · pid 12345 · up 2h  (http://127.0.0.1:18790)
+  bin:       /Users/me/.local/share/fnm/node-versions/v22/bin/node /Users/me/.npm/lib/node_modules/@agentproto/cli/cli.mjs
   config:    /Users/me/.agentproto/config.json
   logs:      /Users/me/.agentproto/daemon.log
 
   recent logs:
     …last 5 lines of daemon.log…
 ```
+
+The `/health` line now includes **build identity** when the running binary was
+built with one: `source` (`workspace` or `published`), short git `sha`, and a
+`built` ISO timestamp. This lets you distinguish a workspace distribution from a
+published tarball of the same version. `bin` shows the exact Node executable and
+script launchd (or the shell) invoked — useful when multiple Node managers are
+in play.
 
 Exit code is `0` only when plist exists AND launchctl reports the
 service loaded. `/health` reachability is informational — it can be

@@ -27,6 +27,7 @@ An app here is a plain `AppHandle` — `codeTeam.agents`, `codeTeam.workflows`,
 | `mail-triage` | `@agentproto/apps/mail-triage` | `triager` | `triage-inbox` |
 | `media-viewer` | `@agentproto/apps/media-viewer` | `cataloger` | `scan-media` |
 | `session-viewer` | `@agentproto/apps/session-viewer` | `narrator` | `narrate-session` |
+| `ops-panel` | `@agentproto/apps/ops-panel` | `manager`, `watchdog` | — |
 
 Each team is a folder with `agents/<name>.ts` (one self-contained file per agent
 — its `defineAgent` handle + `body`) and `workflows/<name>.ts`, composed in the
