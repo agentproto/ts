@@ -17,7 +17,7 @@
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
-import { getReleaseCheckIntervalMs } from "../config.js"
+import { getReleaseCheckIntervalMin } from "../config.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { releaseTtlMs, type ReleaseBuildSource } from "../services/releaseCheck.logic.js"
 import type { ReleaseCheckView } from "../services/releaseCheck.js"
@@ -92,7 +92,7 @@ export function registerReleaseStatusBar(
       const view = await runReleaseCheck({
         localVersion,
         buildSource,
-        ttlMs: releaseTtlMs(getReleaseCheckIntervalMs()),
+        ttlMs: releaseTtlMs(getReleaseCheckIntervalMin()),
       })
       paint(view, build)
     } catch {
