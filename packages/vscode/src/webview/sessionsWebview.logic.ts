@@ -7,15 +7,14 @@
  * DESIGN B — "Attention-first sections" (validated 2026-08-07). The seven
  * status tabs are gone: status is no longer a control the operator drives, it
  * is the SORT ORDER the list organizes itself into. Every session falls into
- * exactly one of six fixed-priority sections —
- *   Needs you → Awaiting bg → Running → Attention → Quiet → Earlier
+ * exactly one of five fixed-priority sections —
+ *   Needs you → Running → Attention → Quiet → Earlier
  * — keyed off the tree's canonical `activityFor` classifier, so the webview
- * never disagrees with the tree about what a session IS. "Awaiting bg" reuses
- * the "Needs you" affordance (its own top-priority section, not folded into
- * Quiet) for a session that ended its turn with background tasks still
- * outstanding — a silent dead end unless someone re-prompts it, so it earns
- * the same visual weight as a session waiting on human input, just in its own
- * amber register rather than ochre.
+ * never disagrees with the tree about what a session IS. A session that ended
+ * its turn with background tasks still outstanding ("awaiting-bg") folds into
+ * Quiet with the rest of the idle sessions — one list, no section of its own
+ * — told apart only by its own amber dot (`.dot.awaiting-bg`) and a small
+ * pulsing dot after its cost tag.
  *
  * Navigation collapses to two axes only, both reusing logic that already
  * exists (NO daemon changes):
@@ -498,7 +497,8 @@ export interface WebviewRow {
    *  Drives the eye badge when > 0. */
   watcherCount: number
   /** Background tool starts from the last turn still pending — the session
-   *  parked itself with work outstanding. Drives the `⏳ N bg` chip when > 0. */
+   *  parked itself with work outstanding. Drives the pulsing bg-tasks dot
+   *  after the cost tag when > 0. */
   pendingBgTasks: number
   /** Descendant sessions currently mid-turn (#session-visibility) — drives the
    *  "⟳ N children" delegating badge. */
@@ -524,21 +524,13 @@ export interface WebviewRow {
   archived: boolean
 }
 
-/** The six attention sections, in fixed priority order. */
-export type SectionKey = "needs-you" | "awaiting-bg" | "running" | "attention" | "quiet" | "earlier"
+/** The five attention sections, in fixed priority order. */
+export type SectionKey = "needs-you" | "running" | "attention" | "quiet" | "earlier"
 
-export const SECTION_ORDER: readonly SectionKey[] = [
-  "needs-you",
-  "awaiting-bg",
-  "running",
-  "attention",
-  "quiet",
-  "earlier",
-]
+export const SECTION_ORDER: readonly SectionKey[] = ["needs-you", "running", "attention", "quiet", "earlier"]
 
 const SECTION_LABELS: Readonly<Record<SectionKey, string>> = {
   "needs-you": "Needs you",
-  "awaiting-bg": "Awaiting bg",
   running: "Running",
   attention: "Attention",
   quiet: "Quiet",
@@ -555,19 +547,18 @@ const SECTION_HINTS: Readonly<Partial<Record<SectionKey, string>>> = {
  *  `now`-aware `activityFor`). */
 const SECTION_BY_STATUS: Readonly<Record<WebviewRowStatus, SectionKey>> = {
   awaiting: "needs-you",
-  // A session parked with its own background tasks still outstanding gets its
-  // own top-priority section — same "needs a look" weight as Needs you, but a
-  // distinct amber register (never folded into Quiet; see ROW_STATUS_RANK).
-  "awaiting-bg": "awaiting-bg",
   working: "running",
   // A delegating parent is actively working (through its subtree), so it sorts
   // with the live sessions rather than sinking into Quiet.
   delegating: "running",
   stalled: "attention",
   failed: "attention",
-  // Parked = quiet but supervised (a watcher, not a bg task); stays in Quiet,
-  // distinguished by its tell.
+  // Parked = quiet but supervised (a watcher, not a bg task); awaiting-bg =
+  // quiet but with its own background tasks still pending. Both stay in the
+  // same single Quiet list as everything else — distinguished by their tell
+  // (dot color / pulsing bg dot), not by a section of their own.
   parked: "quiet",
+  "awaiting-bg": "quiet",
   idle: "quiet",
   stopped: "earlier",
   done: "earlier",

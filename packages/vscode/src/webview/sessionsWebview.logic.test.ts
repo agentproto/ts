@@ -185,8 +185,9 @@ describe("webviewRowStatus", () => {
   })
 
   it("renders a session parked with background tasks pending as its own 'awaiting-bg' status", () => {
-    // parked-bg gets its own dedicated row status — a distinct top-priority
-    // section (Awaiting bg), not folded into the quiet/parked bucket.
+    // parked-bg gets its own dedicated row status (drives the dot color and
+    // the pulsing bg-tasks dot) even though it shares the Quiet section with
+    // plain idle/parked rows.
     expect(webviewRowStatus(session({ busy: false, pendingBgTasks: 2 }))).toBe("awaiting-bg")
     // A busy session with leftover bg tasks is still working.
     expect(webviewRowStatus(session({ busy: true, pendingBgTasks: 2 }))).toBe("working")
@@ -328,13 +329,13 @@ describe("sectionFor", () => {
     expect(sectionFor(session({ status: "killed", killedMidTurn: true }))).toBe("earlier")
   })
 
-  it("gives a session parked with background tasks its own 'awaiting-bg' section", () => {
-    expect(sectionFor(session({ busy: false, pendingBgTasks: 2 }))).toBe("awaiting-bg")
+  it("folds a session parked with background tasks into the same 'quiet' section as other idle sessions", () => {
+    expect(sectionFor(session({ busy: false, pendingBgTasks: 2 }))).toBe("quiet")
   })
 })
 
 describe("buildSessionsWebviewModel — attention sections", () => {
-  it("organizes the agents lane into the six sections in fixed order", () => {
+  it("organizes the agents lane into the five sections in fixed order", () => {
     const sessions = [
       session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
       session({ id: "bg", cwd: "/Code/studio", busy: false, pendingBgTasks: 1 }),
@@ -344,8 +345,11 @@ describe("buildSessionsWebviewModel — attention sections", () => {
       session({ id: "done", cwd: "/Code/studio", status: "exited" }),
     ]
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
-    expect(model.groups.map(g => g.key)).toEqual(["needs-you", "awaiting-bg", "running", "attention", "quiet", "earlier"])
-    expect(model.groups.map(g => g.label)).toEqual(["Needs you", "Awaiting bg", "Running", "Attention", "Quiet", "Earlier"])
+    expect(model.groups.map(g => g.key)).toEqual(["needs-you", "running", "attention", "quiet", "earlier"])
+    expect(model.groups.map(g => g.label)).toEqual(["Needs you", "Running", "Attention", "Quiet", "Earlier"])
+    // The awaiting-bg session lands in the same Quiet list as the plain idle
+    // session — no dedicated section of its own.
+    expect(model.groups.find(g => g.key === "quiet")?.rows.map(r => r.id).sort()).toEqual(["bg", "idle"])
     expect(model.groups.find(g => g.key === "earlier")?.hint).toBe("last 24 h")
     expect(model.shownCount).toBe(6)
   })
@@ -418,7 +422,7 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     expect(row.logo).toEqual({ kind: "icon", file: "browser.svg" })
   })
 
-  it("carries pendingBgTasks onto the row for the ⏳ N bg chip", () => {
+  it("carries pendingBgTasks onto the row for the pulsing bg-tasks dot", () => {
     const sessions = [
       session({ id: "a", cwd: "/Code/studio", busy: false, pendingBgTasks: 3 }),
       session({ id: "b", cwd: "/Code/studio", busy: false }),
@@ -428,9 +432,10 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     const a = rows.find(r => r.id === "a")!
     const b = rows.find(r => r.id === "b")!
     expect(a.pendingBgTasks).toBe(3)
-    // The row status reflects the dedicated awaiting-bg section.
+    // The row status still reflects awaiting-bg (dot color) even though both
+    // rows now share the same Quiet section.
     expect(a.status).toBe("awaiting-bg")
-    // Absent field → 0 (older daemon tolerated), so no chip renders.
+    // Absent field → 0 (older daemon tolerated), so no dot renders.
     expect(b.pendingBgTasks).toBe(0)
   })
 

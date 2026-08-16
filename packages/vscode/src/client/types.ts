@@ -437,7 +437,8 @@ export interface SessionSummary {
   watchers?: number
   /** Background tool starts counted in the session's last turn that are likely
    *  still pending — the session parked itself with work outstanding. Ephemeral,
-   *  stamped at read time; 0/absent ⇒ none. Drives the webview's `⏳ N bg` chip. */
+   *  stamped at read time; 0/absent ⇒ none. Drives the webview's pulsing
+   *  bg-tasks dot after the cost tag. */
   pendingBgTasks?: number
   /** Adapter-reported turn-error marker — see
    *  `SessionDescriptor.lastTurnErroredAt` above. Stamped at turn-end,
