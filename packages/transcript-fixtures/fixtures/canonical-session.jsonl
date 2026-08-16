@@ -1,0 +1,15 @@
+{"seq":1,"ts":"2026-08-17T09:00:00.000Z","kind":"user-prompt","sessionId":"sess_fixture_canonical","text":"Début d'une session de démonstration : peux-tu inspecter le dépôt et créer une pull request de nettoyage ?","source":"human"}
+{"seq":2,"ts":"2026-08-17T09:00:01.000Z","kind":"thought","sessionId":"sess_fixture_canonical","text":"Je dois d'abord regarder l'état du dépôt avant de proposer des changements.","partial":true}
+{"seq":3,"ts":"2026-08-17T09:00:01.400Z","kind":"thought","sessionId":"sess_fixture_canonical","text":"Je dois d'abord regarder l'état du dépôt avant de proposer des changements.\n"}
+{"seq":4,"ts":"2026-08-17T09:00:01.800Z","kind":"text-delta","sessionId":"sess_fixture_canonical","text":"Bien sûr, je vais commencer","partial":true}
+{"seq":5,"ts":"2026-08-17T09:00:02.200Z","kind":"text-delta","sessionId":"sess_fixture_canonical","text":"Bien sûr, je vais commencer par inspecter le dépôt.\n"}
+{"seq":6,"ts":"2026-08-17T09:00:02.500Z","kind":"tool-call","sessionId":"sess_fixture_canonical","toolCallId":"call_fixture_01","toolName":"bash","arguments":{"command":"git status --short"}}
+{"seq":7,"ts":"2026-08-17T09:00:02.600Z","kind":"tool-call","sessionId":"sess_fixture_canonical","toolCallId":"call_fixture_01","toolName":"bash","arguments":{"command":"git status --porcelain --branch","cwd":"/repo"},"isUpdate":true}
+{"seq":8,"ts":"2026-08-17T09:00:03.000Z","kind":"tool-result","sessionId":"sess_fixture_canonical","toolCallId":"call_fixture_01","result":{"stdout":" M packages/runtime/src/transcript-writer.ts\n","stderr":"","exitCode":0},"isError":false}
+{"seq":9,"ts":"2026-08-17T09:00:03.100Z","kind":"tool-call-record","sessionId":"sess_fixture_canonical","tool":"bash","command":"git status --porcelain --branch","args":{"command":"git status --porcelain --branch","cwd":"/repo"},"isError":false,"durationMs":600}
+{"seq":10,"ts":"2026-08-17T09:00:03.500Z","kind":"permission-resolved","sessionId":"sess_fixture_canonical","toolCallId":"call_fixture_01","decision":"allow","optionId":"once"}
+{"seq":11,"ts":"2026-08-17T09:00:04.000Z","kind":"tool-call","sessionId":"sess_fixture_canonical","toolCallId":"call_fixture_02","toolName":"git","arguments":{"subcommand":"commit","args":["-m","chore: tidy"],"create_pr":true}}
+{"seq":12,"ts":"2026-08-17T09:00:06.000Z","kind":"tool-result","sessionId":"sess_fixture_canonical","toolCallId":"call_fixture_02","result":{"output":{"commit":"abc1234","prUrl":"https://github.com/agentproto/ts/pull/123"}},"isError":false}
+{"seq":13,"ts":"2026-08-17T09:00:06.100Z","kind":"tool-call-record","sessionId":"sess_fixture_canonical","tool":"git","command":"git commit -m chore: tidy","args":{"subcommand":"commit","args":["-m","chore: tidy"],"create_pr":true},"isError":false,"durationMs":2100,"createdPrUrl":"https://github.com/agentproto/ts/pull/123","createdPrNumber":123}
+{"seq":14,"ts":"2026-08-17T09:00:06.500Z","kind":"notice","sessionId":"sess_fixture_canonical","text":"Démonstration de fixture : notice système (kind inconnu côté client)."}
+{"seq":15,"ts":"2026-08-17T09:00:06.600Z","kind":"turn-end","sessionId":"sess_fixture_canonical","reason":"turn-complete"}

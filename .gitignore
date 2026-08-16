@@ -76,3 +76,6 @@ pnpm-debug.log*
 .plans/
 packages/vscode/*.vsix
 .turbo-cache
+# Shared turbo filesystem build cache (AGENTS.md recommends pointing at one
+# dir across worktrees; never commit its artifacts)
+.turbo-shared-cache
