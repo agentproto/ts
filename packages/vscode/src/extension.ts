@@ -53,6 +53,7 @@ import { registerHarnessesView } from "./views/harnessesTree.js"
 import { registerAuthProfilesView } from "./views/authProfilesTree.js"
 import { registerAuthSettingsPanel } from "./webview/authSettingsPanel.js"
 import { registerStatusBar } from "./views/statusBar.js"
+import { registerReleaseStatusBar } from "./views/statusBarRelease.js"
 import { registerHarnessesWebview } from "./webview/harnessesWebviewPanel.js"
 import { registerAuthProfilesWebview } from "./webview/authProfilesWebviewPanel.js"
 import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
@@ -101,6 +102,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const authProfilesProvider = registerAuthProfilesView(ctx, client)
   const appsProvider = registerAppsView(ctx, client)
   registerStatusBar(ctx, store)
+  registerReleaseStatusBar(ctx, client, store)
 
   // Per-window "target workspace" pin — client-side only, never the daemon's
   // global `active` workspace. See services/workspacePin.ts.

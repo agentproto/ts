@@ -955,6 +955,12 @@
           ],
           "default": "ask",
           "description": "On activation, whether to adopt an existing local Claude Code login as a self-refreshing auth profile. The token is resolved fresh from your local login per spawn — nothing is pasted or stored. You can always connect one manually from Auth Settings (\"Use my existing Claude Code login\")."
+        },
+        "agentproto.releaseCheck.intervalMin": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "description": "How often (minutes) the release indicator polls the npm registry for a newer @agentproto/cli. Results are cached offline in ~/.agentproto/release-check.json; when unreachable, the last cached value is reused until this TTL expires, then the indicator shows nothing rather than a false \"update available\"."
         }
       }
     }
