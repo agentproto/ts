@@ -17,6 +17,7 @@
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
+import { showReleaseUpdatePrompt } from "../commands/releaseUpdate.js"
 import { getReleaseCheckIntervalMin } from "../config.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { releaseTtlMs, type ReleaseBuildSource } from "../services/releaseCheck.logic.js"
@@ -46,6 +47,37 @@ export function registerReleaseStatusBar(
   )
   item.command = "agentproto.showHealth"
   item.tooltip = "agentproto: release check — click for daemon health"
+
+  // De-dupe so a still-behind daemon doesn't re-prompt on every repaint. A
+  // prompt is only shown once per repaint run; the actual cadence gate is the
+  // persisted snooze (Later / Not now) in commands/releaseUpdate.ts.
+  let promptInFlight = false
+  // Last-seen build source, so a prompt knows what "Update now" means.
+  let currentBuildSource: ReleaseBuildSource = "tarball"
+
+  const maybePrompt = (view: ReleaseCheckView): void => {
+    if (promptInFlight) return
+    if (view.state !== "behind" && view.state !== "workspace") return
+    if (!view.latest || !view.localVersion) return
+    promptInFlight = true
+    void showReleaseUpdatePrompt(
+      {
+        ctx,
+        ttlMs: releaseTtlMs(getReleaseCheckIntervalMin()),
+        refresh: () => void refresh(),
+      },
+      {
+        localVersion: view.localVersion,
+        latest: view.latest,
+        state: view.state,
+        buildSource: currentBuildSource,
+        snooze: null,
+        nowMs: Date.now(),
+      },
+    ).finally(() => {
+      promptInFlight = false
+    })
+  }
 
   const extensionVersion = (): string | null => {
     try {
@@ -89,12 +121,14 @@ export function registerReleaseStatusBar(
         typeof health.version === "string" && health.version.length > 0 ? health.version : null
       const build = health.build ?? null
       const buildSource = normalizeBuildSource(build?.source)
+      currentBuildSource = buildSource
       const view = await runReleaseCheck({
         localVersion,
         buildSource,
         ttlMs: releaseTtlMs(getReleaseCheckIntervalMin()),
       })
       paint(view, build)
+      maybePrompt(view)
     } catch {
       // Daemon unreachable — hide the indicator, like the health block.
       item.hide()

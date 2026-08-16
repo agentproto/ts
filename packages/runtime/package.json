@@ -76,6 +76,11 @@
       "import": "./dist/providers-store.mjs",
       "default": "./dist/providers-store.mjs"
     },
+    "./release-check": {
+      "types": "./dist/release-check.d.ts",
+      "import": "./dist/release-check.mjs",
+      "default": "./dist/release-check.mjs"
+    },
     "./mcp-imports": {
       "types": "./dist/mcp-imports.d.ts",
       "import": "./dist/mcp-imports.mjs",
