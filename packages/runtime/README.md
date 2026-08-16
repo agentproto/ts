@@ -77,6 +77,44 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 - The optional `auth?: AuthOptions` field on `createGateway` is for the *tunnel* bearer (Cloudflare-fronted public surface), independent of the per-boot token. It gates `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route, with a loopback bypass for requests that never crossed a tunnel (127.0.0.1/::1 with no `X-Forwarded-For`).
 - `agentproto serve` wires this from `daemon.authToken` in `~/.agentproto/config.json` (or `--auth-token`) when set, so the gateway can boot already gated with a stable token — no `remote_enable` call, and it survives restarts since it isn't held in memory. `RemoteController`'s `remote_enable` MCP tool is a separate, complementary mechanism: it always mints a fresh in-memory token and opens a Cloudflare quick tunnel, and takes precedence over `daemon.authToken` while active.
 
+## Worktree isolation policy
+
+`agent_start.worktree` isolation is decided by `worktrees.isolation` in
+`~/.agentproto/config.json` (or the `AGENTPROTO_WORKTREES_ISOLATION` env,
+which wins). Three modes — see `WorktreeIsolationMode` in
+[`config.ts`](./src/config.ts) and the decision matrix in
+[`worktree-isolation.ts`](./src/worktree-isolation.ts):
+
+- `"on-request"` (default) — isolates only when the caller explicitly passes
+  `worktree`.
+- `"always"` — every **root** (depth-0) spawn is provisioned into a fresh
+  `<worktrees.root>/<repo>/<slug>` worktree on branch `wt/<slug>` cut from
+  `origin/main`, whether or not the caller asked. A `cwd` outside any git
+  repo has nothing to isolate, so it spawns plain.
+- `"never"` — isolation is off; an explicit `worktree` request is rejected
+  loudly rather than silently ignored.
+
+**Depth-0 only.** A spawn made *through* an orchestrator's scoped sub-gateway
+(depth > 0 — including any `agent_start` a supervisor session issues itself,
+even with `attach: false`) always inherits its parent's working tree; the
+`always` policy never provisions a second worktree for it, and an explicit
+`worktree` request at depth > 0 is rejected (use `sandbox` for child
+isolation instead). To exercise `always` end-to-end you need a genuine root
+spawn — e.g. `agentproto sessions start <adapter> --cwd <repo>` from a shell,
+not an `agent_start` call made from inside another session.
+
+**Config key gotcha:** the field is nested — `{"worktrees": {"isolation":
+"always"}}` — NOT a top-level `worktreeIsolation` key. The loader
+(`loadWorktreeIsolation` / `loadConfig`) silently ignores unknown top-level
+keys, so a hand-edit that adds `worktreeIsolation` at the top level parses
+fine, `agentproto config show` will happily print it back, and the policy
+still silently resolves to the `"on-request"` default — no error, no spawn
+behaviour change. Verify with `agentproto sessions --json` after a root spawn
+and check the descriptor for `worktreePath`/`worktreeId`, not just the config
+file's contents. Config is re-read from disk on every spawn (no caching), so
+a fix to the key takes effect on the next `agent_start`/`sessions start` —
+no daemon restart needed.
+
 ## SessionsRegistry
 
 Exposed via `gateway.sessions`. Useful when you want to register externally-spawned children (e.g. tunnel-driven spawns) or programmatically attach without going through HTTP.
