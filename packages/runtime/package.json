@@ -146,6 +146,7 @@
     "@agentproto/workflow-runtime": "workspace:*",
     "@agentproto/workspace-brain": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "ai": "^6.0.204",
     "croner": "^9.0.0",
     "gray-matter": "^4.0.3",
     "ws": "^8.21.3",
@@ -157,6 +158,7 @@
   "devDependencies": {
     "@agentproto/rendezvous": "workspace:*",
     "@agentproto/tooling": "workspace:*",
+    "@agentproto/transcript-fixtures": "workspace:*",
     "@types/node": "^25.6.2",
     "@types/ws": "^8.5.13",
     "tsup": "^8.5.1",
