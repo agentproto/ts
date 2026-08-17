@@ -298,6 +298,29 @@ export interface ProvenanceConfig {
   wrapGh?: boolean
 }
 
+/**
+ * Policy for the daemon's own AGENTS.md resolution + injection (WP-R2) —
+ * how a spawned session's initial prompt carries the repo's `AGENTS.md`
+ * (see `agents-md.ts`). The daemon resolves the nearest `AGENTS.md` walking
+ * up from the session's `cwd`, bounded by that repo's git toplevel, and
+ * injects one AGENTS.md block after the role disposition whenever the spawn
+ * carries a prompt.
+ */
+export interface AgentsMdConfig {
+  /**
+   * Inline-vs-pointer threshold in KiB. A resolved AGENTS.md whose byte size
+   * is STRICTLY LESS than `inlineMaxKb` KiB is inlined in full into the
+   * spawn's initial prompt, clearly delimited; `>=` the threshold is injected
+   * as a short pointer telling the agent to read the file before its first
+   * tool call instead. An absent AGENTS.md (nothing found up the walk) injects
+   * nothing but is still reported on the descriptor via
+   * `SessionDescriptor.agentsMdMode === "absent"`. Resolution order mirrors
+   * the module docblock (no CLI flag, and no env override — not part of the
+   * approved design): this field > the hardcoded default `8` (KiB).
+   */
+  inlineMaxKb?: number
+}
+
 export interface PairingConfig {
   /** Rendezvous broker WS URL (ws:// or wss://) used by `pair offer` and by
    *  autoconnect on boot. When unset, `pair offer` requires an explicit
@@ -419,6 +442,8 @@ export interface AgentprotoConfig {
   spawn?: SpawnConfig
   /** Provenance policy — the opt-in `gh` PATH shim. See {@link ProvenanceConfig}. */
   provenance?: ProvenanceConfig
+  /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
+  agentsMd?: AgentsMdConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */
