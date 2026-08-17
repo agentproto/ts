@@ -87,6 +87,7 @@ import {
 } from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
+import { EXECUTOR_ROLE } from "../role.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import {
   createSessionsRegistry,
@@ -1586,12 +1587,36 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     expect(sendPrompt).toHaveBeenCalledTimes(1)
     const sentMessage = sendPrompt.mock.calls[0]?.[1]
     const prompt = typeof sentMessage === "string" ? sentMessage : ""
-    const dispositionIdx = prompt.indexOf("You are the leaf")
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
     const appendIdx = prompt.indexOf("focus on the CLI package")
     const taskIdx = prompt.indexOf("fix the bug")
     expect(dispositionIdx).toBeGreaterThanOrEqual(0)
     expect(dispositionIdx).toBeLessThan(appendIdx)
     expect(appendIdx).toBeLessThan(taskIdx)
+  })
+
+  it("passes the role disposition to the recorder as the SYSTEM preamble while the adapter still gets the single composed string", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+      prompt: "fix the bug",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const [id, message, opts] = sendPrompt.mock.calls[0] ?? []
+    expect(typeof id).toBe("string")
+    // The adapter STILL receives the full composed prompt — the split is
+    // recording-only, on the daemon's own event stream.
+    expect(message).toBe(`${EXECUTOR_ROLE.disposition}\n\nfix the bug`)
+    // The daemon records ONLY the synthesized preamble as the system slice;
+    // the caller's ask is the user turn.
+    expect(opts?.system).toBe(EXECUTOR_ROLE.disposition)
   })
 
   it("depth-derived default: root spawn (depth 0) with no role defaults to supervisor", async () => {
@@ -4385,7 +4410,7 @@ describe("spawnAgentSession — child→parent report-back plumbing", () => {
     expect(sendPrompt).toHaveBeenCalledTimes(1)
     const sentMessage = sendPrompt.mock.calls[0]?.[1]
     const prompt = typeof sentMessage === "string" ? sentMessage : ""
-    const dispositionIdx = prompt.indexOf("You are the leaf")
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
     const lineageIdx = prompt.indexOf("You were spawned by session sess_parent01")
     const taskIdx = prompt.indexOf("fix the bug")
     expect(dispositionIdx).toBeGreaterThanOrEqual(0)

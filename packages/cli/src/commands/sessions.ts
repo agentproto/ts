@@ -87,6 +87,8 @@ Usage:
                                       [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
+                                      [--access-profile <ref>]
+                                      [--worktree | --no-worktree]
                                       [--hold-permissions] [--no-color]
   agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
                                             [--workspace <slug>] [--name <slug>]
@@ -164,6 +166,23 @@ sessions start flags:
                                  (wins over --orchestrator when both are given)
   --mcp-servers-json <json>     JSON array of {name, transport, ref?} servers
   --mcp-servers-json @<file>    same, read from a file instead of inline JSON
+  --access-profile <ref>        bill this spawn through the named auth profile
+                                 (CLI twin of the MCP agent_start access.profileRef
+                                 — pin endpoint + credential, never silently the
+                                 default). Overrides the daemon's default profile.
+  --worktree                    isolate this spawn in its OWN git worktree (auto-
+                                 minted slug/branch on origin/main) regardless of
+                                 the daemon's worktrees.isolation policy. Mirrors
+                                 MCP agent_start.worktree=true.
+  --no-worktree                 spawn in cwd directly, overriding an isolation
+                                 policy that would otherwise isolate. Mirrors
+                                 MCP agent_start.worktree=false.
+  --mode <id>                   manifest-declared mode id applied at spawn (e.g.
+                                 claude-code 'plan' / codex 'read-only'). Mirrors
+                                 MCP agent_start.mode.
+  --effort <level>              reasoning effort ('low'|'medium'|'high'|'xhigh'|
+                                 'max'|'ultracode'). Calibrated per model. Mirrors
+                                 MCP agent_start.effort.
   --hold-permissions            park each tool-permission request in the inbox
                                  (approve/deny with \`agentproto permissions\`)
                                  instead of auto-answering it
@@ -183,6 +202,15 @@ sessions terminal flags:
                                        }
                                      }
                                    }
+
+In the watch list (--watch):
+  ↑/↓ or j/k   move selection
+  Enter         attach selected — opens the PTY directly for terminal
+                 sessions (kind terminal / pty), SSE stream otherwise
+  s             show the selected session's Story / conversation
+  m             read-only mirror
+  R             restart · K kill · d forget · r refresh
+  q or Ctrl-C   quit
 
 While attached:
   Ctrl-] q   detach (session keeps running on the daemon)
@@ -290,6 +318,11 @@ async function runStart(args: readonly string[]): Promise<number> {
       "orchestrator-json": { type: "string" },
       "mcp-servers-json": { type: "string" },
       "hold-permissions": { type: "boolean" },
+      "access-profile": { type: "string" },
+      worktree: { type: "boolean" },
+      "no-worktree": { type: "boolean" },
+      mode: { type: "string" },
+      effort: { type: "string" },
     },
   })
   const slug = positionals[0]
@@ -402,6 +435,16 @@ async function runStart(args: readonly string[]): Promise<number> {
     if (values["auth-token"]) options.auth_token = values["auth-token"]
   }
 
+  // --worktree and --no-worktree are opposite overrides — both being set is a
+  // usage error, rejected before any network activity like the other fast-fail
+  // checks above.
+  if (values.worktree && values["no-worktree"]) {
+    process.stderr.write(
+      "agentproto sessions start: --worktree and --no-worktree are mutually exclusive.\n"
+    )
+    return 2
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -432,6 +475,25 @@ async function runStart(args: readonly string[]): Promise<number> {
   // ~/.agentproto/config.json's defaults.adapters.<slug>.auth.{token,apiKey}
   // (never inherited from the shell, per the auth-mode design).
   if (values.auth) body.auth = { mode: values.auth }
+  // Named billing profile — the CLI twin of the MCP `agent_start` tool's
+  // `access.profileRef` field. A bare `--auth subscription|api-key` says the
+  // MODE but never names a profile; this pins the exact auth profile (billed
+  // endpoint + method/credential) the daemon resolves via
+  // `resolveAccessProfileAuth`. Mutation-free: the secret itself is resolved
+  // daemon-side, never carried over HTTP/on the command line.
+  if (values["access-profile"]) body.access = { profileRef: values["access-profile"] }
+  // Worktree isolation — the CLI twin of the MCP `agent_start` tool's
+  // `worktree` field. `--worktree` requests True (auto-mint a slug/branch on
+  // `origin/main`); `--no-worktree` forces False even when the daemon's
+  // `worktrees.isolation` policy would otherwise isolate. Omitted ⇒ the
+  // daemon's policy decides, matching today's behaviour.
+  if (values.worktree) body.worktree = true
+  if (values["no-worktree"]) body.worktree = false
+  // Manifest-declared mode id + reasoning effort — the CLI twins of the MCP
+  // `agent_start` `mode`/`effort` fields. Sent verbatim; the daemon validates
+  // them against each adapter's declared modes / each model's effort calibration.
+  if (values.mode) body.mode = values.mode
+  if (values.effort) body.effort = values.effort
   if (options !== undefined && Object.keys(options).length > 0) body.options = options
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
@@ -458,7 +520,7 @@ async function runStart(args: readonly string[]): Promise<number> {
         (await explain401(endpoint, "agentproto sessions start")) + "\n",
       )
     } else {
-      process.stderr.write(`agentproto sessions start: ${msg}\n`)
+      process.stderr.write(`agentproto sessions start: ${describeSpawnFailure(msg)}\n`)
     }
     return 1
   }
@@ -468,7 +530,12 @@ async function runStart(args: readonly string[]): Promise<number> {
   } else {
     process.stdout.write(
       `agentproto sessions start: spawned ${desc.kind} ${desc.id}` +
-        ` (${desc.status}) — ${desc.command}\n`
+        ` (${desc.status}) — ${desc.command}` +
+        // The worktree this session was provisioned into, when it has one —
+        // surfaced in the plain-text success line (not just `--json`) so a
+        // caller who asked for `--worktree` can immediately `cd` / verify.
+        (desc.worktreePath ? `\n  worktree: ${desc.worktreePath}` : "") +
+        `\n`
     )
   }
 
@@ -480,6 +547,47 @@ async function runStart(args: readonly string[]): Promise<number> {
     })
   }
   return 0
+}
+
+/**
+ * Re-frame a daemon spawn failure (`POST /sessions/agent`) into an
+ * actionable CLI message. The daemon returns structured error bodies like
+ *
+ *   HTTP 400: {"error":"access_profile_ineligible","message":"profile \"x\" ..."}
+ *
+ * for the named-access-profile path (`session-spawn.ts`'s
+ * `resolveAccessProfileAuth`). Raw, that reads as an opaque HTTP status +
+ * JSON blob; here we surface the daemon's own `message` (which already names
+ * the profile, adapter, route, and billed endpoint) inside a hint that tells
+ * the caller the flag they passed (`--access-profile`) is what's being
+ * rejected and where to look for eligible profiles. Any other failure is
+ * returned unchanged.
+ */
+export function describeSpawnFailure(msg: string): string {
+  const m = /^HTTP \d+:\s*/i.exec(msg)
+  const bodyText = m ? msg.slice(m[0].length) : null
+  if (!bodyText) return msg
+  let body: { error?: string; message?: string } | null = null
+  try {
+    body = JSON.parse(bodyText) as { error?: string; message?: string }
+  } catch {
+    return msg
+  }
+  if (
+    body &&
+    (body.error === "access_profile_ineligible" ||
+      body.error === "access_profile_not_found")
+  ) {
+    const why = body.message ?? "the named access profile was rejected."
+    return (
+      `${body.error}: ${why}\n` +
+      "  --access-profile rejected this spawn. ProfileRef and its billed endpoint are shown above; " +
+      "re-run with an eligible profileRef (see `agentproto preset list` and `agentproto usage " +
+      "rollup --json` for your configured profileRefs), or drop --access-profile to let the daemon " +
+      "pick its default profile."
+    )
+  }
+  return msg
 }
 
 /**
@@ -1638,7 +1746,7 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
         "  " +
         pad(r.id, widths.id) +
         "  " +
-        pad(r.kind, widths.kind) +
+        pad(terminalKindMark(r) || r.kind, widths.kind) +
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
@@ -1758,6 +1866,111 @@ export function statusColour(
   }
 }
 
+/** True when a session carries a real PTY — the `kind: "terminal"`,
+ *  `pty: true` case that must surface in the list as an attachable
+ *  interactive terminal rather than a bare row. `pty` is the stronger
+ *  signal (it's what actually selects the WS pty transport), so either
+ *  flag marks it. */
+export function isTerminalSession(
+  s: Pick<SessionDescriptor, "kind" | "pty">,
+): boolean {
+  return s.kind === "terminal" || s.pty === true
+}
+
+/** Row label for the interactive lists: a human-given `name` outranks
+ *  everything; a terminal session with no name is labelled by the
+ *  command it actually ran (`claude --resume …`) instead of its opaque
+ *  id — which is what makes supervisors launched via `claude --resume`
+ *  recognisable at a glance. Anything else falls back to the id. */
+export function sessionRowLabel(
+  s: Pick<SessionDescriptor, "kind" | "pty" | "name" | "command" | "id">,
+): string {
+  if (s.name) return s.name
+  if (isTerminalSession(s) && s.command) return s.command
+  return s.id
+}
+
+/** Simplest possible rendering of the "Terminal"/"PTY" identification
+ *  for the flat tables — a short, sharply visible marker for terminal
+ *  sessions, empty for the agent-cli rows that show a KIND column
+ *  already. Returns plain ASCII (no colour) so it composes with the
+ *  caller's own wrapping. */
+export function terminalKindMark(
+  s: Pick<SessionDescriptor, "kind" | "pty">,
+): string {
+  if (isTerminalSession(s)) return s.pty ? "PTY" : "TERM"
+  return ""
+}
+
+/** Which attach transport a session needs. Enter routes to the same
+ *  `runAttach` for every kind; this is the pure decision that makes a
+ *  `kind: "terminal", pty: true` session land on the interactive PTY
+ *  attach (WS /sessions/:id/pty) instead of the line-based SSE stream.
+ *  Exported so the "Enter on terminal attaches the PTY" behaviour is
+ *  unit-testable without driving a terminal. */
+export function attachMode(
+  s: Pick<SessionDescriptor, "pty">,
+): "pty" | "sse" {
+  return s.pty === true ? "pty" : "sse"
+}
+
+/** Normalised action decoded from a single watch-list keypress. Both
+ *  watch loops (the 3-pane `--watch` and the flat `--simple`) share it
+ *  so the touch→action mapping (Enter = attach, `s` = story, …) is one
+ *  tested source of truth instead of two hand-rolled if-chains.
+ *
+ *  Enter is decoded to `{ kind: "attach" }` unconditionally — the
+ *  terminal-vs-agent-cli split happens downstream in `attachMode`/
+ *  `runAttach`, which is what makes Enter on a `kind: "terminal"`
+ *  session open the PTY directly.
+ */
+export type WatchKeyAction =
+  | { kind: "up" }
+  | { kind: "down" }
+  | { kind: "attach" }
+  | { kind: "story" }
+  | { kind: "mirror" }
+  | { kind: "restart" }
+  | { kind: "kill" }
+  | { kind: "forget" }
+  | { kind: "refresh" }
+  | { kind: "quit" }
+  | null
+
+/** Decode a single-char (or single arrow-sequence) keypress into a
+ *  `WatchKeyAction`. Returns null for anything unrecognised — callers
+ *  silently discard it. Ctrl-C (`\x03`) and `q` both quit. */
+export function decodeWatchKey(key: string): WatchKeyAction {
+  switch (key) {
+    case "\x1b[A":
+    case "k":
+      return { kind: "up" }
+    case "\x1b[B":
+    case "j":
+      return { kind: "down" }
+    case "\r":
+    case "\n":
+      return { kind: "attach" }
+    case "s":
+      return { kind: "story" }
+    case "m":
+      return { kind: "mirror" }
+    case "R":
+      return { kind: "restart" }
+    case "K":
+      return { kind: "kill" }
+    case "d":
+      return { kind: "forget" }
+    case "r":
+      return { kind: "refresh" }
+    case "q":
+    case "\x03":
+      return { kind: "quit" }
+    default:
+      return null
+  }
+}
+
 function pad(s: string, n: number): string {
   if (s.length >= n) return s
   return s + " ".repeat(n - s.length)
@@ -1773,7 +1986,9 @@ function truncate(s: string, n: number): string {
  * daemon's session list. Auto-refreshes every 2 s; key bindings:
  *
  *   ↑/↓ or j/k   move selection
- *   Enter         attach to selected (PTY-aware via runAttach)
+ *   Enter         attach to selected (PTY-aware via runAttach — opens
+ *                 the interactive PTY directly for a terminal session)
+ *   s             show the selected session's Story / conversation
  *   K             kill selected (POST /sessions/:id/kill)
  *   d             forget selected (DELETE /sessions/:id; exited only)
  *   r             refresh now
@@ -1805,7 +2020,7 @@ async function runWatchSimple(
   process.stdin.setEncoding("utf8")
 
   let stop = false
-  let action: "attach" | null = null
+  let action: "attach" | "story" | null = null
   let attachTargetId: string | null = null
   let cursor = 0
   let rows: SessionDescriptor[] = []
@@ -1814,7 +2029,7 @@ async function runWatchSimple(
   const repaint = (): void => {
     process.stdout.write("\x1bc")
     process.stdout.write(
-      `\x1b[2magentproto sessions · ${endpoint.url} · ↑/↓ move · Enter attach · K kill · d forget · r refresh · q quit\x1b[0m\n\n`,
+      `\x1b[2magentproto sessions · ${endpoint.url} · ↑/↓ move · Enter attach · s story · K kill · d forget · r refresh · q quit\x1b[0m\n\n`,
     )
     if (statusMsg) {
       process.stdout.write(`\x1b[33m${statusMsg}\x1b[0m\n\n`)
@@ -1833,82 +2048,90 @@ async function runWatchSimple(
   }
 
   const onKey = (key: string): void => {
-    // Arrow keys arrive as ESC [ A/B/C/D — match common terminals.
-    if (key === "\x1b[A" || key === "k") {
-      if (cursor > 0) cursor--
-      repaint()
-      return
-    }
-    if (key === "\x1b[B" || key === "j") {
-      if (cursor < rows.length - 1) cursor++
-      repaint()
-      return
-    }
-    if (key === "\r" || key === "\n") {
-      const target = rows[cursor]
-      if (target) {
-        action = "attach"
-        attachTargetId = target.id
-        stop = true
-      }
-      return
-    }
-    if (key === "K") {
-      const target = rows[cursor]
-      if (!target) return
-      void httpPostJson<{ ok: boolean }>(
-        `${endpoint.url}/sessions/${encodeURIComponent(target.id)}/kill`,
-        {},
-        endpoint.token,
-      )
-        .then(r => {
-          statusMsg = r.ok
-            ? `sent SIGTERM to ${target.id}`
-            : `${target.id} not running`
-          return refresh()
-        })
-        .catch(err => {
-          statusMsg = `kill error: ${err instanceof Error ? err.message : String(err)}`
-        })
-        .finally(() => repaint())
-      return
-    }
-    if (key === "d") {
-      const target = rows[cursor]
-      if (!target) return
-      if (
-        target.status !== "exited" &&
-        target.status !== "killed" &&
-        target.status !== "error"
-      ) {
-        statusMsg = `d: ${target.id} still ${target.status} — use K first`
+    switch (decodeWatchKey(key)?.kind) {
+      case "up":
+        if (cursor > 0) cursor--
         repaint()
         return
+      case "down":
+        if (cursor < rows.length - 1) cursor++
+        repaint()
+        return
+      case "attach": {
+        const target = rows[cursor]
+        if (target) {
+          action = "attach"
+          attachTargetId = target.id
+          stop = true
+        }
+        return
       }
-      void httpDelete(
-        `${endpoint.url}/sessions/${encodeURIComponent(target.id)}`,
-        endpoint.token,
-      )
-        .then(() => {
-          statusMsg = `forgot ${target.id}`
-          return refresh()
-        })
-        .catch(err => {
-          statusMsg = `forget error: ${err instanceof Error ? err.message : String(err)}`
-        })
-        .finally(() => repaint())
-      return
+      case "story": {
+        const target = rows[cursor]
+        if (target) {
+          action = "story"
+          attachTargetId = target.id
+          stop = true
+        }
+        return
+      }
+      case "kill": {
+        const target = rows[cursor]
+        if (!target) return
+        void httpPostJson<{ ok: boolean }>(
+          `${endpoint.url}/sessions/${encodeURIComponent(target.id)}/kill`,
+          {},
+          endpoint.token,
+        )
+          .then(r => {
+            statusMsg = r.ok
+              ? `sent SIGTERM to ${target.id}`
+              : `${target.id} not running`
+            return refresh()
+          })
+          .catch(err => {
+            statusMsg = `kill error: ${err instanceof Error ? err.message : String(err)}`
+          })
+          .finally(() => repaint())
+        return
+      }
+      case "forget": {
+        const target = rows[cursor]
+        if (!target) return
+        if (
+          target.status !== "exited" &&
+          target.status !== "killed" &&
+          target.status !== "error"
+        ) {
+          statusMsg = `d: ${target.id} still ${target.status} — use K first`
+          repaint()
+          return
+        }
+        void httpDelete(
+          `${endpoint.url}/sessions/${encodeURIComponent(target.id)}`,
+          endpoint.token,
+        )
+          .then(() => {
+            statusMsg = `forgot ${target.id}`
+            return refresh()
+          })
+          .catch(err => {
+            statusMsg = `forget error: ${err instanceof Error ? err.message : String(err)}`
+          })
+          .finally(() => repaint())
+        return
+      }
+      case "refresh":
+        statusMsg = ""
+        void refresh().finally(() => repaint())
+        return
+      case "quit":
+        stop = true
+        return
+      default:
+        void colour // silence unused-var; reserved for future colour toggle
+        return
     }
-    if (key === "r") {
-      statusMsg = ""
-      void refresh().finally(() => repaint())
-      return
-    }
-    if (key === "q" || key === "" /* Ctrl-C */) {
-      stop = true
-      return
-    }
-    void colour // silence unused-var; reserved for future colour toggle
   }
 
   process.stdin.on("data", onKey)
@@ -1940,6 +2163,9 @@ async function runWatchSimple(
       idOrName: attachTargetId,
       colour,
     })
+  }
+  if (action === "story" && attachTargetId) {
+    return runStory([attachTargetId])
   }
   return 0
 }
@@ -1985,7 +2211,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number, attentionDe
       `${marker} ` +
         pad(r.id, widths.id) +
         "  " +
-        pad(r.kind, widths.kind) +
+        pad(terminalKindMark(r) || r.kind, widths.kind) +
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
@@ -2007,7 +2233,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number, attentionDe
  *   │ SESSIONS                       │ DETAIL                          │
  *   │ ▸ name  pty status age         │ id / name / kind / status / …   │
  *   │   …                            │                                 │
- *   │                                │   press Enter to attach         │
+ *   │                                │   Enter to attach · s story      │
  *   ├─ events strip (last 3 from /events SSE) ───────────────────────── │
  *   └─ keys footer ────────────────────────────────────────────────────┘
  *
@@ -2032,7 +2258,7 @@ async function runWatch(
 
   // ─── state ─────────────────────────────────────────────────────
   let stop = false
-  let action: "attach" | "mirror" | null = null
+  let action: "attach" | "mirror" | "story" | null = null
   let attachTargetId: string | null = null
   let cursor = 0
   let sessions: SessionDescriptor[] = []
@@ -2200,101 +2426,129 @@ async function runWatch(
         render()
         continue
       }
-      const ch = keyBuf[0]
+      const hit = decodeWatchKey(keyBuf.charAt(0))
       keyBuf = keyBuf.slice(1)
-      if (ch === "j") {
-        if (cursor < sessions.length - 1) cursor++
-        const t = sessions[cursor]
-        if (t && !previewCache.has(t.id)) void refreshPreview(t.id).then(render)
-        render()
-      } else if (ch === "k") {
-        if (cursor > 0) cursor--
-        const t = sessions[cursor]
-        if (t && !previewCache.has(t.id)) void refreshPreview(t.id).then(render)
-        render()
-      } else if (ch === "q" || ch === "\x03" /* Ctrl-C */) {
-        stop = true
-        return
-      } else if (ch === "r") {
-        flash("refreshing…")
-        void Promise.all([refresh(), refreshHealth()]).finally(render)
-      } else if (ch === "\r" || ch === "\n") {
-        const t = sessions[cursor]
-        if (t) {
-          action = "attach"
-          attachTargetId = t.id
-          stop = true
-          return
-        }
-      } else if (ch === "m") {
-        // Read-only mirror — safer than full attach because Ctrl-C
-        // cleanly exits without needing the Ctrl-] q chord some
-        // terminal emulators swallow.
-        const t = sessions[cursor]
-        if (t) {
-          action = "mirror"
-          attachTargetId = t.id
-          stop = true
-          return
-        }
-      } else if (ch === "R") {
-        // Restart: respawn from history without leaving the dashboard.
-        // Inline httpPostJson (like K kill) so failures flash inline
-        // and a successful restart shows up in the next refresh —
-        // never tears down the watch loop or the parent daemon.
-        const t = sessions[cursor]
-        if (!t) continue
-        void restartSessionInline(endpoint, t)
-          .then(msg => flash(msg))
-          .catch(err =>
-            flash(
-              `restart error: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          )
-          .finally(() => void refresh().then(render))
-      } else if (ch === "K") {
-        const t = sessions[cursor]
-        if (!t) continue
-        void httpPostJson<{ ok: boolean }>(
-          `${endpoint.url}/sessions/${encodeURIComponent(t.id)}/kill`,
-          {},
-          endpoint.token,
-        )
-          .then(out =>
-            flash(out.ok ? `SIGTERM sent to ${t.id}` : `${t.id} not running`),
-          )
-          .catch(err =>
-            flash(
-              `kill error: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          )
-          .finally(() => void refresh().then(render))
-      } else if (ch === "d") {
-        const t = sessions[cursor]
-        if (!t) continue
-        if (
-          t.status !== "exited" &&
-          t.status !== "killed" &&
-          t.status !== "error"
-        ) {
-          flash(`d: ${t.id} still ${t.status} — use K first`)
+      switch (hit?.kind) {
+        case "down": {
+          if (cursor < sessions.length - 1) cursor++
+          const t = sessions[cursor]
+          if (t && !previewCache.has(t.id)) void refreshPreview(t.id).then(render)
           render()
-          continue
+          break
         }
-        void httpDelete(
-          `${endpoint.url}/sessions/${encodeURIComponent(t.id)}`,
-          endpoint.token,
-        )
-          .then(() => {
-            flash(`forgot ${t.id}`)
-            return refresh()
-          })
-          .catch(err =>
-            flash(
-              `forget error: ${err instanceof Error ? err.message : String(err)}`,
-            ),
+        case "up": {
+          if (cursor > 0) cursor--
+          const t = sessions[cursor]
+          if (t && !previewCache.has(t.id)) void refreshPreview(t.id).then(render)
+          render()
+          break
+        }
+        case "quit":
+          stop = true
+          return
+        case "refresh":
+          flash("refreshing…")
+          void Promise.all([refresh(), refreshHealth()]).finally(render)
+          break
+        case "attach": {
+          const t = sessions[cursor]
+          if (t) {
+            action = "attach"
+            attachTargetId = t.id
+            stop = true
+            return
+          }
+          break
+        }
+        case "story": {
+          const t = sessions[cursor]
+          if (t) {
+            action = "story"
+            attachTargetId = t.id
+            stop = true
+            return
+          }
+          break
+        }
+        case "mirror": {
+          // Read-only mirror — safer than full attach because Ctrl-C
+          // cleanly exits without needing the Ctrl-] q chord some
+          // terminal emulators swallow.
+          const t = sessions[cursor]
+          if (t) {
+            action = "mirror"
+            attachTargetId = t.id
+            stop = true
+            return
+          }
+          break
+        }
+        case "restart": {
+          // Restart: respawn from history without leaving the dashboard.
+          // Inline httpPostJson (like K kill) so failures flash inline
+          // and a successful restart shows up in the next refresh —
+          // never tears down the watch loop or the parent daemon.
+          const t = sessions[cursor]
+          if (!t) continue
+          void restartSessionInline(endpoint, t)
+            .then(msg => flash(msg))
+            .catch(err =>
+              flash(
+                `restart error: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            )
+            .finally(() => void refresh().then(render))
+          break
+        }
+        case "kill": {
+          const t = sessions[cursor]
+          if (!t) continue
+          void httpPostJson<{ ok: boolean }>(
+            `${endpoint.url}/sessions/${encodeURIComponent(t.id)}/kill`,
+            {},
+            endpoint.token,
           )
-          .finally(() => render())
+            .then(out =>
+              flash(out.ok ? `SIGTERM sent to ${t.id}` : `${t.id} not running`),
+            )
+            .catch(err =>
+              flash(
+                `kill error: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            )
+            .finally(() => void refresh().then(render))
+          break
+        }
+        case "forget": {
+          const t = sessions[cursor]
+          if (!t) continue
+          if (
+            t.status !== "exited" &&
+            t.status !== "killed" &&
+            t.status !== "error"
+          ) {
+            flash(`d: ${t.id} still ${t.status} — use K first`)
+            render()
+            continue
+          }
+          void httpDelete(
+            `${endpoint.url}/sessions/${encodeURIComponent(t.id)}`,
+            endpoint.token,
+          )
+            .then(() => {
+              flash(`forgot ${t.id}`)
+              return refresh()
+            })
+            .catch(err =>
+              flash(
+                `forget error: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            )
+            .finally(() => render())
+          break
+        }
+        default:
+          break
       }
       // Unknown chars silently discarded — TUI stays calm.
     }
@@ -2422,8 +2676,8 @@ async function runWatch(
     const footer = showFlash
       ? `${c.amber}${statusMsg}${c.reset}`
       : isDead
-        ? `${c.dim}↑/↓ select · ${c.reset}${c.bold}R restart${c.reset}${c.dim} · m mirror · d forget · r refresh · q quit${c.reset}`
-        : `${c.dim}↑/↓ select · Enter attach · R restart · m mirror · K kill · d forget · r refresh · q quit${c.reset}`
+        ? `${c.dim}↑/↓ select · s story · ${c.reset}${c.bold}R restart${c.reset}${c.dim} · m mirror · d forget · r refresh · q quit${c.reset}`
+        : `${c.dim}↑/↓ select · Enter attach · s story · R restart · m mirror · K kill · d forget · r refresh · q quit${c.reset}`
     out.push(truncateAnsi(footer, cols))
 
     // Paint: clear + home + write.
@@ -2485,6 +2739,16 @@ async function runWatch(
   }
   if (action === "mirror" && attachTargetId) {
     const code = await runMirror([attachTargetId])
+    void code
+    return runWatch(endpoint, colour)
+  }
+  if (action === "story" && attachTargetId) {
+    // Render the story on the normal terminal, then re-enter the
+    // watch loop — same "peek, then return to the list" flow as
+    // attach/mirror. Leave the alt screen + raw mode first so the
+    // transcript isn't painted over the dashboard buffer.
+    restore()
+    const code = await runStory([attachTargetId])
     void code
     return runWatch(endpoint, colour)
   }
@@ -2631,7 +2895,7 @@ function renderSidebar(
       const ptyBadge = r.pty
         ? `${c.green}PTY${c.reset}`
         : `${c.dim}   ${c.reset}`
-      const label = r.name ?? r.id
+      const label = sessionRowLabel(r)
       const tone = statusTone(r)
       const age = humaniseDelta(now - new Date(r.startedAt).getTime())
       const labelTrunc = truncate(label, 18)
@@ -2755,7 +3019,10 @@ export function renderDetail(
 
     out.push("")
     if (s.status === "running" || s.status === "starting") {
-      out.push(`  ${c.dim}Enter to attach${c.reset}`)
+      const isTerm = isTerminalSession(s)
+      out.push(
+        `  ${c.dim}Enter to attach${isTerm ? ` (PTY)` : ""} · s story${c.reset}`,
+      )
     } else if (
       s.status === "exited" ||
       s.status === "killed" ||
@@ -3204,7 +3471,7 @@ async function runAttach(opts: AttachOpts): Promise<number> {
     printDeadSessionHint("agentproto sessions --attach", desc)
     return 2
   }
-  if (desc.pty === true) {
+  if (attachMode(desc) === "pty") {
     return runPtyAttach(opts.endpoint, desc, opts.colour)
   }
   return runSseAttach(opts.endpoint, desc, opts.colour)
