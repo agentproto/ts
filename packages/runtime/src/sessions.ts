@@ -82,6 +82,7 @@ import {
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
+import type { AgentsMdMode } from "./agents-md.js"
 import {
   computeContextContinuityStatus,
   computeContextPct,
@@ -996,6 +997,22 @@ export interface SessionDescriptor {
    *  `worktreePath` without an id identifies a PATH, which a later worktree
    *  may reuse; the pair identifies one specific worktree. */
   worktreeId?: string
+  /** Absolute path of the AGENTS.md the daemon resolved for this session's
+   *  spawn `cwd` (walking up, bounded by the repo's git toplevel — see
+   *  `agents-md.ts`), whose content or pointer was injected into the initial
+   *  prompt. Absent when `agentsMdMode` is `"absent"` and for a session
+   *  persisted before this field existed. */
+  agentsMd?: string
+  /** How the resolved AGENTS.md was injected at spawn: `"inline"` (full
+   *  content), `"pointer"` (read-it-first instruction), or `"absent"` (the
+   *  walk found none — a real, reported state, a consumer distinguishes it
+   *  from the field being missing in an old descriptor shape by checking
+   *  `=== "absent"`). The daemon's spawn path (`session-spawn.ts`) ALWAYS
+   *  stamps this once resolution ran — it is optional on the type only so
+   *  legacy persisted descriptors (pre-WP-R2) and non-AGENTS.md-aware
+   *  constructor paths don't have to fabricate a value; a freshly-spawned
+   *  session always carries it. */
+  agentsMdMode?: AgentsMdMode
   /** Pull requests opened while this session was acting on a code host.
    *
    * This is deliberately session provenance rather than workspace state: a
@@ -1437,6 +1454,10 @@ export interface SessionSummary {
   cwd?: string
   worktreePath?: string
   worktreeId?: string
+  /** Resolved AGENTS.md path — see `SessionDescriptor.agentsMd`. */
+  agentsMd?: string
+  /** Injection mode — see `SessionDescriptor.agentsMdMode`. */
+  agentsMdMode?: AgentsMdMode
   adapterSlug?: string
   mode?: string
   model?: string
@@ -1511,6 +1532,8 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     cwd: desc.cwd,
     worktreePath: desc.worktreePath,
     worktreeId: desc.worktreeId,
+    agentsMd: desc.agentsMd,
+    agentsMdMode: desc.agentsMdMode,
     adapterSlug: desc.adapterSlug,
     mode: desc.mode,
     model: desc.model,

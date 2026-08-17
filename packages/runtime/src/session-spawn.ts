@@ -74,6 +74,11 @@ import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
+import {
+  resolveAgentsMd as realResolveAgentsMd,
+  loadAgentsMdInlineMaxKb,
+  type AgentsMdResolution,
+} from "./agents-md.js"
 import { deriveSessionTitle } from "./session-title.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
@@ -648,6 +653,15 @@ export interface SpawnAgentSessionDeps {
    *  `loadProvenanceWrapGh` (reads the real config) when omitted; tests
    *  inject a stub to pin it without touching env or the file. */
   resolveProvenanceWrapGh?: () => Promise<boolean>
+  /** Resolves + shapes the AGENTS.md for a spawn's `cwd` (see
+   *  `agents-md.ts`): inline / pointer / absent, plus the standing cd-contract
+   *  line. Defaults to the real resolver over `loadAgentsMdInlineMaxKb`'s
+   *  config-derived threshold when omitted; tests inject a stub to avoid
+   *  touching the filesystem, git, and the real config on every spawn. */
+  resolveAgentsMd?: (
+    cwd: string,
+    inlineMaxKb?: number,
+  ) => Promise<AgentsMdResolution>
   /** Feeds the adapter-capability spawn guard (`checkModelAdapterEligibility`)
    *  — the SAME `listCatalogModels` the `catalog_models` MCP tool /
    *  `GET /catalog/models` route already use (`RegisterAgentToolsOptions.
@@ -1016,6 +1030,7 @@ export async function spawnAgentSession(
     resolveSpawnAttach,
     resolveSpawnDedupe,
     resolveProvenanceWrapGh,
+    resolveAgentsMd,
     listCatalogModels,
   } = deps
 
@@ -2025,6 +2040,45 @@ export async function spawnAgentSession(
         .filter((p): p is string => !!p)
         .join("\n\n")
     : input.prompt
+  // Daemon-side AGENTS.md resolution + injection (WP-R2): resolve the nearest
+  // `AGENTS.md` for the resolved `cwd` (walking up, bounded by the repo's git
+  // toplevel — see `agents-md.ts`) and inject one block right after the role
+  // disposition, before the parent/lineage line and the caller's own prompt:
+  //   - inline  — full content delimited by AGENTS.md start/end fences;
+  //   - pointer — a short read-it-first instruction naming the resolved path;
+  //   - absent  — nothing extra.
+  // Plus a standing cd-contract sentence in EVERY mode (the daemon cannot
+  // follow the agent past a `cd`; re-resolving is the agent's job). The mode
+  // is stamped on the descriptor below so `sessions --json` / the summaries
+  // view can distinguish a genuine "no AGENTS.md" from a stale descriptor
+  // shape. Resolved from `cwd` here (at prompt-composition time) and stamped
+  // on whatever descriptor this spawn settles into — a first cut, no cache.
+  let agentsMdResolution: AgentsMdResolution
+  const resolveAgentsMdForSpawn =
+    resolveAgentsMd ??
+    (async (cwdArg: string) => realResolveAgentsMd(cwdArg, await loadAgentsMdInlineMaxKb()))
+  try {
+    agentsMdResolution = await resolveAgentsMdForSpawn(cwd)
+  } catch {
+    // AGENTS.md resolution is advisory-on-top-of-the-role: a read failure must
+    // never block a spawn the caller asked for. Fall through to absent — the
+    // prompt is composed without an AGENTS.md block and the descriptor carries
+    // "absent", exactly as if no file existed.
+    agentsMdResolution = { mode: "absent", contractLine: "" }
+  }
+  const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
+    (p): p is string => !!p,
+  )
+  if (input.prompt) {
+    effectivePrompt = [
+      composeRoleContext(role, input.promptAppend, roleRegistry),
+      ...agentsMdParts,
+      parentContextLine,
+      input.prompt,
+    ]
+      .filter((p): p is string => !!p)
+      .join("\n\n")
+  }
   // The session's title must name the CALLER's ask, not whatever text
   // happens to be first in the composed prompt above. `deriveSessionTitle`
   // just takes the first sentence of what it's given — and the composed
@@ -2173,6 +2227,11 @@ export async function spawnAgentSession(
         ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       })
+      // Stamp the AGENTS.md resolution (WP-R2) on the pending descriptor so
+      // the deferred prompt pickup + the settled row both reflect it — same
+      // fields as the sync path's `spawnAgent` stamp below.
+      pendingDesc.agentsMd = agentsMdResolution.path
+      pendingDesc.agentsMdMode = agentsMdResolution.mode
       // Anything from here to the early return must never throw past this
       // point without settling the row it just registered — otherwise the
       // outer catch below would report `agent_spawn_failed` to the ORIGINAL
@@ -2554,6 +2613,12 @@ export async function spawnAgentSession(
     // `sendPrompt` below) also covers the non-`wait` path, which never
     // calls `sendPrompt` at all.
     if (initialTitle) desc.title = initialTitle
+    // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
+    // `sessions --json` / the summaries view can report the resolved path +
+    // mode. `agentsMdMode` is non-optional once resolution ran — always set
+    // here, even for "absent" (a real, reported state, not a missing field).
+    desc.agentsMd = agentsMdResolution.path
+    desc.agentsMdMode = agentsMdResolution.mode
     liveSessionId = desc.id
     // No-key backstop for the same incident `idempotencyKey` guards: every
     // duplicate pair observed in production shared BOTH `label` AND `cwd`,
