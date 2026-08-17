@@ -83,6 +83,8 @@ Usage:
                                       [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
+                                      [--access-profile <ref>]
+                                      [--worktree | --no-worktree]
                                       [--hold-permissions] [--no-color]
   agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
                                             [--workspace <slug>] [--name <slug>]
@@ -160,6 +162,23 @@ sessions start flags:
                                  (wins over --orchestrator when both are given)
   --mcp-servers-json <json>     JSON array of {name, transport, ref?} servers
   --mcp-servers-json @<file>    same, read from a file instead of inline JSON
+  --access-profile <ref>        bill this spawn through the named auth profile
+                                 (CLI twin of the MCP agent_start access.profileRef
+                                 — pin endpoint + credential, never silently the
+                                 default). Overrides the daemon's default profile.
+  --worktree                    isolate this spawn in its OWN git worktree (auto-
+                                 minted slug/branch on origin/main) regardless of
+                                 the daemon's worktrees.isolation policy. Mirrors
+                                 MCP agent_start.worktree=true.
+  --no-worktree                 spawn in cwd directly, overriding an isolation
+                                 policy that would otherwise isolate. Mirrors
+                                 MCP agent_start.worktree=false.
+  --mode <id>                   manifest-declared mode id applied at spawn (e.g.
+                                 claude-code 'plan' / codex 'read-only'). Mirrors
+                                 MCP agent_start.mode.
+  --effort <level>              reasoning effort ('low'|'medium'|'high'|'xhigh'|
+                                 'max'|'ultracode'). Calibrated per model. Mirrors
+                                 MCP agent_start.effort.
   --hold-permissions            park each tool-permission request in the inbox
                                  (approve/deny with \`agentproto permissions\`)
                                  instead of auto-answering it
@@ -283,6 +302,11 @@ async function runStart(args: readonly string[]): Promise<number> {
       "orchestrator-json": { type: "string" },
       "mcp-servers-json": { type: "string" },
       "hold-permissions": { type: "boolean" },
+      "access-profile": { type: "string" },
+      worktree: { type: "boolean" },
+      "no-worktree": { type: "boolean" },
+      mode: { type: "string" },
+      effort: { type: "string" },
     },
   })
   const slug = positionals[0]
@@ -395,6 +419,16 @@ async function runStart(args: readonly string[]): Promise<number> {
     if (values["auth-token"]) options.auth_token = values["auth-token"]
   }
 
+  // --worktree and --no-worktree are opposite overrides — both being set is a
+  // usage error, rejected before any network activity like the other fast-fail
+  // checks above.
+  if (values.worktree && values["no-worktree"]) {
+    process.stderr.write(
+      "agentproto sessions start: --worktree and --no-worktree are mutually exclusive.\n"
+    )
+    return 2
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -425,6 +459,25 @@ async function runStart(args: readonly string[]): Promise<number> {
   // ~/.agentproto/config.json's defaults.adapters.<slug>.auth.{token,apiKey}
   // (never inherited from the shell, per the auth-mode design).
   if (values.auth) body.auth = { mode: values.auth }
+  // Named billing profile — the CLI twin of the MCP `agent_start` tool's
+  // `access.profileRef` field. A bare `--auth subscription|api-key` says the
+  // MODE but never names a profile; this pins the exact auth profile (billed
+  // endpoint + method/credential) the daemon resolves via
+  // `resolveAccessProfileAuth`. Mutation-free: the secret itself is resolved
+  // daemon-side, never carried over HTTP/on the command line.
+  if (values["access-profile"]) body.access = { profileRef: values["access-profile"] }
+  // Worktree isolation — the CLI twin of the MCP `agent_start` tool's
+  // `worktree` field. `--worktree` requests True (auto-mint a slug/branch on
+  // `origin/main`); `--no-worktree` forces False even when the daemon's
+  // `worktrees.isolation` policy would otherwise isolate. Omitted ⇒ the
+  // daemon's policy decides, matching today's behaviour.
+  if (values.worktree) body.worktree = true
+  if (values["no-worktree"]) body.worktree = false
+  // Manifest-declared mode id + reasoning effort — the CLI twins of the MCP
+  // `agent_start` `mode`/`effort` fields. Sent verbatim; the daemon validates
+  // them against each adapter's declared modes / each model's effort calibration.
+  if (values.mode) body.mode = values.mode
+  if (values.effort) body.effort = values.effort
   if (options !== undefined && Object.keys(options).length > 0) body.options = options
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
@@ -451,7 +504,7 @@ async function runStart(args: readonly string[]): Promise<number> {
         (await explain401(endpoint, "agentproto sessions start")) + "\n",
       )
     } else {
-      process.stderr.write(`agentproto sessions start: ${msg}\n`)
+      process.stderr.write(`agentproto sessions start: ${describeSpawnFailure(msg)}\n`)
     }
     return 1
   }
@@ -461,7 +514,12 @@ async function runStart(args: readonly string[]): Promise<number> {
   } else {
     process.stdout.write(
       `agentproto sessions start: spawned ${desc.kind} ${desc.id}` +
-        ` (${desc.status}) — ${desc.command}\n`
+        ` (${desc.status}) — ${desc.command}` +
+        // The worktree this session was provisioned into, when it has one —
+        // surfaced in the plain-text success line (not just `--json`) so a
+        // caller who asked for `--worktree` can immediately `cd` / verify.
+        (desc.worktreePath ? `\n  worktree: ${desc.worktreePath}` : "") +
+        `\n`
     )
   }
 
@@ -473,6 +531,47 @@ async function runStart(args: readonly string[]): Promise<number> {
     })
   }
   return 0
+}
+
+/**
+ * Re-frame a daemon spawn failure (`POST /sessions/agent`) into an
+ * actionable CLI message. The daemon returns structured error bodies like
+ *
+ *   HTTP 400: {"error":"access_profile_ineligible","message":"profile \"x\" ..."}
+ *
+ * for the named-access-profile path (`session-spawn.ts`'s
+ * `resolveAccessProfileAuth`). Raw, that reads as an opaque HTTP status +
+ * JSON blob; here we surface the daemon's own `message` (which already names
+ * the profile, adapter, route, and billed endpoint) inside a hint that tells
+ * the caller the flag they passed (`--access-profile`) is what's being
+ * rejected and where to look for eligible profiles. Any other failure is
+ * returned unchanged.
+ */
+export function describeSpawnFailure(msg: string): string {
+  const m = /^HTTP \d+:\s*/i.exec(msg)
+  const bodyText = m ? msg.slice(m[0].length) : null
+  if (!bodyText) return msg
+  let body: { error?: string; message?: string } | null = null
+  try {
+    body = JSON.parse(bodyText) as { error?: string; message?: string }
+  } catch {
+    return msg
+  }
+  if (
+    body &&
+    (body.error === "access_profile_ineligible" ||
+      body.error === "access_profile_not_found")
+  ) {
+    const why = body.message ?? "the named access profile was rejected."
+    return (
+      `${body.error}: ${why}\n` +
+      "  --access-profile rejected this spawn. ProfileRef and its billed endpoint are shown above; " +
+      "re-run with an eligible profileRef (see `agentproto preset list` and `agentproto usage " +
+      "rollup --json` for your configured profileRefs), or drop --access-profile to let the daemon " +
+      "pick its default profile."
+    )
+  }
+  return msg
 }
 
 /**
