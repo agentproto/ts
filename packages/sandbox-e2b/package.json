@@ -51,7 +51,7 @@
   },
   "dependencies": {
     "@agentproto/sandbox": "workspace:*",
-    "e2b": "^2.38.2"
+    "e2b": "^2.39.0"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
