@@ -144,7 +144,7 @@ const pointerBlock = (path: string): string =>
  * follow the agent — a `cd` elsewhere (a nested repo included) is the agent's
  * own responsibility to re-resolve.
  */
-const cdContractLine =
+export const cdContractLine =
   `The daemon resolves and fixes this AGENTS.md contract ONCE at spawn from ` +
   `your resolved cwd — a \`cd\` outside that repo root is NOT tracked by the ` +
   `daemon. If you \`cd\` somewhere else (a nested repo included), YOU are ` +

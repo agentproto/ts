@@ -77,6 +77,7 @@ import { loadDefaultRoleRegistry } from "./role-registry.js"
 import {
   resolveAgentsMd as realResolveAgentsMd,
   loadAgentsMdInlineMaxKb,
+  cdContractLine,
   type AgentsMdResolution,
 } from "./agents-md.js"
 import { deriveSessionTitle } from "./session-title.js"
@@ -2060,7 +2061,7 @@ export async function spawnAgentSession(
     // never block a spawn the caller asked for. Fall through to absent — the
     // prompt is composed without an AGENTS.md block and the descriptor carries
     // "absent", exactly as if no file existed.
-    agentsMdResolution = { mode: "absent", contractLine: "" }
+    agentsMdResolution = { mode: "absent", contractLine: cdContractLine }
   }
   const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
     (p): p is string => !!p,
