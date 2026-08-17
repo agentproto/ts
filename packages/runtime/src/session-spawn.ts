@@ -2036,10 +2036,6 @@ export async function spawnAgentSession(
       `one is available (no session id needed; the daemon resolves your parent).`
     : undefined
   let effectivePrompt = input.prompt
-    ? [composeRoleContext(role, input.promptAppend, roleRegistry), parentContextLine, input.prompt]
-        .filter((p): p is string => !!p)
-        .join("\n\n")
-    : input.prompt
   // Daemon-side AGENTS.md resolution + injection (WP-R2): resolve the nearest
   // `AGENTS.md` for the resolved `cwd` (walking up, bounded by the repo's git
   // toplevel — see `agents-md.ts`) and inject one block right after the role
