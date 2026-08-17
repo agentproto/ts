@@ -20,7 +20,9 @@ import {
   buildBridgeScript,
   injectBridge,
   readDeclaredUIPort,
+  readDeclaredUITools,
   callDaemonTool,
+  resolveListenHost,
   sanitizeUploadName,
   resolveInboxTarget,
   UploadSizeTracker,
@@ -164,6 +166,61 @@ describe("readDeclaredUIPort", () => {
   })
 })
 
+describe("resolveListenHost", () => {
+  it("returns 127.0.0.1 when no host option is given", () => {
+    expect(resolveListenHost()).toBe("127.0.0.1")
+    expect(resolveListenHost(undefined)).toBe("127.0.0.1")
+  })
+
+  it("returns the caller-supplied address when given", () => {
+    expect(resolveListenHost("0.0.0.0")).toBe("0.0.0.0")
+    expect(resolveListenHost("::1")).toBe("::1")
+  })
+})
+
+describe("readDeclaredUITools", () => {
+  async function writeAppMd(dir: string, frontmatter: string) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(dir, ".agentproto", "APP.md"),
+      `---\n${frontmatter}---\n`,
+      "utf8",
+    )
+  }
+
+  it("reads a ui.tools list from APP.md frontmatter", async () => {
+    const dir = await mktmp()
+    await writeAppMd(
+      dir,
+      "schema: app/v1\nui:\n  path: .agentproto/ui/index.html\n  tools:\n    - app_run\n    - app_status\n",
+    )
+    expect(await readDeclaredUITools(dir)).toEqual(["app_run", "app_status"])
+  })
+
+  it("returns an empty array when ui.tools is explicitly declared as []", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nui:\n  path: .agentproto/ui/index.html\n  tools: []\n")
+    expect(await readDeclaredUITools(dir)).toEqual([])
+  })
+
+  it("returns undefined when ui.tools is not declared (absent field)", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nui:\n  path: .agentproto/ui/index.html\n")
+    expect(await readDeclaredUITools(dir)).toBeUndefined()
+  })
+
+  it("returns undefined when there is no ui section at all", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nagents:\n  - id: a\n")
+    expect(await readDeclaredUITools(dir)).toBeUndefined()
+  })
+
+  it("returns undefined for a missing APP.md", async () => {
+    const dir = await mktmp()
+    expect(await readDeclaredUITools(dir)).toBeUndefined()
+  })
+})
+
 describe("callDaemonTool", () => {
   it("returns 400 for a malformed body", async () => {
     const [status, body] = await callDaemonTool(
@@ -213,6 +270,78 @@ describe("callDaemonTool", () => {
       { name: "do", args: "not-an-object" },
     )
     expect(called).toEqual([{}])
+  })
+
+  it("returns 403 for a tool not in the allowlist, without calling the daemon", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [] })
+      },
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "command_execute", args: {} },
+      ["app_run", "app_status"],
+    )
+    expect(status).toBe(403)
+    expect((body as { error: string }).error).toBe("forbidden")
+    expect((body as { message: string }).message).toContain("command_execute")
+    expect(called).toHaveLength(0)
+  })
+
+  it("forwards a tool that is in the allowlist", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    const [status] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "app_run", args: {} },
+      ["app_run", "app_status"],
+    )
+    expect(status).toBe(200)
+    expect(called).toEqual(["app_run"])
+  })
+
+  it("allows all tools when allowedTools is undefined (ui.tools absent from APP.md)", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    const [status] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "command_execute", args: {} },
+      undefined,
+    )
+    expect(status).toBe(200)
+    expect(called).toEqual(["command_execute"])
+  })
+
+  it("blocks all tools when allowedTools is an empty array", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [] })
+      },
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "app_run", args: {} },
+      [],
+    )
+    expect(status).toBe(403)
+    expect((body as { error: string }).error).toBe("forbidden")
+    expect((body as { message: string }).message).toContain("(empty)")
+    expect(called).toHaveLength(0)
   })
 })
 
