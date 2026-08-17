@@ -143,6 +143,11 @@ function baseDeps(overrides: Partial<SpawnAgentSessionDeps> = {}): {
     // the many tests using this default aren't exercising an unrealistic
     // empty-contract-line shape the production resolver never actually returns.
     resolveAgentsMd: async () => ({ mode: "absent", contractLine: cdContractLine }),
+    // Fast, deterministic per-workspace RULES.md resolution by default (WP-R4)
+    // so existing spawn tests never touch the real `~/.agentproto` workspace
+    // buckets. Individual tests override `resolveWorkspaceRules` to exercise
+    // the actual injection path — see the RULES.md describe block below.
+    resolveWorkspaceRules: async () => ({}),
     ...overrides,
   }
   return { registry, deps }
@@ -4583,5 +4588,167 @@ describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
+  })
+})
+
+describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
+  const RULES_MD_BLOCK = "--- Workspace RULES.md (/buckets/agentik-studio/RULES.md) ---\nCONTENT\n--- end Workspace RULES.md ---"
+
+  it("injects the RULES.md block BEFORE the role disposition and the caller's prompt, and stamps the path on the descriptor", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => ({
+        path: "/buckets/agentik-studio/RULES.md",
+        content: "CONTENT",
+        block: RULES_MD_BLOCK,
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "agentik-studio",
+      role: "executor",
+      prompt: "do the thing",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    const rulesIdx = prompt.indexOf(RULES_MD_BLOCK)
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
+    const taskIdx = prompt.indexOf("do the thing")
+    expect(rulesIdx).toBeGreaterThanOrEqual(0)
+    expect(dispositionIdx).toBeGreaterThan(rulesIdx) // RULES.md leads the composition.
+    expect(taskIdx).toBeGreaterThan(dispositionIdx)
+
+    // Stamped on the descriptor too — present-or-absent, no mode field.
+    expect(result.descriptor.rulesMd).toBe("/buckets/agentik-studio/RULES.md")
+  })
+
+  it("no RULES.md → nothing extra injected, spawn unaffected, no rulesMd on the descriptor", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => ({}), // absent.
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "agentik-studio",
+      role: "executor",
+      prompt: "do the thing",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.rulesMd).toBeUndefined()
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).not.toContain("Workspace RULES.md")
+    // The spawn is otherwise unaffected — the caller's ask still arrives.
+    expect(prompt).toContain("do the thing")
+  })
+
+  it("a resolveWorkspaceRules read failure falls through to absent WITHOUT blocking the spawn (advisory, never a hard gate)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => {
+        throw new Error("EACCES: permission denied reading RULES.md")
+      },
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/x",
+      workspaceSlug: "agentik-studio",
+      prompt: "hi",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.rulesMd).toBeUndefined()
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).not.toContain("Workspace RULES.md")
+    expect(prompt).toContain("hi")
+  })
+
+  it("acceptance: a bare spawn in a workspace whose RULES.md carries the four plan rules gets them all in the composed prompt reaching the adapter", async () => {
+    // The four rules named in the plan — main checkout untouchable, PR-only
+    // never merge, named staging, no AI attribution.
+    const fourRules = [
+      "NEVER touch the main checkout — work only in your own isolated worktree",
+      "PR-only: never merge; open a ready PR and stop",
+      "STAGING: only deploy to the named staging environment spelled out in the brief",
+      "No AI attribution in commits or PR bodies",
+    ].join("\n")
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => ({
+        path: "/buckets/agentik-studio/RULES.md",
+        content: fourRules,
+        block: `--- Workspace RULES.md (/buckets/agentik-studio/RULES.md) ---\n${fourRules}\n--- end Workspace RULES.md ---`,
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    // A bare spawn — trivial prompt, no elaborate brief; the rules must ride
+    // along on their own.
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "agentik-studio",
+      role: "executor",
+      prompt: "hello",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    for (const rule of fourRules.split("\n")) {
+      expect(prompt).toContain(rule)
+    }
+    expect(result.descriptor.rulesMd).toBe("/buckets/agentik-studio/RULES.md")
+  })
+
+  it("system-tagging rides along for free: the RULES.md block is part of the daemon-composed preamble recorded as the system slice (WP-R3 generalizes)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => ({
+        path: "/buckets/agentik-studio/RULES.md",
+        content: "CONTENT",
+        block: RULES_MD_BLOCK,
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "agentik-studio",
+      role: "executor",
+      prompt: "do the thing",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    const [id, message, opts] = sendPrompt.mock.calls[0] ?? []
+    expect(id).toBe(result.descriptor.id)
+    // The adapter still receives the single composed string, RULES.md first.
+    expect(message).toContain(RULES_MD_BLOCK)
+    // The system slice is everything ahead of the caller's ask — including
+    // RULES.md — because composedPreamble() recovers it automatically.
+    expect(opts?.system).toContain(RULES_MD_BLOCK)
+    expect(opts?.system).toContain(EXECUTOR_ROLE.disposition)
   })
 })

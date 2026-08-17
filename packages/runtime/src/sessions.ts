@@ -1097,6 +1097,15 @@ export interface SessionDescriptor {
    *  constructor paths don't have to fabricate a value; a freshly-spawned
    *  session always carries it. */
   agentsMdMode?: AgentsMdMode
+  /** Absolute path of the per-workspace `RULES.md` the daemon resolved for
+   *  this session's spawn workspace (see `workspace-rules.ts`) — read from
+   *  the workspace's state bucket (`~/.agentproto/workspaces/<slug>/
+   *  RULES.md`) and injected into the initial prompt of EVERY spawn in the
+   *  workspace (root and nested, no depth gate). Present only when a rules
+   *  file was actually found and injected; `undefined` means absent (there
+   *  is no separate inline/pointer/absent tri-state — the field itself being
+   *  undefined already means absent). */
+  rulesMd?: string
   /** Pull requests opened while this session was acting on a code host.
    *
    * This is deliberately session provenance rather than workspace state: a
@@ -1544,6 +1553,8 @@ export interface SessionSummary {
   agentsMd?: string
   /** Injection mode — see `SessionDescriptor.agentsMdMode`. */
   agentsMdMode?: AgentsMdMode
+  /** Resolved workspace RULES.md path — see `SessionDescriptor.rulesMd`. */
+  rulesMd?: string
   adapterSlug?: string
   mode?: string
   model?: string
@@ -1621,6 +1632,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     worktreeId: desc.worktreeId,
     agentsMd: desc.agentsMd,
     agentsMdMode: desc.agentsMdMode,
+    rulesMd: desc.rulesMd,
     adapterSlug: desc.adapterSlug,
     mode: desc.mode,
     model: desc.model,

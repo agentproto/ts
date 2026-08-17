@@ -80,6 +80,10 @@ import {
   cdContractLine,
   type AgentsMdResolution,
 } from "./agents-md.js"
+import {
+  resolveWorkspaceRules as realResolveWorkspaceRules,
+  type WorkspaceRulesResolution,
+} from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
@@ -663,6 +667,13 @@ export interface SpawnAgentSessionDeps {
     cwd: string,
     inlineMaxKb?: number,
   ) => Promise<AgentsMdResolution>
+  /** Resolves + shapes the per-workspace RULES.md for a spawn (see
+   *  `workspace-rules.ts`): the path of the workspace's `RULES.md`, inlined
+   *  in full when present, absent otherwise. Injected into EVERY spawn in
+   *  the workspace (root and nested — no depth gate). Defaults to the real
+   *  resolver over the workspace state bucket when omitted; tests inject a
+   *  stub to avoid touching the real `~/.agentproto` directory. */
+  resolveWorkspaceRules?: (slug: string | undefined) => Promise<WorkspaceRulesResolution>
   /** Feeds the adapter-capability spawn guard (`checkModelAdapterEligibility`)
    *  — the SAME `listCatalogModels` the `catalog_models` MCP tool /
    *  `GET /catalog/models` route already use (`RegisterAgentToolsOptions.
@@ -1058,6 +1069,7 @@ export async function spawnAgentSession(
     resolveSpawnDedupe,
     resolveProvenanceWrapGh,
     resolveAgentsMd,
+    resolveWorkspaceRules,
     listCatalogModels,
   } = deps
 
@@ -2095,8 +2107,33 @@ export async function spawnAgentSession(
   const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
     (p): p is string => !!p,
   )
+  // Per-workspace RULES.md injection (WP-R4): resolve the workspace's
+  // `RULES.md` (from its state bucket — see `workspace-rules.ts`) and, when
+  // present, inline it in full into the composed prompt. Unlike AGENTS.md
+  // (repo-scoped, bounded by the spawn cwd's git toplevel), this is
+  // WORKSPACE-scoped and rides into EVERY spawn in the workspace — root and
+  // nested, no depth gate: this composition array is reached for every
+  // spawn, so no depth special-casing is needed. Absent ⇒ nothing extra
+  // (a workspace opts in by a human creating the file). Always full inline
+  // when present — no pointer mode. RULES.md leads the composition (ahead
+  // of the role disposition): it is the standing, workspace-wide discipline
+  // that applies to every spawn regardless of role, the most fundamental
+  // layer — the role disposition is per-role boilerplate on top of it.
+  let workspaceRulesResolution: WorkspaceRulesResolution = {}
+  const resolveWorkspaceRulesForSpawn =
+    resolveWorkspaceRules ?? realResolveWorkspaceRules
+  try {
+    workspaceRulesResolution = await resolveWorkspaceRulesForSpawn(resolvedSlug)
+  } catch {
+    // RULES.md is advisory: a read failure must never block a spawn a caller
+    // asked for. Fall through to "as if absent" — same posture as AGENTS.md's
+    // own try/catch fallback above.
+    workspaceRulesResolution = {}
+  }
+  const rulesMdParts = workspaceRulesResolution.block ? [workspaceRulesResolution.block] : []
   if (input.prompt) {
     effectivePrompt = [
+      ...rulesMdParts,
       composeRoleContext(role, input.promptAppend, roleRegistry),
       ...agentsMdParts,
       parentContextLine,
@@ -2258,6 +2295,9 @@ export async function spawnAgentSession(
       // fields as the sync path's `spawnAgent` stamp below.
       pendingDesc.agentsMd = agentsMdResolution.path
       pendingDesc.agentsMdMode = agentsMdResolution.mode
+      // Stamp the resolved per-workspace RULES.md path (WP-R4), when one was
+      // found — present-or-absent, so an undefined field already means absent.
+      if (workspaceRulesResolution.path) pendingDesc.rulesMd = workspaceRulesResolution.path
       // Anything from here to the early return must never throw past this
       // point without settling the row it just registered — otherwise the
       // outer catch below would report `agent_spawn_failed` to the ORIGINAL
@@ -2654,6 +2694,9 @@ export async function spawnAgentSession(
     // here, even for "absent" (a real, reported state, not a missing field).
     desc.agentsMd = agentsMdResolution.path
     desc.agentsMdMode = agentsMdResolution.mode
+    // Stamp the resolved per-workspace RULES.md path (WP-R4), when one was
+    // found — present-or-absent, so an undefined field already means absent.
+    if (workspaceRulesResolution.path) desc.rulesMd = workspaceRulesResolution.path
     liveSessionId = desc.id
     // No-key backstop for the same incident `idempotencyKey` guards: every
     // duplicate pair observed in production shared BOTH `label` AND `cwd`,
