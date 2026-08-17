@@ -1222,7 +1222,12 @@ export function registerAgentTools(
       })
       if (!parent.busy) {
         try {
-          await registry.enqueuePrompt(parentId, notice, {})
+          // `origin: "child:…"` (not a `source`) labels a queued item's
+          // after-the-fact origin as a child's report — distinct from a
+          // human operator ("user") and another session's `agent_prompt`
+          // ("agent:…"). Provenance-agnostic: transcript `source` stays
+          // unset, as before.
+          await registry.enqueuePrompt(parentId, notice, { origin: `child:${who}` })
           return done("enqueued")
         } catch {
           // Raced into busy/admission-rejected between the check and the

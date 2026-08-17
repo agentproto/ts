@@ -147,6 +147,18 @@ describe("descriptionFor", () => {
         "bg task",
       )
     })
+
+    it("appends the N queued badge when prompts sit in the session's FIFO", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z", queuedPrompts: 2 })
+      expect(descriptionFor(s, { now })).toBe("in-place · 5 days ago · ⧉ 2 queued")
+      // Singular grammar, and absent/zero queuedPrompts add nothing.
+      expect(
+        descriptionFor(session({ startedAt: "2026-01-01T00:00:00Z", queuedPrompts: 1 }), { now }),
+      ).toContain("⧉ 1 queued")
+      expect(descriptionFor(session({ startedAt: "2026-01-01T00:00:00Z" }), { now })).not.toContain(
+        "queued",
+      )
+    })
   })
 })
 

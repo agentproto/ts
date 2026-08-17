@@ -8,10 +8,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 
 // Control the providers.json api-key lookup deterministically (the resolver's
@@ -96,6 +96,7 @@ import {
   PARENT_SESSION_ID_ENV,
   type SessionsRegistry,
 } from "../sessions.js"
+import { cdContractLine } from "../agents-md.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
@@ -133,6 +134,15 @@ function baseDeps(overrides: Partial<SpawnAgentSessionDeps> = {}): {
   const deps: SpawnAgentSessionDeps = {
     registry,
     resolveAgentAdapter: makeResolver(startSession),
+    // Fast, deterministic AGENTS.md resolution by default so the existing
+    // spawn tests never touch the real filesystem / git / config. Individual
+    // tests override `resolveAgentsMd` (or pass `undefined` to fall through
+    // to the REAL resolver) to exercise the actual injection path — see the
+    // AGENTS.md describe blocks below. `contractLine` mirrors the real
+    // resolver's shape (non-empty, present in every mode incl. "absent") so
+    // the many tests using this default aren't exercising an unrealistic
+    // empty-contract-line shape the production resolver never actually returns.
+    resolveAgentsMd: async () => ({ mode: "absent", contractLine: cdContractLine }),
     ...overrides,
   }
   return { registry, deps }
@@ -1612,11 +1622,15 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     const [id, message, opts] = sendPrompt.mock.calls[0] ?? []
     expect(typeof id).toBe("string")
     // The adapter STILL receives the full composed prompt — the split is
-    // recording-only, on the daemon's own event stream.
-    expect(message).toBe(`${EXECUTOR_ROLE.disposition}\n\nfix the bug`)
-    // The daemon records ONLY the synthesized preamble as the system slice;
-    // the caller's ask is the user turn.
-    expect(opts?.system).toBe(EXECUTOR_ROLE.disposition)
+    // recording-only, on the daemon's own event stream. The composed prompt
+    // also carries the WP-R2 AGENTS.md preamble (baseDeps's default resolver
+    // is "absent" mode, which still always carries the real cd-contract
+    // line — see agents-md.ts) between the disposition and the caller's ask.
+    expect(message).toBe(`${EXECUTOR_ROLE.disposition}\n\n${cdContractLine}\n\nfix the bug`)
+    // The daemon records the WHOLE daemon-composed preamble (disposition +
+    // AGENTS.md contract line) as the system slice; the caller's ask is the
+    // user turn.
+    expect(opts?.system).toBe(`${EXECUTOR_ROLE.disposition}\n\n${cdContractLine}`)
   })
 
   it("depth-derived default: root spawn (depth 0) with no role defaults to supervisor", async () => {
@@ -4418,5 +4432,156 @@ describe("spawnAgentSession — child→parent report-back plumbing", () => {
     expect(taskIdx).toBeGreaterThan(lineageIdx)
     expect(prompt).toContain(PARENT_SESSION_ID_ENV)
     expect(prompt).toContain("message_parent")
+  })
+})
+
+describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
+  it("injects the AGENTS.md block after the role disposition and before the caller's prompt, plus the cd-contract line", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: async () => ({
+        mode: "inline",
+        path: "/x/AGENTS.md",
+        block: "--- AGENTS.md (/x/AGENTS.md) ---\ninline content\n--- end AGENTS.md ---",
+        contractLine: "THE_CONTRACT_LINE",
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+      prompt: "do the thing",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
+    const agIdx = prompt.indexOf("--- AGENTS.md (/x/AGENTS.md) ---")
+    const contractIdx = prompt.indexOf("THE_CONTRACT_LINE")
+    const taskIdx = prompt.indexOf("do the thing")
+    expect(dispositionIdx).toBeGreaterThanOrEqual(0)
+    expect(agIdx).toBeGreaterThan(dispositionIdx)
+    expect(contractIdx).toBeGreaterThan(agIdx)
+    expect(taskIdx).toBeGreaterThan(contractIdx)
+
+    // Stamped on the descriptor too.
+    expect(result.descriptor.agentsMd).toBe("/x/AGENTS.md")
+    expect(result.descriptor.agentsMdMode).toBe("inline")
+  })
+
+  it("absent mode: no AGENTS.md up the walk → descriptor carries 'absent' and no path, and no AGENTS.md content is injected", async () => {
+    // A real (non-repo) temp dir with nothing in it — the real resolver's git
+    // probe reports non-repo, so only the dir itself is checked.
+    const tmp = mkdtempSync(join(tmpdir(), "agentproto-am-absent-"))
+    try {
+      const startSession = vi.fn(async () => fakeAgentSession())
+      const { deps } = baseDeps({
+        resolveAgentAdapter: makeResolver(startSession),
+        resolveAgentsMd: undefined, // fall through to the REAL resolver.
+      })
+      const result = await spawnAgentSession(deps, {
+        adapter: "mock",
+        cwd: tmp,
+        prompt: "hi",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("expected success")
+      expect(result.descriptor.agentsMd).toBeUndefined()
+      expect(result.descriptor.agentsMdMode).toBe("absent")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("a resolveAgentsMd failure falls back to 'absent' WITHOUT blocking the spawn, and still injects the real cd-contract line (never an empty one)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: async () => {
+        throw new Error("git rev-parse blew up")
+      },
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/x",
+      prompt: "hi",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    // The spawn succeeds despite the resolution failure — advisory-on-top-
+    // of-the-role, never a hard gate.
+    expect(result.descriptor.agentsMd).toBeUndefined()
+    expect(result.descriptor.agentsMdMode).toBe("absent")
+    // The cd-contract sentence is a static fact independent of resolution
+    // succeeding — a read/git failure must not silently drop it.
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).toContain(cdContractLine)
+  })
+
+  it("resolves + injects THIS repo's own AGENTS.md (pointer mode, since it's ≥ the 8 KiB default) and stamps it on the descriptor", async () => {
+    // The repo root is four levels above this test file.
+    const repoRoot = resolve(import.meta.dirname, "../../../../")
+    const agentsMdPath = join(repoRoot, "AGENTS.md")
+    expect(existsSync(agentsMdPath)).toBe(true)
+
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: undefined, // fall through to the REAL resolver.
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: repoRoot,
+      role: "executor",
+      prompt: "verify the leaf contract",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.agentsMd).toBe(agentsMdPath)
+    // This repo's AGENTS.md is well over 8 KiB → pointer mode.
+    expect(result.descriptor.agentsMdMode).toBe("pointer")
+
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).toContain("read it before your first tool call")
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
+    const pointerIdx = prompt.indexOf("read it before your first tool call")
+    const taskIdx = prompt.indexOf("verify the leaf contract")
+    expect(pointerIdx).toBeGreaterThan(dispositionIdx)
+    expect(taskIdx).toBeGreaterThan(pointerIdx)
+  })
+
+  it("inlines a small AGENTS.md when cwd is a non-repo dir carrying one (real resolver)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agentproto-am-inline-"))
+    writeFileSync(join(tmp, "AGENTS.md"), "short contract body")
+    try {
+      const startSession = vi.fn(async () => fakeAgentSession())
+      const { deps } = baseDeps({
+        resolveAgentAdapter: makeResolver(startSession),
+        resolveAgentsMd: undefined, // fall through to the REAL resolver.
+      })
+      const result = await spawnAgentSession(deps, {
+        adapter: "mock",
+        cwd: tmp,
+        prompt: "hi",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("expected success")
+      expect(result.descriptor.agentsMd).toBe(join(tmp, "AGENTS.md"))
+      expect(result.descriptor.agentsMdMode).toBe("inline")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 })

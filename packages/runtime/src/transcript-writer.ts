@@ -280,9 +280,26 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
       if (opts?.system) {
         writeRecord(sessionId, state, { kind: "system-prompt", sessionId, text: opts.system })
       }
-      const userText = opts?.system && text.length > opts.system.length
-        ? text.slice(opts.system.length).replace(/^\n\n/, "")
-        : text
+      // Strip the system preamble off the front of `text` to get the
+      // caller's own ask. Guarded by an explicit prefix check (not just a
+      // length comparison) so a future change to the composition format
+      // (session-spawn.ts's `composedPreamble`/`effectivePrompt` join) can't
+      // silently slice the wrong bytes here — if the invariant doesn't
+      // hold, fall back to recording the FULL text rather than producing
+      // corrupted output.
+      let userText = text
+      if (opts?.system) {
+        if (text.startsWith(opts.system)) {
+          userText = text.slice(opts.system.length).replace(/^\n\n/, "")
+        } else {
+          console.warn(
+            `[transcript-writer] recordPrompt: system preamble is not a prefix of the composed ` +
+              `prompt for session ${sessionId} — composition invariant violated (see ` +
+              `session-spawn.ts's composedPreamble), recording the full text as user-prompt ` +
+              `instead of risking a bad slice.`,
+          )
+        }
+      }
       writeRecord(sessionId, state, {
         kind: "user-prompt",
         sessionId,

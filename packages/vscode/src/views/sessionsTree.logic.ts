@@ -216,6 +216,11 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
   // the session reads as quietly idle while its work sits unfinished.
   const bg = session.pendingBgTasks ?? 0
   if (bg > 0) parts.push(`${bg} bg task${bg === 1 ? "" : "s"} pending`)
+  // Prompts waiting on this session's queue — the "N queued" badge. Folded
+  // in near the end so it reads as an afterthought-stated status, not the
+  // lead.
+  const queued = session.queuedPrompts ?? 0
+  if (queued > 0) parts.push(`⧉ ${queued} queued`)
   return parts.join(" · ")
 }
 
@@ -675,6 +680,10 @@ export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
   if ((session.pendingBgTasks ?? 0) > 0) {
     fields.push({ label: "bg tasks pending", value: String(session.pendingBgTasks) })
   }
+  // Prompts waiting on the queue — mirrors the row's "N queued" badge with
+  // the positions the operator can act on.
+  const queued = session.queuedPrompts ?? 0
+  if (queued > 0) fields.push({ label: "queued", value: `${queued} prompt${queued === 1 ? "" : "s"}` })
   // The adapter's own last turn reported failure in-band — the marker behind
   // the "stalled" read the row now shows for an otherwise-idle session.
   if (session.lastTurnErroredAt) {

@@ -1421,6 +1421,230 @@ export function registerSessionTools(
     },
   )
 
+  // ── session_queue_list ───────────────────────────────────────
+  // After-the-fact inspection of a session's prompt FIFO: what's sitting in
+  // the queue RIGHT NOW (origin, preview, queuedAt, position), not just the
+  // enqueue-time acknowledgment `POST /sessions/:id/prompt` already echoes.
+  // Position 0 is next to dispatch. Reads `registry.listQueuedPrompts`, the
+  // same projection the HTTP route / GET /sessions/:id/queue serves, so the
+  // MCP and REST surfaces can't drift.
+  server.tool(
+    "session_queue_list",
+    "List the prompts currently queued on a live session (its prompt FIFO — " +
+      "prompts that arrived mid-turn with queueing enabled and are waiting " +
+      "to dispatch once the current turn ends). Each entry carries `position` " +
+      "(0 = next to dispatch), `origin` (who queued it: \"user\", \"agent " +
+      "<sessionId>\", \"child <sessionId>\"), `preview` (short text of the " +
+      "message), and `queuedAt`. Pair with `session_queue_promote` (jump an " +
+      "item to the front without touching the in-flight turn), " +
+      "`session_queue_deliver` (interrupt the current turn and dispatch this " +
+      "item NOW), and `session_queue_drop` (remove without delivering).",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`, alive or historical."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4/WP5): same gate as session_list/session_tree —
+      // a scoped orchestrator only sees its own subtree's queues.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: `session "${input.sessionId}" is outside the caller's subtree` }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const queue = registry.listQueuedPrompts(desc.id)
+      return {
+        content: [{ type: "text", text: JSON.stringify({ sessionId: desc.id, queue }, null, 2) }],
+      }
+    },
+  )
+
+  // ── session_queue_promote ──────────────────────────────────────
+  // Reorder-only force: jump an already-queued item to the front WITHOUT
+  // touching the in-flight turn. Distinct from `session_queue_deliver`.
+  server.tool(
+    "session_queue_promote",
+    "Move an already-queued prompt to the FRONT of a session's queue (position 0, " +
+      "next to dispatch once the current turn ends) WITHOUT cancelling or touching " +
+      "the in-flight turn — a queue-reordering operation only. This is the " +
+      "after-the-fact counterpart of `force` on `POST /sessions/:id/prompt`, but " +
+      "acting on an item already in the queue. Distinct from `session_queue_deliver` " +
+      "(which interrupts and dispatches immediately). The queueId comes from " +
+      "`session_queue_list`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+      queueId: z
+        .string()
+        .min(1)
+        .describe("The queued item's id, from `session_queue_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      const result = registry.promoteQueuedPrompt(desc.id, input.queueId)
+      if (!result.promoted) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no queued item "${input.queueId}" on session "${desc.id}"` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok: true, sessionId: desc.id, queueId: input.queueId, position: result.position }, null, 2),
+          },
+        ],
+      }
+    },
+  )
+
+  // ── session_queue_deliver ──────────────────────────────────────
+  // Deliver-now (interrupt): cancel the in-flight turn and dispatch a
+  // SPECIFIC queued item as the new turn, removing it from the queue. The
+  // "I need this NOW" op — deliberately distinct from promote.
+  server.tool(
+    "session_queue_deliver",
+    "Immediately dispatch a SPECIFIC queued prompt by interrupting whatever " +
+      "turn is currently running on the session and delivering this item as " +
+      "the new turn (removing it from the queue). The \"I need this NOW\" op — " +
+      "distinct from `session_queue_promote`, which only reorders and lets the " +
+      "current turn finish. No-op (error) if the item is not in the queue. " +
+      "The queueId comes from `session_queue_list`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+      queueId: z
+        .string()
+        .min(1)
+        .describe("The queued item's id, from `session_queue_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const result = await registry.deliverQueuedPrompt(desc.id, input.queueId)
+        if (!result.delivered) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: `no queued item "${input.queueId}" on session "${desc.id}"` }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { ok: true, sessionId: desc.id, queueId: input.queueId, interrupted: result.interrupted },
+                null,
+                2,
+              ),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `session_queue_deliver: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  // ── session_queue_drop ─────────────────────────────────────────
+  server.tool(
+    "session_queue_drop",
+    "Remove a prompt from a session's queue WITHOUT ever delivering it — it is " +
+      "cancelled, not dispatched. Idempotent: an unknown session or an item that's " +
+      "already gone (dispatched, removed, or never existed) reports `removed:false` " +
+      "rather than erroring, matching the no-op-is-not-an-error shape of " +
+      "`POST /sessions/:id/interrupt`. The queueId comes from `session_queue_list`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+      queueId: z
+        .string()
+        .min(1)
+        .describe("The queued item's id, from `session_queue_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      const { removed } = registry.removeQueuedPrompt(desc.id, input.queueId)
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              { ok: true, sessionId: desc.id, queueId: input.queueId, removed },
+              null,
+              2,
+            ),
+          },
+        ],
+      }
+    },
+  )
+
   // ── worktree_status ─────────────────────────────────────────────
   // Read-only view of the repo's linked worktrees + their live PR
   // integration + the sessions that opened them. The heavy join is
