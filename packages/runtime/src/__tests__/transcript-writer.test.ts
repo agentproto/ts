@@ -46,6 +46,31 @@ describe("createTranscriptWriter", () => {
     expect(typeof lines[0]?.ts).toBe("string")
   })
 
+  it("records a spawned child's role preamble as a SYSTEM system-prompt record ahead of the caller's user-prompt, stripping the preamble from the user text", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    const preamble = "You are the executor. Do the task yourself.\nKeep it short."
+    writer.recordPrompt("sess_1", `${preamble}\n\nfix the bug`, { system: preamble })
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    // The synthesized preamble is its own SYSTEM record FIRST…
+    expect(lines[0]).toMatchObject({ kind: "system-prompt", text: preamble })
+    // …and the user-prompt that follows carries ONLY the caller's ask —
+    // the daemon-composed preamble is not duplicated into the user bubble.
+    expect(lines[1]).toMatchObject({ kind: "user-prompt", text: "fix the bug" })
+    expect(lines).toHaveLength(2)
+  })
+
+  it("a prompt with no system slice is recorded as a single user-prompt, unchanged", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordPrompt("sess_1", "a human turn")
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ kind: "user-prompt", text: "a human turn" })
+  })
+
   it("records prompt provenance — `opts.source` rides onto the user-prompt record", async () => {
     const writer = createTranscriptWriter({ baseDir: tmp })
     writer.recordPrompt("sess_1", "status?", { source: "agent:sess_boss1" })

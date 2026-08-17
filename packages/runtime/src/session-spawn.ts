@@ -945,6 +945,32 @@ export type SpawnAgentSessionResult =
       details?: Record<string, unknown>
     }
 
+/**
+ * Recover the daemon-composed SYSTEM preamble from a spawned child's
+ * composed initial prompt. `composed` is the single string the adapter
+ * receives; the CALLER's own ask (`callerPrompt`) is the LAST block,
+ * joined from the preamble by "\n\n". The daemon knows the split because
+ * it composed the string — the adapter only ever sees the whole thing, so
+ * this is recorded on the daemon's OWN event stream (as a `system-prompt`
+ * record ahead of the `user-prompt`) so UIs can fold the disposition /
+ * AGENTS.md / lineage text instead of rendering it as a user bubble.
+ *
+ * Returns the preamble text WITHOUT the trailing "\n\n" separator, or
+ * undefined when there's no preamble (the whole prompt is the caller's
+ * ask) or the composition invariant doesn't hold (never split rather
+ * than risk mis-tagging user text as system).
+ */
+function composedPreamble(
+  composed: string | undefined,
+  callerPrompt: string | undefined,
+): string | undefined {
+  if (!callerPrompt || !composed) return undefined
+  const tail = `\n\n${callerPrompt}`
+  if (!composed.endsWith(tail)) return undefined
+  const pre = composed.slice(0, composed.length - tail.length)
+  return pre || undefined
+}
+
 export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
@@ -2285,6 +2311,7 @@ export async function spawnAgentSession(
               : {}),
             ...(readUsage ? { readUsage } : {}),
             ...(asyncPrompt ? { initialPrompt: asyncPrompt } : {}),
+            ...(asyncPrompt ? { initialPromptSystem: composedPreamble(asyncPrompt, input.prompt) } : {}),
           })
         } catch (err) {
           registry.settlePendingAgent(pendingDesc.id, {
@@ -2459,6 +2486,13 @@ export async function spawnAgentSession(
     }
 
     const defaultModel = resolved?.defaultModel
+    // The daemon-composed part of the initial prompt (role disposition +
+    // lineage line + AGENTS.md + posture) sits AHEAD of the caller's own
+    // `prompt`. Recover it now that `effectivePrompt` is final so it can be
+    // recorded as a SYSTEM turn on the daemon's event stream (see
+    // `composedPreamble`) — the adapter still receives the single
+    // concatenated `effectivePrompt`, unchanged.
+    const initialSystemPrompt = composedPreamble(effectivePrompt, input.prompt)
     const desc = registry.spawnAgent({
       id: mintedSessionId,
       workspaceSlug: resolvedSlug,
@@ -2485,6 +2519,7 @@ export async function spawnAgentSession(
       ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
+      ...(initialSystemPrompt ? { initialPromptSystem: initialSystemPrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
       // Hand the caller-derived title to `spawnAgent` so it lands on the
       // descriptor BEFORE the `initialPrompt` (the ROLE-PREFIXED composed
@@ -2616,7 +2651,9 @@ export async function spawnAgentSession(
     // wait mode: block until the first turn completes, then return
     // the descriptor with cleaned output appended.
     if (input.wait && effectivePrompt) {
-      await registry.sendPrompt(desc.id, effectivePrompt)
+      await registry.sendPrompt(desc.id, effectivePrompt, {
+        ...(initialSystemPrompt ? { system: initialSystemPrompt } : {}),
+      })
       const waitLines: string[] = []
       const waitUnsub = registry.attach(desc.id, (line: string) => {
         waitLines.push(line)
