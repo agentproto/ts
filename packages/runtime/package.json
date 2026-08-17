@@ -86,6 +86,11 @@
       "import": "./dist/resume-strategies.mjs",
       "default": "./dist/resume-strategies.mjs"
     },
+    "./session-presence": {
+      "types": "./dist/session-presence.d.ts",
+      "import": "./dist/session-presence.mjs",
+      "default": "./dist/session-presence.mjs"
+    },
     "./session-story": {
       "types": "./dist/session-story.d.ts",
       "import": "./dist/session-story.mjs",

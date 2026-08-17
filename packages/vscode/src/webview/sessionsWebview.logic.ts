@@ -62,6 +62,10 @@ import {
   relativeTime,
   type SessionActivity,
 } from "../views/sessionsTree.logic.js"
+import {
+  inAttentionGrace,
+  DEFAULT_ATTENTION_DELAY_SEC,
+} from "@agentproto/runtime/session-presence"
 
 /**
  * Cost as the row's trailing money tag, e.g. "$1.24" — undefined (renders
@@ -199,9 +203,20 @@ export function busierRowStatus(a: WebviewRowStatus, b: WebviewRowStatus): Webvi
  * awaiting-bg/terminal — so the precedence busy > delegating > awaiting >
  * stalled > awaiting-bg > parked > quiet holds.
  */
-export function webviewRowStatus(session: SessionSummary, now?: number): WebviewRowStatus {
+export function webviewRowStatus(
+  session: SessionSummary,
+  now?: number,
+  attentionDelaySec?: number,
+): WebviewRowStatus {
   const base = ACTIVITY_TO_ROW_STATUS[activityFor(session, now)]
   if (base === "idle") {
+    // A session that JUST finished a turn is still "running" — it must not
+    // sink into the Quiet section the instant it answers. The shared presence
+    // classifier's grace window (default 60s, config `sessions.attentionDelaySec`)
+    // anchors this; any new event resets it by moving lastActivityAt forward.
+    if (inAttentionGrace(session, { now, attentionDelaySec: attentionDelaySec ?? DEFAULT_ATTENTION_DELAY_SEC })) {
+      return "working"
+    }
     if ((session.childrenBusy ?? 0) > 0) return "delegating"
     if ((session.watchers ?? 0) > 0) return "parked"
   }
@@ -565,8 +580,12 @@ const SECTION_BY_STATUS: Readonly<Record<WebviewRowStatus, SectionKey>> = {
 }
 
 /** Fold a session's fine-grained activity into its attention section. */
-export function sectionFor(session: SessionSummary, now?: number): SectionKey {
-  return SECTION_BY_STATUS[webviewRowStatus(session, now)]
+export function sectionFor(
+  session: SessionSummary,
+  now?: number,
+  attentionDelaySec?: number,
+): SectionKey {
+  return SECTION_BY_STATUS[webviewRowStatus(session, now, attentionDelaySec)]
 }
 
 /** Stable key + label for the dedicated "Pinned" pseudo-group — see
@@ -620,6 +639,11 @@ export interface BuildSessionsWebviewModelOptions {
    *  against name/command/cwd/id via the reused sessionFilter predicate. */
   search: string
   now: number
+  /** Grace window (seconds) for the shared presence classifier — a session
+   *  that just finished a turn stays in the "Running" section for this long.
+   *  Resolved by the caller (config `sessions.attentionDelaySec`); defaults to
+   *  the shared 60s. */
+  attentionDelaySec?: number
   /** Daemon's total session count for this view; defaults to the loaded count. */
   serverTotal?: number
   /** Switch to the archived-only view (the "show archived" toggle). Default
@@ -666,6 +690,7 @@ function toRow(
   colorOverrides: WorkspaceColorOverrides | undefined,
   watchedIds: ReadonlySet<string> | undefined,
   byId: ReadonlyMap<string, LaneSubject> | undefined,
+  attentionDelaySec?: number,
 ): WebviewRow {
   const pctStr = contextPercent(session.contextUsed, session.contextSize)
   const ws = workspaceFor(config, session)
@@ -678,7 +703,7 @@ function toRow(
   return {
     id: session.id,
     session,
-    status: webviewRowStatus(session, now),
+    status: webviewRowStatus(session, now, attentionDelaySec),
     lane: laneOf(session, byId),
     name: identity.name,
     idMono: identity.idMono,
@@ -789,7 +814,9 @@ export function buildSessionsWebviewModel(
     .filter(s => laneOf(s, byId) === opts.lane)
     .slice()
     .sort((a, b) => compareSessions(a, b))
-  const rows = scope.map(s => toRow(s, opts.now, workspaces, opts.colorOverrides, opts.watchedIds, byId))
+  const rows = scope.map(s =>
+    toRow(s, opts.now, workspaces, opts.colorOverrides, opts.watchedIds, byId, opts.attentionDelaySec),
+  )
 
   // Pinned rows are lifted into their own dedicated group at the very top of
   // the list, ahead of every attention section / Auto subgroup — "stays
