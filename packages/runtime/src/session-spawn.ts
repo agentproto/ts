@@ -77,7 +77,7 @@ import { loadDefaultRoleRegistry } from "./role-registry.js"
 import {
   resolveAgentsMd as realResolveAgentsMd,
   loadAgentsMdInlineMaxKb,
-  cdContractLine as realCdContractLine,
+  cdContractLine,
   type AgentsMdResolution,
 } from "./agents-md.js"
 import { deriveSessionTitle } from "./session-title.js"
@@ -2064,7 +2064,7 @@ export async function spawnAgentSession(
     // still included: it's a static, always-true fact independent of whether
     // resolution itself succeeded, so a read failure shouldn't silently drop
     // the one guarantee that never depended on the file being readable.
-    agentsMdResolution = { mode: "absent", contractLine: realCdContractLine }
+    agentsMdResolution = { mode: "absent", contractLine: cdContractLine }
   }
   const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
     (p): p is string => !!p,
