@@ -890,6 +890,14 @@ export async function exportDaemonEventsSession(
         flushAssistant()
         messages.push({ role: "user", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
         break
+      case "system-prompt":
+        // The daemon-composed SYSTEM slice of a spawned child's initial
+        // prompt (role disposition + AGENTS.md + lineage). Recorded apart
+        // from the caller's ask so viewers fold it; rendered as a system
+        // message (never a user bubble).
+        flushAssistant()
+        messages.push({ role: "system", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
+        break
       case "text-delta":
         // Terminated lines already carry their own trailing "\n" (see
         // transcript-writer.ts) — only an unterminated tail fragment

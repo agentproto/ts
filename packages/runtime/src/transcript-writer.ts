@@ -82,8 +82,21 @@ export interface TranscriptWriter extends SessionObserver {
    *  question, the opposite direction) — recorded under its own
    *  "user-prompt" kind so turns stay reconstructable without overloading
    *  that name. `opts.source` (provenance, e.g. `agent:<sessionId>` for a
-   *  supervisor-injected prompt) rides onto the record's `source` field. */
-  recordPrompt(sessionId: string, message: unknown, opts?: { source?: string }): void
+   *  supervisor-injected prompt) rides onto the record's `source` field.
+   *
+   *  `opts.system`, when present, is the daemon-composed SYSTEM slice of
+   *  `message` (role disposition + AGENTS.md + lineage — the preamble the
+   *  daemon prepended to a spawned child's prompt, which the ADAPTER still
+   *  receives as one string). It is recorded as its own `system-prompt`
+   *  record AHEAD of the `user-prompt`, and that user-prompt carries only
+   *  the CALLER's own ask (the preamble stripped) — so viewers can fold
+   *  the synthesized text instead of showing it as a user bubble. Recording-
+   *  only; never alters what the adapter receives or how the turn runs. */
+  recordPrompt(
+    sessionId: string,
+    message: unknown,
+    opts?: { source?: string; system?: string }
+  ): void
   /** Record one structured stream event, ahead of `projectEvent`'s
    *  flattening. Coalesces consecutive text-delta/thought chunks the same
    *  way the ring buffer does. */
@@ -260,10 +273,20 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
       const state = getState(sessionId)
       flushBuffers(sessionId, state)
       const text = typeof message === "string" ? message : JSON.stringify(message)
+      // The daemon-composed SYSTEM slice of a spawned child's initial
+      // prompt is recorded apart from the caller's ask. The user-prompt
+      // text is the composed string with that preamble stripped (the
+      // preamble was prepended verbatim at composition, joined by "\n\n").
+      if (opts?.system) {
+        writeRecord(sessionId, state, { kind: "system-prompt", sessionId, text: opts.system })
+      }
+      const userText = opts?.system && text.length > opts.system.length
+        ? text.slice(opts.system.length).replace(/^\n\n/, "")
+        : text
       writeRecord(sessionId, state, {
         kind: "user-prompt",
         sessionId,
-        text,
+        text: userText,
         ...(opts?.source ? { source: opts.source } : {}),
       })
     },

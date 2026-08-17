@@ -3055,6 +3055,15 @@ function startAiUiMessageStream(opts: {
     diskRecords: opts.diskRecords,
     subscribe: opts.subscribe,
     send: record => {
+      // The `turn-end` record finalized the response (`res.end()`). The
+      // transcript writer can still emit POST-terminal records after it —
+      // `runAgentTurn` writes the durable `usage_snapshot` (and possibly a
+      // `usage_update`) in its finally block AFTER recording the turn-end
+      // (sessions.ts). Those are turn bookkeeping, not part of the assistant
+      // message stream, and writing them to the now-ended response would
+      // raise ERR_STREAM_WRITE_AFTER_END. Drop them entirely — no map, no
+      // write — once the stream is finalized.
+      if (finalized) return
       for (const chunk of opts.map(record as unknown as AgentprotoRawTranscriptRecord))
         writeChunk(chunk)
       if (record.kind === "turn-end") finalize()

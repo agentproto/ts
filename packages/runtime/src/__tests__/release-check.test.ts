@@ -8,9 +8,9 @@ import {
   isCacheFresh,
   releaseTtlMs,
   resolveReleaseCheck,
-  type ReleaseCheckCache,
   type ReleaseBuildSource,
-} from "./releaseCheck.logic.js"
+  type ReleaseCheckCache,
+} from "../release-check.js"
 
 const NOW = Date.parse("2026-08-16T12:00:00.000Z")
 
