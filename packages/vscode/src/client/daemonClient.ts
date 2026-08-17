@@ -155,6 +155,19 @@ export interface PromptOptions {
   force?: boolean
 }
 
+/** One entry in `GET /sessions/:id/queue` — the after-the-fact prompt FIFO
+ *  view. Mirrors `@agentproto/runtime` QueuedPromptView. */
+export interface QueueViewItem {
+  id: string
+  /** Human-readable origin ("user", "agent <id>", "child <id>"). */
+  origin: string
+  /** Short text preview of the queued message. */
+  preview: string
+  queuedAt: string
+  /** 0 = next to dispatch. */
+  position: number
+}
+
 /** `POST /sessions/:id/prompt?wait=false`'s response body — `pending` (with
  *  `queueId`/`queuePosition`) is present only when the prompt genuinely
  *  landed in the FIFO rather than dispatching immediately. */
@@ -363,6 +376,35 @@ export class DaemonClient {
     queueId: string,
   ): Promise<{ ok: boolean; id: string; queueId: string; removed: boolean }> {
     return this.deleteJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}`)
+  }
+
+  /** One entry in `GET /sessions/:id/queue` — the after-the-fact view of a
+   *  session's prompt FIFO (origin, preview, queuedAt, position; position 0
+   *  = next to dispatch). Mirrors the runtime `QueuedPromptView`. */
+  async getSessionQueue(
+    id: string,
+  ): Promise<{ ok: boolean; id: string; queue: QueueViewItem[] }> {
+    return this.getJson(`/sessions/${encodeURIComponent(id)}/queue`)
+  }
+
+  /** Reorder-only force: jump an already-queued item to the FRONT without
+   *  touching the in-flight turn — `POST /:id/queue/:queueId/promote`.
+   *  The after-the-fact counterpart of the enqueue-time `force` opt. */
+  async promoteQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; position: number }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}/promote`, {})
+  }
+
+  /** Deliver-now (interrupt): cancel whatever's running and dispatch THIS
+   *  queued item as the new turn — `POST /:id/queue/:queueId/deliver`. The
+   *  "I need this NOW" op; distinct from promote. */
+  async deliverQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; interrupted: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}/deliver`, {})
   }
 
   /**

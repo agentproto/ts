@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -59,6 +59,28 @@ describe("createTranscriptWriter", () => {
     // the daemon-composed preamble is not duplicated into the user bubble.
     expect(lines[1]).toMatchObject({ kind: "user-prompt", text: "fix the bug" })
     expect(lines).toHaveLength(2)
+  })
+
+  it("a system slice that is NOT a prefix of the composed text falls back to recording the FULL text, never a bad slice", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      // Composition invariant violated on purpose: `system` doesn't actually
+      // prefix `message` (as if a future refactor of composedPreamble/
+      // effectivePrompt broke the "<system>\n\n<user>" join this code relies
+      // on). The guard must not blindly slice — it must keep the full text.
+      writer.recordPrompt("sess_1", "the real composed text", { system: "not a real prefix" })
+      await writer.close("sess_1")
+
+      const lines = readLines("sess_1")
+      // The system record is still written (it's the caller's own claim)…
+      expect(lines[0]).toMatchObject({ kind: "system-prompt", text: "not a real prefix" })
+      // …but the user-prompt is the FULL, unsliced text — never corrupted.
+      expect(lines[1]).toMatchObject({ kind: "user-prompt", text: "the real composed text" })
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   it("a prompt with no system slice is recorded as a single user-prompt, unchanged", async () => {

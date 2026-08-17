@@ -47,6 +47,7 @@ import {
   printNoDaemonError,
   httpPostJson,
   httpGetJson,
+  httpDelete,
   humaniseDelta,
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
@@ -122,6 +123,19 @@ Usage:
                                explicit unit: 500ms, 30s, 5m, 2h. default
                                timeout: 900000ms/15m with --until, 60000ms/60s
                                bare — --timeout always wins)
+  agentproto sessions queue <id-or-name> [--force <n>] [--deliver <n>]
+                              [--drop <n>] [--json]
+                              (inspect the prompt FIFO, and optionally act on
+                               an item. With no action flag, lists what's
+                               queued: each item's position (1 = next to
+                               dispatch), origin (user/agent/child), preview and
+                               queuedAt. --force <n> jumps position n to the
+                               FRONT without touching the in-flight turn.
+                               --deliver <n> interrupts whatever is running and
+                               dispatches position n NOW. --drop <n> removes it
+                               without delivering. Positions are 1-indexed here,
+                               matching 'sessions prompt' output. After any
+                               action the queue is re-listed to show the result.)
 
 Discovers the daemon in this order — first live candidate wins:
   1. AGENTPROTO_DAEMON_URL env var (token from AGENTPROTO_DAEMON_TOKEN, or
@@ -240,6 +254,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "mirror") return runMirror(args.slice(1))
   if (sub === "restart") return runRestart(args.slice(1))
   if (sub === "wait") return runWait(args.slice(1))
+  if (sub === "queue") return runQueue(args.slice(1))
 
   const { values } = parseArgs({
     args: [...args],
@@ -920,6 +935,213 @@ async function runGc(args: readonly string[]): Promise<number> {
     }
     process.stderr.write(`agentproto sessions gc: ${msg}\n`)
     return 1
+  }
+}
+
+/**
+ * `agentproto sessions queue <id-or-name> [--force <n>] [--deliver <n>]
+ *                              [--drop <n>] [--json]` — CLI parity for the
+ * daemon's queue-surface (`GET /sessions/:id/queue` + the per-item
+ * promote/deliver/drop routes, the same ops the `session_queue_*` MCP tools
+ * expose). Lists what's sitting in a session's prompt FIFO right now, and
+ * optionally acts on one item by 1-indexed position.
+ *
+ * Positions are 1-INDEXED here (the first queued item is `1`, reading as
+ * "next to dispatch") — matching the "position N" message `sessions prompt`
+ * already prints at enqueue time, so the two surfaces agree. The daemon's
+ * raw `position` field is 0-indexed; this command maps `n` (1-indexed) onto
+ * the item at `n - 1` before calling the op, and labels its own output
+ * 1-indexed.
+ *
+ * The three action flags are deliberately DISTINCT (mirroring the daemon's
+ * two force ops + drop — never one flag with two meanings):
+ *   --force <n>    promote position n to the FRONT (reorder-only; the
+ *                  current in-flight turn is untouched, the item just
+ *                  becomes next to dispatch when it ends)
+ *   --deliver <n>  interrupt whatever's running and dispatch position n NOW
+ *                  (the "I need this NOW" op)
+ *   --drop <n>     remove position n without ever delivering it
+ * After any action the queue is re-listed so the caller sees the result.
+ */
+async function runQueue(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      force: { type: "string" },
+      deliver: { type: "string" },
+      drop: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id) {
+    process.stderr.write(
+      "agentproto sessions queue: missing session id.\n" +
+        "  Try: agentproto sessions queue <id-or-name>\n" +
+        "       agentproto sessions queue <id-or-name> --force 2\n" +
+        "       agentproto sessions queue <id-or-name> --deliver 2\n" +
+        "       agentproto sessions queue <id-or-name> --drop 1\n",
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions queue: unexpected extra positionals: ${positionals.slice(1).join(" ")}\n`,
+    )
+    return 2
+  }
+  // Exactly one action at a time — force/deliver/drop are mutually exclusive.
+  const actions = (["force", "deliver", "drop"] as const).filter(f => values[f] !== undefined)
+  if (actions.length > 1) {
+    process.stderr.write(
+      `agentproto sessions queue: choose one of --force/--deliver/--drop, not multiple.\n`,
+    )
+    return 2
+  }
+  const action: "force" | "deliver" | "drop" | undefined = actions[0]
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions queue")
+    return 2
+  }
+  const endpoint = report.found
+
+  // Fetch the current queue to (a) render it and (b) resolve the 1-indexed
+  // action position onto a real queued item's id, which the ops address by.
+  const listResult = await httpGetJson<{ ok: boolean; queue: QueueViewItem[] }>(
+    `${endpoint.url}/sessions/${encodeURIComponent(id)}/queue`,
+  )
+  if (!listResult || !Array.isArray(listResult.queue)) {
+    process.stderr.write(`agentproto sessions queue: no session "${id}".\n`)
+    return 2
+  }
+  const queue = listResult.queue
+
+  if (action) {
+    let n: number
+    try {
+      n = Number.parseInt(values[action]!, 10)
+    } catch {
+      n = NaN
+    }
+    if (Number.isNaN(n) || n < 1 || !Number.isInteger(n)) {
+      process.stderr.write(
+        `agentproto sessions queue: invalid position "${values[action]}" (expected a positive integer).\n`,
+      )
+      return 2
+    }
+    const item = queue[n - 1]
+    if (!item) {
+      process.stderr.write(
+        `agentproto sessions queue: position ${n} is out of range (${queue.length} queued) on "${id}".\n`,
+      )
+      return 2
+    }
+    let result: Record<string, unknown>
+    try {
+      if (action === "drop") {
+        result = await httpDelete<Record<string, unknown>>(
+          `${endpoint.url}/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(item.id)}`,
+          endpoint.token,
+        )
+      } else {
+        const verb = action === "force" ? "promote" : "deliver"
+        result = await httpPostJson<Record<string, unknown>>(
+          `${endpoint.url}/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(item.id)}/${verb}`,
+          {},
+          endpoint.token,
+        )
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 404/.test(msg)) {
+        process.stderr.write(
+          `agentproto sessions queue: position ${n} (item ${item.id}) is no longer queued on "${id}".\n`,
+        )
+        return 1
+      }
+      process.stderr.write(`agentproto sessions queue: ${msg}\n`)
+      return 1
+    }
+    if (!values.json) {
+      const verbLabel =
+        action === "force" ? "promoted to front" : action === "deliver" ? "delivered now" : "dropped"
+      process.stdout.write(
+        `agentproto sessions queue: position ${n} ${verbLabel} on ${id}.\n`,
+      )
+    }
+    // Re-list so the caller sees the post-action state (drop shifts positions).
+    const refreshed = await httpGetJson<{ ok: boolean; queue: QueueViewItem[] }>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/queue`,
+    )
+    const newQueue = refreshed?.queue ?? queue
+    if (values.json) {
+      process.stdout.write(
+        JSON.stringify(
+          { ok: true, id, action, position: n, result, queue: newQueue },
+          null,
+          2,
+        ) + "\n",
+      )
+    } else {
+      printQueueTable(id, newQueue)
+    }
+    return 0
+  }
+
+  // No action — just list.
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ ok: true, id, queue }, null, 2) + "\n")
+  } else {
+    printQueueTable(id, queue)
+  }
+  return 0
+}
+
+/** Shape of one item in `GET /sessions/:id/queue` — see `QueuedPromptView`. */
+export interface QueueViewItem {
+  id: string
+  origin: string
+  preview: string
+  queuedAt: string
+  /** 0 = next to dispatch (the daemon's index); display 1-indexed. */
+  position: number
+}
+
+function printQueueTable(id: string, queue: QueueViewItem[]): void {
+  process.stdout.write(`\x1b[2mqueue · ${id}\x1b[0m\n`)
+  if (queue.length === 0) {
+    process.stdout.write("(nothing queued)\n")
+    return
+  }
+  const widths = {
+    position: Math.max(...queue.map(q => String(q.position + 1).length), 3),
+    origin: Math.max(...queue.map(q => q.origin.length), 6),
+    queuedAt: 12,
+  }
+  const header =
+    pad("#", widths.position) +
+    "  " +
+    pad("ORIGIN", widths.origin) +
+    "  " +
+    pad("QUEUED", widths.queuedAt) +
+    "  PREVIEW"
+  process.stdout.write(`\x1b[2m${header}\x1b[0m\n`)
+  for (const q of queue) {
+    const ts = q.queuedAt.slice(0, 16).replace("T", " ")
+    process.stdout.write(
+      pad(String(q.position + 1), widths.position) +
+        "  " +
+        pad(q.origin, widths.origin) +
+        "  " +
+        pad(ts, widths.queuedAt) +
+        "  " +
+        truncate(q.preview, 60) +
+        "\n",
+    )
   }
 }
 
@@ -1686,6 +1908,12 @@ function worktreeCell(s: SessionDescriptor): string {
   return s.worktreePath ? truncate(basename(s.worktreePath), WORKTREE_COL_MAX) : "—"
 }
 
+/** QUEUED column cell — "N queued", or blank when nothing is waiting. */
+function queuedCell(s: SessionDescriptor): string {
+  const n = s.queuedPrompts ?? 0
+  return n > 0 ? `${n} queued` : ""
+}
+
 /** Pinned sessions first, each side keeping its incoming relative order —
  *  a stable sort on a single boolean key (`Array.prototype.sort` is
  *  guaranteed stable since ES2019). Exported for direct unit coverage. */
@@ -1706,12 +1934,16 @@ function printTable(rows: SessionDescriptor[]): void {
   // worktree — a column of em-dashes is noise for the (common) case of a
   // daemon whose sessions all run in plain checkouts.
   const showWorktree = sorted.some(r => r.worktreePath !== undefined)
+  // A session is only "N queued"-worthy once something actually sits in its
+  // prompt FIFO — a column of dashes is noise for the common no-queue case.
+  const showQueued = sorted.some(r => (r.queuedPrompts ?? 0) > 0)
   const widths = {
     pin: 3,
     id: Math.max(...sorted.map(r => r.id.length), 4),
     kind: Math.max(...sorted.map(r => r.kind.length), 4),
     workspace: Math.max(...sorted.map(r => r.workspaceSlug.length), 9),
     worktree: Math.max(...sorted.map(r => worktreeCell(r).length), 8),
+    queued: showQueued ? Math.max(...sorted.map(r => queuedCell(r).length), 6) : 0,
     status: Math.max(...sorted.map(r => statusLabel(r).length), 8),
     age: 8,
   }
@@ -1725,6 +1957,7 @@ function printTable(rows: SessionDescriptor[]): void {
     pad("WORKSPACE", widths.workspace) +
     "  " +
     (showWorktree ? pad("WORKTREE", widths.worktree) + "  " : "") +
+    (showQueued ? pad("QUEUED", widths.queued) + "  " : "") +
     pad("STATUS", widths.status) +
     "  " +
     pad("AGE", widths.age) +
@@ -1744,6 +1977,7 @@ function printTable(rows: SessionDescriptor[]): void {
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
         (showWorktree ? pad(worktreeCell(r), widths.worktree) + "  " : "") +
+        (showQueued ? `\x1b[33m${pad(queuedCell(r), widths.queued)}\x1b[0m  ` : "") +
         `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
@@ -3062,34 +3296,6 @@ function truncateAnsi(s: string, max: number): string {
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "")
-}
-
-function httpDelete(url: string, token?: string): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === "https:" ? https : http
-    const headers: Record<string, string> = {}
-    if (token) headers.authorization = `Bearer ${token}`
-    const req = lib.request(u, { method: "DELETE", headers }, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", c => (raw += c))
-      res.on("end", () => {
-        const status = res.statusCode ?? 0
-        if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
-          return
-        }
-        try {
-          resolve(raw ? JSON.parse(raw) : {})
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-    })
-    req.on("error", reject)
-    req.end()
-  })
 }
 
 interface AttachOpts {
