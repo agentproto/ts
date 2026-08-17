@@ -1622,11 +1622,15 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     const [id, message, opts] = sendPrompt.mock.calls[0] ?? []
     expect(typeof id).toBe("string")
     // The adapter STILL receives the full composed prompt — the split is
-    // recording-only, on the daemon's own event stream.
-    expect(message).toBe(`${EXECUTOR_ROLE.disposition}\n\nfix the bug`)
-    // The daemon records ONLY the synthesized preamble as the system slice;
-    // the caller's ask is the user turn.
-    expect(opts?.system).toBe(EXECUTOR_ROLE.disposition)
+    // recording-only, on the daemon's own event stream. The composed prompt
+    // also carries the WP-R2 AGENTS.md preamble (baseDeps's default resolver
+    // is "absent" mode, which still always carries the real cd-contract
+    // line — see agents-md.ts) between the disposition and the caller's ask.
+    expect(message).toBe(`${EXECUTOR_ROLE.disposition}\n\n${cdContractLine}\n\nfix the bug`)
+    // The daemon records the WHOLE daemon-composed preamble (disposition +
+    // AGENTS.md contract line) as the system slice; the caller's ask is the
+    // user turn.
+    expect(opts?.system).toBe(`${EXECUTOR_ROLE.disposition}\n\n${cdContractLine}`)
   })
 
   it("depth-derived default: root spawn (depth 0) with no role defaults to supervisor", async () => {
@@ -4456,7 +4460,7 @@ describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
     if (!result.ok) throw new Error("expected success")
     expect(sendPrompt).toHaveBeenCalledTimes(1)
     const prompt = sendPrompt.mock.calls[0]?.[1] as string
-    const dispositionIdx = prompt.indexOf("You are the leaf")
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
     const agIdx = prompt.indexOf("--- AGENTS.md (/x/AGENTS.md) ---")
     const contractIdx = prompt.indexOf("THE_CONTRACT_LINE")
     const taskIdx = prompt.indexOf("do the thing")
@@ -4551,7 +4555,7 @@ describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
 
     const prompt = sendPrompt.mock.calls[0]?.[1] as string
     expect(prompt).toContain("read it before your first tool call")
-    const dispositionIdx = prompt.indexOf("You are the leaf")
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
     const pointerIdx = prompt.indexOf("read it before your first tool call")
     const taskIdx = prompt.indexOf("verify the leaf contract")
     expect(pointerIdx).toBeGreaterThan(dispositionIdx)
