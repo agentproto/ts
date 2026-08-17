@@ -273,3 +273,193 @@ describe("agentproto sessions start — orchestrator / mcpServers flags", () => 
     expect(body.title).toBeUndefined()
   })
 })
+
+describe("agentproto sessions start — --access-profile / --worktree flags", () => {
+  let stderrChunks: string[]
+  let stdoutChunks: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stderrSpy: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stdoutSpy: any
+
+  beforeEach(() => {
+    stderrChunks = []
+    stdoutChunks = []
+    stderrSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(process.stderr as any, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(String(chunk))
+        return true
+      })
+    stdoutSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(process.stdout as any, "write")
+      .mockImplementation((chunk: unknown) => {
+        stdoutChunks.push(String(chunk))
+        return true
+      })
+
+    readFileMock.mockReset()
+    discoverDaemon.mockResolvedValue({
+      found: { url: "http://127.0.0.1:18790", token: "tok" },
+      stale: [],
+    })
+    httpPostJson.mockResolvedValue({
+      id: "sess_001",
+      kind: "agent",
+      status: "running",
+      command: "claude-code",
+      workspaceSlug: "default",
+      startedAt: new Date().toISOString(),
+    })
+  })
+
+  afterEach(() => {
+    stderrSpy.mockRestore()
+    stdoutSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it("USAGE documents --access-profile, --worktree and --no-worktree", async () => {
+    const code = await runSessions(["--help"])
+    expect(code).toBe(0)
+    const out = stdoutChunks.join("")
+    expect(out).toContain("--access-profile")
+    expect(out).toContain("--worktree")
+    expect(out).toContain("--no-worktree")
+    expect(out).toContain("--mode")
+    expect(out).toContain("--effort")
+  })
+
+  it("sends body.mode and body.effort for --mode / --effort", async () => {
+    const code = await runSessions([
+      "start",
+      "claude-code",
+      "--mode",
+      "plan",
+      "--effort",
+      "xhigh",
+    ])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.mode).toBe("plan")
+    expect(body.effort).toBe("xhigh")
+  })
+
+  it("sends body.access = { profileRef } for --access-profile", async () => {
+    const code = await runSessions([
+      "start",
+      "claude-code",
+      "--access-profile",
+      "claude-max",
+    ])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.access).toEqual({ profileRef: "claude-max" })
+  })
+
+  it("omits body.access when --access-profile is not passed", async () => {
+    await runSessions(["start", "claude-code"])
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.access).toBeUndefined()
+  })
+
+  it("sends body.worktree = true for --worktree", async () => {
+    const code = await runSessions(["start", "claude-code", "--worktree"])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.worktree).toBe(true)
+  })
+
+  it("sends body.worktree = false for --no-worktree", async () => {
+    const code = await runSessions(["start", "claude-code", "--no-worktree"])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.worktree).toBe(false)
+  })
+
+  it("rejects --worktree and --no-worktree together before any network call", async () => {
+    const code = await runSessions(["start", "claude-code", "--worktree", "--no-worktree"])
+    expect(code).toBe(2)
+    expect(httpPostJson).not.toHaveBeenCalled()
+    expect(discoverDaemon).not.toHaveBeenCalled()
+    expect(stderrChunks.join("")).toContain("mutually exclusive")
+  })
+
+  it("omits body.worktree when neither flag is passed (daemon policy decides)", async () => {
+    await runSessions(["start", "claude-code"])
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.worktree).toBeUndefined()
+  })
+
+  it("combo: --orchestrator --access-profile wires both on the body (WP-R5 repro)", async () => {
+    const code = await runSessions([
+      "start",
+      "claude-code",
+      "--orchestrator",
+      "--access-profile",
+      "claude-pro-max",
+    ])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.orchestrator).toBe(true)
+    expect(body.access).toEqual({ profileRef: "claude-pro-max" })
+  })
+
+  it("prints the worktree path in the plain-text success line when the descriptor has one", async () => {
+    httpPostJson.mockResolvedValue({
+      id: "sess_001",
+      kind: "agent",
+      status: "running",
+      command: "claude-code",
+      workspaceSlug: "default",
+      worktreePath: "/tmp/wt/claude-worktree-7",
+      startedAt: new Date().toISOString(),
+    })
+    const code = await runSessions(["start", "claude-code", "--worktree"])
+    expect(code).toBe(0)
+    expect(stdoutChunks.join("")).toContain("worktree: /tmp/wt/claude-worktree-7")
+  })
+
+  it("omits the worktree line from the success line when the descriptor has none", async () => {
+    const code = await runSessions(["start", "claude-code"])
+    expect(code).toBe(0)
+    expect(stdoutChunks.join("")).not.toContain("worktree:")
+  })
+
+  it("frames an access_profile_ineligible daemon failure with an actionable hint", async () => {
+    httpPostJson.mockRejectedValue(
+      new Error(
+        'HTTP 400: {"error":"access_profile_ineligible","message":"profile \\"foo\\" (api/subscription) is not eligible for adapter \\"claude-code\\" on route \\"default\\" (billed endpoint: api)."}',
+      ),
+    )
+    const code = await runSessions([
+      "start",
+      "claude-code",
+      "--access-profile",
+      "foo",
+    ])
+    expect(code).toBe(1)
+    const err = stderrChunks.join("")
+    expect(err).toContain("access_profile_ineligible")
+    expect(err).toContain("not eligible")
+    expect(err).toContain("--access-profile")
+  })
+
+  it("frames an access_profile_not_found daemon failure with an actionable hint", async () => {
+    httpPostJson.mockRejectedValue(
+      new Error('HTTP 400: {"error":"access_profile_not_found","message":"no auth profile \\"ghost\\" found."}'),
+    )
+    const code = await runSessions([
+      "start",
+      "claude-code",
+      "--access-profile",
+      "ghost",
+    ])
+    expect(code).toBe(1)
+    const err = stderrChunks.join("")
+    expect(err).toContain("access_profile_not_found")
+    expect(err).toContain("no auth profile")
+  })
+})

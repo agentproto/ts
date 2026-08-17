@@ -697,6 +697,32 @@ describe("daemon-events exporter", () => {
     ])
   })
 
+  it("maps a daemon-composed system-prompt record to a SYSTEM message, distinct from the caller's user-prompt", async () => {
+    writeEvents([
+      {
+        kind: "system-prompt",
+        sessionId: SESSION_ID,
+        text: "You are the executor. Do the task yourself.",
+      },
+      { kind: "user-prompt", sessionId: SESSION_ID, text: "fix the bug" },
+    ])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      source: "daemon",
+      format: "json",
+    })
+
+    expect(result.content).not.toContain("Error:")
+    const parsed = JSON.parse(result.content) as ExportedSession
+    const FIXTURE_TS = Date.parse("2026-06-01T00:00:00.000Z")
+    expect(parsed.messages).toEqual([
+      { role: "system", text: "You are the executor. Do the task yourself.", ts: FIXTURE_TS },
+      { role: "user", text: "fix the bug", ts: FIXTURE_TS },
+    ])
+  })
+
   it("renders plan and error events as system messages, and folds usage_update into meta", async () => {
     writeEvents([
       {

@@ -41,6 +41,12 @@ import { homedir, platform as osPlatform } from "node:os"
 import { dirname, join } from "node:path"
 import { parseArgs } from "node:util"
 import {
+  compareVersions,
+  runReleaseCheck,
+  type ReleaseBuildSource,
+  type ReleaseCheckView,
+} from "@agentproto/runtime/release-check"
+import {
   loadConfig,
   CONFIG_FILE_PATH,
   type AgentprotoConfig,
@@ -258,6 +264,38 @@ export function renderBuild(build: DaemonHealthInfo["build"]): string {
     build.builtAt ? `built ${build.builtAt}` : undefined,
   ].filter((p): p is string => typeof p === "string" && p.length > 0)
   return parts.length > 0 ? ` (${parts.join(", ")})` : ""
+}
+
+/**
+ * The `release:` line for `daemon status` — same release-check logic the VS
+ * Code indicator uses (WP-A/WP-C fold). Returns one of:
+ *  - `up to date`       — this install is current.
+ *  - `v<latest> available` — a newer `@agentproto/cli` is out.
+ *  - `unknown`          — couldn't reach npm / no cache (offline-safe).
+ */
+export async function renderReleaseStatus(
+  localVersion: string | null,
+  buildSource: ReleaseBuildSource,
+  check?: (opts: { localVersion: string | null; buildSource: ReleaseBuildSource }) => Promise<ReleaseCheckView>,
+): Promise<string> {
+  if (!localVersion) return "unknown"
+  const view = check
+    ? await check({ localVersion, buildSource })
+    : await runReleaseCheck({ localVersion, buildSource, ttlMs: 60 * 60 * 1000 })
+  switch (view.state) {
+    case "behind":
+      return view.latest ? `v${view.latest} available` : "unknown"
+    case "workspace":
+      // A workspace install: a newer release still means "rebuild required",
+      // decided by the same version comparison as the shared logic.
+      return view.latest && compareVersions(view.latest, localVersion) > 0
+        ? `v${view.latest} available`
+        : "up to date"
+    case "current":
+      return "up to date"
+    default:
+      return "unknown"
+  }
 }
 
 /** Single `/health` attempt against the configured bind/port — null when
@@ -682,6 +720,8 @@ async function runStatus(): Promise<number> {
 
   // 3. /health probe.
   let health: string | null = null
+  let release: string | null = null
+  let buildSource: ReleaseBuildSource = null
   try {
     const res = await fetch(`http://${bind}:${port}/health`, {
       signal: AbortSignal.timeout(800),
@@ -696,6 +736,10 @@ async function runStatus(): Promise<number> {
       health =
         `ok${body.version ? ` · v${body.version}` : ""}${renderBuild(body.build)}` +
         ` · workspace=${body.workspace ?? "?"} · up ${humaniseUptime(body.uptimeMs ?? 0)}`
+      // Fold the release check (same logic the VS Code indicator uses): state
+      // the install channel + whether a newer release exists.
+      buildSource = body.build?.source === "workspace" ? "workspace" : "tarball"
+      release = await renderReleaseStatus(body.version ?? null, buildSource)
     } else {
       health = `HTTP ${res.status}`
     }
@@ -711,6 +755,7 @@ async function runStatus(): Promise<number> {
       (stateMatch ? ` · state=${stateMatch[1]}` : "") +
       `\n` +
       `  /health:   ${health}  (http://${bind}:${port})\n` +
+      `  release:   ${release ?? "unknown"}\n` +
       `  config:    ${CONFIG_FILE_PATH()}\n` +
       `  logs:      ${p.log}\n`,
   )

@@ -2218,7 +2218,7 @@ export interface SessionsRegistry {
   sendPrompt(
     id: string,
     message: unknown,
-    opts?: { interrupt?: boolean; source?: string }
+    opts?: { interrupt?: boolean; source?: string; system?: string }
   ): Promise<void>
   /** Fire-and-forget variant of `sendPrompt` for the TURN ITSELF only.
    *  Admission (resume attempt + the missing/wrong-kind/dead/busy
@@ -2782,6 +2782,15 @@ export interface SpawnAgentInput {
    *  runs in the background, projecting events into the ring
    *  buffer. Skip to spawn idle. */
   initialPrompt?: string
+  /** The daemon-composed SYSTEM slice of {@link initialPrompt} — the part
+   *  it synthesized ahead of the CALLER's ask (role disposition, lineage
+   *  line, AGENTS.md, posture preamble). The adapter still receives the
+   *  single concatenated `initialPrompt` unchanged; this metadata lets the
+   *  daemon's OWN event stream record that slice as a `system-prompt` turn
+   *  (ahead of the `user-prompt`) so UIs can fold it instead of rendering
+   *  it as a user bubble. Absent ⇒ the whole `initialPrompt` is treated as
+   *  user text (no synthesized preamble, e.g. a human reprompt). */
+  initialPromptSystem?: string
   label?: string
   /** Title to stamp on the descriptor up-front, BEFORE the `initialPrompt`
    *  turn runs. Set by the spawn path from the CALLER's ask (`input.prompt`),
@@ -2915,6 +2924,10 @@ export type PendingAgentOutcome =
       /** Dispatched now that the tree + driver session both exist — never
        *  passed to `spawnAgentPending`, which would race the tree. */
       initialPrompt?: string
+      /** The daemon-composed SYSTEM slice of `initialPrompt` (see
+       *  `SpawnAgentInput.initialPromptSystem`) — threaded through the
+       *  placeholder so the deferred dispatch records it as a system turn. */
+      initialPromptSystem?: string
     }
   | {
       ok: false
@@ -4808,7 +4821,7 @@ export function createSessionsRegistry(opts?: {
     // `agent:<sessionId>` when another session injected this turn
     // (agent_prompt from a supervisor, a parent's spawn prompt), absent for
     // a human operator. Recording-only: never alters turn behavior.
-    turnOpts?: { promptSource?: string }
+    turnOpts?: { promptSource?: string; system?: string }
   ): Promise<void> => {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
@@ -4923,7 +4936,12 @@ export function createSessionsRegistry(opts?: {
       transcriptWriter.recordPrompt(
         rt.desc.id,
         message,
-        turnOpts?.promptSource ? { source: turnOpts.promptSource } : undefined
+        turnOpts?.promptSource || turnOpts?.system
+          ? {
+              ...(turnOpts?.promptSource ? { source: turnOpts.promptSource } : {}),
+              ...(turnOpts?.system ? { system: turnOpts.system } : {}),
+            }
+          : undefined
       )
       // ACP's `prompt` field expects ContentBlock[] (or a single
       // block). Hosts that send a raw string get auto-wrapped into
@@ -5584,7 +5602,12 @@ export function createSessionsRegistry(opts?: {
         void runAgentTurn(
           rt,
           input.initialPrompt,
-          desc.parentSessionId ? { promptSource: `agent:${desc.parentSessionId}` } : undefined
+          {
+            ...(desc.parentSessionId
+              ? { promptSource: `agent:${desc.parentSessionId}` }
+              : {}),
+            ...(input.initialPromptSystem ? { system: input.initialPromptSystem } : {}),
+          }
         ).catch(err => {
           appendLine(
             rt,
@@ -5734,7 +5757,12 @@ export function createSessionsRegistry(opts?: {
         void runAgentTurn(
           rt,
           outcome.initialPrompt,
-          rt.desc.parentSessionId ? { promptSource: `agent:${rt.desc.parentSessionId}` } : undefined
+          {
+            ...(rt.desc.parentSessionId
+              ? { promptSource: `agent:${rt.desc.parentSessionId}` }
+              : {}),
+            ...(outcome.initialPromptSystem ? { system: outcome.initialPromptSystem } : {}),
+          }
         ).catch(err => {
           appendLine(
             rt,
@@ -6073,7 +6101,10 @@ export function createSessionsRegistry(opts?: {
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
-      await runAgentTurn(rt, message, opts?.source ? { promptSource: opts.source } : undefined)
+      await runAgentTurn(rt, message, {
+        ...(opts?.source ? { promptSource: opts.source } : {}),
+        ...(opts?.system ? { system: opts.system } : {}),
+      })
     },
     async enqueuePrompt(id, message, opts) {
       // Admission phase — AWAITED, unlike the turn itself below. This

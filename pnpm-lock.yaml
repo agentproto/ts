@@ -3024,6 +3024,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.4.3)
+      ai:
+        specifier: ^6.0.204
+        version: 6.0.246(zod@4.4.3)
       croner:
         specifier: ^9.0.0
         version: 9.1.0
@@ -3043,6 +3046,9 @@ importers:
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling
+      '@agentproto/transcript-fixtures':
+        specifier: workspace:*
+        version: link:../transcript-fixtures
       '@types/node':
         specifier: ^25.6.2
         version: 25.6.2

@@ -76,6 +76,11 @@
       "import": "./dist/providers-store.mjs",
       "default": "./dist/providers-store.mjs"
     },
+    "./release-check": {
+      "types": "./dist/release-check.d.ts",
+      "import": "./dist/release-check.mjs",
+      "default": "./dist/release-check.mjs"
+    },
     "./mcp-imports": {
       "types": "./dist/mcp-imports.d.ts",
       "import": "./dist/mcp-imports.mjs",
@@ -146,6 +151,7 @@
     "@agentproto/workflow-runtime": "workspace:*",
     "@agentproto/workspace-brain": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "ai": "^6.0.204",
     "croner": "^9.0.0",
     "gray-matter": "^4.0.3",
     "ws": "^8.21.3",
@@ -157,6 +163,7 @@
   "devDependencies": {
     "@agentproto/rendezvous": "workspace:*",
     "@agentproto/tooling": "workspace:*",
+    "@agentproto/transcript-fixtures": "workspace:*",
     "@types/node": "^25.6.2",
     "@types/ws": "^8.5.13",
     "tsup": "^8.5.1",

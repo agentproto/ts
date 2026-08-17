@@ -31,6 +31,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { WebSocketServer, type WebSocket } from "ws"
 import { ZodError } from "zod"
+import type { UIMessageChunk } from "ai"
+import type { AgentprotoRawTranscriptRecord } from "@agentproto/transcript-fixtures"
 import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
@@ -83,6 +85,7 @@ import { readConversation } from "./conversation-read.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import { createReadStream } from "node:fs"
 import { createInterface } from "node:readline"
+import { createTranscriptToUiMapper } from "./chat-stream.js"
 import {
   monitorSessionWait,
   monitorPolicyWait,
@@ -117,7 +120,7 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
-import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
+import { spawnAgentSession, type BuildOrchestratorMcp, type SpawnAgentSessionInput } from "./session-spawn.js"
 import {
   restartAgentSession,
   RestartOverrideError,
@@ -2985,6 +2988,361 @@ export function deliverRecordsExactlyOnce(opts: {
 }
 
 /**
+ * AI-SDK v6 "UI message stream" writer — the wire protocol the
+ * `/sessions/:id/chat` and `/sessions/chat` routes speak. Same SSE framing
+ * `createUIMessageStreamResponse` / `JsonToSseTransformStream` emit
+ * (`data: <JSON UIMessageChunk>\n\n`, `x-vercel-ai-ui-message-stream: v1`),
+ * but driven here by the daemon's RAW transcript records instead of a model
+ * stream. Backlog + live are merged via `deliverRecordsExactlyOnce` (no dupe,
+ * no hole); each record is mapped to chunk(s) and written as its own `data:`
+ * frame. On a `turn-end` record the stream finalizes (`data: [DONE]\n\n`).
+ */
+function startAiUiMessageStream(opts: {
+  res: ServerResponse
+  since: number
+  diskRecords: AsyncIterable<Record<string, unknown>>
+  subscribe: (onRecord: (record: Record<string, unknown>) => void) => () => void
+  map: (record: AgentprotoRawTranscriptRecord) => UIMessageChunk[]
+}): { finalize: () => void; disconnect: () => void; done: Promise<void> } {
+  const { res } = opts
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    "x-vercel-ai-ui-message-stream": "v1",
+    "x-accel-buffering": "no",
+  })
+  // Unblocks `writeHead` (Node buffers it until the first write) so a session
+  // with nothing new to replay doesn't hang the client — same `: connected`
+  // convention `/events/stream` uses.
+  res.write(`: connected\n\n`)
+  let finalized = false
+  let unsubscribeFn: (() => void) | null = null
+  const ping = setInterval(() => {
+    try {
+      res.write(`: keep-alive\n\n`)
+    } catch {
+      finalize()
+    }
+  }, 25_000)
+  const unwind = (): void => {
+    clearInterval(ping)
+    if (unsubscribeFn) {
+      unsubscribeFn()
+      unsubscribeFn = null
+    }
+  }
+  const finalize = (): void => {
+    if (finalized) return
+    finalized = true
+    try {
+      res.write(`data: [DONE]\n\n`)
+      res.end()
+    } catch {
+      // Socket already gone — nothing left to flush.
+    }
+    unwind()
+  }
+  const writeChunk = (chunk: UIMessageChunk): void => {
+    try {
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+    } catch {
+      finalize()
+    }
+  }
+  const { unsubscribe, done } = deliverRecordsExactlyOnce({
+    since: opts.since,
+    diskRecords: opts.diskRecords,
+    subscribe: opts.subscribe,
+    send: record => {
+      // The `turn-end` record finalized the response (`res.end()`). The
+      // transcript writer can still emit POST-terminal records after it —
+      // `runAgentTurn` writes the durable `usage_snapshot` (and possibly a
+      // `usage_update`) in its finally block AFTER recording the turn-end
+      // (sessions.ts). Those are turn bookkeeping, not part of the assistant
+      // message stream, and writing them to the now-ended response would
+      // raise ERR_STREAM_WRITE_AFTER_END. Drop them entirely — no map, no
+      // write — once the stream is finalized.
+      if (finalized) return
+      for (const chunk of opts.map(record as unknown as AgentprotoRawTranscriptRecord))
+        writeChunk(chunk)
+      if (record.kind === "turn-end") finalize()
+    },
+  })
+  unsubscribeFn = unsubscribe
+  return { finalize, disconnect: unwind, done }
+}
+
+/** Highest `seq` currently on disk for a session's events.jsonl (0 if absent).
+ *  Used as the chat stream's `since` edge so a continuation only replays the
+ *  records that land AFTER the caller's prompt — never the session's prior
+ *  turn history. */
+async function currentTranscriptSeq(id: string): Promise<number> {
+  const filePath = sessionEventsPath(id)
+  let stream: ReturnType<typeof createReadStream>
+  try {
+    stream = createReadStream(filePath, { encoding: "utf8" })
+    await new Promise<void>((resolve, reject) => {
+      stream.once("error", reject)
+      stream.once("open", resolve)
+    })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0
+    throw err
+  }
+  let last = 0
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  for await (const line of rl) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const rec = JSON.parse(trimmed) as Record<string, unknown>
+      if (typeof rec.seq === "number") last = rec.seq
+    } catch {
+      continue
+    }
+  }
+  return last
+}
+
+/** Async-iterable of a session's on-disk events.jsonl records. Tolerates a
+ *  missing file (yields nothing) — unlike /events/stream's 404-on-ENOENT, a
+ *  chat against a session with no transcript yet is a live-only stream. */
+async function* transcriptDiskRecords(id: string): AsyncGenerator<Record<string, unknown>> {
+  const filePath = sessionEventsPath(id)
+  let stream: ReturnType<typeof createReadStream>
+  try {
+    stream = createReadStream(filePath, { encoding: "utf8" })
+    await new Promise<void>((resolve, reject) => {
+      stream.once("error", reject)
+      stream.once("open", resolve)
+    })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return
+    throw err
+  }
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  for await (const line of rl) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      yield JSON.parse(trimmed) as Record<string, unknown>
+    } catch {
+      continue
+    }
+  }
+}
+
+/**
+ * Shared body → `spawnAgentSession` input mapper used by BOTH
+ * `POST /sessions/agent` and the create-variant `POST /sessions/chat`, so the
+ * two surfaces can't drift from each other (or from the MCP `agent_start` core
+ * they both delegate to).
+ */
+function buildSpawnSessionHttpArgs(
+  b: Record<string, unknown>,
+  adapter: string,
+  preset?: UserPreset,
+): SpawnAgentSessionInput {
+  return {
+    adapter,
+    ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
+    ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
+    ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
+    ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0
+      ? { workspaceSlug: b.workspaceSlug }
+      : {}),
+    ...(typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
+      ? { resumeSessionId: b.resumeSessionId }
+      : {}),
+    ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
+    ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
+    ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
+    ...(b.route !== undefined
+      ? (() => {
+          const parsed = parseRouteField(b.route)
+          return parsed !== undefined ? { route: parsed } : {}
+        })()
+      : {}),
+    ...(b.access !== undefined
+      ? (() => {
+          const parsed = parseAccessField(b.access)
+          return parsed !== undefined ? { access: parsed } : {}
+        })()
+      : {}),
+    ...(typeof b.posture === "string" && b.posture.length > 0
+      ? { posture: parsePostureInput(b.posture) }
+      : {}),
+    ...(typeof b.contextProfile === "string" && b.contextProfile.length > 0
+      ? { contextProfile: b.contextProfile }
+      : {}),
+    ...(preset ? { preset } : {}),
+    ...(b.options !== undefined
+      ? (() => {
+          const parsed = parseOptionsField(b.options)
+          return parsed !== undefined ? { options: parsed } : {}
+        })()
+      : {}),
+    ...(b.auth !== undefined
+      ? (() => {
+          const parsed = parseAuthField(b.auth)
+          return parsed !== undefined ? { auth: parsed } : {}
+        })()
+      : {}),
+    ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
+    ...(typeof b.label === "string" ? { label: b.label } : {}),
+    // Explicit title override (SPEC-3 FIX C, `--title`) — wins over the
+    // first-sentence derivation from the prompt (see session-spawn.ts).
+    ...(typeof b.title === "string" ? { title: b.title } : {}),
+    ...(typeof b.idempotencyKey === "string" && b.idempotencyKey.length > 0
+      ? { idempotencyKey: b.idempotencyKey }
+      : {}),
+    // Per-call escape hatch for the daemon's `spawn.dedupe` policy — the
+    // HTTP twin of the MCP `agent_start` tool's `dedupe` field. Tolerate
+    // a stringified boolean like `trace`/`permissionHold`.
+    ...(b.dedupe !== undefined
+      ? (() => {
+          const d =
+            typeof b.dedupe === "boolean"
+              ? b.dedupe
+              : b.dedupe === "true"
+                ? true
+                : b.dedupe === "false"
+                  ? false
+                  : undefined
+          return d !== undefined ? { dedupe: d } : {}
+        })()
+      : {}),
+    // Parent-lineage hint (WP-R1) — the HTTP twin of the MCP `agent_start`
+    // tool's `parentSessionId` field. This route carries no `callerScope`
+    // (it's the anonymous root trust boundary), so the hint is honoured and
+    // the child's depth is derived from the parent — see spawnAgentSession.
+    ...(typeof b.parentSessionId === "string" && b.parentSessionId.length > 0
+      ? { parentSessionId: b.parentSessionId }
+      : {}),
+    // Task-board pin — the HTTP twin of the MCP `agent_start` tool's
+    // `boardId` field. Stamped onto the child's `meta.boardId`; the task
+    // ledger prefers it over the lineage walk — see session-spawn.ts.
+    ...(typeof b.boardId === "string" && b.boardId.length > 0
+      ? { boardId: b.boardId }
+      : {}),
+    ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
+    ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
+    ...(b.orchestrator !== undefined
+      ? (() => {
+          const parsed = parseOrchestratorField(b.orchestrator)
+          return parsed !== undefined ? { orchestrator: parsed } : {}
+        })()
+      : {}),
+    ...(b.mcpServers !== undefined
+      ? (() => {
+          const parsed = parseMcpServersField(b.mcpServers)
+          return parsed !== undefined ? { mcpServers: parsed } : {}
+        })()
+      : {}),
+    // Opt this session into Langfuse tracing — the HTTP twin of the
+    // MCP `agent_start` tool's `trace` field. Tolerate a stringified
+    // boolean (JSON `true`, or `"true"`/`"false"` from form-ish callers)
+    // so the REST driver reaches the same registry gate the MCP tool does.
+    ...(b.trace !== undefined
+      ? (() => {
+          const t =
+            typeof b.trace === "boolean"
+              ? b.trace
+              : b.trace === "true"
+                ? true
+                : b.trace === "false"
+                  ? false
+                  : undefined
+          return t !== undefined ? { trace: t } : {}
+        })()
+      : {}),
+    // Permission-hold mode — the HTTP twin of the MCP `agent_start` tool's
+    // `permissionHold` field (and `agentproto sessions start
+    // --hold-permissions`). Tolerate a stringified boolean like `trace`.
+    ...(b.permissionHold !== undefined
+      ? (() => {
+          const h =
+            typeof b.permissionHold === "boolean"
+              ? b.permissionHold
+              : b.permissionHold === "true"
+                ? true
+                : b.permissionHold === "false"
+                  ? false
+                  : undefined
+          return h ? { permissionHold: true } : {}
+        })()
+      : {}),
+    // Opt into direct in-band crash notification — the HTTP twin of the
+    // MCP `agent_start` tool's `notifyParentOnCrash` field. Tolerate a
+    // stringified boolean like `permissionHold`/`trace`.
+    ...(b.notifyParentOnCrash !== undefined
+      ? (() => {
+          const n =
+            typeof b.notifyParentOnCrash === "boolean"
+              ? b.notifyParentOnCrash
+              : b.notifyParentOnCrash === "true"
+                ? true
+                : b.notifyParentOnCrash === "false"
+                  ? false
+                  : undefined
+          return n ? { notifyParentOnCrash: true } : {}
+        })()
+      : {}),
+    // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
+    // `worktree` field. Same `spawnAgentSession` core resolves the
+    // `worktrees.isolation` policy, so `always` bites here too and there's
+    // no policy-bypassing spawn path.
+    ...(b.worktree !== undefined
+      ? (() => {
+          const parsed = parseWorktreeField(b.worktree)
+          return parsed !== undefined ? { worktree: parsed } : {}
+        })()
+      : {}),
+    // Opt-in auto-restart policy — the HTTP twin of the MCP `agent_start`
+    // tool's `restartPolicy` field (restart-scheduler PR-2).
+    ...(b.restartPolicy !== undefined
+      ? (() => {
+          const parsed = parseRestartPolicyField(b.restartPolicy)
+          return parsed !== undefined ? { restartPolicy: parsed } : {}
+        })()
+      : {}),
+    // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP
+    // twin of the MCP `agent_start` tool's `allowSharedCwd` field. Tolerate
+    // a stringified boolean like `permissionHold`/`trace`.
+    ...(b.allowSharedCwd !== undefined
+      ? (() => {
+          const a =
+            typeof b.allowSharedCwd === "boolean"
+              ? b.allowSharedCwd
+              : b.allowSharedCwd === "true"
+                ? true
+                : b.allowSharedCwd === "false"
+                  ? false
+                  : undefined
+          return a ? { allowSharedCwd: true } : {}
+        })()
+      : {}),
+    // Idle-reaper exemption — the HTTP twin of the MCP `agent_start` tool's
+    // `keepAlive` field. Tolerate a stringified boolean like
+    // `permissionHold`/`trace`/`allowSharedCwd`.
+    ...(b.keepAlive !== undefined
+      ? (() => {
+          const k =
+            typeof b.keepAlive === "boolean"
+              ? b.keepAlive
+              : b.keepAlive === "true"
+                ? true
+                : b.keepAlive === "false"
+                  ? false
+                  : undefined
+          return k ? { keepAlive: true } : {}
+        })()
+      : {}),
+  }
+}
+
+/**
  * /sessions routes — split out of the main switch so the surface
  * stays scannable. Returns `true` when it handled the request, so
  * the dispatcher knows to skip the 404 path.
@@ -2999,6 +3357,10 @@ export function deliverRecordsExactlyOnce(opts: {
  *                                    max 2000). Returns {sessionId, events, nextSeq, complete};
  *                                    404 {error:"no_transcript"} when the file doesn't exist.
  *                                    Read-only GET, no auth gate (same policy as /export).
+ *   POST   /sessions/:id/chat → enqueue a prompt + stream the turn as `ai` v6
+ *                                    UI-message-stream `UIMessageChunk`s.
+ *   POST   /sessions/chat      → create-and-chat: spawn (reusing /sessions/agent's
+ *                                    spawnAgentSession) and stream the first turn.
  *   GET    /sessions/:id/events/stream → SSE live-push sibling of /events: replays every
  *                                    record after since=<seq> (default 0) from disk, then
  *                                    switches to live push as new records are written — one
@@ -3374,202 +3736,7 @@ async function handleSessions(
         ...(provisionWorktree ? { provisionWorktree } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
       },
-      {
-        adapter,
-        ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
-        ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
-        ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
-        ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0
-          ? { workspaceSlug: b.workspaceSlug }
-          : {}),
-        ...(typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
-          ? { resumeSessionId: b.resumeSessionId }
-          : {}),
-        ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
-        ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
-        ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
-        ...(b.route !== undefined
-          ? (() => {
-              const parsed = parseRouteField(b.route)
-              return parsed !== undefined ? { route: parsed } : {}
-            })()
-          : {}),
-        ...(b.access !== undefined
-          ? (() => {
-              const parsed = parseAccessField(b.access)
-              return parsed !== undefined ? { access: parsed } : {}
-            })()
-          : {}),
-        ...(typeof b.posture === "string" && b.posture.length > 0
-          ? { posture: parsePostureInput(b.posture) }
-          : {}),
-        ...(typeof b.contextProfile === "string" && b.contextProfile.length > 0
-          ? { contextProfile: b.contextProfile }
-          : {}),
-        ...(preset ? { preset } : {}),
-        ...(b.options !== undefined
-          ? (() => {
-              const parsed = parseOptionsField(b.options)
-              return parsed !== undefined ? { options: parsed } : {}
-            })()
-          : {}),
-        ...(b.auth !== undefined
-          ? (() => {
-              const parsed = parseAuthField(b.auth)
-              return parsed !== undefined ? { auth: parsed } : {}
-            })()
-          : {}),
-        ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
-        ...(typeof b.label === "string" ? { label: b.label } : {}),
-        // Explicit title override (SPEC-3 FIX C, `--title`) — wins over the
-        // first-sentence derivation from the prompt (see session-spawn.ts).
-        ...(typeof b.title === "string" ? { title: b.title } : {}),
-        ...(typeof b.idempotencyKey === "string" && b.idempotencyKey.length > 0
-          ? { idempotencyKey: b.idempotencyKey }
-          : {}),
-        // Per-call escape hatch for the daemon's `spawn.dedupe` policy — the
-        // HTTP twin of the MCP `agent_start` tool's `dedupe` field. Tolerate
-        // a stringified boolean like `trace`/`permissionHold`.
-        ...(b.dedupe !== undefined
-          ? (() => {
-              const d =
-                typeof b.dedupe === "boolean"
-                  ? b.dedupe
-                  : b.dedupe === "true"
-                    ? true
-                    : b.dedupe === "false"
-                      ? false
-                      : undefined
-              return d !== undefined ? { dedupe: d } : {}
-            })()
-          : {}),
-        // Parent-lineage hint (WP-R1) — the HTTP twin of the MCP `agent_start`
-        // tool's `parentSessionId` field. This route carries no `callerScope`
-        // (it's the anonymous root trust boundary), so the hint is honoured and
-        // the child's depth is derived from the parent — see spawnAgentSession.
-        ...(typeof b.parentSessionId === "string" && b.parentSessionId.length > 0
-          ? { parentSessionId: b.parentSessionId }
-          : {}),
-        // Task-board pin — the HTTP twin of the MCP `agent_start` tool's
-        // `boardId` field. Stamped onto the child's `meta.boardId`; the task
-        // ledger prefers it over the lineage walk — see session-spawn.ts.
-        ...(typeof b.boardId === "string" && b.boardId.length > 0
-          ? { boardId: b.boardId }
-          : {}),
-        ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
-        ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
-        ...(b.orchestrator !== undefined
-          ? (() => {
-              const parsed = parseOrchestratorField(b.orchestrator)
-              return parsed !== undefined ? { orchestrator: parsed } : {}
-            })()
-          : {}),
-        ...(b.mcpServers !== undefined
-          ? (() => {
-              const parsed = parseMcpServersField(b.mcpServers)
-              return parsed !== undefined ? { mcpServers: parsed } : {}
-            })()
-          : {}),
-        // Opt this session into Langfuse tracing — the HTTP twin of the
-        // MCP `agent_start` tool's `trace` field. Tolerate a stringified
-        // boolean (JSON `true`, or `"true"`/`"false"` from form-ish callers)
-        // so the REST driver reaches the same registry gate the MCP tool does.
-        ...(b.trace !== undefined
-          ? (() => {
-              const t =
-                typeof b.trace === "boolean"
-                  ? b.trace
-                  : b.trace === "true"
-                    ? true
-                    : b.trace === "false"
-                      ? false
-                      : undefined
-              return t !== undefined ? { trace: t } : {}
-            })()
-          : {}),
-        // Permission-hold mode — the HTTP twin of the MCP `agent_start` tool's
-        // `permissionHold` field (and `agentproto sessions start
-        // --hold-permissions`). Tolerate a stringified boolean like `trace`.
-        ...(b.permissionHold !== undefined
-          ? (() => {
-              const h =
-                typeof b.permissionHold === "boolean"
-                  ? b.permissionHold
-                  : b.permissionHold === "true"
-                    ? true
-                    : b.permissionHold === "false"
-                      ? false
-                      : undefined
-              return h ? { permissionHold: true } : {}
-            })()
-          : {}),
-        // Opt into direct in-band crash notification — the HTTP twin of the
-        // MCP `agent_start` tool's `notifyParentOnCrash` field. Tolerate a
-        // stringified boolean like `permissionHold`/`trace`.
-        ...(b.notifyParentOnCrash !== undefined
-          ? (() => {
-              const n =
-                typeof b.notifyParentOnCrash === "boolean"
-                  ? b.notifyParentOnCrash
-                  : b.notifyParentOnCrash === "true"
-                    ? true
-                    : b.notifyParentOnCrash === "false"
-                      ? false
-                      : undefined
-              return n ? { notifyParentOnCrash: true } : {}
-            })()
-          : {}),
-        // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
-        // `worktree` field. Same `spawnAgentSession` core resolves the
-        // `worktrees.isolation` policy, so `always` bites here too and there's
-        // no policy-bypassing spawn path.
-        ...(b.worktree !== undefined
-          ? (() => {
-              const parsed = parseWorktreeField(b.worktree)
-              return parsed !== undefined ? { worktree: parsed } : {}
-            })()
-          : {}),
-        // Opt-in auto-restart policy — the HTTP twin of the MCP `agent_start`
-        // tool's `restartPolicy` field (restart-scheduler PR-2).
-        ...(b.restartPolicy !== undefined
-          ? (() => {
-              const parsed = parseRestartPolicyField(b.restartPolicy)
-              return parsed !== undefined ? { restartPolicy: parsed } : {}
-            })()
-          : {}),
-        // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP
-        // twin of the MCP `agent_start` tool's `allowSharedCwd` field. Tolerate
-        // a stringified boolean like `permissionHold`/`trace`.
-        ...(b.allowSharedCwd !== undefined
-          ? (() => {
-              const a =
-                typeof b.allowSharedCwd === "boolean"
-                  ? b.allowSharedCwd
-                  : b.allowSharedCwd === "true"
-                    ? true
-                    : b.allowSharedCwd === "false"
-                      ? false
-                      : undefined
-              return a ? { allowSharedCwd: true } : {}
-            })()
-          : {}),
-        // Idle-reaper exemption — the HTTP twin of the MCP `agent_start` tool's
-        // `keepAlive` field. Tolerate a stringified boolean like
-        // `permissionHold`/`trace`/`allowSharedCwd`.
-        ...(b.keepAlive !== undefined
-          ? (() => {
-              const k =
-                typeof b.keepAlive === "boolean"
-                  ? b.keepAlive
-                  : b.keepAlive === "true"
-                    ? true
-                    : b.keepAlive === "false"
-                      ? false
-                      : undefined
-              return k ? { keepAlive: true } : {}
-            })()
-          : {}),
-      },
+      buildSpawnSessionHttpArgs(b, adapter, preset),
     )
     if (!result.ok) {
       const status =
@@ -3600,6 +3767,101 @@ async function handleSessions(
       ...(result.deduped ? { deduped: true } : {}),
       ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
     })
+    return true
+  }
+
+  // POST /sessions/chat — create-style sibling of POST /sessions/:id/chat.
+  // Spawns a fresh agent session via the SAME core `/sessions/agent` feeds
+  // (`spawnAgentSession`, shared body→args mapper `buildSpawnSessionHttpArgs`)
+  // and, unlike /sessions/agent, REQUIRES a `prompt` and immediately bleeds
+  // the new session's first turn into the `ai` UI message stream instead of
+  // returning a JSON descriptor. Body = the /sessions/agent spawn fields
+  // PLUS `prompt` (the opening user message). On success the response is the
+  // /sessions/:id/chat SSE stream (first turn), not a 201 descriptor.
+  if (path === "/sessions/chat" && req.method === "POST") {
+    if (!resolveAgentAdapter) {
+      json(501, {
+        error: "agent_resolver_not_configured",
+        message:
+          "POST /sessions/chat needs the host to inject `resolveAgentAdapter` " +
+          "(e.g. via @agentproto/cli's resolveAdapter shim).",
+      })
+      return true
+    }
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const chatPrompt = typeof b.prompt === "string" ? b.prompt.trim() : ""
+    if (!chatPrompt) {
+      json(400, { error: "missing_prompt", message: "body.prompt (non-empty string) is required" })
+      return true
+    }
+    const presetId = typeof b.presetId === "string" && b.presetId.length > 0 ? b.presetId : undefined
+    const preset = presetId ? await getUserPreset(presetId) : undefined
+    if (presetId && !preset) {
+      json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
+      return true
+    }
+    const adapter =
+      typeof b.adapter === "string"
+        ? b.adapter
+        : typeof b.harness === "string"
+          ? b.harness
+          : preset?.adapter ?? preset?.harness ?? ""
+    if (!adapter) {
+      json(400, { error: "missing_adapter" })
+      return true
+    }
+    const result = await spawnAgentSession(
+      {
+        registry,
+        resolveAgentAdapter,
+        buildOrchestratorMcp,
+        daemonMcpUrl,
+        ...(provisionWorktree ? { provisionWorktree } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
+      },
+      buildSpawnSessionHttpArgs(b, adapter, preset),
+    )
+    if (!result.ok) {
+      const status =
+        result.code === "adapter_not_found" || result.code === "no_cwd"
+          ? 404
+          : result.code === "orchestrator_not_enabled"
+            ? 501
+            : result.code === "orchestrator_max_depth_exceeded" ||
+                result.code === "orchestrator_child_quota_exceeded" ||
+                result.code === "role_spawn_denied"
+              ? 409
+              : result.code === "invalid_role" ||
+                  result.code === "worktree_requires_explicit_repo" ||
+                  result.code === "access_profile_not_found" ||
+                  result.code === "access_profile_ineligible"
+                ? 400
+                : 500
+      json(status, {
+        error: result.code,
+        message: result.message,
+        ...result.details,
+      })
+      return true
+    }
+    const id = result.descriptor.id
+    // `since` edge is 0 (a fresh session has no prior turn history), but the
+    // replay must tolerate the spawn already having flushed early records.
+    const since = await currentTranscriptSeq(id)
+    const stream = startAiUiMessageStream({
+      res,
+      since,
+      diskRecords: transcriptDiskRecords(id),
+      subscribe: onRecord => registry.subscribeToRecords(id, onRecord),
+      map: createTranscriptToUiMapper(id),
+    })
+    req.once("close", () => stream.disconnect())
+    await stream.done
     return true
   }
 
@@ -4324,7 +4586,7 @@ async function handleSessions(
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -4563,6 +4825,62 @@ async function handleSessions(
     })
 
     await done
+    return true
+  }
+
+  if (suffix === "/chat" && req.method === "POST") {
+    // POST /sessions/:id/chat — enqueue a follow-up prompt on an EXISTING
+    // /sessions/:id session and fan the daemon's RAW transcript records
+    // (events.jsonl) into the `ai` v6 UI message stream as `UIMessageChunk`s
+    // (same SSE framing + `x-vercel-ai-ui-message-stream` header the ai SDK
+    // emits). Body: { prompt, interrupt?, source? }.
+    //
+    // Two-phase so a rejected prompt (dead session, or busy without
+    // `interrupt`) surfaces as a clean HTTP error instead of a half-open
+    // stream: we snapshot the current disk edge, await `enqueuePrompt`'s
+    // admission gate (which is the only phase that can reject), then open the
+    // stream. Turn records land either via the live subscribe or the disk
+    // replay (deduped exactly-once by `deliverRecordsExactlyOnce`) — the
+    // `since` edge is the pre-prompt seq so the session's PRIOR turn history
+    // is never replayed into the chat wire.
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const prompt = typeof b.prompt === "string" ? b.prompt.trim() : ""
+    if (!prompt) {
+      json(400, { error: "missing_prompt", message: "body.prompt (non-empty string) is required" })
+      return true
+    }
+    const interrupt = b.interrupt === true
+    const source =
+      typeof b.source === "string" && b.source.length > 0 ? b.source : "http:chat"
+    const since = await currentTranscriptSeq(id)
+    try {
+      await registry.enqueuePrompt(id, prompt, {
+        interrupt,
+        ...(source ? { source } : {}),
+      })
+    } catch (err) {
+      if (err instanceof SessionNotAliveError) {
+        json(409, { error: "session_not_alive", message: `session "${id}" not alive` })
+        return true
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      json(409, { error: "prompt_rejected", message })
+      return true
+    }
+    const stream = startAiUiMessageStream({
+      res,
+      since,
+      diskRecords: transcriptDiskRecords(id),
+      subscribe: onRecord => registry.subscribeToRecords(id, onRecord),
+      map: createTranscriptToUiMapper(id),
+    })
+    req.once("close", () => stream.disconnect())
+    await stream.done
     return true
   }
 
