@@ -99,7 +99,7 @@ describe("message_parent — delivery", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         `[child-message] worker-a (${child.id}): done: 3 files patched`,
-        {},
+        { origin: "child:worker-a" },
       )
     } finally {
       await h.close()
@@ -159,7 +159,7 @@ describe("message_parent — delivery", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         expect.stringContaining(`(${child.id}): hello`),
-        {},
+        { origin: `child:${child.id}` },
       )
     } finally {
       await h.close()

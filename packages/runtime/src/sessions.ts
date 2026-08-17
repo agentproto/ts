@@ -656,8 +656,84 @@ export interface QueuedPrompt {
   /** ISO 8601 timestamp this item was queued. */
   queuedAt: string
   /** Same as `enqueuePrompt`'s `opts.source` — carried through to the
-   *  turn this item eventually becomes. */
+   *  turn this item eventually becomes (transcript provenance). */
   source?: string
+  /** Who/what queued this, for the AFTER-THE-FACT queue UI — DISTINCT
+   *  from `source` (transcript provenance). Set from `enqueuePrompt`'s
+   *  `opts.origin` at the enqueue site so a human session-operator, an
+   *  agent session (`agent_prompt`), and a child's report (`message_parent`)
+   *  are cleanly separable when someone inspects the queue later across a
+   *  daemon restart. Absent for legacy queued items — `promptOriginLabel`
+   *  falls back to `source`, then `"user"`. */
+  origin?: string
+}
+
+/**
+ * Short text preview of a queued `QueuedPrompt.message` (raw string OR an
+ * ACP content block / array — the same shape `runAgentTurn`'s `message`
+ * accepts). Flattens text out of content-block arrays and truncates to a
+ * sane single line so a queue UI can show "what's waiting" without the
+ * full payload. Shared by the daemon's `session_queue_list` verb + HTTP
+ * route (the single producer), which the CLI and VS Code panel consume —
+ * it lives here (not duplicated) so no consumer re-implements it.
+ */
+export function previewPrompt(message: unknown, maxLength = 80): string {
+  let text: string
+  if (typeof message === "string") {
+    text = message
+  } else if (Array.isArray(message)) {
+    text = message
+      .map(block => textOfContentBlock(block))
+      .filter(Boolean)
+      .join("\n")
+  } else if (message !== null && typeof message === "object") {
+    text = textOfContentBlock(message)
+  } else {
+    text = ""
+  }
+  const single = text.replace(/\s+/g, " ").trim()
+  if (!single) return "[non-text content]"
+  return single.length > maxLength ? `${single.slice(0, maxLength - 1)}…` : single
+}
+
+/** Extract the human-readable text of a single ACP content block, or empty
+ *  string when it has none (tool-use, images, results, …). */
+function textOfContentBlock(block: unknown): string {
+  if (block === null || typeof block !== "object") return ""
+  const b = block as { type?: unknown; text?: unknown; name?: unknown }
+  if (b.text !== undefined && typeof b.text === "string") return b.text
+  if (b.type === "text" && typeof (block as { text?: unknown }).text === "string") {
+    return (block as { text: string }).text
+  }
+  return ""
+}
+
+/**
+ * Human-readable label for a queued item's origin — "who put this in the
+ * queue". Blanks a code (`"user"`, `"agent:<sessionId>"`,
+ * `"child:<sessionId>"`) into display text; falls back to `source`, then
+ * `"user"` (the historical default for any item that predates `origin`).
+ */
+export function promptOriginLabel(item: { source?: string; origin?: string }): string {
+  const code = item.origin ?? item.source ?? "user"
+  if (code === "user") return "user"
+  if (code.startsWith("agent:")) return `agent ${code.slice("agent:".length)}`
+  if (code.startsWith("child:")) return `child ${code.slice("child:".length)}`
+  return code
+}
+
+/** One entry in the after-the-fact queue listing (`listQueuedPrompts` /
+ *  `session_queue_list` / `GET /sessions/:id/queue`). `position` is the
+ *  array index (0 = next to dispatch). */
+export interface QueuedPromptView {
+  id: string
+  /** Human-readable origin — who queued this ("user", "agent <id>", "child <id>"). */
+  origin: string
+  /** Short single-line text preview of the message. */
+  preview: string
+  /** ISO 8601 timestamp the item was queued. */
+  queuedAt: string
+  position: number
 }
 
 export interface SessionDescriptor {
@@ -766,6 +842,14 @@ export interface SessionDescriptor {
    *  busy descendants. NOTE: in-process subagents a harness runs itself are
    *  invisible to the daemon between turns, so they don't count here. */
   childrenBusy?: number
+  /** Count of prompts currently sitting in this session's
+   *  {@link promptQueue} — a cheap, always-present badge signal for
+   *  list/table/panel rendering ("N queued"), derived at read time from
+   *  the live queue. Ephemeral, never persisted (the queue itself is).
+   *  0/absent ⇒ nothing waiting. The full per-item detail (origin,
+   *  preview, queuedAt, position) lives behind the `session_queue_list`
+   *  verb / `GET /sessions/:id/queue` — this is just the scalar badge. */
+  queuedPrompts?: number
   /** Short human-readable string describing the most recent automatic
    *  failure — currently only stamped by `markCrashed` (e.g. "adapter
    *  process gone (pid 1234) — session crashed"). Not a stack trace or raw
@@ -1424,6 +1508,8 @@ export interface SessionSummary {
   /** Busy-descendant count (#session-visibility, subtree rollup) — see
    *  `SessionDescriptor.childrenBusy`. Drives the "delegating" row state. */
   childrenBusy?: number
+  /** Prompt-queue badge count — see `SessionDescriptor.queuedPrompts`. */
+  queuedPrompts?: number
   label?: string
   title?: string
   renamedByUser?: boolean
@@ -1498,6 +1584,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     processAlive: desc.processAlive,
     watchers: desc.watchers,
     childrenBusy: desc.childrenBusy,
+    queuedPrompts: desc.queuedPrompts,
     label: desc.label,
     title: desc.title,
     renamedByUser: desc.renamedByUser,
@@ -2242,6 +2329,11 @@ export interface SessionsRegistry {
     opts?: {
       interrupt?: boolean
       source?: string
+      /** Display origin for the after-the-fact queue UI ("user" for a
+       *  human operator, agent/child when another session injected this).
+       *  Sets `QueuedPrompt.origin` — see that field; does NOT influence
+       *  transcript provenance (`source` does that). */
+      origin?: string
       queue?: boolean
       force?: boolean
       queueId?: string
@@ -2254,6 +2346,39 @@ export interface SessionsRegistry {
    *  throwing, same shape as `interruptSession`'s no-op-is-not-an-error
    *  contract. */
   removeQueuedPrompt(id: string, queueId: string): { removed: boolean }
+  /** Snapshot a session's prompt queue for inspection — the after-the-fact
+   *  view of what's sitting in `SessionDescriptor.promptQueue` right now.
+   *  Runs the shared preview + origin-label derivation so every consumer
+   *  (the `session_queue_list` MCP tool, `GET /sessions/:id/queue`, the CLI,
+   *  the VS Code panel) sees identical text. `position` is the array index
+   *  (0 = next to dispatch), not stored — derived per call. Returns `null`
+   *  when the session is unknown (the caller surfaces 404). */
+  listQueuedPrompts(id: string): QueuedPromptView[] | null
+  /** Reorder-only force: move an already-queued item to the FRONT of the
+   *  queue (position 0) WITHOUT touching any turn currently in flight — it
+   *  becomes next-to-dispatch once the current turn (if any) ends. The
+   *  queue-reordering counterpart to `deliverQueuedPrompt`'s interrupt-and-
+   *  dispatch; the two are deliberately distinct operations. Returns
+   *  position after promotion (0 when promoted, -1 when the item/session
+   *  isn't found). Never mutates the array in place (the webview diff rules
+   *  on `!==` per field). */
+  promoteQueuedPrompt(id: string, queueId: string): { promoted: boolean; position: number }
+  /** Deliver-now: interrupt whatever's mid-flight (same effect + shared
+   *  helper as `enqueuePrompt`'s `interrupt` arm) and immediately dispatch
+   *  THIS specific queued item as the new turn, removing it from the queue.
+   *  The "I need this NOW" op — distinct from `promoteQueuedPrompt` (which
+   *  only reorders; deliver-now cannot wait for the current turn to end).
+   *
+   *  Implemented as promote-to-front + interrupt: the cancelled turn's
+   *  own `dispatchQueuedPrompt` (in its finally) then drains the promoted
+   *  item into a fresh turn. On an idle session (nothing to interrupt) the
+   *  promoted item is dispatched directly. Returns:
+   *    `{ delivered: false, reason }` — `"no-session"` / `"not-in-queue"`;
+   *    `{ delivered: true, interrupted: boolean }` otherwise. */
+  deliverQueuedPrompt(
+    id: string,
+    queueId: string
+  ): Promise<{ delivered: boolean; reason?: string; interrupted?: boolean }>
   /** Eagerly resume ONE dead-but-resumable agent-cli session IN PLACE,
    *  WITHOUT a prompt — the boot-time counterpart to the lazy resume that
    *  `sendPrompt`/`enqueuePrompt` trigger on the first prompt after a restart
@@ -6087,6 +6212,7 @@ export function createSessionsRegistry(opts?: {
           message,
           queuedAt: new Date().toISOString(),
           ...(opts.source ? { source: opts.source } : {}),
+          ...(opts.origin ? { origin: opts.origin } : {}),
         }
         rtPre.desc.promptQueue = opts.force
           ? [item, ...(rtPre.desc.promptQueue ?? [])]
@@ -6119,6 +6245,57 @@ export function createSessionsRegistry(opts?: {
         schedulePersist()
       }
       return { removed }
+    },
+    listQueuedPrompts(id) {
+      const rt = sessions.get(id)
+      if (!rt) return null
+      const queue = rt.desc.promptQueue ?? []
+      return queue.map((p, position) => ({
+        id: p.id,
+        origin: promptOriginLabel(p),
+        preview: previewPrompt(p.message),
+        queuedAt: p.queuedAt,
+        position,
+      }))
+    },
+    promoteQueuedPrompt(id, queueId) {
+      const rt = sessions.get(id)
+      const queue = rt?.desc.promptQueue
+      if (!rt || !queue?.length) return { promoted: false, position: -1 }
+      const idx = queue.findIndex(p => p.id === queueId)
+      if (idx < 0) return { promoted: false, position: -1 }
+      if (idx === 0) return { promoted: true, position: 0 }
+      // Always a NEW array reference (never in-place splice) — the webview
+      // diff rules on `!==` per field (see `promptQueue`'s doc).
+      const item = queue[idx]!
+      const rest = queue.filter(p => p !== item)
+      rt.desc.promptQueue = [item, ...rest]
+      schedulePersist()
+      return { promoted: true, position: 0 }
+    },
+    async deliverQueuedPrompt(id, queueId) {
+      const rt = sessions.get(id)
+      const queue = rt?.desc.promptQueue
+      if (!rt) return { delivered: false, reason: "no-session" }
+      if (!queue?.some(p => p.id === queueId)) {
+        return { delivered: false, reason: "not-in-queue" }
+      }
+      const wasBusy = rt.busy
+      // Promote the target to front FIRST (synchronously), so that when a
+      // busy turn is cancelled its `dispatchQueuedPrompt` finally drains
+      // exactly this item as the new turn. On an idle session nothing is
+      // running to drain it, so dispatch the promoted front directly.
+      const item = queue.find(p => p.id === queueId)!
+      rt.desc.promptQueue = [item, ...queue.filter(p => p.id !== queueId)]
+      schedulePersist()
+      if (wasBusy) {
+        // Await the cancelled turn actually settling — the interruption is
+        // real and delivery is imminent (its finally dispatches the target).
+        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt")
+        return { delivered: true, interrupted: true }
+      }
+      dispatchQueuedPrompt(rt)
+      return { delivered: true, interrupted: false }
     },
     async resumeOnBoot(id) {
       const rt = sessions.get(id)
@@ -6411,6 +6588,7 @@ export function createSessionsRegistry(opts?: {
           stampCurrentStatus(rt)
           stampWatchers(desc)
           desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
+          desc.queuedPrompts = desc.promptQueue?.length ?? 0
           return desc
         })
     },
@@ -6430,6 +6608,7 @@ export function createSessionsRegistry(opts?: {
         stampCurrentStatus(rt)
         stampWatchers(desc)
         desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
+        desc.queuedPrompts = desc.promptQueue?.length ?? 0
         return toSessionSummary(desc)
       })
       return { summaries, total: all.length }
@@ -6443,6 +6622,7 @@ export function createSessionsRegistry(opts?: {
         stampCurrentStatus(rt)
         stampWatchers(desc)
         desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
+        desc.queuedPrompts = desc.promptQueue?.length ?? 0
       }
       return desc
     },

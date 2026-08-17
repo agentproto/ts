@@ -354,6 +354,10 @@ export interface SessionDescriptor {
    *  `force`) instead of rejected. Drains one at a time as turns end; the
    *  transcript panel's queued-messages block reads straight off this. */
   promptQueue?: Array<{ id: string; message: unknown; queuedAt: string; source?: string }>
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.queuedPrompts — cheap
+   *  badge count of items sitting in {@link promptQueue}, stamped at read
+   *  time. 0/absent ⇒ nothing waiting. */
+  queuedPrompts?: number
   blockedOn?: "subagent" | "command"
   /** Mirrors `@agentproto/runtime` SessionDescriptor.stalledSinceMs — epoch
    *  ms of the last known adapter activity at the moment the turn-liveness

@@ -4127,7 +4127,11 @@ async function handleSessions(
         // echoed straight back in the response below without a second
         // round-trip to read the descriptor back for it.
         const queueId = queue ? `q_${randomUUID().slice(0, 8)}` : undefined
-        await registry.enqueuePrompt(id, prompt, { interrupt, queue, force, queueId })
+        // `origin: "user"` labels a queued item as coming from the human/
+        // operator surface (POST /sessions/:id/prompt — the CLI, the VS Code
+        // panel, curl). It only affects the after-the-fact queue origin
+        // badge; transcript provenance is untouched (`source` is not set).
+        await registry.enqueuePrompt(id, prompt, { interrupt, queue, force, queueId, origin: "user" })
         const promptQueue = queueId ? registry.get(id)?.promptQueue : undefined
         const queuePosition = promptQueue?.findIndex(p => p.id === queueId) ?? -1
         json(202, {
@@ -4184,6 +4188,56 @@ async function handleSessions(
     if (!id || !queueId) return false
     const { removed } = registry.removeQueuedPrompt(id, queueId)
     json(200, { ok: true, id, queueId, removed })
+    return true
+  }
+  // Promote an already-queued item to the FRONT without touching the
+  // in-flight turn — the reorder-only force (`session_queue_promote`). The
+  // after-the-fact counterpart of the enqueue-time `force` opt.
+  const queuePromoteMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)\/promote$/)
+  if (queuePromoteMatch && req.method === "POST") {
+    const id = queuePromoteMatch[1]
+    const queueId = queuePromoteMatch[2]
+    if (!id || !queueId) return false
+    const result = registry.promoteQueuedPrompt(id, queueId)
+    if (!result.promoted) {
+      json(404, { error: "queued_item_not_found", id, queueId })
+      return true
+    }
+    json(200, { ok: true, id, queueId, position: result.position })
+    return true
+  }
+  // Deliver-now: interrupt whatever's mid-flight and dispatch THIS item as
+  // the new turn (`session_queue_deliver`). The "I need this NOW" op.
+  const queueDeliverMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)\/deliver$/)
+  if (queueDeliverMatch && req.method === "POST") {
+    const id = queueDeliverMatch[1]
+    const queueId = queueDeliverMatch[2]
+    if (!id || !queueId) return false
+    try {
+      const result = await registry.deliverQueuedPrompt(id, queueId)
+      if (!result.delivered) {
+        json(404, { error: "queued_item_not_found", id, queueId })
+        return true
+      }
+      json(200, { ok: true, id, queueId, interrupted: result.interrupted })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(msg.includes("no session") ? 404 : 409, { error: "deliver_queued_failed", message: msg })
+    }
+    return true
+  }
+  // Inspect the queue after the fact — GET /sessions/:id/queue returns the
+  // ordered list (origin, preview, queuedAt, position). 0 = next to dispatch.
+  const queueListMatch = path.match(/^\/sessions\/([^/]+)\/queue$/)
+  if (queueListMatch && req.method === "GET") {
+    const id = queueListMatch[1]
+    if (!id) return false
+    const queue = registry.listQueuedPrompts(id)
+    if (queue === null) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    json(200, { ok: true, id, queue })
     return true
   }
 

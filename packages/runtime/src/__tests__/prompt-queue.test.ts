@@ -26,7 +26,12 @@ import { AddressInfo } from "node:net"
 
 import { createMcpServer } from "@agentproto/mcp-server"
 
-import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  previewPrompt,
+  promptOriginLabel,
+  type AgentSessionLike,
+} from "../sessions.js"
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
@@ -526,3 +531,207 @@ describe("HTTP POST /sessions/:id/prompt?wait=false — queue/force wiring", () 
     registry.shutdown()
   })
 })
+
+describe("previewPrompt + promptOriginLabel — shared derivation", () => {
+  it("flattens and truncates a plain string", () => {
+    expect(previewPrompt("hello")).toBe("hello")
+    expect(previewPrompt("x".repeat(200))).toBe(`${"x".repeat(79)}…`)
+  })
+
+  it("extracts text out of an ACP content-block ARRAY, joining blocks", () => {
+    const blocks = [
+      { type: "text", text: "first block " },
+      { type: "tool-use", id: "t1", name: "bash", input: {} },
+      { type: "text", text: "second block" },
+    ]
+    expect(previewPrompt(blocks)).toBe("first block second block")
+  })
+
+  it("handles a single content-block object and falls back for non-text content", () => {
+    expect(previewPrompt({ type: "text", text: "single", extra: 1 })).toBe("single")
+    expect(previewPrompt({ type: "tool-use", name: "bash", input: {} })).toBe(
+      "[non-text content]",
+    )
+    expect(previewPrompt(null)).toBe("[non-text content]")
+  })
+
+  it("labels user / agent / child origins from origin or source", () => {
+    expect(promptOriginLabel({})).toBe("user")
+    expect(promptOriginLabel({ origin: "user" })).toBe("user")
+    expect(promptOriginLabel({ source: "agent:sess_boss1" })).toBe("agent sess_boss1")
+    expect(promptOriginLabel({ origin: "child:kid-1" })).toBe("child kid-1")
+  })
+})
+
+describe("listQueuedPrompts — after-the-fact inspection", () => {
+  it("renders origin, preview, queuedAt and (derived) position for each item", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, release, events } = multiTurnAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+
+    await reg.enqueuePrompt(desc.id, "second", { queue: true, origin: "user" })
+    await reg.enqueuePrompt(desc.id, [{ type: "text", text: "child " }, { type: "image" }], {
+      queue: true,
+      origin: "child:kid-1",
+    })
+    await reg.enqueuePrompt(desc.id, { type: "tool-use", name: "bash", input: {} }, {
+      queue: true,
+      source: "agent:sess_boss1",
+    })
+
+    const view = reg.listQueuedPrompts(desc.id)!
+    expect(view).toHaveLength(3)
+    expect(view.map(v => v.position)).toEqual([0, 1, 2])
+    expect(view.map(v => v.origin)).toEqual(["user", "child kid-1", "agent sess_boss1"])
+    expect(view.map(v => v.preview)).toEqual(["second", "child", "[non-text content]"])
+    const first = view[0]!
+    expect(first.queuedAt).toBeTruthy()
+    expect(new Date(first.queuedAt).getTime()).not.toBeNaN()
+
+    // Count badge is stamped onto the descriptor for the list/table view.
+    expect(reg.get(desc.id)?.queuedPrompts).toBe(3)
+
+    // Unknown session → null (caller surfaces 404), matching the HTTP route.
+    expect(reg.listQueuedPrompts("sess_nope")).toBeNull()
+
+    void firstPromise.catch(() => undefined)
+    release()
+    await waitUntil(() => events.length >= 2)
+    reg.shutdown()
+  })
+})
+
+describe("promote vs deliver — two DISTINCT force operations", () => {
+  it("promoteQueuedPrompt REORDERS only — never touches the in-flight turn", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, events } = multiTurnAgentSession()
+    const cancelSpy = vi.spyOn(agent, "cancel")
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+    await reg.enqueuePrompt(desc.id, "second", { queue: true })
+    await reg.enqueuePrompt(desc.id, "third", { queue: true })
+
+    // Jump the LAST item to the front — queue reorder only.
+    const third = reg.get(desc.id)!.promptQueue![1]!
+    const res = reg.promoteQueuedPrompt(desc.id, third.id)
+    expect(res).toEqual({ promoted: true, position: 0 })
+    expect(reg.get(desc.id)?.promptQueue?.map(p => p.message)).toEqual(["third", "second"])
+
+    // The live turn is UNTOUCHED: no cancel, no second turn dispatched.
+    expect(cancelSpy).not.toHaveBeenCalled()
+    expect(events).toEqual([`turn1-start:${wrapped("first")}`])
+    expect(reg.get(desc.id)?.busy).toBe(true)
+
+    void firstPromise.catch(() => undefined)
+    reg.kill(desc.id)
+    reg.shutdown()
+  })
+
+  it("deliverQueuedPrompt INTERRUPTS and dispatches the specific item as the new turn", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, release, events } = multiTurnAgentSession()
+    const cancelSpy = vi.spyOn(agent, "cancel")
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+    await reg.enqueuePrompt(desc.id, "second", { queue: true })
+    await reg.enqueuePrompt(desc.id, "third", { queue: true })
+
+    const third = reg.get(desc.id)!.promptQueue![1]!
+    const res = await reg.deliverQueuedPrompt(desc.id, third.id)
+
+    // Contrast with promote: cancel WAS called, and a new turn started.
+    expect(res).toEqual({ delivered: true, interrupted: true })
+    expect(cancelSpy).toHaveBeenCalledTimes(1)
+    await waitUntil(() => events.length >= 2)
+    expect(events[1]).toBe(`turn2-start:${wrapped("third")}`)
+    // third is gone from the queue (delivered); second is still waiting.
+    expect(reg.get(desc.id)?.promptQueue?.map(p => p.message)).toEqual(["second"])
+
+    await firstPromise
+    reg.shutdown()
+  })
+
+  it("deliverQueuedPrompt on an IDLE session dispatches without interrupting", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, events } = instantCollectingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    // Seed the queue directly (idle sessions normally drain immediately).
+    const queueId = "q_seeded"
+    reg.get(desc.id)!.promptQueue = [
+      { id: queueId, message: "queued-on-idle", queuedAt: new Date().toISOString() },
+    ]
+
+    const res = await reg.deliverQueuedPrompt(desc.id, queueId)
+    expect(res).toEqual({ delivered: true, interrupted: false })
+    await waitUntil(() => events.length >= 1)
+    expect(events[0]).toBe(wrapped("queued-on-idle"))
+    expect(reg.get(desc.id)?.promptQueue ?? []).toEqual([])
+    reg.shutdown()
+  })
+
+  it("deliverQueuedPrompt reports not-in-queue / no-session without side effects", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent } = multiTurnAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+    await expect(reg.deliverQueuedPrompt(desc.id, "q_never")).resolves.toEqual({
+      delivered: false,
+      reason: "not-in-queue",
+    })
+    await expect(reg.deliverQueuedPrompt("sess_nope", "q_x")).resolves.toEqual({
+      delivered: false,
+      reason: "no-session",
+    })
+    reg.shutdown()
+  })
+})
+
+/** Like `instantAgentSession` but records every dispatched message. */
+function instantCollectingAgentSession(): {
+  agent: AgentSessionLike
+  events: string[]
+} {
+  const events: string[] = []
+  const agent: AgentSessionLike = {
+    sessionId: "instant-collect",
+    async *send(message: unknown) {
+      events.push(JSON.stringify(message))
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+  }
+  return { agent, events }
+}
