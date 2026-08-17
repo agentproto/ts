@@ -38,6 +38,10 @@ import https from "node:https"
 import WebSocket from "ws"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
+  presenceFor,
+  resolveAttentionDelaySec,
+} from "@agentproto/runtime/session-presence"
+import {
   resolveTerminalPreset,
   type TerminalPresetCliValues,
 } from "../terminal-preset.js"
@@ -291,14 +295,17 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   }
 
   if (values.watch) {
+    // Grace window for the presence classifier — daemon config could override
+    // the 60s default; resolved once here and threaded through every renderer.
+    const attentionDelaySec = await resolveAttentionDelaySec()
     return values.simple
-      ? runWatchSimple(endpoint, !values["no-color"])
-      : runWatch(endpoint, !values["no-color"])
+      ? runWatchSimple(endpoint, !values["no-color"], attentionDelaySec)
+      : runWatch(endpoint, !values["no-color"], attentionDelaySec)
   }
 
   // One-shot
   const list = await fetchSessions(endpoint.url)
-  printTable(list)
+  printTable(list, await resolveAttentionDelaySec())
   return 0
 }
 
@@ -1923,7 +1930,7 @@ export function sortPinnedFirst(rows: readonly SessionDescriptor[]): SessionDesc
     .sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0))
 }
 
-function printTable(rows: SessionDescriptor[]): void {
+function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void {
   if (rows.length === 0) {
     process.stdout.write("No sessions.\n")
     return
@@ -1944,7 +1951,7 @@ function printTable(rows: SessionDescriptor[]): void {
     workspace: Math.max(...sorted.map(r => r.workspaceSlug.length), 9),
     worktree: Math.max(...sorted.map(r => worktreeCell(r).length), 8),
     queued: showQueued ? Math.max(...sorted.map(r => queuedCell(r).length), 6) : 0,
-    status: Math.max(...sorted.map(r => statusLabel(r).length), 8),
+    status: Math.max(...sorted.map(r => statusLabel(r, attentionDelaySec).length), 8),
     age: 8,
   }
   const header =
@@ -1966,7 +1973,7 @@ function printTable(rows: SessionDescriptor[]): void {
   const now = Date.now()
   for (const r of sorted) {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
-    const tone = statusColour(r)
+    const tone = statusColour(r, attentionDelaySec)
     process.stdout.write(
       pad(r.pinned === true ? "●" : "", widths.pin) +
         "  " +
@@ -1978,7 +1985,7 @@ function printTable(rows: SessionDescriptor[]): void {
         "  " +
         (showWorktree ? pad(worktreeCell(r), widths.worktree) + "  " : "") +
         (showQueued ? `\x1b[33m${pad(queuedCell(r), widths.queued)}\x1b[0m  ` : "") +
-        `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
+        `${tone}${pad(statusLabel(r, attentionDelaySec), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
         "  " +
@@ -1995,63 +2002,99 @@ function printTable(rows: SessionDescriptor[]): void {
  *  surfaced distinctly everywhere status is rendered so it never reads as a
  *  healthy session. */
 export function isStaleRunning(
-  s: Pick<SessionDescriptor, "status" | "processAlive">,
+  s: { status?: string; processAlive?: boolean },
 ): boolean {
   return s.status === "running" && s.processAlive === false
 }
 
-/** Single-character badge for the session's live activity — busy
- *  processing a turn, awaiting input, idle after completing at least one
- *  turn, or (the important case) claiming to run with no process behind
- *  it. Empty string for a freshly-spawned session that hasn't run a turn
- *  yet.
+/** Single-character badge for the session's presence state, driven by the
+ *  shared dashboard classifier (`presenceFor` in @agentproto/runtime/session-
+ *  presence) — the SAME source the VS Code tree/panel render from, so the two
+ *  can no longer drift. Busy/just-finished → ● (running), active children or
+ *  background tasks pending → ◐ (tending), something waiting on the human →
+ *  ?/! / ✗ (attention), nothing → ○ (quiet). Plus the stale-running ⚠ which
+ *  is purely a dead-pid lifecycle flag the classifier doesn't know about.
  *
- *  Agent-cli sessions are long-lived: they stay `status: "running"` after
- *  a turn ends, so `status` alone can't distinguish "still working" from
- *  "finished its turn and sitting idle" — and without `turnsCompleted`,
- *  "idle, finished a turn" was indistinguishable from "idle, never
- *  started one" (both fell through to the same blank badge). The `○`
- *  case below closes that gap. */
-export function statusBadge(
-  s: Pick<
-    SessionDescriptor,
-    "status" | "processAlive" | "busy" | "awaitingInput" | "awaitingPermission" | "turnsCompleted"
-  >,
-): string {
-  if (isStaleRunning(s)) return "⚠" // ⚠
-  if (s.status !== "running") return ""
-  if (s.awaitingPermission) return "!" // ! — held permission awaiting approve/deny
-  if (s.busy) return "●" // ● — mid-turn
-  if (s.awaitingInput) return "?" // ? — blocked on the user
-  if ((s.turnsCompleted ?? 0) > 0) return "○" // ○ — idle, has completed ≥1 turn
-  return "" // never run a turn yet
+ *  Empty string for a terminal (non-running) session — the STATUS column shows
+ *  the raw `status` word for those instead.
+ */
+export type PresenceRenderSession = {
+  status?: string
+  processAlive?: boolean
+  busy?: boolean
+  awaitingInput?: boolean
+  awaitingPermission?: boolean
+  childrenBusy?: number
+  pendingBgTasks?: number
+  lastActivityAt?: string
+  lastOutputAt?: string
+  lastTurnErroredAt?: string
+  exitCode?: number
 }
 
-/** STATUS column/field text — status plus its badge, when any. */
-export function statusLabel(
-  s: Pick<
-    SessionDescriptor,
-    "status" | "processAlive" | "busy" | "awaitingInput" | "awaitingPermission" | "turnsCompleted"
-  >,
+export function statusBadge(
+  s: PresenceRenderSession,
+  attentionDelaySec?: number,
 ): string {
-  const badge = statusBadge(s)
-  return badge ? `${s.status} ${badge}` : s.status
+  if (isStaleRunning(s)) return "⚠" // ⚠ — running, but the pid is dead
+  if (s.status !== "running" && s.status !== "starting") return ""
+  const presence = presenceFor(s, { attentionDelaySec })
+  switch (presence) {
+    case "running":
+      return "●" // ● — turning, or just finished (inside the grace window)
+    case "tending":
+      return "◐" // ◐ — idle but busy through children / background tasks
+    case "attention":
+      if (s.awaitingPermission) return "!" // ! — held permission awaiting decide
+      if (s.awaitingInput) return "?" // ? — blocked on the user
+      if (s.lastTurnErroredAt) return "✗" // ✗ — last turn failed in-band
+      return "!" // terminal-error fold-in — colour carries the warning
+    case "quiet":
+      return "○" // ○ — parked, nothing new
+    default:
+      return ""
+  }
+}
+
+/** STATUS column/field text — presence badge for a live session, else the
+ *  raw lifecycle `status` word for a terminal one. */
+export function statusLabel(
+  s: PresenceRenderSession,
+  attentionDelaySec?: number,
+): string {
+  if (s.status !== "running" && s.status !== "starting") return s.status ?? ""
+  const badge = statusBadge(s, attentionDelaySec)
+  return badge ? `${s.status} ${badge}` : s.status ?? ""
 }
 
 export function statusColour(
-  s: Pick<SessionDescriptor, "status" | "processAlive">,
+  s: PresenceRenderSession,
+  attentionDelaySec?: number,
 ): string {
   if (isStaleRunning(s)) return "\x1b[33m" // amber — "running" contradicted by a dead pid
-  switch (s.status) {
+  if (s.status !== "running") {
+    switch (s.status) {
+      case "starting":
+        return "\x1b[33m" // yellow
+      case "exited":
+        return "\x1b[2m" // dim
+      case "killed":
+      case "error":
+        return "\x1b[31m" // red
+      default:
+        return ""
+    }
+  }
+  // Live agent-cli session (status stays "running" across turns) — colour by
+  // the presence axis, so a parked session reads grey, not healthy-green.
+  switch (presenceFor(s, { attentionDelaySec })) {
     case "running":
-      return "\x1b[32m" // green
-    case "starting":
-      return "\x1b[33m" // yellow
-    case "exited":
-      return "\x1b[2m" // dim
-    case "killed":
-    case "error":
-      return "\x1b[31m" // red
+    case "tending":
+      return "\x1b[32m" // green — in motion, leave alone
+    case "attention":
+      return "\x1b[33m" // amber — needs a look
+    case "quiet":
+      return "\x1b[2m" // dim — parked, nothing new
     default:
       return ""
   }
@@ -2197,11 +2240,12 @@ function truncate(s: string, n: number): string {
 async function runWatchSimple(
   endpoint: DaemonEndpoint,
   colour: boolean,
+  attentionDelaySec?: number,
 ): Promise<number> {
   const tty = process.stdin.isTTY === true
   if (!tty) {
     const list = await fetchSessions(endpoint.url)
-    printTable(list)
+    printTable(list, attentionDelaySec)
     return 0
   }
 
@@ -2224,7 +2268,7 @@ async function runWatchSimple(
     if (statusMsg) {
       process.stdout.write(`\x1b[33m${statusMsg}\x1b[0m\n\n`)
     }
-    printPickerTable(rows, cursor)
+    printPickerTable(rows, cursor, attentionDelaySec)
   }
 
   const refresh = async (): Promise<void> => {
@@ -2366,7 +2410,7 @@ async function runWatchSimple(
  * needs distinct visual treatment that would otherwise add yet more
  * conditionals to the read-only printer.
  */
-function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
+function printPickerTable(rows: SessionDescriptor[], cursor: number, attentionDelaySec?: number): void {
   if (rows.length === 0) {
     process.stdout.write("No sessions.\n")
     return
@@ -2375,7 +2419,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
     id: Math.max(...rows.map(r => r.id.length), 4),
     kind: Math.max(...rows.map(r => r.kind.length), 4),
     workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
-    status: Math.max(...rows.map(r => statusLabel(r).length), 8),
+    status: Math.max(...rows.map(r => statusLabel(r, attentionDelaySec).length), 8),
     age: 8,
   }
   const header =
@@ -2394,7 +2438,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
   const now = Date.now()
   rows.forEach((r, i) => {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
-    const tone = statusColour(r)
+    const tone = statusColour(r, attentionDelaySec)
     const marker = i === cursor ? "\x1b[7m▸" : " "
     const reset = i === cursor ? "\x1b[0m" : ""
     process.stdout.write(
@@ -2405,7 +2449,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
-        `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
+        `${tone}${pad(statusLabel(r, attentionDelaySec), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
         "  " +
@@ -2434,11 +2478,12 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
 async function runWatch(
   endpoint: DaemonEndpoint,
   colour: boolean,
+  attentionDelaySec?: number,
 ): Promise<number> {
   const tty = process.stdin.isTTY === true && process.stdout.isTTY === true
   if (!tty) {
     const list = await fetchSessions(endpoint.url)
-    printTable(list)
+    printTable(list, attentionDelaySec)
     return 0
   }
   // Non-colour pass-through: callers can still pipe via --no-color
@@ -2771,17 +2816,30 @@ async function runWatch(
         red: "",
       }
   const statusTone = (
-    s: Pick<SessionDescriptor, "status" | "processAlive">,
-  ): string =>
-    isStaleRunning(s)
-      ? c.amber
-      : s.status === "running"
-        ? c.green
-        : s.status === "starting"
-          ? c.amber
-          : s.status === "killed" || s.status === "error"
-            ? c.red
-            : c.dim
+    s: PresenceRenderSession,
+  ): string => {
+    if (isStaleRunning(s)) return c.amber
+    if (s.status !== "running") {
+      return s.status === "starting"
+        ? c.amber
+        : s.status === "killed" || s.status === "error"
+          ? c.red
+          : c.dim
+    }
+    // Live agent-cli session — colour by the same presence axis as the table,
+    // so a parked session reads dim, not healthy green.
+    switch (presenceFor(s, { attentionDelaySec })) {
+      case "running":
+      case "tending":
+        return c.green
+      case "attention":
+        return c.amber
+      case "quiet":
+        return c.dim
+      default:
+        return c.dim
+    }
+  }
 
   const render = (): void => {
     const cols = process.stdout.columns || 100
@@ -2810,7 +2868,15 @@ async function runWatch(
     // escapes as zero-width so the column separator lands at the
     // sidebarWidth-th visible column, not the sidebarWidth-th
     // string-index (which over-pads when colors are on).
-    const sidebarLines = renderSidebar(sessions, cursor, sidebarWidth, bodyRows, c, statusTone)
+    const sidebarLines = renderSidebar(
+      sessions,
+      cursor,
+      sidebarWidth,
+      bodyRows,
+      c,
+      statusTone,
+      attentionDelaySec,
+    )
     const selected = sessions[cursor]
     const preview = selected ? previewCache.get(selected.id) : undefined
     const detailLines = renderDetail(selected, detailWidth, bodyRows, c, preview)
@@ -3046,7 +3112,8 @@ function renderSidebar(
   width: number,
   height: number,
   c: Record<string, string>,
-  statusTone: (s: Pick<SessionDescriptor, "status" | "processAlive">) => string,
+  statusTone: (s: PresenceRenderSession) => string,
+  attentionDelaySec?: number,
 ): string[] {
   const out: string[] = []
   out.push(`${c.bold}SESSIONS${c.reset} ${c.dim}(${rows.length})${c.reset}`)
@@ -3067,7 +3134,7 @@ function renderSidebar(
       const age = humaniseDelta(now - new Date(r.startedAt).getTime())
       const labelTrunc = truncate(label, 18)
       const line =
-        `${marker} ${ptyBadge} ${labelTrunc.padEnd(18)} ${tone}${statusLabel(r).padEnd(7)}${c.reset} ${c.dim}${age.padStart(4)}${c.reset}`
+        `${marker} ${ptyBadge} ${labelTrunc.padEnd(18)} ${tone}${statusLabel(r, attentionDelaySec).padEnd(7)}${c.reset} ${c.dim}${age.padStart(4)}${c.reset}`
       out.push(selected ? line : line)
     }
   }
