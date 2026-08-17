@@ -17,6 +17,7 @@ export default createTsupConfig({
     "mcp-imports": "src/mcp-imports.ts",
     "resume-strategies": "src/resume-strategies.ts",
     "providers-store": "src/providers-store.ts",
+    "release-check": "src/release-check.ts",
     "session-story": "src/session-story.ts",
     "session-story-panel": "src/session-story-panel.ts",
     "user-presets": "src/user-presets.ts",
