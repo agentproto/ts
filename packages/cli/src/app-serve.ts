@@ -54,7 +54,7 @@ import { expandHome } from "./commands/skill-install/pack-resolve.js"
 const USAGE = `agentproto app serve — serve an app's UI as a standalone webapp
 
 Usage:
-  agentproto app serve [appDir] [--port <n>] [--json]
+  agentproto app serve [appDir] [--port <n>] [--host <addr>] [--json]
 
 appDir:
   Directory holding a valid .agentproto/APP.md + .agentproto/ui/. Defaults to
@@ -64,6 +64,11 @@ appDir:
   Port to bind. Defaults to the app's declared "ui.port" (APP.md frontmatter),
   else an OS-assigned free port. A taken declared port falls back to
   auto-assign; a taken explicit --port is an error.
+
+--host <addr>:
+  Address to bind (default: 127.0.0.1 — loopback only). Pass 0.0.0.0 to
+  expose on all interfaces. This is an explicit opt-in: a warning is printed
+  to stderr when a non-default address is used.
 
 The served UI gets a window.McpApp bridge whose callTool forwards to the
 daemon's /mcp endpoint (http://127.0.0.1:<daemon.port>/mcp). Start the daemon
@@ -80,6 +85,15 @@ const UPLOAD_PATH = "/__agentproto/upload"
 
 /** Hard cap on an upload's body size — 200 MB. */
 export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+/**
+ * Resolve the hostname/IP to bind the static server to.
+ * Defaults to `127.0.0.1` (loopback only). Pass `--host <addr>` to opt in to
+ * a broader bind; the caller is responsible for printing the warning.
+ */
+export function resolveListenHost(hostOpt?: string): string {
+  return hostOpt ?? "127.0.0.1"
+}
 
 /** Content types for the static surface (extensions ui/ apps actually ship). */
 const MIME_BY_EXT: Record<string, string> = {
@@ -150,11 +164,16 @@ export function createDaemonMcpClientGetter(
  * body (capped at 1MB), forward it through `callDaemonTool`, and write the
  * response. Shared by `app serve` (same-origin static server) and `app dev`
  * (bridge-only CORS server) so the wire contract is identical between them.
+ *
+ * `allowedTools` is the app's `ui.tools` allowlist from APP.md. When defined,
+ * only the listed tools are forwarded; when `undefined` (field absent from
+ * APP.md), all tools are allowed. Pass `[]` to block everything.
  */
 export function handleToolCallRequest(
   req: IncomingMessage,
   res: ServerResponse,
   getClient: () => Promise<Client>,
+  allowedTools?: readonly string[],
 ): void {
   let raw = ""
   req.setEncoding("utf8")
@@ -174,7 +193,7 @@ export function handleToolCallRequest(
         res.end(JSON.stringify({ error: "bad_request", message: "body is not valid JSON." }))
         return
       }
-      const [status, result] = await callDaemonTool(getClient, body)
+      const [status, result] = await callDaemonTool(getClient, body, allowedTools)
       res.writeHead(status, { "content-type": "application/json" })
       res.end(JSON.stringify(result))
     })()
@@ -186,10 +205,16 @@ export function handleToolCallRequest(
  * `CallToolResult` envelope. Returns a 2-tuple `[status, body]` so the caller
  * chooses the error framing; carries `isError` results as 200 (the same way a
  * postMessage host's `tools/call` reply RESOLVES with them).
+ *
+ * `allowedTools`: when defined, only listed tool names are forwarded (403
+ * otherwise). When `undefined` (APP.md omits `ui.tools`), all tools pass.
+ * Mirrors the `ui.tools` allowlist that `/apps/:appId/tool-call` enforces
+ * via `performAppToolCall` in the daemon.
  */
 export async function callDaemonTool(
   getClient: () => Promise<Client>,
   body: unknown,
+  allowedTools?: readonly string[],
 ): Promise<[number, unknown]> {
   if (
     !body ||
@@ -200,6 +225,15 @@ export async function callDaemonTool(
     return [400, { error: "bad_request", message: 'body must be `{ "name": string, args?: object }`.' }]
   }
   const { name, args } = body as { name: string; args?: unknown }
+  if (allowedTools !== undefined && !allowedTools.includes(name)) {
+    return [
+      403,
+      {
+        error: "forbidden",
+        message: `tool "${name}" is not in this app's ui.tools allowlist: ${allowedTools.length > 0 ? allowedTools.join(", ") : "(empty)"}`,
+      },
+    ]
+  }
   let client: Client
   try {
     client = await getClient()
@@ -247,6 +281,32 @@ export async function readDeclaredUIPort(appDir: string): Promise<number | undef
     return typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536
       ? port
       : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Extract the app's declared `ui.tools` string list from
+ * `<dir>/.agentproto/APP.md` frontmatter, if any.
+ *
+ * Returns `string[]` when the field is present (possibly empty), or
+ * `undefined` when it is absent — the distinction matters for allowlist
+ * enforcement: an explicitly-empty list blocks everything, while an absent
+ * list means the app predates the field and we allow all tools (the loopback
+ * bind already limits network exposure).
+ */
+export async function readDeclaredUITools(appDir: string): Promise<string[] | undefined> {
+  const appMdPath = join(appDir, ".agentproto", "APP.md")
+  if (!(await pathExists(appMdPath))) return undefined
+  try {
+    const raw = await readFile(appMdPath, "utf8")
+    const data = matter(raw).data as Record<string, unknown>
+    const ui = data.ui
+    if (!ui || typeof ui !== "object") return undefined
+    const tools = (ui as Record<string, unknown>).tools
+    if (!Array.isArray(tools)) return undefined
+    return tools.filter((t): t is string => typeof t === "string")
   } catch {
     return undefined
   }
@@ -487,7 +547,7 @@ export function applyCors(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 }
 
-/** `agentproto app serve <appDir> [--port <n>] [--json]`. */
+/** `agentproto app serve <appDir> [--port <n>] [--host <addr>] [--json]`. */
 export async function runAppServe(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -495,6 +555,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
     strict: false,
     options: {
       port: { type: "string" },
+      host: { type: "string" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -507,6 +568,14 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
 
   const appDirArg = positionals[0] ?? "."
   const appDir = resolve(process.cwd(), expandHome(appDirArg))
+
+  const listenHost = resolveListenHost(values.host as string | undefined)
+  if (values.host !== undefined) {
+    process.stderr.write(
+      `agentproto app serve: warning: --host ${listenHost} exposes the ` +
+        `tool-call bridge beyond loopback. Make sure this is intentional.\n`,
+    )
+  }
 
   // 1. Require a valid .agentproto/APP.md + .agentproto/ui/
   const appMdPath = join(appDir, ".agentproto", "APP.md")
@@ -546,19 +615,21 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
   const daemonMcpUrl = await resolveDaemonMcpUrl()
   const getClient = createDaemonMcpClientGetter(daemonMcpUrl, "agentproto-app-serve")
 
+  // Read the app's ui.tools allowlist. When declared (even empty), only those
+  // tools are forwarded; when absent, all tools are permitted (the loopback
+  // bind already limits exposure to the local machine).
+  const allowedTools = await readDeclaredUITools(appDir)
+
   const bridgeScript = buildBridgeScript(TOOL_CALL_PATH)
   const runJson = values.json === true
 
   // 4. Build the HTTP server.
   const server = createServer((req, res) => {
-    // Permissive CORS: this host only ever serves one local app's UI (no
-    // cookies/credentials involved), so — unlike the daemon's own /mcp
-    // gateway, which reflects an origin allowlist because it carries
-    // session state — a bare `*` is fine here. Without it, a page loaded
-    // from a different origin (e.g. a file:// or other-port viewer
-    // embedding this app's index.html) can't call the tool-call bridge at
-    // all: the browser blocks the cross-origin fetch before it ever hits
-    // this server.
+    // CORS `*` lets a page from a different origin (e.g. file:// or a Vite
+    // dev port) reach the tool-call bridge — without it the browser blocks
+    // the cross-origin fetch. The safety gate is NOT "no session credentials":
+    // tools like command_execute need no cookie to be dangerous. Safety here
+    // comes from the loopback-only default bind and the ui.tools allowlist.
     applyCors(req, res)
     if (req.method === "OPTIONS") {
       res.writeHead(204)
@@ -568,7 +639,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
 
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
     if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
-      handleToolCallRequest(req, res, getClient)
+      handleToolCallRequest(req, res, getClient, allowedTools)
       return
     }
     if (urlPath === UPLOAD_PATH) {
@@ -591,7 +662,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
         else rejPromise(err)
       }
       server.once("error", onError)
-      server.listen(port, () => {
+      server.listen(port, listenHost, () => {
         server.off("error", onError)
         const addr = server.address()
         resPromise({ port: addr && typeof addr === "object" ? addr.port : port })
