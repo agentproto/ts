@@ -52,8 +52,8 @@
   "dependencies": {
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
-    "@mastra/core": "1.57.0",
-    "mastracode": "0.32.6"
+    "@mastra/core": "1.59.0",
+    "mastracode": "0.33.1"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
