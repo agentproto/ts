@@ -148,4 +148,42 @@ describe("transcript → UIMessageChunk mapping against CANONICAL_SESSION_RECORD
       { type: "finish", finishReason: "stop" },
     ])
   })
+
+  it("usage_update / usage_snapshot are a deliberate no-op — NOT the unknown-kind error path", () => {
+    // Regression test: these are real, KNOWN daemon kinds (transcript-writer.ts
+    // emits usage_update on essentially every turn) that are deliberately
+    // excluded from CANONICAL_SESSION_RECORDS (see records.ts doc comment) —
+    // not modeled in the shared fixture, so asserted directly here instead.
+    // Before this fix, both kinds fell through to the `default` branch and
+    // fired a spurious `error` chunk + console.error on every single turn
+    // against a live daemon.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+    const map = createTranscriptToUiMapper(CANONICAL_SESSION_ID)
+
+    expect(
+      map({
+        seq: 1,
+        ts: "2026-08-17T00:00:00.000Z",
+        kind: "usage_update",
+        sessionId: CANONICAL_SESSION_ID,
+        size: 200_000,
+        used: 50_000,
+      })
+    ).toEqual([])
+
+    expect(
+      map({
+        seq: 2,
+        ts: "2026-08-17T00:00:01.000Z",
+        kind: "usage_snapshot",
+        sessionId: CANONICAL_SESSION_ID,
+        model: "claude-sonnet-5",
+        tokensIn: 1000,
+        tokensOut: 200,
+        source: "turn-end",
+      })
+    ).toEqual([])
+
+    expect(spy).not.toHaveBeenCalled()
+  })
 })

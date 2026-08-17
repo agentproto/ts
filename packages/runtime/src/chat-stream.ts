@@ -171,6 +171,20 @@ export function createTranscriptToUiMapper(
         return []
       }
 
+      // `usage_update` / `usage_snapshot` are real, KNOWN daemon kinds
+      // (transcript-writer.ts) — cost/context bookkeeping the transcript
+      // writer emits on essentially every turn, including after `turn-end`
+      // (the same post-terminal timing `startAiUiMessageStream`'s
+      // `finalized` guard in http-server.ts already accounts for). They are
+      // NOT part of the assistant message stream and NOT an unknown kind —
+      // routing them through the `default` branch below fired a spurious
+      // `error` chunk on every single turn against a live daemon. Skip them
+      // deliberately, same rationale as `tool-call-record`.
+      case "usage_update":
+      case "usage_snapshot": {
+        return []
+      }
+
       case "permission-resolved": {
         // CONDITION 4: the FINAL permission decision travels as a custom data
         // part. `type: \`data-tool-call-approval\`` (`type: \`data-${NAME}\``),
