@@ -142,9 +142,12 @@ const pointerBlock = (path: string): string =>
  * The standing cd-contract sentence, present in every mode: the daemon fixes
  * this contract once at spawn from the session's resolved `cwd` and cannot
  * follow the agent — a `cd` elsewhere (a nested repo included) is the agent's
- * own responsibility to re-resolve.
+ * own responsibility to re-resolve. Exported so a caller's own error-fallback
+ * (a `resolveAgentsMd` failure, e.g. `session-spawn.ts`) can still carry this
+ * sentence — it's a static, always-true fact independent of whether
+ * resolution itself succeeded, so a read failure shouldn't silently drop it.
  */
-const cdContractLine =
+export const cdContractLine =
   `The daemon resolves and fixes this AGENTS.md contract ONCE at spawn from ` +
   `your resolved cwd — a \`cd\` outside that repo root is NOT tracked by the ` +
   `daemon. If you \`cd\` somewhere else (a nested repo included), YOU are ` +

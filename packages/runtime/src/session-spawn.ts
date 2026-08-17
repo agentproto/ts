@@ -77,6 +77,7 @@ import { loadDefaultRoleRegistry } from "./role-registry.js"
 import {
   resolveAgentsMd as realResolveAgentsMd,
   loadAgentsMdInlineMaxKb,
+  cdContractLine as realCdContractLine,
   type AgentsMdResolution,
 } from "./agents-md.js"
 import { deriveSessionTitle } from "./session-title.js"
@@ -2059,8 +2060,11 @@ export async function spawnAgentSession(
     // AGENTS.md resolution is advisory-on-top-of-the-role: a read failure must
     // never block a spawn the caller asked for. Fall through to absent — the
     // prompt is composed without an AGENTS.md block and the descriptor carries
-    // "absent", exactly as if no file existed.
-    agentsMdResolution = { mode: "absent", contractLine: "" }
+    // "absent", exactly as if no file existed. The cd-contract sentence is
+    // still included: it's a static, always-true fact independent of whether
+    // resolution itself succeeded, so a read failure shouldn't silently drop
+    // the one guarantee that never depended on the file being readable.
+    agentsMdResolution = { mode: "absent", contractLine: realCdContractLine }
   }
   const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
     (p): p is string => !!p,

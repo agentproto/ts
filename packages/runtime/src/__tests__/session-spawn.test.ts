@@ -95,6 +95,7 @@ import {
   PARENT_SESSION_ID_ENV,
   type SessionsRegistry,
 } from "../sessions.js"
+import { cdContractLine } from "../agents-md.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
@@ -136,8 +137,11 @@ function baseDeps(overrides: Partial<SpawnAgentSessionDeps> = {}): {
     // spawn tests never touch the real filesystem / git / config. Individual
     // tests override `resolveAgentsMd` (or pass `undefined` to fall through
     // to the REAL resolver) to exercise the actual injection path — see the
-    // AGENTS.md describe blocks below.
-    resolveAgentsMd: async () => ({ mode: "absent", contractLine: "" }),
+    // AGENTS.md describe blocks below. `contractLine` mirrors the real
+    // resolver's shape (non-empty, present in every mode incl. "absent") so
+    // the many tests using this default aren't exercising an unrealistic
+    // empty-contract-line shape the production resolver never actually returns.
+    resolveAgentsMd: async () => ({ mode: "absent", contractLine: cdContractLine }),
     ...overrides,
   }
   return { registry, deps }
@@ -4463,6 +4467,35 @@ describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
+  })
+
+  it("a resolveAgentsMd failure falls back to 'absent' WITHOUT blocking the spawn, and still injects the real cd-contract line (never an empty one)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: async () => {
+        throw new Error("git rev-parse blew up")
+      },
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/x",
+      prompt: "hi",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    // The spawn succeeds despite the resolution failure — advisory-on-top-
+    // of-the-role, never a hard gate.
+    expect(result.descriptor.agentsMd).toBeUndefined()
+    expect(result.descriptor.agentsMdMode).toBe("absent")
+    // The cd-contract sentence is a static fact independent of resolution
+    // succeeding — a read/git failure must not silently drop it.
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).toContain(cdContractLine)
   })
 
   it("resolves + injects THIS repo's own AGENTS.md (pointer mode, since it's ≥ the 8 KiB default) and stamps it on the descriptor", async () => {
