@@ -40,6 +40,10 @@ import type { DaemonConnectionState, SessionStore } from "../services/sessionSto
 import type { WatchedSessions } from "../services/watchedSessions.js"
 import type { AdapterLogo } from "./adapterIcon.logic.js"
 import {
+  DEFAULT_ATTENTION_DELAY_SEC,
+  resolveAttentionDelaySec,
+} from "@agentproto/runtime/session-presence"
+import {
   buildSessionsWebviewModel,
   isValidColorIndex,
   summaryTextFor,
@@ -274,6 +278,11 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private repaintTimer: ReturnType<typeof setInterval> | undefined
   /** Per-slug color overrides set via the rail chip's swatch popover, persisted in globalState. */
   private colorOverrides: Record<string, number>
+  /** Grace window (seconds) for the shared presence classifier — resolved once
+   *  from the daemon config (`sessions.attentionDelaySec`); a session that just
+   *  finished a turn stays in the Running section for this long. Defaults to
+   *  the shared 60s. */
+  private attentionDelaySec = DEFAULT_ATTENTION_DELAY_SEC
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -286,6 +295,12 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     private readonly watched: WatchedSessions | undefined,
   ) {
     this.colorOverrides = readColorOverrides(globalState)
+    void resolveAttentionDelaySec().then(v => {
+      if (v !== this.attentionDelaySec) {
+        this.attentionDelaySec = v
+        this.post()
+      }
+    })
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -572,6 +587,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         now: Date.now(),
         serverTotal: this.serverTotal,
         includeArchived: this.showArchived,
+        attentionDelaySec: this.attentionDelaySec,
         // Footer counts server-paged rows only — pending + pinned live rows are
         // live extras, not paged results.
         loadedCount: this.summaries.length,

@@ -171,6 +171,26 @@ describe("webviewRowStatus", () => {
     expect(webviewRowStatus(stalled, NOW)).toBe("stalled")
   })
 
+  it("keeps a just-finished session 'working' inside the grace window (running presence)", () => {
+    // lastActivityAt 10s before NOW → still inside the default 60s grace window,
+    // so the row stays in the Running section rather than sinking instantly to
+    // Quiet. Newer-than-NOW timestamps in the fixture avoid the stall branch.
+    const fresh = session({ busy: false, lastActivityAt: "2026-01-02T00:00:00Z" })
+    expect(webviewRowStatus(fresh, NOW)).toBe("working")
+  })
+
+  it("settles a just-finished session to idle once the grace window has elapsed", () => {
+    // Same shape, but the last event sits 5min back — past the default 60s.
+    const stale = session({ busy: false, lastActivityAt: "2026-01-01T23:55:00Z" })
+    expect(webviewRowStatus(stale, NOW)).toBe("idle")
+  })
+
+  it("honours a configured (non-default) grace window", () => {
+    // 5min back is past the default 60s but inside a configured 600s window.
+    const fiveMinAgo = session({ busy: false, lastActivityAt: "2026-01-01T23:55:00Z" })
+    expect(webviewRowStatus(fiveMinAgo, NOW, 600)).toBe("working")
+  })
+
   it("refines an idle session with a busy subtree into 'delegating' (#session-visibility)", () => {
     expect(webviewRowStatus(session({ busy: false, childrenBusy: 2 }))).toBe("delegating")
     // Only refines idle — a working session stays working, awaiting stays awaiting.

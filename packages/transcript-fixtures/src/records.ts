@@ -106,8 +106,42 @@ export interface AgentprotoRawNotice extends AgentprotoRawTranscriptBase {
   text: string
 }
 
-/** The union of every RAW record kind the daemon transcript writer emits
- *  that this canonical fixture covers. */
+/** High-frequency cost/context bookkeeping, written on essentially every
+ *  turn (`transcript-writer.ts`'s `recordEvent` "usage_update" case).
+ *  Modeled here (it is a KNOWN kind, not an unrecognized one) but
+ *  deliberately excluded from `CANONICAL_SESSION_RECORDS` below — a
+ *  consumer's handling of it is a plain no-op, unit-tested directly rather
+ *  than via the shared fixture, to avoid dragging every consumer's
+ *  round-trip test into a bookkeeping record that carries no rendering
+ *  semantics. */
+export interface AgentprotoRawUsageUpdate extends AgentprotoRawTranscriptBase {
+  kind: "usage_update"
+  sessionId: string
+  size: number
+  used: number
+  cost?: { amount: number; currency: string }
+  tokensIn?: number
+  tokensOut?: number
+}
+
+/** Durable usage recap at a turn boundary (`transcript-writer.ts`'s
+ *  `recordUsageSnapshot`) — same "known bookkeeping kind, no-op for
+ *  consumers, unit-tested directly" status as {@link AgentprotoRawUsageUpdate}. */
+export interface AgentprotoRawUsageSnapshot extends AgentprotoRawTranscriptBase {
+  kind: "usage_snapshot"
+  sessionId: string
+  model?: string
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  contextSize?: number
+  contextUsed?: number
+  source: string
+}
+
+/** The union of every RAW record kind the daemon transcript writer emits —
+ *  see each member's doc comment for whether it's covered by
+ *  `CANONICAL_SESSION_RECORDS`. */
 export type AgentprotoRawTranscriptRecord =
   | AgentprotoRawUserPrompt
   | AgentprotoRawThought
@@ -118,6 +152,8 @@ export type AgentprotoRawTranscriptRecord =
   | AgentprotoRawPermissionResolved
   | AgentprotoRawTurnEnd
   | AgentprotoRawNotice
+  | AgentprotoRawUsageUpdate
+  | AgentprotoRawUsageSnapshot
 
 /** `CANONICAL_SESSION` — the shared session id for every record in the
  *  canonical fixture. */

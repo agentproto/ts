@@ -66,13 +66,10 @@ import {
   type SessionGrouping,
 } from "./sessionsGroups.logic.js"
 import {
-  activityFor,
   collapseResumeChains,
   descriptionFor,
   formatDuration,
-  iconFor,
-  iconForActivity,
-  subtreeBusiestActivity,
+  iconForSession,
   isSeparatorNode,
   labelFor,
   silentForMs,
@@ -80,8 +77,13 @@ import {
   treeContextValueFor,
   TREE_REPAINT_INTERVAL_MS,
   withArchivedTag,
+  type SessionIcon,
   type SessionNode,
 } from "./sessionsTree.logic.js"
+import {
+  DEFAULT_ATTENTION_DELAY_SEC,
+  resolveAttentionDelaySec,
+} from "@agentproto/runtime/session-presence"
 
 /** Reads live (not cached): the operator can add/close a folder mid-session,
  *  and the "(open)" marker + Create-workspace CTA must track that. */
@@ -130,6 +132,11 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   private now = Date.now()
   private _hiddenCount = 0
   private _hidingMachineDefault = false
+  /** Grace window (seconds) for the shared presence classifier — resolved once
+   *  from the daemon config (`sessions.attentionDelaySec`), defaulting to the
+   *  shared 60s when unset/overridden. A just-finished session stays `running`
+   *  for this long before settling grey. */
+  private attentionDelaySec = DEFAULT_ATTENTION_DELAY_SEC
   private readonly repaintTimer: ReturnType<typeof setInterval>
 
   constructor(
@@ -142,6 +149,14 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     this.filter = filter
     this.seen = seen
     this.watched = watched
+    // Resolve the configured grace window once (config doesn't change under a
+    // running extension); if it differs from the default, repaint with it.
+    void resolveAttentionDelaySec().then(v => {
+      if (v !== this.attentionDelaySec) {
+        this.attentionDelaySec = v
+        this.rebuild()
+      }
+    })
     this.rebuild()
     this.store.onDidChange(() => this.rebuild())
     this.filter.onDidChange(() => this.rebuild())
@@ -267,16 +282,17 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     item.description = withArchivedTag(withWatch, session.archived)
     item.contextValue = treeContextValueFor(session, isWatched)
     item.tooltip = buildTooltip(session, this.now, isWatched)
-    // A parent node inherits the busiest state in its subtree (#session-
-    // visibility), so a collapsed orchestrator whose children are mid-turn
-    // doesn't sit there reading "idle". A leaf uses its own activity.
-    const iconActivity =
-      element.children.length > 0
-        ? subtreeBusiestActivity(element, this.now)
-        : activityFor(session, this.now)
+    // A live row's icon comes from the SHARED dashboard presence classifier
+    // (running ◉ / tending ◌ / attention ? / quiet ○) — same source as the CLI
+    // table and the webview, so a supervisor with busy executors shows the
+    // half-fill `tending` glyph rather than a spinner or a resting dot.
+    // Terminal and stalled rows keep their richer existing icons
+    // (done/stopped/failed/warning) — see iconForSession.
     item.iconPath = session.archived
       ? new vscode.ThemeIcon("archive")
-      : toThemeIcon(iconForActivity(iconActivity, this.seen.isUnread(session)))
+      : toThemeIcon(
+          iconForSession(session, this.now, this.seen.isUnread(session), this.attentionDelaySec),
+        )
     // Single click opens the transcript — the inline $(open-preview) icon
     // (view/item/context menu, wired in package.json) remains as a second
     // way to trigger the same command.
@@ -374,7 +390,7 @@ function ctaTreeItem(cta: CtaNode): vscode.TreeItem {
   return item
 }
 
-function toThemeIcon(icon: ReturnType<typeof iconFor>): vscode.ThemeIcon {
+function toThemeIcon(icon: SessionIcon): vscode.ThemeIcon {
   if (!icon.color) return new vscode.ThemeIcon(icon.id)
   const themeColorId =
     icon.color === "error" ? "problemsErrorIcon.foreground" : "problemsWarningIcon.foreground"

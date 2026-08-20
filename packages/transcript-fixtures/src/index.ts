@@ -26,6 +26,8 @@ export {
   type AgentprotoRawPermissionResolved,
   type AgentprotoRawTurnEnd,
   type AgentprotoRawNotice,
+  type AgentprotoRawUsageUpdate,
+  type AgentprotoRawUsageSnapshot,
 } from "./records.js"
 
 import { CANONICAL_SESSION_RECORDS } from "./records.js"

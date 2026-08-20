@@ -7,6 +7,11 @@
 import { isPendingSession } from "../services/pending.logic.js"
 import { sessionDisplayName } from "../client/sessionName.js"
 import type { SessionDescriptor } from "../client/types.js"
+import {
+  presenceFor,
+  DEFAULT_ATTENTION_DELAY_SEC,
+  type SessionPresence,
+} from "@agentproto/runtime/session-presence"
 
 export type SessionContextValue =
   | "session-pending"
@@ -469,6 +474,61 @@ export function iconForActivity(activity: SessionActivity, unread?: boolean): Se
 
 export function iconFor(session: SessionDescriptor, now?: number, unread?: boolean): SessionIcon {
   return iconForActivity(activityFor(session, now), unread)
+}
+
+/**
+ * The four dashboard-presence states → codicons (the tree's list-level
+ * presence vocabulary, a coarser read than `ACTIVITY_ICONS`).
+ *
+ *   ○ filled    = running   — turning, or just finished (still in the grace
+ *                             window). Full circle, do not touch.
+ *   ◌ dashed    = tending   — idle but busy THROUGH others (active sub-agents
+ *                 half-      or background tasks still pending). There is no
+ *                 fill       literal half-circle in the codicon set, so the
+ *                             closest available is `circle-dashed` — a circle
+ *                             that is only partially there, which reads
+ *                             "present but not fully turned".
+ *   ? amber     = attention  — something is waiting on the human. Amber.
+ *   ○ outline   = quiet      — parked, nothing new. Grey.
+ */
+export function presenceIconFor(presence: SessionPresence): SessionIcon {
+  switch (presence) {
+    case "running":
+      return { id: "circle-filled" }
+    case "tending":
+      return { id: "circle-dashed" }
+    case "attention":
+      return { id: "question", color: "warning" }
+    case "quiet":
+      return { id: "circle-outline" }
+  }
+}
+
+/**
+ * Icon for a session row, from the SHARED dashboard presence classifier
+ * (`presenceFor` in @agentproto/runtime/session-presence — the same source the
+ * CLI table and the webview render from). A live session is painted with its
+ * four-state presence glyph; the client-side terminal states that the
+ * classifier deliberately does NOT cover (`stalled` — a busy-but-silent
+ * session — and the terminal done/stopped/failed states) keep their existing
+ * richer `ACTIVITY_ICONS`, so nothing is lost by folding the list onto the
+ * coarser axis. `attentionDelaySec` is resolved by the caller and threaded in
+ * (defaulting to the shared 60s); `now` defaults so existing call sites and
+ * tests keep working, and grace re-derives from `lastActivityAt` each call.
+ */
+export function iconForSession(
+  session: SessionDescriptor,
+  now?: number,
+  unread?: boolean,
+  attentionDelaySec?: number,
+): SessionIcon {
+  const activity = activityFor(session, now)
+  if (TERMINAL_STATUSES.has(session.status) || activity === "stalled") {
+    return iconForActivity(activity, unread)
+  }
+  return presenceIconFor(
+    presenceFor(session, { now, attentionDelaySec: attentionDelaySec ?? DEFAULT_ATTENTION_DELAY_SEC }),
+  )
 }
 
 /**

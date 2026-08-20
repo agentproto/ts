@@ -299,6 +299,26 @@ export interface ProvenanceConfig {
 }
 
 /**
+ * Session-presence policy — how the dashboard triages a session into its
+ * `running` / `tending` / `attention` / `quiet` presence state (see
+ * `session-presence.ts`). Optional block on `AgentprotoConfig.sessions`.
+ */
+export interface SessionsConfig {
+  /**
+   * How long (seconds) a session stays shown as `running` after its last
+   * turn ends, before it settles into `attention`/`quiet`. The grace window
+   * is measured from the session's most recent `lastActivityAt` — ANY new
+   * event resets it — so a session that just answered does not read as
+   * "quiet" the instant its turn finishes, but something that went idle long
+   * ago, with nothing waiting on it, settles grey. Resolution order mirrors
+   * every other knob in this file (module docblock): env var
+   * `AGENTPROTO_SESSIONS_ATTENTION_DELAY_SEC` > this field > the hardcoded
+   * default `60`. Absent ⇒ 60s.
+   */
+  attentionDelaySec?: number
+}
+
+/**
  * Policy for the daemon's own AGENTS.md resolution + injection (WP-R2) —
  * how a spawned session's initial prompt carries the repo's `AGENTS.md`
  * (see `agents-md.ts`). The daemon resolves the nearest `AGENTS.md` walking
@@ -440,6 +460,8 @@ export interface AgentprotoConfig {
   worktrees?: WorktreesConfig
   /** Spawn-time policy (`agent_start`). See {@link SpawnConfig}. */
   spawn?: SpawnConfig
+  /** Session-presence policy for the dashboard. See {@link SessionsConfig}. */
+  sessions?: SessionsConfig
   /** Provenance policy — the opt-in `gh` PATH shim. See {@link ProvenanceConfig}. */
   provenance?: ProvenanceConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */

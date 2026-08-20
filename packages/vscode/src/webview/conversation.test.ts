@@ -152,7 +152,8 @@ describe("reduceConversation", () => {
     // "Bien re", the tool-call record landed, then the continuation arrived.
     const conv = reduceConversation("s1", [
       rec({ kind: "user-prompt", text: "go" }),
-      rec({ kind: "text-delta", text: "Bien re" }), // no trailing "\n" — mid-line
+      // The writer's debounce flush flags the mid-line fragment `partial`.
+      rec({ kind: "text-delta", text: "Bien re", partial: true }),
       rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash", arguments: { command: "ls" } }),
       rec({ kind: "text-delta", text: "çu — suite." }),
       rec({ kind: "turn-end", reason: "completed" }),
@@ -177,6 +178,25 @@ describe("reduceConversation", () => {
     expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool", "assistant-text"])
     expect(asst.segments[0]).toMatchObject({ text: "done.\n" })
     expect(asst.segments[2]).toMatchObject({ text: "Next thing." })
+  })
+
+  it("does NOT rejoin across a tool-call when the earlier flush was final but unterminated", () => {
+    freshSeq()
+    // The writer's ordering flush (flushBuffers on the next tool-call) emits
+    // the END of a text block as a non-partial record with no trailing "\n" —
+    // the standard end-of-message shape. Gluing here ran whole paragraphs
+    // together ("…the client.Trial/grace logic…").
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "go" }),
+      rec({ kind: "text-delta", text: "Checking the client." }), // final, no "\n", no partial
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash" }),
+      rec({ kind: "text-delta", text: "Trial logic lives in Simone." }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+    const asst = conv.turns[1]!
+    expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool", "assistant-text"])
+    expect(asst.segments[0]).toMatchObject({ text: "Checking the client." })
+    expect(asst.segments[2]).toMatchObject({ text: "Trial logic lives in Simone." })
   })
 
   it("treats a `partial`-flagged flush as unterminated even when it happens to end in a newline", () => {
