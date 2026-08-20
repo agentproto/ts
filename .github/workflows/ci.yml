@@ -637,7 +637,33 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           LAST_SHA: ${{ steps.lastreview.outputs.sha }}
+          HEAD_SHA: ${{ steps.headsha.outputs.sha }}
         run: |
+          # Dedupe by EXACT head sha, first: if the bot already posted a
+          # review for THIS head, skip the whole reviewer ladder outright —
+          # distinct from the merge-forward/patch-id check below, which is
+          # for a DIFFERENT last-reviewed sha. "Find last reviewed commit"
+          # (above) deliberately excludes commit_id == HEAD_SHA (it's hunting
+          # a prior sha to diff against for that patch-id comparison), so an
+          # already-reviewed HEAD looks identical to "no prior review at
+          # all" to that step and would otherwise pay for a full fresh
+          # review. This is exactly what happened on PR #1047: this job's
+          # own concurrency group (`pr-review` has cancel-in-progress:false)
+          # serializes so a second, queued run for the SAME PR only starts
+          # once the first run's "Agentic review" job has fully finished —
+          # by then the first run had already posted review(s) for this
+          # exact HEAD_SHA, but nothing here checked for that, so the second
+          # run re-reviewed from scratch and posted a third, redundant
+          # APPROVE. Also catches a plain manual re-run of this job against
+          # an unchanged HEAD.
+          EXISTING=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            | jq -s "add | [.[] | select(.commit_id==\"$HEAD_SHA\")] | length")
+          if [ "${EXISTING:-0}" -gt 0 ] 2>/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "HEAD $HEAD_SHA already has $EXISTING posted review(s) — skipping the re-review (dedupe by reviewed sha)."
+            exit 0
+          fi
+
           # origin/main is fetched by the agent-setup harness. Fail-safe: if the
           # range can't resolve, skip stays false and the cloud reviewer runs.
           #
@@ -866,13 +892,24 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          SHA: ${{ steps.headsha.outputs.sha }}
         run: |
+          # Re-resolve the head LIVE — do not trust steps.headsha's
+          # checkout-time value here. GitHub stamps a posted review's
+          # commit_id against the PR's head at POST time, not against
+          # whatever sha this job happened to check out at start. If a
+          # second push lands on the branch while the primary reviewer tier
+          # above is still running (the box clones `pull/<N>/head` live),
+          # the review it just posted carries the NEW head's sha, and
+          # comparing against the stale checkout sha always reads 0 — arming
+          # every remaining fallback tier for nothing and posting duplicate
+          # APPROVEs. This is exactly what happened on PR #1047: one job run
+          # posted 2 of its 3 duplicate reviews this way.
+          SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid)
           # --paginate + `jq -s add` is load-bearing: a naive `--paginate
           # --jq` evaluates per PAGE and can miscount.
           COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
             | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
-          echo "Reviews already posted against reviewed SHA $SHA: $COUNT"
+          echo "Reviews already posted against live head $SHA: $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
           else
@@ -968,13 +1005,17 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          SHA: ${{ steps.headsha.outputs.sha }}
         run: |
+          # Re-resolve the head LIVE, same reasoning as the postcheck step
+          # above (see its comment) — the checkout-time steps.headsha sha can
+          # be stale by the time a review actually posts and gets its
+          # commit_id stamped.
+          SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid)
           # Same --paginate + `jq -s add` recipe as the postcheck step above —
           # see its comment for why a naive `--paginate --jq` miscounts.
           COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
             | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
-          echo "Reviews already posted against reviewed SHA $SHA (post-fallback-account check): $COUNT"
+          echo "Reviews already posted against live head $SHA (post-fallback-account check): $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
           else
@@ -1252,11 +1293,21 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          SHA: ${{ steps.headsha.outputs.sha }}
         run: |
+          # Re-resolve the head LIVE, same reasoning as the postcheck steps
+          # above — a review's commit_id is stamped against the PR's head at
+          # POST time, which can have moved past steps.headsha's
+          # checkout-time value (e.g. the reviewer's own changeset push, or
+          # a concurrent human push). Checking the stale sha here produced a
+          # false "posted=false" that both wrongly reddened the gate AND
+          # skipped the provenance-footer step downstream (its `if:` keys
+          # off steps.verify.outputs.posted) — reviewer-pushed commits (like
+          # the changeset commit itself) were landing with no provenance
+          # footer for exactly this reason.
+          SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid)
           COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
             | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
-          echo "Reviews posted against reviewed SHA $SHA: $COUNT"
+          echo "Reviews posted against live head $SHA: $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
           else
@@ -1281,7 +1332,6 @@ jobs:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          SHA: ${{ steps.headsha.outputs.sha }}
           AUTH_MODE: ${{ steps.cliver.outputs.auth-mode }}
           RUN_ID: ${{ github.run_id }}
           SERVER_URL: ${{ github.server_url }}
@@ -1292,7 +1342,22 @@ jobs:
           # Artifact ledger (review id at creation time) — the stamp keys off
           # this id; empty ⇒ it falls back to sha discovery with a ::warning::.
           ARTIFACTS: ${{ steps.reviewer.outputs.artifacts }}
-        run: node scripts/stamp-review-footer.mjs
+        run: |
+          # Same live-head re-resolution as the postcheck/verify steps above
+          # (see "Verify review was posted"'s comment) — SHA here feeds both
+          # the script's sha-discovery fallback (when the artifact ledger is
+          # empty, e.g. the legacy tier) AND the sha embedded IN the footer
+          # text itself. Stale steps.headsha silently dropped the footer on
+          # any review whose commit_id had moved past the job's checkout sha
+          # (the exact case that most reliably moves it: the reviewer's own
+          # changeset commit re-triggering CI) — the deterministic tracking
+          # comment must cover reviewer-pushed commits too, not just the
+          # original author's push.
+          # gh CLI picks up GITHUB_TOKEN (already set above for the script)
+          # as its auth token — no separate GH_TOKEN needed.
+          SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          export SHA
+          node scripts/stamp-review-footer.mjs
 
       # Gate: resolve decision + blocking config, post explicit statuses on
       # HEAD for both "Agentic review" and "Changeset present?" so the merge
