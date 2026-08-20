@@ -210,7 +210,7 @@ function toolJson(result: any): Record<string, unknown> {
 }
 
 describe("session_restart", () => {
-  it("pty-native: respawns via the provider's native resume command when a resume id was captured", async () => {
+  it("pty-native: respawns via the provider's native resume command when preferNativeTerminal opts in (an ACP-origin session never defaults there — see the origin-gate describe block below)", async () => {
     const { client, registry, close } = await buildHarness({ nativeTerminalResume: true })
 
     const prev = registry.spawnAgent({
@@ -227,7 +227,7 @@ describe("session_restart", () => {
 
     const result = await client.callTool({
       name: "session_restart",
-      arguments: { idOrName: prev.id },
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
     })
     expect(result.isError).toBeFalsy()
     const desc = toolJson(result)
@@ -238,6 +238,115 @@ describe("session_restart", () => {
     expect(desc.kind).toBe("terminal")
     expect(desc.pty).toBe(true)
     expect(desc.argv).toEqual([
+      "claude",
+      "--resume",
+      "0e483f81-1a44-4bec-9667-b37158450296",
+    ])
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("origin gate (root-cause fix): an ACP-origin claude-code session defaults to ACP-level resume, NEVER a surprise terminal — even with nativeTerminalResume + a captured resume id", async () => {
+    const { client, registry, calls, close } = await buildHarness({ nativeTerminalResume: true })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+    })
+    // Simulate the output sniffer having captured a native resume id too —
+    // this alone must NOT be enough to mode-switch an ACP-origin session
+    // into a terminal (the "restart starts a terminal but it doesn't work"
+    // bug: the isolated CLAUDE_CONFIG_DIR was never TUI-onboarded).
+    prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.kind).toBe("agent-cli")
+    expect(desc.resumeVia).toBe("resumed via ACP")
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.resumeSessionId).toBe(prev.adapterSessionId)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("origin gate opt-in: preferNativeTerminal:true still reaches pty-native for an ACP-origin claude-code session", async () => {
+    const { client, registry, calls, close } = await buildHarness({ nativeTerminalResume: true })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+    })
+    prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.kind).toBe("terminal")
+    expect(desc.pty).toBe(true)
+    expect(desc.argv).toEqual([
+      "claude",
+      "--resume",
+      "0e483f81-1a44-4bec-9667-b37158450296",
+    ])
+    // The opt-in never touched the ACP call path.
+    expect(calls).toHaveLength(0)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("origin gate: a session that was ITSELF already a raw PTY still gets pty-native by default, no opt-in needed", async () => {
+    const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
+    const { client, registry, close } = await buildHarness(
+      { nativeTerminalResume: true },
+      undefined,
+      factory,
+    )
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+    })
+    // Simulate this row having ALREADY been through a pty-native hop once
+    // (or otherwise genuinely originating as a real terminal) — same
+    // mutation style the other tests in this file use to simulate sniffer
+    // capture (`prev.resumeMetadata = ...`).
+    prev.pty = true
+    prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.kind).toBe("terminal")
+    expect(ptyCalls).toHaveLength(1)
+    expect(ptyCalls[0]?.argv).toEqual([
       "claude",
       "--resume",
       "0e483f81-1a44-4bec-9667-b37158450296",
@@ -543,7 +652,7 @@ describe("session_restart — resumedFrom/resumeVia persist on the stored descri
 
     const result = await client.callTool({
       name: "session_restart",
-      arguments: { idOrName: prev.id },
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
     })
     expect(result.isError).toBeFalsy()
     const desc = toolJson(result)
@@ -659,7 +768,7 @@ describe("session_restart — cross-session resume safety (regression)", () => {
 
     const result = await client.callTool({
       name: "session_restart",
-      arguments: { idOrName: prev.id },
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
     })
     expect(result.isError).toBeFalsy()
     const desc = toolJson(result)
@@ -868,7 +977,7 @@ describe("session_restart — pty-native/pty-plain env threading (CLAUDE_CONFIG_
 
     const result = await client.callTool({
       name: "session_restart",
-      arguments: { idOrName: prev.id },
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
     })
     expect(result.isError).toBeFalsy()
     const desc = toolJson(result)
@@ -908,7 +1017,7 @@ describe("session_restart — pty-native/pty-plain env threading (CLAUDE_CONFIG_
 
     const result = await client.callTool({
       name: "session_restart",
-      arguments: { idOrName: prev.id },
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
     })
     expect(result.isError).toBeFalsy()
 
@@ -938,11 +1047,13 @@ describe("session_restart — pty-native/pty-plain env threading (CLAUDE_CONFIG_
     original.resumeMetadata = { claudeResumeId: "c643a525-5d7a-4a45-a9a0-666215eb6e77" }
     registry.kill(original.id)
 
-    // First hop: agent-cli -> pty-native. Confirms env was threaded (same
-    // as the test above) and gives us the resulting bare-PTY descriptor.
+    // First hop: agent-cli -> pty-native (opted in — this ACP-origin session
+    // would otherwise default to ACP-level resume, see the origin-gate
+    // describe block below). Confirms env was threaded (same as the test
+    // above) and gives us the resulting bare-PTY descriptor.
     const firstRestart = await client.callTool({
       name: "session_restart",
-      arguments: { idOrName: original.id },
+      arguments: { idOrName: original.id, preferNativeTerminal: true },
     })
     const firstDesc = toolJson(firstRestart)
     expect(ptyCalls).toHaveLength(1)
@@ -1047,7 +1158,7 @@ describe("session_restart — pty-native billing-auth re-resolution", () => {
 
     const result = await client.callTool({
       name: "session_restart",
-      arguments: { idOrName: prev.id },
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
     })
     expect(result.isError).toBeFalsy()
 
@@ -1092,7 +1203,7 @@ describe("session_restart — pty-native billing-auth re-resolution", () => {
 
     const result = await client.callTool({
       name: "session_restart",
-      arguments: { idOrName: prev.id },
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
     })
     expect(result.isError).toBeFalsy()
 

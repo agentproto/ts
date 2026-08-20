@@ -3023,9 +3023,15 @@ interface RestartBody {
  * `{url, body}` REST call — the CLI-specific half (cols/rows come from
  * the attached terminal). The daemon's `session_restart` MCP tool runs
  * the same decision in-process instead of shaping an HTTP body.
+ *
+ * `preferNativeTerminal` mirrors `session_restart`'s own opt-in (session-
+ * tools.ts): an agent-cli/ACP-origin session defaults to ACP-level resume,
+ * never a surprise provider-native terminal (its isolated config dir was
+ * never TUI-onboarded — see `decideRestartStrategy`'s doc). Omitted here ⇒
+ * false, same default.
  */
-function buildRestartBody(prev: SessionDescriptor): RestartBody {
-  const strategy = decideRestartStrategy(prev)
+function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false): RestartBody {
+  const strategy = decideRestartStrategy(prev, { preferNativeTerminal })
   if (strategy.kind === "unsupported") {
     throw new Error(`${prev.id} is a ${strategy.reason}`)
   }
@@ -3405,6 +3411,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
       attach: { type: "boolean" },
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
+      "prefer-native-terminal": { type: "boolean" },
     },
   })
   const id = positionals[0]
@@ -3446,7 +3453,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
   prev = await augmentWithFsResume(prev)
   let built: RestartBody
   try {
-    built = buildRestartBody(prev)
+    built = buildRestartBody(prev, values["prefer-native-terminal"] === true)
   } catch (err) {
     process.stderr.write(
       `agentproto sessions restart: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -3499,7 +3506,9 @@ async function runRestart(args: readonly string[]): Promise<number> {
   } else {
     const lineage = resumeFallback
       ? "fresh — resume not available"
-      : describeResumePath(prev) || "fresh shape"
+      : describeResumePath(prev, {
+          preferNativeTerminal: values["prefer-native-terminal"] === true,
+        }) || "fresh shape"
     process.stdout.write(
       `agentproto sessions restart: spawned ${next.id}` +
         `${next.name ? ` (${next.name})` : ""} — ${next.command}\n` +

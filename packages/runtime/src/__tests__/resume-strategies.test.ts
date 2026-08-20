@@ -219,16 +219,67 @@ describe("claude-code fsProbe", () => {
  * them (pty-native beats pty-plain beats agent beats unsupported).
  */
 describe("decideRestartStrategy", () => {
-  it("picks pty-native when the adapter has a captured resume id + spawnArgs + nativeTerminalResume", () => {
+  it("picks pty-native for a PTY-origin session with a captured resume id + spawnArgs + nativeTerminalResume", () => {
     const strategy = decideRestartStrategy({
       adapterSlug: "claude-code",
       resumeMetadata: { claudeResumeId: "abc-123" },
       nativeTerminalResume: true,
+      pty: true,
     })
     expect(strategy).toEqual({
       kind: "pty-native",
       argv: ["claude", "--resume", "abc-123"],
     })
+  })
+
+  // ── origin gate (root-cause fix: "restart starts a terminal but it
+  // doesn't work") ──────────────────────────────────────────────────
+  //
+  // An agent-cli/ACP-origin session's isolated CLAUDE_CONFIG_DIR is
+  // populated ONLY by the headless ACP entrypoint, which never runs
+  // claude-code's interactive first-run wizard (theme picker, "detected a
+  // custom API key" prompt) — so a DEFAULT pty-native restart of such a
+  // session silently drops it onto that wizard with no one attached to
+  // answer it. `nativeTerminalResume` is a capability declaration, not
+  // license to mode-switch a headless session into an unattended terminal.
+
+  it("an ACP-origin session (prev.pty not true) does NOT get pty-native by default, even with nativeTerminalResume + a captured id — resumes via agent/ACP instead", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "claude-code",
+      resumeMetadata: { claudeResumeId: "abc-123" },
+      nativeTerminalResume: true,
+      adapterSessionId: "acp-session-1",
+    })
+    expect(strategy).toEqual({ kind: "agent", resumeSessionId: "acp-session-1" })
+  })
+
+  it("preferNativeTerminal:true opts an ACP-origin session INTO pty-native", () => {
+    const strategy = decideRestartStrategy(
+      {
+        adapterSlug: "claude-code",
+        resumeMetadata: { claudeResumeId: "abc-123" },
+        nativeTerminalResume: true,
+        adapterSessionId: "acp-session-1",
+      },
+      { preferNativeTerminal: true },
+    )
+    expect(strategy).toEqual({
+      kind: "pty-native",
+      argv: ["claude", "--resume", "abc-123"],
+    })
+  })
+
+  it("preferNativeTerminal is irrelevant (and unnecessary) for a genuinely PTY-origin session", () => {
+    const strategy = decideRestartStrategy(
+      {
+        adapterSlug: "claude-code",
+        resumeMetadata: { claudeResumeId: "abc-123" },
+        nativeTerminalResume: true,
+        pty: true,
+      },
+      { preferNativeTerminal: false },
+    )
+    expect(strategy.kind).toBe("pty-native")
   })
 
   it("falls back to pty-plain for a real PTY session with no adapter match", () => {
@@ -270,11 +321,12 @@ describe("decideRestartStrategy", () => {
     expect(strategy).toEqual({ kind: "agent", resumeSessionId: "chat_42" })
   })
 
-  it("picks pty-native for hermes when nativeTerminalResume is set and a resume id is captured", () => {
+  it("picks pty-native for a PTY-origin hermes session when nativeTerminalResume is set and a resume id is captured", () => {
     const strategy = decideRestartStrategy({
       adapterSlug: "hermes",
       resumeMetadata: { hermesResumeId: "h-1" },
       nativeTerminalResume: true,
+      pty: true,
     })
     expect(strategy).toEqual({
       kind: "pty-native",
@@ -335,6 +387,7 @@ describe("decideRestartStrategy", () => {
       resumeMetadata: { claudeResumeId: "abc-123" },
       resumable: false,
       nativeTerminalResume: true,
+      pty: true,
     })
     expect(strategy).toEqual({
       kind: "pty-native",
@@ -352,13 +405,36 @@ describe("decideRestartStrategy", () => {
 })
 
 describe("describeResumePath", () => {
-  it("describes a captured native resume id", () => {
+  it("describes a captured native resume id (PTY-origin session)", () => {
     expect(
       describeResumePath({
         adapterSlug: "claude-code",
         resumeMetadata: { claudeResumeId: "abc-123" },
+        pty: true,
       }),
     ).toBe("resumed via claude --resume")
+  })
+
+  it("describes a captured native resume id via the preferNativeTerminal opt-in (ACP-origin session)", () => {
+    expect(
+      describeResumePath(
+        {
+          adapterSlug: "claude-code",
+          resumeMetadata: { claudeResumeId: "abc-123" },
+        },
+        { preferNativeTerminal: true },
+      ),
+    ).toBe("resumed via claude --resume")
+  })
+
+  it("an ACP-origin session with a captured native id but NO opt-in describes ACP resume, not the native label (origin gate)", () => {
+    expect(
+      describeResumePath({
+        adapterSlug: "claude-code",
+        resumeMetadata: { claudeResumeId: "abc-123" },
+        adapterSessionId: "acp-session-1",
+      }),
+    ).toBe("resumed via ACP")
   })
 
   it("describes an ACP-level resume", () => {

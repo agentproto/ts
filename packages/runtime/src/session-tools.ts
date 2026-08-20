@@ -1907,15 +1907,19 @@ export function registerSessionTools(
       "continuity over a blank restart. Looks up the (possibly historical) " +
       "descriptor by id or name — same lookup as `session_list` — and picks " +
       "the same resume strategy `agentproto sessions restart` uses on the CLI: " +
-      "provider-native resume (spawns a PTY running the provider's own resume " +
-      "command, e.g. `claude --resume <id>`) when the adapter persisted one; " +
-      "else ACP-level resume via the adapter's own session id (retried as a " +
-      "fresh spawn if the adapter rejects the id with \"not found\" — typical " +
-      "when the prior session died before its first turn); else a plain PTY " +
-      "re-run for raw terminal sessions with no adapter match. Generic " +
-      "`command` sessions have no resume path and return an error. Returns " +
-      "the NEW session's descriptor plus `resumedFrom` (the prior id) and " +
-      "`resumeVia` (which path was used, empty string for a fresh respawn).",
+      "ACP-level resume via the adapter's own session id for an agent-cli/ACP-" +
+      "origin session (retried as a fresh spawn if the adapter rejects the id " +
+      "with \"not found\" — typical when the prior session died before its " +
+      "first turn); provider-native resume (spawns a PTY running the " +
+      "provider's own resume command, e.g. `claude --resume <id>`) for a " +
+      "session that was ITSELF already a raw PTY, or when `preferNativeTerminal` " +
+      "explicitly opts an ACP-origin session in (its isolated config dir was " +
+      "never TUI-onboarded, so defaulting there can strand the terminal on the " +
+      "provider's first-run wizard with no one attached to answer it); else a " +
+      "plain PTY re-run for raw terminal sessions with no adapter match. " +
+      "Generic `command` sessions have no resume path and return an error. " +
+      "Returns the NEW session's descriptor plus `resumedFrom` (the prior id) " +
+      "and `resumeVia` (which path was used, empty string for a fresh respawn).",
     {
       idOrName: z
         .string()
@@ -1992,6 +1996,18 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe("Legacy AIP-45 mode id override, forwarded verbatim to the driver at spawn."),
+      preferNativeTerminal: z
+        .boolean()
+        .optional()
+        .describe(
+          "Explicit opt-in to provider-native terminal resume (e.g. `claude --resume <id>` " +
+            "in a raw PTY) for a session that did NOT itself start as a PTY — an agent-cli/ACP " +
+            "session's isolated config dir was never TUI-onboarded (no theme/trust state), so " +
+            "the resumed terminal can otherwise block forever on the provider's first-run " +
+            "wizard with no one attached to answer it. Default false: an ACP-origin session " +
+            "always resumes at the ACP level instead. A session that WAS itself already a raw " +
+            "PTY still prefers native resume regardless of this flag."
+        ),
     },
     async input => {
       const prev = registry.findByIdOrName(input.idOrName)
@@ -2127,7 +2143,9 @@ export function registerSessionTools(
       }
 
       const augmented = await augmentWithFsResume(prev)
-      const strategy = decideRestartStrategy(augmented)
+      const strategy = decideRestartStrategy(augmented, {
+        preferNativeTerminal: input.preferNativeTerminal === true,
+      })
       // Trace WHICH restart path was chosen and why — the branching in
       // `decideRestartStrategy` depends on state that can differ between two
       // restarts of the SAME lineage (whether the output sniffer or the fs
@@ -2273,7 +2291,9 @@ export function registerSessionTools(
             ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
             ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
             resumedFrom: prev.id,
-            resumeVia: describeResumePath(augmented),
+            resumeVia: describeResumePath(augmented, {
+              preferNativeTerminal: input.preferNativeTerminal === true,
+            }),
           })
           return {
             content: [
