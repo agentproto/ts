@@ -143,7 +143,7 @@ describe("createAcpClient — plan / usage_update translation", () => {
     })
   })
 
-  it("still drops unknown session-update kinds (e.g. available_commands_update)", async () => {
+  it("translates an available_commands_update into a StreamEvent with the full command list", async () => {
     const client = await createAcpClient({ ...fakeStreams() })
     const session = await client.newSession({ cwd: "/tmp" })
     const iter = session.prompt({ messages: [{ type: "text", text: "go" }] })[Symbol.asyncIterator]()
@@ -151,7 +151,65 @@ describe("createAcpClient — plan / usage_update translation", () => {
     const handlers = capturedHandlersFactory!()
     await handlers.sessionUpdate({
       sessionId: "sess-plan",
-      update: { sessionUpdate: "available_commands_update", availableCommands: [] },
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "compact",
+            description: "Compress conversation history to save context window",
+            input: { hint: "optional context about what to preserve" },
+          },
+          { name: "context", description: "Show context window usage and session stats", input: null },
+          {
+            name: "autoglm-browser-agent",
+            description: "Browse the web",
+            input: null,
+            _meta: {
+              scope: "user",
+              path: "/Users/x/SKILL.md",
+              bareName: "autoglm-browser-agent",
+              qualifiedName: "user:autoglm-browser-agent",
+            },
+          },
+        ],
+      },
+    })
+
+    const { value } = await iter.next()
+    expect(value).toEqual({
+      kind: "available-commands",
+      sessionId: "sess-plan",
+      commands: [
+        {
+          name: "compact",
+          description: "Compress conversation history to save context window",
+          input: { hint: "optional context about what to preserve" },
+        },
+        { name: "context", description: "Show context window usage and session stats", input: null },
+        {
+          name: "autoglm-browser-agent",
+          description: "Browse the web",
+          input: null,
+          _meta: {
+            scope: "user",
+            path: "/Users/x/SKILL.md",
+            bareName: "autoglm-browser-agent",
+            qualifiedName: "user:autoglm-browser-agent",
+          },
+        },
+      ],
+    })
+  })
+
+  it("still drops genuinely unknown session-update kinds", async () => {
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session.prompt({ messages: [{ type: "text", text: "go" }] })[Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    await handlers.sessionUpdate({
+      sessionId: "sess-plan",
+      update: { sessionUpdate: "some_future_unknown_kind", someField: "x" },
     })
     // Follow with a real event so the iterator has something to yield —
     // otherwise this test can't distinguish "dropped" from "not delivered yet".

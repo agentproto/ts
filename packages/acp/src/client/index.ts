@@ -1109,6 +1109,30 @@ function translateSessionUpdate(
         ...(tokensOut !== undefined ? { tokensOut } : {}),
       }
     }
+    case "available_commands_update": {
+      const commands = (update.availableCommands as Array<Record<string, unknown>>) ?? []
+      return {
+        kind: "available-commands",
+        sessionId,
+        commands: commands.map((cmd) => ({
+          name: (cmd.name as string) ?? "",
+          ...(typeof cmd.description === "string" ? { description: cmd.description } : {}),
+          ...(cmd.input !== undefined
+            ? { input: cmd.input as { hint?: string } | null }
+            : {}),
+          ...(cmd._meta !== undefined
+            ? {
+                _meta: cmd._meta as {
+                  scope?: string
+                  path?: string
+                  bareName?: string
+                  qualifiedName?: string
+                },
+              }
+            : {}),
+        })),
+      }
+    }
     case "user_message_chunk":
       return null
     default:
