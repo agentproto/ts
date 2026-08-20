@@ -16,6 +16,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
+import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
   registerExportSessionTool,
@@ -33,6 +34,7 @@ import {
 } from "./resume-strategies.js"
 import {
   restartAgentSession,
+  resolveResumeAuth,
   RestartOverrideError,
   type RestartOverrides,
 } from "./session-restart-core.js"
@@ -224,6 +226,13 @@ export interface RegisterSessionToolsOptions {
    *  `catalog_models` MCP tool. Without it the tool returns a clear "not
    *  configured" error pointing at the host wiring. */
   listCatalogModels?: CatalogModelsLister
+  /** config.json `defaults` loader — same seam as
+   *  `RestartAgentSessionOptions.loadDefaultsConfig` in session-restart-core.ts.
+   *  Threaded into `session_restart`'s pty-native billing-auth re-resolution
+   *  (`resolveResumeAuth`) so tests can inject a stub instead of touching the
+   *  real `~/.agentproto/config.json`. Defaults to reading the real file via
+   *  `loadConfig` when omitted, same as every other restart call site. */
+  loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
   /** Forwarded to `registerAgentTools` — the daemon's own plain `/mcp`
    *  gateway URL, defaulted onto `hermes` `agent_start` spawns that
    *  pass no `mcpServers`. See `RegisterAgentToolsOptions.daemonMcpUrl`. */
@@ -335,6 +344,7 @@ export function registerSessionTools(
     listWorktreeStatuses,
     runWorktreeGc,
     listCatalogModels,
+    loadDefaultsConfig,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -2202,6 +2212,46 @@ export function registerSessionTools(
                     : `adapter "${prev.adapterSlug}" declares no configDirEnvVar — resume uses the global store`)
             )
           }
+          // Re-resolve billing-auth for a pty-native resume — same
+          // money-safety resolver the "agent" branch uses (`resolveResumeAuth`,
+          // session-restart-core.ts), never the daemon's own ambient env. A raw
+          // `claude --resume` PTY inherits `process.env` wholesale
+          // (sessions.ts's `spawnPty`), so without this it silently picks up
+          // whatever conflicting credential (e.g. an ambient `ANTHROPIC_API_KEY`
+          // set for some unrelated reason) happens to be in the daemon's own
+          // environment instead of THIS session's own resolved auth — the exact
+          // ambient-credential leak #824/#490 already closed for the ACP/agent
+          // paths. Concretely: an ambient `ANTHROPIC_API_KEY` the session's
+          // isolated config dir has never seen trips claude-code's own
+          // "detected a custom API key" prompt, which blocks forever with no
+          // one attached to answer it. `unsetEnv` scrubs that conflict;
+          // `setEnv`/`credential` inject the session's OWN resolved credential.
+          let authEnv: Record<string, string> | undefined
+          let authUnsetEnv: string[] | undefined
+          if (strategy.kind === "pty-native" && prev.adapterSlug && resolveAgentAdapter) {
+            const resolvedAdapter = await resolveAgentAdapter(prev.adapterSlug)
+            if (resolvedAdapter?.authDescriptor) {
+              const { authSpec } = await resolveResumeAuth(prev, resolvedAdapter, {
+                adapterSlug: prev.adapterSlug,
+                ...(prev.model ? { model: prev.model } : {}),
+                ...(prev.route ? { route: prev.route } : {}),
+                ...(prev.accessProfile?.profileRef
+                  ? { accessProfileRef: prev.accessProfile.profileRef }
+                  : {}),
+                prefix: "restart",
+                ...(loadDefaultsConfig ? { loadDefaultsConfig } : {}),
+                ...(listCatalogModels ? { listCatalogModels } : {}),
+              })
+              if (authSpec) {
+                authUnsetEnv = authSpec.unsetEnv
+                if (authSpec.credential !== undefined) {
+                  authEnv = { [authSpec.setEnv]: authSpec.credential }
+                }
+              }
+            }
+          }
+          const combinedPtyEnv: Record<string, string> | undefined =
+            ptyEnv || authEnv ? { ...ptyEnv, ...authEnv } : undefined
           // Persist the resume lineage onto the STORED descriptor (not just
           // grafted onto this response's JSON, as it used to be) — see
           // `SessionDescriptor.resumedFrom`'s doc for why that matters.
@@ -2211,7 +2261,8 @@ export function registerSessionTools(
             workspaceSlug: prev.workspaceSlug,
             cols: input.cols ?? 80,
             rows: input.rows ?? 24,
-            ...(ptyEnv ? { env: ptyEnv } : {}),
+            ...(combinedPtyEnv ? { env: combinedPtyEnv } : {}),
+            ...(authUnsetEnv && authUnsetEnv.length > 0 ? { unsetEnv: authUnsetEnv } : {}),
             ...(prev.name ? { name: prev.name } : {}),
             ...(prev.label ? { label: prev.label } : {}),
             // Lineage carry-forward (#session-visibility) — same reasoning as

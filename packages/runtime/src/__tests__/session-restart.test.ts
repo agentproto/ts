@@ -31,7 +31,7 @@ import type {
   SessionsRegistry,
 } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
-import type { DeclaredAdapterOption } from "../spawn-defaults.js"
+import type { AdapterAuthDescriptor, DeclaredAdapterOption, SpawnDefaultsConfig } from "../spawn-defaults.js"
 
 let acpCounter = 0
 function fakeAgentSession(prefix: string): AgentSessionLike {
@@ -65,6 +65,12 @@ function makeResolver(opts: {
   declaredOptions?: readonly DeclaredAdapterOption[]
   /** Manifest-declared `routeSelection`, surfaced like `AgentAdapterResolver.routeSelection`. */
   routeSelection?: "free" | "derived-from-model"
+  /** Manifest-declared auth descriptor, surfaced like
+   *  `AgentAdapterResolver.authDescriptor` — drives the pty-native
+   *  billing-auth re-resolution tests below. Omitted (like every other
+   *  test in this file) ⇒ `resolveResumeAuth` short-circuits to `{}`,
+   *  same as an adapter with no billing-auth at all (hermes). */
+  authDescriptor?: AdapterAuthDescriptor
 } = {}): {
   resolver: AgentAdapterResolver
   calls: Array<{
@@ -111,6 +117,7 @@ function makeResolver(opts: {
       : {}),
     ...(opts.declaredOptions ? { declaredOptions: opts.declaredOptions } : {}),
     ...(opts.routeSelection ? { routeSelection: opts.routeSelection } : {}),
+    ...(opts.authDescriptor ? { authDescriptor: opts.authDescriptor } : {}),
   })
   return { resolver, calls }
 }
@@ -160,6 +167,12 @@ async function buildHarness(
   // passed `registry.spawnPty`. Defaults to the plain fake used everywhere
   // else so existing call sites are unaffected.
   ptyFactory?: PtyFactory,
+  // Stub for config.json's `defaults` block — the pty-native billing-auth
+  // tests need this so `resolveResumeAuth` never touches the real
+  // `~/.agentproto/config.json` (same seam `session-restart-auth.test.ts`
+  // exercises directly against `restartAgentSession`). Omitted ⇒ falls
+  // through to the real `loadConfig`, unchanged for every other test here.
+  loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>,
 ): Promise<{
   client: Client
   registry: SessionsRegistry
@@ -179,6 +192,7 @@ async function buildHarness(
     registry,
     resolveAgentAdapter: resolver,
     ptyEnabled: true,
+    ...(loadDefaultsConfig ? { loadDefaultsConfig } : {}),
   })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -958,6 +972,137 @@ describe("session_restart — pty-native/pty-plain env threading (CLAUDE_CONFIG_
     expect(ptyCalls[1]?.env?.CLAUDE_CONFIG_DIR).toBe(
       "/fake/agentproto/adapter-config/sess_16c43292",
     )
+
+    await close()
+    registry.shutdown()
+  })
+})
+
+/**
+ * Root-cause regression: a `pty-native` restart spawns `claude --resume <id>`
+ * through `registry.spawnPty`, which merges the daemon's OWN `process.env`
+ * underneath the caller's override (unlike the "agent"/ACP restart branch,
+ * which re-resolves billing-auth via `resolveResumeAuth` before ever calling
+ * `startSession`). Before this fix the pty-native branch never called
+ * `resolveResumeAuth` at all, so the resumed PTY: (a) never received the
+ * session's own resolved credential (e.g. `CLAUDE_CODE_OAUTH_TOKEN`), and
+ * (b) inherited whatever conflicting credential (e.g. an ambient
+ * `ANTHROPIC_API_KEY`) happened to be in the daemon's own environment — the
+ * same ambient-credential leak #824/#490 already closed for the ACP/agent
+ * restart paths, reopened here for the native-terminal one. Concretely, an
+ * ambient `ANTHROPIC_API_KEY` the session's isolated `CLAUDE_CONFIG_DIR` has
+ * never seen trips claude-code's own "detected a custom API key" prompt,
+ * which blocks the PTY forever with no one attached to answer it.
+ */
+describe("session_restart — pty-native billing-auth re-resolution", () => {
+  const CLAUDE_CODE_AUTH_DESC: AdapterAuthDescriptor = {
+    provider: "anthropic",
+    authEnforce: "always",
+    authSubscription: {
+      setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      conflictEnv: ["ANTHROPIC_AUTH_TOKEN"],
+      unsetEnvAdd: ["CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BASE_URL"],
+    },
+  }
+
+  let prevAmbientApiKey: string | undefined
+
+  beforeEach(() => {
+    prevAmbientApiKey = process.env.ANTHROPIC_API_KEY
+  })
+
+  afterEach(() => {
+    if (prevAmbientApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+    else process.env.ANTHROPIC_API_KEY = prevAmbientApiKey
+  })
+
+  it("threads the re-resolved subscription credential (CLAUDE_CODE_OAUTH_TOKEN) into the resumed PTY's env", async () => {
+    delete process.env.ANTHROPIC_API_KEY
+    const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
+    const { client, registry, close } = await buildHarness(
+      { nativeTerminalResume: true, authDescriptor: CLAUDE_CODE_AUTH_DESC },
+      undefined,
+      factory,
+      async () => ({
+        adapters: { "claude-code": { auth: { token: "sk-ant-oat01-freshtoken9999" } } },
+      }),
+    )
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+      auth: {
+        mode: "subscription",
+        fingerprint: "subscription · sk-ant-oat…OLD1",
+        provider: "anthropic",
+        credentialSource: "explicit-config",
+        setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      },
+    })
+    prev.resumeMetadata = { claudeResumeId: "c643a525-5d7a-4a45-a9a0-666215eb6e77" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+
+    expect(ptyCalls).toHaveLength(1)
+    expect(ptyCalls[0]?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-freshtoken9999")
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("scrubs a conflicting ambient ANTHROPIC_API_KEY from the resumed PTY's env (money-safety, mirrors #824/#490)", async () => {
+    // Simulates the daemon's own process having an unrelated ANTHROPIC_API_KEY
+    // set (e.g. for some other adapter's use) — `spawnPty` otherwise forwards
+    // the daemon's full `process.env` verbatim into the resumed PTY.
+    process.env.ANTHROPIC_API_KEY = "sk-ant-leaked-ambient-key"
+    const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
+    const { client, registry, close } = await buildHarness(
+      { nativeTerminalResume: true, authDescriptor: CLAUDE_CODE_AUTH_DESC },
+      undefined,
+      factory,
+      async () => ({
+        adapters: { "claude-code": { auth: { token: "sk-ant-oat01-freshtoken9999" } } },
+      }),
+    )
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+      auth: {
+        mode: "subscription",
+        fingerprint: "subscription · sk-ant-oat…OLD1",
+        provider: "anthropic",
+        credentialSource: "explicit-config",
+        setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      },
+    })
+    prev.resumeMetadata = { claudeResumeId: "c643a525-5d7a-4a45-a9a0-666215eb6e77" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+
+    expect(ptyCalls).toHaveLength(1)
+    // The ambient leak this fix closes: without it, `ANTHROPIC_API_KEY`
+    // would still be sitting in the resumed PTY's env (inherited from
+    // process.env), triggering claude-code's "detected a custom API key"
+    // interactive prompt with no one attached to answer it.
+    expect(ptyCalls[0]?.env?.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(ptyCalls[0]?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-freshtoken9999")
 
     await close()
     registry.shutdown()
