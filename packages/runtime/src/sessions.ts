@@ -322,6 +322,15 @@ export interface AgentStreamEvent {
   /** "permission-resolved" chosen option id, when the driver's offered
    *  options included one (e.g. ACP's `allow_always`). */
   optionId?: string
+  /** "available-commands" full command list — see @agentproto/acp's
+   *  `StreamEvent`'s `available-commands` kind. REPLACES any previously
+   *  reported list wholesale; it is not a delta. */
+  commands?: Array<{
+    name: string
+    description?: string
+    input?: { hint?: string } | null
+    _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
+  }>
 }
 
 /**
@@ -1238,6 +1247,17 @@ export interface SessionDescriptor {
    *  `"no-pricing"` (tokens present but the model isn't in the catalog — cost
    *  deliberately left undefined), or `"none"`. Stamped at each turn-end. */
   usageSource?: import("./usage.js").UsageSource
+  /** Latest known `available_commands_update` payload (see @agentproto/acp's
+   *  `StreamEvent`'s `available-commands` kind) — the slash-commands/skills
+   *  the agent currently supports. Each notification REPLACES the previous
+   *  list wholesale, so this always mirrors the most recent one, not a
+   *  merge across notifications. */
+  availableCommands?: Array<{
+    name: string
+    description?: string
+    input?: { hint?: string } | null
+    _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
+  }>
   /** ACP-level session id (the adapter's own handle — claude-code's
    *  conversation id, hermes' chat id, …). Set at spawnAgent time
    *  from `agentSession.sessionId`. Survives across daemon restarts
@@ -4389,6 +4409,13 @@ export function createSessionsRegistry(opts?: {
         if (typeof evt.tokensOut === "number") rt.desc.tokensOut = evt.tokensOut
         break
       }
+      // Mirror the latest command list onto the descriptor, same as
+      // usage_update above — read-only state for session_list/GET /sessions,
+      // no ring-buffer line (this isn't turn output, it's capability
+      // metadata that changes rarely and isn't part of the conversation).
+      case "available-commands":
+        rt.desc.availableCommands = evt.commands ?? []
+        break
     }
   }
 

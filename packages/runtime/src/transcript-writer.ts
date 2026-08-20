@@ -487,6 +487,14 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             ...(evt.tokensOut !== undefined ? { tokensOut: evt.tokensOut } : {}),
           })
           break
+        case "available-commands":
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, {
+            kind: "available-commands",
+            sessionId,
+            commands: evt.commands ?? [],
+          })
+          break
         default:
           // Unknown kind — drop, same as `projectEvent`'s implicit
           // no-op for anything it doesn't switch on.

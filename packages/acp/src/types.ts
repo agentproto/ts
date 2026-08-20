@@ -217,3 +217,18 @@ export type StreamEvent =
       tokensIn?: number
       tokensOut?: number
     }
+  | {
+      kind: "available-commands"
+      sessionId: string
+      /**
+       * The full, current set of slash-commands/skills the agent supports —
+       * an `available_commands_update` REPLACES any previously reported list
+       * wholesale, it is not a delta.
+       */
+      commands: Array<{
+        name: string
+        description?: string
+        input?: { hint?: string } | null
+        _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
+      }>
+    }
