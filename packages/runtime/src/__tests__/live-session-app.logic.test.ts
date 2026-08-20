@@ -36,11 +36,10 @@ describe("reduceEvent", () => {
   it("rejoins an unterminated fragment split by an interleaved tool-call (mid-word debounce flush)", () => {
     // Real shape from a recorded session: the model paused >250ms mid-word
     // while emitting a tool_use block, so the transcript debounce flushed
-    // "Bien re", the tool-call record landed, then the continuation arrived.
-    // Terminated lines carry their trailing "\n"; only a mid-line fragment
-    // lacks one.
+    // "Bien re" flagged `partial: true` (see transcript-writer.ts), the
+    // tool-call record landed, then the continuation arrived.
     const state = reduceAll([
-      { seq: 1, kind: "text-delta", sessionId: "s1", text: "Bien re" },
+      { seq: 1, kind: "text-delta", sessionId: "s1", text: "Bien re", partial: true },
       { seq: 2, kind: "tool-call", sessionId: "s1", toolCallId: "c1", toolName: "bash" },
       { seq: 3, kind: "text-delta", sessionId: "s1", text: "çu — suite." },
     ])
@@ -63,6 +62,21 @@ describe("reduceEvent", () => {
     expect(state.rows[2]).toMatchObject({ text: "Next thing." })
   })
 
+  it("does NOT rejoin across a tool-call when the earlier flush was final but unterminated", () => {
+    // The writer's ordering flush (flushBuffers on the next tool-call) emits
+    // the END of a text block as a non-partial record with no trailing "\n" —
+    // the standard end-of-message shape, not a mid-line tear.
+    const state = reduceAll([
+      { seq: 1, kind: "text-delta", sessionId: "s1", text: "Checking the client." },
+      { seq: 2, kind: "tool-call", sessionId: "s1", toolCallId: "c1", toolName: "bash" },
+      { seq: 3, kind: "text-delta", sessionId: "s1", text: "Trial logic lives in Simone." },
+    ])
+
+    expect(state.rows.map(r => r.kind)).toEqual(["text", "tool-call", "text"])
+    expect(state.rows[0]).toMatchObject({ text: "Checking the client." })
+    expect(state.rows[2]).toMatchObject({ text: "Trial logic lives in Simone." })
+  })
+
   it("never rejoins across a turn-end, even when the fragment was unterminated", () => {
     const state = reduceAll([
       { seq: 1, kind: "text-delta", sessionId: "s1", text: "cut off mid" },
@@ -76,7 +90,7 @@ describe("reduceEvent", () => {
 
   it("rejoins a session's fragment past another session's interleaved rows", () => {
     const state = reduceAll([
-      { seq: 1, kind: "text-delta", sessionId: "s1", text: "Bien re" },
+      { seq: 1, kind: "text-delta", sessionId: "s1", text: "Bien re", partial: true },
       { seq: 2, kind: "tool-call", sessionId: "s2", toolCallId: "c9", toolName: "bash" },
       { seq: 3, kind: "text-delta", sessionId: "s1", text: "çu." },
     ])

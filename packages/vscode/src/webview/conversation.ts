@@ -52,9 +52,10 @@ export interface TextSegment extends SegmentBase {
   text: string
   /** Reducer-internal continuation hint: true when the LATEST record folded
    *  into this segment was flagged `partial` (an explicitly unterminated
-   *  flush). Most unterminated debounce flushes carry no flag today, so the
-   *  endsWith("\n") check in the reducer is the load-bearing signal; this
-   *  only adds precision when the writer does say so. */
+   *  debounce flush, see transcript-writer.ts). This flag is the ONLY glue
+   *  signal across an interleaved tool card — a non-partial record with no
+   *  trailing "\n" is the writer's normal end-of-text-block shape, not a
+   *  mid-line tear. */
   partial?: boolean
 }
 
@@ -221,14 +222,16 @@ export function reduceConversation(
           break
         }
         // The daemon's transcript debounce can flush an unterminated mid-word
-        // fragment ("Bien re"), let a tool-call record land, then flush the
-        // continuation ("çu — …"). Terminated lines carry their trailing "\n"
-        // (transcript-writer contract), so an earlier assistant-text segment
-        // in THIS turn that does not end in "\n" (or was explicitly flagged
-        // `partial`) is still mid-line — continue it in place rather than
-        // splitting the sentence into a second paragraph after the interleave.
+        // fragment ("Bien re") flagged `partial: true`, let a tool-call record
+        // land, then flush the continuation ("çu — …") — continue that segment
+        // in place rather than splitting the sentence into a second paragraph
+        // after the interleave. Only the explicit `partial` flag glues: the
+        // writer's ordering flush (tool-call/turn-end) emits the END of a text
+        // block as a non-partial record with no trailing "\n", so treating
+        // every unterminated segment as mid-line ran paragraphs together
+        // ("…the client.Trial/grace logic…") whenever tool calls interleaved.
         const open = lastAssistantText(turn)
-        if (open && (open.partial === true || !open.text.endsWith("\n"))) {
+        if (open && open.partial === true) {
           appendTextDelta(open, rec)
           break
         }
