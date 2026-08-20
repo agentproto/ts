@@ -210,18 +210,18 @@ function reduceEvent(state, record) {
       if (last && last.kind === 'text' && last.sessionId === record.sessionId) {
         return { rows: state.rows.slice(0, -1).concat([mergeTextDelta(last, record)]) };
       }
-      // Debounce can flush an unterminated mid-word fragment, let a tool-call
-      // land, then flush the continuation. Terminated lines carry their
-      // trailing newline (transcript-writer contract) — look back within the
-      // same turn (bounded by this session's last turn-end) for that
-      // session's most recent text row; if unterminated (or flagged
-      // partial), continue it in place instead of splitting the sentence.
+      // Debounce can flush an unterminated mid-word fragment (flagged
+      // partial), let a tool-call land, then flush the continuation — look
+      // back within the same turn (bounded by this session's last turn-end)
+      // for that session's most recent text row and continue it in place.
+      // Only the explicit partial flag glues: a non-partial record with no
+      // trailing newline is the writer's normal end-of-text-block shape.
       for (var i = state.rows.length - 1; i >= 0; i--) {
         var prior = state.rows[i];
         if (prior.sessionId !== record.sessionId) continue;
         if (prior.kind === 'turn-end') break;
         if (prior.kind !== 'text') continue;
-        if (prior.partial === true || !prior.text.endsWith('\\n')) {
+        if (prior.partial === true) {
           var patched = state.rows.slice();
           patched[i] = mergeTextDelta(prior, record);
           return { rows: patched };

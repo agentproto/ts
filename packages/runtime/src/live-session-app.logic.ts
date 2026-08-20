@@ -48,9 +48,10 @@ export interface TextRow extends RowBase {
   kind: "text"
   text: string
   /** Reducer-internal continuation hint: true when the LATEST record folded
-   *  into this row was flagged `partial` (an explicitly unterminated flush).
-   *  Most unterminated debounce flushes carry no flag today, so the
-   *  endsWith("\n") check in the reducer is the load-bearing signal. */
+   *  into this row was flagged `partial` (an explicitly unterminated debounce
+   *  flush, see transcript-writer.ts). This flag is the ONLY glue signal
+   *  across an interleave — a non-partial record with no trailing "\n" is the
+   *  writer's normal end-of-text-block shape, not a mid-line tear. */
   partial?: boolean
 }
 
@@ -114,19 +115,20 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
         return { rows: [...state.rows.slice(0, -1), mergeTextDelta(last, record)] }
       }
       // The daemon's transcript debounce can flush an unterminated mid-word
-      // fragment ("Bien re"), let a tool-call record land, then flush the
-      // continuation ("çu — …"). Terminated lines carry their trailing "\n"
-      // (transcript-writer contract) — so look back within the same turn
-      // (bounded by this session's last turn-end) for that session's most
-      // recent text row; if it does not end in "\n" (or was explicitly
-      // flagged `partial`), continue it in place rather than splitting the
-      // sentence into a second row after the interleave.
+      // fragment ("Bien re") flagged `partial: true`, let a tool-call record
+      // land, then flush the continuation ("çu — …") — look back within the
+      // same turn (bounded by this session's last turn-end) for that
+      // session's most recent text row and continue it in place rather than
+      // splitting the sentence into a second row after the interleave. Only
+      // the explicit `partial` flag glues: the writer's ordering flush emits
+      // the END of a text block as a non-partial record with no trailing
+      // "\n", so an endsWith("\n") heuristic ran paragraphs together.
       for (let i = state.rows.length - 1; i >= 0; i--) {
         const prior = state.rows[i]!
         if (prior.sessionId !== record.sessionId) continue
         if (prior.kind === "turn-end") break
         if (prior.kind !== "text") continue
-        if (prior.partial === true || !prior.text.endsWith("\n")) {
+        if (prior.partial === true) {
           const rows = [...state.rows]
           rows[i] = mergeTextDelta(prior, record)
           return { rows }
