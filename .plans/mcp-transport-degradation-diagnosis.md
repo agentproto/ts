@@ -525,3 +525,27 @@ for Incident 2). Recommend scoping the first fix PR to items 1-2 above —
 concrete, cited, low-risk — and opening separate follow-up issues (not
 PRs) for the rest, each linking back to the specific section of this
 document that motivates it.
+
+---
+
+## Related but independent: silent no-op in `sessions wait --until turn-end`
+
+A fourth defect surfaced the same night, in the same general territory
+(session/adapter observability under this daemon) but with a **different
+root cause** from either incident above — recorded here only as a pointer
+for whoever reads this doc next; it is being fixed in a separate PR, not
+this one, and does not change anything in §§Incident 1-2 or the
+recommendation above. `agentproto sessions wait <id> --until turn-end
+--timeout 40m` against an `opencode`-adapter session returned
+successfully and **immediately** (six consecutive calls, each under ~1s,
+against a session that had just been spawned and was nowhere near done)
+instead of blocking until the turn actually ended. Working hypothesis:
+the `opencode` adapter never publishes the turn-boundary signal the wait
+primitive listens for the way `claude-code` does, and the daemon treats
+"no signal available" as "already satisfied" rather than "unknown, keep
+waiting" or "unsupported, error out." Production impact: an orchestrator
+built on this primitive believed it was blocking until real work
+finished, got control back in 1-6 seconds every time, concluded each
+batch was done with zero output produced, and silently burned 38 batches
+of compute for 14 actually-completed items over an entire afternoon — no
+error surfaced anywhere.
