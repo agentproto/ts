@@ -9,6 +9,7 @@ function fakeClient(overrides: Partial<DaemonClient> = {}): DaemonClient {
     output: vi.fn(async () => ""),
     kill: vi.fn(async () => {}),
     waitForAny: vi.fn(async () => ({ sessionId: "sess_1", event: "turn-end" as const })),
+    currentEventsCursor: vi.fn(async () => 0),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -41,9 +42,13 @@ describe("makeDaemonAgentSessionHost", () => {
     expect(host.resolveByLabel("code")).toBe("sess_1")
   })
 
-  it("sendPromptAndWait sends the prompt then waits for the turn to settle", async () => {
+  it("sendPromptAndWait captures a cursor, THEN sends the prompt, THEN waits with that cursor as `since`", async () => {
     const order: string[] = []
     const client = fakeClient({
+      currentEventsCursor: vi.fn(async () => {
+        order.push("cursor")
+        return 7
+      }),
       prompt: vi.fn(async () => {
         order.push("prompt")
       }),
@@ -55,11 +60,17 @@ describe("makeDaemonAgentSessionHost", () => {
     const host = makeDaemonAgentSessionHost(client)
     await host.sendPromptAndWait("sess_1", "do the thing")
     expect(client.prompt).toHaveBeenCalledWith("sess_1", "do the thing")
-    // the wait subscribes before the prompt is sent (avoids a race where an
-    // extremely fast turn settles before the wait call starts listening)
-    expect(order).toEqual(["wait-settled", "prompt"])
+    // The cursor is captured — a completed, AWAITED round-trip — strictly
+    // BEFORE the prompt is sent, so a turn that settles synchronously
+    // inside `prompt`'s own round-trip is still caught by the daemon's
+    // ring-replay branch regardless of when `waitForAny`'s own
+    // subscription reaches it. This is race-free client-ordering can't be
+    // (two outbound requests racing the same daemon have no guaranteed
+    // arrival order) — see `HarnessClient.currentEventsCursor`'s doc.
+    expect(order).toEqual(["cursor", "prompt", "wait-settled"])
     expect(client.prompt).toHaveBeenCalledTimes(1)
     expect(client.waitForAny).toHaveBeenCalledTimes(1)
+    expect(client.waitForAny).toHaveBeenCalledWith(["sess_1"], expect.objectContaining({ since: 7 }))
   })
 
   it("sendPromptAndWait re-polls past a 'timeout' long-poll result instead of returning early", async () => {

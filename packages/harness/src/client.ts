@@ -114,7 +114,7 @@ export class HarnessClient {
    */
   async waitForAny(
     sessionIds: string[],
-    opts?: { timeoutMs?: number; event?: TurnEvent },
+    opts?: { timeoutMs?: number; event?: TurnEvent; since?: number },
   ): Promise<TurnResult> {
     const windowMs = Math.min(Math.max(opts?.timeoutMs ?? 49_000, 1_000), 49_000)
     return this.#call(
@@ -123,9 +123,27 @@ export class HarnessClient {
         sessionIds,
         ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(opts?.event !== undefined ? { event: opts.event } : {}),
+        ...(opts?.since !== undefined ? { since: opts.since } : {}),
       },
       { timeoutMs: windowMs + 60_000 },
     )
+  }
+
+  /**
+   * Fetch the daemon's CURRENT event-ring cursor, with no historical replay
+   * — `session_events_poll` with no `since` starts from the tail (see that
+   * tool's doc), so this returns immediately with `events: []`. A caller
+   * that needs to race-free-wait for a turn it's ABOUT to trigger (e.g.
+   * `sandbox-agent-session-proxy.ts`'s prompt+wait, which can't otherwise
+   * subscribe to `waitForAny` before the remote turn completes over a real
+   * network round-trip) captures this cursor first, then passes it as
+   * `waitForAny`'s `since` — `monitorSessionWait`'s ring-replay branch
+   * checks already-emitted events unconditionally, so this is correct
+   * regardless of how the subsequent long-poll's subscription is timed.
+   */
+  async currentEventsCursor(): Promise<number> {
+    const res = await this.#call<{ nextCursor?: number }>("session_events_poll", {})
+    return res.nextCursor ?? 0
   }
 
   /**
