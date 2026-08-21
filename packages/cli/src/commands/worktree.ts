@@ -66,6 +66,7 @@ import {
   WorktreeNotRemovableError,
   planGc,
   applyGc,
+  reclaimOneWorktree,
   type WorktreeStatusEntry,
   type GcPlanEntry,
   type GcApplyOutcome,
@@ -78,6 +79,7 @@ import {
   type WorktreeGcResult,
   type WorktreeGcPlanEntryView,
   type WorktreeGcOutcomeView,
+  type WorktreeAutoReclaimer,
   type OpenPrResolver,
   type PrStateResolver,
   type PrResolvedState,
@@ -419,21 +421,43 @@ export function makeWorktreeStatusLister(): WorktreeStatusLister {
 }
 
 /** Runtime-local projection of one `GcPlanEntry` — flattens the engine's rich
- *  tree/integration/liveness objects to the discriminants the runtime carries. */
+ *  tree/integration/liveness objects to the discriminants the runtime carries.
+ *  An orphan entry carries none of those axis reads (see `GcPlanEntry`'s
+ *  doc) — projected as the literal `"orphan"` placeholder rather than a
+ *  fabricated value. */
 function toGcPlanEntryView(entry: GcPlanEntry): WorktreeGcPlanEntryView {
-  const integration: { state: string; pr?: number } = { state: entry.integration.state }
-  if ("pr" in entry.integration) integration.pr = entry.integration.pr
+  if (entry.orphan) {
+    return {
+      path: entry.path,
+      branch: entry.branch,
+      head: entry.head,
+      class: entry.class,
+      orphan: true,
+      ...(entry.reclaimReason ? { reclaimReason: entry.reclaimReason } : {}),
+      tree: "orphan",
+      integration: { state: "orphan" },
+      liveness: { state: "orphan", sessionCount: 0 },
+    }
+  }
+  const tree = entry.tree
+  const integrationState = entry.integration
+  const liveness = entry.liveness
+  if (!tree || !integrationState || !liveness) {
+    throw new Error(`gc: non-orphan plan entry missing tree/integration/liveness for ${entry.path}`)
+  }
+  const integration: { state: string; pr?: number } = { state: integrationState.state }
+  if ("pr" in integrationState) integration.pr = integrationState.pr
   return {
     path: entry.path,
     branch: entry.branch,
     head: entry.head,
     class: entry.class,
     ...(entry.reclaimReason ? { reclaimReason: entry.reclaimReason } : {}),
-    tree: entry.tree.state,
+    tree: tree.state,
     integration,
     liveness: {
-      state: entry.liveness.state,
-      sessionCount: entry.liveness.sessions.length,
+      state: liveness.state,
+      sessionCount: liveness.sessions.length,
     },
   }
 }
@@ -479,9 +503,10 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
         `worktree_gc: "${repoRootCandidate}" is not inside a git repository.`
       )
     }
-    const [forge, defaultBranch] = await Promise.all([
+    const [forge, defaultBranch, worktreesRoot] = await Promise.all([
       createForgeClient(repoRoot),
       detectDefaultBranch(repoRoot),
+      resolveWorktreesRoot(undefined),
     ])
     const repoName = repoLabel(repoRoot)
     const memo = new FileVerdictMemoStore()
@@ -494,6 +519,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       memo,
       defaultBranchRef,
       includeDetached,
+      worktreesRoot: join(worktreesRoot, repoName),
     })
 
     if (!apply) {
@@ -510,6 +536,38 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       salvageDirty,
     })
     return { mode: "apply", outcomes: outcomes.map(toGcOutcomeView) }
+  }
+}
+
+/**
+ * Concrete `WorktreeAutoReclaimer` for the daemon — the injected port behind
+ * `sessions.ts`'s exit-time auto-reclaim (`SessionDescriptor.
+ * worktreeAutoProvisioned` / `emitExited`). Scoped to exactly the one
+ * worktree path a session's own exit is allowed to touch: resolves the
+ * owning repo from it and delegates straight to `reclaimOneWorktree` — the
+ * SAME classify → re-verify → remove pipeline `worktree gc`/`worktree_gc`
+ * use, applied to a plan of size one, never a second removal path. A path
+ * that isn't (or no longer is) inside a git repo is a silent no-op — the
+ * worktree it would have named is already gone, nothing to reclaim.
+ */
+export function makeWorktreeAutoReclaimer(): WorktreeAutoReclaimer {
+  return async (worktreePath: string): Promise<void> => {
+    const repoRoot = repoRootOf(resolve(worktreePath))
+    if (!repoRoot) return
+    const [forge, defaultBranch] = await Promise.all([
+      createForgeClient(repoRoot),
+      detectDefaultBranch(repoRoot),
+    ])
+    const outcome = await reclaimOneWorktree(worktreePath, {
+      repoRoot,
+      repoName: repoLabel(repoRoot),
+      forge,
+      memo: new FileVerdictMemoStore(),
+      defaultBranchRef: `origin/${defaultBranch}`,
+    })
+    if (outcome?.result === "failed") {
+      throw new Error(`worktree auto-reclaim failed for ${worktreePath}: ${outcome.message}`)
+    }
   }
 }
 
@@ -944,14 +1002,26 @@ async function runGc(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  const [forge, defaultBranch] = await Promise.all([createForgeClient(repoRoot), detectDefaultBranch(repoRoot)])
+  const [forge, defaultBranch, worktreesRoot] = await Promise.all([
+    createForgeClient(repoRoot),
+    detectDefaultBranch(repoRoot),
+    resolveWorktreesRoot(undefined),
+  ])
   const repoName = repoLabel(repoRoot)
   const memo = new FileVerdictMemoStore()
   const includeDetached = Boolean(values["include-detached"])
   const salvageDirty = Boolean(values["salvage-dirty"])
   const defaultBranchRef = `origin/${defaultBranch}`
 
-  const plan = await planGc({ repoRoot, repoName, forge, memo, defaultBranchRef, includeDetached })
+  const plan = await planGc({
+    repoRoot,
+    repoName,
+    forge,
+    memo,
+    defaultBranchRef,
+    includeDetached,
+    worktreesRoot: join(worktreesRoot, repoName),
+  })
 
   if (!values.apply) {
     printGcPlan(plan, salvageDirty, Boolean(values.json))
@@ -997,6 +1067,7 @@ function printGcPlan(plan: readonly GcPlanEntry[], salvageDirty: boolean, json: 
 }
 
 function gcPlanAction(entry: GcPlanEntry, salvageDirty: boolean): string {
+  if (entry.orphan) return "reclaim (orphan: git metadata gone, rm -rf)"
   if (entry.class === "reclaim") {
     return entry.reclaimReason === "dep-bump"
       ? "reclaim (dep-bump exemption: rm, delete branch)"
@@ -1012,8 +1083,8 @@ function formatGcPlanRow(entry: GcPlanEntry, salvageDirty: boolean): string {
     branch.padEnd(28),
     entry.class.padEnd(9),
     gcPlanAction(entry, salvageDirty).padEnd(30),
-    formatTree(entry.tree).padEnd(16),
-    formatIntegration(entry.integration).padEnd(26),
+    (entry.tree ? formatTree(entry.tree) : "(orphan)").padEnd(16),
+    (entry.integration ? formatIntegration(entry.integration) : "(orphan)").padEnd(26),
     entry.path,
   ].join("  ")
 }
@@ -1023,7 +1094,12 @@ function formatGcOutcomeRow(outcome: GcApplyOutcome): string {
   let detail: string
   switch (outcome.result) {
     case "reclaimed":
-      detail = outcome.reclaimReason === "dep-bump" ? "reclaimed (dep-bump exemption)" : "reclaimed"
+      detail =
+        outcome.reclaimReason === "dep-bump"
+          ? "reclaimed (dep-bump exemption)"
+          : outcome.reclaimReason === "orphan"
+            ? "reclaimed (orphan: git metadata was already gone)"
+            : "reclaimed"
       break
     case "salvaged":
       detail = `salvaged (${outcome.salvageDir})`

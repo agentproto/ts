@@ -14,7 +14,7 @@
  * never rides along on a reclaim removal.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, realpath, readFile, utimes } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, readFile, utimes, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
@@ -31,8 +31,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 })
 
 import { execGit } from "../exec.js"
-import { planGc, applyGc, classifyForGc, type GcApplyOutcome } from "../gc.js"
-import { InMemoryVerdictMemoStore, type IntegrationState } from "../status.js"
+import { planGc, applyGc, classifyForGc, reclaimOneWorktree, type GcApplyOutcome } from "../gc.js"
+import { InMemoryVerdictMemoStore, listGitWorktrees, type IntegrationState } from "../status.js"
 import { UnreachableForgeClient, type ForgeClient, type ForgePullRequestRef } from "../forge.js"
 
 // ── fixtures (same shape as status.test.ts) ─────────────────────────────
@@ -779,7 +779,7 @@ describe("gc — dep-bump reclaim exemption", () => {
 
     const forge = new FakeForgeClient()
     const { entry } = await planFor(repo, wtPath, forge)
-    expect(entry?.tree.state).toBe("dirty")
+    expect(entry?.tree?.state).toBe("dirty")
     expect(entry?.class).toBe("hold")
     expect(entry?.reclaimReason).toBeUndefined()
   })
@@ -827,5 +827,354 @@ describe("gc — dep-bump reclaim exemption", () => {
     })
     const outcome = outcomes.find((o) => o.path === wtPath)
     expect(outcome?.result).toBe("held")
+  })
+})
+
+// ── orphan reclaim: an interrupted `git worktree remove` ───────────────────
+//
+// A `git worktree remove` that dies mid-delete erases `<repo>/.git/worktrees/
+// <name>` but can leave the working directory (or part of it) behind on
+// disk. Once that metadata is gone, `git worktree list` — and therefore
+// `linkedWorktreesOf`, and therefore every classify/reclaim/salvage path
+// above — has no way to ever see the directory again; it accumulates
+// forever. This section drives the orphan scan directly, independent of (and
+// never interfering with) the classify engine covered above.
+
+describe("gc — orphan reclaim: an interrupted `git worktree remove`", () => {
+  /** Simulates a `git worktree remove` that died mid-delete: erases only the
+   *  git-side metadata (`<repo>/.git/worktrees/<name>`), leaving the working
+   *  directory itself — and whatever files were in it — on disk. */
+  async function simulateInterruptedRemove(wtPath: string): Promise<void> {
+    const gitFile = await readFile(join(wtPath, ".git"), "utf8")
+    const match = gitFile.match(/^gitdir:\s*(.+)$/m)
+    if (!match?.[1]) throw new Error(`no gitdir pointer found in ${wtPath}/.git`)
+    await rm(match[1].trim(), { recursive: true, force: true })
+  }
+
+  it("is invisible to git worktree list — and therefore to plain gc — once orphaned: the defect this section fixes", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const worktreesRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-gc-pool-")))
+    cleanupPaths.push(worktreesRoot)
+
+    await execGit(repo, ["checkout", "-b", "wt/orphan-invisible"])
+    await execGit(repo, ["checkout", "main"])
+    const wtPath = join(worktreesRoot, "orphan-invisible")
+    await addWorktree(repo, wtPath, [], "wt/orphan-invisible")
+    await writeFile(join(wtPath, "leftover.txt"), "still here\n")
+
+    await simulateInterruptedRemove(wtPath)
+
+    // Invisible to git itself — the exact blind spot `linkedWorktreesOf`
+    // (and every existing classify/reclaim path) inherits.
+    const linked = await listGitWorktrees(repo)
+    expect(linked.some((w) => w.path === wtPath)).toBe(false)
+
+    // Plain gc — no `worktreesRoot` passed — never sees it either, exactly
+    // like every caller of `planGc` before this change.
+    const forge = new UnreachableForgeClient("must not be called")
+    const memo = new InMemoryVerdictMemoStore()
+    const plainPlan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    expect(plainPlan.some((e) => e.path === wtPath)).toBe(false)
+
+    // Still very much on disk, taking up space — the actual leak.
+    expect(await readFile(join(wtPath, "leftover.txt"), "utf8")).toBe("still here\n")
+  })
+
+  it("shows up in a dry-run plan, distinctly marked, once worktreesRoot is scanned", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const worktreesRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-gc-pool-")))
+    cleanupPaths.push(worktreesRoot)
+
+    await execGit(repo, ["checkout", "-b", "wt/orphan-dry-run"])
+    await execGit(repo, ["checkout", "main"])
+    const wtPath = join(worktreesRoot, "orphan-dry-run")
+    await addWorktree(repo, wtPath, [], "wt/orphan-dry-run")
+    await simulateInterruptedRemove(wtPath)
+
+    const forge = new UnreachableForgeClient("must not be called — an orphan never reaches classify")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      worktreesRoot,
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.orphan).toBe(true)
+    expect(entry?.class).toBe("reclaim")
+    expect(entry?.reclaimReason).toBe("orphan")
+
+    // A dry run mutates nothing.
+    expect((await stat(wtPath)).isDirectory()).toBe(true)
+  })
+
+  it("is removed on apply: true, and re-removing it afterward (already gone) is a harmless no-op", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const worktreesRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-gc-pool-")))
+    cleanupPaths.push(worktreesRoot)
+
+    await execGit(repo, ["checkout", "-b", "wt/orphan-apply"])
+    await execGit(repo, ["checkout", "main"])
+    const wtPath = join(worktreesRoot, "orphan-apply")
+    await addWorktree(repo, wtPath, [], "wt/orphan-apply")
+    await simulateInterruptedRemove(wtPath)
+
+    const forge = new UnreachableForgeClient("must not be called")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      worktreesRoot,
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.orphan).toBe(true)
+
+    const applyOptions = { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW }
+    const outcomes = await applyGc(plan, applyOptions)
+    const outcome = outcomes.find((o) => o.path === wtPath) as Extract<GcApplyOutcome, { result: "reclaimed" }>
+    expect(outcome?.result).toBe("reclaimed")
+    expect(outcome?.reclaimReason).toBe("orphan")
+    await expect(stat(wtPath)).rejects.toThrow()
+
+    // Idempotent: reclaiming the same (now-vanished) entry again is success, not an error.
+    const outcomesAgain = await applyGc(plan, applyOptions)
+    const outcomeAgain = outcomesAgain.find((o) => o.path === wtPath) as Extract<GcApplyOutcome, { result: "reclaimed" }>
+    expect(outcomeAgain?.result).toBe("reclaimed")
+    expect(outcomeAgain?.reclaimReason).toBe("orphan")
+  })
+
+  it("never removes a directory whose .git pointer doesn't resolve back to this repo's .git/worktrees/", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const otherRepo = await makeRepo() // a different repo, standing in for "not ours"
+    cleanupPaths.push(otherRepo)
+    const worktreesRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-gc-pool-")))
+    cleanupPaths.push(worktreesRoot)
+
+    // A worktree that genuinely belongs to `otherRepo`, sitting in the same
+    // pool directory `repo`'s gc sweep will scan (plausible: bucket dirs
+    // share one root, see `resolveWorktreesRoot`).
+    await execGit(otherRepo, ["checkout", "-b", "wt/not-mine"])
+    await execGit(otherRepo, ["checkout", "main"])
+    const notMinePath = join(worktreesRoot, "not-mine")
+    await addWorktree(otherRepo, notMinePath, [], "wt/not-mine")
+    await simulateInterruptedRemove(notMinePath)
+
+    // A plain directory with no `.git` pointer at all.
+    const plainDir = join(worktreesRoot, "not-a-worktree-at-all")
+    await mkdir(plainDir, { recursive: true })
+    await writeFile(join(plainDir, "hello.txt"), "unrelated\n")
+
+    const forge = new UnreachableForgeClient("must not be called")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      worktreesRoot,
+    })
+    expect(plan.some((e) => e.path === notMinePath)).toBe(false)
+    expect(plan.some((e) => e.path === plainDir)).toBe(false)
+
+    // Neither was ever a plan entry, so applying can't have touched them —
+    // confirmed directly on disk too.
+    expect((await stat(notMinePath)).isDirectory()).toBe(true)
+    expect((await stat(plainDir)).isDirectory()).toBe(true)
+  })
+
+  it("never interferes with a real, still-registered dirty worktree — 9 modified tracked files stay held", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const worktreesRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-gc-pool-")))
+    cleanupPaths.push(worktreesRoot)
+
+    await execGit(repo, ["checkout", "-b", "wt/dirty-registered"])
+    for (let i = 0; i < 9; i++) {
+      await writeFile(join(repo, `f${i}.txt`), `v${i}\n`)
+      await execGit(repo, ["add", `f${i}.txt`])
+    }
+    await execGit(repo, ["commit", "-m", "nine files"])
+    await execGit(repo, ["checkout", "main"])
+
+    const wtPath = join(worktreesRoot, "dirty-registered")
+    await addWorktree(repo, wtPath, [], "wt/dirty-registered")
+    for (let i = 0; i < 9; i++) {
+      await writeFile(join(wtPath, `f${i}.txt`), `modified ${i}\n`)
+    }
+
+    const forge = new UnreachableForgeClient("offline — no memo entry, unpushed/unmerged branch")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      worktreesRoot,
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.orphan).toBeUndefined()
+    expect(entry?.tree?.state).toBe("dirty")
+    expect(entry?.class).toBe("hold")
+
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      salvageDirty: true,
+      now: FROZEN_NOW,
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath)
+    expect(outcome?.result).toBe("held")
+
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).toContain(wtPath)
+    expect(await readFile(join(wtPath, "f0.txt"), "utf8")).toBe("modified 0\n")
+  })
+})
+
+// ── reclaimOneWorktree: exit-time auto-reclaim of a single worktree ────────
+//
+// The primitive `sessions.ts` calls (via the injected `WorktreeAutoReclaimer`
+// port) when a policy-provisioned (implicit) session reaches a terminal
+// state. Scoped to exactly one path — a session's own exit must never sweep
+// or touch any OTHER worktree in the pool, even a reclaim-class one.
+
+describe("reclaimOneWorktree — exit-time auto-reclaim, scoped to one worktree", () => {
+  it("reclaims a merged, clean, idle worktree — exactly like applyGc's own reclaim path", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/exit-reclaim"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", "feat/exit-reclaim"])
+
+    const wtPath = join(repo, "..", `exit-reclaim-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "feat/exit-reclaim")
+
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies this")
+    const memo = new InMemoryVerdictMemoStore()
+    const outcome = await reclaimOneWorktree(wtPath, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+    })
+    expect(outcome?.result).toBe("reclaimed")
+
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).not.toContain(wtPath)
+  })
+
+  it("leaves a dirty, unmerged worktree exactly as-is (held), never removing it", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/exit-hold"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat commit"])
+    await execGit(repo, ["checkout", "main"])
+
+    const wtPath = join(repo, "..", `exit-hold-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "feat/exit-hold")
+    await writeFile(join(wtPath, "scratch.txt"), "still working\n")
+
+    const forge = new UnreachableForgeClient("offline — unpushed/unmerged, no memo entry")
+    const memo = new InMemoryVerdictMemoStore()
+    const outcome = await reclaimOneWorktree(wtPath, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+    })
+    expect(outcome?.result).toBe("held")
+
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).toContain(wtPath)
+    expect(await readFile(join(wtPath, "scratch.txt"), "utf8")).toBe("still working\n")
+  })
+
+  it("never touches a DIFFERENT worktree in the same repo, even when it's also reclaim-class", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+
+    await execGit(repo, ["checkout", "-b", "feat/exit-reclaim-target"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "target commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", "feat/exit-reclaim-target"])
+
+    await execGit(repo, ["checkout", "-b", "feat/exit-reclaim-other"])
+    await writeFile(join(repo, "b.txt"), "b\n")
+    await execGit(repo, ["add", "b.txt"])
+    await execGit(repo, ["commit", "-m", "other commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", "feat/exit-reclaim-other"])
+
+    const targetPath = join(repo, "..", `exit-target-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(targetPath)
+    await addWorktree(repo, targetPath, [], "feat/exit-reclaim-target")
+
+    const otherPath = join(repo, "..", `exit-other-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(otherPath)
+    await addWorktree(repo, otherPath, [], "feat/exit-reclaim-other")
+
+    const forge = new UnreachableForgeClient("must not be called")
+    const memo = new InMemoryVerdictMemoStore()
+    const outcome = await reclaimOneWorktree(targetPath, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+    })
+    expect(outcome?.result).toBe("reclaimed")
+
+    // The OTHER reclaim-class worktree was never touched by this call.
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).not.toContain(targetPath)
+    expect(wtList.stdout).toContain(otherPath)
+  })
+
+  it("returns null (not an error) when the path no longer names a linked worktree", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const forge = new UnreachableForgeClient("must not be called")
+    const memo = new InMemoryVerdictMemoStore()
+    const outcome = await reclaimOneWorktree(join(repo, "..", "never-existed"), {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+    })
+    expect(outcome).toBeNull()
   })
 })

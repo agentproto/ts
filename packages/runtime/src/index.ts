@@ -426,7 +426,7 @@ import {
   type SandboxProviderLister,
 } from "./sandbox-adapters.js"
 import { registerSandboxAttachTool } from "./sandbox-attach.js"
-import type { WorktreeProvisioner } from "./worktree-isolation.js"
+import type { WorktreeProvisioner, WorktreeAutoReclaimer } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
@@ -448,6 +448,7 @@ export type {
   WorktreeField,
   WorktreeIsolationMode,
   WorktreeProvisioner,
+  WorktreeAutoReclaimer,
   WorktreeProvisionRequest,
   WorktreeProvisionOutcome,
   WorktreeDecision,
@@ -841,6 +842,17 @@ export interface CreateGatewayOptions {
    */
   runWorktreeGc?: WorktreeGcRunner
   /**
+   * Optional best-effort exit-time reclaim of ONE policy-provisioned
+   * (implicit) session's own worktree — powers `SessionDescriptor.
+   * worktreeAutoProvisioned` (see that field's doc in `sessions.ts`).
+   * Injected for the same reason as `runWorktreeGc`: the classify/remove
+   * logic runs over `@agentproto/worktree`, a dependency the runtime
+   * deliberately does NOT take. The CLI wires it (over `reclaimOneWorktree`).
+   * Omitted → exit-time auto-reclaim is simply skipped; an implicit
+   * worktree is still reclaimable manually or via a scheduled `gc` sweep.
+   */
+  runWorktreeAutoReclaim?: WorktreeAutoReclaimer
+  /**
    * Optional resolver: given a session's cwd, return the OPEN PR for that
    * cwd's git branch (or null). Powers the daemon PR-provenance reconciler,
    * which stamps the `@agentproto-bot` footer onto PRs an executor session
@@ -1192,6 +1204,7 @@ export async function createGateway(
     ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
+    ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
     ...(langfuseTracer ? { langfuseTracer } : {}),
     langfuseTracingDefault: configDefaults?.langfuseTracing ?? false,
     // Resume hook: when a prompt arrives for a dead agent-cli row

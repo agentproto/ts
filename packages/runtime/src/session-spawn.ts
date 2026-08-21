@@ -1337,6 +1337,13 @@ export async function spawnAgentSession(
   // request, or a provision with no provisioner wired) fail LOUD here, before
   // any side effect — mirroring the role/depth gates above.
   let worktreeRequest: WorktreeRequest | undefined
+  // `true` only when the worktree about to be provisioned is
+  // `decision.implicit` — the caller made no explicit `worktree` request and
+  // the `"always"` policy provisioned one anyway. Threaded onto the spawned
+  // session's descriptor (`worktreeAutoProvisioned`) so exit-time auto-
+  // reclaim (`sessions.ts`'s `emitExited`) only ever touches a worktree the
+  // daemon minted on its own — never one a caller explicitly asked to keep.
+  let worktreeAutoProvisioned = false
   // Non-fatal spawn-time notices, surfaced on the success result (`warnings`)
   // AND logged. Populated by the worktree decision below (shared-dirty-cwd).
   const spawnWarnings: string[] = []
@@ -1407,6 +1414,7 @@ export async function spawnAgentSession(
         }
       }
       worktreeRequest = decision.request
+      worktreeAutoProvisioned = decision.implicit
     }
   }
   // `worktree.async` returns before the tree — and therefore the driver
@@ -2250,6 +2258,7 @@ export async function spawnAgentSession(
         adapterSlug: input.adapter,
         adapterConfigDir: adapterConfigDirFor(mintedSessionId),
         harness: input.harness ?? input.adapter,
+        ...(worktreeAutoProvisioned ? { worktreeAutoProvisioned: true } : {}),
         ...(resolved?.routeSelection !== undefined
           ? { routeSelection: resolved.routeSelection }
           : {}),
@@ -2599,6 +2608,7 @@ export async function spawnAgentSession(
       agentSession,
       adapterSlug: input.adapter,
       adapterConfigDir: adapterConfigDirFor(mintedSessionId),
+      ...(worktreeAutoProvisioned ? { worktreeAutoProvisioned: true } : {}),
       ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       ...(resolved?.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }

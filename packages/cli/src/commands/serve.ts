@@ -51,6 +51,7 @@ import {
   makeWorktreeProvisioner,
   makeWorktreeStatusLister,
   makeWorktreeGcRunner,
+  makeWorktreeAutoReclaimer,
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
@@ -724,6 +725,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // `planGc` / `applyGc` engine over @agentproto/worktree (defaults to a
         // dry run), same dep reasoning as above.
         runWorktreeGc: makeWorktreeGcRunner(),
+        // Injected port behind `sessions.ts`'s exit-time worktree auto-reclaim
+        // (`SessionDescriptor.worktreeAutoProvisioned`): a policy-provisioned
+        // (implicit) session's own worktree is reclaimed the moment it exits,
+        // if — and only if — it classifies clean/idle/merged-or-fresh. Same
+        // dep reasoning as above; a worktree the caller explicitly requested
+        // is never routed through this port at all.
+        runWorktreeAutoReclaim: makeWorktreeAutoReclaimer(),
         // Injected port behind the daemon PR-provenance reconciler: resolves the
         // open PR for a session's branch (branch→PR over @agentproto/worktree),
         // so an executor's PR gets the provenance footer even though it opened it
