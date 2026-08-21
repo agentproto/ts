@@ -3754,6 +3754,107 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
   })
 })
 
+// Regression coverage for the profile-aware route fallback: a
+// `modelDerivedApiKey` adapter (opencode-shaped) with no fixed `provider`
+// derives its billing route from the model id's slash prefix
+// (`modelIdPrefixProvider`) BEFORE ever consulting the catalog's real
+// model→provider mapping. For "deepseek/deepseek-v4-flash" that guess is
+// route "deepseek" — but the catalog (and OpenRouter's own route table)
+// says this model is actually billed through "openrouter", which is exactly
+// what the caller's named profile serves. Without the fallback, a caller who
+// supplies only a genuinely-eligible openrouter profile and no explicit
+// `route.gateway` gets rejected for a route they never asked to bill.
+describe("spawnAgentSession — access.profileRef profile-aware route fallback (opencode/deepseek)", () => {
+  const OPENCODE_LIKE_DESCRIPTOR: AdapterAuthDescriptor = {
+    modelDerivedApiKey: true,
+  }
+  const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash"
+
+  function authDeps() {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: OPENCODE_LIKE_DESCRIPTOR,
+    })
+    return baseDeps({ resolveAgentAdapter })
+  }
+
+  beforeEach(() => {
+    authProfileState.profiles = {}
+    authProfileState.keychain = {}
+  })
+
+  it("resolves the naive prefix-guessed route (\"deepseek\") to the model's real serviceable route (\"openrouter\") when that's what the named profile serves, with no explicit route.gateway", async () => {
+    authProfileState.profiles["openrouter-env"] = {
+      id: "openrouter-env",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "agentproto.auth.openrouter.env",
+    }
+    authProfileState.keychain["agentproto.auth.openrouter.env"] = "sk-or-v1-test-key"
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      model: DEEPSEEK_MODEL,
+      access: { profileRef: "openrouter-env" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.provider).toBe("openrouter")
+    expect(result.descriptor.auth?.setEnv).toBe("OPENROUTER_API_KEY")
+    expect(result.descriptor.accessProfile).toMatchObject({
+      profileRef: "openrouter-env",
+      endpoint: "openrouter",
+      method: "api-key",
+    })
+  })
+
+  it("still fails loud when the profile is genuinely ineligible on every candidate route for the model (regression baseline, no silent pass)", async () => {
+    authProfileState.profiles["anthropic-env"] = {
+      id: "anthropic-env",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "agentproto.auth.anthropic.env",
+    }
+    authProfileState.keychain["agentproto.auth.anthropic.env"] = "sk-ant-test-key"
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      model: DEEPSEEK_MODEL,
+      access: { profileRef: "anthropic-env" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("access_profile_ineligible")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("an explicit route.gateway is untouched by the fallback — still resolves exactly as before", async () => {
+    authProfileState.profiles["openrouter-env"] = {
+      id: "openrouter-env",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "agentproto.auth.openrouter.env",
+    }
+    authProfileState.keychain["agentproto.auth.openrouter.env"] = "sk-or-v1-test-key"
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      model: DEEPSEEK_MODEL,
+      route: { gateway: "openrouter" },
+      access: { profileRef: "openrouter-env" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.provider).toBe("openrouter")
+    expect(result.descriptor.auth?.setEnv).toBe("OPENROUTER_API_KEY")
+  })
+})
+
 // "Use my existing Codex login" — a FILE-BASED (external) subscription. The
 // codex adapter declares `authSubscription: { external: true }`: the CLI reads
 // its own ~/.codex/auth.json, so the daemon injects NOTHING — it verifies the

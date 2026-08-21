@@ -60,6 +60,7 @@ import {
   KeychainStore,
   type AuthMethod,
   type AdapterAuthManifest,
+  type AuthProfile,
   type CostBudget,
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
@@ -343,6 +344,33 @@ function spawnEligibilityManifest(
   }
 }
 
+/** When the naive prefix-guessed route (`spawnEligibilityManifest`'s tier-3
+ *  `modelIdPrefixProvider` shortcut for a `modelDerivedApiKey` adapter)
+ *  doesn't make `profile` eligible, search this model's ACTUAL candidate
+ *  routes (`serviceableModelRoutes` — the same reverse lookup the non-profile
+ *  spawn path already trusts) for one that does. A candidate route is
+ *  checked with the same authority an explicit `route.gateway` would carry
+ *  (that's exactly what the prefix guess stands in for absent one), so a
+ *  profile that genuinely bills a different route than the guess still
+ *  spawns without the caller ever having to name `route.gateway` themselves.
+ *  Returns the resolved projection only when EXACTLY one candidate route
+ *  clears eligibility — zero (genuinely ineligible) or more than one
+ *  (ambiguous) both fall through to `undefined` so the caller still fails
+ *  loud. */
+function resolveProfileAwareRoute(
+  adapter: string,
+  authDescriptor: AdapterAuthDescriptor,
+  profile: AuthProfile,
+  model: string | undefined,
+): { manifest: AdapterAuthManifest; routeId: string } | undefined {
+  if (!model) return undefined
+  const eligibleCandidates = serviceableModelRoutes(model)
+    .map(gateway => spawnEligibilityManifest(adapter, authDescriptor, { gateway }, model))
+    .filter((candidate): candidate is { manifest: AdapterAuthManifest; routeId: string } => candidate !== undefined)
+    .filter(candidate => eligibleProfiles([profile], candidate.manifest, candidate.routeId).length > 0)
+  return eligibleCandidates.length === 1 ? eligibleCandidates[0] : undefined
+}
+
 /** A resolved access-profile pin — the mechanical `spec` a driver applies
  *  plus the observable `echo` recorded on a session descriptor. */
 export interface AccessProfileAuthResult {
@@ -411,7 +439,18 @@ export async function resolveAccessProfileAuth(input: {
       message: `adapter "${adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
     }
   }
-  const projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
+  let projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
+  // The naive/prefix-guessed route above is only ever a GUESS when the
+  // caller didn't pin one explicitly (`route?.gateway` still wins outright,
+  // untouched, above); when the guess leaves the named profile ineligible,
+  // fall back to searching the model's real candidate routes before failing.
+  if (
+    route?.gateway === undefined &&
+    (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0)
+  ) {
+    const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
+    if (resolved) projected = resolved
+  }
   if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
     const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
     return {
