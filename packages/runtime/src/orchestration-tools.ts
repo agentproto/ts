@@ -130,6 +130,19 @@ export interface SessionWaitResult {
    *  dropped work that was NOT re-run — the in-place resume never auto-retries.
    *  Absent (not `false`) when the session was not interrupted. */
   interrupted?: boolean
+  /** True when the matched turn-end produced ZERO assistant output and
+   *  zero tool calls — a silent no-op (see `SessionTurnEndEvent.empty`'s
+   *  doc). Surfaced on `event: "turn-end"` matches across all three
+   *  branches (ring-replay, sync fast-path via
+   *  `SessionDescriptor.lastTurnEmpty`, bus long-poll) so a caller doesn't
+   *  mistake a green turn-end for real progress. Absent (not `false`) on a
+   *  normal, productive turn. */
+  empty?: boolean
+  /** The matched turn-end's `SessionTurnEndEvent.reason` (e.g.
+   *  `"completed"`, `"error"`, `"aborted"`), when the adapter/daemon
+   *  reported one. `"error"` means the adapter reported a failed turn.
+   *  Same three-branch coverage as `empty`. */
+  reason?: string
 }
 
 /**
@@ -157,6 +170,15 @@ interface SessionMonitorResult extends SessionWaitResult {
  * `since` is an EventRing cursor: when provided, already-emitted matching
  * events for the watched sessions that occurred after that cursor are
  * returned immediately (race-free replay) before subscribing to the bus.
+ *
+ * The synchronous already-in-target-state check for `turn-end` ALSO
+ * requires `since` to be present (even `since: 0`) — `turnsCompleted > 0`
+ * never resets, so without a cursor to anchor "since when", it can't tell
+ * a turn this call should wait for apart from any turn the session ever
+ * completed, including ones from long before this call started. A
+ * `since`-less `turn-end` wait (e.g. a fresh `agentproto sessions wait`
+ * process, which has no persisted cursor) always falls through to the real
+ * bus-subscribe long-poll instead.
  */
 export async function monitorSessionWait(opts: {
   registry: SessionsRegistry
@@ -217,6 +239,10 @@ export async function monitorSessionWait(opts: {
         ev.type === "session:turn-end" || ev.type === "session:awaiting-input"
           ? ev.question
           : undefined
+      // `empty`/`reason` only exist on `session:turn-end` — see
+      // `SessionTurnEndEvent`'s doc.
+      const empty = ev.type === "session:turn-end" ? ev.empty : undefined
+      const reason = ev.type === "session:turn-end" ? ev.reason : undefined
       const replayDesc = evWithSid.sessionId
         ? registry.get(evWithSid.sessionId)
         : undefined
@@ -227,6 +253,8 @@ export async function monitorSessionWait(opts: {
         since: opts.since,
         ...(question ? { question } : {}),
         ...(replayDesc?.interrupted ? { interrupted: true } : {}),
+        ...(empty ? { empty: true } : {}),
+        ...(reason ? { reason } : {}),
       }
     }
   }
@@ -252,7 +280,22 @@ export async function monitorSessionWait(opts: {
       }
     }
     // Already-finished turn: turnsCompleted > 0 && !busy && running.
+    //
+    // Gated on `opts.since !== undefined` (bug fix, see this function's
+    // doc): `turnsCompleted > 0` is true forever after the session's
+    // first-ever completed turn — it never resets and isn't scoped to
+    // "since this wait call started". Without a `since` anchor there is no
+    // way to tell "the turn this caller is waiting for already finished"
+    // apart from "some turn, possibly hours ago, finished once" — so a
+    // bare `since`-less wait (every fresh `agentproto sessions wait`
+    // invocation, since a separate CLI process has no persisted cursor)
+    // would instantly "succeed" against stale history instead of waiting
+    // for a NEW turn-end. Requiring `since` mirrors the ring-replay branch
+    // above, which already requires a cursor to fire; when `since` is
+    // omitted this falls through to the real bus-subscribe long-poll below
+    // instead of trusting a snapshot with no time correlation.
     if (
+      opts.since !== undefined &&
       (desc.turnsCompleted ?? 0) > 0 &&
       !desc.busy &&
       desc.status === "running" &&
@@ -266,6 +309,8 @@ export async function monitorSessionWait(opts: {
         status: desc.status,
         turnsCompleted: desc.turnsCompleted,
         ...(desc.interrupted ? { interrupted: true } : {}),
+        ...(desc.lastTurnEmpty ? { empty: true } : {}),
+        ...(desc.lastTurnReason !== undefined ? { reason: desc.lastTurnReason } : {}),
       }
     }
     const terminal =
@@ -371,6 +416,9 @@ export async function monitorSessionWait(opts: {
           const sessionId = (ev as { sessionId?: string }).sessionId
           if (!sessionId || !idSet.has(sessionId)) return
           const desc = registry.get(sessionId)
+          // `empty`/`reason` only exist on `session:turn-end` — see
+          // `SessionTurnEndEvent`'s doc.
+          const evTurnEnd = ev.type === "session:turn-end" ? ev : undefined
           finish({
             sessionId,
             event: ev.type.replace("session:", ""),
@@ -379,6 +427,8 @@ export async function monitorSessionWait(opts: {
             status: desc?.status ?? "unknown",
             ...(desc?.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
             ...(desc?.interrupted ? { interrupted: true } : {}),
+            ...(evTurnEnd?.empty ? { empty: true } : {}),
+            ...(evTurnEnd?.reason !== undefined ? { reason: evTurnEnd.reason } : {}),
           })
         }),
       )
@@ -1487,6 +1537,45 @@ export function registerOrchestrationTools(
           "If you have shell access, prefer `agentproto sessions wait <id> " +
           "[--until <event>]` instead of polling this tool in a loop — it's " +
           "a scriptable blocking wait with no 49s cap."
+      }
+      // Fail loud on a silent no-op turn — same precedent as
+      // sessions-registry-agent-host.ts's `waitTurnEnd` (used by the
+      // workflow runner against the same bus event): a caller treating a
+      // bare "turn-end: success" as real progress is exactly the gap that
+      // let a bad auth/model config go unnoticed. `isError: true` so an
+      // agent reading the tool result sees a real failure, not a green
+      // check with a field it may not think to inspect.
+      if (result.empty === true) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ...payload,
+                error:
+                  `session ${result.sessionId} produced an empty turn — no assistant output or ` +
+                  `tool call (commonly an auth failure or an invalid model id)`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (result.reason === "error") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ...payload,
+                error:
+                  `session ${result.sessionId} ended its turn with reason 'error' — the ` +
+                  `adapter reported a failed turn (commonly an auth failure)`,
+              }),
+            },
+          ],
+          isError: true,
+        }
       }
       return {
         content: [{ type: "text", text: JSON.stringify(payload) }],

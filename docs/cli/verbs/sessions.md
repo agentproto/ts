@@ -562,6 +562,7 @@ mistake is caught immediately — the incident this module exists for was a
 | `0` | Condition met (session event matched, or policy reached `done`/`awaiting-ack`). |
 | `2` | Timeout expired, usage error, or policy `blocked`/`cancelled`. |
 | `3` | Session/policy not found, or daemon unreachable. |
+| `4` | The matched turn-end was a silent no-op — `empty: true` (zero assistant output, zero tool calls) — or ended with `reason: "error"` (the adapter reported a failed turn). The wait DID resolve; the turn it resolved on produced nothing. Commonly a bad auth/model config. |
 
 #### `status` vs `wait`
 

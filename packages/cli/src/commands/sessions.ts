@@ -1165,6 +1165,15 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
  *   2  timeout (no resolution within `--timeout`) OR a usage error (bad
  *      arguments) OR policy `blocked`/`cancelled`
  *   3  session/policy not found or daemon unreachable
+ *   4  matched turn-end was a silent no-op (`empty: true` — zero assistant
+ *      output, zero tool calls) or ended with `reason: "error"` (the
+ *      adapter reported a failed turn) — commonly a bad auth/model config.
+ *      Distinct from a real timeout/not-found: the daemon DID resolve the
+ *      wait, but the turn it resolved on produced nothing a caller should
+ *      treat as progress. Mirrors the workflow runner's `waitTurnEnd`
+ *      precedent (sessions-registry-agent-host.ts) so a caller can't
+ *      mistake a bare "turn-end: success" for one that actually did
+ *      something.
  *
  * Timeout used to share exit code 1 with hard CLI failures, so a caller
  * couldn't tell "just needs a bigger --timeout" from "something broke" —
@@ -1358,6 +1367,15 @@ async function runWaitSession(opts: {
       continue
     }
     // Matched.
+    const sid = typeof result.sessionId === "string" ? result.sessionId : idOrName
+    // Fail loud on a silent no-op turn instead of reporting a bare
+    // "matched" — same precedent as sessions-registry-agent-host.ts's
+    // `waitTurnEnd` (used by the workflow runner against the same bus
+    // event). A caller branching only on exit-code-0-vs-nonzero must not
+    // read this as success: the wait DID resolve, but the turn it resolved
+    // on produced nothing.
+    const empty = result.empty === true
+    const erroredReason = result.reason === "error"
     if (json) {
       process.stdout.write(
         JSON.stringify(
@@ -1368,13 +1386,26 @@ async function runWaitSession(opts: {
       )
     } else {
       const ev = typeof result.event === "string" ? result.event : "event"
-      const sid = typeof result.sessionId === "string" ? result.sessionId : idOrName
       const status = typeof result.status === "string" ? result.status : ""
       process.stdout.write(
         `agentproto sessions wait: ${sid} → ${ev}` +
           (status ? ` (${status})` : "") +
           "\n",
       )
+    }
+    if (empty) {
+      process.stderr.write(
+        `agentproto sessions wait: session ${sid} produced an empty turn — no assistant ` +
+          `output or tool call (commonly an auth failure or an invalid model id).\n`,
+      )
+      return 4
+    }
+    if (erroredReason) {
+      process.stderr.write(
+        `agentproto sessions wait: session ${sid} ended its turn with reason 'error' — ` +
+          `the adapter reported a failed turn (commonly an auth failure).\n`,
+      )
+      return 4
     }
     return 0
   }

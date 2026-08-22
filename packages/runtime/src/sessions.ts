@@ -920,6 +920,24 @@ export interface SessionDescriptor {
    *  the moment a LATER turn completes without one (same reset shape as
    *  `resumeAttempts`/`restartAttempts`). Detection + signal only. */
   lastTurnErroredAt?: string
+  /** True when the LAST completed turn produced zero assistant output and
+   *  zero tool calls (mirrors `SessionTurnEndEvent.empty` — see that
+   *  field's doc). Persisted so `monitorSessionWait`'s synchronous
+   *  already-in-target-state fast-path (which has only the descriptor to
+   *  read, not the triggering bus event) can surface the same "green
+   *  turn-end but nothing actually happened" signal the bus/ring branches
+   *  get from the event itself. Stamped every `turnCompleted` turn end
+   *  (absent, not `false`, on a productive turn) — never set by the
+   *  abnormal (error/abort) turn-end path, matching the bus event. */
+  lastTurnEmpty?: boolean
+  /** The LAST completed turn's `SessionTurnEndEvent.reason` (e.g.
+   *  `"completed"`, `"error"`, `"aborted"`), when the adapter/daemon
+   *  reported one. Twin of `lastTurnEmpty` — same reason for existing:
+   *  the sync fast-path branch of `monitorSessionWait` has no event
+   *  object to read `.reason` off, only this descriptor. Stamped at every
+   *  turn end (normal or abnormal); absent when the turn ended with no
+   *  reason to report. */
+  lastTurnReason?: string
   /** DERIVED, read-time only (never persisted — stripped by `snapshotRows`,
    *  stamped by `stampInterrupted` in list()/get()/findByIdOrName). True when
    *  this session died with a turn in flight under a daemon restart —
@@ -5445,6 +5463,19 @@ export function createSessionsRegistry(opts?: {
             "stderr",
           )
         }
+        // Persist alongside the bus event so `monitorSessionWait`'s sync
+        // fast-path (descriptor-only, no event object) can surface the
+        // same signal — see `SessionDescriptor.lastTurnEmpty`'s doc.
+        if (emptyTurn) {
+          rt.desc.lastTurnEmpty = true
+        } else if (rt.desc.lastTurnEmpty !== undefined) {
+          delete rt.desc.lastTurnEmpty
+        }
+        if (turnEndReason !== undefined) {
+          rt.desc.lastTurnReason = turnEndReason
+        } else if (rt.desc.lastTurnReason !== undefined) {
+          delete rt.desc.lastTurnReason
+        }
 
         // ── Activity summary (secondary dynamic label) ───────────────
         // Regenerate the persisted "what is this session doing now" line
@@ -5520,6 +5551,16 @@ export function createSessionsRegistry(opts?: {
         // (or any consumer waiting on completion) doesn't hang on a turn
         // that will never signal done through the normal path.
         rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+        // Not an "empty" turn in the tracked sense (that classification is
+        // normal-path only, mirroring the bus event) — but the reason still
+        // needs to reach the sync fast-path the same way. See
+        // `SessionDescriptor.lastTurnEmpty`/`lastTurnReason`'s doc.
+        if (rt.desc.lastTurnEmpty !== undefined) delete rt.desc.lastTurnEmpty
+        if (turnEndReason !== undefined) {
+          rt.desc.lastTurnReason = turnEndReason
+        } else if (rt.desc.lastTurnReason !== undefined) {
+          delete rt.desc.lastTurnReason
+        }
         if (sessionEvents) {
           sessionEvents.emit({
             type: "session:turn-end",
