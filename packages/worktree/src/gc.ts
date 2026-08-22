@@ -39,7 +39,7 @@
  * still caught.
  */
 
-import { basename, isAbsolute, join, relative, resolve } from "node:path"
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { readFile, readdir, realpath, rm, stat } from "node:fs/promises"
 import { runTool } from "@agentproto/driver"
 import { execArgv } from "./exec.js"
@@ -121,6 +121,36 @@ export function classifyForGc(
  * computed for it.
  */
 export type GcReclaimReason = "dep-bump" | "orphan"
+
+// ── live-session-cwd protection ─────────────────────────────────────────
+//
+// `classify`'s liveness axis (`computeLiveness`, status.ts) already holds a
+// worktree that has a live session's cwd inside it — but only when that
+// session shows up in the sessions snapshot `computeWorktreeStatus` was
+// given. A caller with a stronger, more direct source of truth (the
+// daemon's own in-memory session registry, read at the exact instant gc
+// runs, rather than a possibly-stale/incomplete on-disk snapshot) can name
+// those cwds explicitly via `protectedPaths` — a belt-and-suspenders check
+// that wins unconditionally, independent of `classify`'s snapshot-based
+// verdict and computed BEFORE it (so a protected worktree never pays the
+// dep-bump exemption's extra git spawns either).
+
+/** The hold reasons this module can attach, distinct from `classify`'s snapshot-based holds. */
+export type GcHoldReason = "live-session-cwd"
+
+/**
+ * `true` iff `worktreePath` itself, or a subdirectory of it, is named by
+ * `protectedPaths` — the same exact-or-subdirectory containment convention
+ * as `sessionInWorktree` (provenance.ts), bounded by `sep` so a sibling like
+ * `/a/bc` is never confused with `/a/b`. Plain string comparison, matching
+ * `sessionInWorktree`'s own convention, rather than resolving symlinks —
+ * callers that need realpath-stability should normalize before passing
+ * `protectedPaths` in.
+ */
+function isProtectedPath(worktreePath: string, protectedPaths: readonly string[] | undefined): boolean {
+  if (!protectedPaths || protectedPaths.length === 0) return false
+  return protectedPaths.some((p) => p === worktreePath || p.startsWith(worktreePath + sep))
+}
 
 /**
  * Mechanical dep-bump commit subjects: `chore(deps)` / `fix(deps)`, with or
@@ -228,6 +258,8 @@ export interface GcPlanEntry {
   class: GcClass
   /** Set only when `class === "reclaim"` via the dep-bump exemption or the orphan reclaim path — see `resolveGcClass` / `scanOrphanWorktreePaths`. */
   reclaimReason?: GcReclaimReason
+  /** Set only when `class === "hold"` via `protectedPaths` (`isProtectedPath`) — distinguishes this from an ordinary snapshot-based hold. */
+  holdReason?: GcHoldReason
   /**
    * `true` only for a directory the orphan scan found: physically present
    * under the repo's worktree pool, but absent from `git worktree list`
@@ -259,6 +291,14 @@ export interface PlanGcInput {
    * before — every existing caller that doesn't pass this sees zero change.
    */
   worktreesRoot?: string
+  /**
+   * Absolute paths (typically live session cwds) that must never be
+   * classified `reclaim`/`salvage`, exact-or-subdirectory (`isProtectedPath`)
+   * — see the "live-session-cwd protection" section above. Applies to both
+   * linked worktrees and orphan-scan entries. Omitted ⇒ no additional
+   * protection beyond `classify`'s own snapshot-based liveness axis.
+   */
+  protectedPaths?: string[]
 }
 
 /** Every linked worktree of `repoRoot` except the main checkout itself — see the module docblock. */
@@ -407,7 +447,10 @@ async function scanOrphanWorktreePaths(repoRoot: string, worktreesRoot: string):
   return orphans
 }
 
-function makeOrphanPlanEntry(path: string): GcPlanEntry {
+function makeOrphanPlanEntry(path: string, protectedPaths: readonly string[] | undefined): GcPlanEntry {
+  if (isProtectedPath(path, protectedPaths)) {
+    return { path, branch: null, head: "", class: "hold", holdReason: "live-session-cwd" }
+  }
   return { path, branch: null, head: "", class: "reclaim", reclaimReason: "orphan", orphan: true }
 }
 
@@ -473,7 +516,20 @@ async function toPlanEntry(
   status: { tree: TreeState; integration: IntegrationState; liveness: LivenessState },
   includeDetached: boolean,
   nowMs: number,
+  protectedPaths?: readonly string[],
 ): Promise<GcPlanEntry> {
+  if (isProtectedPath(worktree.path, protectedPaths)) {
+    return {
+      path: worktree.path,
+      branch: worktree.branch,
+      head: worktree.head,
+      tree: status.tree,
+      integration: status.integration,
+      liveness: status.liveness,
+      class: "hold",
+      holdReason: "live-session-cwd",
+    }
+  }
   const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
     repoRoot,
     tipSha: worktree.head,
@@ -515,11 +571,21 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
       sessionsPath: input.sessionsPath,
       now: input.now,
     })
-    entries.push(await toPlanEntry(input.repoRoot, input.defaultBranchRef, worktree, status, includeDetached, nowMs))
+    entries.push(
+      await toPlanEntry(
+        input.repoRoot,
+        input.defaultBranchRef,
+        worktree,
+        status,
+        includeDetached,
+        nowMs,
+        input.protectedPaths,
+      ),
+    )
   }
   if (input.worktreesRoot) {
     const orphanPaths = await scanOrphanWorktreePaths(input.repoRoot, input.worktreesRoot)
-    for (const path of orphanPaths) entries.push(makeOrphanPlanEntry(path))
+    for (const path of orphanPaths) entries.push(makeOrphanPlanEntry(path, input.protectedPaths))
   }
   return entries
 }
@@ -541,16 +607,18 @@ export interface ApplyGcOptions {
   nowMs?: number
   /** Override for `~/.agentproto/worktree-salvage` — tests use a temp dir. */
   salvageRoot?: string
+  /** See `PlanGcInput.protectedPaths` — re-checked here at apply time (layer 2), independent of what the plan entry says, so a stale plan can never remove a now-protected path. */
+  protectedPaths?: string[]
 }
 
 export type GcApplyOutcome =
   | { path: string; branch: string | null; result: "reclaimed"; reclaimReason?: GcReclaimReason }
   | { path: string; branch: string | null; result: "salvaged"; salvageDir: string }
-  | { path: string; branch: string | null; result: "held" }
+  | { path: string; branch: string | null; result: "held"; holdReason?: GcHoldReason }
   /** Salvage-class, but `--salvage-dirty` was not passed: left untouched by design. */
   | { path: string; branch: string | null; result: "skipped-dirty" }
   /** Layer 2: re-classified at apply time to something other than the plan said — refuses rather than acting on a stale plan. */
-  | { path: string; branch: string | null; result: "aborted-reclassified"; from: GcClass; to: GcClass }
+  | { path: string; branch: string | null; result: "aborted-reclassified"; from: GcClass; to: GcClass; holdReason?: GcHoldReason }
   /** The worktree named in the plan no longer exists (already removed by something else since the plan was made). */
   | { path: string; branch: string | null; result: "aborted-vanished" }
   /** git itself (or the salvage snapshot) refused — the TOCTOU backstop actually firing, or a real I/O failure. */
@@ -656,6 +724,24 @@ async function salvageOne(options: ApplyGcOptions, worktree: GitWorktreeRef): Pr
 }
 
 async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<GcApplyOutcome> {
+  // Layer 2's own layer 2: re-checked first, ahead of every other branch
+  // below (orphan or linked, whatever the plan's stale `class` says) — a
+  // path named in `options.protectedPaths` is NEVER touched, even when the
+  // plan itself was built before the path became protected (e.g. a session
+  // started using this cwd after the plan was made but before apply ran).
+  if (isProtectedPath(entry.path, options.protectedPaths)) {
+    if (entry.class === "hold") {
+      return { path: entry.path, branch: entry.branch, result: "held", holdReason: "live-session-cwd" }
+    }
+    return {
+      path: entry.path,
+      branch: entry.branch,
+      result: "aborted-reclassified",
+      from: entry.class,
+      to: "hold",
+      holdReason: "live-session-cwd",
+    }
+  }
   // Orphan entries never go through `findWorktree`/`computeWorktreeStatus`
   // below — those assume `git worktree list` still knows about the entry,
   // which is exactly what an orphan means it doesn't. See "orphan reclaim"
@@ -781,6 +867,7 @@ export async function reclaimOneWorktree(
     status,
     Boolean(options.includeDetached),
     options.nowMs ?? Date.now(),
+    options.protectedPaths,
   )
   return applyOne(entry, options)
 }

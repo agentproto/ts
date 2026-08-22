@@ -80,7 +80,7 @@ import {
   resolveWorktreeQueryRoot,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
-import type { WorktreeGcRunner } from "./worktree-gc.js"
+import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -1847,6 +1847,9 @@ export function registerSessionTools(
           apply: input.apply === true,
           salvageDirty: input.salvageDirty === true,
           includeDetached: input.includeDetached === true,
+          // The daemon's own live in-memory registry, not a disk re-read —
+          // see `livingSessionCwds`'s doc.
+          protectedPaths: livingSessionCwds(registry),
         })
         return {
           content: [

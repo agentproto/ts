@@ -147,6 +147,7 @@ export {
   reclaimOneWorktree,
   type GcClass,
   type GcReclaimReason,
+  type GcHoldReason,
   type ClassifyForGcOptions,
   type ResolveGcClassOptions,
   type ResolvedGcClass,
