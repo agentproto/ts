@@ -40,6 +40,7 @@ import type { SessionsRegistry, AgentSessionLike, RestartPolicy } from "./sessio
 import { SessionNotAliveError } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { PairingRegistry } from "./pairing-registry.js"
+import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, type AppToolCallDeps } from "./app-tools.js"
@@ -1085,6 +1086,14 @@ export async function startHttpServer(
     return false
   }
 
+  // stderr is a launchd-redirected regular file, so every console.error is
+  // a SYNCHRONOUS disk write on the event loop. An ungated line per failed
+  // probe (clients retry precisely when they're already failing) is both a
+  // log flood and a genuine stall risk under ~dozens of concurrent
+  // sessions — first failure logs immediately, then ≤1 line/min with a
+  // suppressed count.
+  const mcpErrorLogGate = createReconnectLogGate()
+
   /**
    * Drive one MCP request over a fresh server+transport pair, per the
    * SDK's stateless pattern. Sharing either across requests breaks after
@@ -1104,7 +1113,11 @@ export async function startHttpServer(
     const transportInternal = transport as unknown as Record<string, unknown>
     if ("onerror" in (transport as object)) {
       transportInternal["onerror"] = (err: unknown) => {
-        console.error("[mcp transport.onerror]", err)
+        const line = mcpErrorLogGate.onFailure(
+          "mcp:transport.onerror",
+          `[mcp transport.onerror] ${err instanceof Error ? err.message : String(err)}`,
+        )
+        if (line) console.error(line)
       }
     }
 
@@ -1117,7 +1130,11 @@ export async function startHttpServer(
       await server.connect(transport)
       await transport.handleRequest(req, res)
     } catch (err) {
-      console.error("[mcp] handleRequest threw:", err)
+      const line = mcpErrorLogGate.onFailure(
+        "mcp:handleRequest",
+        `[mcp] handleRequest threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+      )
+      if (line) console.error(line)
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" })
         res.end(
