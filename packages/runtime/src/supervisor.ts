@@ -386,7 +386,16 @@ export interface PolicyRunState {
   retries: number
   startedAt: string
   endedAt?: string
-  lastGate?: { exitCode: number; at: string }
+  /**
+   * Result of the most recent gate run. `kind` distinguishes what produced
+   * it — `stdout`/`stderr` (truncated) are only populated for a shell gate;
+   * a judge gate only ever sets `exitCode`/`at` here (its actual verdict
+   * lives in `verdict` below). Consulted by a SIBLING judge gate watching
+   * an overlapping session set (see `findRecentMachineGateResult`) so it
+   * cannot render a verdict blind to an already-known machine result —
+   * see that function's doc for the incident this closes.
+   */
+  lastGate?: { exitCode: number; at: string; kind?: "shell" | "judge" | "cost"; stdout?: string; stderr?: string }
   /**
    * Structured judge-gate verdict (WP-D). Set when the gate is a judge gate
    * (`JudgeGateSpec`) and the judge's reply parsed — either a structured JSON
@@ -465,6 +474,16 @@ export interface CompletionPolicySupervisor {
 
 // ── Internal ─────────────────────────────────────────────────────────
 
+/** A completed MACHINE (shell/cost) gate result, as surfaced to a sibling judge gate. */
+interface MachineGateResult {
+  policyId: string
+  kind: "shell" | "cost"
+  exitCode: number
+  at: string
+  stdout?: string
+  stderr?: string
+}
+
 interface RunEntry {
   input: AttachPolicyInput
   /** Resolved fan-in group (deduped, order-preserved). group[0] is the repr. */
@@ -509,6 +528,15 @@ const DEFAULT_NUDGE_TEMPLATE =
 const DEFAULT_MAX_RETRIES = 2
 /** Judge-gate (WP7) wall-clock default before timeout → kill + FAIL. */
 const DEFAULT_JUDGE_TIMEOUT_MS = 120_000
+/** Cap on `lastGate.stdout`/`.stderr` kept for sibling-judge context + persistence. */
+const GATE_OUTPUT_CONTEXT_CHARS = 4000
+
+/** Tail-truncate a shell gate's stdout/stderr before it's persisted/forwarded. */
+function truncateForContext(text: string): string {
+  return text.length > GATE_OUTPUT_CONTEXT_CHARS
+    ? `…(truncated)…\n${text.slice(-GATE_OUTPUT_CONTEXT_CHARS)}`
+    : text
+}
 /**
  * Fixed instruction appended to the judge prompt so its verdict is parseable.
  * The `VERDICT:` line stays MANDATORY (WP7's original contract, and the
@@ -893,6 +921,56 @@ export function createCompletionPolicySupervisor(opts: {
     notifySettled(state.policyId)
   }
 
+  // ── judge ground-truth cross-check ────────────────────────────────
+
+  /**
+   * Find the most recently completed MACHINE gate (shell or cost — never
+   * another judge) run on a policy that watches at least one session in
+   * common with `self`. Covers both ways a judge gate can end up reviewing
+   * work a machine check already scored:
+   *
+   *   - DAG-chained (`next`): the parent that chained onto this judge gate
+   *     is still sitting in `runs` once it reaches `done` — nothing evicts
+   *     a settled entry — so it is found here like any other sibling.
+   *   - Independently attached: two separate `policy_attach` calls watching
+   *     the SAME session (e.g. a shell test-gate and a judge review-gate
+   *     both firing off the session's turn-end) with no `next` relationship
+   *     at all.
+   *
+   * This is the direct structural fix for the incident this file's header
+   * references: a gate.mjs review agent rendered "no regressions, tests
+   * pass" three lines below its OWN gate's "18 failed" — because that
+   * already-computed result was never handed to the reviewer's prompt. The
+   * judge-gate primitive has the same shape of gap: `runJudge` built its
+   * context solely from the watched session's own output tail, never from
+   * a sibling policy's `state.lastGate`. See `runJudge`'s use of this.
+   *
+   * Deliberately returns only the most recent result (by `lastGate.at`), not
+   * every sibling's history — an older, already-superseded failure (e.g.
+   * tests were fixed and re-ran green since) shouldn't keep haunting later
+   * judge runs.
+   */
+  function findRecentMachineGateResult(self: RunEntry): MachineGateResult | undefined {
+    let best: MachineGateResult | undefined
+    for (const other of runs.values()) {
+      if (other === self) continue
+      const lastGate = other.state.lastGate
+      if (!lastGate) continue
+      if (lastGate.kind !== "shell" && lastGate.kind !== "cost") continue
+      if (!other.group.some(id => self.group.includes(id))) continue
+      if (best && lastGate.at <= best.at) continue
+      best = {
+        policyId: other.state.policyId,
+        kind: lastGate.kind,
+        exitCode: lastGate.exitCode,
+        at: lastGate.at,
+        ...(lastGate.stdout ? { stdout: lastGate.stdout } : {}),
+        ...(lastGate.stderr ? { stderr: lastGate.stderr } : {}),
+      }
+    }
+    return best
+  }
+
   // ── arm logic (shared by attach() and reload) ────────────────────
 
   /**
@@ -1138,7 +1216,25 @@ export function createCompletionPolicySupervisor(opts: {
       const context = contextBlocks.length > 0
         ? `\n\nContext — recent output of the watched session(s):\n${contextBlocks.join("\n\n")}`
         : ""
-      const fullPrompt = `${spec.prompt}${context}${JUDGE_VERDICT_INSTRUCTION}`
+
+      // Ground-truth cross-check: a sibling policy (chained via `next` or
+      // independently attached) may already have run a real shell/cost gate
+      // against this same session. Surface its ACTUAL result so this judge
+      // can't render a verdict that quietly contradicts an already-known
+      // machine outcome — see `findRecentMachineGateResult`'s doc.
+      const machineResult = findRecentMachineGateResult(entry)
+      const groundTruth = machineResult
+        ? `\n\nKnown machine result — a ${machineResult.kind} gate (policy ${machineResult.policyId}) ` +
+          `already ran against this same session and produced exit code ${machineResult.exitCode} ` +
+          `(${machineResult.exitCode === 0 ? "PASSED" : "FAILED"}).` +
+          (machineResult.stdout ? `\nstdout:\n${machineResult.stdout}` : "") +
+          (machineResult.stderr ? `\nstderr:\n${machineResult.stderr}` : "") +
+          "\nThis is an actual measured result, not a claim to re-derive. If your own " +
+          "assessment would contradict it (e.g. you were about to say tests/checks pass " +
+          "while this shows a non-zero exit code), you MUST NOT ignore or override it — " +
+          "treat it as authoritative and reflect it in your verdict."
+        : ""
+      const fullPrompt = `${spec.prompt}${context}${groundTruth}${JUDGE_VERDICT_INSTRUCTION}`
 
       // Spawn the judge agent.
       let judgeId: string
@@ -1287,7 +1383,7 @@ export function createCompletionPolicySupervisor(opts: {
       if (isCostGate(input.gate)) {
         const decision = await evaluateCostGate(input.gate)
         const exitCode = decision.tripped ? 1 : 0
-        state.lastGate = { exitCode, at: new Date().toISOString() }
+        state.lastGate = { exitCode, at: new Date().toISOString(), kind: "cost" }
         if (decision.tripped) {
           state.error =
             `cost budget tripped: windowed spend $${decision.spentUsd} exceeds ` +
@@ -1302,7 +1398,7 @@ export function createCompletionPolicySupervisor(opts: {
       // WP7: judge-agent gate.
       if (isJudgeGate(input.gate)) {
         const { passed, exitCode, reason, verdict } = await runJudge(input.gate.judge)
-        state.lastGate = { exitCode, at: new Date().toISOString() }
+        state.lastGate = { exitCode, at: new Date().toISOString(), kind: "judge" }
         // WP-D: overwritten (not merged) on every run, including to
         // `undefined` on a totally unparseable reply — a nudge-and-retry
         // round never carries a stale verdict forward.
@@ -1334,6 +1430,9 @@ export function createCompletionPolicySupervisor(opts: {
       state.lastGate = {
         exitCode: outcome.exitCode,
         at: new Date().toISOString(),
+        kind: "shell",
+        stdout: truncateForContext(outcome.result.stdout),
+        stderr: truncateForContext(outcome.result.stderr),
       }
       schedulePersist()
       await act(outcome.passed, outcome.exitCode)
