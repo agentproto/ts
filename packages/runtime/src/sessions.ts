@@ -82,6 +82,7 @@ import {
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
+import type { WorktreeAutoReclaimer } from "./worktree-isolation.js"
 import type { AgentsMdMode } from "./agents-md.js"
 import {
   computeContextContinuityStatus,
@@ -1090,6 +1091,17 @@ export interface SessionDescriptor {
    *  `worktreePath` without an id identifies a PATH, which a later worktree
    *  may reuse; the pair identifies one specific worktree. */
   worktreeId?: string
+  /** `true` only when `worktreePath` was provisioned by the `worktrees.isolation`
+   *  policy WITHOUT an explicit `worktree` request from the caller (see
+   *  `decideWorktreeIsolation`'s `WorktreeDecision.provision.implicit` in
+   *  `worktree-isolation.ts`) — a worktree the caller never asked to keep.
+   *  Gates exit-time auto-reclaim (`emitExited` below, via the injected
+   *  `WorktreeAutoReclaimer` port): only an implicit worktree is ever a
+   *  candidate for automatic removal on session exit. Absent (never `true`)
+   *  for a worktree the caller explicitly requested (`worktree: {...}` on
+   *  the spawn), which keeps today's manual-cleanup-only behavior unchanged,
+   *  and absent for every session persisted before this field existed. */
+  worktreeAutoProvisioned?: boolean
   /** Absolute path of the AGENTS.md the daemon resolved for this session's
    *  spawn `cwd` (walking up, bounded by the repo's git toplevel — see
    *  `agents-md.ts`), whose content or pointer was injected into the initial
@@ -3055,6 +3067,10 @@ export interface SpawnAgentInput {
    *  idle-reaper.ts) regardless of how long it sits idle — stamped straight
    *  onto `SessionDescriptor.keepAlive`. Default false. */
   keepAlive?: boolean
+  /** Recorded verbatim onto {@link SessionDescriptor.worktreeAutoProvisioned}
+   *  — see that field's doc. Set by `session-spawn.ts` from
+   *  `WorktreeDecision.provision.implicit`. Default false. */
+  worktreeAutoProvisioned?: boolean
 }
 
 /** `SpawnAgentInput` minus the fields that only exist once the driver's
@@ -3301,6 +3317,13 @@ export function createSessionsRegistry(opts?: {
    *  When omitted, auto-continuation degrades to a hard-stop instead of
    *  spawning a replacement session. */
   resolveAgentAdapter?: AgentAdapterResolver
+  /** Optional — best-effort exit-time worktree auto-reclaim, called from
+   *  `emitExited` for a session whose `worktreeAutoProvisioned` flag is set
+   *  (see that field's doc). Injected by the CLI over `@agentproto/worktree`;
+   *  omitted → auto-reclaim is simply skipped, matching today's behaviour
+   *  (manual/scheduled `gc` is still the only way an implicit worktree gets
+   *  reclaimed). */
+  runWorktreeAutoReclaim?: WorktreeAutoReclaimer
 }): SessionsRegistry {
   // `persistPath` names one exact file, so passing it means "don't
   // partition" (see its docblock). Absent it, state partitions per
@@ -3343,6 +3366,7 @@ export function createSessionsRegistry(opts?: {
   const resumeAgent = opts?.resumeAgent
   const sessionEvents = opts?.sessionEvents
   const resolveAgentAdapter = opts?.resolveAgentAdapter
+  const runWorktreeAutoReclaim = opts?.runWorktreeAutoReclaim
   const sessions = new Map<string, SessionRuntime>()
   /** Stamp the fields callers use for a quick status read. These are kept off
    *  disk because phase and elapsed time are meaningful only against the live
@@ -3569,6 +3593,34 @@ export function createSessionsRegistry(opts?: {
     // its parked requests (resolves them as `cancelled`) before anything else.
     // Runs even when no bus is wired, so the driver RPC always settles.
     cancelPendingPermissionsForSession(rt)
+    // Exit-time worktree auto-reclaim (best-effort, fire-and-forget, never
+    // blocks or throws past this point) — see `SessionDescriptor.
+    // worktreeAutoProvisioned`'s doc. Runs from this ONE shared exit point,
+    // which every terminal path funnels through (clean exit, kill, crash,
+    // idle-reap, a failed async provision), since the actual data-safety
+    // gating lives entirely in the reclaimer's own classify (clean tree,
+    // merged/fresh, idle) — an exit that left real uncommitted work simply
+    // doesn't reclaim, regardless of why it exited. The flag is cleared
+    // immediately so a session whose `emitExited` runs more than once (e.g.
+    // no `sessionEvents` bus wired, so the dedup guard above never latches)
+    // never attempts a second reclaim.
+    if (runWorktreeAutoReclaim && rt.desc.worktreeAutoProvisioned && rt.desc.worktreePath) {
+      const worktreePath = rt.desc.worktreePath
+      rt.desc.worktreeAutoProvisioned = false
+      try {
+        void runWorktreeAutoReclaim(worktreePath).catch(err => {
+          console.error(
+            `[worktree-auto-reclaim] best-effort reclaim of ${worktreePath} failed ` +
+              `(session ${rt.desc.id}): ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+      } catch (err) {
+        console.error(
+          `[worktree-auto-reclaim] best-effort reclaim of ${worktreePath} threw synchronously ` +
+            `(session ${rt.desc.id}): ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
     if (!sessionEvents) return
     rt.exitedEmitted = true
     sessionEvents.emit({
@@ -5657,6 +5709,7 @@ export function createSessionsRegistry(opts?: {
         startedAt: new Date().toISOString(),
         cwd: input.cwd,
         ...worktreeFields(input.cwd),
+        ...(input.worktreeAutoProvisioned ? { worktreeAutoProvisioned: true } : {}),
         adapterSlug: input.adapterSlug,
         ...(input.resumable !== undefined ? { resumable: input.resumable } : {}),
         ...(input.nativeTerminalResume !== undefined
@@ -5806,6 +5859,7 @@ export function createSessionsRegistry(opts?: {
         startedAt: new Date().toISOString(),
         cwd: input.cwd,
         ...worktreeFields(input.cwd),
+        ...(input.worktreeAutoProvisioned ? { worktreeAutoProvisioned: true } : {}),
         adapterSlug: input.adapterSlug,
         harness: input.harness ?? input.adapterSlug,
         ...(input.routeSelection !== undefined

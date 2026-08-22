@@ -39,7 +39,8 @@
  * still caught.
  */
 
-import { basename } from "node:path"
+import { basename, isAbsolute, join, relative, resolve } from "node:path"
+import { readFile, readdir, realpath, rm, stat } from "node:fs/promises"
 import { runTool } from "@agentproto/driver"
 import { execArgv } from "./exec.js"
 import { cleanupWorktreeTool } from "./tools/index.js"
@@ -110,8 +111,16 @@ export function classifyForGc(
 // a dirty tree, `unpushed` while forge-unreachable — which can't happen, see
 // `reconcileIntegration`) is completely untouched by this and still holds.
 
-/** The only reclaim reason this module can attach today. */
-export type GcReclaimReason = "dep-bump"
+/**
+ * The reclaim reasons this module can attach. `dep-bump` promotes a `hold`
+ * to `reclaim` (see above). `orphan` is different in kind — it never starts
+ * from a `hold` verdict at all, because an orphan was never classified in
+ * the first place (see the "orphan reclaim" section below): a directory
+ * physically present under the repo's worktree pool that `git worktree
+ * list` no longer knows about, so none of `classify`'s three axes can be
+ * computed for it.
+ */
+export type GcReclaimReason = "dep-bump" | "orphan"
 
 /**
  * Mechanical dep-bump commit subjects: `chore(deps)` / `fix(deps)`, with or
@@ -206,13 +215,28 @@ export interface GcPlanEntry {
   path: string
   branch: string | null
   head: string
-  tree: TreeState
-  integration: IntegrationState
-  liveness: LivenessState
+  /**
+   * Absent only for an orphan entry (`orphan: true`) — git itself cannot
+   * answer the tree/integration/liveness questions for a directory it no
+   * longer recognizes as a worktree, so this module never fabricates a
+   * value for them rather than reporting a fact it can't actually check.
+   */
+  tree?: TreeState
+  integration?: IntegrationState
+  liveness?: LivenessState
   /** Classification per PLAN.md §5.1, after `--include-detached` (if set). */
   class: GcClass
-  /** Set only when `class === "reclaim"` via the dep-bump exemption — see `resolveGcClass`. */
+  /** Set only when `class === "reclaim"` via the dep-bump exemption or the orphan reclaim path — see `resolveGcClass` / `scanOrphanWorktreePaths`. */
   reclaimReason?: GcReclaimReason
+  /**
+   * `true` only for a directory the orphan scan found: physically present
+   * under the repo's worktree pool, but absent from `git worktree list`
+   * (even after `git worktree prune`) — the interrupted-`worktree remove`
+   * shape (module docblock's §5 note). Always paired with `class: "reclaim"`
+   * and `reclaimReason: "orphan"`. Never set for a linked worktree, however
+   * it classifies.
+   */
+  orphan?: boolean
 }
 
 export interface PlanGcInput {
@@ -226,12 +250,220 @@ export interface PlanGcInput {
   now?: () => string
   /** See `ComputeWorktreeStatusInput.nowMs` (status.ts) — kept separate from `now`. Defaults to `Date.now()`. */
   nowMs?: number
+  /**
+   * The bucket directory this repo's worktrees are provisioned under — e.g.
+   * `<worktrees.root>/<repoLabel>` (see `resolveWorktreesRoot` / `repoLabel`,
+   * both resolved by the caller; this module does no root resolution of its
+   * own, see the orphan-reclaim section below). When omitted, orphan
+   * scanning is skipped entirely and `planGc`/`applyGc` behave exactly as
+   * before — every existing caller that doesn't pass this sees zero change.
+   */
+  worktreesRoot?: string
 }
 
 /** Every linked worktree of `repoRoot` except the main checkout itself — see the module docblock. */
 async function linkedWorktreesOf(repoRoot: string): Promise<GitWorktreeRef[]> {
   const worktrees = await listGitWorktrees(repoRoot)
   return worktrees.filter((w) => w.path !== repoRoot)
+}
+
+// ── orphan reclaim ───────────────────────────────────────────────────────
+//
+// `linkedWorktreesOf` (and therefore every axis `classify` depends on) can
+// only ever see what `git worktree list` reports — which is exactly the
+// blind spot behind the 8GB/day leak this section exists for. A worktree
+// removal interrupted mid-delete leaves the directory on disk but erases
+// `<repoRoot>/.git/worktrees/<name>`, so git no longer has ANY record of it:
+// `git worktree list` doesn't show it, `git status` inside it fails outright
+// ("not a working tree"), and it is therefore invisible to gc forever,
+// through no fault of the classify/reclaim/salvage engine above — that
+// engine is working exactly as designed on the set of worktrees git still
+// knows about.
+//
+// This section is deliberately narrow and conservative, matching the case
+// its ownership check can actually prove:
+//   1. A directory only ever counts as an orphan of THIS repo if its own
+//      `.git` file's `gitdir:` pointer resolves inside `<repoRoot>`'s own
+//      `.git/worktrees/` — `belongsToRepo` below. An unrelated directory
+//      that happens to sit in the same pool (no `.git` pointer, or one that
+//      points somewhere else entirely) is never touched, full stop.
+//   2. `git worktree prune` runs first — cheap and safe — so a directory
+//      that's merely mid-registration (not actually orphaned) resolves
+//      itself before the scan concludes anything.
+//   3. Once `git worktree list` still doesn't know about it after a prune,
+//      there is nothing left that could "reclassify" it the way a linked
+//      worktree can flip branches mid-session (`applyOne`'s layer 2): its
+//      git identity is already gone, so nothing can merge it, push it, or
+//      lose reachable history by removing it. The only thing at risk is
+//      uncommitted working-tree state, and by definition git has already
+//      lost the ability to act on that state through any of its own verbs —
+//      the directory is no longer a working tree by git's own definition.
+// Because of (3), an orphan is unconditionally `reclaim` — there is no
+// `hold`/`salvage` axis to compute for it, and manufacturing one would be
+// reporting a fact this module cannot actually check (see `GcPlanEntry`'s
+// `tree`/`integration`/`liveness` doc).
+
+/**
+ * Absolute path to this repo's own `.git/worktrees` directory — every
+ * linked worktree's `.git` file points at a child of this. Resolved via
+ * `git rev-parse --git-common-dir` rather than assuming `<repoRoot>/.git`
+ * literally, so a bare/alternate git layout is still handled correctly.
+ */
+async function gitWorktreesDir(repoRoot: string): Promise<string> {
+  const res = await execArgv("git", ["-C", repoRoot, "rev-parse", "--git-common-dir"], repoRoot)
+  if (res.exitCode !== 0) {
+    throw new Error(
+      `git rev-parse --git-common-dir failed in ${repoRoot} (exit ${res.exitCode}): ${res.stderr.trim()}`,
+    )
+  }
+  return join(resolve(repoRoot, res.stdout.trim()), "worktrees")
+}
+
+/**
+ * Reads a worktree directory's `.git` file (`gitdir: <path>`) and resolves
+ * the target to an absolute path. `null` when the file is absent, unreadable,
+ * or doesn't match the `gitdir:` pointer shape every linked worktree's `.git`
+ * has (a plain directory with no `.git` at all is exactly the shape an
+ * unrelated, not-ours directory has — see `belongsToRepo`).
+ */
+async function readGitdirPointer(worktreePath: string): Promise<string | null> {
+  let raw: string
+  try {
+    raw = await readFile(join(worktreePath, ".git"), "utf8")
+  } catch {
+    return null
+  }
+  const match = raw.match(/^gitdir:\s*(.+?)\s*$/m)
+  const target = match?.[1]
+  if (!target) return null
+  return resolve(worktreePath, target)
+}
+
+/**
+ * `true` only when `worktreePath`'s `.git` pointer resolves inside
+ * `repoRoot`'s own `.git/worktrees/` — the one signal the orphan scan trusts
+ * before ever touching a directory. This is deliberately a string-prefix
+ * check, not an existence check: for a genuine orphan, the specific
+ * `.git/worktrees/<name>` subdirectory the pointer names is exactly what's
+ * gone (that's the orphan condition), so requiring it to still exist would
+ * make this check unable to ever confirm the one case it exists for.
+ */
+async function belongsToRepo(repoRoot: string, worktreePath: string): Promise<boolean> {
+  const pointer = await readGitdirPointer(worktreePath)
+  if (!pointer) return false
+  let worktreesDir: string
+  try {
+    worktreesDir = await gitWorktreesDir(repoRoot)
+  } catch {
+    return false
+  }
+  const rel = relative(worktreesDir, pointer)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Resolves symlinks (`realpath`) so a path git reports and the same path
+ * built by hand from a config-supplied root compare equal even when some
+ * component along the way is a symlink (e.g. macOS's `/tmp` →
+ * `/private/tmp`, or a temp-dir-backed test fixture) — falls back to plain
+ * `resolve` for a path that doesn't exist (yet) rather than throwing.
+ */
+async function realOrResolved(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+/**
+ * Discovery (plan time): every directory physically present under
+ * `worktreesRoot` that both (a) `git worktree list` doesn't know about, even
+ * after a `worktree prune`, and (b) genuinely belongs to `repoRoot` per
+ * `belongsToRepo`. A `worktreesRoot` that doesn't exist yet (nothing has
+ * ever been provisioned there) yields no orphans, not an error.
+ */
+async function scanOrphanWorktreePaths(repoRoot: string, worktreesRoot: string): Promise<string[]> {
+  await execArgv("git", ["-C", repoRoot, "worktree", "prune"], repoRoot).catch(() => null)
+  const linkedRefs = await linkedWorktreesOf(repoRoot)
+  const linked = new Set(await Promise.all(linkedRefs.map((w) => realOrResolved(w.path))))
+  const entries = await readdir(worktreesRoot, { withFileTypes: true }).catch(() => [])
+  const orphans: string[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const candidate = resolve(worktreesRoot, entry.name)
+    if (linked.has(await realOrResolved(candidate))) continue
+    if (await belongsToRepo(repoRoot, candidate)) orphans.push(candidate)
+  }
+  return orphans
+}
+
+function makeOrphanPlanEntry(path: string): GcPlanEntry {
+  return { path, branch: null, head: "", class: "reclaim", reclaimReason: "orphan", orphan: true }
+}
+
+/**
+ * Apply-time re-check (layer 2, mirrored from `applyOne`'s TOCTOU guard for
+ * linked worktrees): re-derive from scratch, immediately before touching
+ * anything, rather than trusting the plan's stale snapshot.
+ *   - `"gone"`: the directory no longer exists at all — a prior/concurrent
+ *     gc pass (or the plan itself racing a manual `rm`) already finished the
+ *     job. Reclaiming this is a no-op success, not a failure.
+ *   - `"confirmed"`: still on disk, still un-linked after a fresh prune,
+ *     `.git` pointer still resolves back to this repo — safe to remove.
+ *   - `"not-orphan"`: something changed since the plan was made (most
+ *     plausibly: it got re-registered, or the ownership check no longer
+ *     passes) — refuse, exactly like `applyOne`'s `aborted-reclassified`.
+ */
+async function verifyOrphan(repoRoot: string, worktreePath: string): Promise<"gone" | "confirmed" | "not-orphan"> {
+  if (!(await pathExists(worktreePath))) return "gone"
+  await execArgv("git", ["-C", repoRoot, "worktree", "prune"], repoRoot).catch(() => null)
+  const linked = await linkedWorktreesOf(repoRoot)
+  const realWorktreePath = await realOrResolved(worktreePath)
+  for (const w of linked) {
+    if ((await realOrResolved(w.path)) === realWorktreePath) return "not-orphan"
+  }
+  return (await belongsToRepo(repoRoot, worktreePath)) ? "confirmed" : "not-orphan"
+}
+
+/**
+ * Reclaim one orphan entry. No `worktree.cleanup` tool here — that tool
+ * shells out to `git worktree remove`, which by definition refuses (or
+ * simply doesn't know what to do with) a directory git has no record of;
+ * plain recursive removal is the correct, and only, verb for something git
+ * itself no longer considers a working tree. `{ recursive: true, force:
+ * true }` is what makes this idempotent: a directory that's already gone,
+ * or partially gone (the same half-deleted shape the orphan condition
+ * itself comes from), is removed without error either way.
+ */
+async function reclaimOrphan(entry: GcPlanEntry, options: ApplyGcOptions): Promise<GcApplyOutcome> {
+  const state = await verifyOrphan(options.repoRoot, entry.path)
+  if (state === "not-orphan") {
+    return { path: entry.path, branch: null, result: "aborted-reclassified", from: "reclaim", to: "hold" }
+  }
+  if (state === "confirmed") {
+    try {
+      await rm(entry.path, { recursive: true, force: true })
+    } catch (err) {
+      return {
+        path: entry.path,
+        branch: null,
+        result: "failed",
+        message: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+  // state === "gone": already removed — idempotent success, nothing to do.
+  return { path: entry.path, branch: null, result: "reclaimed", reclaimReason: "orphan" }
 }
 
 async function toPlanEntry(
@@ -284,6 +516,10 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
       now: input.now,
     })
     entries.push(await toPlanEntry(input.repoRoot, input.defaultBranchRef, worktree, status, includeDetached, nowMs))
+  }
+  if (input.worktreesRoot) {
+    const orphanPaths = await scanOrphanWorktreePaths(input.repoRoot, input.worktreesRoot)
+    for (const path of orphanPaths) entries.push(makeOrphanPlanEntry(path))
   }
   return entries
 }
@@ -420,6 +656,13 @@ async function salvageOne(options: ApplyGcOptions, worktree: GitWorktreeRef): Pr
 }
 
 async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<GcApplyOutcome> {
+  // Orphan entries never go through `findWorktree`/`computeWorktreeStatus`
+  // below — those assume `git worktree list` still knows about the entry,
+  // which is exactly what an orphan means it doesn't. See "orphan reclaim"
+  // above `reclaimOrphan` for its own from-scratch TOCTOU re-check.
+  if (entry.orphan) {
+    return reclaimOrphan(entry, options)
+  }
   if (entry.class === "hold") {
     return { path: entry.path, branch: entry.branch, result: "held" }
   }
@@ -488,4 +731,56 @@ export async function applyGc(plan: readonly GcPlanEntry[], options: ApplyGcOpti
     outcomes.push(await applyOne(entry, options))
   }
   return outcomes
+}
+
+// ── single-worktree reclaim (session exit-time auto-reclaim) ───────────────
+//
+// A policy-provisioned (implicit) worktree — one `decideWorktreeIsolation`'s
+// `"always"` branch minted for a caller who never asked to keep it (see that
+// module's `WorktreeDecision.provision.implicit`) — is a candidate for
+// reclaim the moment its own session exits, rather than sitting until the
+// next manual/scheduled `gc` sweep. This is deliberately scoped to ONE
+// worktree — a session's own exit must never sweep or touch any OTHER
+// worktree in the pool — and deliberately reuses `applyGc`'s existing
+// classify → re-verify → remove pipeline (a plan of size one) rather than
+// hand-rolling a second removal path with its own safety logic to keep in
+// sync.
+
+/**
+ * Attempt to reclaim exactly one worktree by path — the exit-time auto-
+ * reclaim primitive `sessions.ts` calls (via the injected
+ * `WorktreeAutoReclaimer` port) when a policy-provisioned session reaches a
+ * terminal state. Classifies it fresh (never trusts a caller-supplied
+ * verdict) and only ever removes it when that classification is `reclaim`
+ * (merged-or-fresh, clean, idle) — a dirty or held worktree is returned
+ * as-is, exactly like any other `gc` outcome, still visible via
+ * `worktree_status` and still manually reclaimable. Returns `null` when the
+ * path no longer names a linked worktree at all (already removed by
+ * something else — nothing to do, not an error).
+ */
+export async function reclaimOneWorktree(
+  worktreePath: string,
+  options: ApplyGcOptions & { includeDetached?: boolean },
+): Promise<GcApplyOutcome | null> {
+  const worktree = await findWorktree(options.repoRoot, worktreePath)
+  if (!worktree) return null
+  const status = await computeWorktreeStatus({
+    repoRoot: options.repoRoot,
+    repoName: options.repoName,
+    worktree,
+    forge: options.forge,
+    memo: options.memo,
+    defaultBranchRef: options.defaultBranchRef,
+    sessionsPath: options.sessionsPath,
+    now: options.now,
+  })
+  const entry = await toPlanEntry(
+    options.repoRoot,
+    options.defaultBranchRef,
+    worktree,
+    status,
+    Boolean(options.includeDetached),
+    options.nowMs ?? Date.now(),
+  )
+  return applyOne(entry, options)
 }

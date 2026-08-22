@@ -1111,9 +1111,12 @@ export interface WorkspacesConfig {
 //    removed with salvageDirty; `hold` = kept (open PR or a live session). ──
 export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
 
-/** Set only on a `reclaim`-class entry/outcome promoted out of `hold` by the
- *  dep-bump exemption — absent for an ordinary merged/fresh reclaim. */
-export type WorktreeGcReclaimReason = "dep-bump"
+/** `dep-bump` is set on a `reclaim`-class entry/outcome promoted out of
+ *  `hold` by the dep-bump exemption — absent for an ordinary merged/fresh
+ *  reclaim. `orphan` is set on an entry/outcome the orphan scan found: a
+ *  directory physically present under the repo's worktree pool with no `git
+ *  worktree list` entry at all (see `WorktreeGcPlanEntryView.orphan`). */
+export type WorktreeGcReclaimReason = "dep-bump" | "orphan"
 
 export interface WorktreeGcPlanEntryView {
   path: string
@@ -1121,6 +1124,9 @@ export interface WorktreeGcPlanEntryView {
   head: string
   class: WorktreeGcClass
   reclaimReason?: WorktreeGcReclaimReason
+  /** `true` only for an orphan-scan entry — `tree`/`integration`/`liveness`
+   *  carry the literal `"orphan"` placeholder rather than a real axis read. */
+  orphan?: boolean
   tree: string
   integration: { state: string; pr?: number }
   liveness: { state: string; sessionCount: number }

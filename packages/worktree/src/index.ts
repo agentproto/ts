@@ -144,6 +144,7 @@ export {
   isMechanicalDepBumpRange,
   planGc,
   applyGc,
+  reclaimOneWorktree,
   type GcClass,
   type GcReclaimReason,
   type ClassifyForGcOptions,

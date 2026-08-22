@@ -2677,7 +2677,7 @@ describe("spawnAgentSession — worktree isolation", () => {
     branch: "wt/agent-abcd1234",
   }
 
-  it("on-request + worktree:true → provisions and lands the session in the worktree", async () => {
+  it("on-request + worktree:true → provisions and lands the session in the worktree, never auto-reclaimable (explicit request)", async () => {
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
     const result = await spawnAgentSession(
@@ -2688,6 +2688,9 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ cwd: ORIGINAL, labelHint: "fix login" })
     expect(registry.list()[0]?.cwd).toBe(WORKTREE)
+    // The caller asked for this worktree explicitly — exit-time auto-reclaim
+    // (session-spawn.ts's `worktreeAutoProvisioned`) must never touch it.
+    expect(registry.list()[0]?.worktreeAutoProvisioned).toBeUndefined()
   })
 
   it("on-request + no field → never touches the provisioner, spawns in place", async () => {
@@ -2702,7 +2705,7 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(registry.list()[0]?.cwd).toBe(ORIGINAL)
   })
 
-  it("always → provisions even with no field", async () => {
+  it("always → provisions even with no field, and marks the descriptor auto-provisioned (implicit)", async () => {
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
     const result = await spawnAgentSession(
@@ -2712,6 +2715,24 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(result.ok).toBe(true)
     expect(calls).toHaveLength(1)
     expect(registry.list()[0]?.cwd).toBe(WORKTREE)
+    // No explicit `worktree` field — the "always" policy minted this one on
+    // its own, so it's a candidate for exit-time auto-reclaim.
+    expect(registry.list()[0]?.worktreeAutoProvisioned).toBe(true)
+  })
+
+  it("always + an explicit worktree field → still provisions, but NEVER marks it auto-provisioned", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { slug: "pinned" } },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ cwd: ORIGINAL, slug: "pinned" })
+    // The caller pinned this one explicitly, even though `always` would have
+    // provisioned it anyway — exit-time auto-reclaim must leave it alone.
+    expect(registry.list()[0]?.worktreeAutoProvisioned).toBeUndefined()
   })
 
   it("always + a cwd that is not in a git repo → spawns plain at the original cwd", async () => {
