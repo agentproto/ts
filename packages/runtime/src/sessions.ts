@@ -3130,6 +3130,17 @@ export interface SpawnPtyInput {
    *  the factory layer (node-pty.spawn options); don't try to clear
    *  them here. */
   env?: Record<string, string>
+  /** Env vars to strip from the inherited `process.env` before spawning —
+   *  same scrub semantics as `ResolvedAuthSpec.unsetEnv` (define-agent-cli.ts's
+   *  driver applies this by deleting from its own composed env; `spawnPty` has
+   *  no such composition step of its own, so `session_restart`'s pty-native
+   *  branch passes it here). Without this, a PTY resume that re-resolves the
+   *  session's own billing auth still leaks whatever conflicting credential
+   *  (e.g. an ambient `ANTHROPIC_API_KEY`) happens to be in the daemon's own
+   *  `process.env` — `env` alone can only ADD/override keys, never remove
+   *  one inherited from process.env. Applied AFTER `env` overrides so an
+   *  explicit override always wins over a scrub of the same key. */
+  unsetEnv?: string[]
   /** User-friendly slug. Used by `findByIdOrName(query)`. Must not
    *  collide with an existing session's name. */
   name?: string
@@ -5971,6 +5982,11 @@ export function createSessionsRegistry(opts?: {
       // also forces TERM=xterm-256color so alt-screen apps render.
       const env = { ...(process.env as Record<string, string>), ...(input.env ?? {}) }
       delete env.NODE_OPTIONS
+      // Scrub AFTER the override merge so an explicit `input.env` key always
+      // wins over a same-named scrub entry — see `unsetEnv`'s doc.
+      for (const key of input.unsetEnv ?? []) {
+        if (!(input.env && key in input.env)) delete env[key]
+      }
       // Session identity — same assign-last rule as spawn() above
       // (SESSION_ID_ENV's doc): `POST /sessions/terminal` also forwards a
       // caller-supplied `env`.

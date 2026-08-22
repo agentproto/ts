@@ -192,12 +192,15 @@ export interface FsProbeCandidate extends RestartCandidate {
  *
  *   1. pty-native  — the adapter has a captured resume id AND declares
  *      `spawnArgs` (e.g. claude-code): respawn a PTY running the
- *      provider's own resume command. Most reliable — works whenever
- *      the provider persisted the session, regardless of whether the
- *      ACP wrapper did.
+ *      provider's own resume command. Most reliable CONTINUITY mechanism
+ *      when it applies — but only actually reachable by default when the
+ *      prior session was ITSELF a real PTY (`prev.pty === true`), or the
+ *      caller explicitly opts in (`preferNativeTerminal`) — see the
+ *      `mayPreferNative` doc below for why.
  *   2. pty-plain   — the previous session was a real PTY with no
  *      native strategy match: re-run the same argv, no continuity.
- *   3. agent       — an agent-cli session with no native strategy:
+ *   3. agent       — an agent-cli session with no native strategy (or an
+ *      ACP-origin session where pty-native doesn't apply — see above):
  *      resume at the ACP level via the adapter's own session id (may
  *      still 404 if the adapter never persisted a turn — callers
  *      should retry without `resumeSessionId` on a "not found" error).
@@ -210,13 +213,39 @@ export type RestartStrategy =
   | { kind: "agent"; resumeSessionId?: string; resumeFallback?: boolean }
   | { kind: "unsupported"; reason: string }
 
-export function decideRestartStrategy(prev: RestartCandidate): RestartStrategy {
+export interface DecideRestartStrategyOptions {
+  /**
+   * Explicit opt-in to provider-native terminal resume for a session whose
+   * ORIGIN was agent-cli/ACP (not itself a PTY) — a human who wants the raw
+   * provider TUI instead of ACP-level resume, understanding the tradeoffs
+   * (see `mayPreferNative`'s doc below). Default false/omitted: an
+   * ACP-origin session always resumes via ACP.
+   */
+  preferNativeTerminal?: boolean
+}
+
+export function decideRestartStrategy(
+  prev: RestartCandidate,
+  opts: DecideRestartStrategyOptions = {},
+): RestartStrategy {
   // Provider-native terminal resume takes precedence over ACP-level resume —
   // but ONLY when the adapter manifest explicitly declares a verified native
-  // TUI resume capability (`nativeTerminalResume`). ACP resumability alone
-  // (`resumable`) does not imply it is safe or correct to reattach as a raw
-  // PTY; without the flag we fall back to ACP-level or fresh-spawn restart.
-  if (prev.adapterSlug && prev.nativeTerminalResume === true) {
+  // TUI resume capability (`nativeTerminalResume`) AND (origin-gate, closing
+  // the "restart starts a terminal but it doesn't work" bug) either the prior
+  // session was ITSELF a raw PTY (`prev.pty === true` — a real provider TUI a
+  // human was already looking at, whose config dir went through the actual
+  // interactive onboarding wizard), or the caller explicitly opted in
+  // (`preferNativeTerminal`). An agent-cli/ACP session's isolated
+  // `CLAUDE_CONFIG_DIR` (#824) is populated ONLY by the headless ACP
+  // entrypoint, which never runs the interactive TUI wizard — so defaulting
+  // an ACP-origin session's restart to pty-native silently drops it onto
+  // claude-code's first-run onboarding screen (theme picker, "detected a
+  // custom API key" prompt) with no one attached to answer it, forever.
+  // `nativeTerminalResume` alone is a CAPABILITY declaration ("this adapter
+  // supports native resume for a real terminal"), not license to mode-switch
+  // a headless session into an unattended one.
+  const mayPreferNative = prev.pty === true || opts.preferNativeTerminal === true
+  if (prev.adapterSlug && prev.nativeTerminalResume === true && mayPreferNative) {
     const strategy = RESUME_STRATEGIES[prev.adapterSlug]
     const id = strategy?.storeAs
       ? prev.resumeMetadata?.[strategy.storeAs]
@@ -345,9 +374,22 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
  * declared capability backs that claim (`resumable !== false`). An adapter
  * that declared `resumable: false` but still carries an `adapterSessionId`
  * gets an honest degraded label instead of the lie — never silently "".
+ *
+ * Origin gate (mirrors `decideRestartStrategy`'s own — MUST stay in sync or
+ * this label lies about what actually happened): the native-resume phrasing
+ * is only reported when `decideRestartStrategy` itself would have picked
+ * pty-native for this `prev` — i.e. `prev.pty === true` or the caller passed
+ * the SAME `preferNativeTerminal` it decided the strategy with. Without this
+ * gate, a captured `resumeMetadata` alone used to make this function claim
+ * "resumed via claude --resume" even when the actual decision (now)
+ * downgrades an ACP-origin session to ACP-level resume instead.
  */
-export function describeResumePath(prev: RestartCandidate): string {
-  if (prev.adapterSlug) {
+export function describeResumePath(
+  prev: RestartCandidate,
+  opts: DecideRestartStrategyOptions = {},
+): string {
+  const mayPreferNative = prev.pty === true || opts.preferNativeTerminal === true
+  if (prev.adapterSlug && mayPreferNative) {
     const s = RESUME_STRATEGIES[prev.adapterSlug]
     if (s?.spawnArgs && s.storeAs && prev.resumeMetadata?.[s.storeAs]) {
       const sample = s.spawnArgs("…")[0] ?? prev.adapterSlug

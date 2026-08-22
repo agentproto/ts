@@ -16,6 +16,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
+import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
   registerExportSessionTool,
@@ -33,6 +34,7 @@ import {
 } from "./resume-strategies.js"
 import {
   restartAgentSession,
+  resolveResumeAuth,
   RestartOverrideError,
   type RestartOverrides,
 } from "./session-restart-core.js"
@@ -224,6 +226,13 @@ export interface RegisterSessionToolsOptions {
    *  `catalog_models` MCP tool. Without it the tool returns a clear "not
    *  configured" error pointing at the host wiring. */
   listCatalogModels?: CatalogModelsLister
+  /** config.json `defaults` loader — same seam as
+   *  `RestartAgentSessionOptions.loadDefaultsConfig` in session-restart-core.ts.
+   *  Threaded into `session_restart`'s pty-native billing-auth re-resolution
+   *  (`resolveResumeAuth`) so tests can inject a stub instead of touching the
+   *  real `~/.agentproto/config.json`. Defaults to reading the real file via
+   *  `loadConfig` when omitted, same as every other restart call site. */
+  loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
   /** Forwarded to `registerAgentTools` — the daemon's own plain `/mcp`
    *  gateway URL, defaulted onto `hermes` `agent_start` spawns that
    *  pass no `mcpServers`. See `RegisterAgentToolsOptions.daemonMcpUrl`. */
@@ -335,6 +344,7 @@ export function registerSessionTools(
     listWorktreeStatuses,
     runWorktreeGc,
     listCatalogModels,
+    loadDefaultsConfig,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -1897,15 +1907,19 @@ export function registerSessionTools(
       "continuity over a blank restart. Looks up the (possibly historical) " +
       "descriptor by id or name — same lookup as `session_list` — and picks " +
       "the same resume strategy `agentproto sessions restart` uses on the CLI: " +
-      "provider-native resume (spawns a PTY running the provider's own resume " +
-      "command, e.g. `claude --resume <id>`) when the adapter persisted one; " +
-      "else ACP-level resume via the adapter's own session id (retried as a " +
-      "fresh spawn if the adapter rejects the id with \"not found\" — typical " +
-      "when the prior session died before its first turn); else a plain PTY " +
-      "re-run for raw terminal sessions with no adapter match. Generic " +
-      "`command` sessions have no resume path and return an error. Returns " +
-      "the NEW session's descriptor plus `resumedFrom` (the prior id) and " +
-      "`resumeVia` (which path was used, empty string for a fresh respawn).",
+      "ACP-level resume via the adapter's own session id for an agent-cli/ACP-" +
+      "origin session (retried as a fresh spawn if the adapter rejects the id " +
+      "with \"not found\" — typical when the prior session died before its " +
+      "first turn); provider-native resume (spawns a PTY running the " +
+      "provider's own resume command, e.g. `claude --resume <id>`) for a " +
+      "session that was ITSELF already a raw PTY, or when `preferNativeTerminal` " +
+      "explicitly opts an ACP-origin session in (its isolated config dir was " +
+      "never TUI-onboarded, so defaulting there can strand the terminal on the " +
+      "provider's first-run wizard with no one attached to answer it); else a " +
+      "plain PTY re-run for raw terminal sessions with no adapter match. " +
+      "Generic `command` sessions have no resume path and return an error. " +
+      "Returns the NEW session's descriptor plus `resumedFrom` (the prior id) " +
+      "and `resumeVia` (which path was used, empty string for a fresh respawn).",
     {
       idOrName: z
         .string()
@@ -1982,6 +1996,18 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe("Legacy AIP-45 mode id override, forwarded verbatim to the driver at spawn."),
+      preferNativeTerminal: z
+        .boolean()
+        .optional()
+        .describe(
+          "Explicit opt-in to provider-native terminal resume (e.g. `claude --resume <id>` " +
+            "in a raw PTY) for a session that did NOT itself start as a PTY — an agent-cli/ACP " +
+            "session's isolated config dir was never TUI-onboarded (no theme/trust state), so " +
+            "the resumed terminal can otherwise block forever on the provider's first-run " +
+            "wizard with no one attached to answer it. Default false: an ACP-origin session " +
+            "always resumes at the ACP level instead. A session that WAS itself already a raw " +
+            "PTY still prefers native resume regardless of this flag."
+        ),
     },
     async input => {
       const prev = registry.findByIdOrName(input.idOrName)
@@ -2117,7 +2143,9 @@ export function registerSessionTools(
       }
 
       const augmented = await augmentWithFsResume(prev)
-      const strategy = decideRestartStrategy(augmented)
+      const strategy = decideRestartStrategy(augmented, {
+        preferNativeTerminal: input.preferNativeTerminal === true,
+      })
       // Trace WHICH restart path was chosen and why — the branching in
       // `decideRestartStrategy` depends on state that can differ between two
       // restarts of the SAME lineage (whether the output sniffer or the fs
@@ -2202,6 +2230,46 @@ export function registerSessionTools(
                     : `adapter "${prev.adapterSlug}" declares no configDirEnvVar — resume uses the global store`)
             )
           }
+          // Re-resolve billing-auth for a pty-native resume — same
+          // money-safety resolver the "agent" branch uses (`resolveResumeAuth`,
+          // session-restart-core.ts), never the daemon's own ambient env. A raw
+          // `claude --resume` PTY inherits `process.env` wholesale
+          // (sessions.ts's `spawnPty`), so without this it silently picks up
+          // whatever conflicting credential (e.g. an ambient `ANTHROPIC_API_KEY`
+          // set for some unrelated reason) happens to be in the daemon's own
+          // environment instead of THIS session's own resolved auth — the exact
+          // ambient-credential leak #824/#490 already closed for the ACP/agent
+          // paths. Concretely: an ambient `ANTHROPIC_API_KEY` the session's
+          // isolated config dir has never seen trips claude-code's own
+          // "detected a custom API key" prompt, which blocks forever with no
+          // one attached to answer it. `unsetEnv` scrubs that conflict;
+          // `setEnv`/`credential` inject the session's OWN resolved credential.
+          let authEnv: Record<string, string> | undefined
+          let authUnsetEnv: string[] | undefined
+          if (strategy.kind === "pty-native" && prev.adapterSlug && resolveAgentAdapter) {
+            const resolvedAdapter = await resolveAgentAdapter(prev.adapterSlug)
+            if (resolvedAdapter?.authDescriptor) {
+              const { authSpec } = await resolveResumeAuth(prev, resolvedAdapter, {
+                adapterSlug: prev.adapterSlug,
+                ...(prev.model ? { model: prev.model } : {}),
+                ...(prev.route ? { route: prev.route } : {}),
+                ...(prev.accessProfile?.profileRef
+                  ? { accessProfileRef: prev.accessProfile.profileRef }
+                  : {}),
+                prefix: "restart",
+                ...(loadDefaultsConfig ? { loadDefaultsConfig } : {}),
+                ...(listCatalogModels ? { listCatalogModels } : {}),
+              })
+              if (authSpec) {
+                authUnsetEnv = authSpec.unsetEnv
+                if (authSpec.credential !== undefined) {
+                  authEnv = { [authSpec.setEnv]: authSpec.credential }
+                }
+              }
+            }
+          }
+          const combinedPtyEnv: Record<string, string> | undefined =
+            ptyEnv || authEnv ? { ...ptyEnv, ...authEnv } : undefined
           // Persist the resume lineage onto the STORED descriptor (not just
           // grafted onto this response's JSON, as it used to be) — see
           // `SessionDescriptor.resumedFrom`'s doc for why that matters.
@@ -2211,7 +2279,8 @@ export function registerSessionTools(
             workspaceSlug: prev.workspaceSlug,
             cols: input.cols ?? 80,
             rows: input.rows ?? 24,
-            ...(ptyEnv ? { env: ptyEnv } : {}),
+            ...(combinedPtyEnv ? { env: combinedPtyEnv } : {}),
+            ...(authUnsetEnv && authUnsetEnv.length > 0 ? { unsetEnv: authUnsetEnv } : {}),
             ...(prev.name ? { name: prev.name } : {}),
             ...(prev.label ? { label: prev.label } : {}),
             // Lineage carry-forward (#session-visibility) — same reasoning as
@@ -2222,7 +2291,9 @@ export function registerSessionTools(
             ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
             ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
             resumedFrom: prev.id,
-            resumeVia: describeResumePath(augmented),
+            resumeVia: describeResumePath(augmented, {
+              preferNativeTerminal: input.preferNativeTerminal === true,
+            }),
           })
           return {
             content: [
