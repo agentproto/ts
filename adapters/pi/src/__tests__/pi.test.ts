@@ -28,15 +28,26 @@ describe("@agentproto/adapter-pi — manifest", () => {
     expect(pi.capabilities?.sub_agents).toBe(true)
   })
 
-  it("declares the 4 provider env slots and a native-resume continuation", () => {
+  it("declares the auth env slots (incl. the anthropic bearer door) and a native-resume continuation", () => {
     expect(pi.auth?.state?.env).toEqual([
       "ANTHROPIC_API_KEY",
+      "ANTHROPIC_OAUTH_TOKEN",
       "OPENAI_API_KEY",
       "GOOGLE_GENERATIVE_AI_API_KEY",
       "MOONSHOT_API_KEY",
     ])
     expect(pi.continuation?.default).toBe("native-resume")
     expect(pi.continuation?.supported).toContain("native-resume")
+  })
+
+  it("declares the anthropic-scoped subscription surface (ANTHROPIC_OAUTH_TOKEN)", () => {
+    // Pi's own bearer door — `ANTHROPIC_OAUTH_TOKEN — Anthropic OAuth token
+    // (alternative to API key)` (pi 0.80.x --help). Scoped to anthropic so a
+    // Claude subscription profile lights up pi's anthropic models only.
+    expect(pi.authSubscription).toEqual({
+      setEnv: "ANTHROPIC_OAUTH_TOKEN",
+      provider: "anthropic",
+    })
   })
 
   it("declares model + effort options with pi's thinking levels", () => {
