@@ -116,6 +116,20 @@ export interface AgentCliAuthSubscription {
    * which is why this is separate from {@link conflictEnv}.
    */
   unsetEnvAdd?: string[]
+  /**
+   * Scope this subscription surface to ONE billing provider — for a
+   * multi-provider (`modelDerivedApiKey`) adapter whose bearer door is
+   * provider-specific: pi reads `ANTHROPIC_OAUTH_TOKEN` as its documented
+   * alternative to `ANTHROPIC_API_KEY`, an anthropic-only path that means
+   * nothing for its openai/google/moonshot models. When set, the runtime
+   * only treats subscription mode as supported (and only advertises
+   * oauth-bearer eligibility) when the spawn's RESOLVED provider equals
+   * this id — so an anthropic subscription profile lights up pi's
+   * anthropic models without making, say, a codex OAuth profile look
+   * eligible for pi's openai models. Omit for a fixed-provider adapter
+   * (claude-code, codex): the descriptor-level `provider` already pins it.
+   */
+  provider?: string
 }
 
 /**

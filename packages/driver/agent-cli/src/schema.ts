@@ -213,6 +213,9 @@ const authSubscriptionSchema = z.object({
   external: z.boolean().optional(),
   conflictEnv: z.array(z.string()).optional(),
   unsetEnvAdd: z.array(z.string()).optional(),
+  // Provider scope for a multi-provider adapter's bearer surface (pi's
+  // ANTHROPIC_OAUTH_TOKEN is anthropic-only) — see AgentCliAuthSubscription.
+  provider: z.string().min(1).optional(),
 }).strict().superRefine((v, ctx) => {
   if (v.external) {
     if (v.setEnv !== undefined) {

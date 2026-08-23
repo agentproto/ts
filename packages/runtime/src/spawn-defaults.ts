@@ -272,6 +272,14 @@ export interface AdapterAuthDescriptor {
     external?: boolean
     conflictEnv?: string[]
     unsetEnvAdd?: string[]
+    /** Provider scope for a multi-provider (`modelDerivedApiKey`) adapter's
+     *  bearer surface — pi's `ANTHROPIC_OAUTH_TOKEN` is an anthropic-only
+     *  door. When set, subscription mode is supported (and oauth-bearer
+     *  eligibility advertised) ONLY when the spawn's resolved provider
+     *  equals this id. Omitted for fixed-provider adapters (claude-code,
+     *  codex) — their descriptor-level `provider` already pins it. See
+     *  {@link subscriptionAppliesTo}. */
+    provider?: string
   }
   /** True when the adapter's api-key auth is derived from the requested
    *  model rather than a fixed provider (e.g. `pi`, `opencode`). When set,
@@ -436,6 +444,36 @@ export function modelIdPrefixProvider(modelId: string): string | undefined {
   return slash > 0 ? modelId.slice(0, slash) : undefined
 }
 
+/**
+ * Whether an adapter's declared subscription surface applies on `endpoint` —
+ * THE one predicate every subscription-eligibility site shares
+ * (`resolveAuthSpec` below, plus the three mirrored direct-methods
+ * projections in `session-spawn.ts` / `session-restart-core.ts` /
+ * `catalog-models.ts`), so they can never drift.
+ *
+ * A provider-scoped surface (pi's `ANTHROPIC_OAUTH_TOKEN`, anthropic-only)
+ * applies only on its own provider; an unscoped one (fixed-provider
+ * adapters — claude-code, codex) applies wherever the adapter itself does.
+ * An unknown endpoint is treated as applying — the fixed-provider case,
+ * where the caller had no per-model derivation to offer.
+ *
+ * This predicate REPLACED the old `modelDerivedApiKey ⇒ subscription works`
+ * assumption ("Anthropic OATs work as API keys"): an OAT presented on the
+ * x-api-key header is rejected by Anthropic's edge regardless of account
+ * validity — observed live as opencode's opaque "Internal error: API key is
+ * invalid" when the runtime injected a subscription token into
+ * `ANTHROPIC_API_KEY`. Subscription support now requires an EXPLICIT
+ * `authSubscription` declaration naming the env var the CLI actually reads
+ * a bearer from.
+ */
+export function subscriptionAppliesTo(
+  sub: AdapterAuthDescriptor["authSubscription"],
+  endpoint: string | undefined,
+): boolean {
+  if (sub === undefined) return false
+  return sub.provider === undefined || endpoint === undefined || sub.provider === endpoint
+}
+
 export function resolveAuthSpec(
   input: ResolveAuthSpecInput,
 ): { spec: ResolvedAuthSpec; echo: AuthEcho } | undefined {
@@ -507,16 +545,23 @@ export function resolveAuthSpec(
   }
   if (!provider) return undefined
 
-  const sub = input.descriptor.authSubscription
-  // Gateway routes are normally API-key only; subscription mode is only
-  // supported on direct routes where the adapter declares authSubscription
-  // OR has modelDerivedApiKey (the subscription token is injected via the
-  // model-derived env var — Anthropic OATs work as API keys).
-  // A native fixed-provider gateway preset (e.g. codex + route.gateway "openai")
-  // is a direct route, so subscription stays eligible.
+  // Subscription support requires an EXPLICIT, provider-matching
+  // authSubscription declaration ({@link subscriptionAppliesTo}) — the old
+  // `|| modelDerivedApiKey` clause assumed "Anthropic OATs work as API
+  // keys", which is false on the x-api-key header: it silently injected the
+  // subscription token into ANTHROPIC_API_KEY for opencode/mastracode/jcode
+  // and the upstream rejected it as an invalid key. A multi-provider
+  // adapter that DOES have a bearer door declares it (pi:
+  // `authSubscription: {setEnv: "ANTHROPIC_OAUTH_TOKEN", provider:
+  // "anthropic"}`); the rest fail fast below instead of failing upstream.
+  // Gateway routes stay API-key only; a native fixed-provider gateway
+  // preset (e.g. codex + route.gateway "openai") is a direct route, so
+  // subscription stays eligible there.
+  const sub = subscriptionAppliesTo(input.descriptor.authSubscription, provider)
+    ? input.descriptor.authSubscription
+    : undefined
   const supportsSub =
-    (sub !== undefined || input.descriptor.modelDerivedApiKey === true) &&
-    (gatewayRoute === undefined || isNativeGatewayPreset)
+    sub !== undefined && (gatewayRoute === undefined || isNativeGatewayPreset)
   const enforce = input.descriptor.authEnforce ?? "when-configured"
 
   // File-based (external) subscription (codex/gemini): the CLI reads its OWN
@@ -545,8 +590,11 @@ export function resolveAuthSpec(
   if (input.requestedMode) {
     if (input.requestedMode === "subscription" && !supportsSub) {
       throw new AuthResolutionError(
-        `auth mode "subscription" is not supported for provider "${provider}" ` +
-          `(this adapter declares no authSubscription) — use api-key instead.`,
+        `auth mode "subscription" is not supported for provider "${provider}" on this ` +
+          `adapter (no matching authSubscription surface): it presents credentials on ` +
+          `the api-key header, where a subscription OAuth token is rejected upstream as ` +
+          `an invalid key. Use an api-key profile (a console key) or route the model ` +
+          `via a gateway profile (e.g. openrouter) instead.`,
       )
     }
     mode = input.requestedMode
@@ -579,9 +627,10 @@ export function resolveAuthSpec(
     credentialSource = subCredAvailable ? "cli-local-login" : "none"
     externalCredential = true
   } else if (mode === "subscription") {
-    // Bearer authSubscription declares setEnv (schema-enforced); a
-    // modelDerivedApiKey adapter without authSubscription injects the
-    // subscription token via the model-derived provider env var instead.
+    // Bearer authSubscription declares setEnv (schema-enforced) — for pi
+    // that's ANTHROPIC_OAUTH_TOKEN, its documented bearer door. The
+    // `?? apiKeyEnv` fallback is defensive only: subscription mode can no
+    // longer resolve without a matching authSubscription (see supportsSub).
     setEnv = sub?.setEnv ?? apiKeyEnv
     credential = input.subscriptionCredential
     credentialSource =

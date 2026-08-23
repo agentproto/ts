@@ -65,6 +65,7 @@ import {
 import {
   resolveSpawnDefaults,
   resolveAuthSpec,
+  subscriptionAppliesTo,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -180,9 +181,16 @@ function methodToMode(method: AuthMethod): "subscription" | "api-key" {
  *  from the same projection `resolveAuthSpec` reads (`authSubscription` ⇒
  *  oauth-bearer, `provider` ⇒ api-key) — the method-side of the eligibility
  *  predicate (SPEC §3.4). Mirrors `catalog-models.ts`'s `methodsForDirect`. */
-function directMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
+function directMethods(
+  descriptor: AdapterAuthDescriptor | undefined,
+  endpoint?: string,
+): AuthMethod[] {
   const methods: AuthMethod[] = []
-  if (descriptor?.authSubscription || descriptor?.modelDerivedApiKey) methods.push("oauth-bearer")
+  // oauth-bearer requires an explicit, provider-matching subscription
+  // surface — see `subscriptionAppliesTo`'s doc in spawn-defaults.ts.
+  if (subscriptionAppliesTo(descriptor?.authSubscription, endpoint)) {
+    methods.push("oauth-bearer")
+  }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
@@ -214,7 +222,9 @@ function eligibilityManifest(
   // oauth-bearer path). Otherwise it's the direct route.
   const isDirect = baseVendor !== undefined && routeId === baseVendor
   const billedVendor = isDirect ? baseVendor : routeId
-  const methods: readonly AuthMethod[] = isDirect ? directMethods(descriptor) : ["api-key"]
+  const methods: readonly AuthMethod[] = isDirect
+    ? directMethods(descriptor, billedVendor)
+    : ["api-key"]
   return {
     manifest: {
       id: adapterSlug,

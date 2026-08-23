@@ -312,6 +312,91 @@ describe("resolveAuthSpec — modelDerivedApiKey", () => {
   })
 })
 
+describe("resolveAuthSpec — provider-scoped authSubscription (pi)", () => {
+  // pi's manifest shape: multi-provider (modelDerivedApiKey) with an
+  // anthropic-only bearer door (`ANTHROPIC_OAUTH_TOKEN — Anthropic OAuth
+  // token (alternative to API key)`, pi 0.80.x --help).
+  const PI_DESCRIPTOR = {
+    modelDerivedApiKey: true,
+    authSubscription: { setEnv: "ANTHROPIC_OAUTH_TOKEN", provider: "anthropic" },
+  }
+
+  it("subscription on an anthropic model injects the OAuth var, not the api-key var", () => {
+    const r = resolveAuthSpec({
+      descriptor: PI_DESCRIPTOR,
+      model: "anthropic/claude-sonnet-4-5",
+      explicit: true,
+      requestedMode: "subscription",
+      subscriptionCredential: "sk-ant-oat01-sub",
+    })
+    expect(r?.echo.provider).toBe("anthropic")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("ANTHROPIC_OAUTH_TOKEN")
+    expect(r?.spec.credential).toBe("sk-ant-oat01-sub")
+    // The api-key var is the non-set sibling credential — scrubbed so a
+    // leftover key can't silently flip billing to API credits.
+    expect(r?.spec.unsetEnv).toContain("ANTHROPIC_API_KEY")
+  })
+
+  it("subscription requested on a NON-matching provider (openai model) rejects", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: PI_DESCRIPTOR,
+        model: "openai/gpt-5",
+        explicit: true,
+        requestedMode: "subscription",
+        subscriptionCredential: "sk-ant-oat01-sub",
+      }),
+    ).toThrow(AuthResolutionError)
+  })
+
+  it("ordered preference on a non-matching provider falls to api-key, never subscription", () => {
+    const r = resolveAuthSpec({
+      descriptor: PI_DESCRIPTOR,
+      model: "openai/gpt-5",
+      explicit: true,
+      subscriptionCredential: "sk-ant-oat01-sub",
+      apiKeyConfigCredential: "sk-proj-x",
+    })
+    expect(r?.echo.authMode).toBe("api-key")
+    expect(r?.spec.setEnv).toBe("OPENAI_API_KEY")
+  })
+})
+
+describe("resolveAuthSpec — modelDerivedApiKey alone no longer implies subscription", () => {
+  // The old `supportsSub = sub || modelDerivedApiKey` clause injected a
+  // subscription OAT into the x-api-key var for opencode/mastracode/jcode
+  // ("Anthropic OATs work as API keys" — false on that header): the
+  // upstream rejected it as an invalid key AFTER the session was live.
+  // An opencode-shaped descriptor must now fail fast at resolution.
+  it("explicit subscription on an opencode-shaped descriptor rejects with an actionable message", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: { modelDerivedApiKey: true },
+        model: "anthropic/claude-fable-5",
+        explicit: true,
+        requestedMode: "subscription",
+        subscriptionCredential: "sk-ant-oat01-sub",
+      }),
+    ).toThrow(/api-key header|api-key profile/)
+  })
+
+  it("ordered preference with only a subscription credential no longer picks subscription", () => {
+    const r = resolveAuthSpec({
+      descriptor: { modelDerivedApiKey: true },
+      model: "anthropic/claude-fable-5",
+      explicit: true,
+      subscriptionCredential: "sk-ant-oat01-sub",
+    })
+    // api-key is the only supported mode; with no api-key credential the
+    // pick is flagged as unconfigured rather than silently injecting the
+    // OAT into ANTHROPIC_API_KEY.
+    expect(r?.echo.authMode).toBe("api-key")
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.spec.neitherConfigured).toBe(true)
+  })
+})
+
 describe("resolveAuthSpec — gateway route injection", () => {
   it("route.gateway = moonshot -> MOONSHOT_API_KEY + base_url + anthropic scrub", () => {
     const r = resolveAuthSpec({
