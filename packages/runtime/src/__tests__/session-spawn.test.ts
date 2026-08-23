@@ -43,15 +43,16 @@ const oauthState = vi.hoisted(() => ({
   // File-based (external) login presence check — default: login present (void).
   // A test sets `verifyImpl` to throw a SubscriptionSourceError to exercise the
   // fail-loud "not logged in" path.
-  verifyImpl: (async (_recipeId: string, _slug: string) => {}) as (
+  verifyImpl: (async (_recipeId: string, _slug: string, _methodId?: string) => {}) as (
     recipeId: string,
     slug: string,
+    methodId?: string,
   ) => Promise<void>,
 }))
 vi.mock("../claude-code-oauth-source.js", () => ({
   resolveClaudeCodeOauthToken: (id: string) => oauthState.impl(id),
-  verifyLocalLoginPresent: (recipeId: string, slug: string) =>
-    oauthState.verifyImpl(recipeId, slug),
+  verifyLocalLoginPresent: (recipeId: string, slug: string, methodId?: string) =>
+    oauthState.verifyImpl(recipeId, slug, methodId),
 }))
 
 // Control named auth-profile resolution (`access.profileRef`) deterministically
@@ -3923,7 +3924,7 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     expect(result.descriptor.auth?.setEnv).toBe("")
     expect(result.descriptor.auth?.fingerprint).toBe("subscription · local-login")
     // The login was verified against the `codex` recipe.
-    expect(verify).toHaveBeenCalledWith("codex", "codex")
+    expect(verify).toHaveBeenCalledWith("codex", "codex", undefined)
   })
 
   it("`auth.mode: subscription` with no source verifies against the adapter slug", async () => {
@@ -3938,7 +3939,7 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
-    expect(verify).toHaveBeenCalledWith("codex", "codex")
+    expect(verify).toHaveBeenCalledWith("codex", "codex", undefined)
   })
 
   it("login NOT present ⇒ loud spawn failure (auth_source_unresolved), no session, nothing injected", async () => {
@@ -3981,7 +3982,7 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.mode).toBe("subscription")
     expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
-    expect(verify).toHaveBeenCalledWith("codex", "codex")
+    expect(verify).toHaveBeenCalledWith("codex", "codex", undefined)
     expect(result.descriptor.accessProfile).toMatchObject({
       profileRef: "codex-local",
       endpoint: "openai",
@@ -4034,6 +4035,106 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
   })
 })
 
+// External verification must resolve the ADAPTER's recipe, never the
+// profile's/config's source: an external surface verifies the adapter CLI's
+// OWN login file, and a source naming ANOTHER CLI's login (codex-local's
+// `source: "codex"` on a mastracode spawn) used to shadow the adapter recipe
+// — observed live as "provider 'codex' has no method 'openai-oauth'" instead
+// of checking mastracode's own auth.json.
+describe("spawnAgentSession — external verification uses the adapter's recipe, not the source", () => {
+  const MASTRACODE_MULTI_SURFACE: AdapterAuthDescriptor = {
+    modelDerivedApiKey: true,
+    authSubscription: [
+      { external: true, provider: "anthropic" },
+      { external: true, provider: "openai" },
+    ],
+  }
+
+  function authDeps() {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: MASTRACODE_MULTI_SURFACE,
+    })
+    return baseDeps({ resolveAgentAdapter })
+  }
+
+  beforeEach(() => {
+    authProfileState.profiles = {}
+    authProfileState.keychain = {}
+    oauthState.verifyImpl = async () => {}
+  })
+
+  it("codex-local profile (source 'codex') on mastracode verifies mastracode's recipe + openai-oauth method", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    authProfileState.profiles["codex-local"] = {
+      id: "codex-local",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      source: "codex",
+      label: "My Codex login",
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mastracode",
+      cwd: "/tmp",
+      model: "openai/gpt-5.1",
+      access: { profileRef: "codex-local" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(result.descriptor.auth?.setEnv).toBe("")
+    // The adapter's recipe + the provider-keyed method — NOT the profile's
+    // "codex" source recipe (which has no openai-oauth method at all).
+    expect(verify).toHaveBeenCalledWith("mastracode", "mastracode", "openai-oauth")
+  })
+
+  it("an anthropic subscription profile on mastracode verifies the anthropic-oauth method", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    authProfileState.profiles["claude-subs"] = {
+      id: "claude-subs",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      credentialRef: "agentproto.auth.anthropic.sub",
+      label: "Claude Subs",
+    }
+    authProfileState.keychain["agentproto.auth.anthropic.sub"] = "sk-ant-oat01-sub"
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mastracode",
+      cwd: "/tmp",
+      model: "anthropic/claude-sonnet-4-5",
+      access: { profileRef: "claude-subs" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(verify).toHaveBeenCalledWith("mastracode", "mastracode", "anthropic-oauth")
+  })
+
+  it("config-defaults source naming another CLI's login still verifies the adapter's own recipe", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mastracode",
+      cwd: "/tmp",
+      model: "anthropic/claude-sonnet-4-5",
+      auth: { mode: "subscription", source: "claude-code-oauth" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // NOT the "claude-code-oauth" recipe (Claude Code's own Keychain login) —
+    // mastracode's login is the one that matters for an external spawn.
+    expect(verify).toHaveBeenCalledWith("mastracode", "mastracode", "anthropic-oauth")
+  })
+})
+
 // "Use my existing Gemini login" — the SAME file-based (external) subscription
 // primitive as codex, on the native `@agentproto/adapter-gemini` adapter. The
 // Gemini CLI reads its own ~/.gemini/oauth_creds.json, so the daemon injects
@@ -4082,7 +4183,7 @@ describe("spawnAgentSession — gemini file-based (external) subscription login"
     expect(result.descriptor.auth?.setEnv).toBe("")
     expect(result.descriptor.auth?.fingerprint).toBe("subscription · local-login")
     // The login was verified against the `gemini` recipe.
-    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini", undefined)
   })
 
   it("`auth.mode: subscription` with no source verifies against the adapter slug", async () => {
@@ -4097,7 +4198,7 @@ describe("spawnAgentSession — gemini file-based (external) subscription login"
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
-    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini", undefined)
   })
 
   it("login NOT present ⇒ loud spawn failure (auth_source_unresolved), no session, nothing injected", async () => {
@@ -4140,7 +4241,7 @@ describe("spawnAgentSession — gemini file-based (external) subscription login"
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.mode).toBe("subscription")
     expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
-    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini", undefined)
     expect(result.descriptor.accessProfile).toMatchObject({
       profileRef: "gemini-local",
       endpoint: "google",
