@@ -46,7 +46,7 @@ import {
   MODEL_ALIASES,
 } from "@agentproto/model-catalog/llm"
 import { getAnthropicGatewayPreset } from "@agentproto/provider-presets"
-import type { AdapterAuthDescriptor } from "./spawn-defaults.js"
+import { subscriptionAppliesTo, type AdapterAuthDescriptor } from "./spawn-defaults.js"
 import type { RouteSpec } from "./session-config.js"
 
 export type { RouteSpec } from "./session-config.js"
@@ -308,10 +308,14 @@ function resolveModelId(id: string): ResolvedModel {
  *  path), regardless of what the underlying model's own vendor is. */
 function methodsForDirect(
   descriptor: AdapterAuthDescriptor | undefined,
+  endpoint?: string,
 ): AuthMethod[] {
   const methods: AuthMethod[] = []
-  if (descriptor?.authSubscription || descriptor?.modelDerivedApiKey)
+  // oauth-bearer requires an explicit, provider-matching subscription
+  // surface — see `subscriptionAppliesTo`'s doc in spawn-defaults.ts.
+  if (subscriptionAppliesTo(descriptor?.authSubscription, endpoint)) {
     methods.push("oauth-bearer")
+  }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
@@ -354,7 +358,7 @@ function curatedContributions(
       const resolved = resolveModelId(model.id)
       const route = model.mode ?? model.provider ?? resolved.directRoute
       const methods: AuthMethod[] = isDirectRoute(route, model.mode, resolved)
-        ? methodsForDirect(adapter.authDescriptor)
+        ? methodsForDirect(adapter.authDescriptor, route)
         : ["api-key"]
       out.push({
         vendor: resolved.vendor,

@@ -106,7 +106,13 @@ export const pi: AgentCliHandle = defineAgentCli({
   auth: {
     ref: "./SECRETS.md",
     state: {
-      env: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "MOONSHOT_API_KEY"],
+      env: [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "MOONSHOT_API_KEY",
+      ],
     },
   },
   // Pi's model router reads the provider straight off each id's own
@@ -116,6 +122,19 @@ export const pi: AgentCliHandle = defineAgentCli({
   // include api-key profiles for the model-derived direct endpoint — without
   // it, no profile is eligible and pi models show "needs a profile".
   modelDerivedApiKey: true,
+  // Pi's own bearer door: `ANTHROPIC_OAUTH_TOKEN — Anthropic OAuth token
+  // (alternative to API key)` (verified against pi 0.80.x `--help`). A
+  // Claude subscription token (`sk-ant-oat…`, minted by `claude
+  // setup-token`) is VALID there — pi presents it on the Authorization
+  // bearer path — while the same token on ANTHROPIC_API_KEY is rejected
+  // upstream as an invalid key. `provider: "anthropic"` scopes the surface:
+  // subscription mode (and oauth-bearer profile eligibility) lights up only
+  // for pi's anthropic-derived models, never its openai/google/moonshot
+  // ones.
+  authSubscription: {
+    setEnv: "ANTHROPIC_OAUTH_TOKEN",
+    provider: "anthropic",
+  },
   sandbox: "./SANDBOX.md",
   protocol: "proprietary",
   adapter: "@agentproto/adapter-pi",

@@ -27,6 +27,7 @@ import {
   resolveSubscriptionCredential,
   SubscriptionSourceError,
   modelIdPrefixProvider,
+  subscriptionAppliesTo,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -296,9 +297,18 @@ function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key"
   return method === "oauth-bearer" ? "subscription" : "api-key"
 }
 
-function directAuthMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
+function directAuthMethods(
+  descriptor: AdapterAuthDescriptor | undefined,
+  endpoint?: string,
+): AuthMethod[] {
   const methods: AuthMethod[] = []
-  if (descriptor?.authSubscription || descriptor?.modelDerivedApiKey) methods.push("oauth-bearer")
+  // oauth-bearer requires an explicit, provider-matching subscription
+  // surface — `modelDerivedApiKey` alone no longer implies it (that
+  // assumption injected subscription OATs into x-api-key vars; see
+  // `subscriptionAppliesTo`'s doc in spawn-defaults.ts).
+  if (subscriptionAppliesTo(descriptor?.authSubscription, endpoint)) {
+    methods.push("oauth-bearer")
+  }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
@@ -338,7 +348,9 @@ function spawnEligibilityManifest(
     manifest: {
       id: adapter,
       endpointByRoute: { [routeId]: direct ? directEndpoint : routeId },
-      methodsByRoute: { [routeId]: direct ? directAuthMethods(descriptor) : ["api-key"] },
+      methodsByRoute: {
+        [routeId]: direct ? directAuthMethods(descriptor, directEndpoint) : ["api-key"],
+      },
     },
     routeId,
   }
