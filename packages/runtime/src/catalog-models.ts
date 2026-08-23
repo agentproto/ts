@@ -46,7 +46,7 @@ import {
   MODEL_ALIASES,
 } from "@agentproto/model-catalog/llm"
 import { getAnthropicGatewayPreset } from "@agentproto/provider-presets"
-import { subscriptionAppliesTo, type AdapterAuthDescriptor } from "./spawn-defaults.js"
+import { subscriptionSurfaceFor, type AdapterAuthDescriptor } from "./spawn-defaults.js"
 import type { RouteSpec } from "./session-config.js"
 
 export type { RouteSpec } from "./session-config.js"
@@ -312,8 +312,8 @@ function methodsForDirect(
 ): AuthMethod[] {
   const methods: AuthMethod[] = []
   // oauth-bearer requires an explicit, provider-matching subscription
-  // surface — see `subscriptionAppliesTo`'s doc in spawn-defaults.ts.
-  if (subscriptionAppliesTo(descriptor?.authSubscription, endpoint)) {
+  // surface — see `subscriptionSurfaceFor`'s doc in spawn-defaults.ts.
+  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
     methods.push("oauth-bearer")
   }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")

@@ -27,7 +27,7 @@ import {
   resolveSubscriptionCredential,
   SubscriptionSourceError,
   modelIdPrefixProvider,
-  subscriptionAppliesTo,
+  subscriptionSurfaceFor,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -305,12 +305,28 @@ function directAuthMethods(
   // oauth-bearer requires an explicit, provider-matching subscription
   // surface — `modelDerivedApiKey` alone no longer implies it (that
   // assumption injected subscription OATs into x-api-key vars; see
-  // `subscriptionAppliesTo`'s doc in spawn-defaults.ts).
-  if (subscriptionAppliesTo(descriptor?.authSubscription, endpoint)) {
+  // `subscriptionSurfaceFor`'s doc in spawn-defaults.ts).
+  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
     methods.push("oauth-bearer")
   }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
+}
+
+/** The provision-recipe methodId to verify a FILE-BASED subscription login
+ *  under — convention `<provider>-oauth` (mastracode/opencode's
+ *  `anthropic-oauth`/`openai-oauth`). Only meaningful for a MULTI-SURFACE
+ *  adapter (`authSubscription` is an array): a single-surface adapter
+ *  (codex, gemini) keeps today's behavior — undefined, so
+ *  `verifyLocalLoginPresent` falls back to the recipe's default (first)
+ *  method — since its recipe's method id doesn't follow this convention
+ *  (codex: `"oauth-subscription"`, gemini: `"oauth-token"`). */
+function subscriptionOauthMethodId(
+  descriptor: AdapterAuthDescriptor | undefined,
+  provider: string | undefined,
+): string | undefined {
+  if (!Array.isArray(descriptor?.authSubscription) || !provider) return undefined
+  return `${provider}-oauth`
 }
 
 /** Build the one-route eligibility projection used for an initial spawn.
@@ -483,14 +499,22 @@ export async function resolveAccessProfileAuth(input: {
   let subscriptionCredentialSource: CredentialSource | undefined
   let apiKeyCredential: string | undefined
   let externalSubscriptionVerified = false
-  // File-based (external) subscription — codex/gemini: the CLI reads its OWN
-  // login file, so a source-backed profile injects NOTHING. Verify the login
-  // is present (fail-loud) and let `resolveAuthSpec` produce a scrub-only
-  // external spec; never resolve/inject a bearer.
-  const externalSub = authDescriptor.authSubscription?.external === true
+  // File-based (external) subscription — codex/gemini/mastracode/opencode:
+  // the CLI reads its OWN login file, so a source-backed profile injects
+  // NOTHING. Verify the login is present (fail-loud) and let
+  // `resolveAuthSpec` produce a scrub-only external spec; never
+  // resolve/inject a bearer. `profile.endpoint` is the profile's resolved
+  // provider — the surface lookup for a MULTI-surface adapter (mastracode/
+  // opencode) needs it to pick the anthropic vs. openai surface.
+  const authSubSurface = subscriptionSurfaceFor(authDescriptor.authSubscription, profile.endpoint)
+  const externalSub = authSubSurface?.external === true
   if (authMode === "subscription" && externalSub) {
     try {
-      await verifyLocalLoginPresent(profile.source ?? adapter, adapter)
+      await verifyLocalLoginPresent(
+        profile.source ?? adapter,
+        adapter,
+        subscriptionOauthMethodId(authDescriptor, profile.endpoint),
+      )
       externalSubscriptionVerified = true
     } catch (err) {
       if (err instanceof SubscriptionSourceError) {
@@ -1890,14 +1914,21 @@ export async function spawnAgentSession(
     let subscriptionCredential: string | undefined
     let subscriptionCredentialSource: CredentialSource | undefined
     let externalSubscriptionVerified = false
-    // File-based (external) subscription — codex/gemini: the CLI reads its OWN
-    // login file, so an explicit subscription opt-in (mode:"subscription" or a
-    // configured source) verifies the login is present (fail-loud) and injects
-    // NOTHING — never routed through resolveSubscriptionCredential (which
-    // resolves+injects a bearer, and would reject a non-Anthropic source). An
-    // unconfigured or api-key codex spawn skips this and stays untouched.
+    // File-based (external) subscription — codex/gemini/mastracode/opencode:
+    // the CLI reads its OWN login file, so an explicit subscription opt-in
+    // (mode:"subscription" or a configured source) verifies the login is
+    // present (fail-loud) and injects NOTHING — never routed through
+    // resolveSubscriptionCredential (which resolves+injects a bearer, and
+    // would reject a non-Anthropic source). An unconfigured or api-key codex
+    // spawn skips this and stays untouched. `resolvedProvider` (computed
+    // above) picks the matching surface for a MULTI-surface adapter
+    // (mastracode/opencode) — same lookup `resolveAuthSpec` itself uses.
+    const wantsExternalSurface = subscriptionSurfaceFor(
+      resolved.authDescriptor.authSubscription,
+      resolvedProvider,
+    )
     const wantsExternalLogin =
-      resolved.authDescriptor.authSubscription?.external === true &&
+      wantsExternalSurface?.external === true &&
       spawnDefaults.auth.explicit &&
       (spawnDefaults.auth.requestedMode === "subscription" ||
         spawnDefaults.auth.subscriptionSource !== undefined)
@@ -1906,6 +1937,7 @@ export async function spawnAgentSession(
         await verifyLocalLoginPresent(
           spawnDefaults.auth.subscriptionSource ?? input.adapter,
           input.adapter,
+          subscriptionOauthMethodId(resolved.authDescriptor, resolvedProvider),
         )
         externalSubscriptionVerified = true
       } else {

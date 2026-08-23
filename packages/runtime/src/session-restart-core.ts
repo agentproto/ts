@@ -65,7 +65,7 @@ import {
 import {
   resolveSpawnDefaults,
   resolveAuthSpec,
-  subscriptionAppliesTo,
+  subscriptionSurfaceFor,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -187,8 +187,8 @@ function directMethods(
 ): AuthMethod[] {
   const methods: AuthMethod[] = []
   // oauth-bearer requires an explicit, provider-matching subscription
-  // surface — see `subscriptionAppliesTo`'s doc in spawn-defaults.ts.
-  if (subscriptionAppliesTo(descriptor?.authSubscription, endpoint)) {
+  // surface — see `subscriptionSurfaceFor`'s doc in spawn-defaults.ts.
+  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
     methods.push("oauth-bearer")
   }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")

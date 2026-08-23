@@ -250,6 +250,30 @@ export function credentialFingerprint(
 }
 
 /**
+ * One subscription (OAuth/bearer) surface — mirrors the driver's
+ * `AgentCliAuthSubscription`. `external: true` (codex/gemini/mastracode/
+ * opencode) ⇒ file-based: the CLI reads its own local-login file, so
+ * `setEnv` is absent and the runtime injects NO bearer — it only scrubs the
+ * conflicting api-key vars.
+ */
+export interface AuthSubscriptionSurface {
+  /** Env var SET to the resolved subscription credential — absent for an
+   *  {@link external} surface. */
+  setEnv?: string
+  external?: boolean
+  conflictEnv?: string[]
+  unsetEnvAdd?: string[]
+  /** Provider scope for a multi-provider adapter's surface — pi's
+   *  `ANTHROPIC_OAUTH_TOKEN` is an anthropic-only door; mastracode/opencode's
+   *  file-based ChatGPT login is an openai-only door alongside their
+   *  anthropic one. When set, this surface only MATCHES a spawn whose
+   *  resolved provider equals this id (see {@link subscriptionSurfaceFor}).
+   *  Omitted for a fixed-provider adapter (claude-code, codex) — their
+   *  descriptor-level `provider` already pins it. */
+  provider?: string
+}
+
+/**
  * The adapter's billing-auth capability, projected from its AIP-45 manifest
  * (`provider` / `authEnforce` / `authSubscription`) by the host resolver. The
  * runtime reads THIS, never the manifest directly — keeping the LLM-catalog
@@ -263,24 +287,12 @@ export interface AdapterAuthDescriptor {
    *  #312 fail-fast); `"when-configured"` (default) only when `explicit`. */
   authEnforce?: "always" | "when-configured"
   /** Subscription (OAuth/bearer) support. Presence ⇒ the adapter supports
-   *  `"subscription"` mode. Mirrors the driver's `AgentCliAuthSubscription`.
-   *  `external: true` (codex/gemini) ⇒ file-based: the CLI reads its own
-   *  local-login file, so `setEnv` is absent and the runtime injects NO
-   *  bearer — it only scrubs the conflicting api-key vars. */
-  authSubscription?: {
-    setEnv?: string
-    external?: boolean
-    conflictEnv?: string[]
-    unsetEnvAdd?: string[]
-    /** Provider scope for a multi-provider (`modelDerivedApiKey`) adapter's
-     *  bearer surface — pi's `ANTHROPIC_OAUTH_TOKEN` is an anthropic-only
-     *  door. When set, subscription mode is supported (and oauth-bearer
-     *  eligibility advertised) ONLY when the spawn's resolved provider
-     *  equals this id. Omitted for fixed-provider adapters (claude-code,
-     *  codex) — their descriptor-level `provider` already pins it. See
-     *  {@link subscriptionAppliesTo}. */
-    provider?: string
-  }
+   *  `"subscription"` mode. A SINGLE surface for a fixed/single-provider
+   *  subscription, or an ARRAY of surfaces for an adapter with more than one
+   *  native OAuth login (mastracode/opencode: both an anthropic- and an
+   *  openai-scoped file-based login) — see {@link subscriptionSurfaceFor},
+   *  which resolves the matching surface for a spawn's resolved provider. */
+  authSubscription?: AuthSubscriptionSurface | AuthSubscriptionSurface[]
   /** True when the adapter's api-key auth is derived from the requested
    *  model rather than a fixed provider (e.g. `pi`, `opencode`). When set,
    *  the adapter supports `"api-key"` on the model-derived direct endpoint,
@@ -445,19 +457,29 @@ export function modelIdPrefixProvider(modelId: string): string | undefined {
 }
 
 /**
- * Whether an adapter's declared subscription surface applies on `endpoint` —
- * THE one predicate every subscription-eligibility site shares
+ * Resolve WHICH of an adapter's declared subscription surface(s) applies on
+ * `endpoint` — THE one lookup every subscription-eligibility site shares
  * (`resolveAuthSpec` below, plus the three mirrored direct-methods
  * projections in `session-spawn.ts` / `session-restart-core.ts` /
- * `catalog-models.ts`), so they can never drift.
+ * `catalog-models.ts`), so they can never drift. Returns the matching
+ * surface, or `undefined` when none applies — callers that only need the
+ * old boolean predicate check `!== undefined`.
  *
- * A provider-scoped surface (pi's `ANTHROPIC_OAUTH_TOKEN`, anthropic-only)
- * applies only on its own provider; an unscoped one (fixed-provider
- * adapters — claude-code, codex) applies wherever the adapter itself does.
- * An unknown endpoint is treated as applying — the fixed-provider case,
- * where the caller had no per-model derivation to offer.
+ * `authSubscription` is a single surface OR an array of surfaces (one
+ * per provider, for an adapter with more than one native OAuth login —
+ * mastracode/opencode: anthropic AND openai). For a SINGLE surface, this
+ * preserves the original predicate exactly: a provider-scoped surface (pi's
+ * `ANTHROPIC_OAUTH_TOKEN`) applies only on its own provider; an unscoped one
+ * (fixed-provider adapters — claude-code, codex) applies wherever the
+ * adapter itself does; an unknown endpoint is treated as applying — the
+ * fixed-provider case, where the caller had no per-model derivation to
+ * offer. For an ARRAY of surfaces, an explicit provider match wins;
+ * otherwise the one unscoped surface (if any) applies. An unknown endpoint
+ * against MULTIPLE provider-scoped surfaces cannot be disambiguated — unlike
+ * the single-surface case, guessing here would pick a specific but WRONG
+ * provider's bearer door, not just skip a scrub — so nothing matches.
  *
- * This predicate REPLACED the old `modelDerivedApiKey ⇒ subscription works`
+ * This lookup REPLACED the old `modelDerivedApiKey ⇒ subscription works`
  * assumption ("Anthropic OATs work as API keys"): an OAT presented on the
  * x-api-key header is rejected by Anthropic's edge regardless of account
  * validity — observed live as opencode's opaque "Internal error: API key is
@@ -466,12 +488,20 @@ export function modelIdPrefixProvider(modelId: string): string | undefined {
  * `authSubscription` declaration naming the env var the CLI actually reads
  * a bearer from.
  */
-export function subscriptionAppliesTo(
+export function subscriptionSurfaceFor(
   sub: AdapterAuthDescriptor["authSubscription"],
   endpoint: string | undefined,
-): boolean {
-  if (sub === undefined) return false
-  return sub.provider === undefined || endpoint === undefined || sub.provider === endpoint
+): AuthSubscriptionSurface | undefined {
+  if (sub === undefined) return undefined
+  if (!Array.isArray(sub)) {
+    return sub.provider === undefined || endpoint === undefined || sub.provider === endpoint
+      ? sub
+      : undefined
+  }
+  return (
+    sub.find(s => s.provider !== undefined && s.provider === endpoint) ??
+    sub.find(s => s.provider === undefined)
+  )
 }
 
 export function resolveAuthSpec(
@@ -546,20 +576,21 @@ export function resolveAuthSpec(
   if (!provider) return undefined
 
   // Subscription support requires an EXPLICIT, provider-matching
-  // authSubscription declaration ({@link subscriptionAppliesTo}) — the old
+  // authSubscription declaration ({@link subscriptionSurfaceFor}) — the old
   // `|| modelDerivedApiKey` clause assumed "Anthropic OATs work as API
   // keys", which is false on the x-api-key header: it silently injected the
   // subscription token into ANTHROPIC_API_KEY for opencode/mastracode/jcode
   // and the upstream rejected it as an invalid key. A multi-provider
   // adapter that DOES have a bearer door declares it (pi:
   // `authSubscription: {setEnv: "ANTHROPIC_OAUTH_TOKEN", provider:
-  // "anthropic"}`); the rest fail fast below instead of failing upstream.
-  // Gateway routes stay API-key only; a native fixed-provider gateway
-  // preset (e.g. codex + route.gateway "openai") is a direct route, so
-  // subscription stays eligible there.
-  const sub = subscriptionAppliesTo(input.descriptor.authSubscription, provider)
-    ? input.descriptor.authSubscription
-    : undefined
+  // "anthropic"}`); a multi-SURFACE adapter declares one entry per provider
+  // (mastracode/opencode: an anthropic AND an openai external surface) and
+  // this resolves the one matching the spawn's resolved provider; the rest
+  // fail fast below instead of failing upstream. Gateway routes stay
+  // API-key only; a native fixed-provider gateway preset (e.g. codex +
+  // route.gateway "openai") is a direct route, so subscription stays
+  // eligible there.
+  const sub = subscriptionSurfaceFor(input.descriptor.authSubscription, provider)
   const supportsSub =
     sub !== undefined && (gatewayRoute === undefined || isNativeGatewayPreset)
   const enforce = input.descriptor.authEnforce ?? "when-configured"

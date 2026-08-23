@@ -8,14 +8,15 @@ describe("@agentproto/adapter-opencode", () => {
     expect(opencode.routeSelection).toBe("derived-from-model")
   })
 
-  it("declares the external anthropic-scoped subscription (opencode's own Claude Pro/Max login)", () => {
-    // External: the runtime injects no bearer (an agentproto-held OAT on
-    // opencode's x-api-key channel is rejected upstream) — it verifies the
-    // CLI's own `opencode auth login` is present and scrubs api-key vars.
-    expect(opencode.authSubscription).toEqual({
-      external: true,
-      provider: "anthropic",
-    })
+  it("declares both the anthropic- and openai-scoped external subscriptions (opencode's own Claude Pro/Max + ChatGPT logins)", () => {
+    // External: the runtime injects no bearer (an agentproto-held OAT/access
+    // token on opencode's x-api-key channel is rejected upstream) — it
+    // verifies the CLI's own `opencode auth login` is present (per provider)
+    // and scrubs api-key vars.
+    expect(opencode.authSubscription).toEqual([
+      { external: true, provider: "anthropic" },
+      { external: true, provider: "openai" },
+    ])
   })
 
   it("generates the model menu from the shared catalog for supported providers", () => {

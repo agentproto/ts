@@ -16,6 +16,7 @@ import {
   resolveSubscriptionCredential,
   SubscriptionSourceError,
   CLAUDE_CODE_OAUTH_SOURCE,
+  subscriptionSurfaceFor,
   type SpawnDefaultsConfig,
   type AdapterAuthDescriptor,
 } from "../spawn-defaults.js"
@@ -394,6 +395,104 @@ describe("resolveAuthSpec — external provider-scoped authSubscription (opencod
       resolveAuthSpec({
         descriptor: OPENCODE_DESCRIPTOR,
         model: "openai/gpt-5",
+        explicit: true,
+        requestedMode: "subscription",
+        externalSubscriptionVerified: true,
+      }),
+    ).toThrow(AuthResolutionError)
+  })
+})
+
+describe("subscriptionSurfaceFor — multi-surface array descriptor (mastracode/opencode)", () => {
+  // mastracode/opencode's shape: TWO native OAuth logins, one per provider —
+  // each declared as its own external, provider-scoped entry in an array.
+  const MULTI_SURFACE: AdapterAuthDescriptor["authSubscription"] = [
+    { external: true, provider: "anthropic" },
+    { external: true, provider: "openai" },
+  ]
+
+  it("matches the anthropic-scoped entry for an anthropic endpoint", () => {
+    expect(subscriptionSurfaceFor(MULTI_SURFACE, "anthropic")).toEqual({
+      external: true,
+      provider: "anthropic",
+    })
+  })
+
+  it("matches the openai-scoped entry for an openai endpoint", () => {
+    expect(subscriptionSurfaceFor(MULTI_SURFACE, "openai")).toEqual({
+      external: true,
+      provider: "openai",
+    })
+  })
+
+  it("matches neither entry for a third provider (moonshot)", () => {
+    expect(subscriptionSurfaceFor(MULTI_SURFACE, "moonshot")).toBeUndefined()
+  })
+
+  it("cannot disambiguate an unknown endpoint across two scoped surfaces", () => {
+    // Unlike the single-surface case (an unknown endpoint is treated as
+    // applying — the fixed-provider case), guessing here would pick a
+    // specific but possibly WRONG provider's bearer door.
+    expect(subscriptionSurfaceFor(MULTI_SURFACE, undefined)).toBeUndefined()
+  })
+
+  it("falls back to the one unscoped surface when present alongside scoped ones", () => {
+    const mixed: AdapterAuthDescriptor["authSubscription"] = [
+      { external: true, provider: "anthropic" },
+      { setEnv: "GENERIC_OAUTH_TOKEN" },
+    ]
+    expect(subscriptionSurfaceFor(mixed, "moonshot")).toEqual({
+      setEnv: "GENERIC_OAUTH_TOKEN",
+    })
+  })
+})
+
+describe("resolveAuthSpec — multi-surface array descriptor (mastracode/opencode)", () => {
+  const MASTRACODE_DESCRIPTOR: AdapterAuthDescriptor = {
+    modelDerivedApiKey: true,
+    authSubscription: [
+      { external: true, provider: "anthropic" },
+      { external: true, provider: "openai" },
+    ],
+  }
+
+  it("anthropic model resolves the anthropic surface (external, scrubs ANTHROPIC_API_KEY)", () => {
+    const r = resolveAuthSpec({
+      descriptor: MASTRACODE_DESCRIPTOR,
+      model: "anthropic/claude-sonnet-4-5",
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.echo.provider).toBe("anthropic")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("")
+    expect(r?.spec.externalCredential).toBe(true)
+    expect(r?.spec.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(r?.spec.unsetEnv).not.toContain("OPENAI_API_KEY")
+  })
+
+  it("openai model resolves the openai surface (external, scrubs OPENAI_API_KEY)", () => {
+    const r = resolveAuthSpec({
+      descriptor: MASTRACODE_DESCRIPTOR,
+      model: "openai/gpt-5",
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.echo.provider).toBe("openai")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("")
+    expect(r?.spec.externalCredential).toBe(true)
+    expect(r?.spec.unsetEnv).toContain("OPENAI_API_KEY")
+    expect(r?.spec.unsetEnv).not.toContain("ANTHROPIC_API_KEY")
+  })
+
+  it("a third provider (moonshot) has neither surface — subscription request rejects", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: MASTRACODE_DESCRIPTOR,
+        model: "moonshotai/kimi-k2.7-code",
         explicit: true,
         requestedMode: "subscription",
         externalSubscriptionVerified: true,
