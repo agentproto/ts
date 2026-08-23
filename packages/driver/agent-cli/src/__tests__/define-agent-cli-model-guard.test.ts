@@ -43,6 +43,9 @@ vi.mock("node:child_process", () => ({
 // Mutable per-test fixtures the mocked ACP arm reads from.
 let armModelApplyRejection: { requested: string; reason: string } | undefined
 let closeCalls = 0
+// Events yielded for a control turn (the "command" apply's `/model <id>`
+// drain) — empty means the switch is never acknowledged.
+let scriptedEvents: import("../types.js").StreamEvent[] = []
 
 vi.mock("../protocol/acp-client.js", () => ({
   createAcpProtocolArm: vi.fn(() => {
@@ -53,7 +56,9 @@ vi.mock("../protocol/acp-client.js", () => ({
       },
       async connect() {},
       async send() {},
-      async *events() {},
+      async *events() {
+        for (const e of scriptedEvents) yield e
+      },
       async cancel() {},
       async close() {
         closeCalls += 1
@@ -99,6 +104,7 @@ describe("derived-from-model spawn guard (rejected model apply)", () => {
     armModelApplyRejection = undefined
     closeCalls = 0
     lastChild = undefined
+    scriptedEvents = []
   })
 
   it("refuses the spawn when a derived-from-model adapter rejects the requested model", async () => {
@@ -195,5 +201,82 @@ describe("derived-from-model spawn guard (rejected model apply)", () => {
     })
     expect(session.sessionId).toBe("acp-sess-1")
     await session.close()
+  })
+})
+
+describe("derived-from-model spawn guard — apply:'command' (hermes-style)", () => {
+  const commandDerivedDef: AgentCliDefinition = {
+    ...derivedDef,
+    name: "fake-hermes",
+    bin: "fake-hermes",
+    models: {
+      ...derivedDef.models,
+      apply: "command",
+      allowed: [{ id: "deepseek/deepseek-v4@openrouter", provider: "openrouter" }],
+    },
+  } as AgentCliDefinition
+
+  beforeEach(() => {
+    armModelApplyRejection = undefined
+    closeCalls = 0
+    lastChild = undefined
+    scriptedEvents = []
+  })
+
+  it("refuses the spawn when the /model control turn is never acknowledged", async () => {
+    // Empty scripted events: the control turn drains with no "switched"
+    // acknowledgement — previously the spawn-time call IGNORED
+    // applyModelCommand's result and continued on the default model.
+    scriptedEvents = [
+      { kind: "turn-end", sessionId: "acp-sess-1", reason: "completed" },
+    ] as import("../types.js").StreamEvent[]
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const runtime = createAgentCliRuntime(commandDerivedDef)
+
+    await expect(
+      runtime.start({ cwd: "/tmp", config: { options: { model: "bogus/model" } } }),
+    ).rejects.toThrow(/refusing to start on the default model/)
+    expect(closeCalls).toBe(1)
+    expect(lastChild?.kill).toHaveBeenCalledWith("SIGTERM")
+    warnSpy.mockRestore()
+  })
+
+  it("starts normally when the /model switch is acknowledged", async () => {
+    scriptedEvents = [
+      {
+        kind: "text-delta",
+        sessionId: "acp-sess-1",
+        text: "Model switched to: deepseek/deepseek-v4 · Provider: openrouter",
+      },
+      { kind: "turn-end", sessionId: "acp-sess-1", reason: "completed" },
+    ] as import("../types.js").StreamEvent[]
+    const runtime = createAgentCliRuntime(commandDerivedDef)
+
+    const session = await runtime.start({
+      cwd: "/tmp",
+      config: { options: { model: "deepseek/deepseek-v4@openrouter" } },
+    })
+    expect(session.sessionId).toBe("acp-sess-1")
+    await session.close()
+  })
+
+  it("keeps warn-and-continue for a NON-derived command-apply adapter", async () => {
+    const commandFreeDef: AgentCliDefinition = {
+      ...baseDef,
+      models: { apply: "command" },
+    } as AgentCliDefinition
+    scriptedEvents = [
+      { kind: "turn-end", sessionId: "acp-sess-1", reason: "completed" },
+    ] as import("../types.js").StreamEvent[]
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const runtime = createAgentCliRuntime(commandFreeDef)
+
+    const session = await runtime.start({
+      cwd: "/tmp",
+      config: { options: { model: "whatever" } },
+    })
+    expect(session.sessionId).toBe("acp-sess-1")
+    await session.close()
+    warnSpy.mockRestore()
   })
 })

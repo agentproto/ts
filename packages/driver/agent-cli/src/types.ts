@@ -274,7 +274,11 @@ export interface AgentCliModels {
    *   - "command" — `set_config_option` is a no-op / silently rejected on
    *     this agent (e.g. hermes), so instead send a `/model <id>` control
    *     turn after `newSession` and drain it. The agent's reply is checked
-   *     for a "switched" acknowledgement; a failure is warned, not fatal.
+   *     for a "switched" acknowledgement; a failure is warned, not fatal —
+   *     EXCEPT for a `routeSelection:"derived-from-model"` adapter, where
+   *     an unacknowledged switch refuses the spawn (the model id is the
+   *     route and the bill; see the derived-from-model guard in
+   *     `define-agent-cli.ts`, same contract as the "config" path).
    *   - "arg" — this CLI takes its model as a CLI argument, not an ACP
    *     session config or control turn.
    *     The requested model is composed into `bin_args` at spawn time via

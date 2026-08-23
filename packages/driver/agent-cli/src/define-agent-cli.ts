@@ -575,24 +575,31 @@ export function createAgentCliRuntime(
         const { requested, reason } = arm.modelApplyRejection
         await arm.close().catch(() => {})
         if (child && !child.killed) child.kill("SIGTERM")
-        const first = definition.models?.allowed?.[0]
-        const example =
-          (typeof first === "string" ? first : first?.id) ??
-          "openrouter/anthropic/claude-sonnet-4-6"
-        throw new Error(
-          `${definition.bin}: refusing to start on the default model — the requested model ` +
-            `"${requested}" was rejected by the agent (${reason}). This adapter routes AND ` +
-            `bills by the model id's own provider prefix, so continuing would silently run ` +
-            `(and bill) a model you didn't ask for. Use the adapter's ` +
-            `"<provider>/<model>" form (e.g. "${example}"), or pick an id from its model menu.`,
-        )
+        throw derivedModelRefusalError(definition, requested, reason)
       }
 
       // "command" model strategy: switch the model via a drained `/model
-      // <id>` control turn. Best-effort — a failure is warned, never fatal,
-      // so the session still starts (on the agent's default model).
+      // <id>` control turn. Best-effort for free/fixed-routing adapters — a
+      // failure is warned, never fatal, so the session still starts (on the
+      // agent's default model). For a derived-from-model adapter (hermes is
+      // the command-apply case today) the SAME guard as the config path
+      // above applies: an unacknowledged/failed switch means the session is
+      // on a model — and a bill — the operator didn't name, so refuse the
+      // spawn instead of continuing silently.
       if (optModel && modelApply === "command") {
-        await applyModelCommand(arm, String(optModel))
+        const commandResult = await applyModelCommand(arm, String(optModel))
+        if (
+          !commandResult.applied &&
+          definition.routeSelection === "derived-from-model"
+        ) {
+          await arm.close().catch(() => {})
+          if (child && !child.killed) child.kill("SIGTERM")
+          throw derivedModelRefusalError(
+            definition,
+            String(optModel),
+            commandResult.reason ?? "model switch not acknowledged",
+          )
+        }
       }
 
       // Prefer the protocol-layer session id (ACP, etc.) so the host
@@ -764,4 +771,29 @@ function filterStringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     if (typeof v === "string") out[k] = v
   }
   return out
+}
+
+/**
+ * The spawn-refusal error for a derived-from-model adapter whose explicitly
+ * requested model did not take — shared by the "config" (ACP rejection) and
+ * "command" (`/model` control turn, unacknowledged/failed) apply paths so
+ * the two guards can never drift. Names the requested id, the concrete
+ * reason, and the adapter's own expected id shape (first menu entry).
+ */
+function derivedModelRefusalError(
+  definition: AgentCliDefinition,
+  requested: string,
+  reason: string,
+): Error {
+  const first = definition.models?.allowed?.[0]
+  const example =
+    (typeof first === "string" ? first : first?.id) ??
+    "openrouter/anthropic/claude-sonnet-4-6"
+  return new Error(
+    `${definition.bin}: refusing to start on the default model — the requested model ` +
+      `"${requested}" was not applied (${reason}). This adapter routes AND ` +
+      `bills by the model id's own provider prefix, so continuing would silently run ` +
+      `(and bill) a model you didn't ask for. Use the adapter's ` +
+      `"<provider>/<model>" form (e.g. "${example}"), or pick an id from its model menu.`,
+  )
 }
