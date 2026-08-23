@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest"
-import { formatToolCall, formatToolResult } from "../tool-presenter.js"
+import {
+  ARTIFACT_MARKER,
+  artifactMarkerLines,
+  formatToolCall,
+  formatToolResult,
+} from "../tool-presenter.js"
 
 describe("formatToolCall", () => {
   it("summarizes ScheduleWakeup with delay + reason", () => {
@@ -98,5 +103,43 @@ describe("formatToolResult", () => {
       false
     )
     expect(result).toBe("3 matches found")
+  })
+})
+
+describe("artifactMarkerLines", () => {
+  const record = '{"kind":"review","id":5000347376,"url":"https://x","sha":"abc"}'
+
+  it("extracts a marker line buried in multi-line tool stdout", () => {
+    const stdout = `posting review…\n${ARTIFACT_MARKER}${record}\ncreated review id=5000347376`
+    expect(artifactMarkerLines(stdout)).toEqual([`${ARTIFACT_MARKER}${record}`])
+  })
+
+  it("extracts markers from an MCP-shaped content array", () => {
+    const result = {
+      content: [{ type: "text", text: `${ARTIFACT_MARKER}${record}` }],
+    }
+    expect(artifactMarkerLines(result)).toEqual([`${ARTIFACT_MARKER}${record}`])
+  })
+
+  it("keeps the marker parseable: tail of the line JSON-parses to the record", () => {
+    const [line] = artifactMarkerLines(`${ARTIFACT_MARKER}${record}`)
+    const idx = line!.indexOf(ARTIFACT_MARKER)
+    const parsed = JSON.parse(line!.slice(idx + ARTIFACT_MARKER.length).trim()) as {
+      kind: string
+      id: number
+    }
+    expect(parsed.kind).toBe("review")
+    expect(parsed.id).toBe(5000347376)
+  })
+
+  it("returns [] for results without a marker (the overwhelmingly common case)", () => {
+    expect(artifactMarkerLines("regular output\nlines")).toEqual([])
+    expect(artifactMarkerLines(null)).toEqual([])
+    expect(artifactMarkerLines({ content: [] })).toEqual([])
+  })
+
+  it("caps pathological marker floods", () => {
+    const flood = Array.from({ length: 50 }, () => `${ARTIFACT_MARKER}${record}`).join("\n")
+    expect(artifactMarkerLines(flood).length).toBeLessThanOrEqual(8)
   })
 })

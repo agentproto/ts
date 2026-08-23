@@ -59,7 +59,7 @@ import {
   filterSessionObserver,
   type SessionObserver,
 } from "./session-observer.js"
-import { formatToolCall, formatToolResult } from "./tool-presenter.js"
+import { artifactMarkerLines, formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
 import {
@@ -4320,6 +4320,20 @@ export function createSessionsRegistry(opts?: {
           )
         } else if (evt.isError) {
           appendLine(rt, `\x1b[31m[tool-error]\x1b[0m`, "stderr")
+        }
+        // Artifact-ledger passthrough: the CI delivery helper
+        // (`deliver-artifact.mjs`) prints `::agentproto-artifact::{…}` to a
+        // tool's stdout so the agentproto-run driver can harvest created
+        // PR/review/comment ids back out of `agent_output` — the one-line
+        // summary above would otherwise destroy the marker ("N lines, XB")
+        // and the provenance stamp degrades to sha-discovery every time.
+        // Re-emit marker lines verbatim under a `[tool-artifact]` prefix:
+        // clean mode still strips them from human-facing output (the
+        // `[tool…` filter in `cleanAgentLines`), while the raw ring keeps
+        // them harvestable. NO ANSI styling — the harvester JSON-parses the
+        // line's tail, and a trailing reset code would corrupt it.
+        for (const marker of artifactMarkerLines(evt.result)) {
+          appendLine(rt, `[tool-artifact] ${marker}`, "stdout")
         }
         break
       }

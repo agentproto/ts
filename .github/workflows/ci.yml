@@ -889,6 +889,18 @@ jobs:
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.mode.outputs.mode == 'agentproto'
+        # A transient GitHub API failure here must not kill the job: this
+        # step runs BETWEEN the reviewer tier and the verify/stamp steps, so
+        # a single dropped connection used to fail the whole job AFTER the
+        # review had already posted — leaving it permanently unstamped
+        # (PR #1054: one graphql i/o timeout here → no provenance footer,
+        # and a re-run can't recover it because the dedupe-by-head-sha step
+        # then skips the entire ladder). The calls retry below; if GitHub
+        # still can't be reached, `posted=unknown` + continue-on-error keep
+        # the job alive: downstream tiers treat "unknown" as "do not arm"
+        # (no duplicate-review risk) and the verify step settles the truth
+        # with its own retries.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -904,11 +916,26 @@ jobs:
           # every remaining fallback tier for nothing and posting duplicate
           # APPROVEs. This is exactly what happened on PR #1047: one job run
           # posted 2 of its 3 duplicate reviews this way.
-          SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid)
+          resolve_sha() {
+            gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid
+          }
           # --paginate + `jq -s add` is load-bearing: a naive `--paginate
           # --jq` evaluates per PAGE and can miscount.
-          COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
-            | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
+          count_reviews() {
+            gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+              | jq -s "add | [.[] | select(.commit_id==\"$1\")] | length"
+          }
+          COUNT=""
+          for attempt in 1 2 3; do
+            if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then break; fi
+            COUNT=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          if [ -z "$COUNT" ]; then
+            echo "::warning::postcheck: GitHub API unreachable after 3 attempts — posted=unknown (fallback tiers stay disarmed; verify decides)."
+            echo "posted=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "Reviews already posted against live head $SHA: $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
@@ -941,11 +968,17 @@ jobs:
       # a real row on the PR for this SHA — which is already required above.
       - name: Run agentic PR reviewer (agentproto lane, fallback account)
         id: reviewer-agentproto-fallback
+        # `posted != 'unknown'`: when the postcheck couldn't reach GitHub at
+        # all it can't prove the primary DIDN'T post — arming another posting
+        # tier on that blindness risks a duplicate review. Empty (step
+        # skipped) still passes both inequalities, preserving the
+        # mode=='legacy' free-pass documented on the legacy step.
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.mode.outputs.mode == 'agentproto' &&
           steps.postcheck.outputs.posted != 'true' &&
+          steps.postcheck.outputs.posted != 'unknown' &&
           steps.mode.outputs.has-fallback-account == 'true' &&
           steps.cliver.outputs.auth-mode == 'subscription'
         continue-on-error: true
@@ -995,13 +1028,19 @@ jobs:
       # fallback step itself was skipped.
       - name: Check whether a review was already posted (before legacy fallback)
         id: postcheck-fallback
+        # `posted != 'unknown'` mirrors the fallback-account step (see its
+        # comment); continue-on-error + retries + posted=unknown mirror the
+        # first postcheck — a transient API failure between tiers must
+        # neither kill the job nor arm the legacy tier blind.
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.mode.outputs.mode == 'agentproto' &&
           steps.postcheck.outputs.posted != 'true' &&
+          steps.postcheck.outputs.posted != 'unknown' &&
           steps.mode.outputs.has-fallback-account == 'true' &&
           steps.cliver.outputs.auth-mode == 'subscription'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -1010,11 +1049,26 @@ jobs:
           # above (see its comment) — the checkout-time steps.headsha sha can
           # be stale by the time a review actually posts and gets its
           # commit_id stamped.
-          SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid)
+          resolve_sha() {
+            gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid
+          }
           # Same --paginate + `jq -s add` recipe as the postcheck step above —
           # see its comment for why a naive `--paginate --jq` miscounts.
-          COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
-            | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
+          count_reviews() {
+            gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+              | jq -s "add | [.[] | select(.commit_id==\"$1\")] | length"
+          }
+          COUNT=""
+          for attempt in 1 2 3; do
+            if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then break; fi
+            COUNT=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          if [ -z "$COUNT" ]; then
+            echo "::warning::postcheck-fallback: GitHub API unreachable after 3 attempts — posted=unknown (legacy tier stays disarmed; verify decides)."
+            echo "posted=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "Reviews already posted against live head $SHA (post-fallback-account check): $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
@@ -1037,12 +1091,17 @@ jobs:
         # is equally empty (and so equally `!= 'true'`) whenever the fallback
         # tier never ran — no fallback secret configured, auth-mode isn't
         # subscription, or mode=='legacy' — so no extra disjunct is needed to
-        # cover those cases either.
+        # cover those cases either. `!= 'unknown'` (both tiers): a postcheck
+        # that couldn't reach GitHub can't prove nothing was posted — never
+        # arm another POSTING tier blind (duplicate risk); an empty output
+        # still passes, keeping the mode=='legacy' free-pass above intact.
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.postcheck.outputs.posted != 'true' &&
-          steps.postcheck-fallback.outputs.posted != 'true'
+          steps.postcheck.outputs.posted != 'unknown' &&
+          steps.postcheck-fallback.outputs.posted != 'true' &&
+          steps.postcheck-fallback.outputs.posted != 'unknown'
         # Don't abort the job on a non-posting reviewer — capture the outcome so
         # the gate can turn it into an honest red instead of a false green.
         continue-on-error: true
@@ -1304,9 +1363,28 @@ jobs:
           # off steps.verify.outputs.posted) — reviewer-pushed commits (like
           # the changeset commit itself) were landing with no provenance
           # footer for exactly this reason.
-          SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid)
-          COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
-            | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
+          resolve_sha() {
+            gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid
+          }
+          count_reviews() {
+            gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+              | jq -s "add | [.[] | select(.commit_id==\"$1\")] | length"
+          }
+          # Retry the API calls — this is the step whose `posted` output the
+          # provenance stamp keys off, so a transient failure here silently
+          # drops the footer even when the review landed (the postcheck
+          # steps above retry for the same reason).
+          COUNT=""
+          for attempt in 1 2 3; do
+            if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then break; fi
+            COUNT=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          if [ -z "$COUNT" ]; then
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Could not verify the review row (GitHub API unreachable after 3 attempts) — treating as not posted."
+            exit 1
+          fi
           echo "Reviews posted against live head $SHA: $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
@@ -1354,8 +1432,16 @@ jobs:
           # comment must cover reviewer-pushed commits too, not just the
           # original author's push.
           # gh CLI picks up GITHUB_TOKEN (already set above for the script)
-          # as its auth token — no separate GH_TOKEN needed.
-          SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          # as its auth token — no separate GH_TOKEN needed. Retried like the
+          # postcheck/verify steps: one flaky call here silently skips the
+          # stamp (continue-on-error) even though the review posted fine.
+          SHA=""
+          for attempt in 1 2 3; do
+            if SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid); then break; fi
+            SHA=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          [ -n "$SHA" ] || { echo "::warning::stamp: could not resolve live head sha after 3 attempts."; exit 1; }
           export SHA
           node scripts/stamp-review-footer.mjs
 
