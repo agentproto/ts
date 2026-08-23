@@ -496,6 +496,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
     apply,
     salvageDirty,
     includeDetached,
+    protectedPaths,
   }): Promise<WorktreeGcResult> => {
     const repoRoot = repoRootOf(resolve(repoRootCandidate))
     if (!repoRoot) {
@@ -520,6 +521,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       defaultBranchRef,
       includeDetached,
       worktreesRoot: join(worktreesRoot, repoName),
+      protectedPaths,
     })
 
     if (!apply) {
@@ -534,6 +536,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       defaultBranchRef,
       includeDetached,
       salvageDirty,
+      protectedPaths,
     })
     return { mode: "apply", outcomes: outcomes.map(toGcOutcomeView) }
   }
@@ -549,6 +552,21 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
  * use, applied to a plan of size one, never a second removal path. A path
  * that isn't (or no longer is) inside a git repo is a silent no-op — the
  * worktree it would have named is already gone, nothing to reclaim.
+ *
+ * Deliberately NOT passed `protectedPaths` for OTHER live sessions: the
+ * `WorktreeAutoReclaimer` port (`worktree-isolation.ts`) is a bare `(path:
+ * string) => Promise<void>` with no registry handle, and its one call site
+ * (`sessions.ts`'s `emitExited`) fires for every terminal session — widening
+ * the port to also thread through every other live session's cwd would
+ * change a stable port contract (and its test doubles, e.g.
+ * `worktree-auto-reclaim.test.ts`'s `recordingReclaimer`) for a case this
+ * already handles correctly: `reclaimOneWorktree` below still calls
+ * `computeWorktreeStatus` → `classify` fresh, and now that `computeLiveness`
+ * reads the full bucket-union sessions snapshot (not just the frozen legacy
+ * file), a genuinely live OTHER session whose cwd sits inside this same
+ * worktree is already caught by that liveness axis and holds instead of
+ * reclaiming — no `protectedPaths` needed on this path for that case to be
+ * safe.
  */
 export function makeWorktreeAutoReclaimer(): WorktreeAutoReclaimer {
   return async (worktreePath: string): Promise<void> => {

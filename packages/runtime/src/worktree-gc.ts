@@ -14,6 +14,25 @@
  * `resolveWorktreeQueryRoot` in `worktree-status.ts`.
  */
 
+import type { SessionsRegistry } from "./sessions.js"
+
+/**
+ * cwds of every session `registry.list()` reports as alive right now
+ * (`status` `"running"` or `"starting"` — same alive predicate the registry
+ * itself uses, e.g. `isAlive` in `sessions.ts`'s crash-detect path) — the
+ * daemon's live in-memory source of truth for `WorktreeGcRunInput.protectedPaths`,
+ * read at the exact instant gc runs rather than a possibly-stale/incomplete
+ * on-disk sessions snapshot. A session with no `cwd` (not yet spawned far
+ * enough to have one) contributes nothing.
+ */
+export function livingSessionCwds(registry: SessionsRegistry): string[] {
+  return registry
+    .list({ includeArchived: true })
+    .filter((desc) => desc.status === "running" || desc.status === "starting")
+    .map((desc) => desc.cwd)
+    .filter((cwd): cwd is string => typeof cwd === "string" && cwd.length > 0)
+}
+
 /** `gc`'s three classes, mirrored runtime-local (matches `GcClass`). */
 export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
 
@@ -103,6 +122,17 @@ export interface WorktreeGcRunInput {
   apply: boolean
   salvageDirty: boolean
   includeDetached: boolean
+  /**
+   * Absolute cwds of every live session the daemon knows about right now —
+   * see `livingSessionCwds` below. Threaded straight to the gc engine's own
+   * `protectedPaths` (`@agentproto/worktree`'s `PlanGcInput`/`ApplyGcOptions`):
+   * a worktree that IS or CONTAINS one of these paths is held, never
+   * reclaimed/salvaged, regardless of what `classify`'s own (snapshot-based)
+   * liveness axis concludes. Optional — a host that can't cheaply enumerate
+   * its own live sessions (or has none, e.g. the bare CLI `worktree gc`
+   * command) omits it and gets exactly today's behavior.
+   */
+  protectedPaths?: string[]
 }
 
 /**

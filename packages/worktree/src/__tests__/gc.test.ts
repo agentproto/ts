@@ -1178,3 +1178,231 @@ describe("reclaimOneWorktree — exit-time auto-reclaim, scoped to one worktree"
     expect(outcome).toBeNull()
   })
 })
+
+// ── protectedPaths: live-session-cwd protection ─────────────────────────
+//
+// Regression coverage for the 2026-08-22 incident: a running daemon
+// session's own cwd (a worktree the session was actively using) classified
+// `reclaim` and would have been deleted out from under it by the next
+// `--apply` sweep. `classify`'s own liveness axis is snapshot-based
+// (`computeLiveness`, status.ts) and depends on the caller passing a
+// sessions snapshot that actually contains the session; `protectedPaths` is
+// a second, independent belt-and-suspenders check a caller with a stronger
+// source of truth (e.g. the daemon's live in-memory session registry) can
+// use to hold a path unconditionally, regardless of what `classify`
+// concludes.
+describe("gc — protectedPaths: live-session-cwd protection", () => {
+  it("without protectedPaths: a merged, clean worktree is plain reclaim (the defect this section fixes)", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/protected-repro"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", "feat/protected-repro"])
+
+    const wtPath = join(repo, "..", `protected-repro-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "feat/protected-repro")
+
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies this")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("reclaim")
+  })
+
+  it("exact-match protectedPaths entry holds a worktree that would otherwise reclaim, and applyGc never removes it", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/protected-exact"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", "feat/protected-exact"])
+
+    const wtPath = join(repo, "..", `protected-exact-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "feat/protected-exact")
+
+    const forge = new UnreachableForgeClient("must not be called — protection wins before classification runs")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      protectedPaths: [wtPath],
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("hold")
+    expect(entry?.holdReason).toBe("live-session-cwd")
+
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      protectedPaths: [wtPath],
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath)
+    expect(outcome?.result).toBe("held")
+
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).toContain(wtPath)
+  })
+
+  it("a session cwd that's a SUBDIRECTORY of the worktree also holds it", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/protected-subdir"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", "feat/protected-subdir"])
+
+    const wtPath = join(repo, "..", `protected-subdir-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "feat/protected-subdir")
+    const sessionCwd = join(wtPath, "packages", "app")
+
+    const forge = new UnreachableForgeClient("must not be called")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      protectedPaths: [sessionCwd],
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("hold")
+    expect(entry?.holdReason).toBe("live-session-cwd")
+  })
+
+  it("a sibling path that merely shares a string prefix is NOT protected (/a/b vs /a/bc)", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/protected-sibling"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", "feat/protected-sibling"])
+
+    const wtPath = join(repo, "..", `protected-sibling-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "feat/protected-sibling")
+    // Shares wtPath as a literal string prefix but is a DIFFERENT directory
+    // (no path-separator boundary) — must never be treated as "inside" wtPath.
+    const unrelatedSibling = `${wtPath}-other`
+
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies this")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      protectedPaths: [unrelatedSibling],
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("reclaim")
+  })
+
+  it("protects an orphan entry too, and applyGc leaves it on disk instead of removing it", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const worktreesRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-gc-pool-")))
+    cleanupPaths.push(worktreesRoot)
+
+    await execGit(repo, ["checkout", "-b", "wt/orphan-protected"])
+    await execGit(repo, ["checkout", "main"])
+    const wtPath = join(worktreesRoot, "orphan-protected")
+    await addWorktree(repo, wtPath, [], "wt/orphan-protected")
+    const gitFile = await readFile(join(wtPath, ".git"), "utf8")
+    const match = gitFile.match(/^gitdir:\s*(.+)$/m)
+    if (!match?.[1]) throw new Error(`no gitdir pointer found in ${wtPath}/.git`)
+    await rm(match[1].trim(), { recursive: true, force: true })
+
+    const forge = new UnreachableForgeClient("must not be called — an orphan never reaches classify")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      worktreesRoot,
+      protectedPaths: [wtPath],
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("hold")
+    expect(entry?.holdReason).toBe("live-session-cwd")
+    expect(entry?.orphan).toBeFalsy()
+
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      protectedPaths: [wtPath],
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath)
+    expect(outcome?.result).toBe("held")
+    expect((await stat(wtPath)).isDirectory()).toBe(true)
+  })
+
+  it("TOCTOU: applyGc refuses to remove a protected path even when the PLAN was built without protectedPaths (stale plan)", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/protected-toctou"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat commit"])
+    await execGit(repo, ["checkout", "main"])
+    await execGit(repo, ["merge", "--ff-only", "feat/protected-toctou"])
+
+    const wtPath = join(repo, "..", `protected-toctou-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "feat/protected-toctou")
+
+    const forge = new UnreachableForgeClient("must not be called")
+    const memo = new InMemoryVerdictMemoStore()
+    // Plan built with no knowledge of protection at all — the stale-plan shape.
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("reclaim")
+
+    // By apply time, a session has started using this cwd — passed only here.
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+      protectedPaths: [wtPath],
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath)
+    expect(outcome?.result).toBe("aborted-reclassified")
+    expect(outcome && "to" in outcome ? outcome.to : undefined).toBe("hold")
+
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).toContain(wtPath)
+  })
+})

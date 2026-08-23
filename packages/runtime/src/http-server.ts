@@ -141,7 +141,7 @@ import {
   resolveWorktreeQueryRoot,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
-import type { WorktreeGcRunner } from "./worktree-gc.js"
+import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
@@ -1771,6 +1771,11 @@ export async function startHttpServer(
               apply,
               salvageDirty,
               includeDetached,
+              // The daemon's own live in-memory registry — fresher than
+              // whatever's on disk, and always available here since this
+              // route is only reachable when a SessionsRegistry is wired
+              // (`opts.sessions`, e.g. the /sessions family above).
+              protectedPaths: opts.sessions ? livingSessionCwds(opts.sessions) : undefined,
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))
