@@ -156,7 +156,11 @@ export const jcode: AgentCliHandle = defineAgentCli({
       id: "model",
       type: "string",
       description:
-        "Model id for this run (e.g. `claude-sonnet-4-5`). Forwarded to `--model`.",
+        "Model id for this run (e.g. `claude-sonnet-4-5`). Forwarded to `--model`. " +
+        "An id jcode can't resolve makes its CLI silently fall back to its OWN " +
+        "default model — the print arm detects that from the NDJSON `start` " +
+        "line's reported model and aborts the turn loudly instead " +
+        "(derived-from-model guard; see PrintArmOptions.expectedModel).",
       bin_args_template: ["--model", "{value}"],
     },
     {

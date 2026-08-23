@@ -274,7 +274,11 @@ export interface AgentCliModels {
    *   - "command" — `set_config_option` is a no-op / silently rejected on
    *     this agent (e.g. hermes), so instead send a `/model <id>` control
    *     turn after `newSession` and drain it. The agent's reply is checked
-   *     for a "switched" acknowledgement; a failure is warned, not fatal.
+   *     for a "switched" acknowledgement; a failure is warned, not fatal —
+   *     EXCEPT for a `routeSelection:"derived-from-model"` adapter, where
+   *     an unacknowledged switch refuses the spawn (the model id is the
+   *     route and the bill; see the derived-from-model guard in
+   *     `define-agent-cli.ts`, same contract as the "config" path).
    *   - "arg" — this CLI takes its model as a CLI argument, not an ACP
    *     session config or control turn.
    *     The requested model is composed into `bin_args` at spawn time via
@@ -995,6 +999,18 @@ export interface AgentCliClient {
    * leave it undefined (treated as empty by `define-agent-cli.ts`).
    */
   readonly availableConfigOptions?: SessionConfigOption[]
+  /**
+   * Set when the connect-time `model` apply was rejected by the ACP server
+   * — the session is live but on the agent's own DEFAULT model, not the
+   * requested one (see `@agentproto/acp/client`'s
+   * `AcpClientSession.modelApplyRejection` for the full contract). Only the
+   * ACP arm populates this; other arms leave it undefined. Read by
+   * `define-agent-cli.ts` right after `connect()`: for a
+   * `routeSelection:"derived-from-model"` adapter (opencode & co. — the
+   * model id IS the route and the bill) a rejected explicit model is a
+   * spawn-fatal misroute, not a cosmetic default.
+   */
+  readonly modelApplyRejection?: { requested: string; reason: string }
   /**
    * The wrapper's advertised session modes, captured at connect time
    * (`SessionModeState.availableModes`) — see `@agentproto/acp/client`'s

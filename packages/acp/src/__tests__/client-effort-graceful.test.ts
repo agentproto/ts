@@ -121,6 +121,44 @@ describe("createAcpClient — newSession effort graceful degradation", () => {
     warnSpy.mockRestore()
   })
 
+  it("records a rejected model apply as modelApplyRejection on the session", async () => {
+    // The non-fatal contract stands (see the #186 test above), but the host
+    // must be able to SEE that the session is on the default model, not the
+    // requested one — for a derived-from-model adapter (opencode & co.)
+    // that difference is a different provider on a different bill, and the
+    // driver escalates it to a spawn failure.
+    const rejection: Error & { code?: number; data?: { details?: string } } =
+      Object.assign(new Error("Internal error"), {
+        code: -32603,
+        data: { details: "Invalid value for config option model: deepseek/deepseek-v4-pro@openrouter" },
+      })
+    mockSetSessionConfigOption.mockRejectedValue(rejection)
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({
+      cwd: "/tmp",
+      model: "deepseek/deepseek-v4-pro@openrouter",
+    })
+
+    expect(session.modelApplyRejection).toEqual({
+      requested: "deepseek/deepseek-v4-pro@openrouter",
+      reason: expect.stringContaining(
+        "Invalid value for config option model: deepseek/deepseek-v4-pro@openrouter",
+      ) as unknown as string,
+    })
+    warnSpy.mockRestore()
+  })
+
+  it("leaves modelApplyRejection unset when the model apply succeeds", async () => {
+    mockSetSessionConfigOption.mockResolvedValue({})
+
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp", model: "claude-sonnet-5" })
+
+    expect(session.modelApplyRejection).toBeUndefined()
+  })
+
   it("applies a valid model via set_config_option before effort", async () => {
     mockSetSessionConfigOption.mockResolvedValue({})
 

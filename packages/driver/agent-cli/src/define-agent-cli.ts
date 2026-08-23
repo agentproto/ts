@@ -381,6 +381,14 @@ export function createAgentCliRuntime(
       // long-lived child, no AgentCliClient connect/events cycle.
       // Short-circuit here so buildProtocolArm is never called for it.
       if (definition.protocol === "print") {
+        // Derived-from-model guard, print flavor: hand the arm the
+        // explicitly requested model so it can abort a turn whose wire
+        // `start` event names a DIFFERENT model — jcode's CLI silently
+        // falls back to its own default on an unknown `--model` id, which
+        // for a derived-from-model adapter is a different provider on a
+        // different bill (same contract as the ACP-arm guard below; see
+        // PrintArmOptions.expectedModel).
+        const printModel = config?.options?.model
         return createPrintSession({
           bin: resolvedBin,
           baseArgs: composed.binArgs,
@@ -393,6 +401,9 @@ export function createAgentCliRuntime(
           printConfig: definition.print,
           commandSandbox: opts?.commandSandbox,
           ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+          ...(definition.routeSelection === "derived-from-model" && printModel
+            ? { expectedModel: String(printModel) }
+            : {}),
         })
       }
 
@@ -555,11 +566,51 @@ export function createAgentCliRuntime(
         ...(opts?.permissionHold ? { permissionHold: true } : {}),
       })
 
+      // Derived-from-model guard: when the ACP server REJECTED the
+      // connect-time model apply, the session is alive but on the agent's
+      // own default model. For a free/fixed-routing adapter that's a
+      // tolerable degradation (the route and bill don't change — keep
+      // agentproto#186's warn-and-continue). For a
+      // routeSelection:"derived-from-model" adapter (opencode, mastracode,
+      // hermes, jcode) the model id IS the route: "kept the default" means
+      // a DIFFERENT provider on a DIFFERENT bill than the operator named
+      // (observed live: opencode spawned with a claude-code-style
+      // `…@openrouter` id silently ran anthropic/claude-sonnet-4-5).
+      // That's a misroute, not a preference — refuse the spawn loudly,
+      // with the server's own reason and the id shape this adapter needs.
+      if (
+        configModel &&
+        definition.routeSelection === "derived-from-model" &&
+        arm.modelApplyRejection
+      ) {
+        const { requested, reason } = arm.modelApplyRejection
+        await arm.close().catch(() => {})
+        if (child && !child.killed) child.kill("SIGTERM")
+        throw derivedModelRefusalError(definition, requested, reason)
+      }
+
       // "command" model strategy: switch the model via a drained `/model
-      // <id>` control turn. Best-effort — a failure is warned, never fatal,
-      // so the session still starts (on the agent's default model).
+      // <id>` control turn. Best-effort for free/fixed-routing adapters — a
+      // failure is warned, never fatal, so the session still starts (on the
+      // agent's default model). For a derived-from-model adapter (hermes is
+      // the command-apply case today) the SAME guard as the config path
+      // above applies: an unacknowledged/failed switch means the session is
+      // on a model — and a bill — the operator didn't name, so refuse the
+      // spawn instead of continuing silently.
       if (optModel && modelApply === "command") {
-        await applyModelCommand(arm, String(optModel))
+        const commandResult = await applyModelCommand(arm, String(optModel))
+        if (
+          !commandResult.applied &&
+          definition.routeSelection === "derived-from-model"
+        ) {
+          await arm.close().catch(() => {})
+          if (child && !child.killed) child.kill("SIGTERM")
+          throw derivedModelRefusalError(
+            definition,
+            String(optModel),
+            commandResult.reason ?? "model switch not acknowledged",
+          )
+        }
       }
 
       // Prefer the protocol-layer session id (ACP, etc.) so the host
@@ -731,4 +782,29 @@ function filterStringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     if (typeof v === "string") out[k] = v
   }
   return out
+}
+
+/**
+ * The spawn-refusal error for a derived-from-model adapter whose explicitly
+ * requested model did not take — shared by the "config" (ACP rejection) and
+ * "command" (`/model` control turn, unacknowledged/failed) apply paths so
+ * the two guards can never drift. Names the requested id, the concrete
+ * reason, and the adapter's own expected id shape (first menu entry).
+ */
+function derivedModelRefusalError(
+  definition: AgentCliDefinition,
+  requested: string,
+  reason: string,
+): Error {
+  const first = definition.models?.allowed?.[0]
+  const example =
+    (typeof first === "string" ? first : first?.id) ??
+    "openrouter/anthropic/claude-sonnet-4-6"
+  return new Error(
+    `${definition.bin}: refusing to start on the default model — the requested model ` +
+      `"${requested}" was not applied (${reason}). This adapter routes AND ` +
+      `bills by the model id's own provider prefix, so continuing would silently run ` +
+      `(and bill) a model you didn't ask for. Use the adapter's ` +
+      `"<provider>/<model>" form (e.g. "${example}"), or pick an id from its model menu.`,
+  )
 }

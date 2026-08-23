@@ -164,8 +164,11 @@ export const opencode: AgentCliHandle = defineAgentCli({
         "Provider/model override for this operator binding (e.g. `openrouter/anthropic/claude-sonnet-4-6`). Applied via ACP " +
         "session/set_config_option after the session is created (see " +
         "`models.apply`, default \"config\"); no CLI flag for this exists on " +
-        "`opencode acp`. An id the server can't resolve is warned about and " +
-        "ignored (the session keeps the server's default model).",
+        "`opencode acp`. An id the server can't resolve REFUSES the spawn " +
+        "with the server's reason (derived-from-model guard in " +
+        "`define-agent-cli.ts`): opencode routes AND bills by the id's own " +
+        "provider prefix, so silently keeping the server's default model " +
+        "would run a model (and a bill) the operator didn't ask for.",
     },
   ],
   continuation: {
