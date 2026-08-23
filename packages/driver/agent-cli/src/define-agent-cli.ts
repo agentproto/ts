@@ -555,6 +555,39 @@ export function createAgentCliRuntime(
         ...(opts?.permissionHold ? { permissionHold: true } : {}),
       })
 
+      // Derived-from-model guard: when the ACP server REJECTED the
+      // connect-time model apply, the session is alive but on the agent's
+      // own default model. For a free/fixed-routing adapter that's a
+      // tolerable degradation (the route and bill don't change — keep
+      // agentproto#186's warn-and-continue). For a
+      // routeSelection:"derived-from-model" adapter (opencode, mastracode,
+      // hermes, jcode) the model id IS the route: "kept the default" means
+      // a DIFFERENT provider on a DIFFERENT bill than the operator named
+      // (observed live: opencode spawned with a claude-code-style
+      // `…@openrouter` id silently ran anthropic/claude-sonnet-4-5).
+      // That's a misroute, not a preference — refuse the spawn loudly,
+      // with the server's own reason and the id shape this adapter needs.
+      if (
+        configModel &&
+        definition.routeSelection === "derived-from-model" &&
+        arm.modelApplyRejection
+      ) {
+        const { requested, reason } = arm.modelApplyRejection
+        await arm.close().catch(() => {})
+        if (child && !child.killed) child.kill("SIGTERM")
+        const first = definition.models?.allowed?.[0]
+        const example =
+          (typeof first === "string" ? first : first?.id) ??
+          "openrouter/anthropic/claude-sonnet-4-6"
+        throw new Error(
+          `${definition.bin}: refusing to start on the default model — the requested model ` +
+            `"${requested}" was rejected by the agent (${reason}). This adapter routes AND ` +
+            `bills by the model id's own provider prefix, so continuing would silently run ` +
+            `(and bill) a model you didn't ask for. Use the adapter's ` +
+            `"<provider>/<model>" form (e.g. "${example}"), or pick an id from its model menu.`,
+        )
+      }
+
       // "command" model strategy: switch the model via a drained `/model
       // <id>` control turn. Best-effort — a failure is warned, never fatal,
       // so the session still starts (on the agent's default model).

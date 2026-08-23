@@ -249,6 +249,21 @@ export interface SetConfigOptionResult {
 export interface AcpClientSession {
   readonly sessionId: string
   /**
+   * Set when `newSession`'s connect-time `model` apply was REJECTED by the
+   * server — the session is live but running on the agent's own default
+   * model, not the requested one. The apply itself stays non-fatal here
+   * (agentproto#186: a rejected model must never crash the spawn with an
+   * opaque error), but silently-on-the-wrong-model is exactly the failure
+   * a caller may need to escalate: for a derived-from-model adapter
+   * (opencode & co.) the model IS the route, so "kept the default" means
+   * a different provider and a different bill. This field is the
+   * structural signal that lets the host decide — warn for free-routing
+   * adapters, fail loudly for derived-from-model ones. `undefined` when no
+   * model was requested, the apply succeeded, or the session was resumed
+   * (`loadSession` applies no model).
+   */
+  readonly modelApplyRejection?: { requested: string; reason: string }
+  /**
    * The wrapper's advertised session configuration options (SDK
    * `SessionConfigOption[]`), captured verbatim from `newSession`'s /
    * `loadSession`'s response at connect time — the per-model value lists
@@ -421,6 +436,7 @@ export async function createAcpClient(
       // omitted the agent keeps its own defaults (which vary by model).
       // We call these sequentially so a model switch (which rebuilds the
       // effort options) always precedes the effort set.
+      let modelApplyRejection: { requested: string; reason: string } | undefined
       if (params.model) {
         try {
           await connection.setSessionConfigOption({
@@ -443,11 +459,16 @@ export async function createAcpClient(
           // by wrapper version and account entitlements), so there is no
           // version-stable way to know it before the call — a rejected model
           // must therefore never be fatal. This is NOT a silent drop: the
-          // requested id AND the server's own reason are logged, and the
+          // requested id AND the server's own reason are logged, recorded on
+          // the returned session as `modelApplyRejection` (so a host that
+          // CAN'T tolerate running on the default model — derived-from-model
+          // adapters, where model = route = bill — can escalate), and the
           // session continues on the agent's default model.
+          const reason = configOptionErrorDetail(err)
+          modelApplyRejection = { requested: params.model, reason }
           console.warn(
             `[acp] set_config_option model="${params.model}" rejected by server ` +
-              `— keeping the agent's default model. Reason: ${configOptionErrorDetail(err)}`,
+              `— keeping the agent's default model. Reason: ${reason}`,
           )
         }
       }
@@ -497,6 +518,7 @@ export async function createAcpClient(
         options.onActivity,
         options.turnIdleTimeoutMs,
         cancelPermissionsForSession,
+        modelApplyRejection,
       )
     },
     async loadSession(params) {
@@ -564,9 +586,11 @@ function buildSession(
   onActivity: (() => void) | undefined,
   turnIdleTimeoutMs: number | undefined,
   cancelPermissionsForSession: (sessionId: string) => void,
+  modelApplyRejection?: { requested: string; reason: string },
 ): AcpClientSession {
   return {
     sessionId,
+    ...(modelApplyRejection ? { modelApplyRejection } : {}),
     availableConfigOptions: state.configOptions,
     availableModes: state.modes,
     currentModeId: state.currentModeId,

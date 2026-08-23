@@ -996,6 +996,18 @@ export interface AgentCliClient {
    */
   readonly availableConfigOptions?: SessionConfigOption[]
   /**
+   * Set when the connect-time `model` apply was rejected by the ACP server
+   * — the session is live but on the agent's own DEFAULT model, not the
+   * requested one (see `@agentproto/acp/client`'s
+   * `AcpClientSession.modelApplyRejection` for the full contract). Only the
+   * ACP arm populates this; other arms leave it undefined. Read by
+   * `define-agent-cli.ts` right after `connect()`: for a
+   * `routeSelection:"derived-from-model"` adapter (opencode & co. — the
+   * model id IS the route and the bill) a rejected explicit model is a
+   * spawn-fatal misroute, not a cosmetic default.
+   */
+  readonly modelApplyRejection?: { requested: string; reason: string }
+  /**
    * The wrapper's advertised session modes, captured at connect time
    * (`SessionModeState.availableModes`) — see `@agentproto/acp/client`'s
    * `AcpClientSession.availableModes`. Only the ACP arm populates this;
