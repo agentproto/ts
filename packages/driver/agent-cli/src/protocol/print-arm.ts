@@ -64,6 +64,43 @@ export interface PrintArmOptions {
   /** Extra write-capable paths beyond the default toolchain set, e.g. the
    *  per-session `CLAUDE_CONFIG_DIR` temp dir set up by the caller. */
   extraWritePaths?: string[]
+  /**
+   * The explicitly requested model id — when set, a wire event that
+   * truthfully reports which model the agent ACTUALLY started on (today:
+   * the jcode-ndjson `start` line's `model` field) is checked against it,
+   * and a mismatch aborts the turn loudly (child killed, error event)
+   * instead of letting the agent run on a model the operator didn't name.
+   * Set by `define-agent-cli.ts` only for `routeSelection:
+   * "derived-from-model"` adapters with an explicit `model` option — the
+   * print-protocol counterpart of its ACP-arm guard. The bug this closes:
+   * jcode's CLI silently falls back to its own default on an unknown
+   * `--model` id (observed live: `--model totally-bogus-xyz` →
+   * `{"type":"start","model":"gpt-5.6-sol","provider":"OpenAI"}`), which
+   * for a derived-from-model adapter is a different provider on a
+   * different bill. Schemas that never report the started model are
+   * unaffected. Compared via {@link printModelMismatch} (basename,
+   * `@suffix`/`provider/`-prefix tolerant).
+   */
+  expectedModel?: string
+}
+
+/**
+ * Whether the agent's reported model contradicts the requested one.
+ * Compares the model BASENAME (last `/` segment, `@route` suffix stripped,
+ * case-insensitive) because the wire echoes a normalized form of the id:
+ * jcode reports `deepseek/deepseek-v4-pro` for a requested
+ * `deepseek/deepseek-v4-pro@openrouter` — same model, different spelling.
+ * Basename equality keeps that a match while still catching a silent
+ * default-model fallback (requested `gpt-5` vs reported `gpt-5.6-sol` IS a
+ * mismatch — no substring leniency).
+ */
+export function printModelMismatch(requested: string, reported: string): boolean {
+  const basename = (id: string): string => {
+    const noSuffix = id.split("@")[0] ?? id
+    const segs = noSuffix.split("/")
+    return (segs[segs.length - 1] ?? noSuffix).trim().toLowerCase()
+  }
+  return basename(requested) !== basename(reported)
 }
 
 // ── Defaults (Claude Code backward-compatible) ──────────────────────
@@ -210,13 +247,48 @@ export function createPrintSession(
         // backpressure from a slow client.
         const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
         const queue = new EventQueue()
+        let modelMismatchAborted = false
 
         rl.on("line", (line: string) => {
           if (!line.trim()) return
+          if (modelMismatchAborted) return
           let evt: Record<string, unknown>
           try {
             evt = JSON.parse(line) as Record<string, unknown>
           } catch {
+            return
+          }
+
+          // Derived-from-model guard (see PrintArmOptions.expectedModel):
+          // the jcode-ndjson `start` line truthfully names the model the
+          // agent actually chose — if that contradicts the explicitly
+          // requested one, the CLI silently fell back to its own default.
+          // Abort the turn NOW, before the model call completes, instead
+          // of running (and billing) a model the operator didn't name.
+          if (
+            opts.expectedModel &&
+            eventSchema === "jcode-ndjson" &&
+            evt.type === "start" &&
+            typeof evt.model === "string" &&
+            printModelMismatch(opts.expectedModel, evt.model)
+          ) {
+            modelMismatchAborted = true
+            const provider =
+              typeof evt.provider === "string" ? ` (provider ${evt.provider})` : ""
+            queue.push({
+              kind: "error",
+              error: {
+                message:
+                  `model mismatch: requested "${opts.expectedModel}" but the agent ` +
+                  `started on "${evt.model}"${provider} — its CLI silently fell back ` +
+                  `to a default it resolved itself. This adapter routes AND bills by ` +
+                  `the model id, so the turn was aborted instead of silently running ` +
+                  `(and billing) a model you didn't ask for. Check the id against ` +
+                  `the adapter's model menu.`,
+              },
+            })
+            queue.end()
+            child.kill("SIGTERM")
             return
           }
 

@@ -381,6 +381,14 @@ export function createAgentCliRuntime(
       // long-lived child, no AgentCliClient connect/events cycle.
       // Short-circuit here so buildProtocolArm is never called for it.
       if (definition.protocol === "print") {
+        // Derived-from-model guard, print flavor: hand the arm the
+        // explicitly requested model so it can abort a turn whose wire
+        // `start` event names a DIFFERENT model — jcode's CLI silently
+        // falls back to its own default on an unknown `--model` id, which
+        // for a derived-from-model adapter is a different provider on a
+        // different bill (same contract as the ACP-arm guard below; see
+        // PrintArmOptions.expectedModel).
+        const printModel = config?.options?.model
         return createPrintSession({
           bin: resolvedBin,
           baseArgs: composed.binArgs,
@@ -393,6 +401,9 @@ export function createAgentCliRuntime(
           printConfig: definition.print,
           commandSandbox: opts?.commandSandbox,
           ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+          ...(definition.routeSelection === "derived-from-model" && printModel
+            ? { expectedModel: String(printModel) }
+            : {}),
         })
       }
 
