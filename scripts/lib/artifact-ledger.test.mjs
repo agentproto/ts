@@ -74,6 +74,19 @@ test("parseArtifactMarkers pulls records out of surrounding log noise", () => {
   ])
 })
 
+test("parseArtifactMarkers parses the runtime's [tool-artifact] ring passthrough line", () => {
+  // The runtime's ring buffer summarizes tool results to one lossy line, and
+  // re-emits marker lines under a `[tool-artifact] ` prefix so clean mode can
+  // strip them (see @agentproto/runtime tool-presenter `artifactMarkerLines`).
+  // The harvest must keep parsing that prefixed form — this is the contract
+  // the sandbox-session lane (e2b reviewer → agent_output → driver) rides on.
+  const text = [
+    "[2m[tool-result] 3 lines, 120B[0m",
+    `[tool-artifact] ${formatArtifactMarker({ kind: "review", id: 5000347376 })}`,
+  ].join("\n")
+  assert.deepEqual(parseArtifactMarkers(text), [{ kind: "review", id: 5000347376 }])
+})
+
 test("parseArtifactMarkers merges extra (sessionId) only when absent", () => {
   const text = [
     formatArtifactMarker({ kind: "pr", id: 1 }),
