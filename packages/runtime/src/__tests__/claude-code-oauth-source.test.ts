@@ -60,7 +60,22 @@ describe("verifyLocalLoginPresent (file-based / external login)", () => {
     resolveSourceSpec.mockResolvedValue("  ya29.codex-oauth-token\n")
 
     await expect(verifyLocalLoginPresent("codex", "codex")).resolves.toBeUndefined()
-    expect(resolveRecipeMethod).toHaveBeenCalledWith("codex")
+    // No methodId given ⇒ passed through as undefined, so `resolveRecipeMethod`
+    // falls back to the recipe's default (first) method — today's behavior for
+    // every single-surface adapter (codex, gemini).
+    expect(resolveRecipeMethod).toHaveBeenCalledWith("codex", undefined)
+    expect(resolveSourceSpec).toHaveBeenCalledWith(fakeSource)
+  })
+
+  it("threads an explicit methodId through to resolveRecipeMethod (multi-surface adapters)", async () => {
+    const fakeSource = { file: "~/.local/share/opencode/auth.json", jsonPath: "openai.access" }
+    resolveRecipeMethod.mockReturnValue({ recipe: { id: "opencode" }, method: { source: fakeSource } })
+    resolveSourceSpec.mockResolvedValue("  chatgpt-access-token\n")
+
+    await expect(
+      verifyLocalLoginPresent("opencode", "opencode", "openai-oauth"),
+    ).resolves.toBeUndefined()
+    expect(resolveRecipeMethod).toHaveBeenCalledWith("opencode", "openai-oauth")
     expect(resolveSourceSpec).toHaveBeenCalledWith(fakeSource)
   })
 

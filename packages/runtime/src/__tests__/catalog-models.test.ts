@@ -536,6 +536,43 @@ describe("buildCatalogModels — mastracode model-derived api-key eligibility", 
     expect(openaiRoute?.eligibleProfiles).toEqual([])
   })
 
+  it("makes anthropic AND openai subscription profiles eligible for a multi-surface adapter (mastracode/opencode) — each scoped to its own surface", () => {
+    // mastracode/opencode's real shape: modelDerivedApiKey + an array of
+    // provider-scoped file-based bearer doors, one per native OAuth login
+    // (Claude Pro/Max AND ChatGPT).
+    const MASTRACODE_MULTI: CatalogAdapterInput = {
+      slug: "mastracode",
+      models: [
+        { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+        { id: "openai/gpt-5.1", provider: "openai" },
+      ],
+      authDescriptor: {
+        modelDerivedApiKey: true,
+        authSubscription: [
+          { external: true, provider: "anthropic" },
+          { external: true, provider: "openai" },
+        ],
+      },
+      routeSelection: "derived-from-model",
+    }
+    const openaiSubscription: AuthProfile = {
+      id: "jeremy-chatgpt",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      credentialRef: "ref-oauth-openai",
+    }
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE_MULTI],
+      profiles: [anthropicSubscription, openaiSubscription],
+    })
+    const anthropicRoute = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(anthropicRoute?.runnable).toBe(true)
+    expect(anthropicRoute?.eligibleProfiles).toEqual(["jeremy-max"])
+    const openaiRoute = findRoute(response, "openai", "gpt-5.1", "openai")
+    expect(openaiRoute?.runnable).toBe(true)
+    expect(openaiRoute?.eligibleProfiles).toEqual(["jeremy-chatgpt"])
+  })
+
   it("keeps direct-route eligibility scoped by model-derived provider", () => {
     const response = buildCatalogModels({
       adapters: [MASTRACODE],

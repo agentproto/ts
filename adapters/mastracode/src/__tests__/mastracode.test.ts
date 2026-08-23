@@ -18,14 +18,15 @@ describe("mastracode adapter manifest", () => {
     expect(mastracode.print?.resume).toEqual({ flag: "--thread", kind: "value" })
   })
 
-  it("declares the external anthropic-scoped subscription (mastracode's own Claude Pro/Max login)", () => {
-    // External: the runtime injects no bearer (an agentproto-held OAT on
-    // mastracode's x-api-key channel is rejected upstream) — it verifies the
-    // CLI's own /login (auth.json `anthropic` oauth entry) is present and
-    // scrubs api-key vars so a leftover key can't override it.
-    expect(mastracode.authSubscription).toEqual({
-      external: true,
-      provider: "anthropic",
-    })
+  it("declares both the anthropic- and openai-scoped external subscriptions (mastracode's own Claude Pro/Max + ChatGPT logins)", () => {
+    // External: the runtime injects no bearer (an agentproto-held OAT/access
+    // token on mastracode's x-api-key channel is rejected upstream) — it
+    // verifies the CLI's own /login (auth.json `anthropic`/`openai-codex`
+    // oauth entries) is present per provider and scrubs api-key vars so a
+    // leftover key can't override it.
+    expect(mastracode.authSubscription).toEqual([
+      { external: true, provider: "anthropic" },
+      { external: true, provider: "openai" },
+    ])
   })
 })

@@ -100,20 +100,28 @@ export const mastracode: AgentCliHandle = defineAgentCli({
   // resolver and catalog eligibility manifest include api-key profiles for the
   // model-derived direct endpoint.
   modelDerivedApiKey: true,
-  // mastracode's own Claude Pro/Max login (its TUI `/login` → Anthropic
-  // OAuth via `anthropicOAuthProvider`, stored in the CLI's auth.json under
-  // its app-data dir with its own refresh token). EXTERNAL: the runtime
-  // injects no bearer — an agentproto-held `sk-ant-oat…` token presented on
+  // mastracode ships TWO independent native OAuth logins, each reached via
+  // its TUI `/login` flow and stored in the CLI's own auth.json under its
+  // app-data dir — the runtime declares one provider-scoped `authSubscription`
+  // surface per login (see `subscriptionSurfaceFor` in `@agentproto/runtime`'s
+  // spawn-defaults.ts, which resolves the matching entry for a spawn's
+  // resolved provider). Both are EXTERNAL: the runtime injects no bearer —
+  // an agentproto-held `sk-ant-oat…`/ChatGPT access token presented on
   // mastracode's x-api-key channel is rejected upstream as an invalid key,
-  // so the ONLY working subscription path is the CLI's own login.
-  // Subscription mode verifies that login is present (fail-loud, via the
-  // `mastracode` provision recipe) and scrubs the api-key vars so a
-  // leftover ANTHROPIC_API_KEY can't override it. Scoped
-  // `provider: "anthropic"`: never lights up its openai/openrouter models.
-  authSubscription: {
-    external: true,
-    provider: "anthropic",
-  },
+  // so the ONLY working subscription path is the CLI's own login. Each
+  // entry verifies its own login is present (fail-loud, via the
+  // `mastracode` provision recipe's `anthropic-oauth`/`openai-oauth`
+  // methods) and scrubs the matching api-key var so a leftover
+  // ANTHROPIC_API_KEY/OPENAI_API_KEY can't override it.
+  //   - anthropic: `anthropicOAuthProvider` (Claude Pro/Max).
+  //   - openai: `openaiCodexOAuthProvider` (ChatGPT), stored under the
+  //     auth.json key `openai-codex` — verified against a live login.
+  // Each is scoped to its own `provider`, so neither ever lights up the
+  // other's (or openrouter/google's) models.
+  authSubscription: [
+    { external: true, provider: "anthropic" },
+    { external: true, provider: "openai" },
+  ],
   sandbox: "./SANDBOX.md",
   protocol: "print",
   print: {

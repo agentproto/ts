@@ -112,20 +112,35 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // model-derived direct endpoint.
   routeSelection: "derived-from-model",
   modelDerivedApiKey: true,
-  // opencode's own Claude Pro/Max login (`opencode auth login` → Anthropic
-  // OAuth, stored in its auth.json with its own refresh token). EXTERNAL:
-  // the runtime injects no bearer — an agentproto-held `sk-ant-oat…` token
-  // presented on opencode's x-api-key channel is rejected upstream as an
-  // invalid key, so the ONLY working subscription path is the CLI's own
-  // login. Subscription mode therefore verifies that login is present
-  // (fail-loud, via the `opencode` provision recipe) and scrubs the
-  // api-key vars so a leftover ANTHROPIC_API_KEY can't override it.
-  // Scoped `provider: "anthropic"`: the subscription surface never lights
-  // up opencode's openai/openrouter/groq models.
-  authSubscription: {
-    external: true,
-    provider: "anthropic",
-  },
+  // opencode ships TWO native OAuth logins reached via `opencode auth login`
+  // (provider selection), both stored in its own auth.json — the runtime
+  // declares one provider-scoped `authSubscription` surface per login (see
+  // `subscriptionSurfaceFor` in `@agentproto/runtime`'s spawn-defaults.ts,
+  // which resolves the matching entry for a spawn's resolved provider).
+  // Both are EXTERNAL: the runtime injects no bearer — an agentproto-held
+  // `sk-ant-oat…`/ChatGPT access token presented on opencode's x-api-key
+  // channel is rejected upstream as an invalid key, so the ONLY working
+  // subscription path is the CLI's own login. Each entry verifies its own
+  // login is present (fail-loud, via the `opencode` provision recipe's
+  // `anthropic-oauth`/`openai-oauth` methods) and scrubs the matching
+  // api-key var so a leftover ANTHROPIC_API_KEY/OPENAI_API_KEY can't
+  // override it.
+  //   - anthropic: "Claude Pro/Max" OAuth login (browser/headless).
+  //   - openai: "ChatGPT Pro/Plus" OAuth login (browser/headless, against
+  //     auth.openai.com). Reverse-engineered from the shipped binary (no
+  //     OSS source available for this build): opencode keys BOTH the
+  //     ChatGPT OAuth login and the plain API-key credential for this
+  //     provider under the SAME auth.json key `openai` (there is no
+  //     separate "chatgpt" key) — the generic `Cli.providers.login` /
+  //     `Auth.set(provider.id, …)` write path is provider-id-keyed, not
+  //     method-keyed. See the `opencode` provision recipe's `openai-oauth`
+  //     method docblock for the full trace.
+  // Each is scoped to its own `provider`, so neither ever lights up the
+  // other's (or openrouter/groq's) models.
+  authSubscription: [
+    { external: true, provider: "anthropic" },
+    { external: true, provider: "openai" },
+  ],
   models: {
     // Default to a canonical catalog model (claude-sonnet-4-5). The legacy
     // alias `claude-sonnet-4-6` still resolves to the same model, but the

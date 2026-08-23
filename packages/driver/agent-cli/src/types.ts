@@ -705,9 +705,15 @@ export interface AgentCliDefinition {
    * Declares that this adapter supports `subscription` billing mode and how
    * (which env var to set + what to scrub). Presence = supported; absence
    * means a `subscription` request is rejected with `unsupported_auth_mode`.
-   * Only the Claude adapters set it. See {@link AgentCliAuthSubscription}.
+   * A SINGLE surface for a fixed/single-provider subscription (claude-code),
+   * or an ARRAY of surfaces for an adapter with more than one native OAuth
+   * login (mastracode: both an anthropic and an openai `provider`-scoped
+   * entry) — the runtime matches the spawn's resolved provider against each
+   * entry's `provider` scope (see `subscriptionSurfaceFor` in
+   * `@agentproto/runtime`'s `spawn-defaults.ts`). See
+   * {@link AgentCliAuthSubscription}.
    */
-  authSubscription?: AgentCliAuthSubscription
+  authSubscription?: AgentCliAuthSubscription | AgentCliAuthSubscription[]
   /**
    * Declares how THIS adapter receives a GATEWAY-routed bearer credential —
    * distinct from a gateway preset's own `keyEnv`
