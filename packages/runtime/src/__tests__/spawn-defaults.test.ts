@@ -363,6 +363,45 @@ describe("resolveAuthSpec — provider-scoped authSubscription (pi)", () => {
   })
 })
 
+describe("resolveAuthSpec — external provider-scoped authSubscription (opencode/mastracode)", () => {
+  // opencode/mastracode shape: multi-provider (modelDerivedApiKey) whose ONLY
+  // working Claude-subscription path is the CLI's OWN Pro/Max OAuth login
+  // (external — inject nothing, scrub the api-key vars), scoped to anthropic.
+  const OPENCODE_DESCRIPTOR = {
+    modelDerivedApiKey: true,
+    authSubscription: { external: true, provider: "anthropic" as const },
+  }
+
+  it("subscription on an anthropic model resolves external: inject nothing, scrub the api-key var", () => {
+    const r = resolveAuthSpec({
+      descriptor: OPENCODE_DESCRIPTOR,
+      model: "anthropic/claude-sonnet-4-5",
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("")
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.spec.externalCredential).toBe(true)
+    // A leftover key must not override the CLI's own login.
+    expect(r?.spec.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(r?.echo.credentialSource).toBe("cli-local-login")
+  })
+
+  it("subscription requested on a non-anthropic model still rejects (scope holds for external too)", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: OPENCODE_DESCRIPTOR,
+        model: "openai/gpt-5",
+        explicit: true,
+        requestedMode: "subscription",
+        externalSubscriptionVerified: true,
+      }),
+    ).toThrow(AuthResolutionError)
+  })
+})
+
 describe("resolveAuthSpec — modelDerivedApiKey alone no longer implies subscription", () => {
   // The old `supportsSub = sub || modelDerivedApiKey` clause injected a
   // subscription OAT into the x-api-key var for opencode/mastracode/jcode

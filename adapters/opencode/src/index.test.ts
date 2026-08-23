@@ -8,6 +8,16 @@ describe("@agentproto/adapter-opencode", () => {
     expect(opencode.routeSelection).toBe("derived-from-model")
   })
 
+  it("declares the external anthropic-scoped subscription (opencode's own Claude Pro/Max login)", () => {
+    // External: the runtime injects no bearer (an agentproto-held OAT on
+    // opencode's x-api-key channel is rejected upstream) — it verifies the
+    // CLI's own `opencode auth login` is present and scrubs api-key vars.
+    expect(opencode.authSubscription).toEqual({
+      external: true,
+      provider: "anthropic",
+    })
+  })
+
   it("generates the model menu from the shared catalog for supported providers", () => {
     const allowed = opencode.models?.allowed ?? []
     const ids = allowed.map((entry) =>

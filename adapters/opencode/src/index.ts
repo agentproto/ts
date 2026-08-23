@@ -112,6 +112,20 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // model-derived direct endpoint.
   routeSelection: "derived-from-model",
   modelDerivedApiKey: true,
+  // opencode's own Claude Pro/Max login (`opencode auth login` → Anthropic
+  // OAuth, stored in its auth.json with its own refresh token). EXTERNAL:
+  // the runtime injects no bearer — an agentproto-held `sk-ant-oat…` token
+  // presented on opencode's x-api-key channel is rejected upstream as an
+  // invalid key, so the ONLY working subscription path is the CLI's own
+  // login. Subscription mode therefore verifies that login is present
+  // (fail-loud, via the `opencode` provision recipe) and scrubs the
+  // api-key vars so a leftover ANTHROPIC_API_KEY can't override it.
+  // Scoped `provider: "anthropic"`: the subscription surface never lights
+  // up opencode's openai/openrouter/groq models.
+  authSubscription: {
+    external: true,
+    provider: "anthropic",
+  },
   models: {
     // Default to a canonical catalog model (claude-sonnet-4-5). The legacy
     // alias `claude-sonnet-4-6` still resolves to the same model, but the

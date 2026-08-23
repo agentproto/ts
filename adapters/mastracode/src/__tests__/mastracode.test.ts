@@ -17,4 +17,15 @@ describe("mastracode adapter manifest", () => {
   it("keeps the --thread resume flag wired for the print arm", () => {
     expect(mastracode.print?.resume).toEqual({ flag: "--thread", kind: "value" })
   })
+
+  it("declares the external anthropic-scoped subscription (mastracode's own Claude Pro/Max login)", () => {
+    // External: the runtime injects no bearer (an agentproto-held OAT on
+    // mastracode's x-api-key channel is rejected upstream) — it verifies the
+    // CLI's own /login (auth.json `anthropic` oauth entry) is present and
+    // scrubs api-key vars so a leftover key can't override it.
+    expect(mastracode.authSubscription).toEqual({
+      external: true,
+      provider: "anthropic",
+    })
+  })
 })

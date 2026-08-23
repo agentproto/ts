@@ -96,11 +96,24 @@ export const mastracode: AgentCliHandle = defineAgentCli({
   // Mastra Code's model router reads the provider straight off each id's own
   // `<provider>/<id>` prefix and consults the matching provider env var
   // (ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, …). There is no
-  // fixed provider and no Anthropic subscription bearer path — every direct
-  // route is api-key only. Declaring this lets the runtime's billing-auth
+  // fixed provider. Declaring this lets the runtime's billing-auth
   // resolver and catalog eligibility manifest include api-key profiles for the
   // model-derived direct endpoint.
   modelDerivedApiKey: true,
+  // mastracode's own Claude Pro/Max login (its TUI `/login` → Anthropic
+  // OAuth via `anthropicOAuthProvider`, stored in the CLI's auth.json under
+  // its app-data dir with its own refresh token). EXTERNAL: the runtime
+  // injects no bearer — an agentproto-held `sk-ant-oat…` token presented on
+  // mastracode's x-api-key channel is rejected upstream as an invalid key,
+  // so the ONLY working subscription path is the CLI's own login.
+  // Subscription mode verifies that login is present (fail-loud, via the
+  // `mastracode` provision recipe) and scrubs the api-key vars so a
+  // leftover ANTHROPIC_API_KEY can't override it. Scoped
+  // `provider: "anthropic"`: never lights up its openai/openrouter models.
+  authSubscription: {
+    external: true,
+    provider: "anthropic",
+  },
   sandbox: "./SANDBOX.md",
   protocol: "print",
   print: {

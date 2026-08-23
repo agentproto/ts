@@ -56,6 +56,53 @@ export const codexRecipe = defineProvisionRecipe({
   ],
 })
 
+/** opencode — Anthropic (Claude Pro/Max) OAuth login stored by the CLI's own
+ *  `opencode auth login` flow. opencode keeps its auth store under the XDG
+ *  data dir on every platform (macOS included — verified live). The entry
+ *  shape is `{anthropic: {type: "oauth", access, refresh, expires}}`. */
+export const opencodeRecipe = defineProvisionRecipe({
+  id: "opencode",
+  description:
+    "opencode's Anthropic (Claude Pro/Max) subscription OAuth access token, read from the CLI's own auth store (written by `opencode auth login`).",
+  label: "opencode (Claude subscription)",
+  methods: [
+    {
+      id: "anthropic-oauth",
+      source: {
+        file: "~/.local/share/opencode/auth.json",
+        jsonPath: "anthropic.access",
+      },
+    },
+  ],
+})
+
+/** mastracode — Anthropic (Claude Pro/Max) OAuth login from the TUI's own
+ *  `/login` flow. mastracode's app-data dir is platform-dependent
+ *  (`getAppDataDir()` in its source: Application Support on macOS, XDG data
+ *  dir elsewhere); the entry shape is `{anthropic: {type: "oauth", access,
+ *  refresh, expires}}` — verified against a live login. */
+export const mastracodeRecipe = defineProvisionRecipe({
+  id: "mastracode",
+  description:
+    "mastracode's Anthropic (Claude Pro/Max) subscription OAuth access token, read from the CLI's own auth store (written by its /login flow).",
+  label: "mastracode (Claude subscription)",
+  methods: [
+    {
+      id: "anthropic-oauth",
+      source: [
+        {
+          file: "~/Library/Application Support/mastracode/auth.json",
+          jsonPath: "anthropic.access",
+        },
+        {
+          file: "~/.local/share/mastracode/auth.json",
+          jsonPath: "anthropic.access",
+        },
+      ],
+    },
+  ],
+})
+
 /** Gemini CLI OAuth token written by the local CLI. */
 export const geminiRecipe = defineProvisionRecipe({
   id: "gemini",
@@ -77,4 +124,6 @@ export const BUILTIN_RECIPES: readonly ProvisionRecipe[] = [
   claudeCodeOauthRecipe,
   codexRecipe,
   geminiRecipe,
+  opencodeRecipe,
+  mastracodeRecipe,
 ]
