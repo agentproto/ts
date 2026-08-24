@@ -41,7 +41,7 @@
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.134.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
     "jsdom": "^29.1.1",
