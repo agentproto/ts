@@ -510,8 +510,16 @@ export async function resolveAccessProfileAuth(input: {
   const externalSub = authSubSurface?.external === true
   if (authMode === "subscription" && externalSub) {
     try {
+      // The ADAPTER's recipe, never `profile.source`: an external surface
+      // verifies the adapter CLI's OWN login file — the profile's source
+      // names where the PROFILE's credential lives, which external mode
+      // never injects. `profile.source ?? adapter` was correct only by
+      // coincidence (codex-local on the codex adapter: source === slug);
+      // observed live: mastracode + the codex-local profile resolved the
+      // "codex" recipe and failed with "provider 'codex' has no method
+      // 'openai-oauth'" instead of checking mastracode's own auth.json.
       await verifyLocalLoginPresent(
-        profile.source ?? adapter,
+        adapter,
         adapter,
         subscriptionOauthMethodId(authDescriptor, profile.endpoint),
       )
@@ -1934,8 +1942,13 @@ export async function spawnAgentSession(
         spawnDefaults.auth.subscriptionSource !== undefined)
     try {
       if (wantsExternalLogin) {
+        // The ADAPTER's recipe, never the configured subscriptionSource —
+        // same reasoning as the access-profile path above: external mode
+        // verifies the adapter CLI's OWN login, and a config-defaults
+        // source (e.g. "claude-code-oauth") naming another CLI's login
+        // would resolve the wrong recipe entirely.
         await verifyLocalLoginPresent(
-          spawnDefaults.auth.subscriptionSource ?? input.adapter,
+          input.adapter,
           input.adapter,
           subscriptionOauthMethodId(resolved.authDescriptor, resolvedProvider),
         )
