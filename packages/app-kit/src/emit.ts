@@ -53,6 +53,7 @@ interface EmitInput {
   readonly skill?: AppSkillSurface
   readonly artifacts?: readonly AppArtifactDecl[]
   readonly dev?: AppDevDefinition
+  readonly externalReadRoots?: readonly string[]
 }
 
 export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> {
@@ -152,6 +153,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     ...(skillFrontmatter !== undefined ? { skill: skillFrontmatter } : {}),
     ...(app.artifacts !== undefined ? { artifacts: app.artifacts } : {}),
     ...(app.dev !== undefined ? { dev: app.dev } : {}),
+    ...(app.externalReadRoots !== undefined ? { externalReadRoots: app.externalReadRoots } : {}),
   }
   await writeFile(appPath, toManifest(appFrontmatter, app.description ?? ""), "utf8")
 

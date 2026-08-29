@@ -77,6 +77,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const dev = def.dev
     ? Object.freeze({ launch: Object.freeze(def.dev.launch.map(l => Object.freeze({ ...l }))) })
     : undefined
+  const externalReadRoots = def.externalReadRoots ? Object.freeze([...def.externalReadRoots]) : undefined
 
   validateAttachment(agents, workflows)
 
@@ -99,6 +100,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(skill !== undefined ? { skill } : {}),
     ...(artifacts !== undefined ? { artifacts } : {}),
     ...(dev !== undefined ? { dev } : {}),
+    ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
       const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
@@ -138,6 +140,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(skill !== undefined ? { skill } : {}),
           ...(artifacts !== undefined ? { artifacts } : {}),
           ...(dev !== undefined ? { dev } : {}),
+          ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
         },
         dir,
       )
