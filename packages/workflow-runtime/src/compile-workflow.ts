@@ -290,12 +290,14 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
     case "map": {
       const over = f<string>(step, "over")
       const inner = compileStepList(f(step, "steps"), `${id}__body`, opts)
+      const onError = f<"throw" | "collect" | undefined>(step, "onError")
       return {
         kind: "map",
         id,
         parallelism: f<number | undefined>(step, "parallelism"),
         over: (b) => resolveRef(over, b) as readonly unknown[],
         body: () => inner,
+        ...(onError !== undefined ? { onError } : {}),
       }
     }
 
