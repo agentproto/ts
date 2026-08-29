@@ -49,16 +49,17 @@ import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 // numbers proves the row is genuinely priced (a launchable wallet needs it),
 // not merely present.
 const GPT56 = [
-  // OpenRouter repriced the two lower tiers (sol unchanged), moving the
-  // ladder from 1 / 2.5 / 5 to 0.1 / 1 / 5. Both tiers moved consistently
-  // across their base and -pro variants, so this is a real price cut, not a
-  // stray decimal on one row.
-  { product: "gpt-5.6-luna", inPer1M: 0.1, outPer1M: 0.6 },
-  { product: "gpt-5.6-luna-pro", inPer1M: 0.1, outPer1M: 0.6 },
-  { product: "gpt-5.6-sol", inPer1M: 5, outPer1M: 30 },
-  { product: "gpt-5.6-sol-pro", inPer1M: 5, outPer1M: 30 },
-  { product: "gpt-5.6-terra", inPer1M: 1, outPer1M: 6 },
-  { product: "gpt-5.6-terra-pro", inPer1M: 1, outPer1M: 6 },
+  // These are OpenRouter's LIVE prices, re-synced by catalog-sync — they
+  // have drifted (and broken this pin) more than once already. If this
+  // breaks again on the next sync, re-pin from
+  // packages/model-catalog/src/llm/openrouter-routes.generated.ts rather
+  // than guessing; each base/-pro pair moves together.
+  { product: "gpt-5.6-luna", inPer1M: 0.2, outPer1M: 1.2 },
+  { product: "gpt-5.6-luna-pro", inPer1M: 0.2, outPer1M: 1.2 },
+  { product: "gpt-5.6-sol", inPer1M: 2, outPer1M: 10 },
+  { product: "gpt-5.6-sol-pro", inPer1M: 2, outPer1M: 10 },
+  { product: "gpt-5.6-terra", inPer1M: 2, outPer1M: 12 },
+  { product: "gpt-5.6-terra-pro", inPer1M: 2, outPer1M: 12 },
 ] as const
 
 const openrouterKey: AuthProfile = {
