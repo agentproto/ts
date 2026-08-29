@@ -32,6 +32,14 @@ const addTenTool = defineTool({
   inputSchema: z.object({ n: z.number() }),
   outputSchema: z.object({ n: z.number() }),
 })
+/** Throws for a negative input, otherwise doubles — exercises a map's
+ *  `onError: "collect"` path without a real I/O failure. */
+const flakyTool = defineTool({
+  id: "demo.flaky",
+  description: "Throws on a negative input, otherwise doubles.",
+  inputSchema: z.object({ n: z.number() }),
+  outputSchema: z.object({ n: z.number() }),
+})
 const provider = defineDriver({
   id: "math-builtin",
   name: "Math",
@@ -40,13 +48,22 @@ const provider = defineDriver({
   implements: [
     { tool: "demo.double", version: "0.1.0" },
     { tool: "demo.add-ten", version: "0.1.0" },
+    { tool: "demo.flaky", version: "0.1.0" },
   ],
   implementations: [
     implementTool(doubleTool, ({ input }) => ({ n: input.n * 2 })),
     implementTool(addTenTool, ({ input }) => ({ n: input.n + 10 })),
+    implementTool(flakyTool, ({ input }) => {
+      if (input.n < 0) throw new Error(`flaky: negative input ${input.n}`)
+      return { n: input.n * 2 }
+    }),
   ],
 })
-const tools = { "demo.double": doubleTool, "demo.add-ten": addTenTool }
+const tools = {
+  "demo.double": doubleTool,
+  "demo.add-ten": addTenTool,
+  "demo.flaky": flakyTool,
+}
 const candidates = [provider]
 
 describe("compileWorkflow", () => {
@@ -121,6 +138,51 @@ describe("compileWorkflow", () => {
       input: { xs: [1, 2, 3] },
     })
     expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([2, 4, 6])
+  })
+
+  it("a declarative map's `onError: collect` reaches the compiled step — one item failing doesn't abort the run", async () => {
+    const wf = defineWorkflow({
+      name: "Double each, tolerant",
+      id: "double-each-tolerant",
+      description: "Double every element, collecting per-item failures.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "doubled",
+          kind: "map",
+          over: "$input.xs",
+          onError: "collect",
+          steps: [
+            {
+              id: "d",
+              kind: "tool",
+              tool: "demo.flaky",
+              inputs: { n: "$item" },
+            },
+          ],
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      input: { xs: [1, -1, 3] },
+    })
+    const tolerant = output as {
+      results: Array<
+        | { status: "fulfilled"; index: number; value: { n: number } }
+        | { status: "rejected"; index: number; error: string }
+      >
+      succeeded: number
+      failed: number
+    }
+    expect(tolerant.succeeded).toBe(2)
+    expect(tolerant.failed).toBe(1)
+    expect(tolerant.results[0]).toMatchObject({ status: "fulfilled", value: { n: 2 } })
+    expect(tolerant.results[1]).toMatchObject({ status: "rejected" })
+    expect(tolerant.results[2]).toMatchObject({ status: "fulfilled", value: { n: 6 } })
   })
 
   it("passes an entry-based `transform` step through unchanged, threading a prior tool step's output", async () => {

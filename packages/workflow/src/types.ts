@@ -224,6 +224,14 @@ export interface StepMap {
   over: string
   parallelism?: number
   steps: Step[]
+  /**
+   * Hand-tuned ahead of the generated JSON Schema (not yet in
+   * `resources/aip-15/draft/WORKFLOW.schema.json`): `"throw"` (default)
+   * aborts the whole map on the first item to fail; `"collect"` runs every
+   * item to completion and binds a `TolerantFanOutResult` instead of a bare
+   * array — see `@agentproto/workflow-runtime`'s `MapStep.onError`.
+   */
+  onError?: "throw" | "collect"
 }
 export interface StepLoop {
   kind: "loop"
