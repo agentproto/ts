@@ -54,6 +54,13 @@ export interface InstalledApp {
     readonly description?: string
   }
   readonly artifacts?: readonly { readonly type: string; readonly description?: string }[]
+  /** Read-only external filesystem roots this app was granted at install
+   *  time (AIP-42 `externalReadRoots`), normalized to absolute, `~`-expanded,
+   *  existing-directory paths — see `performInstall` in app-tools.ts for the
+   *  normalization + existence check. `app_external_list`/`app_external_read`
+   *  (app-external.ts) only ever resolve a path under one of these, and only
+   *  when the caller's `root` argument exact-string-matches an entry here. */
+  readonly externalReadRoots?: readonly string[]
   readonly dev?: {
     readonly launch: readonly {
       readonly name: string

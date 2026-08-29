@@ -83,6 +83,7 @@ interface AppFrontmatter {
   readonly skill?: AppFrontmatterSkill
   readonly artifacts?: readonly AppArtifactDecl[]
   readonly dev?: AppDevDefinition
+  readonly externalReadRoots?: readonly string[]
 }
 
 function resolveRef(dir: string, path: string): string {
@@ -120,6 +121,16 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
   if (data.requires !== undefined) {
     if (!Array.isArray(data.requires) || !data.requires.every((e) => typeof e === "string")) {
       throw new AppLoadError(`'${appPath}': frontmatter 'requires' must be an array of strings.`)
+    }
+  }
+  if (data.externalReadRoots !== undefined) {
+    if (
+      !Array.isArray(data.externalReadRoots) ||
+      !data.externalReadRoots.every((e) => typeof e === "string" && e.trim() !== "")
+    ) {
+      throw new AppLoadError(
+        `'${appPath}': frontmatter 'externalReadRoots' must be an array of non-empty strings.`,
+      )
     }
   }
   return data as unknown as AppFrontmatter
@@ -250,5 +261,6 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       : {}),
     ...(fm.artifacts !== undefined ? { artifacts: fm.artifacts } : {}),
     ...(fm.dev !== undefined ? { dev: fm.dev } : {}),
+    ...(fm.externalReadRoots !== undefined ? { externalReadRoots: fm.externalReadRoots } : {}),
   })
 }
