@@ -673,17 +673,26 @@ describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
   // entry (vendor as OpenRouter reports it) BEFORE the alias table is even
   // consulted — resolvePricing tries a direct match first. Different vendor
   // string than the direct-SDK entries above by design.
-  it.each([
-    ["moonshotai/kimi-k3", 3.0, 15.0],
-    ["moonshotai/kimi-k2.7-code", 0.71, 3.5],
-  ])("%s resolves to expected OpenRouter-routed pricing", (id, input, output) => {
-    const pricing = resolvePricing(id)
-    expect(pricing).toBeDefined()
-    expect(pricing?.vendor).toBe("moonshotai")
-    expect(pricing?.provider).toBe("openrouter")
-    expect(pricing?.inputPer1M).toBe(input)
-    expect(pricing?.outputPer1M).toBe(output)
-  })
+  //
+  // Prices are OpenRouter's LIVE numbers, re-synced weekly by catalog-sync,
+  // so they are snapshotted (not hardcoded) — drift shows as a reviewable
+  // `vitest -u` diff instead of a red CI pin. catalog-sync.yml runs `-u` as
+  // part of its own commit, so a legitimate price change never blocks the
+  // sync PR; only a real generator bug (wrong vendor/provider, or a
+  // pricing shape that vanished) still fails hard.
+  it.each(["moonshotai/kimi-k3", "moonshotai/kimi-k2.7-code"])(
+    "%s resolves to an OpenRouter-routed pricing snapshot",
+    id => {
+      const pricing = resolvePricing(id)
+      expect(pricing).toBeDefined()
+      expect(pricing?.vendor).toBe("moonshotai")
+      expect(pricing?.provider).toBe("openrouter")
+      expect({
+        inputPer1M: pricing?.inputPer1M,
+        outputPer1M: pricing?.outputPer1M,
+      }).toMatchSnapshot()
+    }
+  )
 })
 
 describe("resolveContextWindow", () => {

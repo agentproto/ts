@@ -32,27 +32,31 @@ const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
 
 /**
  * The filename must diff as ADDED against origin/main: changeset-check
- * ("Changeset present?" in ci.yml) uses `git diff --diff-filter=A`, so if a
- * previous sync's changeset with the same name is still sitting un-consumed
- * on main, regenerating under that name shows as Modified and the check can
- * never pass (broke PR #1040). Suffix with the head sha when the default
- * name is taken on origin/main.
+ * ("Changeset present?" in ci.yml) uses `git diff --diff-filter=A`. Always
+ * sha-suffix rather than trying a plain name first (broke PR #1040, then
+ * PR #1063 the same way one level deeper: a plain-name run swept and
+ * rewrote a PREVIOUS sha-suffixed changeset still unconsumed on main —
+ * same content, different name, and git's own rename detection turned that
+ * delete+add into a Renamed entry, which --diff-filter=A also doesn't
+ * count). A fresh sha every run means there is never a name collision to
+ * detect in the first place.
  */
 function defaultOutPath() {
-  const base = `${ROOT}/.changeset/catalog-sync-auto.md`
-  try {
-    execSync('git cat-file -e origin/main:.changeset/catalog-sync-auto.md', {
-      cwd: ROOT,
-      stdio: 'ignore',
-    })
-  } catch {
-    return base // not on main — the plain name will diff as Added
-  }
   const sha = execSync('git rev-parse --short HEAD', {
     cwd: ROOT,
     encoding: 'utf8',
   }).trim()
   return `${ROOT}/.changeset/catalog-sync-auto-${sha}.md`
+}
+
+/** True if `relPath` (e.g. ".changeset/foo.md") exists, unchanged, on origin/main. */
+function isOnOriginMain(relPath) {
+  try {
+    execSync(`git cat-file -e origin/main:${relPath}`, { cwd: ROOT, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
 }
 
 const outFlag = process.argv.indexOf('--out')
@@ -75,13 +79,20 @@ if (packages.length === 0) {
 }
 
 // Sweep older bot-owned changesets (catalog-sync-auto*.md) from the working
-// tree so suffixed names don't accumulate across sync runs on the same
+// tree so suffixed names don't accumulate across sync runs on the SAME
 // branch. Human-authored changesets are never touched — the prefix is the
-// ownership contract.
+// ownership contract. Critically, this only removes files this branch
+// itself added in an earlier commit — a changeset that's still on
+// origin/main (unconsumed from a previous, already-merged sync PR) is left
+// alone. Deleting + recreating one of those with identical content is
+// exactly what produced the Renamed-not-Added diff that broke #1040/#1063.
 for (const name of readdirSync(`${ROOT}/.changeset`)) {
   if (!name.startsWith('catalog-sync-auto') || !name.endsWith('.md')) continue
-  const stale = `${ROOT}/.changeset/${name}`
-  if (stale !== OUT) unlinkSync(stale)
+  const relPath = `.changeset/${name}`
+  const stale = `${ROOT}/${relPath}`
+  if (stale === OUT) continue
+  if (isOnOriginMain(relPath)) continue
+  unlinkSync(stale)
 }
 
 const frontmatter = packages.map((name) => `"${name}": patch`).join('\n')
