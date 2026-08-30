@@ -594,10 +594,16 @@ describe("listRouterLlmRoutes", () => {
     expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1-mini")).toBe(false)
     expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1")).toBe(true)
     // `deepinfra/<upstream>/<model>` nests an upstream provider ahead of
-    // vendor/product — every single one of Requesty's `deepinfra/…` keys is
-    // this triple-segment shape, so none round-trip and the vendor is
-    // entirely absent from the resolved set.
-    expect(routes.some(r => r.vendor === "deepinfra")).toBe(false)
+    // vendor/product (e.g. `deepinfra/Qwen/Qwen3-235B-A22B`) — that
+    // triple-segment shape doesn't round-trip, since its "product" would
+    // still contain a `/`. Not every `deepinfra/…` key has this shape
+    // though: some list a model directly under the vendor
+    // (`deepinfra/glm-5.3-flash`), which resolves cleanly as
+    // vendor="deepinfra", product="glm-5.3-flash".
+    expect(routes.some(r => r.vendor === "deepinfra" && r.product === "Qwen/Qwen3-235B-A22B")).toBe(
+      false
+    )
+    expect(routes.some(r => r.vendor === "deepinfra" && r.product === "glm-5.3-flash")).toBe(true)
   })
 
   it("resolves every HuggingFace route table entry", () => {
