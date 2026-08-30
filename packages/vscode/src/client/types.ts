@@ -411,6 +411,17 @@ export interface SessionDescriptor {
   remote?: boolean
   sandboxId?: string
   sandboxTeardown?: "kill" | "pause"
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.availableCommands — the
+   *  slash-commands/skills the active harness/adapter currently advertises
+   *  for THIS session (ACP's `available_commands_update`). REPLACES wholesale
+   *  on each update, not a merge; absent for a harness that doesn't advertise
+   *  any. Feeds the composer's `/`-popup (transcriptPanel.ts). */
+  availableCommands?: Array<{
+    name: string
+    description?: string
+    input?: { hint?: string } | null
+    _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
+  }>
 }
 
 /**
