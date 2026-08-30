@@ -33,6 +33,8 @@ export interface ApplyEditsResult {
     readonly filesChanged: number
     readonly applied: number
     readonly skipped: number
+    /** Ids of chapters whose edits were computed then reverted (post-check failed). */
+    readonly postCheckFailed: readonly string[]
   }
 }
 
@@ -44,6 +46,10 @@ export interface ApplyEditsOptions {
   /** Subdir holding chapter files. Default `chapters`. */
   readonly chaptersDir?: string
 }
+
+/** Chapter body start: an optional `assembleChapters({ injectAnchors: true })`
+ * anchor line, then the `## ` heading. */
+const HEADING_START = /^(?:<a id="[^"]*"><\/a>\n\n)?## /
 
 /** Count non-overlapping occurrences of `n` in `hay`. */
 function occ(hay: string, n: string): number {
@@ -67,6 +73,7 @@ export async function applyEdits(
   let applied = 0
   let skipped = 0
   let filesChanged = 0
+  const postCheckFailed: string[] = []
 
   for (const r of opts.results) {
     const path = `${chaptersDir}/${r.id}.md`
@@ -98,12 +105,14 @@ export async function applyEdits(
       }
     }
     const post: string[] = []
-    if (!text.startsWith("## ")) post.push("no longer starts at '##'")
+    if (!HEADING_START.test(text))
+      post.push("no longer starts at '##' (optionally preceded by an anchor)")
     const oorAll = outOfRangeCites(text, opts.bibMax)
     if (oorAll.length) post.push(`out-of-range cites present: ${oorAll.join(",")}`)
-    if (post.length)
+    if (post.length) {
       md += `- ⚠️ POST-CHECK FAILED (${post.join("; ")}) → NOT written\n`
-    else if (n > 0) {
+      if (n > 0) postCheckFailed.push(r.id)
+    } else if (n > 0) {
       files.push({ path, content: text })
       filesChanged++
     }
@@ -112,5 +121,5 @@ export async function applyEdits(
     md += `- result: ${n}/${edits.length} applied${post.length ? " (reverted)" : ""}\n\n`
   }
 
-  return { files, report: md, stats: { filesChanged, applied, skipped } }
+  return { files, report: md, stats: { filesChanged, applied, skipped, postCheckFailed } }
 }

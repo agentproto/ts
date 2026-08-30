@@ -117,5 +117,30 @@ describe("applyEdits", () => {
     })
     expect(res.files).toHaveLength(0)
     expect(res.report).toContain("POST-CHECK FAILED")
+    expect(res.stats.postCheckFailed).toEqual(["ch01"])
+  })
+
+  it("does not revert an anchor-prefixed chapter (assembleChapters injectAnchors output)", async () => {
+    // This is exactly what assembleChapters({ injectAnchors: true }) writes.
+    const report = new MemFs({
+      "chapters/ch01.md": '<a id="ch01"></a>\n\n## 1. Title\n\nThe quick brown fox.',
+    })
+    const res = await applyEdits({
+      bibMax: 5,
+      report,
+      results: [
+        {
+          id: "ch01",
+          edits: [{ find: "quick brown fox", replace: "lazy dog [2]", reason: "swap" }],
+        },
+      ],
+    })
+    expect(res.report).not.toContain("POST-CHECK FAILED")
+    expect(res.stats.postCheckFailed).toEqual([])
+    expect(res.files).toHaveLength(1)
+    const m = Object.fromEntries(res.files.map((f) => [f.path, f.content]))
+    expect(m["chapters/ch01.md"]).toBe(
+      '<a id="ch01"></a>\n\n## 1. Title\n\nThe lazy dog [2].'
+    )
   })
 })
