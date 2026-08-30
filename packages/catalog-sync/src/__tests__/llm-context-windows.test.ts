@@ -34,7 +34,7 @@ describe("llm:context-windows generator", () => {
     expect(Object.keys(files)).toEqual([OUTPUT_PATH])
   })
 
-  it("emits a parseable CONTEXT_WINDOWS map covering all four providers", async () => {
+  it("emits a parseable CONTEXT_WINDOWS map covering all five providers", async () => {
     const files = await llmContextWindowsGenerator.generate(offlineCtx())
     const src = files[OUTPUT_PATH]!
     expect(src).toBeTruthy()
@@ -46,7 +46,7 @@ describe("llm:context-windows generator", () => {
     // it has to be bumped on each catalog sync — see the count-drift note on
     // the sync PR.
     const entryCount = (src.match(/contextWindow: \d+/g) ?? []).length
-    expect(entryCount).toBe(49)
+    expect(entryCount).toBe(105)
 
     // Spot-check one real entry per provider.
     expect(src).toContain('"claude-opus-4-8": { contextWindow: 1000000, maxOutput: 128000')
@@ -54,9 +54,14 @@ describe("llm:context-windows generator", () => {
     expect(src).toContain('"llama-3.3-70b-versatile": { contextWindow: 131072, maxOutput: 32768, provider: "groq" }')
     expect(src).toContain('"grok-4.5": { contextWindow: 500000, provider: "xai" }')
     expect(src).toContain('"kimi-k2.6": { contextWindow: 262144, provider: "moonshot" }')
+    expect(src).toContain('"codestral-2508": { contextWindow: 256000, provider: "mistral" }')
 
     // xAI's null-context models (video) are excluded, not emitted as 0/null.
     expect(src).not.toContain("grok-imagine-video")
+
+    // Mistral's `name` field is an alias pointer, not a display name — never
+    // surfaced as `displayName` for mistral entries.
+    expect(src).not.toContain('"mistral-code-latest": { contextWindow: 256000, displayName:')
   })
 
   it("is byte-identical across two generate calls (deterministic)", async () => {
@@ -69,7 +74,7 @@ describe("llm:context-windows generator", () => {
     expect(llmContextWindowsGenerator.name).toBe("llm:context-windows")
     expect(llmContextWindowsGenerator.modality).toBe("llm")
     const ids = llmContextWindowsGenerator.sources.map(s => s.id)
-    expect(ids).toEqual(["llm-anthropic", "llm-groq", "llm-xai", "llm-moonshot"])
+    expect(ids).toEqual(["llm-anthropic", "llm-groq", "llm-xai", "llm-moonshot", "llm-mistral"])
   })
 
   it("generates the same bytes whether called directly or through the runner (write=false)", async () => {
