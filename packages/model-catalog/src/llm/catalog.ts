@@ -72,6 +72,16 @@ export interface LLMPricing {
    * `moonshot`, `mistralai`, `minimax`, `meta`, `qwen`, `deepseek`.
    */
   vendor?: string
+  /**
+   * ISO date (`YYYY-MM-DD`) this id was first seen by a catalog-sync run.
+   * Generator-owned (currently emitted by `llm:openrouter` / `llm:requesty`;
+   * hand-maintained catalog rows below leave it unset) — backfilled from the
+   * provider's own creation timestamp when the source has one, else the
+   * sync run's date, and NEVER mutated once stamped. See
+   * `packages/catalog-sync/src/added-at.ts` and
+   * `packages/catalog-sync/README.md` for the full convention.
+   */
+  addedAt?: string
 }
 
 import { OPENROUTER_ROUTES } from "./openrouter-routes.generated.js"

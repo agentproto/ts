@@ -4,7 +4,7 @@
     {
       "id": "mistral-medium-2505",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -35,7 +35,7 @@
     {
       "id": "mistral-medium-2508",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -66,7 +66,7 @@
     {
       "id": "codestral-2508",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -101,7 +101,7 @@
     {
       "id": "codestral-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -136,7 +136,7 @@
     {
       "id": "mistral-code-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -171,7 +171,7 @@
     {
       "id": "mistral-code-fim-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -206,7 +206,7 @@
     {
       "id": "devstral-2512",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -241,7 +241,7 @@
     {
       "id": "devstral-medium-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -276,7 +276,7 @@
     {
       "id": "devstral-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -311,7 +311,7 @@
     {
       "id": "mistral-code-agent-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -346,7 +346,7 @@
     {
       "id": "mistral-small-2603",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -381,7 +381,7 @@
     {
       "id": "mistral-small-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -416,7 +416,7 @@
     {
       "id": "mistral-vibe-cli-fast",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -451,7 +451,7 @@
     {
       "id": "magistral-small-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -486,7 +486,7 @@
     {
       "id": "voxtral-small-2507",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -519,7 +519,7 @@
     {
       "id": "voxtral-small-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -552,7 +552,7 @@
     {
       "id": "labs-leanstral-1-5-1",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -585,7 +585,7 @@
     {
       "id": "labs-leanstral-1-5",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -618,7 +618,7 @@
     {
       "id": "mistral-large-2512",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -651,7 +651,7 @@
     {
       "id": "mistral-large-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -684,7 +684,7 @@
     {
       "id": "ministral-3b-2512",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -717,7 +717,7 @@
     {
       "id": "ministral-3b-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -750,7 +750,7 @@
     {
       "id": "ministral-8b-2512",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -783,7 +783,7 @@
     {
       "id": "ministral-8b-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -816,7 +816,7 @@
     {
       "id": "ministral-14b-2512",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -849,7 +849,7 @@
     {
       "id": "ministral-14b-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -882,7 +882,7 @@
     {
       "id": "mistral-medium-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -922,7 +922,7 @@
     {
       "id": "mistral-medium",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -962,7 +962,7 @@
     {
       "id": "mistral-medium-3-5",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1002,7 +1002,7 @@
     {
       "id": "mistral-medium-3.5",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1042,7 +1042,7 @@
     {
       "id": "mistral-medium-3",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1082,7 +1082,7 @@
     {
       "id": "mistral-medium-2604",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1122,7 +1122,7 @@
     {
       "id": "mistral-vibe-cli-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1162,7 +1162,7 @@
     {
       "id": "mistral-vibe-cli-with-tools",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1202,7 +1202,7 @@
     {
       "id": "magistral-medium-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1242,7 +1242,7 @@
     {
       "id": "glm-5-2",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1275,7 +1275,7 @@
     {
       "id": "zai-glm-5-2",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": true,
@@ -1308,7 +1308,7 @@
     {
       "id": "mistral-embed-2312",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1341,7 +1341,7 @@
     {
       "id": "mistral-embed",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1374,7 +1374,7 @@
     {
       "id": "codestral-embed",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1407,7 +1407,7 @@
     {
       "id": "codestral-embed-2505",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1440,7 +1440,7 @@
     {
       "id": "mistral-moderation-2603",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1471,7 +1471,7 @@
     {
       "id": "mistral-ocr-2512",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1505,7 +1505,7 @@
     {
       "id": "mistral-ocr-3-0",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1539,7 +1539,7 @@
     {
       "id": "mistral-ocr-3",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1573,7 +1573,7 @@
     {
       "id": "mistral-ocr-4-0",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1604,7 +1604,7 @@
     {
       "id": "mistral-ocr-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1638,7 +1638,7 @@
     {
       "id": "mistral-ocr-4",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1672,7 +1672,7 @@
     {
       "id": "mistral-ocr-4-1",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1706,7 +1706,7 @@
     {
       "id": "voxtral-mini-2602",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1739,7 +1739,7 @@
     {
       "id": "voxtral-mini-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1772,7 +1772,7 @@
     {
       "id": "voxtral-mini-transcribe-realtime-2602",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1806,7 +1806,7 @@
     {
       "id": "voxtral-mini-realtime-2602",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1840,7 +1840,7 @@
     {
       "id": "voxtral-mini-realtime-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1874,7 +1874,7 @@
     {
       "id": "voxtral-mini-tts-2603",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
@@ -1907,7 +1907,7 @@
     {
       "id": "voxtral-mini-tts-latest",
       "object": "model",
-      "created": 1788106678,
+      "created": 1788128892,
       "owned_by": "mistralai",
       "capabilities": {
         "completion_chat": false,
