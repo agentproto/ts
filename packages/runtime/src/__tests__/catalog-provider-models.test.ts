@@ -35,6 +35,16 @@ describe("buildCatalogProviderModels", () => {
     expect(res.models.every(m => m.route === "openrouter")).toBe(true)
   })
 
+  it("surfaces addedAt (ISO date) for a sync-stamped OpenRouter route, null for a hand-maintained one", () => {
+    const openrouter = buildCatalogProviderModels({ endpoint: "openrouter" })
+    const glm = openrouter.models.find(m => m.id === "z-ai/glm-5.3-flash")
+    expect(glm?.addedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+
+    const anthropic = buildCatalogProviderModels({ endpoint: "anthropic" })
+    const opus = anthropic.models.find(m => m.id === "claude-opus-4-8")
+    expect(opus?.addedAt).toBeNull()
+  })
+
   it("treats `route` as a synonym for `endpoint`, precedence to `route`", () => {
     const byRoute = buildCatalogProviderModels({ route: "anthropic" })
     const byEndpoint = buildCatalogProviderModels({ endpoint: "anthropic" })
