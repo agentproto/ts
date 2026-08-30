@@ -567,6 +567,13 @@ async function runProfileRefreshModels(args: readonly string[]): Promise<number>
   }
 
   const deps = localProfileProvisionDeps()
+  // Not just a defensive fast-fail: we need `profile.endpoint` to build the
+  // current-catalog snapshot below, so this fetch+check is unavoidable here
+  // regardless of the below call. `refreshAuthProfileModels` re-checks
+  // existence itself (an extra, cheap local-file read) because it must stay
+  // safe to call directly (e.g. from the MCP tool) without a caller having
+  // pre-fetched the profile first — deliberate double-validation, not an
+  // oversight.
   const profile = await deps.getProfile(id)
   if (!profile) {
     process.stderr.write(`agentproto auth profile refresh-models: no profile with id "${id}"\n`)
