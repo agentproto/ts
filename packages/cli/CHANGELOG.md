@@ -1,5 +1,81 @@
 # @agentproto/cli
 
+## 0.15.0
+
+### Minor Changes
+
+- fbdc28b: Centralize session watch keypress handling and add a `s` key to view a session's Story/conversation. Exposes new public helpers `isTerminalSession`, `sessionRowLabel`, `terminalKindMark`, `attachMode`, `decodeWatchKey`, and the `WatchKeyAction` type.
+- 34bbf65: Extract release-check logic from VS Code into `@agentproto/runtime` for code sharing with the CLI. Add `daemon status` release indicator and VS Code update-prompt command with tarball/workspace-specific behaviors.
+- d9aada2: Add CLI flags for agent spawn configuration: `--access-profile` (named billing profile), `--worktree`/`--no-worktree` (git worktree isolation), `--mode` (manifest-declared mode), and `--effort` (reasoning effort). Mirrors MCP agent_start tool fields. Includes actionable error handling for access profile failures.
+- f90a383: Add queue management commands and MCP tools for prompt FIFO inspection and control.
+
+  Introduces `agentproto sessions queue <id>` CLI command with flags `--force`, `--deliver`, `--drop` to inspect and manipulate queued prompts after enqueue. Adds four new MCP tools (`session_queue_list`, `session_queue_promote`, `session_queue_deliver`, `session_queue_drop`) with the same semantics. HTTP routes mirror the MCP surface.
+
+  New public exports: `previewPrompt()`, `promptOriginLabel()`, `QueuedPromptView` interface from @agentproto/runtime for after-the-fact queue UI. Origin tracking distinguishes user-initiated queuing from agent/child-sourced prompts. Queue badge ("N queued") shown in CLI and VS Code session listings.
+
+  All three operations are deliberately distinct: promote reorders without interrupting; deliver interrupts and dispatches immediately; drop removes without delivering.
+
+- 85c0ad7: Add `--host` option and `ui.tools` allowlist enforcement to `agentproto app serve`. The `--host` option allows binding to addresses beyond loopback (default `127.0.0.1`), with a stderr warning when used. The `ui.tools` allowlist is read from APP.md frontmatter, providing a second layer of defense: when absent, all tools are allowed (backward compatible); when explicitly empty, all tools are blocked; otherwise, only listed tools are forwarded. The distinction between absent and empty allows apps to opt into explicit allowlisting while maintaining backward compatibility with apps predating this feature.
+
+### Patch Changes
+
+- 4ac9d37: Documentation sync: Update MCP tool naming conventions (resource_action pattern), version bumps (0.12.0 → 0.14.0), and add docs for new features (daemon status build identity, pack build subcommand, workspace-brain transcript chunking, ops-panel app).
+- 11982fd: Introduce shared dashboard presence classifier (`presenceFor`) to unify session-status rendering across CLI and VS Code. Previously, the CLI sessions table and VS Code tree/webview each derived their own inconsistent status readings. The new four-state model (running/tending/attention/quiet) is driven by a pure, config-aware classifier in @agentproto/runtime, consumed identically by both clients. Fixes status divergence and adds grace-window config (`sessions.attentionDelaySec`, default 60s).
+- e2314b3: Weekly dependency update: minor/patch-range bumps across the workspace.
+  - @mastra/core 1.57.0 → 1.59.0
+  - @mastra/memory 1.26.0 → 1.26.2
+  - @mastra/libsql 1.19.0 → 1.20.0
+  - turbo 2.10.9 → 2.10.10
+  - unpdf 1.8.0 → 1.8.1
+  - e2b 2.38.2 → 2.39.0
+  - @anthropic-ai/claude-agent-sdk 0.3.226/0.3.232 → 0.3.233
+  - @earendil-works/pi-tui 0.84.1 → 0.84.2
+  - mastracode 0.32.6 → 0.33.1
+
+- 7220068: Fix "restart starts a terminal but it doesn't work" bug: add origin-gate that prevents agent-cli/ACP-origin sessions from defaulting to provider-native terminal restart. ACP-origin sessions now default to agent-level resume, with explicit opt-in via `preferNativeTerminal` flag. Implement billing-auth re-resolution for pty-native path to prevent ambient credential leaks, closing #824/#490 for this codepath.
+- 6372c19: Implement exit-time auto-reclaim for policy-provisioned (implicit) worktrees. When a session spawned under the `"always"` isolation policy without an explicit `worktree` request exits cleanly (merged/fresh, no uncommitted work), its worktree is automatically reclaimed using the same safety-layered classify→re-verify→remove pipeline as `worktree gc`. Caller-explicit worktrees (today's manual-cleanup behavior) are never auto-reclaimed. The feature is fire-and-forget, best-effort only, and never interrupts session teardown.
+- 8a3d53d: Fix two critical bugs in `monitorSessionWait`:
+  1. **Stale fast-path**: The synchronous already-in-target-state check for `turn-end` now requires `opts.since !== undefined` to fire. Without a cursor anchor, there is no way to distinguish "the turn this wait is waiting for already finished" from "some turn finished hours ago". Fresh `agentproto sessions wait` CLI processes (which have no persisted cursor) now correctly fall through to the real bus-subscribe long-poll instead of instantly succeeding against stale history.
+  2. **Dropped empty/reason fields**: `SessionTurnEndEvent.empty` (zero assistant output, zero tool calls) and `.reason` (e.g. `"error"`) are now propagated through all three branches of the wait monitor (ring-replay, sync fast-path, bus long-poll) so callers can distinguish productive turns from silent no-ops (bad auth/model config) or adapter-reported errors. CLI exit code 4 is added for these cases.
+
+  Includes a new `currentEventsCursor()` method to capture race-free cursors for prompt+wait patterns that cannot otherwise subscribe before a turn completes.
+
+- c5016ed: Fix critical production incident (2026-08-22) where running daemon sessions' own working directories were incorrectly deleted by worktree GC. Root cause: `computeLiveness` was defaulting to the frozen legacy sessions file instead of reading per-workspace bucket files (AIP-46). Also adds `protectedPaths` mechanism as belt-and-suspenders protection, wiring the daemon's live in-memory session registry to prevent TOCTOU races between plan and apply.
+- b95e23b: Weekly dependency update: bump external dependencies to latest minor/patch versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.233 → 0.3.241
+  - @ast-grep/napi 0.45.1 → 0.45.2
+  - @mastra/core 1.59.0 → 1.61.0
+  - @mastra/libsql 1.20.0 → 1.21.1
+  - @mastra/memory 1.26.2 → 1.27.0
+  - @tanstack/react-query 5.66.0 → 5.102.2
+  - @types/react-dom 19.2.4 → 19.2.5
+  - @types/vscode 1.90.0 → 1.134.0
+  - e2b 2.39.0 → 2.45.0
+  - mastracode 0.33.1 → 0.35.0
+  - turbo 2.10.10 → 2.10.11
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [95f7b5e]
+- Updated dependencies [e826a4a]
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+- Updated dependencies [e2314b3]
+- Updated dependencies [baf8570]
+- Updated dependencies [6372c19]
+- Updated dependencies [8a3d53d]
+- Updated dependencies [c5016ed]
+- Updated dependencies [b95e23b]
+- Updated dependencies [1fd4a15]
+  - @agentproto/model-catalog@0.8.5
+  - @agentproto/driver-agent-cli@2.3.1
+  - @agentproto/secrets@0.2.3
+  - @agentproto/acp@0.7.2
+  - @agentproto/sandbox-e2b@0.3.5
+  - @agentproto/worktree@0.5.3
+  - @agentproto/sandbox-box@0.2.4
+
 ## 0.14.0
 
 ### Minor Changes
@@ -25,7 +101,7 @@
   medium tier, codestral, devstral, ministral, magistral; drops retired ids)
   and declare a model list on the mistral-vibe generic-ACP spec so its launch
   picker offers real models instead of only "custom".
-- 99fb2fb: Accuracy pass on skill documentation and AGENTS.md. Fixes ~20 tool names in skill documentation to match current runtime API (agent*output, command_log_tail, file*_, terminal\__, etc.). Corrects permissions_respond schema documentation. Removes diverged duplicate SKILL.md file from packages/cli/skill/ (never imported by code but shipped in npm tarball). Updates reference documentation paths and line numbers.
+- 99fb2fb: Accuracy pass on skill documentation and AGENTS.md. Fixes ~20 tool names in skill documentation to match current runtime API (agent*output, command_log_tail, file*\_, terminal\_\_, etc.). Corrects permissions_respond schema documentation. Removes diverged duplicate SKILL.md file from packages/cli/skill/ (never imported by code but shipped in npm tarball). Updates reference documentation paths and line numbers.
 - 132ffe5: Documentation updates for CLI enhancements, adapter protocol changes, and provider preset expansion.
   - **@agentproto/adapter-jcode**: Updated protocol documentation to reflect NDJSON streaming support and added exit code semantics for setup requiring TTY (code 78).
   - **@agentproto/cli**: Documented new session commands (`prompt`, `pin`, `unpin`), daemon capabilities (PATH self-healing, version reporting in `/health`), file upload endpoint for `app serve`, and added grok-cli adapter reference.

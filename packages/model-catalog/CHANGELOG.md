@@ -1,5 +1,13 @@
 # @agentproto/model-catalog
 
+## 0.8.5
+
+### Patch Changes
+
+- 95f7b5e: Sync generated catalog data from the pinned provider sources.
+- e826a4a: Sync generated catalog data from the pinned provider sources.
+- 1fd4a15: Make live OpenRouter pricing resilient to testing via snapshots instead of hardcoded assertions. Prices are re-synced weekly by catalog-sync, so snapshot diffs show legitimate changes as reviewable without breaking CI. Also fixes changeset naming collision in sync script that broke #1040/#1063.
+
 ## 0.8.4
 
 ### Patch Changes

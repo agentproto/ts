@@ -1,5 +1,11 @@
 # @agentproto/code-brain
 
+## 0.3.0
+
+### Minor Changes
+
+- 7e00adb: Add `queryManySources` utility for client-side multi-source fan-out queries. Parallelizes `graphQuery` calls across multiple sources, deduplicates results by file+span (with title+body fallback), and returns a single score-ranked hit list.
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/app-kit",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "@agentproto/app-kit — declare an agent (with its system prompt) and its workflows in one TypeScript module and import them anywhere. A thin umbrella over AIP-42 defineAgent + AIP-15 defineWorkflow: defineApp cross-links the two (every workflow agent-step must target the app's agent, every agent workflow ref must resolve), toMastraAgent turns the AGENT.md body into a real Mastra `instructions` field, and emit writes the .agents/<id>/AGENT.md + WORKFLOW.md(+entry) pair that runs through the agentproto-run lane unchanged.",
   "keywords": [
     "agentproto",

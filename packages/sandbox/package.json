@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/sandbox",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "@agentproto/sandbox — AIP-36 SANDBOX.md reference implementation. A composable schema block defining the `sandbox` field — provider, config, command env, network egress, resource limits — for any manifest that names a compute environment for agent-issued shell commands. Sibling primitive to STORAGE.md (AIP-35); inline or ref, mirroring AIP-17 RUNNER and AIP-19 SECRETS. Also ships createSandboxAgentSessionHost — the provider-agnostic seam that runs an AgentStep's coding-agent turn inside a booted sandbox by pointing the existing daemon-backed AgentSessionHost at its MCP URL.",
   "keywords": [
     "agentproto",

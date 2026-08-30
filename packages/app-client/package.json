@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/app-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "@agentproto/app-client — typed client for the window.McpApp bridge an agentproto host injects into an app's UI, plus TanStack Query hooks. connectMcpApp() resolves host (panel / app serve) → dev bridge (app dev proxy) → standalone mocks, so the same UI code runs embedded, in vite dev, and as a plain static page.",
   "keywords": [
     "agentproto",
