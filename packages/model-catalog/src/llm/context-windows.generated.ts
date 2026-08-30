@@ -3,6 +3,10 @@
 // Sources: api.anthropic.com/v1/models, api.groq.com/openai/v1/models,
 //         api.x.ai/v1/models, api.moonshot.ai/v1/models,
 //         api.mistral.ai/v1/models
+// google entries: SOURCED FROM OPENROUTER (openrouter.ai/api/v1/models),
+//         Google's native API is billing-blocked — ids remapped from
+//         google/<id> to the bare native id; see the generator's module
+//         doc comment for the exact remap + skip rules.
 // Context window (max input tokens) + max output tokens per live model id.
 // NOT pricing — see LLM_PRICING_CATALOG / OPENROUTER_ROUTES in catalog.ts.
 
@@ -10,7 +14,7 @@ export interface ContextWindowEntry {
   contextWindow: number
   maxOutput?: number
   displayName?: string
-  provider: "anthropic" | "groq" | "xai" | "moonshot" | "mistral"
+  provider: "anthropic" | "groq" | "xai" | "moonshot" | "mistral" | "google"
 }
 
 export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {
@@ -34,6 +38,13 @@ export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {
   "devstral-2512": { contextWindow: 262144, provider: "mistral" },
   "devstral-latest": { contextWindow: 262144, provider: "mistral" },
   "devstral-medium-latest": { contextWindow: 262144, provider: "mistral" },
+  "gemini-2.5-flash": { contextWindow: 1048576, maxOutput: 65535, provider: "google" },
+  "gemini-2.5-flash-lite": { contextWindow: 1048576, maxOutput: 65535, provider: "google" },
+  "gemini-2.5-pro": { contextWindow: 1048576, maxOutput: 65536, provider: "google" },
+  "gemini-3-flash-preview": { contextWindow: 1048576, maxOutput: 65536, provider: "google" },
+  "gemini-3.1-flash-lite": { contextWindow: 1048576, maxOutput: 65536, provider: "google" },
+  "gemini-3.1-pro-preview": { contextWindow: 1048576, maxOutput: 65536, provider: "google" },
+  "gemini-3.5-flash": { contextWindow: 1048576, maxOutput: 65536, provider: "google" },
   "glm-5-2": { contextWindow: 1048576, provider: "mistral" },
   "grok-4.20-0309-non-reasoning": { contextWindow: 1000000, provider: "xai" },
   "grok-4.20-0309-reasoning": { contextWindow: 1000000, provider: "xai" },
