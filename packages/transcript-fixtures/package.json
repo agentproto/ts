@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/transcript-fixtures",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/transcript-fixtures — canonical RAW daemon-transcript fixtures. The single source of truth for the `{seq, ts, kind, ...}` records produced by the daemon's transcript writer, consumed as anti-drift conformity data by the `packages/runtime` test suites (this repo) and by `packages/react-agentproto`'s `normalize.ts` (the agentik-studio repo, via `workspace:*`). Zero runtime dependencies — just typed data.",
   "keywords": [
     "agentproto",
@@ -51,8 +51,7 @@
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
-  "dependencies": {
-  },
+  "dependencies": {},
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",

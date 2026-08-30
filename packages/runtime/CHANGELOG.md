@@ -1,5 +1,102 @@
 # @agentproto/runtime
 
+## 2.9.0
+
+### Minor Changes
+
+- 0097d36: Add a new opt-in, read-only external filesystem plane for installed apps: an app can declare `externalReadRoots` (a manifest field on `AppDefinition`/`AppHandle`/`AppFrontmatter`/`InstalledApp`) to be granted read access to a real host folder outside the daemon's sandbox — e.g. a user's actual `~/Downloads/applications` — without touching the existing app-data (app-owned dir) or fs-tools (workspace-root) planes.
+
+  Each root is `~`-expanded, resolved absolute, and validated to exist as a real directory at install time (`app_install`/`app_apply` fail fast otherwise). Two new MCP tools (`app_external_list`, `app_external_read`) and a new `GET /apps/:appId/external-blob?root=&path=` HTTP route read from a granted root only when the caller's `root` argument is an exact match — no prefix/fuzzy matching. `app_external_read` serves only an allowlist of text-ish extensions under a 2MB cap; binary content (PDFs, images, …) streams through the HTTP route instead. There is no write or delete tool for these roots anywhere in the daemon.
+
+- 88134e9: Signal sources ingested with a stale pipeline version. Introduces `PIPELINE_VERSION` constant and `isStaleRecord()` helper to detect when ingested data was produced by an older version of the chunking/processing logic. When `ingestPending()` completes, it now reports `staleSources` (count of records behind the current pipeline version) and `currentPipelineVersion`. The new optional `reindexStale` parameter to `ingestPending()` forces re-ingestion of stale sources. Updated `workspace_brain_status` and `workspace_brain_ingest` tool descriptions to explain the new `staleSources` signal.
+- 557c4d0: Add adapter-capability spawn guard to prevent spawning with models the adapter doesn't support on a resolved route.
+
+  The bug: a supervisor spawned `agent_start({adapter:"claude-code", model:"openrouter/deepseek/deepseek-v4-flash-0731"})` with no explicit `route.gateway`. The money-safety wallet guard (checkModelWalletEligibility) passed — openrouter genuinely bills that model. But claude-code's own manifest never curates that specific model on that route; its ACP wrapper validates against its own live selector and rejects anything it doesn't recognize. The upstream 404 reached the driver, leaving 0 tool calls.
+
+  The fix: before spawn and restart, check whether the adapter is among the resolved (vendor, product, route) row's adapters in the catalog. Reuses the exact same `buildCatalogModels` join `catalog_models` reports — never a parallel per-model table. Optional dependency: skipped when `listCatalogModels` isn't wired, preserving pre-guard behavior.
+
+  Adds:
+  - `checkModelAdapterEligibility` predicate function
+  - `modelAdapterIncompatibleMessage` message formatter
+  - `ModelAdapterEligibility` result interface
+  - New error code `model_adapter_incompatible` on spawn/restart failures
+
+- 007716f: Add two new chat streaming routes (`POST /sessions/:id/chat` and `POST /sessions/chat`) that map daemon transcript records into Vercel AI SDK v6 UIMessageChunk SSE format. Includes a pure record→chunk mapper with canonical fixture conformity tests, two-phase validation for existing sessions, and refactored shared spawn logic to prevent route surface drift.
+- 34bbf65: Extract release-check logic from VS Code into `@agentproto/runtime` for code sharing with the CLI. Add `daemon status` release indicator and VS Code update-prompt command with tarball/workspace-specific behaviors.
+- 7d39ce7: Add daemon-side AGENTS.md resolution and injection (WP-R2) + role disposition SYSTEM preamble tagging (WP-R3). The daemon now resolves the nearest AGENTS.md walking up from a session's cwd (bounded by git toplevel), injects it into the initial prompt (inline for small files, pointer for large ones), and stamps the resolution on the descriptor. Role disposition text has been clarified and is now recorded separately as a SYSTEM preamble in transcripts (along with lineage and AGENTS.md pointer), allowing UIs to fold synthesized text instead of rendering it as user bubbles. Includes configurable inline/pointer threshold via config, dependency-injected fs for testability, and comprehensive unit + integration test coverage.
+- f90a383: Add queue management commands and MCP tools for prompt FIFO inspection and control.
+
+  Introduces `agentproto sessions queue <id>` CLI command with flags `--force`, `--deliver`, `--drop` to inspect and manipulate queued prompts after enqueue. Adds four new MCP tools (`session_queue_list`, `session_queue_promote`, `session_queue_deliver`, `session_queue_drop`) with the same semantics. HTTP routes mirror the MCP surface.
+
+  New public exports: `previewPrompt()`, `promptOriginLabel()`, `QueuedPromptView` interface from @agentproto/runtime for after-the-fact queue UI. Origin tracking distinguishes user-initiated queuing from agent/child-sourced prompts. Queue badge ("N queued") shown in CLI and VS Code session listings.
+
+  All three operations are deliberately distinct: promote reorders without interrupting; deliver interrupts and dispatches immediately; drop removes without delivering.
+
+- 11982fd: Introduce shared dashboard presence classifier (`presenceFor`) to unify session-status rendering across CLI and VS Code. Previously, the CLI sessions table and VS Code tree/webview each derived their own inconsistent status readings. The new four-state model (running/tending/attention/quiet) is driven by a pure, config-aware classifier in @agentproto/runtime, consumed identically by both clients. Fixes status divergence and adds grace-window config (`sessions.attentionDelaySec`, default 60s).
+- 9191286: Implement WP-R4: per-workspace RULES.md injection. Enables workspace supervisors to define standing rules that automatically inject into every agent spawn in the workspace, carrying workspace-wide discipline like "main checkout untouchable", "PR-only never merge", "no AI attribution" without needing to hand-type them into every brief. Rules are read from the workspace's state bucket and injected ahead of the role disposition to establish the fundamental layer before role-specific behavior.
+- 9953527: Add ground-truth cross-check for judge gates: when a judge gate runs on a session that has already had a machine gate (shell or cost) execute, the judge's prompt now includes the machine gate's actual exit code and output. This prevents judges from rendering verdicts that contradict already-computed results. Includes `kind` discriminator on `PolicyRunState.lastGate` to distinguish shell/cost/judge gates.
+
+### Patch Changes
+
+- dfb41f6: Carry `::agentproto-artifact::` ledger markers through the session ring buffer. The tool-result summarizer collapses multi-line tool output to one lossy line ("N lines, XB"), which destroyed the artifact-ledger marker the CI delivery helper prints — `driver: artifacts=[]` on every agentflow run, so the review provenance stamp always degraded to sha discovery (and PR #1054's review lost its footer entirely when a network blip killed the job before the fallback could run). Marker lines are now re-emitted verbatim under a `[tool-artifact]` prefix: raw `agent_output` keeps them harvestable (and JSON-parseable — no ANSI wrapping), while clean mode still strips them from human-facing output.
+- 76f2c78: Multi-surface external subscriptions — one adapter can now declare BOTH a Claude and a ChatGPT native OAuth login, so mastracode/opencode's subscription eligibility no longer forces an anthropic-or-openai choice. `authSubscription` accepts a single surface (unchanged) OR an array of surfaces, one per billing provider; two entries claiming the same provider scope (or two unscoped entries) are rejected at manifest-validation time rather than resolved arbitrarily at spawn time. The runtime's old `subscriptionAppliesTo` boolean predicate is replaced by `subscriptionSurfaceFor`, which resolves the MATCHING surface for a spawn's resolved provider — used by `resolveAuthSpec` and the three mirrored direct-methods projections (`session-spawn.ts`, `session-restart-core.ts`, `catalog-models.ts`) so they stay in lockstep. `verifyLocalLoginPresent` now takes an optional provision-recipe `methodId` (convention `<provider>-oauth`) so a multi-surface spawn verifies the RIGHT login file instead of always checking the recipe's default method. mastracode declares both `{external: true, provider: "anthropic"}` and `{external: true, provider: "openai"}` — its ChatGPT login (`openaiCodexOAuthProvider`) is stored in its own auth.json under the key `openai-codex`, verified live. opencode declares the same pair: its ChatGPT OAuth login was reverse-engineered from the shipped binary (no OSS source available for this build) and is keyed under the SAME `openai` provider id its API-key flow already uses — there is no separate "chatgpt" key, confirmed by tracing the binary's generic `Cli.providers.login` → `Auth.set(provider.id, …)` write path. Both adapters' provision recipes gained an `openai-oauth` method alongside the existing `anthropic-oauth` one.
+- adebd5b: External subscription verification resolves the ADAPTER's recipe, never the profile's/config's source. An external surface verifies the adapter CLI's own login file, but `profile.source ?? adapter` let a source naming another CLI's login shadow the adapter recipe — observed live: spawning mastracode with the codex-local profile (`source: "codex"`) resolved the codex recipe and failed with "provider 'codex' has no method 'openai-oauth'" instead of checking mastracode's own auth.json. Both the access-profile path and the config-defaults path now pass the adapter slug; codex-local on the codex adapter is unchanged (source equalled the slug there, which is why the bug hid).
+- 1297e7f: Rate-limit `/mcp` transport error logs through the existing
+  `createReconnectLogGate` (first failure immediate, then ≤1 line per minute
+  with a suppressed-count suffix). Bare per-failure `console.error` on a
+  launchd-redirected regular-file stderr is a synchronous disk write per
+  malformed probe — a log flood and an event-loop stall risk under bursts of
+  retrying clients (the `Parse error: Invalid JSON` / ECONNRESET incident).
+  Wire behavior is unchanged: every probe still gets its JSON-RPC error
+  response.
+- e3ad769: Claude subscription on pi/opencode/mastracode — each through the door that actually exists — and honest subscription eligibility everywhere. The runtime assumed "Anthropic OATs work as API keys" for every model-derived adapter and silently injected the subscription OAuth token into `ANTHROPIC_API_KEY`, where Anthropic's edge rejects it as an invalid key after the session is live (observed on opencode: "Internal error: API key is invalid"). Subscription support now requires an explicit, provider-matching `authSubscription` surface, shared across all four eligibility/resolution sites via one `subscriptionAppliesTo` predicate. pi declares its documented bearer env (`ANTHROPIC_OAUTH_TOKEN`, scoped `provider: "anthropic"`) so a Claude subscription profile runs pi's anthropic models natively. opencode and mastracode declare `external` anthropic-scoped subscriptions — each CLI's OWN Claude Pro/Max OAuth login (`opencode auth login`; mastracode's `/login`), backed by new `opencode`/`mastracode` provision recipes pointing at each CLI's auth store: the runtime verifies the login is present (fail-loud), injects nothing, and scrubs the api-key vars so a leftover key can't override it. Adapters/models with no matching surface fail fast at spawn with an actionable message instead of failing opaquely upstream, and the catalog stops advertising subscription profiles as runnable on them.
+- 4ac9d37: Documentation sync: Update MCP tool naming conventions (resource_action pattern), version bumps (0.12.0 → 0.14.0), and add docs for new features (daemon status build identity, pack build subcommand, workspace-brain transcript chunking, ops-panel app).
+- f62f63a: Fix regression where pty-native session restarts lost the isolated config directory, causing provider resume to fail with "No conversation found". Add env-var threading support (CLAUDE_CONFIG_DIR) for session restarts with proper replay across pty-plain restart chains. Improve observability for abnormal PTY exits by capturing and surfacing diagnostic output.
+- 90411f9: Document `agent_start(wait: true)` serialization behavior. Batching multiple `wait: true` calls in a single turn serializes them (caller-side harness limitation, not daemon bug). Includes clear workaround patterns for parallel fan-out using `wait: false` + `agentproto sessions wait` or `policy_attach`.
+- c48c10d: Document `worktrees.isolation` configuration policy with detailed explanation of the three modes (on-request, always, never), depth-0-only behavior for nested spawns, and important config-key gotcha that can lead to silent misconfiguration.
+- c6b5e41: Fix HTTP streaming finalization bug: prevent writing POST-terminal records (like usage_snapshot) after stream is finalized. Add integration test for `/sessions/:id/chat` SSE streaming route validating the complete UI message stream chunk sequence.
+- d5eb115: Separate daemon-composed system prompts from user prompts in transcripts. The role disposition (and other daemon-synthesized preambles like lineage, AGENTS.md) are now recorded as a distinct `system-prompt` event ahead of the `user-prompt`, allowing viewers to fold synthesized context instead of rendering it as a user bubble. The adapter still receives the single composed prompt unchanged; the split is recording-only on the daemon's event stream.
+- 8900417: Add support for `usage_update` and `usage_snapshot` transcript record kinds as known no-ops. These high-frequency cost/context bookkeeping records were previously falling through to the unknown-kind error path. Fixes spurious error chunks and console logging on every turn against a live daemon.
+- dcfaa65: Fix text fragment rejoining logic to use only the explicit `partial` flag instead of heuristic `endsWith("\n")` check. This prevents complete text blocks from being incorrectly concatenated when tool calls interleave, which was causing paragraphs to run together (e.g., "…the client.Trial logic…"). The writer's transcript contract emits end-of-message blocks as non-partial records without trailing newlines, making the explicit `partial: true` flag the only reliable glue signal.
+- baf8570: Surface ACP's `available_commands_update` notification instead of silently dropping it. `translateSessionUpdate` now maps it to a new `available-commands` StreamEvent, `transcript-writer` persists it to `events.jsonl`, and the daemon mirrors the latest command list onto `SessionDescriptor.availableCommands`, exposed read-only via `GET /sessions` / `GET /sessions/:id`.
+- 7220068: Fix "restart starts a terminal but it doesn't work" bug: add origin-gate that prevents agent-cli/ACP-origin sessions from defaulting to provider-native terminal restart. ACP-origin sessions now default to agent-level resume, with explicit opt-in via `preferNativeTerminal` flag. Implement billing-auth re-resolution for pty-native path to prevent ambient credential leaks, closing #824/#490 for this codepath.
+- bdc7d6f: Fix profile-aware route fallback for model-derived API key adapters: when a model's naive prefix-guessed route doesn't make a named profile eligible, search the model's actual serviceable routes for one that does, allowing models like "deepseek/deepseek-v4-flash" (billed via "openrouter") to work with appropriate profiles without requiring explicit `route.gateway`.
+- 6372c19: Implement exit-time auto-reclaim for policy-provisioned (implicit) worktrees. When a session spawned under the `"always"` isolation policy without an explicit `worktree` request exits cleanly (merged/fresh, no uncommitted work), its worktree is automatically reclaimed using the same safety-layered classify→re-verify→remove pipeline as `worktree gc`. Caller-explicit worktrees (today's manual-cleanup behavior) are never auto-reclaimed. The feature is fire-and-forget, best-effort only, and never interrupts session teardown.
+- 8a3d53d: Fix two critical bugs in `monitorSessionWait`:
+  1. **Stale fast-path**: The synchronous already-in-target-state check for `turn-end` now requires `opts.since !== undefined` to fire. Without a cursor anchor, there is no way to distinguish "the turn this wait is waiting for already finished" from "some turn finished hours ago". Fresh `agentproto sessions wait` CLI processes (which have no persisted cursor) now correctly fall through to the real bus-subscribe long-poll instead of instantly succeeding against stale history.
+  2. **Dropped empty/reason fields**: `SessionTurnEndEvent.empty` (zero assistant output, zero tool calls) and `.reason` (e.g. `"error"`) are now propagated through all three branches of the wait monitor (ring-replay, sync fast-path, bus long-poll) so callers can distinguish productive turns from silent no-ops (bad auth/model config) or adapter-reported errors. CLI exit code 4 is added for these cases.
+
+  Includes a new `currentEventsCursor()` method to capture race-free cursors for prompt+wait patterns that cannot otherwise subscribe before a turn completes.
+
+- c5016ed: Fix critical production incident (2026-08-22) where running daemon sessions' own working directories were incorrectly deleted by worktree GC. Root cause: `computeLiveness` was defaulting to the frozen legacy sessions file instead of reading per-workspace bucket files (AIP-46). Also adds `protectedPaths` mechanism as belt-and-suspenders protection, wiring the daemon's live in-memory session registry to prevent TOCTOU races between plan and apply.
+- 1fd4a15: Make live OpenRouter pricing resilient to testing via snapshots instead of hardcoded assertions. Prices are re-synced weekly by catalog-sync, so snapshot diffs show legitimate changes as reviewable without breaking CI. Also fixes changeset naming collision in sync script that broke #1040/#1063.
+- Updated dependencies [0097d36]
+- Updated dependencies [95f7b5e]
+- Updated dependencies [e826a4a]
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+- Updated dependencies [4ac9d37]
+- Updated dependencies [88134e9]
+- Updated dependencies [e2314b3]
+- Updated dependencies [baf8570]
+- Updated dependencies [b95e23b]
+- Updated dependencies [b1a8b7e]
+- Updated dependencies [1fd4a15]
+  - @agentproto/app-kit@0.7.0
+  - @agentproto/model-catalog@0.8.5
+  - @agentproto/driver-agent-cli@2.3.1
+  - @agentproto/secrets@0.2.3
+  - @agentproto/acp@0.7.2
+  - @agentproto/workspace-brain@0.4.0
+  - @agentproto/workflow@0.3.0
+  - @agentproto/workflow-runtime@0.8.0
+  - @agentproto/providers-store@0.3.8
+  - @agentproto/sandbox@0.2.4
+  - @agentproto/workflow-loader@0.1.4
+  - @agentproto/eval-reporters@0.2.7
+  - @agentproto/telemetry-langfuse@0.2.5
+
 ## 2.8.0
 
 ### Minor Changes

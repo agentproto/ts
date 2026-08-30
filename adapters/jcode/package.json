@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-jcode",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "@agentproto/adapter-jcode — AIP-45 adapter for 1jehuang/jcode, a RAM-efficient Rust coding agent. Spawns `jcode run` in headless mode.",
   "keywords": [
     "agentproto",

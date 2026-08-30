@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-hermes",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "@agentproto/adapter-hermes — AIP-45 AGENT-CLI adapter for Nous Research's Hermes Agent. Spawns `hermes acp` and drives it as an agentproto agent CLI via the ACP protocol arm of @agentproto/driver-agent-cli.",
   "keywords": [
     "agentproto",

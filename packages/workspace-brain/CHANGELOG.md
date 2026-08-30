@@ -1,5 +1,17 @@
 # @agentproto/workspace-brain
 
+## 0.4.0
+
+### Minor Changes
+
+- 88134e9: Signal sources ingested with a stale pipeline version. Introduces `PIPELINE_VERSION` constant and `isStaleRecord()` helper to detect when ingested data was produced by an older version of the chunking/processing logic. When `ingestPending()` completes, it now reports `staleSources` (count of records behind the current pipeline version) and `currentPipelineVersion`. The new optional `reindexStale` parameter to `ingestPending()` forces re-ingestion of stale sources. Updated `workspace_brain_status` and `workspace_brain_ingest` tool descriptions to explain the new `staleSources` signal.
+
+### Patch Changes
+
+- 4ac9d37: Documentation sync: Update MCP tool naming conventions (resource_action pattern), version bumps (0.12.0 → 0.14.0), and add docs for new features (daemon status build identity, pack build subcommand, workspace-brain transcript chunking, ops-panel app).
+  - @agentproto/corpus@0.5.2
+  - @agentproto/adapter-knowledge-files@0.2.3
+
 ## 0.3.0
 
 ### Minor Changes

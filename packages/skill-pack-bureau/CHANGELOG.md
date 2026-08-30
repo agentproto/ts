@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-bureau
 
+## 0.3.1
+
+### Patch Changes
+
+- 4ac9d37: Documentation sync: Update MCP tool naming conventions (resource_action pattern), version bumps (0.12.0 → 0.14.0), and add docs for new features (daemon status build identity, pack build subcommand, workspace-brain transcript chunking, ops-panel app).
+
 ## 0.3.0
 
 ### Minor Changes
@@ -8,7 +14,7 @@
 
 ### Patch Changes
 
-- 99fb2fb: Accuracy pass on skill documentation and AGENTS.md. Fixes ~20 tool names in skill documentation to match current runtime API (agent*output, command_log_tail, file*_, terminal\__, etc.). Corrects permissions_respond schema documentation. Removes diverged duplicate SKILL.md file from packages/cli/skill/ (never imported by code but shipped in npm tarball). Updates reference documentation paths and line numbers.
+- 99fb2fb: Accuracy pass on skill documentation and AGENTS.md. Fixes ~20 tool names in skill documentation to match current runtime API (agent*output, command_log_tail, file*\_, terminal\_\_, etc.). Corrects permissions_respond schema documentation. Removes diverged duplicate SKILL.md file from packages/cli/skill/ (never imported by code but shipped in npm tarball). Updates reference documentation paths and line numbers.
 - b941fd1: Translate French skill documentation to English. Includes supervisor-session, durable-supervision, agent-session-orchestration-agentproto, nested-orchestration, light-coder-orchestration, hermes-headless-background, adapter-setup-kit, and bureau quickstart. Preserves all API names, commands, JSON, paths, and code examples verbatim. Also applies bundled API reference fixes: execute_command → command_execute, read_file/write_file → file_read/file_write, get_agent_session_output → agent_output, create_tunnel → tunnel_create.
 
 ## 0.2.0

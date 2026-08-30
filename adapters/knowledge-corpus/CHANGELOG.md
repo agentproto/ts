@@ -1,5 +1,11 @@
 # @agentproto/adapter-knowledge-corpus
 
+## 0.3.1
+
+### Patch Changes
+
+- @agentproto/corpus@0.5.2
+
 ## 0.3.0
 
 ### Minor Changes

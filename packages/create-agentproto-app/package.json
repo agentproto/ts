@@ -1,6 +1,6 @@
 {
   "name": "create-agentproto-app",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "create-agentproto-app — scaffold an agentproto agent app: the .agentproto/ shell (APP.md, an agent, a workflow) plus a Vite + TanStack Router + TanStack Query ui/ project that builds to static files in .agentproto/ui/. Run with `pnpm create agentproto-app <dir>`.",
   "keywords": [
     "agentproto",

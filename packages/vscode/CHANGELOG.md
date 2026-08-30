@@ -1,5 +1,72 @@
 # agentproto-vscode
 
+## 0.11.0
+
+### Minor Changes
+
+- b4e0806: Add release indicator status bar showing when a newer @agentproto/cli is available on npm, with configurable poll interval and offline-safe cache fallback.
+- 34bbf65: Extract release-check logic from VS Code into `@agentproto/runtime` for code sharing with the CLI. Add `daemon status` release indicator and VS Code update-prompt command with tarball/workspace-specific behaviors.
+- f90a383: Add queue management commands and MCP tools for prompt FIFO inspection and control.
+
+  Introduces `agentproto sessions queue <id>` CLI command with flags `--force`, `--deliver`, `--drop` to inspect and manipulate queued prompts after enqueue. Adds four new MCP tools (`session_queue_list`, `session_queue_promote`, `session_queue_deliver`, `session_queue_drop`) with the same semantics. HTTP routes mirror the MCP surface.
+
+  New public exports: `previewPrompt()`, `promptOriginLabel()`, `QueuedPromptView` interface from @agentproto/runtime for after-the-fact queue UI. Origin tracking distinguishes user-initiated queuing from agent/child-sourced prompts. Queue badge ("N queued") shown in CLI and VS Code session listings.
+
+  All three operations are deliberately distinct: promote reorders without interrupting; deliver interrupts and dispatches immediately; drop removes without delivering.
+
+### Patch Changes
+
+- dde599e: Simplify sessions webview layout: merge "Awaiting bg" section into "Quiet" (reducing 6 sections to 5) while preserving visual distinction via amber dot and pulsing bg-task indicator. Replace text label (⏳N) with small ambient pulsing dot after cost tag for pending background tasks.
+- 11982fd: Introduce shared dashboard presence classifier (`presenceFor`) to unify session-status rendering across CLI and VS Code. Previously, the CLI sessions table and VS Code tree/webview each derived their own inconsistent status readings. The new four-state model (running/tending/attention/quiet) is driven by a pure, config-aware classifier in @agentproto/runtime, consumed identically by both clients. Fixes status divergence and adds grace-window config (`sessions.attentionDelaySec`, default 60s).
+- dcfaa65: Fix text fragment rejoining logic to use only the explicit `partial` flag instead of heuristic `endsWith("\n")` check. This prevents complete text blocks from being incorrectly concatenated when tool calls interleave, which was causing paragraphs to run together (e.g., "…the client.Trial logic…"). The writer's transcript contract emits end-of-message blocks as non-partial records without trailing newlines, making the explicit `partial: true` flag the only reliable glue signal.
+- 6372c19: Implement exit-time auto-reclaim for policy-provisioned (implicit) worktrees. When a session spawned under the `"always"` isolation policy without an explicit `worktree` request exits cleanly (merged/fresh, no uncommitted work), its worktree is automatically reclaimed using the same safety-layered classify→re-verify→remove pipeline as `worktree gc`. Caller-explicit worktrees (today's manual-cleanup behavior) are never auto-reclaimed. The feature is fire-and-forget, best-effort only, and never interrupts session teardown.
+- b95e23b: Weekly dependency update: bump external dependencies to latest minor/patch versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.233 → 0.3.241
+  - @ast-grep/napi 0.45.1 → 0.45.2
+  - @mastra/core 1.59.0 → 1.61.0
+  - @mastra/libsql 1.20.0 → 1.21.1
+  - @mastra/memory 1.26.2 → 1.27.0
+  - @tanstack/react-query 5.66.0 → 5.102.2
+  - @types/react-dom 19.2.4 → 19.2.5
+  - @types/vscode 1.90.0 → 1.134.0
+  - e2b 2.39.0 → 2.45.0
+  - mastracode 0.33.1 → 0.35.0
+  - turbo 2.10.10 → 2.10.11
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [0097d36]
+- Updated dependencies [dfb41f6]
+- Updated dependencies [76f2c78]
+- Updated dependencies [adebd5b]
+- Updated dependencies [1297e7f]
+- Updated dependencies [e3ad769]
+- Updated dependencies [4ac9d37]
+- Updated dependencies [88134e9]
+- Updated dependencies [f62f63a]
+- Updated dependencies [90411f9]
+- Updated dependencies [557c4d0]
+- Updated dependencies [007716f]
+- Updated dependencies [c48c10d]
+- Updated dependencies [34bbf65]
+- Updated dependencies [c6b5e41]
+- Updated dependencies [7d39ce7]
+- Updated dependencies [d5eb115]
+- Updated dependencies [f90a383]
+- Updated dependencies [11982fd]
+- Updated dependencies [8900417]
+- Updated dependencies [9191286]
+- Updated dependencies [dcfaa65]
+- Updated dependencies [baf8570]
+- Updated dependencies [7220068]
+- Updated dependencies [bdc7d6f]
+- Updated dependencies [6372c19]
+- Updated dependencies [8a3d53d]
+- Updated dependencies [c5016ed]
+- Updated dependencies [9953527]
+- Updated dependencies [1fd4a15]
+  - @agentproto/runtime@2.9.0
+
 ## 0.10.0
 
 ### Minor Changes
