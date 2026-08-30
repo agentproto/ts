@@ -29,6 +29,7 @@ import {
   deleteAuthProfile,
   getAuthProfile,
   listAuthProfiles,
+  refreshAuthProfileModels,
   removeAuthProfile,
   setAuthProfileEnabled,
   setAuthProfileModels,
@@ -41,6 +42,7 @@ import {
   importDiscoveredCredential,
   CredentialImportError,
 } from "./credential-discovery.js"
+import { buildCatalogProviderModels } from "./catalog-provider-models.js"
 
 /** Wire `@agentproto/auth`'s provisioning helpers to the real keychain +
  *  on-disk profile store. Shared by the MCP tools here and the HTTP routes in
@@ -320,6 +322,47 @@ export function registerAuthProfileTools(server: McpServer): void {
         }
         return errorText(
           `auth_profile_set_models failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    },
+  )
+
+  // ── auth_profile_refresh_models ───────────────────────────────
+  server.tool(
+    "auth_profile_refresh_models",
+    "Re-sync a `mode: \"allow\"` profile's curated `ids` against the CURRENT " +
+      "model catalog for its endpoint — fixes curation drift, where an " +
+      "allowlist generated once at import/provision time never picks up " +
+      "models the catalog adds later or drops models it retires. Re-runs the " +
+      "same enumeration (`catalog_provider_models` for the profile's " +
+      "endpoint) that would build the list today and replaces `ids` with it. " +
+      "Explicit and opt-in: nothing calls this automatically, so a profile " +
+      "is only ever touched when this tool is invoked on it by name. " +
+      "Rejects a profile with no `mode: \"allow\"` curation (a `mode: \"all\"` " +
+      "profile already tracks the live catalog on every read, so there is " +
+      "nothing to refresh). Returns the updated profile plus the `added`/" +
+      "`removed` id diff.",
+    {
+      id: z.string().describe("The profile id to refresh."),
+    },
+    async ({ id }) => {
+      try {
+        const deps = defaultProfileProvisionDeps()
+        const profile = await deps.getProfile(id)
+        if (!profile) {
+          return errorText(`auth_profile_refresh_models rejected: no profile with id "${id}"`)
+        }
+        const currentIds = buildCatalogProviderModels({ endpoint: profile.endpoint }).models.map(
+          m => m.id,
+        )
+        const result = await refreshAuthProfileModels(id, currentIds, deps)
+        return text({ profile: result.profile, added: result.added, removed: result.removed })
+      } catch (err) {
+        if (err instanceof AuthProfileValidationError) {
+          return errorText(`auth_profile_refresh_models rejected: ${err.message}`)
+        }
+        return errorText(
+          `auth_profile_refresh_models failed: ${err instanceof Error ? err.message : String(err)}`,
         )
       }
     },

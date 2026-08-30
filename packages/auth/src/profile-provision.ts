@@ -439,3 +439,76 @@ export async function setAuthProfileModels(
   await deps.addProfile(updated)
   return updated
 }
+
+/** The result of {@link refreshAuthProfileModels} — the updated profile plus
+ *  the diff against the previous allowlist, so a caller (CLI, MCP tool) can
+ *  report exactly what changed without re-diffing itself. */
+export interface RefreshAuthProfileModelsResult {
+  profile: AuthProfile
+  /** Ids newly present in the refreshed allowlist that weren't in the old one. */
+  added: string[]
+  /** Ids that were in the old allowlist but have dropped out of the current
+   *  catalog snapshot (e.g. a retired model). */
+  removed: string[]
+}
+
+/**
+ * Re-sync a `mode: "allow"` profile's `ids` against a CURRENT catalog
+ * snapshot for its endpoint (WS3 follow-up — fixes curation drift). A
+ * profile's allowlist is otherwise a frozen snapshot taken once at
+ * create/import time: the catalog moves (new models ship, old ones retire)
+ * but `ids` never does, so a profile silently stops seeing new models and
+ * keeps offering retired ones. This re-runs the SAME enumeration a caller
+ * would have used to build the list in the first place — "every model
+ * currently known for this profile's endpoint" — against `currentIds`, so
+ * `ids` tracks the live catalog instead of the day it was written.
+ *
+ * `currentIds` is caller-supplied (typically every id `getModelsByProvider`
+ * /`buildCatalogProviderModels` reports for `profile.endpoint`) rather than
+ * looked up here, keeping this package decoupled from `@agentproto/model-catalog`
+ * (see {@link AuthProfile.endpoint}'s doc) and the diffing logic unit-testable
+ * against a fake snapshot with no catalog wiring at all.
+ *
+ * Deliberately EXPLICIT and OPT-IN — a caller (CLI verb, MCP tool) invokes
+ * this on one named profile; nothing calls it automatically. A profile a
+ * human deliberately narrowed is therefore never touched unless that human
+ * (or an operator with the same intent) explicitly asks this profile to be
+ * refreshed.
+ *
+ * Throws {@link AuthProfileValidationError} for an unknown id, and — by
+ * design — for a profile with no `mode: "allow"` curation to refresh: an
+ * absent `models` field (or `mode: "all"`) already tracks the live catalog
+ * on every read (see `profileAllowsModel` in `catalog-models.ts`), so
+ * "refreshing" it would be a silent no-op that could mask the caller asking
+ * for the wrong profile. Rejecting loudly instead surfaces that mismatch.
+ */
+export async function refreshAuthProfileModels(
+  id: string,
+  currentIds: readonly string[],
+  deps: ProfileProvisionDeps,
+): Promise<RefreshAuthProfileModelsResult> {
+  const trimmed = (id ?? "").trim()
+  if (!trimmed) throw new AuthProfileValidationError("id is required")
+
+  const profile = await deps.getProfile(trimmed)
+  if (!profile) {
+    throw new AuthProfileValidationError(`no profile with id "${trimmed}"`)
+  }
+  if (!profile.models || profile.models.mode !== "allow") {
+    throw new AuthProfileValidationError(
+      `profile "${trimmed}" has no mode:"allow" curation to refresh — ` +
+        `mode:"all" (or absent models) already tracks the live catalog on every read`,
+    )
+  }
+
+  const nextIds = [...new Set(currentIds.map(s => s.trim()).filter(Boolean))]
+  const prevIds = profile.models.ids
+  const prevSet = new Set(prevIds)
+  const nextSet = new Set(nextIds)
+  const added = nextIds.filter(i => !prevSet.has(i))
+  const removed = prevIds.filter(i => !nextSet.has(i))
+
+  const updated: AuthProfile = { ...profile, models: { mode: "allow", ids: nextIds } }
+  await deps.addProfile(updated)
+  return { profile: updated, added, removed }
+}
