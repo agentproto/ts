@@ -2110,6 +2110,145 @@ describe("transcriptPanel webview — @file mentions", () => {
   })
 })
 
+describe("transcriptPanel webview — /command popup", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  const availableCommands: SessionDescriptor["availableCommands"] = [
+    { name: "plan", description: "Enter planning mode" },
+    { name: "planReview", description: "Review the current plan", _meta: { scope: "user" } },
+    { name: "compact", description: "Compact the conversation" },
+  ]
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session({ adapterSlug: "claude-code", availableCommands, ...over }),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  function type(panel: Panel, text: string): void {
+    const input = el(panel, "input")
+    input.value = text
+    input.selectionStart = text.length
+    input.dispatchEvent(new panel.window.Event("input"))
+  }
+  function keydown(panel: Panel, key: string): DomEvent {
+    const ev = new panel.window.Event("keydown", { cancelable: true })
+    ev.key = key
+    el(panel, "input").dispatchEvent(ev)
+    return ev
+  }
+  const items = (panel: Panel): DomElement[] => [...el(panel, "command-popup").querySelectorAll(".command-item")]
+
+  it("opens on a bare / at the start, listing every command with its harness in the header", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    type(panel, "/")
+
+    expect(el(panel, "command-popup").hidden).toBe(false)
+    expect(items(panel)).toHaveLength(3)
+    expect(el(panel, "command-popup").querySelector(".command-popup-header")?.textContent).toContain("claude-code")
+  })
+
+  it("filters as the command name is typed, and does NOT open for a / mid-message", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    type(panel, "/plan")
+    expect(items(panel).map(i => i.querySelector(".command-item-name")?.textContent)).toEqual(["/plan", "/planReview"])
+
+    type(panel, "hi /plan")
+    expect(el(panel, "command-popup").hidden).toBe(true)
+  })
+
+  it("closes once a space follows the command name — no longer filtering", () => {
+    const panel = renderPanel()
+    init(panel)
+    type(panel, "/plan")
+    expect(el(panel, "command-popup").hidden).toBe(false)
+
+    type(panel, "/plan ")
+    expect(el(panel, "command-popup").hidden).toBe(true)
+  })
+
+  it("shows each command's description and scope", () => {
+    const panel = renderPanel()
+    init(panel)
+    type(panel, "/planR")
+    const row = items(panel)[0]
+    expect(row?.querySelector(".command-item-desc")?.textContent).toBe("Review the current plan")
+    expect(row?.querySelector(".command-item-scope")?.textContent).toBe("user")
+  })
+
+  it("keyboard nav (arrow + enter) inserts the chosen command as plain text, keeping trailing args", () => {
+    const panel = renderPanel()
+    init(panel)
+    type(panel, "/pla")
+
+    keydown(panel, "ArrowDown") // -> planReview
+    keydown(panel, "Enter")
+
+    expect(el(panel, "input").value).toBe("/planReview ")
+    expect(el(panel, "command-popup").hidden).toBe(true)
+  })
+
+  it("closes the popup on Escape without sending", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    type(panel, "/pl")
+
+    keydown(panel, "Escape")
+
+    expect(el(panel, "command-popup").hidden).toBe(true)
+    expect(posted.filter(m => (m as { type?: string }).type === "send")).toEqual([])
+  })
+
+  it("the [/] button opens the same popup on an empty composer", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    el(panel, "composer-commands").dispatchEvent(new panel.window.Event("click"))
+
+    expect(el(panel, "command-popup").hidden).toBe(false)
+    expect(items(panel)).toHaveLength(3)
+    expect(el(panel, "input").value).toBe("/")
+  })
+
+  it("refreshes the list when the session/harness changes", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    panel.send({
+      type: "sessionUpdate",
+      session: session({
+        adapterSlug: "codex",
+        availableCommands: [{ name: "review", description: "Review the diff" }],
+      }),
+    })
+    type(panel, "/")
+
+    expect(items(panel).map(i => i.querySelector(".command-item-name")?.textContent)).toEqual(["/review"])
+    expect(el(panel, "command-popup").querySelector(".command-popup-header")?.textContent).toContain("codex")
+  })
+
+  it("shows an empty-state message for a harness that reports no commands", () => {
+    const panel = renderPanel()
+    init(panel, { availableCommands: [] })
+
+    type(panel, "/")
+
+    expect(el(panel, "command-popup").hidden).toBe(false)
+    expect(items(panel)).toHaveLength(0)
+    expect(el(panel, "command-popup").querySelector(".mention-empty")).not.toBeNull()
+  })
+})
+
 describe("transcriptPanel webview — tool IO opens in an editor", () => {
   function initWithTool(panel: Panel, tool: PresentedToolSegment): void {
     panel.send({

@@ -35,6 +35,7 @@ import {
   parseUriList,
 } from "./attachments.logic.js"
 import { mentionQueryAt } from "./mentions.logic.js"
+import { commandQueryAt, filterCommands, leadingCommandEnd } from "./commands.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
 import { accessIdentity, contextGauge, contextRingLevel, defaultPostureLabel, formatCostShort, harnessGlyph, postureLabel, projectPlan, titleStatusState } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
@@ -613,6 +614,9 @@ export function buildHtml(
   // so `.toString()` yields a clean, named, hoistable declaration.
   const injectedHelpers = [
     mentionQueryAt,
+    commandQueryAt,
+    filterCommands,
+    leadingCommandEnd,
     parseUriList,
     recallHistory,
     pushHistoryEntry,
@@ -1604,6 +1608,59 @@ export function buildHtml(
       color: var(--vscode-descriptionForeground);
       font-style: italic;
     }
+    /* ── /command popup ───────────────────────────────────────────────
+       Same floating shape as #mention-popup, own id so the two (mutually
+       exclusive — one opens on @, the other only at position 0) never
+       fight over visibility. */
+    #command-popup {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: calc(100% + 4px);
+      max-height: 260px;
+      overflow-y: auto;
+      z-index: 5;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
+      border-radius: 6px;
+      background: var(--vscode-editorSuggestWidget-background, var(--vscode-input-background));
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+    #command-popup[hidden] { display: none; }
+    .command-popup-header {
+      padding: 4px 10px;
+      font-size: 0.78em;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+    }
+    .command-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      white-space: nowrap;
+    }
+    .command-item-name {
+      font-family: var(--vscode-editor-font-family);
+      flex: 0 0 auto;
+    }
+    .command-item-desc {
+      flex: 1 1 auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+    }
+    .command-item-scope {
+      flex: 0 0 auto;
+      font-size: 0.78em;
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.8;
+    }
+    #composer-commands {
+      flex: 0 0 auto;
+      font-family: var(--vscode-editor-font-family);
+    }
     #input {
       width: 100%;
       resize: none;
@@ -2175,9 +2232,11 @@ export function buildHtml(
     <div id="queued" hidden></div>
     <div id="composer">
       <div id="mention-popup" hidden></div>
+      <div id="command-popup" hidden></div>
       <div id="composer-attachments" hidden></div>
       <textarea id="input" rows="1" placeholder="Reply to the agent… (paste, drop, or @-mention a file)"></textarea>
       <div id="composer-bar">
+        <button id="composer-commands" class="composer-chip composer-chip-btn" type="button" title="Browse slash commands">/</button>
         <span id="composer-meta">
           <span id="composer-harness" class="composer-chip dimmed" title="Harness can't be switched on a live session — start a new one to change it"></span>
           <button id="composer-model" class="composer-chip composer-chip-btn" type="button" title="Switch model"></button>
@@ -2253,6 +2312,7 @@ export function buildHtml(
       const composerRoute = document.getElementById('composer-route');
       const composerPosture = document.getElementById('composer-posture');
       const composerAuth = document.getElementById('composer-auth');
+      const composerCommands = document.getElementById('composer-commands');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
       const stopBtn = document.getElementById('stop');
@@ -2271,6 +2331,7 @@ export function buildHtml(
       const queuedRow = document.getElementById('queued');
       const attachmentsRow = document.getElementById('composer-attachments');
       const mentionPopup = document.getElementById('mention-popup');
+      const commandPopup = document.getElementById('command-popup');
       const ptyView = document.getElementById('pty-view');
 
       // Mirrors STALL_AFTER_MS in views/sessionsTree.logic.ts — the tree and
@@ -2364,6 +2425,17 @@ export function buildHtml(
       // bracket the @token in the textarea so a selection replaces exactly it;
       // active is the index of the highlighted item.
       let mention = null;
+      // Slash commands the active harness currently advertises for THIS
+      // session (SessionDescriptor.availableCommands, mirrored fresh on every
+      // applySession — see the ACP available_commands_update doc there).
+      // { name, description, scope } — scope is the raw ACP _meta.scope
+      // ("user"/"project"/...) when the harness reports one.
+      let availableCommands = [];
+      // Active /command popup: { start, end, query, items, active } or null —
+      // same shape as 'mention' above, but items are CommandCandidate (from
+      // availableCommands, filtered locally — no host round trip needed,
+      // unlike @mentions which need a live file listing).
+      let commandPopupState = null;
       let isScrolledUp = false;
       let isSending = false;
       /** True from the Stop click until the turn actually settles (busy goes
@@ -2445,6 +2517,7 @@ export function buildHtml(
         const hasText = Boolean(input.value.trim()) || attachments.length > 0;
         const live = !exited && !isSending;
         input.disabled = !live;
+        composerCommands.disabled = !live;
         sendBtn.disabled = !live || !hasText;
         sendBtn.classList.toggle('has-text', hasText && live);
         // Send/Stop are mutually exclusive: mid-turn, there is nothing to
@@ -2652,6 +2725,19 @@ export function buildHtml(
           queuedItems = queuedItems.filter(function(item) {
             return item.queueId === null || liveIds.has(item.queueId);
           });
+        }
+        // The active harness's slash commands — REPLACED wholesale on every
+        // descriptor (see SessionDescriptor.availableCommands' doc), so a
+        // harness/session switch picks up the new list for free here.
+        availableCommands = Array.isArray(session.availableCommands)
+          ? session.availableCommands.map(function(c) {
+              return { name: c.name, description: c.description, scope: c._meta && c._meta.scope };
+            })
+          : [];
+        if (commandPopupState) {
+          commandPopupState.items = filterCommands(availableCommands, commandPopupState.query);
+          if (commandPopupState.active >= commandPopupState.items.length) commandPopupState.active = 0;
+          renderCommandPopup();
         }
         refreshComposer();
         refreshWorking();
@@ -4392,9 +4478,12 @@ export function buildHtml(
       }
 
       input.addEventListener('keydown', function(e) {
-        // While the @mention popup is open it owns the arrow/enter/tab/escape
-        // keys — otherwise Enter would send instead of picking a file.
+        // While the @mention or /command popup is open it owns the
+        // arrow/enter/tab/escape keys — otherwise Enter would send instead of
+        // picking an item. The two never overlap (one triggers on @, the
+        // other only at position 0), so checking both in sequence is safe.
         if (mention && handleMentionKey(e)) return;
+        if (commandPopupState && handleCommandKey(e)) return;
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           const noSelection = input.selectionStart === input.selectionEnd;
           // ↑ recalls once the caret is parked at the very start (index 0) —
@@ -4440,15 +4529,18 @@ export function buildHtml(
         autoGrow();
         refreshComposer();
         updateMention();
+        updateCommandPopup();
       });
 
-      // Clicking elsewhere in the textarea moves the caret out of an @token.
+      // Clicking elsewhere in the textarea moves the caret out of an @token
+      // or the leading /command.
       input.addEventListener('click', function() {
         // A click means "I'm editing this now, not browsing" — exit history
         // navigation, same escape hatch as typing. Only the cursor resets;
         // entries/draft are untouched so history is still there next time.
         historyState = { ...historyState, index: null };
         updateMention();
+        updateCommandPopup();
       });
 
       // Paste an image → the agent reads it. The webview can't touch disk, so
@@ -4587,6 +4679,121 @@ export function buildHtml(
         autoGrow();
       }
 
+      // ── /command popup ────────────────────────────────────────────────
+      // Unlike @mentions, the candidate list is already local (from the
+      // session descriptor's availableCommands — see applySession), so there
+      // is no host round trip: filtering is synchronous.
+      function closeCommandPopup() {
+        commandPopupState = null;
+        commandPopup.hidden = true;
+        commandPopup.textContent = '';
+      }
+
+      function updateCommandPopup() {
+        const caret = input.selectionStart == null ? input.value.length : input.selectionStart;
+        const found = commandQueryAt(input.value, caret);
+        if (!found) { closeCommandPopup(); return; }
+        commandPopupState = {
+          start: found.start,
+          end: found.end,
+          query: found.query,
+          items: filterCommands(availableCommands, found.query),
+          active: 0,
+        };
+        renderCommandPopup();
+      }
+
+      function renderCommandPopup() {
+        if (!commandPopupState) return;
+        commandPopup.textContent = '';
+        const header = document.createElement('div');
+        header.className = 'command-popup-header';
+        header.textContent = 'Commands' + (lastSession && lastSession.adapterSlug ? ' \\u00b7 ' + lastSession.adapterSlug : '');
+        commandPopup.appendChild(header);
+        if (commandPopupState.items.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'mention-empty';
+          empty.textContent = availableCommands.length === 0
+            ? 'This harness has not reported any commands'
+            : 'No matching commands';
+          commandPopup.appendChild(empty);
+          commandPopup.hidden = false;
+          return;
+        }
+        for (let i = 0; i < commandPopupState.items.length; i++) {
+          const item = commandPopupState.items[i];
+          const row = document.createElement('div');
+          row.className = 'mention-item command-item' + (i === commandPopupState.active ? ' active' : '');
+          const name = document.createElement('span');
+          name.className = 'command-item-name';
+          name.textContent = '/' + item.name;
+          row.appendChild(name);
+          if (item.description) {
+            const desc = document.createElement('span');
+            desc.className = 'command-item-desc';
+            desc.textContent = item.description;
+            row.appendChild(desc);
+          }
+          if (item.scope) {
+            const scope = document.createElement('span');
+            scope.className = 'command-item-scope';
+            scope.textContent = item.scope;
+            row.appendChild(scope);
+          }
+          row.title = item.description ? '/' + item.name + ' \\u2014 ' + item.description : '/' + item.name;
+          const idx = i;
+          row.addEventListener('mousedown', function(ev) {
+            // mousedown, not click: click fires after the textarea blurs,
+            // which would tear the popup state down before the handler runs.
+            ev.preventDefault();
+            chooseCommand(idx);
+          });
+          commandPopup.appendChild(row);
+        }
+        commandPopup.hidden = false;
+      }
+
+      // Returns true if it consumed the key (popup navigation), false otherwise.
+      function handleCommandKey(e) {
+        if (!commandPopupState) return false;
+        if (e.key === 'Escape') { e.preventDefault(); closeCommandPopup(); return true; }
+        if (commandPopupState.items.length === 0) return false;
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          commandPopupState.active = (commandPopupState.active + 1) % commandPopupState.items.length;
+          renderCommandPopup();
+          return true;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          commandPopupState.active = (commandPopupState.active - 1 + commandPopupState.items.length) % commandPopupState.items.length;
+          renderCommandPopup();
+          return true;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          chooseCommand(commandPopupState.active);
+          return true;
+        }
+        return false;
+      }
+
+      // Replace the leading /token with "/name " — plain composer text (not
+      // a chip like @mentions), so the agent receives it exactly as if typed.
+      function chooseCommand(index) {
+        if (!commandPopupState || !commandPopupState.items[index]) return;
+        const chosen = commandPopupState.items[index];
+        const after = input.value.slice(commandPopupState.end);
+        const inserted = '/' + chosen.name + ' ';
+        input.value = inserted + after;
+        closeCommandPopup();
+        const pos = inserted.length;
+        input.focus();
+        input.setSelectionRange(pos, pos);
+        autoGrow();
+        refreshComposer();
+      }
+
       // ── PTY-mode helpers (live xterm.js view) ─────────────────────────
       function ensurePtyTerm() {
         if (ptyTerm) return;
@@ -4698,6 +4905,19 @@ export function buildHtml(
       });
       composerAuth.addEventListener('click', function() {
         vscode.postMessage({ type: 'changeAccess' });
+      });
+      // [/] button: same popup the typed trigger opens, reusing commandQueryAt
+      // by first making sure the caret sits at the end of a leading /token
+      // (inserting the '/' itself when the composer doesn't have one yet).
+      composerCommands.addEventListener('click', function() {
+        if (input.disabled) return;
+        if (input.value.charAt(0) !== '/') input.value = '/' + input.value;
+        const end = leadingCommandEnd(input.value);
+        input.setSelectionRange(end, end);
+        input.focus();
+        updateCommandPopup();
+        autoGrow();
+        refreshComposer();
       });
       sendBtn.addEventListener('click', function() { send(false); });
       // Abandon the in-flight turn, send nothing — distinct from "Interrupt &
