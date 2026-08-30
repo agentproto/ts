@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, dirname, join } from "node:path"
 import { createDoctype } from "@agentproto/define-doctype"
 import { agentCliFrontmatterSchema } from "./schema.js"
 import { createAcpProtocolArm } from "./protocol/acp-client.js"
@@ -90,11 +90,54 @@ export const defineAgentCli = createDoctype<AgentCliDefinition, AgentCliHandle>(
  * a `node` entry — true in an interactive shell (nvm etc.) but NOT
  * guaranteed under launchd, which starts the daemon with a minimal PATH.
  * Resolving to `process.execPath` sidesteps PATH entirely for the one bin
- * value that always means "this runtime". Every other bin (npx, hermes,
- * gemini, …) is left untouched — those are meant to be resolved off PATH.
+ * value that always means "this runtime".
+ *
+ * `npx` / `npm` get the same treatment when possible: every Node install
+ * layout (nvm, fnm, homebrew, system, Volta) ships them as siblings of the
+ * `node` binary, so a daemon whose PATH lacks that dir (launchd again —
+ * observed live 2026-08-30 as `spawn npx ENOENT` on a codex `agent_start`)
+ * can still resolve them relative to its own `process.execPath`. Falls back
+ * to the bare name (PATH lookup, prior behavior) when no sibling exists —
+ * e.g. a trimmed container image exposing npx elsewhere on PATH.
+ *
+ * Every other bin (hermes, gemini, …) is left untouched — those are meant
+ * to be resolved off PATH.
  */
-function resolveSpawnBin(bin: string): string {
-  return bin === "node" ? process.execPath : bin
+export function resolveSpawnBin(
+  bin: string,
+  deps?: { execPath?: string; exists?: (p: string) => boolean },
+): string {
+  const execPath = deps?.execPath ?? process.execPath
+  if (bin === "node") return execPath
+  if (bin === "npx" || bin === "npm") {
+    const exists = deps?.exists ?? existsSync
+    const sibling = join(
+      dirname(execPath),
+      process.platform === "win32" ? `${bin}.cmd` : bin,
+    )
+    if (exists(sibling)) return sibling
+  }
+  return bin
+}
+
+/**
+ * Ensure the running node binary's directory is on the child env's PATH.
+ * Resolving `npx` to an absolute sibling path (above) is necessary but not
+ * sufficient: npx is a `#!/usr/bin/env node` script, so its shebang — and
+ * the `node` its target package's own bin shim execs — still resolve off
+ * the CHILD's PATH. Under a launchd daemon whose PATH lacks the nvm bin
+ * dir, an absolute-path npx would otherwise die right after spawn.
+ * APPENDED, not prepended, so an operator-supplied PATH (opts.env) keeps
+ * picking its own toolchain first; this only adds a fallback.
+ */
+function ensureExecDirOnPath(
+  env: Record<string, string>,
+  execPath: string = process.execPath,
+): void {
+  const execDir = dirname(execPath)
+  const parts = (env.PATH ?? "").split(delimiter).filter(Boolean)
+  if (parts.includes(execDir)) return
+  env.PATH = [...parts, execDir].join(delimiter)
 }
 
 export function createAgentCliRuntime(
@@ -260,6 +303,10 @@ export function createAgentCliRuntime(
       }
 
       Object.assign(env, opts?.env ?? {})
+      // After ALL env layers (ambient, mode/option patches, billing-auth,
+      // opts.env) so the append lands on the final PATH — see the helper's
+      // doc for why even an absolute-path npx needs this.
+      ensureExecDirOnPath(env)
 
       // claude-code's ACP wrapper never reads `--permission-mode` from argv
       // (the `bin_args_append` above is a no-op against it) — it resolves
@@ -462,9 +509,18 @@ export function createAgentCliRuntime(
         if (spawnFailure) {
           const isEnoent =
             (spawnFailure as NodeJS.ErrnoException).code === "ENOENT"
-          const enoentHint = isEnoent
-            ? `\n'${execBin}' was not found on the daemon's PATH. If it works in your own terminal, the daemon's environment may be stale — try \`agentproto daemon restart\`.`
-            : ""
+          // Node reports a nonexistent WORKING DIRECTORY as the byte-identical
+          // `spawn <bin> ENOENT` it uses for a missing binary — a stale
+          // workspace path masquerades as "npx is not installed" and sends
+          // whoever reads the error down the wrong trail. Disambiguate here,
+          // where the failure is in hand, rather than preflighting every
+          // start: the cwd probe only runs on the already-failed path.
+          const cwdMissing = isEnoent && !existsSync(cwd)
+          const enoentHint = !isEnoent
+            ? ""
+            : cwdMissing
+              ? `\ncwd '${cwd}' does not exist — Node reports a missing working directory with this same ENOENT. Recreate the directory, or pass a valid cwd/workspace (is the workspace path stale, or its worktree removed?).`
+              : `\n'${execBin}' was not found on the daemon's PATH. If it works in your own terminal, the daemon's environment may be stale — restart the daemon from a shell where \`which ${definition.bin}\` resolves (\`agentproto daemon restart\`).`
           throw new Error(
             `agent-cli '${definition.id}': failed to spawn '${execBin} ${execArgs.join(" ")}': ${spawnFailure.message}${enoentHint}`,
           )
