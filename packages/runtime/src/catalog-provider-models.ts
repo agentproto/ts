@@ -65,6 +65,11 @@ export interface CatalogProviderModel {
   /** Per-1M-token pricing for LLM models; `null` for the media kinds, whose
    *  pricing is per-image/second/character rather than per token. */
   pricing: CatalogProviderPricing | null
+  /** ISO date (`YYYY-MM-DD`) this model first appeared in the catalog, when
+   *  known — see `LLMPricing.addedAt` (`model-catalog/src/llm/catalog.ts`)
+   *  for the convention. `null` for media kinds and for LLM entries the sync
+   *  never stamped (hand-maintained rows). Lets a picker show a "new" badge. */
+  addedAt: string | null
 }
 
 export interface CatalogProviderModelsResponse {
@@ -103,6 +108,11 @@ function pricingOf(model: ResolvedModel): CatalogProviderPricing | null {
   return { inPer1M: model.pricing.inputPer1M, outPer1M: model.pricing.outputPer1M }
 }
 
+function addedAtOf(model: ResolvedModel): string | null {
+  if (model.kind !== "llm") return null
+  return model.pricing.addedAt ?? null
+}
+
 /**
  * The pure per-provider enumeration behind the `catalog_provider_models` MCP
  * tool. No I/O, no host state — just a projection over the static catalog.
@@ -121,6 +131,7 @@ export function buildCatalogProviderModels(
     label: labelOf(m),
     route: routeOf(m),
     pricing: pricingOf(m),
+    addedAt: addedAtOf(m),
   }))
   return { provider, models }
 }
