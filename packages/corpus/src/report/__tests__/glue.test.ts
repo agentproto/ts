@@ -25,6 +25,27 @@ describe("assembleChapters", () => {
     expect(res.stats.preamblesStripped).toBe(1)
     expect(res.stats.outOfRange).toEqual([{ ch: "ch02", cites: [9] }])
   })
+
+  it("without injectAnchors, output is byte-identical to today (backward compatible)", () => {
+    const res = assembleChapters({
+      bibMax: 5,
+      chapters: [{ ch: "ch01", draft: "## 1. Title\n\nBody cites [2] and [3→4].\n\n\n\nTail." }],
+    })
+    const m = Object.fromEntries(res.files.map((f) => [f.path, f.content]))
+    expect(m["chapters/ch01.md"]).toBe("## 1. Title\n\nBody cites [2] and [4].\n\nTail.\n")
+  })
+
+  it("with injectAnchors: true, prepends <a id> to each chapter body", () => {
+    const res = assembleChapters({
+      bibMax: 5,
+      injectAnchors: true,
+      chapters: [{ ch: "ch01", draft: "## 1. Title\n\nBody cites [2] and [3→4].\n\n\n\nTail." }],
+    })
+    const m = Object.fromEntries(res.files.map((f) => [f.path, f.content]))
+    expect(m["chapters/ch01.md"]).toBe(
+      '<a id="ch01"></a>\n\n## 1. Title\n\nBody cites [2] and [4].\n\nTail.\n'
+    )
+  })
 })
 
 describe("stitchReport", () => {

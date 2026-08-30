@@ -30,6 +30,12 @@ export interface AssembleOptions {
   readonly bibMax: number
   /** Subdir under the report root for chapter files. Default `chapters`. */
   readonly chaptersDir?: string
+  /**
+   * Prepend `<a id="<ch>"></a>` to each chapter body so canvakit's
+   * `resolveWikilinks` can resolve `[[chapter-id]]` cross-refs at render time.
+   * Default false — existing callers see zero output change.
+   */
+  readonly injectAnchors?: boolean
 }
 
 const PREAMBLE = /^\s*(?:I have|I'll|Here is|Here's|Writing|Let me|Okay|Done)/i
@@ -52,8 +58,9 @@ export function assembleChapters(opts: AssembleOptions): AssembleResult {
   const outOfRange: Array<{ ch: string; cites: number[] }> = []
 
   for (const c of opts.chapters) {
-    const body = cleanDraft(c.draft)
+    let body = cleanDraft(c.draft)
     if (PREAMBLE.test(c.draft || "")) preamblesStripped++
+    if (body && opts.injectAnchors) body = `<a id="${c.ch}"></a>\n\n${body}`
     if (body) files.push({ path: `${chaptersDir}/${c.ch}.md`, content: body + "\n" })
     const oor = outOfRangeCites(body, opts.bibMax)
     if (oor.length) outOfRange.push({ ch: c.ch, cites: oor })
