@@ -182,6 +182,18 @@ export interface AppDefinition {
   readonly artifacts?: readonly AppArtifactDecl[]
   /** Dev-launch configuration for running the app locally. */
   readonly dev?: AppDevDefinition
+  /**
+   * Absolute or `~`-relative host directories the app is granted READ-ONLY
+   * access to outside its own sandboxed `dir` (e.g. a user's real
+   * `~/Downloads/applications` folder). Each entry is normalized (`~`
+   * expanded, resolved absolute) and validated to exist as a real directory
+   * at install time — `app_install`/`app_apply` fail fast on a missing or
+   * invalid root rather than storing it. Backs the `app_external_list` /
+   * `app_external_read` MCP tools (app-external.ts) and the
+   * `GET /apps/:appId/external-blob` HTTP route; there is no write/delete
+   * path for these roots anywhere in the daemon.
+   */
+  readonly externalReadRoots?: readonly string[]
 }
 
 /** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
@@ -235,6 +247,10 @@ export interface AppHandle {
   readonly artifacts?: readonly AppArtifactDecl[]
   /** Dev-launch configuration for running the app locally. */
   readonly dev?: AppDevDefinition
+  /** Read-only external filesystem roots this app declares (see
+   *  {@link AppDefinition.externalReadRoots}). Not yet normalized/validated —
+   *  that happens at install time in `performInstall`. */
+  readonly externalReadRoots?: readonly string[]
 
   /**
    * Build agents into runnable Mastra agents whose `instructions` field is

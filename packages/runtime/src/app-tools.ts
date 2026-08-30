@@ -20,7 +20,8 @@
  */
 
 import { readFile, readdir, stat } from "node:fs/promises"
-import { isAbsolute, join, relative } from "node:path"
+import { homedir } from "node:os"
+import { isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -304,6 +305,50 @@ export interface RegisterAppToolsOptions {
   catalogPath?: string
 }
 
+/** Expand a leading `~` (bare or `~/…`) against `os.homedir()`. Any other
+ *  string passes through untouched — `resolve()` below handles relative
+ *  segments. */
+function expandHome(raw: string): string {
+  if (raw === "~") return homedir()
+  if (raw.startsWith("~/")) return join(homedir(), raw.slice(2))
+  return raw
+}
+
+/**
+ * Normalize `handle.externalReadRoots` (declared in APP.md frontmatter /
+ * `defineApp()`) into absolute, `~`-expanded paths, and fail fast — rather
+ * than storing a bad root — if any entry doesn't exist as a real directory
+ * at install time. This is the only place these roots are ever written to
+ * an `InstalledApp` record; `app_external_list`/`app_external_read`
+ * (app-external.ts) and the `GET /apps/:appId/external-blob` HTTP route
+ * trust `InstalledApp.externalReadRoots` as already-validated.
+ */
+async function normalizeExternalReadRoots(
+  roots: readonly string[],
+): Promise<{ ok: true; roots: string[] } | { ok: false; error: string }> {
+  const normalized: string[] = []
+  for (const raw of roots) {
+    const abs = resolve(expandHome(raw))
+    let st: Awaited<ReturnType<typeof stat>>
+    try {
+      st = await stat(abs)
+    } catch (err) {
+      return {
+        ok: false,
+        error: `externalReadRoots entry "${raw}" (resolved "${abs}") does not exist: ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
+    if (!st.isDirectory()) {
+      return {
+        ok: false,
+        error: `externalReadRoots entry "${raw}" (resolved "${abs}") is not a directory.`,
+      }
+    }
+    normalized.push(abs)
+  }
+  return { ok: true, roots: normalized }
+}
+
 export async function performInstall(
   dir: string,
   appRegistry: AppRegistry,
@@ -393,6 +438,13 @@ export async function performInstall(
       }
     : undefined
 
+  let externalReadRoots: string[] | undefined
+  if (handle.externalReadRoots && handle.externalReadRoots.length > 0) {
+    const result = await normalizeExternalReadRoots(handle.externalReadRoots)
+    if (!result.ok) return { ok: false, error: `app_install: ${result.error}` }
+    externalReadRoots = result.roots
+  }
+
   const record = appRegistry.upsertApp({
     appId: handle.id,
     dir,
@@ -408,6 +460,7 @@ export async function performInstall(
     ...(skill ? { skill } : {}),
     ...(handle.artifacts ? { artifacts: handle.artifacts } : {}),
     ...(handle.dev ? { dev: handle.dev } : {}),
+    ...(externalReadRoots ? { externalReadRoots } : {}),
   })
 
   return { ok: true, record }

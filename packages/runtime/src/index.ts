@@ -101,6 +101,7 @@ import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { registerAppTools, resolveAgentRefsForWorkflow, performInstall } from "./app-tools.js"
 import { registerAppDataTools } from "./app-data.js"
+import { registerAppExternalTools } from "./app-external.js"
 import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import type { AgnoMcpApp } from "./sessions-panel-app.js"
@@ -1839,6 +1840,13 @@ export async function createGateway(
     // App-scoped durable data plane (app-data.ts) — app_data_read/write/list/
     // migrate, anchored to each installed app's own dir with traversal guard.
     registerAppDataTools(server, { appRegistry })
+    // Read-only external filesystem plane (app-external.ts) —
+    // app_external_list/app_external_read, anchored to each installed app's
+    // opted-in InstalledApp.externalReadRoots (never the app's own sandbox
+    // dir). No write/delete tool exists here by design; binary files are
+    // never read into a tool response — see GET /apps/:appId/external-blob
+    // in http-server.ts for that.
+    registerAppExternalTools(server, { appRegistry })
     registerTelegramBotTools(server, { telegramCreds: telegramBotCreds })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view

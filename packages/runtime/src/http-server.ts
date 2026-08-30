@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
-import { basename, isAbsolute, join, resolve as resolvePath } from "node:path"
+import { basename, extname, isAbsolute, join, resolve as resolvePath } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -45,6 +45,13 @@ import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, type AppToolCallDeps } from "./app-tools.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
+import {
+  assertExternalPathRealInside,
+  isExternalRootGranted,
+  realpathExternalRoot,
+  resolveExternalPath,
+} from "./app-external.js"
+import { mimeTypeFor } from "./outbound-adapters.js"
 import {
   loadWorkspacesConfig,
   saveWorkspacesConfig,
@@ -2635,6 +2642,18 @@ export async function startHttpServer(
               opts.appRegistry,
               opts.appToolCallDeps ?? {},
             )
+            return
+          }
+          // Binary sibling of the app_external_read MCP tool — streams a
+          // file's raw bytes from a granted externalReadRoots entry instead
+          // of returning them in a JSON tool response. Same gating as
+          // /ui and /tool-call: guardBrowserOrigin blocks a non-allowlisted
+          // page's drive-by, authorize() gates the tunnel path by bearer.
+          const blobMatch = path.match(/^\/apps\/(.+)\/external-blob$/)
+          if (blobMatch && req.method === "GET") {
+            if (guardBrowserOrigin(req, res)) return
+            if (!authorize(req, res)) return
+            await handleAppExternalBlob(req, res, decodeURIComponent(blobMatch[1]!), opts.appRegistry)
             return
           }
         }
@@ -6438,6 +6457,92 @@ async function handleAppUiPage(
     "content-security-policy": "frame-ancestors 'none'",
   })
   res.end(injectStandaloneAppBridge(raw))
+}
+
+/** Map a file extension to the `OutboundAttachment["type"]` bucket
+ *  `mimeTypeFor` (outbound-adapters.ts) expects, so `/external-blob` can
+ *  reuse that lookup instead of hand-rolling a second MIME table. Any
+ *  extension not recognized here still resolves through `mimeTypeFor`'s
+ *  "document" branch, which falls back to `application/octet-stream`. */
+function outboundKindForExt(ext: string): "photo" | "document" | "video" | "audio" {
+  const e = ext.toLowerCase()
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(e)) return "photo"
+  if ([".mp4", ".mov", ".webm"].includes(e)) return "video"
+  if ([".mp3", ".ogg", ".wav", ".m4a"].includes(e)) return "audio"
+  return "document"
+}
+
+/** `GET /apps/:appId/external-blob?root=<exact-granted-root>&path=<relative>`
+ *  — streams a file's raw bytes from one of an installed app's granted
+ *  `InstalledApp.externalReadRoots`, the binary-content sibling of the
+ *  `app_external_read` MCP tool (app-external.ts), which only serves an
+ *  allowlist of text-ish extensions into a tool's JSON response. `root`
+ *  must be an exact string match to a granted entry (same boundary as the
+ *  MCP tools — no prefix/fuzzy match); `path` is resolved against it with
+ *  `resolveExternalPath` + a symlink-escape recheck, the exact same guard
+ *  `app_external_list`/`app_external_read` use, not a re-derived one. GET
+ *  only, read-only: this route never writes/deletes, and there is no size
+ *  cap — PDFs/images are meant to flow through here unlike the text tool. */
+async function handleAppExternalBlob(
+  req: IncomingMessage,
+  res: ServerResponse,
+  appId: string,
+  appRegistry: AppRegistry,
+): Promise<void> {
+  const reply = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+  const app = appRegistry.getApp(appId)
+  if (!app) {
+    reply(404, { error: `app "${appId}" is not installed.` })
+    return
+  }
+  const reqUrl = req.url ?? ""
+  const qs = new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "")
+  const root = qs.get("root")
+  const relPath = qs.get("path") ?? ""
+  if (!root) {
+    reply(400, { error: "missing_root" })
+    return
+  }
+  if (!isExternalRootGranted(app, root)) {
+    reply(403, { error: `root "${root}" is not granted to app "${appId}".` })
+    return
+  }
+  const safeRoot = await realpathExternalRoot(root)
+  if (!safeRoot) {
+    reply(404, { error: `root "${root}" is not accessible.` })
+    return
+  }
+  let target: string
+  try {
+    target = resolveExternalPath(safeRoot, relPath)
+    await assertExternalPathRealInside(safeRoot, target)
+  } catch (err) {
+    reply(400, { error: err instanceof Error ? err.message : String(err) })
+    return
+  }
+  let st: Awaited<ReturnType<typeof stat>>
+  try {
+    st = await stat(target)
+  } catch {
+    reply(404, { error: `"${relPath}" not found under root "${root}".` })
+    return
+  }
+  if (st.isDirectory()) {
+    reply(400, { error: `"${relPath}" is a directory, not a file.` })
+    return
+  }
+  const ext = extname(target)
+  res.writeHead(200, {
+    "content-type": mimeTypeFor(ext, outboundKindForExt(ext)),
+    "content-disposition": "inline",
+    "cache-control": "no-store",
+  })
+  const stream = createReadStream(target)
+  stream.on("error", () => res.destroy())
+  stream.pipe(res)
 }
 
 /** `POST /apps/:appId/tool-call` `{ tool, args? }` — the REST twin of the

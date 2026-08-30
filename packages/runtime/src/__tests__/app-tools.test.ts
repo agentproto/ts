@@ -167,6 +167,94 @@ describe("app_* verbs", () => {
     expect(body.error).toContain("agentproto install mastra-agent")
   })
 
+  it("app_install normalizes a `~`-relative externalReadRoots entry and validates it exists", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "app-tools-fakehome-"))
+    const grantedDir = join(fakeHome, "Downloads", "applications")
+    await mkdir(grantedDir, { recursive: true })
+    const originalHome = process.env.HOME
+    process.env.HOME = fakeHome
+    try {
+      const app = defineApp({
+        id: "@test/external-app",
+        name: "External App",
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "worker",
+              description: "A worker agent.",
+              model: "claude-sonnet-5",
+            }),
+            body: "You do the thing.",
+          },
+        ],
+        externalReadRoots: ["~/Downloads/applications"],
+      })
+      await app.emit(dir)
+
+      const { client } = await setup()
+      const res = await client.callTool({ name: "app_install", arguments: { dir } })
+      expect(isError(res)).toBe(false)
+      const record = parseToolJson(res)
+      expect(record.externalReadRoots).toEqual([grantedDir])
+    } finally {
+      process.env.HOME = originalHome
+      await rm(fakeHome, { recursive: true, force: true })
+    }
+  })
+
+  it("app_install fails fast when an externalReadRoots entry doesn't exist", async () => {
+    const app = defineApp({
+      id: "@test/external-app-missing",
+      name: "External App Missing",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      externalReadRoots: [join(dir, "does-not-exist")],
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(true)
+    expect(parseToolJson(res).error).toContain("does not exist")
+  })
+
+  it("app_install fails fast when an externalReadRoots entry is a file, not a directory", async () => {
+    const filePath = join(dir, "not-a-dir.txt")
+    await writeFile(filePath, "x", "utf8")
+    const app = defineApp({
+      id: "@test/external-app-file",
+      name: "External App File",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      externalReadRoots: [filePath],
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(true)
+    expect(parseToolJson(res).error).toContain("not a directory")
+  })
+
   it("app_list reflects the install; re-install upserts instead of duplicating", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
     const { client } = await setup()
