@@ -58,7 +58,7 @@
     "@agentclientprotocol/sdk": "^0.21.0",
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/provider-presets": "workspace:*",
-    "@anthropic-ai/claude-agent-sdk": "^0.3.241"
+    "@anthropic-ai/claude-agent-sdk": "^0.3.251"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

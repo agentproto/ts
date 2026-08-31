@@ -65,7 +65,7 @@
     "@mastra/core": "^1.61.0",
     "@mastra/libsql": "~1.21.1",
     "@mastra/memory": "^1.27.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/app-kit": "workspace:*",

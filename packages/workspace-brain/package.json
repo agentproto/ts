@@ -56,7 +56,7 @@
     "@agentproto/adapter-knowledge-qdrant": "workspace:*",
     "@agentproto/corpus": "workspace:*",
     "@agentproto/knowledge-engine": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

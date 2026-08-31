@@ -56,7 +56,7 @@
     "@agentproto/telemetry": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

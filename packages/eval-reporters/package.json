@@ -51,11 +51,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/provider-kit": "workspace:*",
     "@agentproto/eval": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*",
     "@agentproto/telemetry": "workspace:*",
     "@agentproto/telemetry-langfuse": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

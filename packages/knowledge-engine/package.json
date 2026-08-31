@@ -84,12 +84,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/tool": "workspace:*",
     "@agentproto/driver": "workspace:*",
-    "@agentproto/driver-mcp": "workspace:*",
-    "@agentproto/driver-http": "workspace:*",
     "@agentproto/driver-cli": "workspace:*",
-    "zod": "^4.4.3"
+    "@agentproto/driver-http": "workspace:*",
+    "@agentproto/driver-mcp": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
