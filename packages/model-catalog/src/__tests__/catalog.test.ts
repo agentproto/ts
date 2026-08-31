@@ -30,7 +30,12 @@ import {
 import { getModel } from "../registry/index.js"
 import { shouldDebit } from "../byok/index.js"
 import type { ResolvedModel } from "../registry/index.js"
-import { resolvePricing, resolveModelRoute, resolveContextWindow } from "../llm/catalog.js"
+import {
+  resolvePricing,
+  resolveModelRoute,
+  resolveContextWindow,
+  listNativeModelIds,
+} from "../llm/catalog.js"
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -722,5 +727,33 @@ describe("resolveContextWindow", () => {
   it("returns undefined for a non-synced provider", () => {
     expect(resolveContextWindow("gpt-4o")).toBeUndefined()
     expect(resolveContextWindow("glm-4.6")).toBeUndefined()
+  })
+})
+
+describe("listNativeModelIds", () => {
+  it("includes the Anthropic id whose absence from a hand-typed list motivated this PR", () => {
+    expect(listNativeModelIds("anthropic")).toContain("claude-opus-4-6")
+  })
+
+  it("includes the equivalent live xAI id", () => {
+    expect(listNativeModelIds("xai")).toContain("grok-4.6")
+  })
+
+  it("returns only ids native to the requested provider, never an OpenRouter-routed form", () => {
+    const anthropicIds = listNativeModelIds("anthropic")
+    expect(anthropicIds.length).toBeGreaterThan(0)
+    for (const id of anthropicIds) {
+      // OpenRouter/requesty routes are provider-prefixed ("anthropic/claude-opus-4-6"),
+      // never a bare native id — reject that shape outright.
+      expect(id).not.toContain("/")
+      expect(resolveContextWindow(id)?.provider).toBe("anthropic")
+    }
+
+    const xaiIds = listNativeModelIds("xai")
+    expect(xaiIds.length).toBeGreaterThan(0)
+    for (const id of xaiIds) {
+      expect(id).not.toContain("/")
+      expect(resolveContextWindow(id)?.provider).toBe("xai")
+    }
   })
 })
