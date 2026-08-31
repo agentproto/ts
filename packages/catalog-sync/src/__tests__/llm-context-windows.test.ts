@@ -41,12 +41,24 @@ describe("llm:context-windows generator", () => {
 
     expect(src).toContain("export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {")
 
-    // Entry count matches the committed snapshots exactly (deterministic).
-    // NOTE: this number moves every time a provider adds or drops a model, so
-    // it has to be bumped on each catalog sync — see the count-drift note on
-    // the sync PR.
+    // Floor, not exact equality — this count moves every time a provider adds
+    // or drops a model, so pinning it exactly turns every routine catalog
+    // sync into a required manual bump (see #1082, which failed on exactly
+    // that). A floor still catches what this assertion actually guards
+    // against: the generator silently losing most/all of a provider's
+    // models, while tolerating normal single-digit drift from upstream.
     const entryCount = (src.match(/contextWindow: \d+/g) ?? []).length
-    expect(entryCount).toBe(112)
+    expect(entryCount).toBeGreaterThanOrEqual(100)
+
+    // Bare "latest" ids mechanically derived from their dated siblings
+    // (claude-opus-4-6 incident, then repeated for context windows — see
+    // the derivation comment in the generator). Anthropic's live /v1/models
+    // only lists the dated form for an aged-out generation; the bare form
+    // must still resolve so it stays in listNativeModelIds and every
+    // adapter's native model menu.
+    expect(src).toContain('"claude-haiku-4-5": { contextWindow: 200000, maxOutput: 64000')
+    expect(src).toContain('"claude-opus-4-5": { contextWindow: 200000, maxOutput: 64000')
+    expect(src).toContain('"claude-sonnet-4-5": { contextWindow: 1000000, maxOutput: 64000')
 
     // Spot-check one real entry per provider.
     expect(src).toContain('"claude-opus-4-8": { contextWindow: 1000000, maxOutput: 128000')
