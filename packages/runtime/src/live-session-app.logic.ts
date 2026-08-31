@@ -69,23 +69,28 @@ export interface TurnEndRow extends RowBase {
   reason?: string
 }
 
-export interface UsageRow extends RowBase {
-  kind: "usage_update"
+export interface UsageInfo {
   size?: number
   used?: number
   cost?: number
   tokensIn?: number
   tokensOut?: number
+  /** seq/ts of the record that produced this snapshot — last-write-wins. */
+  seq?: number
+  ts?: string | number
 }
 
-export type TimelineRow = TextRow | ToolCallRow | TurnEndRow | UsageRow
+export type TimelineRow = TextRow | ToolCallRow | TurnEndRow
 
 export interface TimelineState {
   rows: TimelineRow[]
+  /** Latest known usage snapshot, or null before the first usage_update
+   *  record. Not a row — state, updated in place. */
+  usage: UsageInfo | null
 }
 
 export function initialTimelineState(): TimelineState {
-  return { rows: [] }
+  return { rows: [], usage: null }
 }
 
 function rowId(record: TimelineEventRecord, rows: readonly TimelineRow[]): string {
@@ -112,7 +117,7 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
     case "text-delta": {
       const last = state.rows[state.rows.length - 1]
       if (last && last.kind === "text" && last.sessionId === record.sessionId) {
-        return { rows: [...state.rows.slice(0, -1), mergeTextDelta(last, record)] }
+        return { rows: [...state.rows.slice(0, -1), mergeTextDelta(last, record)], usage: state.usage }
       }
       // The daemon's transcript debounce can flush an unterminated mid-word
       // fragment ("Bien re") flagged `partial: true`, let a tool-call record
@@ -131,7 +136,7 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
         if (prior.partial === true) {
           const rows = [...state.rows]
           rows[i] = mergeTextDelta(prior, record)
-          return { rows }
+          return { rows, usage: state.usage }
         }
         break
       }
@@ -144,7 +149,7 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
         text: record.text ?? "",
         ...(record.partial === true ? { partial: true } : {}),
       }
-      return { rows: [...state.rows, row] }
+      return { rows: [...state.rows, row], usage: state.usage }
     }
 
     case "tool-call": {
@@ -159,7 +164,7 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
         arguments: record.arguments,
         status: "pending",
       }
-      return { rows: [...state.rows, row] }
+      return { rows: [...state.rows, row], usage: state.usage }
     }
 
     case "tool-result": {
@@ -180,7 +185,7 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
           status: record.isError ? "error" : "ok",
           result: record.result,
         }
-        return { rows: [...state.rows, row] }
+        return { rows: [...state.rows, row], usage: state.usage }
       }
       const prior = state.rows[idx] as ToolCallRow
       const updated: ToolCallRow = {
@@ -190,7 +195,7 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
       }
       const rows = state.rows.slice()
       rows[idx] = updated
-      return { rows }
+      return { rows, usage: state.usage }
     }
 
     case "turn-end": {
@@ -202,26 +207,88 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
         sessionId: record.sessionId,
         reason: record.reason,
       }
-      return { rows: [...state.rows, row] }
+      return { rows: [...state.rows, row], usage: state.usage }
     }
 
     case "usage_update": {
-      const row: UsageRow = {
-        kind: "usage_update",
-        id: rowId(record, state.rows),
-        seq: record.seq,
-        ts: record.ts,
-        sessionId: record.sessionId,
-        size: record.size,
-        used: record.used,
-        cost: record.cost,
-        tokensIn: record.tokensIn,
-        tokensOut: record.tokensOut,
+      // Usage is state, not a row — last-write-wins, no merge with the
+      // prior snapshot. `state.rows` is reused as-is (it didn't change).
+      return {
+        rows: state.rows,
+        usage: {
+          size: record.size,
+          used: record.used,
+          cost: record.cost,
+          tokensIn: record.tokensIn,
+          tokensOut: record.tokensOut,
+          seq: record.seq,
+          ts: record.ts,
+        },
       }
-      return { rows: [...state.rows, row] }
     }
 
     default:
       return state
   }
+}
+
+// ── WP1 — scroll decision helper ─────────────────────────────────────
+
+export const SCROLL_STICK_THRESHOLD_PX = 24
+
+/** True when the viewport is close enough to the bottom that new content
+ *  should auto-follow. Pure arithmetic — no DOM access — so it's testable
+ *  outside a browser and the DOM layer can call it with live element
+ *  metrics (`el.scrollHeight`, `el.scrollTop`, `el.clientHeight`). */
+export function isNearBottom(
+  scrollHeight: number,
+  scrollTop: number,
+  clientHeight: number,
+  threshold: number = SCROLL_STICK_THRESHOLD_PX,
+): boolean {
+  return scrollHeight - scrollTop - clientHeight <= threshold
+}
+
+// ── WP3 — tool-call RLE grouping ────────────────────────────────────
+
+export const TOOL_CALL_GROUP_THRESHOLD = 2
+
+export type RowGroupEntry =
+  | { kind: "row"; row: TimelineRow }
+  | { kind: "tool-group"; rows: ToolCallRow[] }
+
+/** Walk `rows` once (order preserved) and collapse runs of `threshold`+
+ *  adjacent tool-call rows into a single `tool-group` entry. A run breaks
+ *  on any non-tool-call row in between (text, turn-end). Non-tool-call rows,
+ *  and tool-call runs shorter than `threshold`, pass through as individual
+ *  `{kind:"row"}` entries — same order as `rows`. */
+export function groupAdjacentToolCalls(
+  rows: readonly TimelineRow[],
+  threshold: number = TOOL_CALL_GROUP_THRESHOLD,
+): RowGroupEntry[] {
+  const result: RowGroupEntry[] = []
+  let run: ToolCallRow[] = []
+
+  function flushRun() {
+    if (run.length >= threshold) {
+      result.push({ kind: "tool-group", rows: run })
+    } else {
+      for (const row of run) {
+        result.push({ kind: "row", row })
+      }
+    }
+    run = []
+  }
+
+  for (const row of rows) {
+    if (row.kind === "tool-call") {
+      run.push(row)
+    } else {
+      flushRun()
+      result.push({ kind: "row", row })
+    }
+  }
+  flushRun()
+
+  return result
 }

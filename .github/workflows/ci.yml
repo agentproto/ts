@@ -647,6 +647,51 @@ jobs:
           LAST_SHA: ${{ steps.lastreview.outputs.sha }}
           HEAD_SHA: ${{ steps.headsha.outputs.sha }}
         run: |
+          # Every dedupe branch below treats "a review exists for this sha"
+          # as proof that this sha is fully handled — but "handled" is TWO
+          # facts, review-posted AND changeset-committed, and they aren't
+          # atomic: the changeset is committed by a LATER, separate host
+          # step ("Commit changeset", gated on this step's own skip output)
+          # that waits on Build+test and can fail to ever run (timeout,
+          # crashed job, red build) even after the review already posted.
+          # A guard that only checks the first fact then treats the pair as
+          # done forever creates an absorbing state: every later push gets a
+          # NEW head sha, so the exact-sha dedupe never matches again, but
+          # the patch-id-unchanged check below matches on CONTENT rather
+          # than sha and fires anyway — no push can ever re-earn the
+          # changeset commit. Real case: PR #1086's review posted at
+          # ba3a65a with no changeset commit behind it; see #1088. Compute
+          # whether a changeset is actually owed and already settled on this
+          # branch before trusting any dedupe below — mirrors the
+          # "changeset-check" job's own rule (private packages don't count).
+          CHANGESET_OWED=false
+          PKG_CHANGES=$(git diff --name-only origin/main...HEAD -- 'packages/**' 'adapters/**' || true)
+          if [ -n "$PKG_CHANGES" ]; then
+            PRIVATE_PREFIXES=$(
+              find packages adapters -maxdepth 2 -name package.json -not -path '*/node_modules/*' 2>/dev/null \
+                | while read -r pkgJson; do
+                    if jq -e '.private == true' "$pkgJson" >/dev/null 2>&1; then
+                      dirname "$pkgJson"
+                    fi
+                  done
+            )
+            PUBLISHABLE_CHANGES="$PKG_CHANGES"
+            for prefix in $PRIVATE_PREFIXES; do
+              PUBLISHABLE_CHANGES=$(echo "$PUBLISHABLE_CHANGES" | grep -v "^${prefix}/" || true)
+            done
+            if [ -n "$PUBLISHABLE_CHANGES" ]; then
+              CHANGESET_OWED=true
+            fi
+          fi
+          CHANGESET_SETTLED=true
+          if [ "$CHANGESET_OWED" = "true" ]; then
+            ADDED=$(git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md' \
+              | grep -v '^\.changeset/README\.md$' || true)
+            if [ -z "$ADDED" ]; then
+              CHANGESET_SETTLED=false
+            fi
+          fi
+
           # Dedupe by EXACT head sha, first: if the bot already posted a
           # review for THIS head, skip the whole reviewer ladder outright —
           # distinct from the merge-forward/patch-id check below, which is
@@ -671,10 +716,13 @@ jobs:
             | jq -s --arg hs "$HEAD_SHORT" 'add // [] | [.[] | select(
               ((try (.body // "" | match("sha `([0-9a-f]{7,40})`").captures[0].string) catch null) // "")[:7] == $hs
             )] | length')
-          if [ "${EXISTING:-0}" -gt 0 ] 2>/dev/null; then
+          if [ "${EXISTING:-0}" -gt 0 ] 2>/dev/null && [ "$CHANGESET_SETTLED" = "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "HEAD $HEAD_SHA already has $EXISTING posted review(s) — skipping the re-review (dedupe by reviewed sha)."
             exit 0
+          fi
+          if [ "${EXISTING:-0}" -gt 0 ] 2>/dev/null; then
+            echo "HEAD $HEAD_SHA already has $EXISTING posted review(s), but a changeset is owed and still missing from the branch — not trusting the dedupe (see #1088); re-reviewing so the changeset can actually land."
           fi
 
           # origin/main is fetched by the agent-setup harness. Fail-safe: if the
@@ -705,10 +753,13 @@ jobs:
             if [ -n "$BASE_HEAD" ] && [ -n "$BASE_LAST" ]; then
               NOW="$(git diff "$BASE_HEAD" HEAD | git patch-id --stable | awk '{print $1}')"
               THEN="$(git diff "$BASE_LAST" "$LAST_SHA" | git patch-id --stable | awk '{print $1}')"
-              if [ -n "$NOW" ] && [ "$NOW" = "$THEN" ]; then
+              if [ -n "$NOW" ] && [ "$NOW" = "$THEN" ] && [ "$CHANGESET_SETTLED" = "true" ]; then
                 echo "skip=true" >> "$GITHUB_OUTPUT"
                 echo "PR contribution unchanged since last review ($LAST_SHA) — push only carried main forward; skipping the re-review."
                 exit 0
+              fi
+              if [ -n "$NOW" ] && [ "$NOW" = "$THEN" ]; then
+                echo "PR contribution unchanged since last review ($LAST_SHA), but a changeset is owed and still missing from the branch — not trusting the dedupe (see #1088); re-reviewing so the changeset can actually land."
               fi
             fi
           fi

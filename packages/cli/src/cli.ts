@@ -21,7 +21,7 @@ import { runAuth } from "./commands/auth.js"
 import { runConfig } from "./commands/config.js"
 import { runInstall } from "./commands/install.js"
 import { runSetupCommand } from "./commands/setup.js"
-import { runPlugins } from "./commands/plugins.js"
+import { runAdapters } from "./commands/adapters.js"
 import { runRun } from "./commands/run.js"
 import { runChat } from "./commands/chat.js"
 import { runChatTui } from "./commands/chat-tui.js"
@@ -61,7 +61,7 @@ Usage:
                        --allow-unverified: run a curl/download installer that
                        declares no verify_sha256 (refused by default in
                        non-interactive contexts)
-  agentproto plugins   <list|show|install|uninstall|enable|disable> [args]
+  agentproto adapters  <list|show|install|uninstall|enable|disable> [args]
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
   agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
@@ -169,7 +169,7 @@ const VERBS = new Set([
   "config",
   "daemon",
   "install",
-  "plugins",
+  "adapters",
   "setup",
   "run",
   "chat",
@@ -242,8 +242,8 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     case "install":
       return runInstall(rest)
-    case "plugins":
-      return runPlugins(rest)
+    case "adapters":
+      return runAdapters(rest)
     case "setup":
       return runSetupCommand(rest)
     case "run":

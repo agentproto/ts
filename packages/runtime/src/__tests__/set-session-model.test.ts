@@ -140,12 +140,16 @@ describe("SessionsRegistry.setModel", () => {
     const result = await reg.setModel(desc.id, "claude-sonnet-5")
     expect(result).toEqual({ applied: true, model: "claude-sonnet-5" })
     expect(reg.get(desc.id)?.model).toBe("claude-sonnet-5")
+    // A switch made through this daemon means requested and active agree —
+    // see SessionDescriptor.activeModel's doc.
+    expect(reg.get(desc.id)?.activeModel).toBe("claude-sonnet-5")
 
     const modelChanged = seen.find(ev => ev.type === "session:model-changed")
     expect(modelChanged).toEqual({
       type: "session:model-changed",
       sessionId: desc.id,
       model: "claude-sonnet-5",
+      activeModel: "claude-sonnet-5",
       label: "my-conversation",
       ts: expect.any(String),
     })

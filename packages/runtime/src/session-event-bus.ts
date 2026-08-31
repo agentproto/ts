@@ -438,6 +438,17 @@ export interface SessionModelChangedEvent {
   type: "session:model-changed"
   sessionId: string
   model: string
+  /**
+   * The model now believed to be ACTIVE — mirrors
+   * `SessionDescriptor.activeModel`. Absent only for adapters/paths that
+   * predate this field; once populated it's kept in lockstep with `model`
+   * (equal when a switch went through this daemon, divergent when learned
+   * from an adapter's own reply to a `/model` sent as an ordinary prompt).
+   * REPORTED BY THE ADAPTER, NOT INDEPENDENTLY VERIFIED when it diverges
+   * from `model` — see `SessionDescriptor.activeModel`'s doc. A display
+   * hint, never a source of billing/cost truth.
+   */
+  activeModel?: string
   label?: string
   ts: string
 }
