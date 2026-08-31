@@ -110,41 +110,20 @@ import { XAI_GENERATED_PRICING } from "./xai-pricing.generated.js"
  * every case that applied to, and the exact two values each side had.
  */
 export const PRICING_OVERRIDES: Record<string, LLMPricing & { reason: string }> = {
-  "claude-opus-4-5": {
-    reason:
-      "Bare alias-target id predating Anthropic's dated-id convention. Anthropic's /v1/models (and the CONTEXT_WINDOWS fallback used when no key is available) only returns the dated form claude-opus-4-5-20251101 -- no generator produces this exact bare spelling.",
-    inputPer1M: 15.0, outputPer1M: 75.0, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "anthropic", provider: "anthropic",
-  },
-
-  "claude-haiku-4-5": {
-    reason:
-      "Bare alias-target id predating Anthropic's dated-id convention. Anthropic's /v1/models only returns the dated form claude-haiku-4-5-20251001 -- no generator produces this exact bare spelling.",
-    inputPer1M: 0.8, outputPer1M: 4.0, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "anthropic", provider: "anthropic",
-  },
-
-  "claude-sonnet-4-5": {
-    reason:
-      "Bare alias-target id predating Anthropic's dated-id convention. Anthropic's /v1/models only returns the dated form claude-sonnet-4-5-20250929 -- no generator produces this exact bare spelling. Unlike claude-opus-4-5/claude-haiku-4-5, this one does NOT diverge from its dated/generated sibling (3/15 both sides) -- kept anyway because no generator emits the bare key itself.",
-    inputPer1M: 3.0, outputPer1M: 15.0, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "anthropic", provider: "anthropic",
-  },
-
-  "grok-4.20": {
-    reason:
-      "xAI's live /v1/models now serves this only as an alias of the build-suffixed canonical id grok-4.20-0309-reasoning (verified live: that entry's own `aliases` array includes \"grok-4.20\"). Not a distinct priced id in xai-pricing.generated.ts, which emits canonical ids only.",
-    inputPer1M: 1.25, outputPer1M: 2.5, vendor: "xai", provider: "xai",
-  },
-
-  "grok-4.20-reasoning": {
-    reason:
-      "Same as grok-4.20 -- alias of grok-4.20-0309-reasoning per xAI's own live aliases array, not a separate canonical id the generator emits.",
-    inputPer1M: 1.25, outputPer1M: 2.5, vendor: "xai", provider: "xai",
-  },
-
-  "grok-4.20-multi-agent": {
-    reason:
-      "Same class -- alias of grok-4.20-multi-agent-0309 per xAI's own live aliases array, not a separate canonical id the generator emits.",
-    inputPer1M: 1.25, outputPer1M: 2.5, vendor: "xai", provider: "xai",
-  },
+  // claude-opus-4-5 / claude-haiku-4-5 / claude-sonnet-4-5 (bare) and
+  // grok-4.20 / grok-4.20-reasoning / grok-4.20-multi-agent used to live
+  // here as hand-typed numbers, justified by "no generator produces this
+  // exact spelling" — true, but that only justifies the id's EXISTENCE, not
+  // hand-typing its PRICE when a same-model sibling under a different id is
+  // already generated (Anthropic's dated form, xAI's own declared alias).
+  // Fixed at the generator, not papered over here:
+  //   - sync-anthropic.mjs now mechanically derives every bare "aged-out"
+  //     id from its dated sibling (strip the -YYYYMMDD suffix), same price.
+  //   - sync-xai.mjs now expands every model's own `aliases` array from
+  //     xAI's live payload into additional priced entries.
+  // Both bare-id sets are gone from this map for good — see the PR body's
+  // divergence table for what the old hand-typed numbers here were wrong
+  // by (these were on ids adapters/auth-profiles actually spawn).
 
   "kimi-k2-0905-preview": {
     reason:
@@ -176,34 +155,41 @@ export const PRICING_OVERRIDES: Record<string, LLMPricing & { reason: string }> 
     inputPer1M: 0.6, outputPer1M: 3.0, cacheReadMultiplier: 0.17, vendor: "moonshot", provider: "moonshot",
   },
 
+  // mistral-large-latest / mistral-small-latest / codestral-latest /
+  // ministral-8b-latest: "no generator produces this exact -latest
+  // spelling" is true and justifies the id existing here, but it does NOT
+  // justify a hand-typed NUMBER when a same-family dated sibling is already
+  // generated (mistral-large-2512, mistral-small-2603, codestral-2508,
+  // ministral-8b-2512 respectively) — that was the same mistake as the
+  // Anthropic/xAI bare-id overrides above, just not mechanically fixable at
+  // the generator (Mistral's dated suffixes, e.g. -2512, don't strip back
+  // to "-latest" the way Anthropic's -YYYYMMDD strips to a bare id). Spread
+  // the generated sibling's pricing directly instead of retyping it, so a
+  // re-sync that changes the dated price changes this too, automatically.
   "mistral-large-latest": {
-    reason:
-      "PLACEHOLDER -- shares its exact 0.5/1.5 value with 3 other Mistral rows below (mistral-medium-latest, codestral-latest, devstral-latest), a copy-pasted template never individually verified. \"-latest\" alias spelling also has no generated counterpart (Mistral's own /v1/models returns dated ids only, e.g. mistral-large-2512).",
-    inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
+    reason: "\"-latest\" alias spelling has no generated counterpart of its own; derives from the dated sibling mistral-large-2512 (MISTRAL_GENERATED_PRICING) rather than a hand-typed number.",
+    ...MISTRAL_GENERATED_PRICING["mistral-large-2512"],
   },
 
   "mistral-small-latest": {
-    reason:
-      "PLACEHOLDER -- shares its exact 0.06/0.18 value with 2 other Mistral rows below (ministral-8b-latest, magistral-small-latest), a copy-pasted template never individually verified. \"-latest\" alias spelling also has no generated counterpart.",
-    inputPer1M: 0.06, outputPer1M: 0.18, cacheReadMultiplier: 0.5, vendor: "mistral", provider: "mistral",
+    reason: "\"-latest\" alias spelling has no generated counterpart of its own; derives from the dated sibling mistral-small-2603 (MISTRAL_GENERATED_PRICING) rather than a hand-typed number. The old hand-typed value here (0.06/0.18, cache 0.5) diverged from this — see the PR body's divergence table.",
+    ...MISTRAL_GENERATED_PRICING["mistral-small-2603"],
+  },
+
+  "codestral-latest": {
+    reason: "\"-latest\" alias spelling has no generated counterpart of its own; derives from the dated sibling codestral-2508 (MISTRAL_GENERATED_PRICING) rather than a hand-typed number. The old hand-typed value here (0.5/1.5, a copy-pasted placeholder) diverged from this — see the PR body's divergence table.",
+    ...MISTRAL_GENERATED_PRICING["codestral-2508"],
+  },
+
+  "ministral-8b-latest": {
+    reason: "\"-latest\" alias spelling has no generated counterpart of its own; derives from the dated sibling ministral-8b-2512 (MISTRAL_GENERATED_PRICING) rather than a hand-typed number. The old hand-typed value here (0.06/0.18, a copy-pasted placeholder) diverged from this — see the PR body's divergence table.",
+    ...MISTRAL_GENERATED_PRICING["ministral-8b-2512"],
   },
 
   "mistral-medium-latest": {
     reason:
-      "PLACEHOLDER, explicitly marked `// TODO verify pricing` in the row this replaces -- copy-pasted 0.5/1.5 template value, never real. \"-latest\" alias spelling also has no generated counterpart.",
+      "PLACEHOLDER, explicitly marked `// TODO verify pricing` in the row this replaces -- copy-pasted 0.5/1.5 template value, never real. Unlike the four rows above, this one is NOT auto-derived from a generated sibling: MISTRAL_GENERATED_PRICING has THREE medium candidates (mistral-medium-3, mistral-medium-3-5, mistral-medium-3.5) and which one \"-latest\" currently means is an editorial call this sync can't safely make -- picking wrong would silently misprice, which is worse than an honestly-labeled unverified placeholder. Needs a human to confirm which dated id is current, then wire it the same way as mistral-large-latest above.",
     inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
-  },
-
-  "codestral-latest": {
-    reason:
-      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.5/1.5 template value, never real. \"-latest\" alias spelling also has no generated counterpart (generated has the dated codestral-2508).",
-    inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
-  },
-
-  "ministral-8b-latest": {
-    reason:
-      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.06/0.18 template value, never real. \"-latest\" alias spelling also has no generated counterpart (generated has the dated ministral-8b-2512).",
-    inputPer1M: 0.06, outputPer1M: 0.18, vendor: "mistral", provider: "mistral",
   },
 
   "devstral-latest": {

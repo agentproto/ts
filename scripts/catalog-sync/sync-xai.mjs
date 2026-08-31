@@ -134,6 +134,33 @@ async function main() {
   }
   console.log(`  ${entries.length} text models with native pricing kept`)
 
+  // xAI's own /v1/models response declares each model's alternate callable
+  // names in its `aliases` array (e.g. grok-4.20-0309-reasoning lists
+  // "grok-4.20", "grok-4.20-reasoning", "grok-4.20-beta", ...) — a caller
+  // requesting the bare/marketing alias is requesting the SAME priced
+  // model, not a different one with an unknown price. Emit every alias as
+  // its own priced entry (identical pricing to its canonical id) instead of
+  // leaving it to fall through to a hand-typed row or DEFAULT_PRICING.
+  // Never overwrites a distinct canonical entry (first-declared alias wins
+  // on a cross-model collision; logged so it's visible, not silent).
+  const byId = new Map(entries.map((e) => [e.id, e]))
+  for (const m of models) {
+    if (!m.id || !byId.has(m.id) || !Array.isArray(m.aliases)) continue
+    const canonical = byId.get(m.id)
+    for (const alias of m.aliases) {
+      if (byId.has(alias)) {
+        if (byId.get(alias) !== canonical) {
+          console.log(`  Alias collision: "${alias}" already priced under a different canonical id — keeping the first one, not ${m.id}`)
+        }
+        continue
+      }
+      const aliasEntry = { ...canonical, id: alias }
+      entries.push(aliasEntry)
+      byId.set(alias, aliasEntry)
+    }
+  }
+  console.log(`  ${entries.length} entries after expanding xAI's own aliases`)
+
   // Sort alphabetically by id
   entries.sort((a, b) => a.id.localeCompare(b.id))
 

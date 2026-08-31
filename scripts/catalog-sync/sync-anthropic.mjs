@@ -221,6 +221,25 @@ async function main() {
     }
   }
 
+  // Some Anthropic model generations "age out" of the live /v1/models
+  // listing into a dated-only id (e.g. claude-opus-4-5-20251101) while the
+  // bare "latest" spelling (claude-opus-4-5) stays a valid, callable
+  // back-compat id — just no longer separately listed. Mechanically derive
+  // the bare form from every dated entry (strip the trailing -YYYYMMDD),
+  // priced IDENTICALLY to its dated sibling, rather than leaving that bare
+  // id to either disappear or need a hand-typed number that drifts from the
+  // real one. Skips a bare id that's already a distinct, separately-priced
+  // entry (a live, non-aged model should never be silently overwritten).
+  const byId = new Map(entries.map((e) => [e.id, e]))
+  for (const entry of entries) {
+    const bare = entry.id.replace(/-\d{8}$/, "")
+    if (bare === entry.id) continue
+    if (byId.has(bare)) continue
+    const bareEntry = { ...entry, id: bare }
+    entries.push(bareEntry)
+    byId.set(bare, bareEntry)
+  }
+
   // Sort alphabetically by id
   entries.sort((a, b) => a.id.localeCompare(b.id))
 
