@@ -16,6 +16,7 @@
 import type { FsPort } from "../ports/fs.port.js"
 import type { PackFile } from "./packs.js"
 import { outOfRangeCites } from "./cites.js"
+import { recordedBibSha } from "./bib-sha.js"
 
 export interface ChapterEdit {
   readonly find?: string
@@ -48,6 +49,8 @@ export interface ApplyEditsResult {
       readonly id: string
       readonly cites: readonly number[]
     }[]
+    /** Ids of chapters skipped wholesale: written against a stale bibliography. */
+    readonly staleBib: readonly string[]
   }
 }
 
@@ -58,11 +61,19 @@ export interface ApplyEditsOptions {
   readonly report: FsPort
   /** Subdir holding chapter files. Default `chapters`. */
   readonly chaptersDir?: string
+  /**
+   * Current bibliography content-sha. When set, a chapter stamped with a
+   * DIFFERENT sha is skipped wholesale — its `[n]`s (and the fixer's, which
+   * read the current bibliography) point at different numberings, so exact
+   * edits would silently mix the two.
+   */
+  readonly bibSha?: string
 }
 
-/** Chapter body start: an optional `assembleChapters({ injectAnchors: true })`
- * anchor line, then the `## ` heading. */
-const HEADING_START = /^(?:<a id="[^"]*"><\/a>\n\n)?## /
+/** Chapter body start: an optional `assembleChapters({ bibSha })` marker,
+ * an optional `injectAnchors: true` anchor line, then the `## ` heading. */
+const HEADING_START =
+  /^(?:<!-- bib-sha:[0-9a-f]+ -->\n\n)?(?:<a id="[^"]*"><\/a>\n\n)?## /
 
 /** Count non-overlapping occurrences of `n` in `hay`. */
 function occ(hay: string, n: string): number {
@@ -88,6 +99,7 @@ export async function applyEdits(
   let filesChanged = 0
   const postCheckFailed: string[] = []
   const preExistingOutOfRange: { id: string; cites: readonly number[] }[] = []
+  const staleBib: string[] = []
 
   for (const r of opts.results) {
     const path = `${chaptersDir}/${r.id}.md`
@@ -98,6 +110,16 @@ export async function applyEdits(
     let n = 0
     let reverted = 0
     md += `## ${r.id} — ${edits.length} proposed edit(s)\n`
+    const recorded = recordedBibSha(text)
+    if (opts.bibSha && recorded && recorded !== opts.bibSha) {
+      staleBib.push(r.id)
+      skipped += edits.length
+      md +=
+        `- ⚠️ SKIP ALL — chapter written against bibliography ${recorded}, ` +
+        `current is ${opts.bibSha} (its [n]s cite a stale numbering; ` +
+        `re-run write/assemble for this chapter)\n\n`
+      continue
+    }
     for (const e of edits) {
       const find = e.find ?? ""
       const replace = e.replace ?? ""
@@ -158,6 +180,13 @@ export async function applyEdits(
   return {
     files,
     report: md,
-    stats: { filesChanged, applied, skipped, postCheckFailed, preExistingOutOfRange },
+    stats: {
+      filesChanged,
+      applied,
+      skipped,
+      postCheckFailed,
+      preExistingOutOfRange,
+      staleBib,
+    },
   }
 }
