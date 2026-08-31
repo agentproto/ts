@@ -1,15 +1,27 @@
 import { describe, expect, it } from "vitest"
+import { resolveContextWindow, listNativeModelIds } from "@agentproto/model-catalog/llm"
 import { resolvePiContextWindow } from "../client.js"
 
 describe("resolvePiContextWindow", () => {
   it("resolves a cataloged model id (incl. pi's moonshotai/ wire prefix) to its real window", () => {
-    // The original repro (sess_e9edfc55) used moonshotai/kimi-k2.5 — pi's
-    // --model wire spelling, aliased in @agentproto/model-catalog to the
-    // bare catalog entry. kimi-k2.5 has since aged out of Moonshot's live
-    // /v1/models sync (see catalog-sync PR #1082), so this now pins
-    // kimi-k2.6 instead — same wire-prefix alias mechanism under test, a
-    // model id that's still live, same 262144-token window.
-    expect(resolvePiContextWindow("moonshotai/kimi-k2.6")).toBe(262144)
+    // Regression for sess_e9edfc55: pi's --model wire spelling
+    // (moonshotai/<id>) must resolve through @agentproto/model-catalog's
+    // alias table to a real context window, not silently return undefined.
+    // What's under test is that MECHANISM, not any specific model's
+    // survival — an earlier version of this test hardcoded
+    // "moonshotai/kimi-k2.5", which broke the moment Moonshot retired that
+    // id from its live /v1/models sync (catalog-sync PR #1082), the same
+    // way a hardcoded entry count broke on every routine sync (#1092).
+    // Derive the fixture from the live snapshot instead: pick whichever
+    // currently-live moonshot id has a wire-prefix alias, so this can't go
+    // stale the same way again.
+    const liveMoonshotIds = listNativeModelIds("moonshot")
+    expect(liveMoonshotIds.length).toBeGreaterThan(0)
+    const resolvable = liveMoonshotIds
+      .map(id => ({ id, window: resolvePiContextWindow(`moonshotai/${id}`) }))
+      .find(r => r.window !== undefined)
+    expect(resolvable).toBeDefined()
+    expect(resolvable!.window).toBe(resolveContextWindow(resolvable!.id)!.contextWindow)
   })
 
   it("returns undefined for a model the catalog doesn't know — never a fabricated number", () => {
