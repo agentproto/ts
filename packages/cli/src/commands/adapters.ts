@@ -14,7 +14,7 @@
  *
  * Adapters are loaded by `agentproto run-swarm` in the order they
  * appear. Last one to register a `kind` wins — useful for overriding
- * a built-in or another adapter's adapter.
+ * a built-in or another adapter.
  */
 
 import { spawn } from "node:child_process"
@@ -32,7 +32,7 @@ import type {
 const USAGE = `agentproto adapters — manage runtime adapters
 
 Usage:
-  agentproto adapters list                  Show enabled adapters + adapters
+  agentproto adapters list                  Show enabled adapters + what they provide
   agentproto adapters show <pkg>            Print an adapter's manifest
   agentproto adapters install <pkg>         npm i -g + add to config
   agentproto adapters uninstall <pkg>       Remove from config (+ npm rm)
