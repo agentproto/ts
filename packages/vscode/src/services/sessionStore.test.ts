@@ -337,6 +337,29 @@ describe("SessionStore — debounced refresh", () => {
     store.dispose()
   })
 
+  it("refreshes the session list on a model switch, so the composer chip repaints promptly", async () => {
+    const client = createFakeClient()
+    client.sessionEventsPoll.mockResolvedValue({
+      events: [{ type: "session:model-changed", sessionId: "s1" }],
+      nextCursor: 1,
+    })
+    client.listSessions.mockResolvedValue([session({ model: "sonnet-5" })])
+
+    const scheduler = new ManualScheduler()
+    const store = new SessionStore(client, 5000, scheduler)
+    store.start()
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(client.listSessions).toHaveBeenCalledTimes(1) // boot
+
+    client.listSessions.mockResolvedValue([
+      session({ model: "sonnet-5", activeModel: "sonnet-4-5" }),
+    ])
+    await vi.advanceTimersByTimeAsync(150)
+    expect(client.listSessions).toHaveBeenCalledTimes(2) // debounced refresh
+    store.dispose()
+  })
+
   it("snapshots on a clock, so a session started elsewhere appears without a manual refresh", async () => {
     const client = createFakeClient()
     client.sessionEventsPoll.mockResolvedValue({ events: [], nextCursor: 0 })

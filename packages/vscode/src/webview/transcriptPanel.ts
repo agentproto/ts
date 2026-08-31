@@ -1728,6 +1728,13 @@ export function buildHtml(
       color: var(--phosphor);
       text-decoration: underline;
     }
+    /* Requested-vs-active divergence inside the model chip (#composer-model)
+       — only rendered when the two facts actually disagree (a live /model
+       switch the daemon learned about mid-session). The active model is the
+       one the user is actually talking to right now, so it reads at full
+       strength; the requested/spawn-time id is de-emphasized alongside it. */
+    .composer-model-requested { opacity: 0.6; }
+    .composer-model-active { opacity: 1; }
     button {
       padding: 3px 8px;
       border: none;
@@ -2838,10 +2845,49 @@ export function buildHtml(
           (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '');
       }
 
+      // Two distinct facts, not one value with two versions: session.model is
+      // what the session was REQUESTED to run at spawn, session.activeModel
+      // is what's actually running now when the daemon learned of a mid-
+      // session switch (a live model-switch verb, or an adapter's own
+      // acknowledgement of a /model command typed as a plain prompt — see
+      // SessionDescriptor.activeModel's doc in client/types.ts: that second
+      // source is REPORTED BY THE ADAPTER, NOT INDEPENDENTLY VERIFIED, a
+      // display hint only). Coincide (the majority case) -> render exactly
+      // as before, no visual noise. Diverge -> both shown, active
+      // foregrounded. Built via DOM APIs + textContent, never innerHTML/
+      // string interpolation — a model id ultimately traces back to an
+      // adapter's own reply text, same injection-safety reasoning as the
+      // watcher rows above.
+      function renderModelChip(session) {
+        const requested = session.model || 'model?';
+        const active = session.activeModel;
+        composerModel.textContent = '';
+        if (active && session.model && active !== session.model) {
+          const requestedSpan = document.createElement('span');
+          requestedSpan.className = 'composer-model-requested';
+          requestedSpan.textContent = requested;
+          const activeSpan = document.createElement('span');
+          activeSpan.className = 'composer-model-active';
+          activeSpan.textContent = active;
+          composerModel.appendChild(requestedSpan);
+          composerModel.appendChild(document.createTextNode(' → '));
+          composerModel.appendChild(activeSpan);
+          composerModel.title = 'Requested: ' + requested + ' · Active: ' + active +
+            ' (reported by the adapter, unverified) — click to switch';
+        } else {
+          composerModel.textContent = requested;
+          composerModel.title = 'Switch model';
+        }
+      }
+
       function renderCostPopover(session) {
         popoverTokensIn.textContent = typeof session.tokensIn === 'number' ? String(session.tokensIn) : '—';
         popoverTokensOut.textContent = typeof session.tokensOut === 'number' ? String(session.tokensOut) : '—';
-        popoverModel.textContent = session.model || '—';
+        const requestedModel = session.model || '—';
+        popoverModel.textContent =
+          session.activeModel && session.model && session.activeModel !== session.model
+            ? requestedModel + ' → ' + session.activeModel + ' (unverified)'
+            : requestedModel;
         popoverHarness.textContent = session.adapterSlug || '—';
         // The named wallet the session's access axis is bound to (profile
         // label/ref), falling back to the raw auth method — never a secret.
@@ -2981,7 +3027,7 @@ export function buildHtml(
             composerHarness.textContent = session.adapterSlug || '';
           }
           composerHarness.title = session.adapterSlug || '';
-          composerModel.textContent = session.model || 'model?';
+          renderModelChip(session);
           // The effort chip only shows when the session carries one — an adapter
           // that has no effort axis leaves the chip empty (:empty hides it).
           composerEffort.textContent = session.effort ? ('effort: ' + session.effort) : '';
