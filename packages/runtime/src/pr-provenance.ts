@@ -126,7 +126,7 @@ export const buildFooter = ({
     if (prov?.host) parts.push(`host \`${prov.host}\``)
     if (prov?.cwd) parts.push(`cwd \`${cwdLabel(prov.cwd, prov.workspaceSlug)}\``)
   }
-  if (sha) parts.push(`sha \`${sha.slice(0, 7)}\``)
+  if (sha) parts.push(`sha \`${sha}\``)
   return `\n\n---\n<sub>${parts.join(" · ")}</sub>`
 }
 

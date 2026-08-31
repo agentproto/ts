@@ -608,14 +608,22 @@ jobs:
         run: |
           # --paginate + `jq -s add` (per-page eval otherwise miscounts, matches
           # the postcheck step's recipe).
-          REVIEWS=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" | jq -s 'add')
+          REVIEWS=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" | jq -s 'add // []')
+          # commit_id drifts with the branch HEAD after force-pushes — extract
+          # the frozen SHA from the provenance footer instead (#1088).
+          HEAD_SHORT="${HEAD_SHA:0:7}"
+          REVIEWS=$(echo "$REVIEWS" | jq '
+            [.[] | . + { real_sha: (
+              (try (.body // "" | match("sha `([0-9a-f]{7,40})`").captures[0].string) catch null)
+              // .commit_id // ""
+            )}]')
           # Prefer the bot's own prior reviews (author login starts with the app
           # slug), against a DIFFERENT sha than HEAD; fall back to any review with
-          # a commit_id if the bot has none yet. Latest by submitted_at wins.
-          LAST=$(echo "$REVIEWS" | jq -r --arg head "$HEAD_SHA" --arg slug "$BOT_SLUG" '
-            def pick(f): [ .[] | select(.commit_id != null and .commit_id != "" and .commit_id != $head) | select(f) ] | sort_by(.submitted_at) | last;
-            (pick(.user.login | startswith($slug)) // pick(true)) // {} | .commit_id // ""')
-          BODY=$(echo "$REVIEWS" | jq -r --arg last "$LAST" '[ .[] | select(.commit_id == $last) ] | sort_by(.submitted_at) | last // {} | .body // ""')
+          # a real_sha if the bot has none yet. Latest by submitted_at wins.
+          LAST=$(echo "$REVIEWS" | jq -r --arg hs "$HEAD_SHORT" --arg slug "$BOT_SLUG" '
+            def pick(f): [ .[] | select(.real_sha != "" and (.real_sha[:7] != $hs)) | select(f) ] | sort_by(.submitted_at) | last;
+            (pick(.user.login | startswith($slug)) // pick(true)) // {} | .real_sha // ""')
+          BODY=$(echo "$REVIEWS" | jq -r --arg last "$LAST" '[ .[] | select(.real_sha == $last) ] | sort_by(.submitted_at) | last // {} | .body // ""')
           echo "sha=$LAST" >> "$GITHUB_OUTPUT"
           {
             echo "body<<__AGENTFLOW_EOF__"
@@ -701,8 +709,13 @@ jobs:
           # run re-reviewed from scratch and posted a third, redundant
           # APPROVE. Also catches a plain manual re-run of this job against
           # an unchanged HEAD.
+          # commit_id drifts with the branch HEAD after force-pushes —
+          # match the frozen SHA from the provenance footer instead (#1088).
+          HEAD_SHORT="${HEAD_SHA:0:7}"
           EXISTING=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
-            | jq -s "add | [.[] | select(.commit_id==\"$HEAD_SHA\")] | length")
+            | jq -s --arg hs "$HEAD_SHORT" 'add // [] | [.[] | select(
+              ((try (.body // "" | match("sha `([0-9a-f]{7,40})`").captures[0].string) catch null) // "")[:7] == $hs
+            )] | length')
           if [ "${EXISTING:-0}" -gt 0 ] 2>/dev/null && [ "$CHANGESET_SETTLED" = "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "HEAD $HEAD_SHA already has $EXISTING posted review(s) — skipping the re-review (dedupe by reviewed sha)."

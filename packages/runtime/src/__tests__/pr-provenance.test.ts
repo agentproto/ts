@@ -50,7 +50,7 @@ describe("buildFooter — format parity with the runner lanes", () => {
         "<sub>🤖 **@agentproto-bot** — PR · session `sess_abc123` (`fix-foo`) · " +
         "claude-code / subscription · model `kimi-k2.7-code` · 12.3k in / 67.9k out · $0.1234 · " +
         "run [123456789](https://github.com/agentproto/ts/actions/runs/123456789) · " +
-        "sha `abcdef1`</sub>",
+        "sha `abcdef1234567890`</sub>",
     )
   })
 
@@ -72,7 +72,7 @@ describe("buildFooter — format parity with the runner lanes", () => {
         "<sub>🤖 **@agentproto-bot** — PR · session `sess_abc123` (`fix-foo`) · " +
         "claude-code / subscription · model `kimi-k2.7-code` · 12.3k in / 67.9k out · $0.1234 (local) · " +
         "host `jeremy-mac-studio` · cwd `ts/local-pr-provenance-audit` · " +
-        "sha `abcdef1`</sub>",
+        "sha `abcdef1234567890`</sub>",
     )
   })
 
