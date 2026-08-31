@@ -105,7 +105,7 @@ describe("applyEdits", () => {
     expect(res.report).toContain("out-of-range cite 9")
   })
 
-  it("reverts a chapter whose post-check fails (no write)", async () => {
+  it("reverts an edit whose post-check fails (no write)", async () => {
     const report = new MemFs({ "chapters/ch01.md": "## 1. Title\n\nBody." })
     const res = await applyEdits({
       bibMax: 5,
@@ -118,6 +118,81 @@ describe("applyEdits", () => {
     expect(res.files).toHaveLength(0)
     expect(res.report).toContain("POST-CHECK FAILED")
     expect(res.stats.postCheckFailed).toEqual(["ch01"])
+    expect(res.stats.applied).toBe(0)
+  })
+
+  it("a pre-existing out-of-range cite does not revert an unrelated edit batch (WP17)", async () => {
+    // WP17 bench scenario: the write stage shipped a stray [0] (bibMax 6);
+    // review proposed valid citation fixes elsewhere. The old whole-chapter
+    // post-check silently reverted the entire batch.
+    const report = new MemFs({
+      "chapters/mcp-server.md":
+        "## 4. MCP server\n\nStray writer cite [0] here.\n\n" +
+        "The client `connect` before the loop runs [3].\n\n" +
+        "Taken from chapter 3's own registry [1].",
+    })
+    const res = await applyEdits({
+      bibMax: 6,
+      report,
+      results: [
+        {
+          id: "mcp-server",
+          edits: [
+            {
+              find: "the loop runs [3]",
+              replace: "the loop runs",
+              reason: "cite [3] does not support the claim",
+            },
+            {
+              find: "own registry [1]",
+              replace: "own registry",
+              reason: "cite [1] does not support the claim",
+            },
+          ],
+        },
+      ],
+    })
+    // Both valid edits land despite the stray [0].
+    expect(res.stats.applied).toBe(2)
+    expect(res.stats.filesChanged).toBe(1)
+    expect(res.stats.postCheckFailed).toEqual([])
+    const m = Object.fromEntries(res.files.map((f) => [f.path, f.content]))
+    expect(m["chapters/mcp-server.md"]).toContain("the loop runs.")
+    expect(m["chapters/mcp-server.md"]).not.toContain("[3]")
+    // The stray is surfaced, not silently tolerated.
+    expect(res.stats.preExistingOutOfRange).toEqual([
+      { id: "mcp-server", cites: [0] },
+    ])
+    expect(res.report).toContain("pre-existing out-of-range cite(s) present: 0")
+    expect(res.report).not.toContain("reverted")
+  })
+
+  it("reverts only the edit that introduces an out-of-range cite in context", async () => {
+    // replace is clean in isolation but composes with the surrounding text
+    // into "[9]" — only that edit reverts; the valid one still lands.
+    const report = new MemFs({
+      "chapters/ch01.md": "## 1. Title\n\nAlpha9] tail. Beta stays.",
+    })
+    const res = await applyEdits({
+      bibMax: 5,
+      report,
+      results: [
+        {
+          id: "ch01",
+          edits: [
+            { find: "Alpha", replace: "Gamma [", reason: "composes into [9]" },
+            { find: "Beta stays", replace: "Beta lands [2]", reason: "valid" },
+          ],
+        },
+      ],
+    })
+    expect(res.stats.applied).toBe(1)
+    expect(res.stats.postCheckFailed).toEqual(["ch01"])
+    expect(res.report).toContain("introduces out-of-range cite 9 in context")
+    const m = Object.fromEntries(res.files.map((f) => [f.path, f.content]))
+    expect(m["chapters/ch01.md"]).toContain("Alpha9] tail") // guilty edit reverted
+    expect(m["chapters/ch01.md"]).toContain("Beta lands [2]") // valid edit kept
+    expect(res.stats.preExistingOutOfRange).toEqual([])
   })
 
   it("does not revert an anchor-prefixed chapter (assembleChapters injectAnchors output)", async () => {
