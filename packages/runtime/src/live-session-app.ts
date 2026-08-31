@@ -149,6 +149,9 @@ body.compact-mode #tree-pane{display:none}
 body.compact-mode #head-selector{display:inline-block}
 body.compact-mode #focus-id-label{display:none}
 body.compact-mode .row{border-radius:6px;padding:5px 8px;border-left-width:3px}
+body.compact-mode .row.text{border-left-color:var(--blue)}
+body.compact-mode .row.tool-call{border-left-color:var(--yellow)}
+body.compact-mode .row.turn-end{border-left-color:var(--purple)}
 body.compact-mode .row .body{font-size:12px;margin-top:3px}
 body.compact-mode .row .rhead{font-size:10px}
 details.tool-group{border:1px solid var(--border);border-radius:8px;background:var(--bg2);padding:5px 8px;border-left:3px solid var(--yellow)}
@@ -202,7 +205,7 @@ details.tool-group .row{margin-top:5px}
       <span id="status-line">connecting…</span>
     </div>
     <div id="timeline-body"><div id="timeline-empty">No session focused yet.</div></div>
-    <button id="new-pill" type="button">↓ Nouveaux messages</button>
+    <button id="new-pill" type="button">↓ New messages</button>
   </div>
 </div>
 <script>
@@ -625,14 +628,17 @@ function applyRecordToDom(prevRows) {
 
   if (compactMode) {
     // Inline mode: smaller rows — full grouped rebuild, preserving
-    // wasAtBottom/scrollTop and <details> open-state.
+    // wasAtBottom/scrollTop and <details> open-state. Only touch the DOM
+    // (and the scroll/pill decision) when the rows actually changed — a
+    // usage_update leaves rows === prevRows, so it must fall through to the
+    // header-only path below, same as the dense-mode branch.
     if (rows !== prevRows) {
       var flags = captureDetailsOpenFlags(body);
       body.innerHTML = buildTimelineHtml();
       restoreDetailsOpenFlags(body, flags);
+      if (wasAtBottom) body.scrollTop = body.scrollHeight;
+      else showNewPill();
     }
-    if (wasAtBottom) body.scrollTop = body.scrollHeight;
-    else showNewPill();
     updateHeader();
     return;
   }
