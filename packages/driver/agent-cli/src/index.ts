@@ -30,6 +30,8 @@ export {
   createArmSessionControls,
   applyModelCommand,
   promptTurn,
+  isModelSwitchAcknowledgement,
+  parseModelSwitchCommand,
   type ArmSessionControls,
 } from "./session-controls.js"
 // Agent CLI → generic model port: one executor backing every prompt→completion
