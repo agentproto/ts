@@ -47,10 +47,10 @@
       "import": "./dist/registry/builtins.mjs",
       "default": "./dist/registry/builtins.mjs"
     },
-    "./registry/plugins": {
-      "types": "./dist/registry/plugins.d.ts",
-      "import": "./dist/registry/plugins.mjs",
-      "default": "./dist/registry/plugins.mjs"
+    "./registry/adapters": {
+      "types": "./dist/registry/adapters.d.ts",
+      "import": "./dist/registry/adapters.mjs",
+      "default": "./dist/registry/adapters.mjs"
     },
     "./registry/manifest": {
       "types": "./dist/registry/manifest.d.ts",
