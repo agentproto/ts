@@ -229,12 +229,13 @@ export class McpProxyRegistry {
         error: handle.lastError ?? "client not connected",
       }
     }
+    const resolved = await resolveClientLocalFile(toolName, args)
     try {
       const result = await handle.client.callTool({
         name: toolName,
         arguments:
-          args && typeof args === "object"
-            ? (args as Record<string, unknown>)
+          resolved && typeof resolved === "object"
+            ? (resolved as Record<string, unknown>)
             : {},
       })
       return { ok: true, result }
@@ -258,6 +259,28 @@ export class McpProxyRegistry {
       Array.from(this.clients.values()).map(c => safeClose(c.client))
     )
     this.clients.clear()
+  }
+}
+
+/**
+ * Client-side file resolution for `media_upload_local`: the tool is designed
+ * to upload files from the CALLER's machine, so the proxy reads the file here
+ * (on the MCP client side) and injects its base64 contents as `data` before
+ * forwarding — zero context tokens, works even when the server is remote.
+ */
+async function resolveClientLocalFile(
+  toolName: string,
+  args: unknown
+): Promise<unknown> {
+  if (toolName !== "media_upload_local") return args
+  if (!args || typeof args !== "object") return args
+  const a = args as Record<string, unknown>
+  if (typeof a.path !== "string" || a.data !== undefined) return args
+  try {
+    const bytes = await fs.readFile(a.path)
+    return { ...a, data: bytes.toString("base64") }
+  } catch {
+    return args
   }
 }
 
