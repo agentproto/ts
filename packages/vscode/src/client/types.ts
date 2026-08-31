@@ -320,6 +320,15 @@ export interface SessionDescriptor {
    *  picking it is a live switch or needs a restart. */
   mode?: string
   model?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.activeModel — the model
+   *  believed to be running right now, when it may differ from `model`
+   *  above (the requested/spawn-time value). Populated by a live switch
+   *  through this daemon, or by picking a switch acknowledgement out of an
+   *  adapter's own reply to a `/model` sent as an ordinary prompt — that
+   *  second source is REPORTED BY THE ADAPTER, NOT INDEPENDENTLY VERIFIED,
+   *  a display hint for the composer chip, never billing/cost truth. Absent
+   *  when never learned, or equal to `model` when nothing has diverged. */
+  activeModel?: string
   auth?: {
     mode: "subscription" | "api-key"
     fingerprint: string
