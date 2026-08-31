@@ -98,6 +98,19 @@ import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
+// Reused, not reimplemented — same parser `applyModelCommand`'s dedicated
+// control turn uses, branched onto the ORDINARY prompt flow below so a
+// `/model <id>` typed as a plain turn (never routed through
+// `agent_set_model`) still gets learned. See `activeModel`'s doc on
+// `SessionDescriptor` for why this is a display hint, not billing truth.
+// A lean, dependency-free pair of string helpers — doesn't pull in any
+// driver session/runtime type, so this stays consistent with
+// `AgentSessionLike`'s driver-decoupling above (same precedent as
+// `session-config.ts`'s `inferLegacyModeKind` import).
+import {
+  isModelSwitchAcknowledgement,
+  parseModelSwitchCommand,
+} from "@agentproto/driver-agent-cli"
 
 /**
  * Minimal shape we need from a driver-agent-cli session — kept as a
@@ -1213,6 +1226,24 @@ export interface SessionDescriptor {
   mode?: string
   /** The model the session was requested to run (echoed back at spawn). */
   model?: string
+  /**
+   * The model believed to be ACTIVE right now, when it may differ from
+   * `model` above (the requested/spawn-time value). Populated by a
+   * successful live `setModel` (mirrors `model` — the switch went through
+   * this daemon, so both facts agree) or, more importantly, by picking a
+   * model-switch acknowledgement out of an ORDINARY prompt turn whose text
+   * opened with `/model <id>` (`@agentproto/driver-agent-cli`'s
+   * `isModelSwitchAcknowledgement`/`parseModelSwitchCommand` —
+   * `applyModelCommand`'s dedicated control turn never runs for that case,
+   * since the switch never went through `agent_set_model`).
+   *
+   * That second source is REPORTED BY THE ADAPTER'S OWN REPLY TEXT, NOT
+   * INDEPENDENTLY VERIFIED — a deliberately lax match good enough as a
+   * display hint for a UI chip, NEVER a source of billing/cost truth. Never
+   * overwrites `model`: losing the spawn-time request would lose the very
+   * thing that lets a client show the two facts diverging.
+   */
+  activeModel?: string
   // ── Decomposed per-session config axes (SPEC §3.1/§3.7,
   //    `agentproto-session-config-axes`). Each is the DESCRIPTOR ECHO of one
   //    orthogonal axis, recorded here so a picker chip renders that axis
@@ -5208,6 +5239,15 @@ export function createSessionsRegistry(opts?: {
       // human-friendly prompts without shaping the wire format.
       const wrapped =
         typeof message === "string" ? { type: "text", text: message } : message
+      // Learn a model switch sent as an ORDINARY prompt instead of the
+      // `agent_set_model` verb — the shape a `/model <id>` shortcut typed
+      // into chat actually produces (see `activeModel`'s doc on
+      // `SessionDescriptor`). Only bothers checking events against
+      // `isModelSwitchAcknowledgement` when the outgoing text looks like a
+      // switch request at all, so an ordinary chat turn pays nothing extra.
+      const switchCandidate =
+        typeof message === "string" ? parseModelSwitchCommand(message) : undefined
+      let switchLearned = false
       for await (const evt of rt.agentSession.send(wrapped)) {
         // Hermes may end a turn with nested/parallel tool calls still lacking
         // their terminal `tool_call_update`. Persist synthetic settlements
@@ -5220,6 +5260,21 @@ export function createSessionsRegistry(opts?: {
         // shape (tool arguments, plan entries, ...) still exists.
         transcriptWriter.recordEvent(rt.desc.id, evt)
         projectEvent(rt, evt)
+        if (switchCandidate && !switchLearned && isModelSwitchAcknowledgement(evt)) {
+          switchLearned = true
+          if (rt.desc.activeModel !== switchCandidate) {
+            rt.desc.activeModel = switchCandidate
+            schedulePersist()
+            sessionEvents?.emit({
+              type: "session:model-changed",
+              sessionId: rt.desc.id,
+              model: rt.desc.model ?? switchCandidate,
+              activeModel: switchCandidate,
+              label: rt.desc.label,
+              ts: new Date().toISOString(),
+            })
+          }
+        }
         // `text-delta` is the sole assistant-text channel (see projectEvent);
         // a whitespace-only delta doesn't count as real output.
         if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
@@ -6675,6 +6730,10 @@ export function createSessionsRegistry(opts?: {
         // driver consumed — the descriptor echo and UI picker must stay in
         // canonical model-identity terms.
         rt.desc.model = modelId
+        // The switch went through this daemon, so both facts genuinely
+        // agree — mirror onto `activeModel` too (SessionDescriptor's doc)
+        // rather than leaving it stale from a prior divergence.
+        rt.desc.activeModel = modelId
         schedulePersist()
         if (sessionEvents) {
           const ts = new Date().toISOString()
@@ -6694,6 +6753,7 @@ export function createSessionsRegistry(opts?: {
             type: "session:model-changed",
             sessionId: id,
             model: rt.desc.model,
+            activeModel: rt.desc.activeModel,
             label: rt.desc.label,
             ts,
           })

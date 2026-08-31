@@ -521,6 +521,29 @@ describe("transcriptPanel webview — composer", () => {
     expect(panel.document.getElementById("header-subtitle")?.textContent).toBe("")
   })
 
+  it("renders the model chip unchanged when requested and active agree (nominal case)", () => {
+    const panel = renderPanel()
+    init(panel, { adapterSlug: "claude-code", model: "sonnet-5", activeModel: "sonnet-5" })
+    const chip = btn(panel, "composer-model")
+    expect(chip.textContent).toBe("sonnet-5")
+    expect(chip.querySelector(".composer-model-active")).toBeNull()
+  })
+
+  it("foregrounds the active model and dims the requested one once a live switch diverges them", () => {
+    const panel = renderPanel()
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "z-ai/glm-5.2@openrouter",
+      activeModel: "z-ai/glm-5.3-flash",
+    })
+    const chip = btn(panel, "composer-model")
+    expect(chip.textContent).toBe("z-ai/glm-5.2@openrouter → z-ai/glm-5.3-flash")
+    expect(chip.querySelector(".composer-model-requested")?.textContent).toBe(
+      "z-ai/glm-5.2@openrouter",
+    )
+    expect(chip.querySelector(".composer-model-active")?.textContent).toBe("z-ai/glm-5.3-flash")
+  })
+
   it("clicking the model chip posts changeModel to the host", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
