@@ -40,7 +40,7 @@
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
-import { extname, join, normalize, resolve, sep } from "node:path"
+import { extname, join, normalize, resolve, sep, dirname } from "node:path"
 import { parseArgs } from "node:util"
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -51,14 +51,71 @@ import { loadConfig } from "@agentproto/runtime/config"
 import { pathExists } from "./commands/skill-install/shared.js"
 import { expandHome } from "./commands/skill-install/pack-resolve.js"
 
+// ── installed-app registry (shared with daemon's ~/.agentproto/apps.json) ──
+
+import { homedir } from "node:os"
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs"
+
+const APPS_JSON_PATH = join(homedir(), ".agentproto", "apps.json")
+
+interface AppsJsonFile {
+  apps?: { appId: string; dir: string }[]
+  runs?: unknown[]
+  applied?: unknown[]
+}
+
+function loadAppsJson(): AppsJsonFile {
+  if (!existsSync(APPS_JSON_PATH)) return {}
+  try {
+    return JSON.parse(readFileSync(APPS_JSON_PATH, "utf8")) as AppsJsonFile
+  } catch {
+    return {}
+  }
+}
+
+function saveAppsJson(data: AppsJsonFile): void {
+  mkdirSync(dirname(APPS_JSON_PATH), { recursive: true })
+  const tmp = `${APPS_JSON_PATH}.tmp.${process.pid}`
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8")
+  renameSync(tmp, APPS_JSON_PATH)
+}
+
+/** Resolve an installed app's directory by its `appId`. Returns `undefined`
+ *  when no app with that id is registered. */
+export function findInstalledAppDir(appId: string): string | undefined {
+  const data = loadAppsJson()
+  const app = data.apps?.find((a) => a.appId === appId)
+  return app?.dir
+}
+
+/** Register (or update) an app id → directory mapping in `~/.agentproto/apps.json`.
+ *  Preserves unrelated keys (`runs`, `applied`) the daemon manages. */
+export function installAppDir(appId: string, dir: string): void {
+  const data = loadAppsJson()
+  const apps = data.apps ?? []
+  const idx = apps.findIndex((a) => a.appId === appId)
+  if (idx === -1) {
+    apps.push({ appId, dir })
+  } else {
+    apps[idx] = { appId, dir }
+  }
+  data.apps = apps
+  saveAppsJson(data)
+}
+
 const USAGE = `agentproto app serve — serve an app's UI as a standalone webapp
 
 Usage:
-  agentproto app serve [appDir] [--port <n>] [--host <addr>] [--json]
+  agentproto app serve [appDir] [--port <n>] [--host <addr>] [--app <appId>] [--json]
 
 appDir:
   Directory holding a valid .agentproto/APP.md + .agentproto/ui/. Defaults to
-  the current directory.
+  the current directory. Ignored when --app is given.
+
+--app <appId>:
+  Serve an INSTALLED app by its id (resolved from ~/.agentproto/apps.json).
+  When given, appDir is ignored — the registered directory is used instead.
+  Install an app first: agentproto app install <dir>
 
 --port <n>:
   Port to bind. Defaults to the app's declared "ui.port" (APP.md frontmatter),
@@ -556,6 +613,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
     options: {
       port: { type: "string" },
       host: { type: "string" },
+      app: { type: "string" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -567,7 +625,23 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
   }
 
   const appDirArg = positionals[0] ?? "."
-  const appDir = resolve(process.cwd(), expandHome(appDirArg))
+  let appDir = resolve(process.cwd(), expandHome(appDirArg))
+
+  // --app <appId> overrides the positional dir — resolve from the installed-app
+  // registry instead. This lets users `app install` once then `app serve --app`.
+  const appId = values.app as string | undefined
+  if (appId !== undefined && appId.length > 0) {
+    const resolved = findInstalledAppDir(appId)
+    if (!resolved) {
+      process.stderr.write(
+        `agentproto app serve: no installed app with id '${appId}'.\n` +
+          `  Install it first: agentproto app install <dir>\n` +
+          `  Or list installed apps: agentproto app list\n`,
+      )
+      return 2
+    }
+    appDir = resolved
+  }
 
   const listenHost = resolveListenHost(values.host as string | undefined)
   if (values.host !== undefined) {

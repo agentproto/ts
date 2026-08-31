@@ -32,14 +32,15 @@
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { createHash } from "node:crypto"
 import { basename, dirname, join, resolve } from "node:path"
-import { tmpdir } from "node:os"
+import { tmpdir, homedir } from "node:os"
 import { spawn } from "node:child_process"
+import { existsSync, readFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 
 import matter from "gray-matter"
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
-import { runAppServe } from "../app-serve.js"
+import { runAppServe, findInstalledAppDir, installAppDir } from "../app-serve.js"
 import { runAppBuild } from "../app-build.js"
 import { runAppDev } from "../app-dev.js"
 
@@ -88,12 +89,14 @@ interface AgentAppManifest {
   agentprotoVersion: string
 }
 
-const USAGE = `agentproto app — package, unpack, serve, build, or dev an agentproto app
+const USAGE = `agentproto app — package, unpack, install, serve, build, or dev an agentproto app
 
 Usage:
   agentproto app pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
-  agentproto app serve [appDir] [--port <n>] [--json]
+  agentproto app install <appDir>
+  agentproto app list
+  agentproto app serve [appDir] [--port <n>] [--app <appId>] [--json]
   agentproto app build <appDir> [--json]
   agentproto app dev <appDir> [--port <n>] [--json] [-- <viteArgs...>]
 
@@ -108,10 +111,21 @@ unpack:
   and restore the app folder (without manifest.json). Without --dir,
   restores into <id>-<version> in the current directory.
 
+install:
+  Register an app id→dir mapping in ~/.agentproto/apps.json so that
+  \`agentproto app serve --app <id>\` can resolve it. Reads the app's
+  .agentproto/APP.md for its id, then writes the mapping. Idempotent —
+  re-running with the same directory updates the existing entry.
+
+list:
+  List every registered app (id → dir) from ~/.agentproto/apps.json.
+
 serve:
   Serve <appDir>'s .agentproto/ui/ as a standalone webapp with a window.McpApp
-  bridge wired to the daemon's /mcp endpoint. Port resolution: --port, then
-  the APP.md "ui.port" hint, then an OS-assigned free port.
+  bridge wired to the daemon's /mcp endpoint. Pass --app <appId> to serve an
+  installed app by its registered id instead of giving a directory path.
+  Port resolution: --port, then the APP.md "ui.port" hint, then an OS-assigned
+  free port.
 
 build:
   Build <appDir>/ui/ (a Vite UI source project) into .agentproto/ui/. No
@@ -138,6 +152,12 @@ export async function runApp(args: readonly string[]): Promise<number> {
   if (subVerb === "serve") {
     return runAppServe(args.filter((a) => a !== subVerb))
   }
+  if (subVerb === "install") {
+    return runAppInstall(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "list") {
+    return runAppList()
+  }
   if (subVerb === "build") {
     return runAppBuild(args.filter((a) => a !== subVerb))
   }
@@ -150,6 +170,101 @@ export async function runApp(args: readonly string[]): Promise<number> {
       `${USAGE}\n`,
   )
   return 2
+}
+
+/** `agentproto app install <appDir>` — register the app's id→dir mapping. */
+export async function runAppInstall(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: false,
+    options: {
+      help: { type: "boolean", short: "h" },
+    },
+  })
+
+  if (values.help) {
+    process.stdout.write(`${USAGE}\n`)
+    return 0
+  }
+
+  const appDirArg = positionals[0]
+  if (!appDirArg) {
+    process.stderr.write(
+      `agentproto app install: <appDir> is required.\n${USAGE}\n`,
+    )
+    return 2
+  }
+
+  const appDir = resolve(process.cwd(), expandHome(appDirArg))
+  const appMdPath = join(appDir, ".agentproto", "APP.md")
+
+  if (!(await pathExists(appMdPath))) {
+    process.stderr.write(
+      `agentproto app install: ${appDir} is not an agentproto app ` +
+        `(missing ${appMdPath}).\n`,
+    )
+    return 2
+  }
+
+  // Read the app id from APP.md frontmatter.
+  let appId: string
+  try {
+    const raw = await readFile(appMdPath, "utf8")
+    const front = matter(raw).data as Record<string, unknown>
+    appId =
+      typeof front.id === "string" && front.id.length > 0
+        ? front.id
+        : typeof front.slug === "string" && front.slug.length > 0
+          ? front.slug
+          : ""
+  } catch {
+    process.stderr.write(
+      `agentproto app install: could not parse ${appMdPath}.\n`,
+    )
+    return 1
+  }
+
+  if (!appId) {
+    process.stderr.write(
+      `agentproto app install: APP.md must have a non-empty 'id' or 'slug' field.\n`,
+    )
+    return 2
+  }
+
+  installAppDir(appId, appDir)
+  process.stdout.write(
+    `agentproto: registered app '${appId}' -> ${appDir}\n`,
+  )
+  return 0
+}
+
+/** `agentproto app list` — print every registered app id→dir mapping. */
+export async function runAppList(): Promise<number> {
+  const path = join(homedir(), ".agentproto", "apps.json")
+  if (!existsSync(path)) {
+    process.stdout.write("agentproto: no installed apps.\n")
+    return 0
+  }
+
+  let data: { apps?: { appId: string; dir: string }[] }
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"))
+  } catch {
+    process.stdout.write("agentproto: no installed apps.\n")
+    return 0
+  }
+
+  const apps = Array.isArray(data.apps) ? data.apps : []
+  if (apps.length === 0) {
+    process.stdout.write("agentproto: no installed apps.\n")
+    return 0
+  }
+
+  for (const app of apps) {
+    process.stdout.write(`${app.appId} -> ${app.dir}\n`)
+  }
+  return 0
 }
 
 /** `agentproto app pack <appDir> [--out ...] [--json]`. */
