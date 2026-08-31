@@ -66,6 +66,14 @@ const SESSION_DESCRIPTOR_EVENT_TYPES = new Set([
   // webview's Pinned group / the CLI table (list-visibility only, no
   // operational effect) resorts without waiting for the next clock snapshot.
   "session:pinned-changed",
+  // A model switch mutates `model` and/or `activeModel` — refresh so the
+  // transcript panel's composer chip repaints (requested vs. active) without
+  // waiting for the idle-poll fallback. Both the axis-generic event and its
+  // back-compat `model-changed` alias are listed: either can arrive alone
+  // depending on which write-path fired (see @agentproto/runtime
+  // sessions.ts's `setModel` and its ordinary-prompt learn-path).
+  "session:config-changed",
+  "session:model-changed",
 ])
 
 export interface FocusOutputHandlers {

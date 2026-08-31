@@ -137,6 +137,40 @@ export function createArmSessionControls(
 }
 
 /**
+ * Loose acknowledgement match shared by `applyModelCommand`'s dedicated
+ * control turn below AND the ordinary-prompt learn-path
+ * (`@agentproto/runtime`'s `sessions.ts` `runAgentTurn`, which watches a
+ * plain `/model <id>` typed as a normal conversational turn — the shape the
+ * hermes spawn recipe's `/model` shortcut actually sends today, since it
+ * never goes through this control turn). Hermes replies "Model switched to:
+ * <id> · Provider: …"; other adapters phrase it differently, so this is
+ * deliberately lax rather than coupled to one adapter's wording or a
+ * specific `StreamEvent` shape.
+ *
+ * REPORTED BY THE ADAPTER, NOT INDEPENDENTLY VERIFIED — good enough as a
+ * display hint (`SessionDescriptor.activeModel`), never as a source of
+ * billing/cost truth. A caller that ever reads `activeModel` for cost
+ * purposes must know it read a heuristic, not a fact.
+ */
+export const MODEL_SWITCH_ACK_RE = /switch|model\s+set|now using/i
+
+/** See {@link MODEL_SWITCH_ACK_RE}. */
+export function isModelSwitchAcknowledgement(evt: unknown): boolean {
+  return MODEL_SWITCH_ACK_RE.test(JSON.stringify(evt))
+}
+
+/**
+ * Extract the target model id from a plain-text turn that opens with a
+ * `/model <id>` control command — whether it arrives through
+ * `applyModelCommand`'s dedicated control turn or as an ORDINARY
+ * conversational prompt (see {@link MODEL_SWITCH_ACK_RE}'s doc for why the
+ * latter matters: it's the case the hermes spawn recipe actually produces).
+ */
+export function parseModelSwitchCommand(text: string): string | undefined {
+  return /^\s*\/model\s+(\S+)/i.exec(text)?.[1]
+}
+
+/**
  * Switch the active model via a `/model <id>` control turn, for adapters
  * whose ACP session config doesn't select the model (`models.apply:
  * "command"`, e.g. hermes). The turn is fully drained so the switch
@@ -158,10 +192,7 @@ export async function applyModelCommand(
       type: "text",
       text: `/model ${modelId}`,
     })) {
-      // Loose check across the serialised event — hermes replies
-      // "Model switched to: <id> · Provider: …". We don't couple to a
-      // specific StreamEvent shape; any "switch" mention = acknowledged.
-      if (/switch|model\s+set|now using/i.test(JSON.stringify(evt))) acked = true
+      if (isModelSwitchAcknowledgement(evt)) acked = true
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
