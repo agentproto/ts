@@ -52,7 +52,7 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

@@ -58,7 +58,7 @@
     "@agentproto/manifest": "workspace:*",
     "ajv": "^8.20.0",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

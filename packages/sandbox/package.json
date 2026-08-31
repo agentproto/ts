@@ -56,10 +56,10 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "@agentproto/secrets": "workspace:*",
-    "@agentproto/worktree": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
+    "@agentproto/worktree": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
