@@ -25,6 +25,21 @@
  * (see "INLINED REDUCER COPY" below) since the widget ships as one
  * self-contained script with no bundler step. Keep the two in sync. Its MCP
  * Apps handshake comes from the shared spec-correct panel bridge.
+ *
+ * Rendering (WP1): the timeline body is patched INCREMENTALLY — a
+ * text-delta that merges into the last row patches only that row's text
+ * node (found via `data-row-id`); every other new row is appended with one
+ * `insertAdjacentHTML`. A full `innerHTML` reset happens only on session
+ * start/`setFocus()` and on display-mode switches. Auto-scroll decision is
+ * `isNearBottom` (inlined copy, SPEC §2) captured BEFORE any DOM mutation:
+ * stick to bottom when the user was at the bottom, otherwise preserve the
+ * read position exactly and surface a "new messages" pill.
+ *
+ * Compact mode (WP3/WP4): when `hostContext.displayMode === 'inline'` (or
+ * the viewport is under ~640px) the tree pane collapses into a header
+ * `<select>` (WP4) and the timeline renders through `groupAdjacentToolCalls`
+ * (inlined copy, SPEC §3) with a colour rail and collapsible tool-call
+ * groups. `setFocus()` remains the only session-switch entry point.
  */
 
 import { z } from "zod"
@@ -80,7 +95,7 @@ export function makeLiveSessionApp(
     description:
       "Open the live session widget — a two-pane view of a running agent " +
       "session: a live tree on the left, a streaming timeline (text, tool " +
-      "calls/results, turn-end, usage) on the right. Omit `sessionId` to " +
+      "calls/results, turn-end) on the right. Omit `sessionId` to " +
       "attach to the newest running session; pass one to attach directly.",
     inputSchema: liveSessionInputSchema,
     execute: async input => ({
@@ -113,11 +128,33 @@ html,body{height:100%;font-family:ui-sans-serif,system-ui,-apple-system,'Segoe U
 #tree-pane{width:280px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--bg2)}
 #tree-head{padding:10px 12px;border-bottom:1px solid var(--border);font-weight:600;font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
 #tree-body{flex:1;overflow-y:auto;padding:6px}
-#timeline-pane{flex:1;display:flex;flex-direction:column;min-width:0}
+#timeline-pane{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 #timeline-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0}
 #timeline-head .focus-id{font-weight:600;font-size:13px;font-family:Menlo,Monaco,monospace}
-#status-line{margin-left:auto;font-size:11px;color:var(--text2)}
+#head-summary{margin-left:auto;font-size:11px;color:var(--text2);display:flex;align-items:center;gap:4px;white-space:nowrap;overflow:hidden;min-width:0}
+#head-summary .sdot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:3px;vertical-align:1px}
+#head-summary .sdot.running{background:var(--green)}
+#head-summary .sdot.grey{background:var(--text3)}
+#head-summary .sdot.error{background:var(--red)}
+#usage-chip{font-size:10.5px;font-family:Menlo,Monaco,monospace;background:var(--bg3);border-radius:4px;padding:1px 6px;color:var(--text)}
+#status-line{margin-left:8px;font-size:11px;color:var(--text2);flex-shrink:0}
 #timeline-body{flex:1;overflow-y:auto;padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+#head-selector{display:none;max-width:42%;font:inherit;font-size:12px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:2px 4px}
+#new-pill{display:none;position:absolute;right:14px;bottom:12px;z-index:6;background:var(--blue);color:#0d1117;border:none;font-size:11px;font-weight:700;padding:5px 11px;border-radius:12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+#new-pill.show{display:block}
+
+/* WP3 compact mode — colour rail + tighter rows; only under body.compact-mode
+   (displayMode 'inline' or narrow viewport). fullscreen/pip keep the cards. */
+body.compact-mode #tree-pane{display:none}
+body.compact-mode #head-selector{display:inline-block}
+body.compact-mode #focus-id-label{display:none}
+body.compact-mode .row{border-radius:6px;padding:5px 8px;border-left-width:3px}
+body.compact-mode .row .body{font-size:12px;margin-top:3px}
+body.compact-mode .row .rhead{font-size:10px}
+details.tool-group{border:1px solid var(--border);border-radius:8px;background:var(--bg2);padding:5px 8px;border-left:3px solid var(--yellow)}
+details.tool-group>summary{cursor:pointer;font-size:11px;color:var(--text2);font-weight:600;list-style:none}
+details.tool-group[open]>summary{margin-bottom:6px}
+details.tool-group .row{margin-top:5px}
 
 .tnode{border-radius:6px;cursor:pointer;padding:5px 8px;margin:1px 0;display:flex;align-items:center;gap:7px;font-size:12px}
 .tnode:hover{background:var(--bg3)}
@@ -137,7 +174,6 @@ html,body{height:100%;font-family:ui-sans-serif,system-ui,-apple-system,'Segoe U
 .row.text .kind{color:var(--blue)}
 .row.tool-call .kind{color:var(--yellow)}
 .row.turn-end .kind{color:var(--purple)}
-.row.usage_update .kind{color:var(--text3)}
 .row .body{margin-top:5px;font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
 .row.text .body{font-family:inherit}
 .row.tool-call .toolname{font-family:Menlo,Monaco,monospace;font-weight:600}
@@ -161,9 +197,12 @@ html,body{height:100%;font-family:ui-sans-serif,system-ui,-apple-system,'Segoe U
   <div id="timeline-pane">
     <div id="timeline-head">
       <span class="focus-id" id="focus-id-label">—</span>
+      <select id="head-selector" title="Sessions"></select>
+      <span id="head-summary"></span>
       <span id="status-line">connecting…</span>
     </div>
     <div id="timeline-body"><div id="timeline-empty">No session focused yet.</div></div>
+    <button id="new-pill" type="button">↓ Nouveaux messages</button>
   </div>
 </div>
 <script>
@@ -176,13 +215,14 @@ ${panelBridgeScript("agentproto-live-session")}
 // Plain JS, same semantics: coalesce consecutive text-delta of the same
 // session (and rejoin an unterminated mid-line fragment split by an
 // interleaved record — see the TS module's text-delta arm), pair
-// tool-call/tool-result by toolCallId, pass through turn-end/usage_update,
-// ignore unknown kinds. Keep in sync with the TS module; the TS module is
-// the one the test suite imports.
+// tool-call/tool-result by toolCallId, pass through turn-end, keep usage
+// as STATE (SPEC §1: usage leaves the timeline — a usage_update record
+// never produces a row), ignore unknown kinds. Keep in sync with the TS
+// module; the TS module is the one the test suite imports.
 // ============================================================
 
 function initialTimelineState() {
-  return { rows: [] };
+  return { rows: [], usage: null };
 }
 
 function rowId(record, rows) {
@@ -208,7 +248,7 @@ function reduceEvent(state, record) {
     case 'text-delta': {
       var last = state.rows[state.rows.length - 1];
       if (last && last.kind === 'text' && last.sessionId === record.sessionId) {
-        return { rows: state.rows.slice(0, -1).concat([mergeTextDelta(last, record)]) };
+        return { rows: state.rows.slice(0, -1).concat([mergeTextDelta(last, record)]), usage: state.usage };
       }
       // Debounce can flush an unterminated mid-word fragment (flagged
       // partial), let a tool-call land, then flush the continuation — look
@@ -224,7 +264,7 @@ function reduceEvent(state, record) {
         if (prior.partial === true) {
           var patched = state.rows.slice();
           patched[i] = mergeTextDelta(prior, record);
-          return { rows: patched };
+          return { rows: patched, usage: state.usage };
         }
         break;
       }
@@ -233,7 +273,7 @@ function reduceEvent(state, record) {
         sessionId: record.sessionId, text: record.text || '',
       };
       if (record.partial === true) row.partial = true;
-      return { rows: state.rows.concat([row]) };
+      return { rows: state.rows.concat([row]), usage: state.usage };
     }
     case 'tool-call': {
       var row = {
@@ -241,7 +281,7 @@ function reduceEvent(state, record) {
         sessionId: record.sessionId, toolCallId: record.toolCallId || '',
         toolName: record.toolName || 'unknown', arguments: record.arguments, status: 'pending',
       };
-      return { rows: state.rows.concat([row]) };
+      return { rows: state.rows.concat([row]), usage: state.usage };
     }
     case 'tool-result': {
       var idx = -1;
@@ -254,33 +294,75 @@ function reduceEvent(state, record) {
           sessionId: record.sessionId, toolCallId: record.toolCallId || '', toolName: 'unknown',
           status: record.isError ? 'error' : 'ok', result: record.result,
         };
-        return { rows: state.rows.concat([row]) };
+        return { rows: state.rows.concat([row]), usage: state.usage };
       }
       var updated = Object.assign({}, state.rows[idx], {
         status: record.isError ? 'error' : 'ok', result: record.result,
       });
       var rows = state.rows.slice();
       rows[idx] = updated;
-      return { rows: rows };
+      return { rows: rows, usage: state.usage };
     }
     case 'turn-end': {
       var row = {
         kind: 'turn-end', id: rowId(record, state.rows), seq: record.seq, ts: record.ts,
         sessionId: record.sessionId, reason: record.reason,
       };
-      return { rows: state.rows.concat([row]) };
+      return { rows: state.rows.concat([row]), usage: state.usage };
     }
     case 'usage_update': {
-      var row = {
-        kind: 'usage_update', id: rowId(record, state.rows), seq: record.seq, ts: record.ts,
-        sessionId: record.sessionId, size: record.size, used: record.used, cost: record.cost,
-        tokensIn: record.tokensIn, tokensOut: record.tokensOut,
+      // Usage is state, not a row (SPEC §1) — last-write-wins, no merge with
+      // the prior snapshot. state.rows is reused as-is (it didn't change).
+      return {
+        rows: state.rows,
+        usage: {
+          size: record.size, used: record.used, cost: record.cost,
+          tokensIn: record.tokensIn, tokensOut: record.tokensOut,
+          seq: record.seq, ts: record.ts,
+        },
       };
-      return { rows: state.rows.concat([row]) };
     }
     default:
       return state;
   }
+}
+
+// ============================================================
+// INLINED PURE HELPERS — exact copies of live-session-app.logic.ts's
+// isNearBottom (SPEC §2) and groupAdjacentToolCalls (SPEC §3). Same names,
+// same signatures, same default thresholds; plain JS because the widget
+// has no import step.
+// ============================================================
+
+var SCROLL_STICK_THRESHOLD_PX = 24;
+
+function isNearBottom(scrollHeight, scrollTop, clientHeight, threshold) {
+  if (threshold == null) threshold = SCROLL_STICK_THRESHOLD_PX;
+  return scrollHeight - scrollTop - clientHeight <= threshold;
+}
+
+var TOOL_CALL_GROUP_THRESHOLD = 2;
+
+// Collapse runs of \`threshold\`+ adjacent tool-call rows into one
+// {kind:'tool-group', rows:[...]} entry; everything else passes through as
+// individual {kind:'row', row} entries, same order as the input.
+function groupAdjacentToolCalls(rows, threshold) {
+  if (threshold == null) threshold = TOOL_CALL_GROUP_THRESHOLD;
+  var out = [];
+  var run = [];
+  function flushRun() {
+    if (!run.length) return;
+    if (run.length >= threshold) out.push({ kind: 'tool-group', rows: run });
+    else for (var j = 0; j < run.length; j++) out.push({ kind: 'row', row: run[j] });
+    run = [];
+  }
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].kind === 'tool-call') { run.push(rows[i]); continue; }
+    flushRun();
+    out.push({ kind: 'row', row: rows[i] });
+  }
+  flushRun();
+  return out;
 }
 
 // ============================================================
@@ -299,6 +381,37 @@ function statusDotClass(status) {
   if (status === 'running' || status === 'starting') return 'running';
   if (status === 'error' || status === 'killed') return 'error';
   return 'grey';
+}
+
+// SPEC §4 (non-contract guidance): 52524 → "52.5k", >=1e6 → "M" suffix,
+// one decimal, trailing .0 vanishes because the value stays a number.
+// cost → "$" + toFixed(2). Read from timelineState.usage.
+function fmtCompactNum(n) {
+  if (typeof n !== 'number' || !isFinite(n)) return null;
+  if (n >= 1000000) return (Math.round(n / 100000) / 10) + 'M';
+  if (n >= 1000) return (Math.round(n / 100) / 10) + 'k';
+  return String(n);
+}
+
+function usageChipText(usage) {
+  if (!usage) return '';
+  var bits = [];
+  if (usage.used != null && usage.size != null) {
+    bits.push(fmtCompactNum(usage.used) + '/' + fmtCompactNum(usage.size));
+  } else if (usage.used != null) {
+    bits.push(fmtCompactNum(usage.used));
+  }
+  if (typeof usage.cost === 'number') bits.push('$' + usage.cost.toFixed(2));
+  return bits.join(' · ');
+}
+
+// WP5: elapsed seconds since the timeline's first row (running only).
+function elapsedText(rows, status) {
+  if (status !== 'running' && status !== 'starting') return null;
+  if (!rows.length || rows[0].ts == null) return null;
+  var ms = new Date(rows[0].ts).getTime();
+  if (!isFinite(ms)) return null;
+  return Math.max(0, Math.round((Date.now() - ms) / 1000)) + 's';
 }
 
 // ============================================================
@@ -345,12 +458,30 @@ function renderTreeNode(node, depth) {
     (childrenHtml ? '<div class="tchildren">' + childrenHtml + '</div>' : '');
 }
 
+// WP4: compact header <select> mirrors the tree; still routes through
+// setFocus() — the only session-switch entry point.
+function renderHeadSelector() {
+  var sel = document.getElementById('head-selector');
+  var flat = flattenDfs(currentTree);
+  while (sel.firstChild) sel.removeChild(sel.firstChild);
+  if (!flat.length) return;
+  for (var i = 0; i < flat.length; i++) {
+    var n = flat[i];
+    var o = document.createElement('option');
+    o.value = n.id;
+    o.textContent = (n.id === focusId ? '● ' : '') + (n.label || n.id);
+    sel.appendChild(o);
+  }
+  sel.value = focusId || '';
+}
+
 function renderTree() {
   var body = document.getElementById('tree-body');
   var root = focusId ? findNode(currentTree, focusId) : null;
   var renderNodes = root ? [root] : currentTree;
   if (!renderNodes.length) {
     body.innerHTML = '<div id="tree-empty">No sessions.</div>';
+    renderHeadSelector();
     return;
   }
   body.innerHTML = renderNodes.map(function(n) { return renderTreeNode(n, 0); }).join('');
@@ -362,6 +493,7 @@ function renderTree() {
       setFocus(id);
     });
   });
+  renderHeadSelector();
 }
 
 function pollTree() {
@@ -372,6 +504,7 @@ function pollTree() {
       if (focusId) startTimeline(focusId);
     }
     renderTree();
+    updateHeader();
   }).catch(function() {
     // Leave the last-known tree rendered; the next poll may recover.
   });
@@ -384,25 +517,199 @@ function pollTree() {
 var timelineState = initialTimelineState();
 var sincePtr = 0;
 var activeSource = null; // {type:'sse', es} | {type:'poll', timer}
+var compactMode = false; // WP3: hostContext.displayMode === 'inline' (or narrow)
 
 function setStatus(msg) {
   document.getElementById('status-line').textContent = msg;
 }
 
-function renderTimeline() {
+function isCompact() {
+  return (getHostContext() && getHostContext().displayMode === 'inline') ||
+    (typeof window !== 'undefined' && window.innerWidth < 640);
+}
+
+// WP3/WP4: apply the compact/expanded split. Only re-renders the timeline
+// when the mode actually flips (scroll + <details> state survive otherwise).
+function applyDisplayMode() {
+  var c = isCompact();
+  document.body.classList.toggle('compact-mode', c);
+  if (c !== compactMode) {
+    compactMode = c;
+    renderTimelineFull();
+    renderTree();
+  }
+}
+
+// WP5 + WP2: one header line — \`● running · 3 tools · 52.5k/200k · $0.04 · 12s\`
+// (status dot from the focus node, tool count from the rows, usage from
+// timelineState.usage — no usage_update row anymore) + transport status.
+function updateHeader() {
   document.getElementById('focus-id-label').textContent = focusId || '—';
+  var rows = timelineState.rows || [];
+  var usage = timelineState.usage;
+  var tools = 0;
+  for (var i = 0; i < rows.length; i++) if (rows[i].kind === 'tool-call') tools++;
+  var node = focusId ? findNode(currentTree, focusId) : null;
+  var st = node ? node.status : null;
+  var parts = [];
+  if (st) parts.push('<span class="sdot ' + statusDotClass(st) + '"></span>' + escHtml(st));
+  if (tools) parts.push(tools + (tools === 1 ? ' tool' : ' tools'));
+  var chip = usageChipText(usage);
+  if (chip) parts.push('<span id="usage-chip" class="chip">' + escHtml(chip) + '</span>');
+  var el = elapsedText(rows, st);
+  if (el) parts.push(escHtml(el));
+  document.getElementById('head-summary').innerHTML = parts.length ? parts.join(' · ') : '';
+}
+
+function captureDetailsOpenFlags(body) {
+  var dets = body.querySelectorAll('details');
+  var flags = [];
+  for (var i = 0; i < dets.length; i++) flags.push(dets[i].open);
+  return flags;
+}
+
+function restoreDetailsOpenFlags(body, flags) {
+  var dets = body.querySelectorAll('details');
+  for (var i = 0; i < dets.length && i < flags.length; i++) {
+    if (flags[i]) dets[i].open = true;
+  }
+}
+
+// Full rebuild — used ONLY for the first paint of a session, a setFocus()
+// session switch (SPEC §2: full reset is correct there), a display-mode
+// flip, and as the fallback for shapes the incremental patcher can't patch.
+// A display-mode flip re-renders the SAME content (WP3: "réactif... sans
+// perdre le scroll ni l'état des <details>"), so open <details> and the
+// exact scroll offset (not just the at-bottom decision) survive the rebuild.
+function renderTimelineFull() {
   var body = document.getElementById('timeline-body');
+  var wasAtBottom = isNearBottom(body.scrollHeight, body.scrollTop, body.clientHeight);
+  var savedScrollTop = body.scrollTop;
+  var flags = captureDetailsOpenFlags(body);
+  body.innerHTML = buildTimelineHtml();
+  restoreDetailsOpenFlags(body, flags);
+  body.scrollTop = wasAtBottom ? body.scrollHeight : savedScrollTop;
+  updateHeader();
+}
+
+function buildTimelineHtml() {
   var rows = timelineState.rows;
-  if (!rows.length) {
-    body.innerHTML = '<div id="timeline-empty">No events yet.</div>';
+  if (!rows.length) return '<div id="timeline-empty">No events yet.</div>';
+  if (compactMode) {
+    var entries = groupAdjacentToolCalls(rows);
+    var html = '';
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      if (e.kind === 'tool-group') {
+        html += '<details class="tool-group"><summary>▸ ' + e.rows.length + ' tool calls</summary>' +
+          e.rows.map(renderRow).join('') + '</details>';
+      } else {
+        html += renderRow(e.row);
+      }
+    }
+    return html;
+  }
+  return rows.map(renderRow).join('');
+}
+
+// ── WP1 incremental patch (dense mode) ─────────────────────────────────
+// One record, one minimal DOM mutation. The common case (text-delta merged
+// into the LAST rendered row) patches just that row's text node. Anything
+// else appends via insertAdjacentHTML. Only rare in-place replacements
+// (tool-result merge, partial-lookback re-merge) swap ONE element's HTML.
+function applyRecordToDom(prevRows) {
+  var body = document.getElementById('timeline-body');
+  // Capture "stuck to bottom?" BEFORE any mutation (SPEC §2).
+  var wasAtBottom = isNearBottom(body.scrollHeight, body.scrollTop, body.clientHeight);
+  var rows = timelineState.rows;
+
+  if (compactMode) {
+    // Inline mode: smaller rows — full grouped rebuild, preserving
+    // wasAtBottom/scrollTop and <details> open-state.
+    if (rows !== prevRows) {
+      var flags = captureDetailsOpenFlags(body);
+      body.innerHTML = buildTimelineHtml();
+      restoreDetailsOpenFlags(body, flags);
+    }
+    if (wasAtBottom) body.scrollTop = body.scrollHeight;
+    else showNewPill();
+    updateHeader();
     return;
   }
-  body.innerHTML = rows.map(renderRow).join('');
+
+  var appended = rows.length > prevRows.length;
+  if (prevRows.length === 0 || (appended && !samePrefix(prevRows, rows))) {
+    // First real paint of this session (empty placeholder present) or an
+    // unexpected shape — full reset is correct/cheapest.
+    body.innerHTML = buildTimelineHtml();
+    body.scrollTop = body.scrollHeight;
+    updateHeader();
+    return;
+  }
+
+  if (appended) {
+    body.insertAdjacentHTML('beforeend', renderRow(rows[rows.length - 1]));
+  } else if (rows.length === prevRows.length && rows.length > 0) {
+    // Exactly one row object replaced (tool-result merge, partial-text
+    // re-merge via the reducer's lookback). Patch that one element only.
+    // Scan from the tail: the hot path (a text-delta merged into the LAST
+    // row, the dominant streaming case) is found in O(1) this way instead
+    // of walking the whole array — the rare mid-array lookback re-merge
+    // still resolves correctly, just slower.
+    var idx = -1;
+    for (var i = rows.length - 1; i >= 0; i--) {
+      if (rows[i] !== prevRows[i]) { idx = i; break; }
+    }
+    var patched = false;
+    if (idx >= 0) {
+      var row = rows[idx];
+      var el = body.querySelector('[data-row-id="' + escHtml(row.id) + '"]');
+      if (el) {
+        if (row.kind === 'text' && idx === rows.length - 1) {
+          // High-frequency case: patch the existing text node in place.
+          var b = el.querySelector('.body');
+          if (b) { b.textContent = row.text; patched = true; }
+        }
+        if (!patched) { el.outerHTML = renderRow(row); patched = true; }
+      }
+    }
+    if (!patched) {
+      // Multiple rows changed at once (shouldn't happen per-record) — rebuild.
+      body.innerHTML = buildTimelineHtml();
+      if (wasAtBottom) body.scrollTop = body.scrollHeight;
+      updateHeader();
+      return;
+    }
+  } else {
+    // rows unchanged (usage_update) — header only.
+    updateHeader();
+    return;
+  }
+
+  // Scroll decision AFTER the mutation: stick or leave the position alone.
+  if (wasAtBottom) body.scrollTop = body.scrollHeight;
+  else showNewPill();
+  updateHeader();
+}
+
+function samePrefix(prevRows, rows) {
+  for (var i = 0; i < prevRows.length; i++) {
+    if (prevRows[i] !== rows[i]) return false;
+  }
+  return true;
+}
+
+function showNewPill() {
+  document.getElementById('new-pill').classList.add('show');
+}
+
+function hideNewPill() {
+  document.getElementById('new-pill').classList.remove('show');
 }
 
 function renderRow(row) {
   if (row.kind === 'text') {
-    return '<div class="row text"><div class="rhead"><span class="kind">text</span></div>' +
+    return '<div class="row text" data-row-id="' + escHtml(row.id) + '"><div class="rhead"><span class="kind">text</span></div>' +
       '<div class="body">' + escHtml(row.text) + '</div></div>';
   }
   if (row.kind === 'tool-call') {
@@ -411,24 +718,15 @@ function renderRow(row) {
     var resultHtml = row.status !== 'pending'
       ? '<details><summary>result</summary><pre>' + escHtml(safeJson(row.result)) + '</pre></details>'
       : '';
-    return '<div class="row tool-call"><div class="rhead"><span class="kind">tool</span>' +
+    return '<div class="row tool-call" data-row-id="' + escHtml(row.id) + '"><div class="rhead"><span class="kind">tool</span>' +
       '<span class="toolname">' + escHtml(row.toolName) + '</span>' +
       '<span class="status-badge ' + badgeCls + '">' + badgeText + '</span></div>' +
       '<details><summary>arguments</summary><pre>' + escHtml(safeJson(row.arguments)) + '</pre></details>' +
       resultHtml + '</div>';
   }
   if (row.kind === 'turn-end') {
-    return '<div class="row turn-end"><div class="rhead"><span class="kind">turn end</span>' +
+    return '<div class="row turn-end" data-row-id="' + escHtml(row.id) + '"><div class="rhead"><span class="kind">turn end</span>' +
       '<span class="chip">' + escHtml(row.reason || '—') + '</span></div></div>';
-  }
-  if (row.kind === 'usage_update') {
-    var parts = [];
-    if (row.tokensIn != null) parts.push('in ' + row.tokensIn);
-    if (row.tokensOut != null) parts.push('out ' + row.tokensOut);
-    if (row.used != null && row.size != null) parts.push(row.used + '/' + row.size);
-    if (row.cost != null) parts.push('$' + row.cost);
-    return '<div class="row usage_update"><div class="rhead"><span class="kind">usage</span>' +
-      '<span class="chip">' + escHtml(parts.join(' · ') || '—') + '</span></div></div>';
   }
   return '';
 }
@@ -484,9 +782,10 @@ function attemptSSE(id) {
     }
     var rec;
     try { rec = JSON.parse(evt.data); } catch (e) { return; }
+    var prev = timelineState;
     timelineState = reduceEvent(timelineState, rec);
     if (typeof rec.seq === 'number' && rec.seq > sincePtr) sincePtr = rec.seq;
-    renderTimeline();
+    if (timelineState !== prev) applyRecordToDom(prev.rows);
   };
   es.onerror = function() {
     if (stale()) return;
@@ -515,10 +814,11 @@ function startPolling(id) {
     callTool('app_session_events', { sessionId: id, since: sincePtr }).then(function(res) {
       var events = res.events || [];
       for (var i = 0; i < events.length; i++) {
+        var prev = timelineState;
         timelineState = reduceEvent(timelineState, events[i]);
+        if (timelineState !== prev) applyRecordToDom(prev.rows);
       }
       if (typeof res.nextSeq === 'number') sincePtr = res.nextSeq;
-      if (events.length) renderTimeline();
       setStatus('polling');
       if (activeSource) activeSource.timer = setTimeout(tick, 1500);
     }).catch(function() {
@@ -533,7 +833,8 @@ function startTimeline(id) {
   teardownTimeline();
   timelineState = initialTimelineState();
   sincePtr = 0;
-  renderTimeline();
+  hideNewPill();
+  renderTimelineFull();
   setStatus('connecting…');
   attemptSSE(id);
 }
@@ -560,8 +861,32 @@ initBridge().then(function() {
   });
 }).then(function(init) {
   focusId = init.sessionId || null;
+  onHostContext(function() {
+    applyDisplayMode();
+    updateHeader();
+  });
+  document.getElementById('head-selector').addEventListener('change', function(evt) {
+    var id = evt.target.value;
+    if (id && id !== focusId) setFocus(id);
+  });
+  document.getElementById('new-pill').addEventListener('click', function() {
+    var body = document.getElementById('timeline-body');
+    body.scrollTop = body.scrollHeight;
+    hideNewPill();
+  });
+  document.getElementById('timeline-body').addEventListener('scroll', function() {
+    // User scrolled back near the bottom — the pill is stale, hide it.
+    var el = document.getElementById('timeline-body');
+    if (isNearBottom(el.scrollHeight, el.scrollTop, el.clientHeight)) hideNewPill();
+  });
+  window.addEventListener('resize', function() {
+    var c = isCompact();
+    if (c !== compactMode) { applyDisplayMode(); }
+  });
+  applyDisplayMode();
   pollTree();
   treeTimer = setInterval(pollTree, 2000);
+  setInterval(updateHeader, 1000); // keep the WP5 elapsed clock fresh
   if (focusId) startTimeline(focusId);
 }).catch(function(e) {
   setStatus('Bridge error: ' + e.message);
