@@ -1,20 +1,20 @@
 /**
- * `agentproto plugins <subverb>` — manage runtime plugins.
+ * `agentproto adapters <subverb>` — manage runtime adapters.
  *
- *   plugins list                  Show enabled plugins + what they provide
- *   plugins show <pkg>            Print a plugin's manifest summary
- *   plugins install <pkg>         `npm i -g <pkg>` + add to config
- *   plugins uninstall <pkg>       Remove from config (+ optional npm rm)
- *   plugins enable <pkg>          Add to config (assumes installed)
- *   plugins disable <pkg>         Remove from config (keep installed)
+ *   adapters list                  Show enabled adapters + what they provide
+ *   adapters show <pkg>            Print an adapter's manifest summary
+ *   adapters install <pkg>         `npm i -g <pkg>` + add to config
+ *   adapters uninstall <pkg>       Remove from config (+ optional npm rm)
+ *   adapters enable <pkg>          Add to config (assumes installed)
+ *   adapters disable <pkg>         Remove from config (keep installed)
  *
- * Plugin list lives in `~/.agentproto/config.json`:
+ * Adapter list lives in `~/.agentproto/config.json`:
  *
- *   { "plugins": ["@guilde/agentproto-bridge", "@acme/agentproto-slack"] }
+ *   { "adapters": ["@guilde/agentproto-bridge", "@acme/agentproto-slack"] }
  *
- * Plugins are loaded by `agentproto run-swarm` in the order they
+ * Adapters are loaded by `agentproto run-swarm` in the order they
  * appear. Last one to register a `kind` wins — useful for overriding
- * a built-in or another plugin's adapter.
+ * a built-in or another adapter's adapter.
  */
 
 import { spawn } from "node:child_process"
@@ -22,28 +22,28 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { parseArgs } from "node:util"
-import { readPluginManifest } from "../registry/manifest-loader.js"
+import { readAdapterManifest } from "../registry/manifest-loader.js"
 import type {
   AdapterEntry,
-  PluginManifest,
+  AdapterManifest,
   SubstrateEntry,
 } from "../registry/manifest.js"
 
-const USAGE = `agentproto plugins — manage runtime plugins
+const USAGE = `agentproto adapters — manage runtime adapters
 
 Usage:
-  agentproto plugins list                  Show enabled plugins + adapters
-  agentproto plugins show <pkg>            Print a plugin's manifest
-  agentproto plugins install <pkg>         npm i -g + add to config
-  agentproto plugins uninstall <pkg>       Remove from config (+ npm rm)
-  agentproto plugins enable <pkg>          Add to config (assume installed)
-  agentproto plugins disable <pkg>         Remove from config (keep installed)
-  agentproto plugins --help
+  agentproto adapters list                  Show enabled adapters + adapters
+  agentproto adapters show <pkg>            Print an adapter's manifest
+  agentproto adapters install <pkg>         npm i -g + add to config
+  agentproto adapters uninstall <pkg>       Remove from config (+ npm rm)
+  agentproto adapters enable <pkg>          Add to config (assume installed)
+  agentproto adapters disable <pkg>         Remove from config (keep installed)
+  agentproto adapters --help
 
-Plugin list lives in ~/.agentproto/config.json under \`plugins[]\`.
+Adapter list lives in ~/.agentproto/config.json under \`adapters[]\`.
 `
 
-export async function runPlugins(args: readonly string[]): Promise<number> {
+export async function runAdapters(args: readonly string[]): Promise<number> {
   const sub = args[0]
   const rest = args.slice(1)
   switch (sub) {
@@ -66,7 +66,7 @@ export async function runPlugins(args: readonly string[]): Promise<number> {
       return runDisable(rest)
     default:
       process.stderr.write(
-        `agentproto plugins: unknown subcommand '${sub}'.\n\n${USAGE}`
+        `agentproto adapters: unknown subcommand '${sub}'.\n\n${USAGE}`
       )
       return 2
   }
@@ -81,24 +81,24 @@ async function runList(args: readonly string[]): Promise<number> {
     strict: true,
   })
   const cfg = await loadConfig()
-  const plugins = cfg.plugins ?? []
-  if (plugins.length === 0) {
+  const adapters = cfg.adapters ?? []
+  if (adapters.length === 0) {
     if (values.json) process.stdout.write("[]\n")
     else
       process.stdout.write(
-        "agentproto plugins: no plugins enabled. Try `agentproto plugins install <pkg>`.\n"
+        "agentproto adapters: no adapters enabled. Try `agentproto adapters install <pkg>`.\n"
       )
     return 0
   }
 
   const entries: Array<{
     id: string
-    manifest: PluginManifest | null
+    manifest: AdapterManifest | null
     error?: string
   }> = []
-  for (const id of plugins) {
+  for (const id of adapters) {
     try {
-      const result = await readPluginManifest(id)
+      const result = await readAdapterManifest(id)
       entries.push({ id, manifest: result?.manifest ?? null })
     } catch (err) {
       entries.push({
@@ -121,7 +121,7 @@ async function runList(args: readonly string[]): Promise<number> {
       continue
     }
     if (!e.manifest) {
-      process.stdout.write(`    (no manifest — legacy side-effect plugin)\n`)
+      process.stdout.write(`    (no manifest — legacy side-effect adapter)\n`)
       continue
     }
     printAdapterSummary("substrates", e.manifest.substrates)
@@ -153,23 +153,23 @@ async function runShow(args: readonly string[]): Promise<number> {
   const pkg = positionals[0]
   if (!pkg) {
     process.stderr.write(
-      "agentproto plugins show: missing <pkg>. Try: agentproto plugins show @guilde/agentproto-bridge\n"
+      "agentproto adapters show: missing <pkg>. Try: agentproto adapters show @guilde/agentproto-bridge\n"
     )
     return 2
   }
 
-  let result: Awaited<ReturnType<typeof readPluginManifest>>
+  let result: Awaited<ReturnType<typeof readAdapterManifest>>
   try {
-    result = await readPluginManifest(pkg)
+    result = await readAdapterManifest(pkg)
   } catch (err) {
     process.stderr.write(
-      `agentproto plugins show: ${err instanceof Error ? err.message : String(err)}\n`
+      `agentproto adapters show: ${err instanceof Error ? err.message : String(err)}\n`
     )
     return 1
   }
   if (!result) {
     process.stderr.write(
-      `agentproto plugins show: '${pkg}' is not installed (or doesn't declare an agentproto manifest).\n`
+      `agentproto adapters show: '${pkg}' is not installed (or doesn't declare an agentproto manifest).\n`
     )
     return 1
   }
@@ -222,7 +222,7 @@ async function runInstall(args: readonly string[]): Promise<number> {
   })
   const pkg = positionals[0]
   if (!pkg) {
-    process.stderr.write("agentproto plugins install: missing <pkg>.\n")
+    process.stderr.write("agentproto adapters install: missing <pkg>.\n")
     return 2
   }
 
@@ -234,14 +234,14 @@ async function runInstall(args: readonly string[]): Promise<number> {
     ].filter(Boolean))
     if (code !== 0) {
       process.stderr.write(
-        `agentproto plugins install: npm failed with exit ${code}; config not modified.\n`
+        `agentproto adapters install: npm failed with exit ${code}; config not modified.\n`
       )
       return code
     }
   }
 
   await addToConfig(pkg)
-  process.stdout.write(`agentproto plugins: enabled '${pkg}'.\n`)
+  process.stdout.write(`agentproto adapters: enabled '${pkg}'.\n`)
   return 0
 }
 
@@ -257,7 +257,7 @@ async function runUninstall(args: readonly string[]): Promise<number> {
   })
   const pkg = positionals[0]
   if (!pkg) {
-    process.stderr.write("agentproto plugins uninstall: missing <pkg>.\n")
+    process.stderr.write("agentproto adapters uninstall: missing <pkg>.\n")
     return 2
   }
 
@@ -271,42 +271,42 @@ async function runUninstall(args: readonly string[]): Promise<number> {
     ].filter(Boolean))
     if (code !== 0) {
       process.stderr.write(
-        `agentproto plugins uninstall: removed from config but npm uninstall failed with exit ${code}.\n`
+        `agentproto adapters uninstall: removed from config but npm uninstall failed with exit ${code}.\n`
       )
       return code
     }
   }
 
-  process.stdout.write(`agentproto plugins: disabled '${pkg}'.\n`)
+  process.stdout.write(`agentproto adapters: disabled '${pkg}'.\n`)
   return 0
 }
 
 async function runEnable(args: readonly string[]): Promise<number> {
   const [pkg] = args
   if (!pkg) {
-    process.stderr.write("agentproto plugins enable: missing <pkg>.\n")
+    process.stderr.write("agentproto adapters enable: missing <pkg>.\n")
     return 2
   }
   await addToConfig(pkg)
-  process.stdout.write(`agentproto plugins: enabled '${pkg}'.\n`)
+  process.stdout.write(`agentproto adapters: enabled '${pkg}'.\n`)
   return 0
 }
 
 async function runDisable(args: readonly string[]): Promise<number> {
   const [pkg] = args
   if (!pkg) {
-    process.stderr.write("agentproto plugins disable: missing <pkg>.\n")
+    process.stderr.write("agentproto adapters disable: missing <pkg>.\n")
     return 2
   }
   await removeFromConfig(pkg)
-  process.stdout.write(`agentproto plugins: disabled '${pkg}'.\n`)
+  process.stdout.write(`agentproto adapters: disabled '${pkg}'.\n`)
   return 0
 }
 
 // ── config helpers ────────────────────────────────────────────────────
 
 interface AgentprotoConfig {
-  plugins?: string[]
+  adapters?: string[]
   [key: string]: unknown
 }
 
@@ -333,15 +333,15 @@ async function saveConfig(cfg: AgentprotoConfig): Promise<void> {
 
 async function addToConfig(pkg: string): Promise<void> {
   const cfg = await loadConfig()
-  const plugins = cfg.plugins ?? []
-  if (!plugins.includes(pkg)) plugins.push(pkg)
-  cfg.plugins = plugins
+  const adapters = cfg.adapters ?? []
+  if (!adapters.includes(pkg)) adapters.push(pkg)
+  cfg.adapters = adapters
   await saveConfig(cfg)
 }
 
 async function removeFromConfig(pkg: string): Promise<void> {
   const cfg = await loadConfig()
-  cfg.plugins = (cfg.plugins ?? []).filter((p) => p !== pkg)
+  cfg.adapters = (cfg.adapters ?? []).filter((p) => p !== pkg)
   await saveConfig(cfg)
 }
 

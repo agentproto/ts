@@ -39,9 +39,9 @@ import {
 } from "../registry/runtime.js"
 import { registerBuiltins } from "../registry/builtins.js"
 import {
-  loadPlugins,
-  loadPluginsFromConfig,
-} from "../registry/plugins.js"
+  loadAdapters,
+  loadAdaptersFromConfig,
+} from "../registry/adapters.js"
 
 export async function runRunSwarm(args: readonly string[]): Promise<number> {
   const { values } = parseArgs({
@@ -76,8 +76,8 @@ export async function runRunSwarm(args: readonly string[]): Promise<number> {
 
   registerBuiltins()
   const cliPlugins = values.plugin ?? []
-  const configPlugins = await loadPluginsFromConfig()
-  await loadPlugins([...configPlugins, ...cliPlugins])
+  const configPlugins = await loadAdaptersFromConfig()
+  await loadAdapters([...configPlugins, ...cliPlugins])
 
   const loaded = await loadManifest(resolvePath(values.manifest))
   const verbose = values.verbose === true

@@ -1,12 +1,12 @@
 /**
- * Plugin manifest — `agentproto/plugin/v1`.
+ * Adapter manifest — `agentproto/adapter/v1`.
  *
- * Plugins declare what they provide in either:
+ * Adapters declare what they provide in either:
  *   - their `package.json` under the `agentproto` key, OR
  *   - a standalone `agentproto.json` next to their `package.json`.
  *
  * The CLI reads this manifest, dynamic-imports each adapter entry,
- * and registers it with the runtime registry. Plugins don't need
+ * and registers it with the runtime registry. Adapters don't need
  * side-effect imports any more — they just export their factory
  * functions and let the manifest do the wiring.
  *
@@ -15,7 +15,7 @@
  *   {
  *     "name": "@guilde/agentproto-bridge",
  *     "agentproto": {
- *       "schema": "agentproto/plugin/v1",
+ *       "schema": "agentproto/adapter/v1",
  *       "substrates": [
  *         {
  *           "kind": "guilde-mcp",
@@ -39,22 +39,22 @@
 
 import { z } from "zod"
 
-export const PLUGIN_MANIFEST_SCHEMA = "agentproto/plugin/v1" as const
+export const ADAPTER_MANIFEST_SCHEMA = "agentproto/adapter/v1" as const
 
 const AdapterEntrySchema = z
   .object({
     /** The `kind` string the manifest's substrate/dispatcher/etc. block uses. */
     kind: z.string().min(1),
     /**
-     * Path to the entry module, relative to the plugin package root.
-     * Resolved via the plugin's `package.json#main`/`exports` (i.e. you
+     * Path to the entry module, relative to the adapter package root.
+     * Resolved via the adapter's `package.json#main`/`exports` (i.e. you
      * can use a subpath like `./dist/substrates.mjs` or an export name
-     * like `.` if the plugin re-exports everything from its root).
+     * like `.` if the adapter re-exports everything from its root).
      */
     entry: z.string().min(1),
     /** Named export inside `entry` — the factory function. */
     export: z.string().min(1),
-    /** Free-form description; shown by `agentproto plugins show`. */
+    /** Free-form description; shown by `agentproto adapters show`. */
     description: z.string().optional(),
   })
   .loose()
@@ -62,15 +62,15 @@ const AdapterEntrySchema = z
 const SubstrateEntrySchema = AdapterEntrySchema.extend({
   /**
    * Free-form capability tags. Not gated by the kernel yet, but
-   * surfaced by `agentproto plugins show` so users can see what the
+   * surfaced by `agentproto adapters show` so users can see what the
    * substrate claims to support (mentions, reactions, visibility, …).
    */
   capabilities: z.array(z.string()).optional(),
 })
 
-export const PluginManifestSchema = z
+export const AdapterManifestSchema = z
   .object({
-    schema: z.literal(PLUGIN_MANIFEST_SCHEMA),
+    schema: z.literal(ADAPTER_MANIFEST_SCHEMA),
     substrates: z.array(SubstrateEntrySchema).default([]),
     dispatchers: z.array(AdapterEntrySchema).default([]),
     executors: z.array(AdapterEntrySchema).default([]),
@@ -78,6 +78,6 @@ export const PluginManifestSchema = z
   })
   .loose()
 
-export type PluginManifest = z.infer<typeof PluginManifestSchema>
+export type AdapterManifest = z.infer<typeof AdapterManifestSchema>
 export type AdapterEntry = z.infer<typeof AdapterEntrySchema>
 export type SubstrateEntry = z.infer<typeof SubstrateEntrySchema>
