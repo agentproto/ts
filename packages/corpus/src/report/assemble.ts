@@ -7,6 +7,7 @@
 
 import type { PackFile } from "./packs.js"
 import { outOfRangeCites } from "./cites.js"
+import { bibShaMarker } from "./bib-sha.js"
 
 export interface ChapterDraft {
   /** Chapter id (= `<chaptersDir>/<ch>.md`). */
@@ -36,6 +37,14 @@ export interface AssembleOptions {
    * Default false — existing callers see zero output change.
    */
   readonly injectAnchors?: boolean
+  /**
+   * Bibliography content-sha the drafts were written against (from
+   * `BuildPacksResult.bibliographySha`). When set, each chapter file opens
+   * with a `<!-- bib-sha:… -->` marker so stitch can refuse chapters whose
+   * bibliography has since been renumbered. Default absent — zero output
+   * change for existing callers.
+   */
+  readonly bibSha?: string
 }
 
 const PREAMBLE = /^\s*(?:I have|I'll|Here is|Here's|Writing|Let me|Okay|Done)/i
@@ -61,6 +70,7 @@ export function assembleChapters(opts: AssembleOptions): AssembleResult {
     let body = cleanDraft(c.draft)
     if (PREAMBLE.test(c.draft || "")) preamblesStripped++
     if (body && opts.injectAnchors) body = `<a id="${c.ch}"></a>\n\n${body}`
+    if (body && opts.bibSha) body = `${bibShaMarker(opts.bibSha)}\n\n${body}`
     if (body) files.push({ path: `${chaptersDir}/${c.ch}.md`, content: body + "\n" })
     const oor = outOfRangeCites(body, opts.bibMax)
     if (oor.length) outOfRange.push({ ch: c.ch, cites: oor })
