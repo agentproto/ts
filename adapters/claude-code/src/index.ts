@@ -10,6 +10,7 @@ import {
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
 import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
+import { listNativeModelIds } from "@agentproto/model-catalog/llm"
 
 // Cloud-provider redirect toggles that must be scrubbed alongside the core
 // ANTHROPIC_API_KEY whenever the claude binary is pointed at a non-Anthropic
@@ -31,6 +32,19 @@ const CLAUDE_CODE_GATEWAY_ENV_UNSET: string[] = [
   ...ANTHROPIC_CORE_SCRUB_ENV,
   ...CLAUDE_CODE_CLOUD_TOGGLES,
 ]
+
+// Native-Anthropic model menu, derived from the catalog's own synced
+// `/v1/models` listing (see `listNativeModelIds` — never a hand-typed id
+// list, see agentproto#186 / the removal note below for why that used to
+// be one). An id landing here the moment Anthropic publishes it is the
+// whole point: no PR needed for the next model. Nothing is known to need
+// hiding today, so the denylist starts empty — it exists purely as the
+// one sanctioned manual override (a specific id we've vetted and want
+// OFF this adapter), never as a stand-in for a hand-typed allowlist.
+const NATIVE_ANTHROPIC_DENYLIST = new Set<string>([])
+const NATIVE_ANTHROPIC_MODELS = listNativeModelIds("anthropic")
+  .filter(id => !NATIVE_ANTHROPIC_DENYLIST.has(id))
+  .map(id => ({ id, provider: "anthropic" as const }))
 
 export const claudeCode: AgentCliHandle = defineAgentCli({
   name: "claude-code",
@@ -115,11 +129,17 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   // Every id below is validated against the wrapper's live
   // `session/new` → configOptions[model] selector: the wrapper resolves
   // these (via its own `resolveModelPreference`) and rejects anything it
-  // can't — a rejected `session/set_config_option` used to kill the spawn
-  // (agentproto#186; the apply is now best-effort, see @agentproto/acp's
-  // newSession). Stale native ids that the wrapper no longer offers were
-  // removed: `claude-sonnet-4-6` (the old default), `claude-opus-4-7`,
-  // `claude-opus-4-6`.
+  // can't. That USED to be fatal — a rejected `session/set_config_option`
+  // killed the whole spawn (agentproto#186) — which is why the native
+  // Anthropic ids used to be a small hand-picked subset with stale entries
+  // pruned by hand whenever the wrapper's own menu drifted. The apply is
+  // now best-effort (see @agentproto/acp's `newSession`: a rejected model
+  // is caught, logged, and recorded as `modelApplyRejection` — the session
+  // continues on the agent's default rather than dying), so that risk is
+  // gone and the native Anthropic ids below are derived from the catalog's
+  // synced model list instead (`NATIVE_ANTHROPIC_MODELS`) — a model the
+  // wrapper doesn't yet recognize just no-ops back to its default, it
+  // doesn't take the spawn down with it.
   //
   // The gateway (Moonshot/OpenRouter/Requesty) models keep their `provider`
   // annotation but NO LONGER carry a `mode:` binding: the route to a gateway
@@ -131,11 +151,10 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   models: {
     default: "claude-sonnet-5",
     allowed: [
-      // Native Anthropic
-      { id: "claude-sonnet-5", provider: "anthropic" },
-      { id: "claude-opus-4-8", provider: "anthropic" },
-      { id: "claude-haiku-4-5", provider: "anthropic" },
-      { id: "claude-fable-5", provider: "anthropic" },
+      // Native Anthropic — every id the catalog's own `/v1/models` sync
+      // currently carries for this provider (see NATIVE_ANTHROPIC_MODELS
+      // above), not a hand-typed subset.
+      ...NATIVE_ANTHROPIC_MODELS,
       // Moonshot (Kimi) — route resolved from the catalog `@route`
       { id: "kimi-k3", provider: "moonshot" },
       { id: "kimi-k2.7-code", provider: "moonshot" },

@@ -24,7 +24,21 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { listNativeModelIds } from "@agentproto/model-catalog/llm"
 import { DEFAULT_MODEL } from "./options.js"
+
+// Native-Anthropic model menu, derived from the catalog's own synced
+// `/v1/models` listing (see `listNativeModelIds`) rather than a hand-typed
+// id array — a hand-typed list silently drops a newly-published id (e.g.
+// Anthropic shipping `claude-opus-4-9`) until someone notices and opens a
+// PR. Nothing is known to need hiding today, so the denylist starts empty
+// — it exists purely as the one sanctioned manual override (a specific id
+// we've vetted and want OFF this adapter), never as a stand-in for a
+// hand-typed allowlist.
+const NATIVE_ANTHROPIC_DENYLIST = new Set<string>([])
+const NATIVE_ANTHROPIC_MODELS = listNativeModelIds("anthropic")
+  .filter(id => !NATIVE_ANTHROPIC_DENYLIST.has(id))
+  .map(id => ({ id, provider: "anthropic" as const }))
 
 // Self-locating: the built handle spawns `node <this-dist>/cli.mjs acp`.
 // import.meta.url resolves into dist/ at runtime, where cli.mjs sits next to
@@ -122,11 +136,10 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
     // ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN. The `model` option remains
     // free-form, so any gateway id works even if it is not listed here.
     allowed: [
-      // Native Anthropic
-      { id: "claude-haiku-4-5-20251001", provider: "anthropic" },
-      { id: "claude-sonnet-5", provider: "anthropic" },
-      { id: "claude-opus-4-8", provider: "anthropic" },
-      { id: "claude-fable-5", provider: "anthropic" },
+      // Native Anthropic — every id the catalog's own `/v1/models` sync
+      // currently carries for this provider (see NATIVE_ANTHROPIC_MODELS
+      // above), not a hand-typed subset.
+      ...NATIVE_ANTHROPIC_MODELS,
       // Gateway providers — routing is resolved by the runtime. OpenRouter ids
       // carry the `@openrouter` route-identity suffix so the catalog join pins
       // the gateway route (a bare 2-segment id resolves to the dead direct

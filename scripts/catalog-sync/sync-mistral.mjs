@@ -108,13 +108,22 @@ async function main() {
   for (const model of openRouterModels) {
     if (!model.id?.startsWith("mistralai/")) continue
     if (!model.pricing?.prompt || !model.pricing?.completion) continue
-    
+
     const id = model.id
+    const promptPerToken = parseFloat(model.pricing.prompt)
     // OpenRouter prices are in USD per token, so multiply by 1e6 to get per 1M
-    const inputPer1M = round4(parseFloat(model.pricing.prompt) * 1e6)
+    const inputPer1M = round4(promptPerToken * 1e6)
     const outputPer1M = round4(parseFloat(model.pricing.completion) * 1e6)
-    
-    openRouterMap[id] = { inputPer1M, outputPer1M }
+    const entry = { inputPer1M, outputPer1M }
+    // Derive cacheReadMultiplier from input_cache_read / prompt ratio (same
+    // pattern as sync-anthropic.mjs / sync-google.mjs). OpenRouter's
+    // mistralai/* routes carry no input_cache_write field — cacheWriteMultiplier
+    // is never derivable from this source.
+    if (model.pricing.input_cache_read && promptPerToken > 0) {
+      const ratio = parseFloat(model.pricing.input_cache_read) / promptPerToken
+      if (Number.isFinite(ratio)) entry.cacheReadMultiplier = round4(ratio)
+    }
+    openRouterMap[id] = entry
   }
   console.log(`  ${Object.keys(openRouterMap).length} Mistral models with pricing found`)
 
@@ -127,6 +136,7 @@ async function main() {
         id: model.id,
         inputPer1M: pricing.inputPer1M,
         outputPer1M: pricing.outputPer1M,
+        cacheReadMultiplier: pricing.cacheReadMultiplier,
       })
     } else {
       console.log(`  No pricing found for: ${model.id}`)
@@ -141,7 +151,8 @@ async function main() {
 
   const body = entries
     .map((e) => {
-      return `  ${JSON.stringify(e.id)}: { inputPer1M: ${e.inputPer1M}, outputPer1M: ${e.outputPer1M}, vendor: "mistral", provider: "mistral" },`
+      const cache = e.cacheReadMultiplier !== undefined ? `, cacheReadMultiplier: ${e.cacheReadMultiplier}` : ""
+      return `  ${JSON.stringify(e.id)}: { inputPer1M: ${e.inputPer1M}, outputPer1M: ${e.outputPer1M}${cache}, vendor: "mistral", provider: "mistral" },`
     })
     .join("\n")
 
