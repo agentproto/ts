@@ -739,6 +739,18 @@ describe("listNativeModelIds", () => {
     expect(listNativeModelIds("xai")).toContain("grok-4.6")
   })
 
+  it("includes the bare 'latest' id for every Anthropic generation aged out to a dated-only live id", () => {
+    // Same bug as claude-opus-4-6, one layer down: the pricing generator
+    // already derived these bare ids from their dated siblings, but the
+    // context-windows generator didn't — so they priced fine yet vanished
+    // from this list (and so from every adapter's native model menu). Locks
+    // in the fix so a future refactor of either generator can't reopen it.
+    const anthropicIds = listNativeModelIds("anthropic")
+    expect(anthropicIds).toContain("claude-haiku-4-5")
+    expect(anthropicIds).toContain("claude-opus-4-5")
+    expect(anthropicIds).toContain("claude-sonnet-4-5")
+  })
+
   it("returns only ids native to the requested provider, never an OpenRouter-routed form", () => {
     const anthropicIds = listNativeModelIds("anthropic")
     expect(anthropicIds.length).toBeGreaterThan(0)

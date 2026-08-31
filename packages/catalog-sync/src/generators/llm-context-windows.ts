@@ -184,6 +184,28 @@ async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
         provider: "anthropic",
       }
     }
+
+    // Some Anthropic model generations "age out" of the live /v1/models
+    // listing into a dated-only id (e.g. claude-opus-4-5-20251101) while
+    // the bare "latest" spelling (claude-opus-4-5) stays a valid, callable
+    // back-compat id — just no longer separately listed. Mechanically
+    // derive the bare form from every dated entry (strip the trailing
+    // -YYYYMMDD), identical to its dated sibling, the same way
+    // `scripts/catalog-sync/sync-anthropic.mjs` already does for pricing —
+    // this generator has its own independent entries map (context window,
+    // not price) and was missing the same derivation, which dropped the
+    // bare id from `listNativeModelIds("anthropic")` (and so from every
+    // adapter's native model menu) even though it still priced and
+    // resolved fine. Skips a bare id that's already a distinct,
+    // separately-listed entry (a live, non-aged model should never be
+    // silently overwritten).
+    for (const [id, entry] of Object.entries(entries)) {
+      if (entry.provider !== "anthropic") continue
+      const bare = id.replace(/-\d{8}$/, "")
+      if (bare === id) continue
+      if (bare in entries) continue
+      entries[bare] = { ...entry }
+    }
   }
 
   const groqSrc = sources.find(s => s.id === "llm-groq")
