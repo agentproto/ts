@@ -546,7 +546,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.12,
         outputPer1M: 0.5,
         supportsTools: true,
-        supportsStructuredOutput: true,
+        supportsStructuredOutput: false,
       }
     ],
   },
@@ -884,7 +884,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.71,
         outputPer1M: 4.25,
         supportsTools: true,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       },
       {
         provider: "scaleway",
@@ -955,7 +955,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.47,
         outputPer1M: 3.19,
         supportsTools: true,
-        supportsStructuredOutput: true,
+        supportsStructuredOutput: false,
       }
     ],
   },
@@ -1281,7 +1281,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.2,
         outputPer1M: 0.2,
         supportsTools: false,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       }
     ],
   },
@@ -1471,6 +1471,15 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
     wireId: "deepseek-ai/DeepSeek-V4-Flash-0731",
     providers: [
       {
+        provider: "baseten",
+        status: "live",
+        contextLength: 1048576,
+        inputPer1M: 0.13,
+        outputPer1M: 0.26,
+        supportsTools: true,
+        supportsStructuredOutput: true,
+      },
+      {
         provider: "deepinfra",
         status: "live",
         contextLength: 1048576,
@@ -1541,6 +1550,15 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
   "deepseek-ai/DeepSeek-V4-Pro-0813": {
     wireId: "deepseek-ai/DeepSeek-V4-Pro-0813",
     providers: [
+      {
+        provider: "baseten",
+        status: "live",
+        contextLength: 1048576,
+        inputPer1M: 1.32,
+        outputPer1M: 3.96,
+        supportsTools: true,
+        supportsStructuredOutput: true,
+      },
       {
         provider: "deepinfra",
         status: "live",
@@ -1662,7 +1680,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.285,
         outputPer1M: 0.57,
         supportsTools: true,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       }
     ],
   },
@@ -1787,10 +1805,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         outputPer1M: 0.05,
         supportsTools: true,
         supportsStructuredOutput: false,
-      },
-      {
-        provider: "featherless-ai",
-        status: "live",
       },
       {
         provider: "novita",
@@ -2002,7 +2016,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.45,
         outputPer1M: 2.25,
         supportsTools: true,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       },
       {
         provider: "featherless-ai",
@@ -2154,20 +2168,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
       }
     ],
   },
-  "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16": {
-    wireId: "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
-    providers: [
-      {
-        provider: "deepinfra",
-        status: "live",
-        contextLength: 262144,
-        inputPer1M: 1,
-        outputPer1M: 5,
-        supportsTools: true,
-        supportsStructuredOutput: true,
-      }
-    ],
-  },
   "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4": {
     wireId: "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
     providers: [
@@ -2178,7 +2178,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.6,
         outputPer1M: 2.4,
         supportsTools: true,
-        supportsStructuredOutput: true,
+        supportsStructuredOutput: false,
       }
     ],
   },
@@ -2253,7 +2253,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.05,
         outputPer1M: 0.25,
         supportsTools: true,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       },
       {
         provider: "nscale",
@@ -2333,7 +2333,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.05,
         outputPer1M: 0.2,
         supportsTools: true,
-        supportsStructuredOutput: true,
+        supportsStructuredOutput: false,
       },
       {
         provider: "ovhcloud",
@@ -2520,7 +2520,16 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 1,
         outputPer1M: 4.05,
         supportsTools: true,
-        supportsStructuredOutput: true,
+        supportsStructuredOutput: false,
+      },
+      {
+        provider: "deepinfra",
+        status: "live",
+        contextLength: 524288,
+        inputPer1M: 0.95,
+        outputPer1M: 4.05,
+        supportsTools: true,
+        supportsStructuredOutput: false,
       },
       {
         provider: "fireworks-ai",
@@ -2669,6 +2678,15 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
   "zai-org/GLM-4.6": {
     wireId: "zai-org/GLM-4.6",
     providers: [
+      {
+        provider: "deepinfra",
+        status: "live",
+        contextLength: 202752,
+        inputPer1M: 0.5,
+        outputPer1M: 2,
+        supportsTools: true,
+        supportsStructuredOutput: true,
+      },
       {
         provider: "featherless-ai",
         status: "live",
@@ -2833,6 +2851,15 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
     wireId: "zai-org/GLM-5",
     providers: [
       {
+        provider: "deepinfra",
+        status: "live",
+        contextLength: 202752,
+        inputPer1M: 0.6,
+        outputPer1M: 2.08,
+        supportsTools: true,
+        supportsStructuredOutput: true,
+      },
+      {
         provider: "featherless-ai",
         status: "live",
       },
@@ -2929,7 +2956,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 1.4,
         outputPer1M: 4.4,
         supportsTools: true,
-        supportsStructuredOutput: true,
+        supportsStructuredOutput: false,
       },
       {
         provider: "scaleway",
@@ -2987,6 +3014,15 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         supportsStructuredOutput: true,
       },
       {
+        provider: "novita",
+        status: "live",
+        contextLength: 1048576,
+        inputPer1M: 1.4,
+        outputPer1M: 4.4,
+        supportsTools: true,
+        supportsStructuredOutput: false,
+      },
+      {
         provider: "together",
         status: "live",
         contextLength: 1048575,
@@ -3018,6 +3054,15 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
     wireId: "zai-org/GLM-5.3-Flash",
     providers: [
       {
+        provider: "baseten",
+        status: "live",
+        contextLength: 1048576,
+        inputPer1M: 0.15,
+        outputPer1M: 0.5,
+        supportsTools: true,
+        supportsStructuredOutput: true,
+      },
+      {
         provider: "fireworks-ai",
         status: "live",
         contextLength: 1048576,
@@ -3028,8 +3073,8 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         provider: "novita",
         status: "live",
         contextLength: 1048576,
-        inputPer1M: 1.4,
-        outputPer1M: 4.4,
+        inputPer1M: 0.075,
+        outputPer1M: 0.25,
         supportsTools: true,
         supportsStructuredOutput: false,
       },

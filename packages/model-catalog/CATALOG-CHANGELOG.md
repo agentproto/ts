@@ -16,5 +16,14 @@ for that.
 
 ## 2026-08-31
 
+### llm:huggingface
+- Removed: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+
+### llm:context-windows
+- Removed: kimi-k2.5, moonshot-v1-128k, moonshot-v1-128k-vision-preview, moonshot-v1-32k, moonshot-v1-32k-vision-preview, moonshot-v1-8k, moonshot-v1-8k-vision-preview, moonshot-v1-auto
+
+### image:replicate
+- Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
+
 ### llm:context-windows
 - Added: claude-haiku-4-5, claude-opus-4-5, claude-sonnet-4-5
