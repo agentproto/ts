@@ -41,6 +41,7 @@ function llmModel(id = "claude-sonnet-4-5"): ResolvedModel {
     id,
     canonicalId: id,
     pricing: { inputPer1M: 3.0, outputPer1M: 15.0, provider: "anthropic", vendor: "anthropic" },
+    provider: "anthropic",
   }
 }
 
@@ -596,7 +597,7 @@ describe("registerCatalogOverlay + getModel", () => {
     const resolved = getModel("my-finetune")
     expect(resolved?.kind).toBe("llm")
     if (resolved?.kind === "llm") {
-      expect(resolved.pricing.inputPer1M).toBe(1.0)
+      expect(resolved.pricing?.inputPer1M).toBe(1.0)
     }
   })
 })
@@ -641,7 +642,10 @@ describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
   // reports a price and marks them runnable.
   it.each([
     ["claude-opus-4-8", 5.0, 25.0],
-    ["claude-sonnet-5", 3.0, 15.0],
+    // claude-sonnet-5 is priced by ANTHROPIC_GENERATED_PRICING now (2/10,
+    // not the old hand-typed 3/15) — generated wins on divergence, see
+    // catalog.ts's LLM_PRICING_CATALOG comment and the PR body's table.
+    ["claude-sonnet-5", 2.0, 10.0],
     ["claude-fable-5", 10.0, 50.0],
   ])("%s resolves to anthropic pricing", (id, input, output) => {
     const pricing = resolvePricing(id)
@@ -659,7 +663,10 @@ describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
 describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
   it.each([
     ["kimi-k3", 3.0, 15.0],
-    ["kimi-k2.7-code", 0.95, 4.0],
+    // kimi-k2.7-code is priced by MOONSHOT_GENERATED_PRICING now (0.66/3.4,
+    // not the old hand-typed 0.95/4.0) — generated wins on divergence, see
+    // catalog.ts's LLM_PRICING_CATALOG comment and the PR body's table.
+    ["kimi-k2.7-code", 0.66, 3.4],
   ])("%s resolves to expected direct-Moonshot pricing", (id, input, output) => {
     const pricing = resolvePricing(id)
     expect(pricing).toBeDefined()

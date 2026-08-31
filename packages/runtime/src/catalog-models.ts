@@ -42,6 +42,8 @@ import {
 import {
   getModelProvider,
   resolvePricingExact,
+  resolveContextWindow,
+  formatTokens,
   LLM_PRICING_CATALOG,
   MODEL_ALIASES,
 } from "@agentproto/model-catalog/llm"
@@ -124,6 +126,14 @@ export interface CatalogRoute {
   ref: string
   baseUrl: string | null
   pricing: CatalogPricing | null
+  /** Human-readable max input tokens (e.g. `"1M"`, `"200k"`), from the
+   *  live-synced CONTEXT_WINDOWS table (`resolveContextWindow`); null when
+   *  no synced provider carries this id. Consumers wanting the raw integer
+   *  can re-resolve via `resolveContextWindow(ref product)` or parse. */
+  contextWindow: string | null
+  /** Human-readable max output tokens (same source/format), null when the
+   *  source doesn't publish a completion cap for this id. */
+  maxOutput: string | null
   runnable: boolean
   eligibleProfiles: string[]
   adapterModes: string[]
@@ -675,11 +685,19 @@ export function buildCatalogModels(
     const runnable = eligible.length > 0
     if (query.runnableOnly && !runnable) continue
 
+    const ctx = resolveContextWindow(row.product)
     const route: CatalogRoute = {
       route: row.route,
       ref: row.ref,
       baseUrl: row.baseUrl,
       pricing: row.pricing,
+      // Live-synced context window (max input) + max output, when a synced
+      // provider (Anthropic/Groq/xAI/Moonshot/Mistral/Google) carries this
+      // id — null otherwise. All CONTEXT_WINDOWS providers get this, not
+      // only Anthropic. Formatted for display (`1M`/`200k`); consumers
+      // needing the raw integer resolve it themselves.
+      contextWindow: formatTokens(ctx?.contextWindow),
+      maxOutput: formatTokens(ctx?.maxOutput),
       runnable,
       eligibleProfiles: eligible.map(p => p.id),
       adapterModes: row.adapterModes,

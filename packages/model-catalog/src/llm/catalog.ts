@@ -89,707 +89,193 @@ import { pricingRegistry, CC_USD_RATE } from "../pricing/index.js"
 import { CONTEXT_WINDOWS, type ContextWindowEntry } from "./context-windows.generated.js"
 import { MISTRAL_GENERATED_PRICING } from "./mistral-pricing.generated.js"
 import { MOONSHOT_GENERATED_PRICING } from "./moonshot-pricing.generated.js"
+import { ANTHROPIC_GENERATED_PRICING } from "./anthropic-pricing.generated.js"
+import { GOOGLE_GENERATED_PRICING } from "./google-pricing.generated.js"
+import { OPENAI_GENERATED_PRICING } from "./openai-pricing.generated.js"
+import { MINIMAX_GENERATED_PRICING } from "./minimax-pricing.generated.js"
+import { XAI_GENERATED_PRICING } from "./xai-pricing.generated.js"
+
+/**
+ * Explicit, named, reasoned manual pricing — the ONLY sanctioned form of
+ * hand-written pricing left in this catalog. An id lands here for exactly
+ * one of two reasons, stated per-entry in `reason`:
+ *   - no generator covers this id at all (a structural gap — a "-latest"
+ *     alias spelling, a retired preview, a build-suffix/alias mismatch), or
+ *   - the value is a known-unverified placeholder that predates any sync.
+ *
+ * An id a generator DOES cover is priced by that generator directly and
+ * NEVER duplicated here, regardless of whether the (now deleted) hand-typed
+ * row used to disagree with the generated value — generated wins
+ * unconditionally on a divergence; see the PR body's divergence table for
+ * every case that applied to, and the exact two values each side had.
+ */
+export const PRICING_OVERRIDES: Record<string, LLMPricing & { reason: string }> = {
+  "claude-opus-4-5": {
+    reason:
+      "Bare alias-target id predating Anthropic's dated-id convention. Anthropic's /v1/models (and the CONTEXT_WINDOWS fallback used when no key is available) only returns the dated form claude-opus-4-5-20251101 -- no generator produces this exact bare spelling.",
+    inputPer1M: 15.0, outputPer1M: 75.0, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "anthropic", provider: "anthropic",
+  },
+
+  "claude-haiku-4-5": {
+    reason:
+      "Bare alias-target id predating Anthropic's dated-id convention. Anthropic's /v1/models only returns the dated form claude-haiku-4-5-20251001 -- no generator produces this exact bare spelling.",
+    inputPer1M: 0.8, outputPer1M: 4.0, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "anthropic", provider: "anthropic",
+  },
+
+  "claude-sonnet-4-5": {
+    reason:
+      "Bare alias-target id predating Anthropic's dated-id convention. Anthropic's /v1/models only returns the dated form claude-sonnet-4-5-20250929 -- no generator produces this exact bare spelling. Unlike claude-opus-4-5/claude-haiku-4-5, this one does NOT diverge from its dated/generated sibling (3/15 both sides) -- kept anyway because no generator emits the bare key itself.",
+    inputPer1M: 3.0, outputPer1M: 15.0, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "anthropic", provider: "anthropic",
+  },
+
+  "grok-4.20": {
+    reason:
+      "xAI's live /v1/models now serves this only as an alias of the build-suffixed canonical id grok-4.20-0309-reasoning (verified live: that entry's own `aliases` array includes \"grok-4.20\"). Not a distinct priced id in xai-pricing.generated.ts, which emits canonical ids only.",
+    inputPer1M: 1.25, outputPer1M: 2.5, vendor: "xai", provider: "xai",
+  },
+
+  "grok-4.20-reasoning": {
+    reason:
+      "Same as grok-4.20 -- alias of grok-4.20-0309-reasoning per xAI's own live aliases array, not a separate canonical id the generator emits.",
+    inputPer1M: 1.25, outputPer1M: 2.5, vendor: "xai", provider: "xai",
+  },
+
+  "grok-4.20-multi-agent": {
+    reason:
+      "Same class -- alias of grok-4.20-multi-agent-0309 per xAI's own live aliases array, not a separate canonical id the generator emits.",
+    inputPer1M: 1.25, outputPer1M: 2.5, vendor: "xai", provider: "xai",
+  },
+
+  "kimi-k2-0905-preview": {
+    reason:
+      "Not present in Moonshot's current live model list (api.moonshot.ai/v1/models returned 4 models total on the sync run that produced moonshot-pricing.generated.ts) -- likely retired or renamed since this row was hand-added.",
+    inputPer1M: 0.6, outputPer1M: 2.5, cacheReadMultiplier: 0.25, vendor: "moonshot", provider: "moonshot",
+  },
+
+  "kimi-k2-thinking": {
+    reason:
+      "Same as kimi-k2-0905-preview -- absent from Moonshot's current live model list.",
+    inputPer1M: 0.6, outputPer1M: 2.5, cacheReadMultiplier: 0.25, vendor: "moonshot", provider: "moonshot",
+  },
+
+  "kimi-k2-thinking-turbo": {
+    reason:
+      "Same as kimi-k2-0905-preview -- absent from Moonshot's current live model list.",
+    inputPer1M: 1.15, outputPer1M: 8.0, cacheReadMultiplier: 0.13, vendor: "moonshot", provider: "moonshot",
+  },
+
+  "kimi-k2-turbo-preview": {
+    reason:
+      "Same as kimi-k2-0905-preview -- absent from Moonshot's current live model list.",
+    inputPer1M: 1.15, outputPer1M: 8.0, cacheReadMultiplier: 0.13, vendor: "moonshot", provider: "moonshot",
+  },
+
+  "kimi-k2.5": {
+    reason:
+      "Same as kimi-k2-0905-preview -- absent from Moonshot's current live model list.",
+    inputPer1M: 0.6, outputPer1M: 3.0, cacheReadMultiplier: 0.17, vendor: "moonshot", provider: "moonshot",
+  },
+
+  "mistral-large-latest": {
+    reason:
+      "PLACEHOLDER -- shares its exact 0.5/1.5 value with 3 other Mistral rows below (mistral-medium-latest, codestral-latest, devstral-latest), a copy-pasted template never individually verified. \"-latest\" alias spelling also has no generated counterpart (Mistral's own /v1/models returns dated ids only, e.g. mistral-large-2512).",
+    inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
+  },
+
+  "mistral-small-latest": {
+    reason:
+      "PLACEHOLDER -- shares its exact 0.06/0.18 value with 2 other Mistral rows below (ministral-8b-latest, magistral-small-latest), a copy-pasted template never individually verified. \"-latest\" alias spelling also has no generated counterpart.",
+    inputPer1M: 0.06, outputPer1M: 0.18, cacheReadMultiplier: 0.5, vendor: "mistral", provider: "mistral",
+  },
+
+  "mistral-medium-latest": {
+    reason:
+      "PLACEHOLDER, explicitly marked `// TODO verify pricing` in the row this replaces -- copy-pasted 0.5/1.5 template value, never real. \"-latest\" alias spelling also has no generated counterpart.",
+    inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
+  },
+
+  "codestral-latest": {
+    reason:
+      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.5/1.5 template value, never real. \"-latest\" alias spelling also has no generated counterpart (generated has the dated codestral-2508).",
+    inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
+  },
+
+  "ministral-8b-latest": {
+    reason:
+      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.06/0.18 template value, never real. \"-latest\" alias spelling also has no generated counterpart (generated has the dated ministral-8b-2512).",
+    inputPer1M: 0.06, outputPer1M: 0.18, vendor: "mistral", provider: "mistral",
+  },
+
+  "devstral-latest": {
+    reason:
+      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.5/1.5 template value, never real. No generated counterpart at all (Mistral's chat-model sync doesn't currently return a devstral id).",
+    inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
+  },
+
+  "magistral-small-latest": {
+    reason:
+      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.06/0.18 template value, never real. No generated counterpart at all.",
+    inputPer1M: 0.06, outputPer1M: 0.18, vendor: "mistral", provider: "mistral",
+  },
+
+  "devstral-medium-latest": {
+    reason:
+      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.5/1.5 template value, never real. No generated counterpart at all.",
+    inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
+  },
+
+  "gpt-5-codex": {
+    reason:
+      "No generated counterpart -- not present in OpenRouter's openai/* listing under this exact id (OpenAI has no native pricing endpoint at all, see packages/catalog-sync/src/sources/openai.ts, so OpenRouter is the only automated source and it doesn't carry this specific id).",
+    inputPer1M: 1.25, outputPer1M: 10.0, cacheReadMultiplier: 0.1, vendor: "openai", provider: "openai",
+  },
+
+  "o1-mini": {
+    reason:
+      "No generated counterpart -- not present in OpenRouter's openai/* listing under this exact id.",
+    inputPer1M: 0.55, outputPer1M: 2.2, vendor: "openai", provider: "openai",
+  },
+
+  "o3-deep-research": {
+    reason:
+      "No generated counterpart -- not present in OpenRouter's openai/* listing under this exact id.",
+    inputPer1M: 10.0, outputPer1M: 40.0, cacheReadMultiplier: 0.25, vendor: "openai", provider: "openai",
+  },
+
+  "o4-mini-deep-research": {
+    reason:
+      "No generated counterpart -- not present in OpenRouter's openai/* listing under this exact id.",
+    inputPer1M: 2.0, outputPer1M: 8.0, cacheReadMultiplier: 0.25, vendor: "openai", provider: "openai",
+  },
+}
+
+/** `PRICING_OVERRIDES` stripped of its `reason` field — what actually gets
+ *  spread into `LLM_PRICING_CATALOG`; `reason` is documentation, not a
+ *  pricing field. */
+const PRICING_OVERRIDES_PRICING: Record<string, LLMPricing> = Object.fromEntries(
+  Object.entries(PRICING_OVERRIDES).map(([id, { reason: _reason, ...pricing }]) => [id, pricing])
+)
 
 export const LLM_PRICING_CATALOG = {
-  // Generated Mistral pricing (see mistral-pricing.generated.ts); hand-maintained entries below override.
+  // Every provider below is fully generated from that provider's own live
+  // sync (`scripts/catalog-sync/sync-*.mjs`) — existence AND price both come
+  // from the provider's native id space wherever the provider exposes one
+  // (Anthropic, xAI, MiniMax, Moonshot, Mistral, Google-via-remap); OpenRouter
+  // supplies PRICE only for those, never ids, except for OpenAI, the one
+  // provider with no native id/pricing source of its own at all, where
+  // OpenRouter is the sole source for both. On any id a generator covers,
+  // the generated value wins UNCONDITIONALLY — no hand-typed row duplicates
+  // an id a generator already prices, even where they used to disagree; see
+  // the PR body's divergence table. `PRICING_OVERRIDES` above is the only
+  // surviving hand-written pricing, spread last, one reasoned entry per id.
   ...MISTRAL_GENERATED_PRICING,
-  // Generated Moonshot pricing (see moonshot-pricing.generated.ts); hand-maintained entries below override.
   ...MOONSHOT_GENERATED_PRICING,
-  // ── Anthropic ──────────────────────────────────────────────────────────
-  // Catalog keys MUST be valid Anthropic model ids — `resolveAlias` returns
-  // the catalog key as the API model id, and Anthropic 404s on anything
-  // that isn't a real published id (e.g. the bare `claude-sonnet-4`
-  // collapsed every Sonnet 4.x request through to a not_found_error).
-  "claude-opus-4-5": {
-    inputPer1M: 15.0,
-    outputPer1M: 75.0,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    vendor: "anthropic",
-    provider: "anthropic",
-  },
-  "claude-sonnet-4-5": {
-    inputPer1M: 3.0,
-    outputPer1M: 15.0,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    vendor: "anthropic",
-    provider: "anthropic",
-  },
-  "claude-haiku-4-5": {
-    inputPer1M: 0.8,
-    outputPer1M: 4.0,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    vendor: "anthropic",
-    provider: "anthropic",
-  },
-  // Latest-generation Anthropic ids the claude-code / claude-sdk adapters
-  // advertise. Registered so `agentproto models` reports a $/Mtok figure and
-  // a concrete provider — before these rows they resolved to provider
-  // `unknown` (no pricing entry) and showed as runnable:false. Prices per 1M
-  // tokens from platform.claude.com/docs/en/pricing.
-  "claude-opus-4-8": {
-    inputPer1M: 5.0,
-    outputPer1M: 25.0,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    vendor: "anthropic",
-    provider: "anthropic",
-  },
-  "claude-sonnet-5": {
-    inputPer1M: 3.0,
-    outputPer1M: 15.0,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    vendor: "anthropic",
-    provider: "anthropic",
-  },
-  "claude-fable-5": {
-    inputPer1M: 10.0,
-    outputPer1M: 50.0,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    vendor: "anthropic",
-    provider: "anthropic",
-  },
-
-  // ── Google ─────────────────────────────────────────────────────────────
-  // Source: https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-05-29)
-  // — Flash text/image/video input $0.30/1M, output $2.50/1M, context-cache
-  // $0.03/1M (audio input is $1.00/1M — not modeled). Cross-checked against
-  // https://pricepertoken.com/pricing-page/model/google-gemini-2.5-flash.
-  "gemini-2.5-flash": {
-    inputPer1M: 0.3,
-    outputPer1M: 2.5,
-    // Context-cache $0.03/1M = 0.1× input (implicit caching, no write surcharge).
-    cacheReadMultiplier: 0.1,
-    vendor: "google",
-    provider: "google",
-  },
-  // Source: https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-05-29)
-  // — Pro ≤200k prompts: input $1.25/1M, output $10.00/1M, context-cache
-  // $0.125/1M. (>200k tiers: $2.50 in / $15.00 out — not modeled.)
-  "gemini-2.5-pro": {
-    inputPer1M: 1.25,
-    outputPer1M: 10.0,
-    // Context-cache $0.125/1M = 0.1× input (≤200k tier).
-    cacheReadMultiplier: 0.1,
-    vendor: "google",
-    provider: "google",
-  },
-  // Source: https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-05-29)
-  // — Gemini 3.5 Flash input $1.50/1M, output $9.00/1M, context-cache
-  // $0.15/1M. Cross-checked against https://devtk.ai/en/models/gemini-3-5-flash.
-  "gemini-3.5-flash": {
-    inputPer1M: 1.5,
-    outputPer1M: 9.0,
-    // Context-cache $0.15/1M = 0.1× input.
-    cacheReadMultiplier: 0.1,
-    vendor: "google",
-    provider: "google",
-  },
-  // Source: https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-05-29)
-  // — Flash-Lite text/image/video input $0.10/1M, output $0.40/1M, cache $0.01.
-  "gemini-2.5-flash-lite": {
-    inputPer1M: 0.1,
-    outputPer1M: 0.4,
-    // Context-cache $0.01/1M = 0.1× input.
-    cacheReadMultiplier: 0.1,
-    vendor: "google",
-    provider: "google",
-  },
-  // Source: https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-05-29)
-  // — Gemini 3.1 Pro Preview ≤200k prompts: input $2.00/1M, output $12.00/1M,
-  // context-cache $0.20/1M. (>200k tiers: $4.00 in / $18.00 out — not modeled.)
-  "gemini-3.1-pro-preview": {
-    inputPer1M: 2.0,
-    outputPer1M: 12.0,
-    // Context-cache $0.20/1M = 0.1× input (≤200k tier).
-    cacheReadMultiplier: 0.1,
-    vendor: "google",
-    provider: "google",
-  },
-  // Source: https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-05-29)
-  // — Gemini 3 Flash Preview text/image/video input $0.50/1M, output $3.00/1M,
-  // context-cache $0.05/1M.
-  "gemini-3-flash-preview": {
-    inputPer1M: 0.5,
-    outputPer1M: 3.0,
-    // Context-cache $0.05/1M = 0.1× input.
-    cacheReadMultiplier: 0.1,
-    vendor: "google",
-    provider: "google",
-  },
-  // Source: https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-05-29)
-  // — Gemini 3.1 Flash-Lite text/image/video input $0.25/1M, output $1.50/1M,
-  // context-cache $0.025/1M.
-  "gemini-3.1-flash-lite": {
-    inputPer1M: 0.25,
-    outputPer1M: 1.5,
-    // Context-cache $0.025/1M = 0.1× input.
-    cacheReadMultiplier: 0.1,
-    vendor: "google",
-    provider: "google",
-  },
-
-  // ── OpenAI ─────────────────────────────────────────────────────────────
-  // All OpenAI cacheReadMultiplier = 0.1 (cached input billed at 10% of base,
-  // matching the per-model cached-input rates on the pricing table). No cache-
-  // write premium (OpenAI prompt caching is automatic, no write surcharge).
-  // Source: https://pricepertoken.com/pricing-page/provider/openai
-  // (mirrors openai.com/api/pricing; fetched 2026-05-29 — openai.com 403s WebFetch).
-  "gpt-5.5": {
-    // $5.00 in / $0.50 cached / $30.00 out per 1M.
-    inputPer1M: 5.0,
-    outputPer1M: 30.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.5-pro": {
-    // $30.00 in / $180.00 out per 1M. No cached tier on pro.
-    inputPer1M: 30.0,
-    outputPer1M: 180.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.4": {
-    // $2.50 in / $0.25 cached / $15.00 out per 1M (production workhorse).
-    inputPer1M: 2.5,
-    outputPer1M: 15.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.4-mini": {
-    // $0.75 in / $0.075 cached / $4.50 out per 1M.
-    inputPer1M: 0.75,
-    outputPer1M: 4.5,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.4-nano": {
-    // $0.20 in / $0.02 cached / $1.25 out per 1M.
-    inputPer1M: 0.2,
-    outputPer1M: 1.25,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.4-pro": {
-    // $30.00 in / $180.00 out per 1M. No cached tier on pro.
-    inputPer1M: 30.0,
-    outputPer1M: 180.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.2": {
-    // $1.75 in / $0.175 cached / $14.00 out per 1M.
-    inputPer1M: 1.75,
-    outputPer1M: 14.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.1": {
-    // $1.25 in / $0.125 cached / $10.00 out per 1M.
-    inputPer1M: 1.25,
-    outputPer1M: 10.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5": {
-    // $1.25 in / $0.125 cached / $10.00 out per 1M (base GPT-5).
-    inputPer1M: 1.25,
-    outputPer1M: 10.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-4.1": {
-    inputPer1M: 2.0,
-    outputPer1M: 8.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-4.1-mini": {
-    inputPer1M: 0.4,
-    outputPer1M: 1.6,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // Source: pricepertoken.com/pricing-page/provider/openai (fetched 2026-05-29)
-  // — gpt-4.1-nano $0.10 in / $0.025 cached / $0.40 out per 1M.
-  "gpt-4.1-nano": {
-    inputPer1M: 0.1,
-    outputPer1M: 0.4,
-    cacheReadMultiplier: 0.25,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-4o": {
-    inputPer1M: 2.5,
-    outputPer1M: 10.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-4o-mini": {
-    inputPer1M: 0.15,
-    outputPer1M: 0.6,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI o-series (reasoning) ─────────────────────────────────────────
-  // Source: pricepertoken.com/pricing-page/provider/openai (fetched 2026-05-29).
-  o3: {
-    // $2.00 in / $8.00 out per 1M.
-    inputPer1M: 2.0,
-    outputPer1M: 8.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "o4-mini": {
-    // $0.55 in / $0.275 cached / $2.20 out per 1M.
-    inputPer1M: 0.55,
-    outputPer1M: 2.2,
-    cacheReadMultiplier: 0.5,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "o3-mini": {
-    // $0.55 in / $2.20 out per 1M (no cache discount listed).
-    inputPer1M: 0.55,
-    outputPer1M: 2.2,
-    vendor: "openai",
-    provider: "openai",
-  },
-  o1: {
-    // $15.00 in / $7.50 cached / $60.00 out per 1M.
-    inputPer1M: 15.0,
-    outputPer1M: 60.0,
-    cacheReadMultiplier: 0.5,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "o1-mini": {
-    // $0.55 in / $2.20 out per 1M.
-    inputPer1M: 0.55,
-    outputPer1M: 2.2,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI GPT-5.6 series ──────────────────────────────────────────────
-  // Source: OpenRouter pricing (fetched 2026-07-16)
-  "gpt-5.6-luna": {
-    // $1.00 in / $6.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 1.0,
-    outputPer1M: 6.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.6-luna-pro": {
-    // $1.00 in / $6.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 1.0,
-    outputPer1M: 6.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.6-terra": {
-    // $2.50 in / $15.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 2.5,
-    outputPer1M: 15.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.6-terra-pro": {
-    // $2.50 in / $15.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 2.5,
-    outputPer1M: 15.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.6-sol": {
-    // $5.00 in / $30.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 5.0,
-    outputPer1M: 30.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.6-sol-pro": {
-    // $5.00 in / $30.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 5.0,
-    outputPer1M: 30.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI GPT-5 min/nano (lite variants) ──────────────────────────────
-  "gpt-5-mini": {
-    // $0.25 in / $2.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 0.25,
-    outputPer1M: 2.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5-nano": {
-    // $0.05 in / $0.40 out per 1M. Cache read 0.1x.
-    inputPer1M: 0.05,
-    outputPer1M: 0.4,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI GPT-5 codex (coding specialist) ─────────────────────────────
-  "gpt-5-codex": {
-    // $1.25 in / $10.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 1.25,
-    outputPer1M: 10.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI GPT-5 pro (reasoning-enhanced) ──────────────────────────────
-  "gpt-5-pro": {
-    // $15.00 in / $120.00 out per 1M. No cache discount.
-    inputPer1M: 15.0,
-    outputPer1M: 120.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI GPT-5 image generation ──────────────────────────────────────
-  "gpt-5-image": {
-    // $10.00 in / $10.00 out (+ $40/1M image output). Cache read 0.125x.
-    inputPer1M: 10.0,
-    outputPer1M: 10.0,
-    cacheReadMultiplier: 0.125,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5-image-mini": {
-    // $2.50 in / $2.00 out (+ $8/1M image output). Cache read 0.1x.
-    inputPer1M: 2.5,
-    outputPer1M: 2.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI GPT audio (multimodal) ──────────────────────────────────────
-  "gpt-audio": {
-    // $2.50 in / $10.00 out (+ audio in $32/1M, audio out $64/1M).
-    inputPer1M: 2.5,
-    outputPer1M: 10.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-audio-mini": {
-    // $0.60 in / $2.40 out (+ audio in $0.60/1M, audio out $2.40/1M).
-    inputPer1M: 0.6,
-    outputPer1M: 2.4,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI o-series (reasoning models) ─────────────────────────────────
-  // Extended reasoning variants with cache support.
-  "o3-pro": {
-    // $20.00 in / $80.00 out per 1M. No cache discount.
-    inputPer1M: 20.0,
-    outputPer1M: 80.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "o3-deep-research": {
-    // $10.00 in / $40.00 out per 1M. Cache read 0.25x.
-    inputPer1M: 10.0,
-    outputPer1M: 40.0,
-    cacheReadMultiplier: 0.25,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "o4-mini-high": {
-    // $1.10 in / $4.40 out per 1M. Cache read 0.25x.
-    inputPer1M: 1.1,
-    outputPer1M: 4.4,
-    cacheReadMultiplier: 0.25,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "o4-mini-deep-research": {
-    // $2.00 in / $8.00 out per 1M. Cache read 0.25x.
-    inputPer1M: 2.0,
-    outputPer1M: 8.0,
-    cacheReadMultiplier: 0.25,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "o1-pro": {
-    // $150.00 in / $600.00 out per 1M. No cache discount.
-    inputPer1M: 150.0,
-    outputPer1M: 600.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-  // ── OpenAI GPT-5.1/5.2 codex (code specialist) ─────────────────────────
-  "gpt-5.1-codex": {
-    // $1.25 in / $10.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 1.25,
-    outputPer1M: 10.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.1-codex-mini": {
-    // $0.25 in / $2.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 0.25,
-    outputPer1M: 2.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.1-codex-max": {
-    // $1.25 in / $10.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 1.25,
-    outputPer1M: 10.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.2-codex": {
-    // $1.75 in / $14.00 out per 1M. Cache read 0.1x.
-    inputPer1M: 1.75,
-    outputPer1M: 14.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "openai",
-    provider: "openai",
-  },
-  "gpt-5.2-pro": {
-    // $21.00 in / $168.00 out per 1M. No cache discount.
-    inputPer1M: 21.0,
-    outputPer1M: 168.0,
-    vendor: "openai",
-    provider: "openai",
-  },
-
-  // ── MiniMax (direct SDK) ───────────────────────────────────────────────
-  // Bare ids match what the MiniMax SDK expects on the wire (PascalCase
-  // with optional minor version). OpenRouter equivalents under
-  // `minimax/minimax-m2*` are separate entries auto-imported below; the
-  // runtime connector picks which one to call based on the guild's
-  // installed connectors.
-  "MiniMax-M2": {
-    inputPer1M: 0.2,
-    outputPer1M: 1.0,
-    cacheReadMultiplier: 0.15,
-    cacheWriteMultiplier: 1.875,
-    vendor: "minimax",
-    provider: "minimax",
-  },
-  "M2-her": {
-    inputPer1M: 0.2,
-    outputPer1M: 1.0,
-    cacheReadMultiplier: 0.15,
-    cacheWriteMultiplier: 1.875,
-    vendor: "minimax",
-    provider: "minimax",
-  },
-  "MiniMax-M2.1": {
-    inputPer1M: 0.3,
-    outputPer1M: 1.2,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    vendor: "minimax",
-    provider: "minimax",
-  },
-  "MiniMax-M2.5": {
-    inputPer1M: 0.3,
-    outputPer1M: 1.2,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    vendor: "minimax",
-    provider: "minimax",
-  },
-  "MiniMax-M2.7": {
-    inputPer1M: 0.3,
-    outputPer1M: 1.2,
-    vendor: "minimax",
-    provider: "minimax",
-  },
-
-  // ── Moonshot (direct SDK) ─────────────────────────────────────────────
-  "kimi-k3": {
-    // Flagship, released 2026-07-16 (2.8T-param MoE, 1M context,
-    // reasoning-always-on). Source: https://openrouter.ai/moonshotai/kimi-k3
-    // (fetched 2026-07-18). Cache-hit input is 90% off cache-miss
-    // ($0.30 vs $3.00/1M).
-    inputPer1M: 3.0,
-    outputPer1M: 15.0,
-    cacheReadMultiplier: 0.1,
-    vendor: "moonshot",
-    provider: "moonshot",
-  },
-  "kimi-k2.7-code": {
-    // Source: direct Moonshot pricing (fetched 2026-07-18). Cache-hit
-    // input is $0.19/1M vs $0.95/1M miss (80% off).
-    inputPer1M: 0.95,
-    outputPer1M: 4.0,
-    cacheReadMultiplier: 0.2,
-    vendor: "moonshot",
-    provider: "moonshot",
-  },
-  "kimi-k2.6": {
-    inputPer1M: 0.95,
-    outputPer1M: 4.0,
-    cacheReadMultiplier: 0.17,
-    vendor: "moonshot",
-    provider: "moonshot",
-  },
-  "kimi-k2.5": {
-    inputPer1M: 0.6,
-    outputPer1M: 3.0,
-    cacheReadMultiplier: 0.17,
-    vendor: "moonshot",
-    provider: "moonshot",
-  },
-  "kimi-k2-0905-preview": {
-    inputPer1M: 0.6,
-    outputPer1M: 2.5,
-    cacheReadMultiplier: 0.25,
-    vendor: "moonshot",
-    provider: "moonshot",
-  },
-  "kimi-k2-turbo-preview": {
-    inputPer1M: 1.15,
-    outputPer1M: 8.0,
-    cacheReadMultiplier: 0.13,
-    vendor: "moonshot",
-    provider: "moonshot",
-  },
-  "kimi-k2-thinking": {
-    inputPer1M: 0.6,
-    outputPer1M: 2.5,
-    cacheReadMultiplier: 0.25,
-    vendor: "moonshot",
-    provider: "moonshot",
-  },
-  "kimi-k2-thinking-turbo": {
-    inputPer1M: 1.15,
-    outputPer1M: 8.0,
-    cacheReadMultiplier: 0.13,
-    vendor: "moonshot",
-    provider: "moonshot",
-  },
-
-  // ── xAI (direct SDK + proxy) ─────────────────────────────────────────
-  // Source: https://docs.x.ai/docs/models (fetched 2026-07-14)
-  // Pricing from API: prompt_text_token_price / completion_text_token_price
-  // in units per 1 token. Converted to $ per 1M tokens.
-  "grok-4.5": {
-    // $2.00 in / $6.00 out per 1M (flagship).
-    inputPer1M: 2.0,
-    outputPer1M: 6.0,
-    vendor: "xai",
-    provider: "xai",
-  },
-  "grok-4.20": {
-    // $1.25 in / $2.50 out per 1M (non-reasoning default).
-    inputPer1M: 1.25,
-    outputPer1M: 2.5,
-    vendor: "xai",
-    provider: "xai",
-  },
-  "grok-4.20-reasoning": {
-    // Same pricing as grok-4.20, reasoning variant.
-    inputPer1M: 1.25,
-    outputPer1M: 2.5,
-    vendor: "xai",
-    provider: "xai",
-  },
-  "grok-4.20-multi-agent": {
-    // Same pricing as grok-4.20.
-    inputPer1M: 1.25,
-    outputPer1M: 2.5,
-    vendor: "xai",
-    provider: "xai",
-  },
-  "grok-4.3": {
-    // $1.25 in / $2.50 out per 1M (alias: grok-latest).
-    inputPer1M: 1.25,
-    outputPer1M: 2.5,
-    vendor: "xai",
-    provider: "xai",
-  },
-  "grok-build-0.1": {
-    // $1.00 in / $2.00 out per 1M (code/fast variant, 256k context).
-    inputPer1M: 1.0,
-    outputPer1M: 2.0,
-    vendor: "xai",
-    provider: "xai",
-  },
-
-  // ── Mistral (direct SDK) ──────────────────────────────────────────────
-  "mistral-large-latest": {
-    inputPer1M: 0.5,
-    outputPer1M: 1.5,
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "mistral-small-latest": {
-    inputPer1M: 0.06,
-    outputPer1M: 0.18,
-    cacheReadMultiplier: 0.5,
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "mistral-medium-latest": {
-    inputPer1M: 0.5, // TODO verify pricing
-    outputPer1M: 1.5, // TODO verify pricing
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "mistral-medium-3-5": {
-    inputPer1M: 0.5, // TODO verify pricing
-    outputPer1M: 1.5, // TODO verify pricing
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "codestral-latest": {
-    inputPer1M: 0.5, // TODO verify pricing
-    outputPer1M: 1.5, // TODO verify pricing
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "ministral-8b-latest": {
-    inputPer1M: 0.06, // TODO verify pricing
-    outputPer1M: 0.18, // TODO verify pricing
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "devstral-latest": {
-    inputPer1M: 0.5, // TODO verify pricing
-    outputPer1M: 1.5, // TODO verify pricing
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "magistral-small-latest": {
-    inputPer1M: 0.06, // TODO verify pricing
-    outputPer1M: 0.18, // TODO verify pricing
-    vendor: "mistral",
-    provider: "mistral",
-  },
-  "devstral-medium-latest": {
-    inputPer1M: 0.5, // TODO verify pricing
-    outputPer1M: 1.5, // TODO verify pricing
-    vendor: "mistral",
-    provider: "mistral",
-  },
+  ...ANTHROPIC_GENERATED_PRICING,
+  ...GOOGLE_GENERATED_PRICING,
+  ...OPENAI_GENERATED_PRICING,
+  ...MINIMAX_GENERATED_PRICING,
+  ...XAI_GENERATED_PRICING,
+  ...PRICING_OVERRIDES_PRICING,
 
   // ── OpenRouter routes — generated by `scripts/catalog-sync` from
   // https://openrouter.ai/api/v1/models. Re-run
@@ -799,20 +285,79 @@ export const LLM_PRICING_CATALOG = {
 } satisfies Record<string, LLMPricing>
 
 /**
- * Every canonical catalog model id — derived straight from the pricing
- * map keys (`satisfies` above preserves the literal keys). Downstream
- * curation/config should constrain their ids to this so a typo or a
- * removed model is a build error, not a broken row at runtime.
+ * Every canonical catalog model id. Existence is NOT the same question as
+ * "does this id have a price" — `LLM_PRICING_CATALOG`'s keys alone used to
+ * answer both, which meant a real, live, provider-published model with no
+ * pricing row yet (the Anthropic `claude-opus-4-6` incident: synced by
+ * `catalog-sync`, present in `CONTEXT_WINDOWS`, absent here) simply ceased
+ * to exist anywhere downstream — invisible in `agentproto models`, unlisted
+ * in every adapter's native allow-list, silently resolved to a stale alias.
+ * `LlmModelId` now unions the pricing keys with `CONTEXT_WINDOWS` (each
+ * provider's own synced `/v1/models` id list — see
+ * `packages/catalog-sync/src/generators/llm-context-windows.ts` — carries
+ * ids independent of whether a price has synced yet) and `OPENROUTER_ROUTES`
+ * (thousands of ids, self-updating). A model can be a member of this type
+ * with `resolvePricing` returning `undefined` for it — callers MUST treat
+ * that as "price not yet known," never as "doesn't exist" (see
+ * `ResolvedModel`'s `pricing?` in `registry/index.ts`, and `isKnownLlmId`
+ * below for an existence-only check). Downstream curation/config should
+ * still constrain ids to this type so a typo is a build error.
  */
-export type LlmModelId = keyof typeof LLM_PRICING_CATALOG
+export type LlmModelId =
+  | keyof typeof LLM_PRICING_CATALOG
+  | keyof typeof CONTEXT_WINDOWS
+  | keyof typeof OPENROUTER_ROUTES
+
+/**
+ * True iff `modelId` is a real, known catalog id — regardless of whether it
+ * has a price yet. Use this (not `resolvePricing(id) !== undefined`) to
+ * answer "does this model exist"; use `resolvePricing`/`resolvePricingExact`
+ * to answer "what does it cost" — the two questions are independent by
+ * design, see `LlmModelId`'s doc comment.
+ */
+export function isKnownLlmId(modelId: string): boolean {
+  return (
+    modelId in LLM_PRICING_CATALOG ||
+    modelId in CONTEXT_WINDOWS ||
+    modelId in OPENROUTER_ROUTES
+  )
+}
+
+/**
+ * Every known LLM id that has NO pricing row (`CONTEXT_WINDOWS` ∪
+ * `OPENROUTER_ROUTES`, minus whatever `LLM_PRICING_CATALOG` already prices)
+ * — the enumeration `listModels`'s `llm` branch needs to surface a
+ * known-but-unpriced model instead of silently dropping it. Each entry
+ * carries its provider when derivable (see `getModelProvider`).
+ */
+export function listUnpricedKnownLlmIds(): Array<{
+  id: string
+  provider: CatalogProvider | undefined
+}> {
+  const ids = new Set<string>([
+    ...Object.keys(CONTEXT_WINDOWS),
+    ...Object.keys(OPENROUTER_ROUTES),
+  ])
+  const result: Array<{ id: string; provider: CatalogProvider | undefined }> = []
+  for (const id of ids) {
+    if (id in LLM_PRICING_CATALOG) continue
+    result.push({ id, provider: getModelProvider(id) })
+  }
+  return result
+}
 
 // ── Aliases (map model IDs to catalog keys) ─────────────────────────────
 
 export const MODEL_ALIASES = {
   // Anthropic — alias targets must be real Anthropic model ids since
   // `resolveAlias` feeds the result straight to the SDK.
-  "claude-opus-4-6": "claude-opus-4-5",
-  "claude-sonnet-4-6": "claude-sonnet-4-5",
+  //
+  // `claude-opus-4-6` / `claude-sonnet-4-6` used to alias here to 4.5 —
+  // the silent-downgrade bug this PR fixes (agentproto catalog-sync). Both
+  // are now real, directly-priced `LlmModelId`s via
+  // `ANTHROPIC_GENERATED_PRICING` above; an alias pointing them at 4.5
+  // would just re-introduce the same silent downgrade, so it's removed,
+  // not kept.
   "claude-4-opus": "claude-opus-4-5",
   "claude-4-sonnet": "claude-sonnet-4-5",
   "claude-3-5-haiku": "claude-haiku-4-5",
@@ -965,6 +510,27 @@ export function resolveContextWindow(modelId: string): ContextWindowEntry | unde
 }
 
 /**
+ * Every live model id `CONTEXT_WINDOWS` carries for one provider — sourced
+ * straight from that provider's own `/v1/models` sync (`llm-context-windows.ts`
+ * generator), independent of whether the id has landed a pricing row yet.
+ *
+ * The one legitimate consumer of this today: an adapter's `models.allowed`
+ * curation for its native (non-gateway) provider surface. Deriving that list
+ * from here instead of a hand-typed array means a newly-published id (e.g.
+ * Anthropic shipping `claude-opus-4-9`) becomes offerable the moment the next
+ * catalog-sync run picks it up — no code change, no PR. An adapter that wants
+ * to hide a specific id anyway (deprecated, not yet vetted) does so with its
+ * OWN small denylist filtering this list's output, never by omitting the id
+ * from a hand-typed allowlist that silently also hides every future id.
+ */
+export function listNativeModelIds(provider: ContextWindowEntry["provider"]): string[] {
+  return Object.entries(CONTEXT_WINDOWS)
+    .filter(([, entry]) => entry.provider === provider)
+    .map(([id]) => id)
+    .sort()
+}
+
+/**
  * Resolve a model id to its DEFAULT provider — the single source of truth for
  * "which SDK reaches this model when no per-model override is set". Reads the
  * resolved catalog entry's `provider` field (direct id → alias → partial
@@ -980,7 +546,16 @@ export function resolveContextWindow(modelId: string): ContextWindowEntry | unde
  * `openrouter`) — each carrying its own `provider`.
  */
 export function getModelProvider(modelId: string): CatalogProvider | undefined {
-  return resolvePricing(modelId)?.provider
+  const pricedProvider = resolvePricing(modelId)?.provider
+  if (pricedProvider) return pricedProvider
+  // Fallback for a known-but-not-yet-priced id (see `LlmModelId`'s doc
+  // comment) — CONTEXT_WINDOWS carries `provider` independent of pricing.
+  // "groq" is a CONTEXT_WINDOWS provider but not a billing/auth
+  // CatalogProvider (Groq never got a pricing generator — see the catalog
+  // sync survey in the PR this comment shipped with), so it's excluded
+  // rather than mis-cast.
+  const cwProvider = resolveContextWindow(modelId)?.provider
+  return cwProvider && cwProvider !== "groq" ? cwProvider : undefined
 }
 
 /**
@@ -1139,6 +714,22 @@ export function calculateLLMCreditCost(
   const resolved = resolvePricing(modelId)
   const pricing = resolved ?? DEFAULT_PRICING
   const isFallback = !resolved
+  if (isFallback) {
+    // `isFallback` is returned on `LLMCreditCostResult`/`CostResult` but
+    // historically had no reader anywhere downstream — a model billed at
+    // DEFAULT_PRICING's cheap-model rate instead of its real (possibly much
+    // higher) provider cost had no observable signal anywhere except this
+    // flag nobody checked. Surfacing it here (not changing the amount
+    // charged — DEFAULT_PRICING's cost-plus-margin-at-cheap-rate behavior
+    // is unchanged and intentional, see DEFAULT_PRICING's own doc comment)
+    // makes a real under-charge visible in logs instead of silent.
+    console.warn(
+      `[model-catalog] calculateLLMCreditCost: no pricing for "${modelId}" — ` +
+        `billing at DEFAULT_PRICING (inputPer1M ${DEFAULT_PRICING.inputPer1M}, ` +
+        `outputPer1M ${DEFAULT_PRICING.outputPer1M}). If this model has a real, ` +
+        `higher provider cost, this under-charges until it gets a pricing row.`
+    )
+  }
   const cacheRead = pricing.cacheReadMultiplier ?? 1.0
   const cacheWrite = pricing.cacheWriteMultiplier ?? 1.0
 

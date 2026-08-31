@@ -99,17 +99,20 @@ function labelOf(model: ResolvedModel): string {
  *  provider (which IS the queried provider on this per-provider query) is the
  *  meaningful value; the media kinds are statically pinned to their adapter. */
 function routeOf(model: ResolvedModel): string | null {
-  if (model.kind === "llm") return model.pricing.provider ?? null
+  // `model.provider` (not `model.pricing?.provider`) so a known-but-not-
+  // yet-priced id (pricing undefined — see ResolvedModel's doc comment)
+  // still reports its provider, derived from CONTEXT_WINDOWS by `getModel`.
+  if (model.kind === "llm") return model.provider ?? null
   return getStaticModelProvider(model) ?? null
 }
 
 function pricingOf(model: ResolvedModel): CatalogProviderPricing | null {
-  if (model.kind !== "llm") return null
+  if (model.kind !== "llm" || !model.pricing) return null
   return { inPer1M: model.pricing.inputPer1M, outPer1M: model.pricing.outputPer1M }
 }
 
 function addedAtOf(model: ResolvedModel): string | null {
-  if (model.kind !== "llm") return null
+  if (model.kind !== "llm" || !model.pricing) return null
   return model.pricing.addedAt ?? null
 }
 

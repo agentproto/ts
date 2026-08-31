@@ -72,6 +72,8 @@ const FAKE_RESPONSE: CatalogModelsResponse = {
               ref: "anthropic/claude-opus-4-8",
               baseUrl: null,
               pricing: { inPer1M: 5, outPer1M: 25 },
+              contextWindow: "1M",
+              maxOutput: "128k",
               runnable: true,
               eligibleProfiles: ["jeremy-max"],
               adapterModes: [],
