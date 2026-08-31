@@ -37,6 +37,7 @@ Pick whichever matches what you're trying to do:
 
 - [`agentproto app`](./verbs/app.md) — package, unpack, or serve an agentproto app bundle (.agentapp)
 - [`agentproto acp`](./verbs/acp.md) — manage generic ACP agents (zero-code ACP CLIs)
+- [`agentproto adapters`](./verbs/adapters.md) — manage runtime adapters (swarm-kernel substrates/dispatchers/executors)
 - [`agentproto auth`](./verbs/auth.md) — log in to a host (RFC 8628 device flow)
 - [`agentproto browser`](./verbs/browser.md) — manage browser service sessions (Camofox, Bureau, Chromium)
 - [`agentproto chat` / `chat-tui`](./verbs/chat.md) — interactive REPL on a daemon agent session
@@ -52,7 +53,6 @@ Pick whichever matches what you're trying to do:
 - [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
 - [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, or auto-resolve with `watch` rules
-- [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
 - [`agentproto policy`](./verbs/policy.md) — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
 - [`agentproto provider-preset`](./verbs/presets.md) — list provider gateway definitions + key-env status
 - [`agentproto preset`](./verbs/preset.md) — manage saved user spawn configurations
