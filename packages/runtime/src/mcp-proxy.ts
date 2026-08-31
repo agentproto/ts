@@ -61,6 +61,9 @@ export interface ProxyToolDescriptor {
   /** JSON Schema as published by the upstream server. Forwarded to
    *  the operator verbatim — they read it to figure out args. */
   inputSchema?: unknown
+  /** Opaque metadata from the upstream tool listing. Carries client-side
+   *  hints such as `x-client-resolve`. */
+  _meta?: Record<string, unknown>
 }
 
 export interface ProxyAliasSummary {
@@ -229,7 +232,12 @@ export class McpProxyRegistry {
         error: handle.lastError ?? "client not connected",
       }
     }
-    const resolved = await resolveClientLocalFile(toolName, args)
+    const hint = handle.tools
+      ?.find(t => t.name === toolName)
+      ?._meta?.["x-client-resolve"] as
+      | { read: string; inject: string }
+      | undefined
+    const resolved = await applyClientResolve(hint, args)
     try {
       const result = await handle.client.callTool({
         name: toolName,
@@ -263,22 +271,27 @@ export class McpProxyRegistry {
 }
 
 /**
- * Client-side file resolution for `media_upload_local`: the tool is designed
- * to upload files from the CALLER's machine, so the proxy reads the file here
- * (on the MCP client side) and injects its base64 contents as `data` before
- * forwarding — zero context tokens, works even when the server is remote.
+ * Generic client-side file resolution driven by the upstream tool's
+ * `_meta["x-client-resolve"]` hint: `{ read: "<path-field>", inject: "<data-field>" }`.
+ *
+ * When the hint is present and `args[read]` is a local path whose `args[inject]`
+ * is not yet set, the proxy reads the file on the client machine, base64-encodes
+ * it, and injects it before forwarding — zero context tokens, works even when
+ * the MCP server is remote. Any tool from any server can opt in by declaring
+ * `x-client-resolve` in its `_meta`.
  */
-async function resolveClientLocalFile(
-  toolName: string,
+async function applyClientResolve(
+  hint: { read: string; inject: string } | undefined,
   args: unknown
 ): Promise<unknown> {
-  if (toolName !== "media_upload_local") return args
+  if (!hint) return args
   if (!args || typeof args !== "object") return args
   const a = args as Record<string, unknown>
-  if (typeof a.path !== "string" || a.data !== undefined) return args
+  if (typeof a[hint.read] !== "string" || a[hint.inject] !== undefined)
+    return args
   try {
-    const bytes = await fs.readFile(a.path)
-    return { ...a, data: bytes.toString("base64") }
+    const bytes = await fs.readFile(a[hint.read] as string)
+    return { ...a, [hint.inject]: bytes.toString("base64") }
   } catch {
     return args
   }
@@ -292,11 +305,13 @@ function toDescriptor(tool: {
   name: string
   description?: string
   inputSchema?: unknown
+  _meta?: Record<string, unknown>
 }): ProxyToolDescriptor {
   return {
     name: tool.name,
     ...(tool.description ? { description: tool.description } : {}),
     ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
+    ...(tool._meta ? { _meta: tool._meta } : {}),
   }
 }
 
