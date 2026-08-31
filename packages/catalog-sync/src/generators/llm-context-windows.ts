@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { defineGenerator, type CatalogSource, type GeneratedFiles, type GeneratorContext } from "../types.js"
+import { GOOGLE_NATIVE_MODEL_IDS } from "./google-native-model-ids.mjs"
 
 /**
  * Context window (max input tokens) + max output tokens, live per model id,
@@ -43,24 +44,6 @@ import { defineGenerator, type CatalogSource, type GeneratedFiles, type Generato
  * When a working Google key exists, swap this block for a direct
  * `generativelanguage.googleapis.com/v1beta/models` source instead.
  */
-
-/**
- * Native Google/Gemini model ids this generator is allowed to emit via the
- * OpenRouter remap, verified against `adapters/gemini/src/index.ts`
- * (`models.allowed`) and the hand-maintained Google rows in
- * `model-catalog/src/llm/catalog.ts` — the two places that would break if a
- * wrong id slipped in. Do not add to this list from OpenRouter data alone;
- * a new entry needs the same cross-check.
- */
-const GOOGLE_NATIVE_MODEL_IDS = new Set([
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-3.5-flash",
-  "gemini-3.1-pro-preview",
-  "gemini-3-flash-preview",
-  "gemini-3.1-flash-lite",
-])
 
 /** Repo-relative drop-in target for {@link @agentproto/model-catalog}. */
 const OUTPUT_PATH = "packages/model-catalog/src/llm/context-windows.generated.ts"

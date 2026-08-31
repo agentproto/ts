@@ -50,6 +50,7 @@
   },
   "dependencies": {
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/model-catalog": "workspace:*",
     "@agentproto/provider-presets": "workspace:*"
   },
   "devDependencies": {
