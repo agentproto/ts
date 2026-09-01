@@ -25,6 +25,7 @@ import {
   OpenAIChatToResponsesStreamConverter,
 } from './responses.js';
 import { getAuthProfile, KeychainStore } from '@agentproto/auth';
+import { handleBatchesRequest, isInternalLoopbackRequest, resumeIncompleteLocalQueueBatches } from './batches.js';
 
 // Port local du proxy — surchargeable via env (LLM_ENDPOINT_PORT | PORT).
 // NOTE: evaluated once at module-load time. Set the env variable *before*
@@ -1318,7 +1319,7 @@ function adaptAnthropicToOpenAI(payload: any) {
 // contenu et n'affiche rien. On retire donc thinking/redacted_thinking côté proxy
 // pour ne garder que les blocs text/tool_use que le CLI sait afficher.
 
-function stripThinkingFromAnthropicJson(jsonStr: string): string {
+export function stripThinkingFromAnthropicJson(jsonStr: string): string {
   try {
     const obj = JSON.parse(jsonStr);
     if (Array.isArray(obj.content)) {
@@ -1812,7 +1813,7 @@ export function isPublicModelListPath(pathname: string): boolean {
 const server = createServer((req, res) => {
   // CORS & Options
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version, X-Proxy-Access, X-Proxy-Pack, X-Proxy-Format, X-Edge-Auth');
 
   if (req.method === 'OPTIONS') {
@@ -1837,10 +1838,15 @@ const server = createServer((req, res) => {
   // selector. Only `/v1/models` (`/models`) — pack lists stay gated.
   const gateExempt = publicModels() && isPublicModelListPath(urlPath);
 
+  // Loopback bypass — the local-queue batch emulation calls this proxy's own
+  // /v1/messages over loopback and authenticates with a process-local token
+  // instead of a normal access/edge token (see batches.ts).
+  const internalLoopback = isInternalLoopbackRequest(req.headers);
+
   // Inbound access gate — 401 any non-preflight request without a valid token
   // when LLM_ENDPOINT_ACCESS_TOKENS is set. Gates discovery too (unless exempt
   // above), so pack config isn't readable unauthenticated.
-  if (!gateExempt && !isAuthorized(req.headers, accessTokens())) {
+  if (!gateExempt && !internalLoopback && !isAuthorized(req.headers, accessTokens())) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid proxy access token.' } }));
     return;
@@ -1849,7 +1855,7 @@ const server = createServer((req, res) => {
   // Edge/WAF token gate — independent of the inbound access gate above. Off
   // by default (unset LLM_ENDPOINT_EDGE_TOKENS); see buildWafRuleExpression
   // for enforcing the same policy at the edge instead of in-process.
-  if (!gateExempt && !isEdgeAuthorized(req.headers, edgeTokens())) {
+  if (!gateExempt && !internalLoopback && !isEdgeAuthorized(req.headers, edgeTokens())) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid edge token.' } }));
     return;
@@ -1875,7 +1881,7 @@ const server = createServer((req, res) => {
 
   // 2. URL path /v1/{pack}/...
   if (!packId) {
-    const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages|\/models|\/chat\/completions|\/responses)?$/);
+    const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages(?:\/batches(?:\/[^/]+)?(?:\/(?:results|cancel))?)?|\/models|\/chat\/completions|\/responses)?$/);
     if (packPathMatch) {
       const potentialPack = packPathMatch[1];
       const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat', 'responses', 'upstreams']);
@@ -2076,6 +2082,31 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify(openaiModelsResponse));
       return;
     }
+  }
+
+  // 1b. /v1/messages/batches* — matched before the generic '/messages' check
+  // below, since a batches path never ends in exactly '/messages'.
+  if (
+    handleBatchesRequest(
+      req,
+      res,
+      {
+        activePack,
+        parsedUrl,
+        queryModelCode,
+        queryProvider,
+        forcedAliasCode,
+        anthropicFormat,
+        queryTools,
+        queryNoTools,
+        headerTools,
+        headerNoTools,
+        headerExcludeTools,
+      },
+      urlPath,
+    )
+  ) {
+    return;
   }
 
   // 2. Traitement des messages
@@ -2490,6 +2521,9 @@ export { isEmptyAnthropicTurn, resolveEmptyTurnRetries };
 
 /** Démarre le proxy sur `port` (défaut : {@link PORT}). Renvoie le serveur en écoute. */
 export function start(port: number = PORT) {
+  void resumeIncompleteLocalQueueBatches().catch((err: unknown) => {
+    console.error('[Proxy][batches] boot reconciliation failed', err);
+  });
   return server.listen(port, () => {
     console.log(`[Proxy Server] Live on http://localhost:${port}`);
     console.log(`[Proxy Server] Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses surfaces configured.`);
