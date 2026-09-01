@@ -278,6 +278,14 @@ jobs:
       - name: Run artifact-ledger tests
         run: node --test scripts/lib/artifact-ledger.test.mjs .github/agentproto-workflows/lib/deliver-artifact.test.mjs
 
+      # Guards the shared local-daemon MCP contract (scripts/lib/daemon-mcp.mjs)
+      # the `review.mjs --engine daemon` gate drives (token read, connect,
+      # workflow_run_file → poll → terminal-status/error surfacing, session
+      # tail read) and the engine "daemon" config wiring. Lives outside
+      # packages/**/adapters/**, so `pnpm test` misses it.
+      - name: Run daemon-mcp and agentflow config tests
+        run: node --test scripts/lib/daemon-mcp.test.mjs scripts/agentflow/config.test.mjs
+
       # `changeset version` only runs on main, after the merge, and hard-errors
       # on a package name that isn't in the workspace — so one bad changeset
       # takes down every release until a human notices. pr-338-review declared
