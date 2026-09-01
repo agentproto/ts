@@ -2389,9 +2389,15 @@ importers:
       '@agentproto/auth':
         specifier: workspace:*
         version: link:../auth
+      '@agentproto/batch':
+        specifier: workspace:*
+        version: link:../batch
       '@agentproto/providers-store':
         specifier: workspace:*
         version: link:../providers-store
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
