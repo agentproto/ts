@@ -4,8 +4,11 @@
  * Wires config → DaemonClient → SessionStore, then the views (sessions tree,
  * permissions inbox, harnesses, auth profiles, status bar) and commands
  * (spawn / prompt / interrupt / kill / permissions / transcript / harness /
- * auth profile). `agentproto.openTranscript` opens the webview chat panel;
- * `agentproto.openTranscriptChannel` is the raw output-channel variant.
+ * auth profile). `agentproto.openSession` is the sessions list's single-click
+ * command — it routes to the terminal, the browser live view, or the webview
+ * chat panel by session kind (sessionOpen.logic.ts). `agentproto.openTranscript`
+ * opens the webview chat panel unconditionally; `agentproto.openTranscriptChannel`
+ * is the raw output-channel variant.
  */
 
 import * as vscode from "vscode"
@@ -62,9 +65,11 @@ import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
 import { registerAppPanels } from "./webview/appPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
+import { registerBrowserPanels } from "./webview/browserPanel.js"
 import { registerConfigurationLabWebview } from "./webview/configurationLabPanel.js"
 import { registerAuthModelMindmap, type AuthModelFocusTarget } from "./webview/authModelMindmapPanel.js"
 import { registerAuthExplorer } from "./webview/authExplorerPanel.js"
+import { defaultOpenTarget } from "./commands/sessionOpen.logic.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -153,11 +158,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerAuthProfilesWebview(ctx, client, authProfilesProvider)
   registerConfigurationLabWebview(ctx, client)
   const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
+  const browserPanels = registerBrowserPanels(ctx, client) // agentproto.openBrowser (live browser session view)
   const appPanels = registerAppPanels(ctx, client) // agentproto.openAppPanel (installed app UI panels)
   registerAppCommands(ctx, client, appPanels, appsProvider) // agentproto.openAppPanel / refreshApps
   const authModelMindmap = registerAuthModelMindmap(ctx, client) // agentproto.openAuthModel (auth/model config map)
   const authExplorer = registerAuthExplorer(ctx, client, authProfilesProvider) // agentproto.openAuthExplorer (editable auth & models)
-  registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
+  const terminalSwitch = registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSessionConfig(ctx, client, store, authProfilesProvider, () => transcriptPanels.activeSessionId()) // agentproto.configureSession
   registerSessionContinuityCommands(ctx, client, store, () => transcriptPanels.activeSessionId()) // agentproto.compactSession / agentproto.continueSessionFresh
@@ -201,6 +207,46 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
           client,
         )
         if (session) transcriptPanels.open(session)
+      },
+    ),
+    // The sessions list's single click — routes to the view that matches the
+    // session's kind (terminal / browser / transcript). `agentproto.openTranscript`
+    // above stays as the explicit "always open the transcript" action.
+    vscode.commands.registerCommand(
+      "agentproto.openSession",
+      async (arg: unknown) => {
+        const session = await resolveSessionArg(
+          arg,
+          store,
+          "Select a session to open",
+          () => true,
+          client,
+        )
+        if (!session) return
+        switch (defaultOpenTarget(session)) {
+          case "terminal":
+            terminalSwitch.open(session)
+            return
+          case "browser":
+            browserPanels.open(session)
+            return
+          case "transcript":
+            transcriptPanels.open(session)
+            return
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      "agentproto.openBrowser",
+      async (arg: unknown) => {
+        const session = await resolveSessionArg(
+          arg,
+          store,
+          "Select a browser session to open",
+          s => s.kind === "browser",
+          client,
+        )
+        if (session) browserPanels.open(session)
       },
     ),
     vscode.commands.registerCommand(

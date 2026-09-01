@@ -293,18 +293,20 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
       : toThemeIcon(
           iconForSession(session, this.now, this.seen.isUnread(session), this.attentionDelaySec),
         )
-    // Single click opens the transcript — the inline $(open-preview) icon
-    // (view/item/context menu, wired in package.json) remains as a second
-    // way to trigger the same command.
+    // Single click routes to the view matching the session's kind — real
+    // terminal, browser live view, or the transcript panel (see
+    // sessionOpen.logic.ts's defaultOpenTarget). The inline $(open-preview)
+    // icon (view/item/context menu, wired in package.json) still opens the
+    // transcript unconditionally via agentproto.openTranscript.
     //
     // Except on an optimistic row: there is no session behind it yet, so a
-    // click could only open a transcript for an id the daemon has never heard
-    // of. Leaving `command` unset makes the row inert rather than a trap —
-    // it's there to say "coming up", and it'll be a real row in a moment.
+    // click could only open a view for an id the daemon has never heard of.
+    // Leaving `command` unset makes the row inert rather than a trap — it's
+    // there to say "coming up", and it'll be a real row in a moment.
     if (!isPendingSession(session)) {
       item.command = {
-        command: "agentproto.openTranscript",
-        title: "Open Transcript",
+        command: "agentproto.openSession",
+        title: "Open Session",
         arguments: [element],
       }
     }

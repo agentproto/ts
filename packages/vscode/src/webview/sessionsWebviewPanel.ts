@@ -423,7 +423,10 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private async openSession(id: string): Promise<void> {
     if (isPendingSession({ id })) return
     const session = await this.resolveSession(id)
-    if (session) this.transcriptPanels.open(session)
+    // Route through the command rather than duplicating the kind switch here —
+    // agentproto.openSession (extension.ts) is the one place that decides
+    // terminal vs. browser vs. transcript (sessionOpen.logic.ts).
+    if (session) await vscode.commands.executeCommand("agentproto.openSession", session)
   }
 
   private async resolveSession(id: string): Promise<SessionDescriptor | undefined> {
