@@ -61,6 +61,8 @@ import type {
   UserPreset,
   WorkspacesConfig,
   WorktreeGcResult,
+  AppCatalogEntry,
+  WorkflowRunStart,
 } from "./types.js"
 
 export interface SessionEventsOptions {
@@ -744,6 +746,35 @@ export class DaemonClient {
   async listApps(): Promise<InstalledAppInfo[]> {
     const result = await this.mcpCall<InstalledAppInfo[]>("app_list")
     return Array.isArray(result) ? result : []
+  }
+
+  /**
+   * `app_catalog` — the curated catalog file merged with installed status.
+   * The Apps view reads it only for each app's `category`; a daemon without
+   * the verb makes this throw, which callers tolerate (ungrouped fallback).
+   */
+  async appCatalog(): Promise<AppCatalogEntry[]> {
+    const result = await this.mcpCall<AppCatalogEntry[]>("app_catalog")
+    return Array.isArray(result) ? result : []
+  }
+
+  /**
+   * `workflow_run_file` — start one of an installed app's workflows from
+   * its emitted WORKFLOW.md (the path `app_list` reports under
+   * `workflows[].path`). `cwd` should be the app's install dir so spawned
+   * steps resolve the app's agents. Throws with the daemon's message when
+   * the run is refused (the tool answers `isError`).
+   */
+  async runWorkflowFile(args: {
+    path: string
+    cwd?: string
+    input?: Record<string, unknown>
+  }): Promise<WorkflowRunStart> {
+    return this.mcpCall<WorkflowRunStart>("workflow_run_file", {
+      path: args.path,
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(args.input ? { input: args.input } : {}),
+    })
   }
 
   /**

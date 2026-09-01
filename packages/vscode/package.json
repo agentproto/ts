@@ -427,6 +427,18 @@
         "icon": "$(globe)"
       },
       {
+        "command": "agentproto.openAppManifest",
+        "title": "agentproto: Open App Manifest",
+        "category": "agentproto",
+        "icon": "$(book)"
+      },
+      {
+        "command": "agentproto.runAppWorkflow",
+        "title": "agentproto: Run App Workflow…",
+        "category": "agentproto",
+        "icon": "$(play)"
+      },
+      {
         "command": "agentproto.refreshAuthProfiles",
         "title": "agentproto: Refresh Auth Profiles",
         "category": "agentproto",
@@ -605,6 +617,26 @@
           "command": "agentproto.openAppPanel",
           "when": "view == agentproto.apps && viewItem == app",
           "group": "1_app@1"
+        },
+        {
+          "command": "agentproto.openAppManifest",
+          "when": "view == agentproto.apps && viewItem =~ /^app(-no-ui)?$/",
+          "group": "1_app@2"
+        },
+        {
+          "command": "agentproto.runAppWorkflow",
+          "when": "view == agentproto.apps && viewItem == app-workflow",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.runAppWorkflow",
+          "when": "view == agentproto.apps && viewItem == app-workflow",
+          "group": "1_app@1"
+        },
+        {
+          "command": "agentproto.openAppManifest",
+          "when": "view == agentproto.apps && viewItem =~ /^app-(agent|workflow)$/",
+          "group": "1_app@2"
         },
         {
           "command": "agentproto.promptSession",

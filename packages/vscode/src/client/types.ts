@@ -644,15 +644,52 @@ export interface InstalledAppUi {
   }
 }
 
+/** An agent or workflow an installed app bundles: its id plus the absolute
+ *  path of the emitted manifest (`AGENT.md` / `WORKFLOW.md`) on the daemon
+ *  host — what `@agentproto/app-kit`'s `emit` materializes. */
+export interface InstalledAppRef {
+  id: string
+  path: string
+}
+
 /** One entry in the daemon's installed-app registry (MCP-only:
  *  mcpCall("app_list"), no HTTP route). Only the fields the extension
- *  reads — the daemon record carries more (agents, workflows, runs). */
+ *  reads — the daemon record carries more (unvalidatedAgentTools, runs…). */
 export interface InstalledAppInfo {
   appId: string
   name?: string
   description?: string
   version?: string
+  /** Install directory on the daemon host; the root manifest lives at
+   *  `<dir>/.agentproto/APP.md`. Absent on daemons predating the field. */
+  dir?: string
+  agents?: InstalledAppRef[]
+  workflows?: InstalledAppRef[]
+  /** Catalog category (`app` | `team` | …). Not on the `app_list` record
+   *  itself — the Apps view stamps it from `app_catalog`
+   *  (views/appsTree.logic.ts `withCatalogCategories`). */
+  category?: string
   ui?: InstalledAppUi
+}
+
+/** One entry of `app_catalog`: the curated `~/.agentproto/app-catalog.json`
+ *  merged with installed status. `category` is the file's classification;
+ *  installed apps the file doesn't list come back without one. */
+export interface AppCatalogEntry {
+  appId: string
+  name?: string
+  description?: string
+  dir: string
+  category?: string
+  installed: boolean
+  hasUi: boolean
+}
+
+/** `workflow_run_file` acknowledgement — the run was accepted and is
+ *  progressing in the background (poll with `workflow_status`). */
+export interface WorkflowRunStart {
+  runId: string
+  status: string
 }
 
 /** /health probe result. */

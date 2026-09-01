@@ -151,6 +151,16 @@ describe("DaemonClient — URL + auth header mapping", () => {
         if (rpc.method === "tools/call" && rpc.params.name === "app_tool_call") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ echoed: rpc.params.arguments }) }] } } }
         }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_catalog") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", dir: "/apps/mail", category: "app", installed: true, hasUi: true }, { appId: "code-team", dir: "/apps/code-team", category: "team", installed: true, hasUi: false }]) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "workflow_run_file") {
+          const a = rpc.params.arguments as { path: string }
+          if (a.path.endsWith("/missing/WORKFLOW.md")) {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "workflow file not found" }) }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ runId: "run_42", status: "running", echoed: rpc.params.arguments }) }] } } }
+        }
         if (rpc.method === "resources/read") {
           const params = (req.body as { params: { uri: string } }).params
           if (params.uri === "ui://app_ui_mail_triage/view") {
@@ -425,6 +435,48 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(apps).toHaveLength(1)
     expect(apps[0]?.appId).toBe("mail-triage")
     expect(apps[0]?.ui?.title).toBe("Mail Triage")
+  })
+
+  it("appCatalog() routes through mcpCall app_catalog and keeps each entry's category", async () => {
+    const entries = await client().appCatalog()
+    expect(entries.map(e => [e.appId, e.category])).toEqual([
+      ["mail-triage", "app"],
+      ["code-team", "team"],
+    ])
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ method: "tools/call", params: { name: "app_catalog" } })
+  })
+
+  it("runWorkflowFile() posts workflow_run_file with path/cwd/input and returns the run ack", async () => {
+    const run = await client().runWorkflowFile({
+      path: "/apps/code-team/.agentproto/workflows/deliver-change/WORKFLOW.md",
+      cwd: "/apps/code-team",
+      input: { topic: "x" },
+    })
+    expect(run).toMatchObject({ runId: "run_42", status: "running" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({
+      method: "tools/call",
+      params: {
+        name: "workflow_run_file",
+        arguments: {
+          path: "/apps/code-team/.agentproto/workflows/deliver-change/WORKFLOW.md",
+          cwd: "/apps/code-team",
+          input: { topic: "x" },
+        },
+      },
+    })
+  })
+
+  it("runWorkflowFile() omits cwd/input when not given, and throws on an isError result", async () => {
+    await client().runWorkflowFile({ path: "/apps/x/WORKFLOW.md" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(Object.keys(args)).toEqual(["path"])
+
+    await expect(client().runWorkflowFile({ path: "/apps/missing/WORKFLOW.md" })).rejects.toThrow(
+      /workflow file not found/,
+    )
   })
 
   it("appToolCall() posts app_tool_call with appId/tool/args", async () => {
