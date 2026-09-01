@@ -76,6 +76,12 @@ The extension adds two Activity Bar containers.
 - **Auth Profiles** — named credential profiles for the models your agents
   bill against: connect a provider, adopt your local login, enable/disable, set
   allowed models, and run the built-in **Local Router**.
+- **Apps** — every app installed on the daemon (`app_list`), grouped by its
+  `app_catalog` category (**Apps**, **Teams**, …). Expand an app to its
+  **agents** and **workflows**; click one to read its `AGENT.md` /
+  `WORKFLOW.md`. An app that ships a UI opens its **panel** on click (or in a
+  browser tab); an agent/workflow-only app opens its `APP.md` instead. **Run
+  workflow…** on a workflow row starts it on the daemon.
 
 ### Agentproto Lab
 
