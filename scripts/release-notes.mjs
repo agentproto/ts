@@ -161,9 +161,40 @@ function appendBatchMarker(body, sha) {
   return `${body.replace(/\s+$/, '')}\n\n${batchMarker(sha)}\n`
 }
 
+/**
+ * Where to look for the batch's version-bump commit. NOT the checkout's HEAD:
+ * in a version-mode run (pending changesets → "Version Packages" PR),
+ * changesets/action leaves the working tree on ITS OWN fresh
+ * `chore(release): version packages` commit — the head of
+ * `changeset-release/main`, not on main at all. A `force_post_release_steps`
+ * backfill on such a run used to grep that commit first and publish notes for
+ * the *unmerged* batch (2026-09-01: `release/2026-09-01` announced cli@0.16.1
+ * and runtime@2.10.1 while npm carried 0.16.0 / 2.10.0). `GITHUB_SHA` is the
+ * commit the workflow was triggered for — always on the branch that was
+ * pushed — so the walk starts there. Outside Actions, HEAD is the only truth.
+ */
+function batchLookupRef(env = process.env) {
+  return env.GITHUB_SHA || 'HEAD'
+}
+
+/** File contents at a commit (`git show sha:path`), or null when absent. */
+function readAtCommit(sha, relPath) {
+  if (!sha || !relPath) return null
+  try {
+    return execFileSync('git', ['show', `${sha}:${relPath}`], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 16 * 1024 * 1024,
+    })
+  } catch {
+    return null
+  }
+}
+
 /** The sha of the version-bump commit this run is publishing notes for. */
 function currentBatchSha() {
-  return run('git log --grep="chore(release): version packages" -1 --format=%H') || null
+  return run(`git log ${batchLookupRef()} --grep="chore(release): version packages" -1 --format=%H`) || null
 }
 
 /**
@@ -216,7 +247,9 @@ function suffixTitle(title, attempt) {
  */
 function tool_list_published_packages() {
   // Find the latest version-bump commit from changesets/action
-  const releaseCommit = run(`git log --oneline --grep="chore(release): version packages" -1`)
+  const releaseCommit = run(
+    `git log ${batchLookupRef()} --oneline --grep="chore(release): version packages" -1`,
+  )
   if (!releaseCommit) {
     // Fallback: find all @agentproto packages that have a CHANGELOG with a recent entry
     const pkgJsonPaths = run(
@@ -246,7 +279,10 @@ function tool_list_published_packages() {
   for (const changelogPath of changelogs) {
     const pkgJsonPath = changelogPath.replace('CHANGELOG.md', 'package.json')
     try {
-      const { name, version, private: priv } = JSON.parse(readFileSync(resolve(ROOT, pkgJsonPath), 'utf8'))
+      // Versions come from the batch commit itself, never the working tree —
+      // on a version-mode run the tree already carries the NEXT bump.
+      const raw = readAtCommit(commitHash, pkgJsonPath) ?? readFileSync(resolve(ROOT, pkgJsonPath), 'utf8')
+      const { name, version, private: priv } = JSON.parse(raw)
       if (!name?.startsWith('@agentproto/') || priv) continue
       published.push({ name, version, changelogPath })
     } catch {}
@@ -267,9 +303,14 @@ function tool_read_changelog({ name, maxChars = 6_000 }) {
     try {
       const { name: pkgName } = JSON.parse(readFileSync(resolve(ROOT, p), 'utf8'))
       if (pkgName !== name) continue
-      const changelogPath = resolve(ROOT, p.replace('package.json', 'CHANGELOG.md'))
-      if (!existsSync(changelogPath)) return `(no CHANGELOG.md found for ${name})`
-      const content = readFileSync(changelogPath, 'utf8')
+      const changelogRel = p.replace('package.json', 'CHANGELOG.md')
+      const changelogPath = resolve(ROOT, changelogRel)
+      // Same rule as list_published_packages: the batch commit's CHANGELOG, so
+      // the top entry is the version that shipped, not the next pending bump.
+      const content =
+        readAtCommit(currentBatchSha(), changelogRel) ??
+        (existsSync(changelogPath) ? readFileSync(changelogPath, 'utf8') : null)
+      if (content === null) return `(no CHANGELOG.md found for ${name})`
       // Return only the latest version block (up to maxChars)
       const trimmed = content.length > maxChars ? content.slice(0, maxChars) + '\n... (truncated)' : content
       return trimmed
@@ -685,6 +726,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 
 export {
+  batchLookupRef,
+  readAtCommit,
   assertPublishable,
   TRACE_MARKERS,
   CONSOLIDATED_TAG,
