@@ -221,33 +221,177 @@ jobs:
       # it just opened the "Version Packages" PR). The agent reads every
       # per-package CHANGELOG, greps the codebase for context, and posts a
       # consolidated human-readable release to GitHub Releases.
-      - name: Generate agentic release notes
+      #
+      # BILLING LADDER. 2026-09-01: two Anthropic orgs and a Moonshot account
+      # all ran dry within the hour and every agentic post-release step died on
+      # its first API call — the batch shipped to npm with no notes at all. The
+      # notes step now walks lanes (scripts/lib/agent-lane.mjs), the same shape
+      # as the CI review job's subscription → fallback → API-key ladder:
+      #   1. subscription          CLAUDE_CODE_OAUTH_TOKEN (claude.ai plan, no per-token bill)
+      #   2. subscription-fallback CLAUDE_CODE_OAUTH_TOKEN_FALLBACK
+      #   3. openrouter            OPENROUTER_API_KEY via OpenRouter's Anthropic-compatible endpoint
+      #   4. api-key               ANTHROPIC_API_KEY, last resort (the only lane that bills the org)
+      # Each lane is followed by `release-notes.mjs --check`, which asks GitHub
+      # whether a consolidated release already carries THIS batch's marker; the
+      # next lane only runs when it doesn't. Every lane is continue-on-error;
+      # the final gate below is the one honest red.
+      - name: Generate agentic release notes (subscription)
+        id: notes-1
         if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        continue-on-error: true
         run: node scripts/release-notes.mjs
         env:
+          AGENT_LANE: subscription
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release notes posted? (after subscription)
+        id: notes-check-1
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if node scripts/release-notes.mjs --check; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate agentic release notes (fallback subscription)
+        id: notes-2
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.notes-check-1.outputs.posted != 'true'
+        continue-on-error: true
+        run: node scripts/release-notes.mjs
+        env:
+          AGENT_LANE: subscription-fallback
+          CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release notes posted? (after fallback subscription)
+        id: notes-check-2
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.notes-check-1.outputs.posted != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if node scripts/release-notes.mjs --check; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate agentic release notes (openrouter)
+        id: notes-3
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.notes-check-2.outputs.posted != 'true'
+        continue-on-error: true
+        run: node scripts/release-notes.mjs
+        env:
+          AGENT_LANE: openrouter
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release notes posted? (after openrouter)
+        id: notes-check-3
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.notes-check-2.outputs.posted != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if node scripts/release-notes.mjs --check; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate agentic release notes (api-key)
+        id: notes-4
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.notes-check-3.outputs.posted != 'true'
+        continue-on-error: true
+        run: node scripts/release-notes.mjs
+        env:
+          AGENT_LANE: api-key
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Release notes posted? (after api-key)
+        id: notes-check-4
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.notes-check-3.outputs.posted != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if node scripts/release-notes.mjs --check; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Release notes posted? (final gate)
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if node scripts/release-notes.mjs --check; then exit 0; fi
+          echo "::error::No lane produced consolidated release notes for this batch — see the four notes steps above. Backfill with: gh workflow run Release --ref main -f force_post_release_steps=true"
+          exit 1
+
       # Checks the hand-maintained docs (docs/**, README.md, per-package
       # README.md) for drift against what this release actually shipped, and
-      # edits any stale ones directly. Runs on Moonshot's kimi-k2.7-code via
-      # the Claude Agent SDK's gateway mode (see scripts/docs-check.mjs) —
-      # cheap enough to run on every release. "Machine proposes, human
-      # merges": like catalog-sync.yml, edits land as a draft PR, never a
-      # direct commit to main.
+      # edits any stale ones directly (scripts/docs-check.mjs, Claude Agent
+      # SDK). "Machine proposes, human merges": like catalog-sync.yml, edits
+      # land as a draft PR, never a direct commit to main.
       #
-      # continue-on-error: this is a best-effort bonus on top of an already-
-      # published release — a docs-check hiccup (bad key, gateway blip, ran
-      # out of turns on a large batch) must never make an otherwise-successful
-      # release job look red. The script itself already soft-fails (see
-      # scripts/docs-check.mjs's try/catch), this is defense in depth.
-      - name: Check docs for release drift
+      # Same billing ladder as the notes above, Moonshot last (it was the only
+      # lane before, and its account is the one that went "suspended due to
+      # insufficient balance"). Each step reports `status=ok|error|no-result|
+      # no-lane`; the next lane only runs when the previous one wasn't ok.
+      # Every lane is continue-on-error and the script itself soft-fails —
+      # this is a best-effort bonus on top of an already-published release.
+      - name: Check docs for release drift (subscription)
+        id: docs-1
         if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         run: node scripts/docs-check.mjs
         env:
+          AGENT_LANE: subscription
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      - name: Check docs for release drift (fallback subscription)
+        id: docs-2
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.docs-1.outputs.status != 'ok'
+        continue-on-error: true
+        run: node scripts/docs-check.mjs
+        env:
+          AGENT_LANE: subscription-fallback
+          CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+      - name: Check docs for release drift (openrouter)
+        id: docs-3
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.docs-1.outputs.status != 'ok' &&
+          steps.docs-2.outputs.status != 'ok'
+        continue-on-error: true
+        run: node scripts/docs-check.mjs
+        env:
+          AGENT_LANE: openrouter
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      - name: Check docs for release drift (moonshot)
+        id: docs-4
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
+          steps.docs-1.outputs.status != 'ok' &&
+          steps.docs-2.outputs.status != 'ok' &&
+          steps.docs-3.outputs.status != 'ok'
+        continue-on-error: true
+        run: node scripts/docs-check.mjs
+        env:
+          AGENT_LANE: moonshot
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
-
       - name: Detect docs drift
         id: docs-drift
         if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
