@@ -1,5 +1,14 @@
 # @agentproto/apps
 
+## 0.8.2
+
+### Patch Changes
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/agent@0.2.2
+  - @agentproto/workflow@0.3.1
+  - @agentproto/app-kit@0.7.1
+
 ## 0.8.1
 
 ### Patch Changes

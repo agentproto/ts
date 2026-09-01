@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-knowledge-files",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Pure, zero-runtime knowledge adapter: implements @agentproto/knowledge-engine's IKnowledgeProvider over local files with an in-process BM25 index (no embeddings, no network, no API key). Registers as a provider-kit family and ships a node:fs FsPort so it runs standalone. All BM25 index/query logic is confined to this package.",
   "keywords": [
     "agentproto",

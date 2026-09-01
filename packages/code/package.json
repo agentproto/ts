@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/code — AIP-26 CODE.md reference implementation. A composable schema block defining the `code` and `run` fields that declare what files compose a runnable bundle (inline, local, github, ref) and how to invoke them — together with the `code-workspace` first-class kind that other manifests reference.",
   "keywords": [
     "agentproto",

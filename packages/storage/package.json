@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/storage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/storage — AIP-35 STORAGE.md reference implementation. A composable schema block defining the `storage` field — provider, config, sync semantics, auth ref, exclude rules — for any manifest that names a backing store. Reused by WORKSPACE.md (AIP-34) and any future manifest that names persistent state. Inline or ref, mirroring AIP-17 RUNNER and AIP-19 SECRETS.",
   "keywords": [
     "agentproto",

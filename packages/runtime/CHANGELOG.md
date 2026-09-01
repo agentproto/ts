@@ -1,5 +1,74 @@
 # @agentproto/runtime
 
+## 2.10.0
+
+### Minor Changes
+
+- 77ca7ff: Resolve media_upload_local file contents client-side before proxying
+- 4fa1a02: Surface `addedAt` ISO date field on `CatalogProviderModel` interface to expose model introduction timestamps in provider model enumeration, enabling "new" badges in catalog pickers.
+- d663b35: Refactor live-session widget timeline rendering: move usage updates from rows to state, add incremental DOM patching, and support compact display mode.
+
+  **WP1**: Usage snapshot (`usage_update` record) now stores in `TimelineState.usage` instead of appending a row. Last-write-wins semantics; usage is displayed in the header chip, not the timeline.
+
+  **WP2**: New `isNearBottom()` helper determines auto-scroll — captured BEFORE DOM mutation to preserve read position when user scrolls up, show "new messages" pill otherwise.
+
+  **WP3/WP4**: Compact display mode (inline or <640px viewport) collapses the tree into a `<select>` dropdown and groups consecutive tool calls (≥2) into collapsible `<details>` sections.
+
+  **WP5**: Header summary line surfaces status dot, tool count, usage chip (from state), and elapsed time, refreshed every 1s during active sessions.
+
+  Incremental DOM patching: text-delta patches the last row's text node in place; other records append via `insertAdjacentHTML`; full rebuilds only on session start/focus change/mode flip.
+
+- 12bb9e8: Add support for tracking model switches sent as ordinary prompts. Introduces an optional `activeModel` field to `SessionDescriptor` that captures the model believed to be running after a live switch, distinct from `model` (the requested/spawn-time value). The daemon learns switches from two paths: (1) a successful `setModel` call (verified, mirrors `model`), or (2) a `/model <id>` command sent as a plain conversational prompt followed by an adapter acknowledgement (unverified, advisory only — for UI display, never billing). Exports `isModelSwitchAcknowledgement()` and `parseModelSwitchCommand()` from agent-cli for reuse across both paths. VS Code's composer chip now renders "requested → active" when they diverge.
+
+### Patch Changes
+
+- 7a96351: Fix curation drift on `mode: "allow"` auth profiles: an allowlist generated once at create/import time was a frozen snapshot of the catalog that day — new models the catalog picked up later never became usable through the profile, and retired ones lingered forever, with nothing surfacing the mismatch. Adds an explicit, opt-in re-sync: `refreshAuthProfileModels` (`@agentproto/auth`) recomputes a profile's `ids` against a caller-supplied current-catalog snapshot, exposed as the `auth_profile_refresh_models` MCP tool and the `agentproto auth profile refresh-models <id>` CLI verb. Nothing calls this automatically — a profile is only touched when refreshed by name — and it rejects a `mode: "all"` profile outright, since that mode already tracks the live catalog on every read.
+- f5b462a: Add test coverage for `auth profile refresh-models` CLI command and `auth_profile_refresh_models` MCP tool. Both test suites verify the happy path (successful refresh against the current model catalog) and error handling (unknown profile id).
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- 728205b: Fix PR deduplication after force-pushes by extracting commit SHA from the provenance footer instead of relying on GitHub's API `commit_id` field, which drifts during branch mutations. Store full 40-character SHA in footer for unambiguous tracking.
+- Updated dependencies [7a96351]
+- Updated dependencies [4b924c9]
+- Updated dependencies [008a483]
+- Updated dependencies [3496977]
+- Updated dependencies [008a483]
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+- Updated dependencies [001a2a0]
+- Updated dependencies [5dcc733]
+  - @agentproto/auth@1.0.1
+  - @agentproto/model-catalog@0.9.0
+  - @agentproto/driver-agent-cli@2.4.0
+  - @agentproto/acp@0.7.3
+  - @agentproto/agent@0.2.2
+  - @agentproto/driver@0.2.1
+  - @agentproto/eval-reporters@0.2.8
+  - @agentproto/mcp-server@0.2.6
+  - @agentproto/provider-kit@0.4.2
+  - @agentproto/routine@0.2.1
+  - @agentproto/sandbox@0.2.5
+  - @agentproto/secrets@0.2.4
+  - @agentproto/tool@0.2.2
+  - @agentproto/workflow@0.3.1
+  - @agentproto/workflow-loader@0.1.5
+  - @agentproto/workflow-runtime@0.8.1
+  - @agentproto/workspace-brain@0.4.1
+  - @agentproto/providers-store@0.3.9
+  - @agentproto/app-kit@0.7.1
+  - @agentproto/telemetry-langfuse@0.2.6
+
 ## 2.9.0
 
 ### Minor Changes

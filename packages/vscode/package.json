@@ -2,7 +2,7 @@
   "name": "agentproto-vscode",
   "displayName": "agentproto",
   "description": "Live operational views for the agentproto daemon — sessions, permissions, cost — plus spawn/drive/stop from the editor.",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "publisher": "agentproto",
   "icon": "media/icon.png",
   "license": "Apache-2.0",

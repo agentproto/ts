@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/work",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/work — AIP-20 WORK.md reference implementation. A workspace-only successor to AIP-13 that drops hardcoded project/initiative/task doctypes and delegates all per-item-kind schema work to AIP-18 collections — owning only the workspace root manifest, scope axes, status rollups, and cross-AIP composition.",
   "keywords": [
     "agentproto",

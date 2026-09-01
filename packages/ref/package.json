@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/ref",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "agentref/v1 (AIP-27) — composable reference primitive. Typed, registry-extensible discriminated union with a canonical compact string form. Eleven base kinds (local, url, git, github, ipfs, email, operator, user, persona, eth_tx, ots) cover the pointer surfaces existing AIPs need; extension kinds register at the implementation boundary.",
   "keywords": [
     "agentref",

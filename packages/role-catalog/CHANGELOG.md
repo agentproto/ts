@@ -1,5 +1,13 @@
 # @agentproto/role-catalog
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/policy@0.1.1
+  - @agentproto/role@0.1.1
+
 ## 0.1.0
 
 ### Patch Changes

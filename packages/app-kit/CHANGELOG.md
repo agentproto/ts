@@ -1,5 +1,16 @@
 # @agentproto/app-kit
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/agent@0.2.2
+  - @agentproto/workflow@0.3.1
+  - @agentproto/workflow-loader@0.1.5
+  - @agentproto/workspace@0.1.1
+  - @agentproto/mastra@0.2.9
+
 ## 0.7.0
 
 ### Minor Changes

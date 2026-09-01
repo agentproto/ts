@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-kit",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "DEPRECATED — renamed @agentproto/provider-kit. This package re-exports it unchanged.",
   "keywords": [
     "agentproto",

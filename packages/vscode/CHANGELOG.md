@@ -1,5 +1,23 @@
 # agentproto-vscode
 
+## 0.12.0
+
+### Minor Changes
+
+- eeb0209: Add slash-command popup UI for browsing and quickly inserting available harness commands. Users can type `/` at the start of the composer to filter commands by name with keyboard navigation (arrow keys, enter/tab to choose, escape to close). Includes a new optional `availableCommands` field in `SessionDescriptor` mirroring `@agentproto/runtime`, aligned with ACP's `available_commands_update` standard.
+
+### Patch Changes
+
+- Updated dependencies [7a96351]
+- Updated dependencies [77ca7ff]
+- Updated dependencies [4fa1a02]
+- Updated dependencies [f5b462a]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [d663b35]
+- Updated dependencies [12bb9e8]
+- Updated dependencies [728205b]
+  - @agentproto/runtime@2.10.0
+
 ## 0.11.0
 
 ### Minor Changes

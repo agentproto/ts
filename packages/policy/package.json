@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/policy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/policy — AIP-38 POLICY.md reference implementation. A markdown + frontmatter format for declaring policy on a resource — access grants (who can perform which actions), defaults (per-block behavioural defaults), limits (rate / quota caps), and requirements (cross-cutting must-haves like MFA / approval). Composable inline | ref | file. Granted on AIP-39 ACTION ids — implementations / TOOLs are decoupled from policy.",
   "keywords": [
     "agentproto",
