@@ -2303,7 +2303,20 @@ export async function spawnAgentSession(
     const existing = claims.get(key)
     if (existing) {
       const result = await existing.result
-      return result.ok ? { ...result, deduped: true, dedupeSource } : result
+      if (result.ok) {
+        // Observability: a dedupe hit otherwise leaves NO daemon-side trace —
+        // the caller gets the cached descriptor and nothing is logged or
+        // persisted, which makes "why did my second agent_start return an
+        // existing session?" (or its UI residue, e.g. two widget cards for
+        // one session) undiagnosable from logs after the fact.
+        console.warn(
+          `[agent_start] dedupe hit (${dedupeSource}): returning existing session ` +
+            `${result.descriptor.id}${input.label ? ` (label "${input.label}")` : ""} ` +
+            `for a repeated spawn (adapter ${input.adapter}, cwd ${cwd})`,
+        )
+        return { ...result, deduped: true, dedupeSource }
+      }
+      return result
     }
     let resolveClaim!: (result: SpawnAgentSessionResult) => void
     claims.set(key, {

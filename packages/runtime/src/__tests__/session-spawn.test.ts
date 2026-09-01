@@ -900,6 +900,34 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
     expect(second.deduped).toBe(true)
   })
 
+  it("a dedupe hit logs a daemon-side trace naming the returned session (it used to return silently)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const startSession = vi.fn(async () => fakeAgentSession())
+      const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+      const input = {
+        adapter: "mock",
+        cwd: "/tmp",
+        label: "worker",
+        prompt: "do the thing",
+        idempotencyKey: "req-log",
+      }
+
+      const first = await spawnAgentSession(deps, input)
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("dedupe hit"))
+      const second = await spawnAgentSession(deps, input)
+
+      if (!first.ok || !second.ok) throw new Error("expected success")
+      const hit = warnSpy.mock.calls.map(c => String(c[0])).find(m => m.includes("dedupe hit"))
+      expect(hit).toBeDefined()
+      expect(hit).toContain("explicit")
+      expect(hit).toContain(first.descriptor.id)
+      expect(hit).toContain('label "worker"')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
   it("two truly concurrent calls (Promise.all, no await between them) with the same idempotencyKey still spawn only ONE process", async () => {
     // The claim is staked synchronously (check-then-set, no `await` in
     // between) right before the process fork, so whichever call's JS
