@@ -2,29 +2,7 @@
   "object": "list",
   "data": [
     {
-      "created": 1788143651,
-      "id": "kimi-k2.6",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "supports_image_in": true,
-      "supports_video_in": true,
-      "supports_reasoning": true,
-      "context_length": 262144
-    },
-    {
-      "created": 1788143651,
+      "created": 1788143632,
       "id": "kimi-k3",
       "object": "model",
       "owned_by": "moonshot",
@@ -66,8 +44,8 @@
       "context_length": 1048576
     },
     {
-      "created": 1788143651,
-      "id": "kimi-k2.7-code-highspeed",
+      "created": 1788143632,
+      "id": "kimi-k2.7-code",
       "object": "model",
       "owned_by": "moonshot",
       "permission": [
@@ -88,8 +66,30 @@
       "context_length": 262144
     },
     {
-      "created": 1788143651,
-      "id": "kimi-k2.7-code",
+      "created": 1788143632,
+      "id": "kimi-k2.6",
+      "object": "model",
+      "owned_by": "moonshot",
+      "permission": [
+        {
+          "created": 0,
+          "id": "",
+          "object": "",
+          "organization": "moonshot",
+          "group": "moonshot",
+          "is_blocking": false
+        }
+      ],
+      "root": "",
+      "parent": "",
+      "supports_image_in": true,
+      "supports_video_in": true,
+      "supports_reasoning": true,
+      "context_length": 262144
+    },
+    {
+      "created": 1788143632,
+      "id": "kimi-k2.7-code-highspeed",
       "object": "model",
       "owned_by": "moonshot",
       "permission": [

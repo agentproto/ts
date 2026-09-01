@@ -27,3 +27,18 @@ for that.
 
 ### llm:context-windows
 - Added: claude-haiku-4-5, claude-opus-4-5, claude-sonnet-4-5
+
+## 2026-09-01
+
+### llm:openrouter
+- Added: anthropic/claude-fable-5.1, ibm-granite/granite-4.2-8b, inception/mercury-2.5-preview, openai/gpt-3.5-turbo:batch, openai/gpt-4-turbo:batch, openai/gpt-4.1-mini:batch, openai/gpt-4.1-nano:batch, openai/gpt-4.1:batch, openai/gpt-4o-mini:batch, openai/gpt-4o:batch, openai/gpt-5-mini:batch, openai/gpt-5-nano:batch, openai/gpt-5-pro:batch, openai/gpt-5.1:batch, openai/gpt-5.2-pro:batch, openai/gpt-5.2:batch, openai/gpt-5.4-mini:batch, openai/gpt-5.4-nano:batch, openai/gpt-5.4-pro:batch, openai/gpt-5.4:batch, openai/gpt-5.5-pro:batch, openai/gpt-5.5:batch, openai/gpt-5.6-luna-pro:batch, openai/gpt-5.6-luna:batch, openai/gpt-5.6-sol-pro:batch, openai/gpt-5.6-sol:batch, openai/gpt-5.6-terra-pro:batch, openai/gpt-5.6-terra:batch, openai/gpt-5:batch, openai/o3-mini:batch, openai/o3:batch, openai/o4-mini:batch
+- Removed: anthropic/claude-opus-4.7-fast, anthropic/claude-opus-4.8-fast, anthropic/claude-opus-5-fast, kwaipilot/kat-coder-air-v2.5, mistralai/codestral-2508:batch, mistralai/ministral-8b-2512:batch, mistralai/mistral-large-2512:batch, mistralai/mistral-medium-3.1:batch, mistralai/mistral-small-2603:batch
+
+### llm:huggingface
+- Added: Qwen/Qwen2.5-7B-Instruct, nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+
+### llm:context-windows
+- Added: claude-fable-5-1
+
+### image:replicate
+- Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
