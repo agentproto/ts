@@ -237,7 +237,7 @@ jobs:
       # @agentproto/cli@0.5.0 incident (a console trace published as a release
       # body) and the model-invented release date behind it.
       - name: Run release-tooling tests
-        run: node --test scripts/release-notes.test.mjs
+        run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs
 
       # Guards docs-check.mjs's PreToolUse path-confinement guard — an
       # unattended `bypassPermissions` SDK run that reads/edits doc files is

@@ -14,6 +14,8 @@ import assert from 'node:assert/strict'
 
 import {
   assertPublishable,
+  batchLookupRef,
+  readAtCommit,
   CONSOLIDATED_TAG,
   RELEASE_DATE_LONG,
   THIS_YEAR,
@@ -260,4 +262,24 @@ test('bodyBatchSha reports null for a legacy body and ignores a lookalike', () =
   assert.equal(bodyBatchSha(undefined), null)
   // Prose mentioning the marker's name is not a marker.
   assert.equal(bodyBatchSha('agentproto-batch: deadbeef in prose'), null)
+})
+
+// ── batch lookup must start from the pushed commit, not the checkout ─────────
+//
+// Version-mode runs leave the tree on changesets' own unmerged
+// "chore(release): version packages" commit; a forced backfill on 2026-09-01
+// published notes for that unmerged batch under release/2026-09-01.
+
+test('batchLookupRef walks from GITHUB_SHA in Actions and HEAD elsewhere', () => {
+  assert.equal(batchLookupRef({ GITHUB_SHA: 'abc123' }), 'abc123')
+  assert.equal(batchLookupRef({}), 'HEAD')
+  assert.equal(batchLookupRef({ GITHUB_SHA: '' }), 'HEAD')
+})
+
+test('readAtCommit reads a file as of a commit and returns null when absent', () => {
+  const pkg = readAtCommit('HEAD', 'package.json')
+  assert.ok(pkg, 'root package.json should exist at HEAD')
+  assert.equal(JSON.parse(pkg).name !== undefined, true)
+  assert.equal(readAtCommit('HEAD', 'does/not/exist.md'), null)
+  assert.equal(readAtCommit('', 'package.json'), null)
 })

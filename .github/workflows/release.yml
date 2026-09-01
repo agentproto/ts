@@ -78,6 +78,23 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
 
+      # changesets/action drops EVERY per-package changelog from the "Version
+      # Packages" PR body once the rendered body crosses GitHub's 65 536-char
+      # cap — #1072 (241 files, 60 packages) shipped with bare headings and
+      # "omitted … exceeds the size limit", nothing to review. Re-post the
+      # full changelog as marker-tagged comments (chunked under the comment
+      # cap, updated in place on every run, removed when the body wasn't
+      # truncated). continue-on-error: reviewability bonus on top of an
+      # already-successful version step, never a red release job.
+      - name: Post full changelog on the Version Packages PR
+        if: always() && steps.changesets.outputs.pullRequestNumber != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.changesets.outputs.pullRequestNumber }}
+          REPO: ${{ github.repository }}
+        run: node scripts/version-pr-changelog.mjs
+
       # changesets/action pushes one git tag per published package,
       # sequentially, in a single burst — pushing ~100 tags back-to-back in
       # a few seconds has hit GitHub's ref-write path hard enough to reject
