@@ -3532,8 +3532,8 @@ importers:
         specifier: ^25.6.2
         version: 25.6.2
       '@types/vscode':
-        specifier: ^1.134.0
-        version: 1.134.0
+        specifier: 1.90.0
+        version: 1.90.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -5970,8 +5970,8 @@ packages:
   '@types/unist@3.0.3':
     resolution: {integrity: sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q==}
 
-  '@types/vscode@1.134.0':
-    resolution: {integrity: sha512-NDEu0hg4sF7+vvFsADsktqUJ6f80LHSZvVK2Ovo1XiQ0/VHck1O3zst+ZZyVA/uvz6vo6LcuoqU2q48YMqOwWw==}
+  '@types/vscode@1.90.0':
+    resolution: {integrity: sha512-oT+ZJL7qHS9Z8bs0+WKf/kQ27qWYR3trsXpq46YDjFqBsMLG4ygGGjPaJ2tyrH0wJzjOEmDyg9PDJBBhWg9pkQ==}
 
   '@types/which@2.0.2':
     resolution: {integrity: sha512-113D3mDkZDjo+EeUEHCFy0qniNc1ZpecGiAU7WSo7YDoSzolZIQKpYFHrPpjkB2nuyahcKfrmLXeQlh7gqJYdw==}
@@ -11432,7 +11432,7 @@ snapshots:
 
   '@types/unist@3.0.3': {}
 
-  '@types/vscode@1.134.0': {}
+  '@types/vscode@1.90.0': {}
 
   '@types/which@2.0.2': {}
 
