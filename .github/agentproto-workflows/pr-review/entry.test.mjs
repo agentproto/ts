@@ -73,6 +73,22 @@ test('placement "local" wins even when reviewerSandbox + repo are also set', () 
   assert.match(text, /LOCAL pre-push check/)
 })
 
+test('placement "local" forces the step to a HOST spawn (sandbox/cwd undefined) even when reviewConfig sets reviewerSandbox', () => {
+  const bindings = {
+    input: { placement: 'local', reviewConfig: { reviewerSandbox: 'e2b' } },
+  }
+  assert.equal(workflow.steps[0].sandbox(bindings), undefined)
+  assert.equal(workflow.steps[0].cwd(bindings), undefined)
+})
+
+test('non-local placement still resolves sandbox/cwd from reviewConfig (unchanged behavior)', () => {
+  const bindings = {
+    input: { prNumber: 7, repo: 'agentproto/ts', reviewConfig: { reviewerSandbox: 'e2b' } },
+  }
+  assert.notEqual(workflow.steps[0].sandbox(bindings), undefined)
+  assert.equal(workflow.steps[0].cwd(bindings), '/home/user')
+})
+
 // ── declared inputs ──────────────────────────────────────────────────────────
 
 test('placement input defaults to "host" and prNumber defaults to 0', () => {
