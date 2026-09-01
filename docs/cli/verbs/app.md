@@ -1,6 +1,8 @@
 # `agentproto app`
 
 ```text
+agentproto app install <appDir> [--data-dir <path>]
+agentproto app list
 agentproto app pack   <appDir> [--out <path.agentapp>] [--json]
 agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
 agentproto app serve  [appDir] [--port <n>] [--json]
@@ -30,6 +32,39 @@ exact tree and relative paths that `readAppRefs` / `app_install` depend on
 survive the round-trip.
 
 ## Subverbs
+
+### `install <appDir> [--data-dir <path>]`
+
+Register the app (its `id` from `.agentproto/APP.md`) → `<appDir>` mapping in
+`~/.agentproto/apps.json`, the same file the daemon's `app_install` writes, so
+`agentproto app serve --app <id>` and the daemon can resolve it. Idempotent:
+re-running for the same id updates the entry.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data-dir <path>` | see below | Where the app's durable data — everything `app_data_read` / `app_data_write` / `app_data_list` touch — lives. Absolute, `~`-relative, or relative to `<appDir>`. This is what keeps multi-GB generated output out of the app's source tree. |
+
+The registered **data dir** is resolved, in order: `--data-dir` → the entry's
+previously registered data dir (a bare re-install never moves an app's data)
+→ the APP.md `data.dir` frontmatter hint (relative to `<appDir>`) →
+`<appDir>/data`. It is stored absolute; the daemon's `app_install {dir,
+dataDir}` follows the same precedence.
+
+How paths resolve against it (the daemon's rule, `packages/runtime/src/app-data.ts`):
+
+1. An app-relative path resolves under the data dir.
+2. Under the default layout (`<appDir>/data`) a leading `data/` is the legacy
+   spelling from when the plane was anchored at `<appDir>` and is dropped —
+   `data/trips/x.json` and `trips/x.json` name the same file.
+3. If a path (or its top-level folder) does not exist under the data dir but
+   does under `<appDir>`, it resolves there — files written by a pre-data-dir
+   install keep working, and `app_data_list` merges both views. Move the
+   folder into the data dir and the fallback stops applying.
+
+### `list`
+
+Print every registered app as `id -> dir`, each followed by its data dir
+(entries written before the field existed show `<dir>/data`).
 
 ### `serve [appDir] [--port <n>] [--json]`
 
@@ -197,6 +232,9 @@ verify integrity.
 ## Examples
 
 ```bash
+# Register an app, keeping its generated output on a big external volume
+agentproto app install ./tripsmith --data-dir /Volumes/big/tripsmith-data
+
 # Pack a real app into the current directory
 agentproto app pack ./job-application-kit
 

@@ -373,3 +373,33 @@ describe("loadAppHandle — the inverse of emit", () => {
     }
   })
 })
+
+describe("loadAppHandle — data dir hint", () => {
+  const solo = () =>
+    defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+
+  it("round-trips `data.dir`", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-data-"))
+    try {
+      await defineApp({ agents: [{ agent: solo(), body: "Solo." }], data: { dir: "store" } }).emit(d)
+      const loaded = await loadAppHandle(d)
+      expect(loaded.data).toEqual({ dir: "store" })
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("throws AppLoadError on a malformed `data` block", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-baddata-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: solo(), body: "Solo." }] }).emit(d)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(appPath, matter.stringify(parsed.content, { ...parsed.data, data: { dir: "" } }), "utf8")
+      await expect(loadAppHandle(d)).rejects.toThrow(AppLoadError)
+      await writeFile(appPath, matter.stringify(parsed.content, { ...parsed.data, data: "data" }), "utf8")
+      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter 'data'/)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+})

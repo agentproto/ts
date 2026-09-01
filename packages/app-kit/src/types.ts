@@ -140,6 +140,19 @@ export interface AppDevDefinition {
 }
 
 /**
+ * Where the app's durable data lives (the `app_data_*` plane). `dir` is a
+ * path RELATIVE to the app dir — `"data"` means `<appDir>/data`, which is
+ * also what the daemon uses when the hint is absent. It is a hint: an
+ * explicit `dataDir` passed to `app_install` / `agentproto app install
+ * --data-dir` overrides it, and the resolved absolute path is persisted on
+ * the `InstalledApp` record. Reserved for later: a `store.sqlite` inside
+ * that dir, exposed through an `app_data_query` tool.
+ */
+export interface AppDataDefinition {
+  readonly dir?: string
+}
+
+/**
  * Input to `defineApp`. Each `agents[]` entry is an already-validated
  * `AgentHandle` (bare, no body) or an `AgentEntry` (handle + body).
  */
@@ -182,6 +195,9 @@ export interface AppDefinition {
   readonly artifacts?: readonly AppArtifactDecl[]
   /** Dev-launch configuration for running the app locally. */
   readonly dev?: AppDevDefinition
+  /** Default data directory hint for the `app_data_*` plane (relative to
+   *  the app dir; see {@link AppDataDefinition}). */
+  readonly data?: AppDataDefinition
   /**
    * Absolute or `~`-relative host directories the app is granted READ-ONLY
    * access to outside its own sandboxed `dir` (e.g. a user's real
@@ -247,6 +263,9 @@ export interface AppHandle {
   readonly artifacts?: readonly AppArtifactDecl[]
   /** Dev-launch configuration for running the app locally. */
   readonly dev?: AppDevDefinition
+  /** Default data directory hint (see {@link AppDataDefinition}). Resolved
+   *  against the app dir at install time in `performInstall`. */
+  readonly data?: AppDataDefinition
   /** Read-only external filesystem roots this app declares (see
    *  {@link AppDefinition.externalReadRoots}). Not yet normalized/validated —
    *  that happens at install time in `performInstall`. */

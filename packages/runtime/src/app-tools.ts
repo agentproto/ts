@@ -34,6 +34,7 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, type AppRegistry, type InstalledAppRef } from "./app-registry.js"
+import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
 import { loadAppCatalogFile } from "./app-catalog.js"
 
 /** The only agent adapter this WP knows how to run an emitted AGENT.md
@@ -349,11 +350,49 @@ async function normalizeExternalReadRoots(
   return { ok: true, roots: normalized }
 }
 
+export interface PerformInstallOptions {
+  /** Explicit data root for the `app_data_*` plane. Absolute or `~`-relative;
+   *  a relative path is taken relative to the app dir (like the APP.md
+   *  `data.dir` hint). Wins over every other source. */
+  readonly dataDir?: string
+}
+
+/**
+ * Resolve the data root persisted on the `InstalledApp` record (see
+ * `InstalledApp.dataDir`). Precedence: explicit `opts.dataDir` > the
+ * previously persisted `dataDir` of the same appId (so a bare re-install
+ * never silently moves an app's data) > the APP.md `data.dir` hint >
+ * `<dir>/data`. Always absolute. A path that exists but is not a directory
+ * is rejected; a missing one is fine — `app_data_write` creates it lazily.
+ */
+export async function resolveInstallDataDir(input: {
+  dir: string
+  explicit?: string
+  previous?: string
+  hint?: string
+}): Promise<{ ok: true; dataDir: string } | { ok: false; error: string }> {
+  const raw = input.explicit ?? input.previous ?? input.hint
+  const dataDir =
+    raw === undefined
+      ? resolve(input.dir, DEFAULT_APP_DATA_SUBDIR)
+      : resolve(input.dir, expandHome(raw))
+  try {
+    const st = await stat(dataDir)
+    if (!st.isDirectory()) {
+      return { ok: false, error: `dataDir "${dataDir}" exists but is not a directory.` }
+    }
+  } catch {
+    // Missing is fine — created on first write.
+  }
+  return { ok: true, dataDir }
+}
+
 export async function performInstall(
   dir: string,
   appRegistry: AppRegistry,
   listRegisteredToolIds: () => Promise<string[]>,
   resolveAgentAdapter?: AgentAdapterResolver,
+  opts?: PerformInstallOptions,
 ): Promise<{ ok: true; record: Awaited<ReturnType<typeof appRegistry.upsertApp>> } | { ok: false; error: string }> {
   let handle: Awaited<ReturnType<typeof loadAppHandle>>
   try {
@@ -445,9 +484,20 @@ export async function performInstall(
     externalReadRoots = result.roots
   }
 
+  const dataDirResult = await resolveInstallDataDir({
+    dir,
+    ...(opts?.dataDir !== undefined ? { explicit: opts.dataDir } : {}),
+    ...(appRegistry.getApp(handle.id)?.dataDir !== undefined
+      ? { previous: appRegistry.getApp(handle.id)!.dataDir }
+      : {}),
+    ...(handle.data?.dir !== undefined ? { hint: handle.data.dir } : {}),
+  })
+  if (!dataDirResult.ok) return { ok: false, error: `app_install: ${dataDirResult.error}` }
+
   const record = appRegistry.upsertApp({
     appId: handle.id,
     dir,
+    dataDir: dataDirResult.dataDir,
     ...(handle.version ? { version: handle.version } : {}),
     ...(handle.name ? { name: handle.name } : {}),
     ...(handle.description ? { description: handle.description } : {}),
@@ -483,10 +533,23 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "STEP-DISPATCH time) and checks the `mastra-agent` adapter resolves. Agent-" +
       "declared tool refs (workspace tools like `read_file`) are the adapter's own " +
       "business and are never validated here — see `unvalidatedAgentTools` on the " +
-      "result. Re-installing the same appId upserts.",
-    { dir: z.string().describe("Absolute path to the app's directory.") },
+      "result. Re-installing the same appId upserts (and keeps its existing " +
+      "`dataDir` unless a new one is passed).",
+    {
+      dir: z.string().describe("Absolute path to the app's directory."),
+      dataDir: z
+        .string()
+        .optional()
+        .describe(
+          "Where the app's durable data (`app_data_*`) lives. Absolute or `~`-relative; a " +
+            "relative path is taken relative to `dir`. Defaults to the previously installed " +
+            "dataDir, else the APP.md `data.dir` hint, else `<dir>/data`.",
+        ),
+    },
     async input => {
-      const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter)
+      const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+        ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
+      })
       if (!result.ok) return errorResult(`app_install: ${result.error}`)
       return textResult(result.record)
     },
@@ -500,6 +563,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       const runs = appRegistry.listRuns()
       const apps = appRegistry.listApps().map(app => ({
         ...app,
+        dataDir: appDataDir(app),
         runs: runs
           .filter(r => r.appId === app.appId)
           .map(r => ({
@@ -789,13 +853,16 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       appId: z.string(),
       scopeId: z.string().optional().describe("Scope to apply to. Defaults to 'root'."),
       dir: z.string().optional().describe("Absolute path to install from if not already installed."),
+      dataDir: z.string().optional().describe("Data root to install with (see app_install). Only used when installing."),
     },
     async input => {
       const scopeId = input.scopeId ?? "root"
       let installed = appRegistry.getApp(input.appId)
 
       if (!installed && input.dir) {
-        const installResult = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter)
+        const installResult = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+          ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
+        })
         if (!installResult.ok) return errorResult(`app_apply: ${installResult.error}`)
         installed = installResult.record
       } else if (!installed) {

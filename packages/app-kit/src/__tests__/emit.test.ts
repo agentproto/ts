@@ -341,3 +341,22 @@ describe("emit — manifests round-trip through the loaders", () => {
     expect(parsed.data.skill).toBeUndefined()
   })
 })
+
+describe("emit — data dir hint", () => {
+  it("writes `data` verbatim into APP.md frontmatter, and omits it when absent", async () => {
+    const solo = () =>
+      defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+    const withHint = await mkdtemp(join(tmpdir(), "app-kit-emit-data-"))
+    const without = await mkdtemp(join(tmpdir(), "app-kit-emit-nodata-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: solo(), body: "Solo." }], data: { dir: "data" } }).emit(withHint)
+      expect(matter(await readFile(appPath, "utf8")).data.data).toEqual({ dir: "data" })
+
+      const bare = await defineApp({ agents: [{ agent: solo(), body: "Solo." }] }).emit(without)
+      expect("data" in matter(await readFile(bare.appPath, "utf8")).data).toBe(false)
+    } finally {
+      await rm(withHint, { recursive: true, force: true })
+      await rm(without, { recursive: true, force: true })
+    }
+  })
+})

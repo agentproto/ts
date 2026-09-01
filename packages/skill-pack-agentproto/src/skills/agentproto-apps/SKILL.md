@@ -34,11 +34,14 @@ runs, and persists them. This skill is the app plane on top of the base
     agents/<id>/AGENT.md              # AIP-42 agent manifests
     workflows/<id>/WORKFLOW.md        # AIP-15 workflow manifests
     ui/index.html                     # single-file dashboard (CSS+JS inline)
-  <data>…                             # app-scoped data (app_data_* writes here)
+  data/                               # default data dir (app_data_* writes here)
+<dataDir>/                            # …or wherever `app_install {dataDir}` /
+                                      # `app install --data-dir` pointed it
 ```
 
 `APP.md` frontmatter (`schema: app/v1`, `id`, `agents: [{id,path}]`,
-`workflows: [{id,path}]`, `ui: {path, title, tools: [...]}`). The `ui.tools`
+`workflows: [{id,path}]`, `ui: {path, title, tools: [...]}`, optional
+`data: {dir}` — the default data dir, relative to the app dir). The `ui.tools`
 array is an **allowlist** — `app_tool_call` REFUSES any tool id not in it, so
 when the UI calls a new daemon tool (e.g. `app_data_read`), add it there.
 
@@ -83,10 +86,29 @@ wrapper, since a completed run may still read `running` until reconciliation.
 
 Generic `fs-*` tools are **workspace-rooted** — unsafe/incompatible for
 installed-app storage. Apps persist through the app-scoped surface, anchored to
-the installed app's own `dir` with **path-traversal protection**:
+the installed app's **data dir** (`InstalledApp.dataDir`, default `<dir>/data`,
+persisted in `~/.agentproto/apps.json`) with **path-traversal protection**:
 `resolveAppDataPath` rejects absolute paths, drive-letter prefixes, and any
 `..`/symlink escape; every failure returns an MCP error envelope containing
 `traversal`.
+
+**Data dir ≠ source dir.** `app_install {dir, dataDir?}` (CLI: `agentproto app
+install <appDir> --data-dir <path>`) points the plane at a directory outside
+the source tree — that's where multi-GB generated output belongs. Precedence:
+explicit `dataDir` → the previously installed one (a bare re-install never
+moves data) → APP.md `data: {dir}` (relative to the app dir) → `<dir>/data`.
+`app_list` shows it. Resolution rule for an app-relative path:
+
+1. resolves under `dataDir`;
+2. under the default layout (`<dir>/data`) a leading `data/` is the legacy
+   spelling and is dropped — `data/trips/x.json` ≡ `trips/x.json`;
+3. if the path (or its top-level folder) exists only under the source `dir`
+   (a pre-dataDir install), it resolves there — reads find it, writes update it
+   in place, `app_data_list` merges both views. New paths land under `dataDir`.
+
+Address files at the new base (`trips/<id>/brief.json`, not
+`data/trips/...`). Reserved for later: a `store.sqlite` in `dataDir` behind an
+`app_data_query` tool — not there yet.
 
 - **`app_data_read {appId, path}`** → `{appId, path, exists, content}` —
   `.json` paths parse `content`; others return raw text. `exists:false` when
@@ -100,13 +122,14 @@ the installed app's own `dir` with **path-traversal protection**:
   shape into the durable layout; idempotent via `data/state.json` (`force`
   re-runs). Reports `{migrated, jobCount, dossierCount, skippedFolders, alreadyMigrated?}`.
 
-**Durable layout convention** (adapt to the app; the Job Application Kit uses):
+**Durable layout convention** (adapt to the app; the Job Application Kit uses,
+all relative to the data dir):
 ```
-<appDir>/data/jobs/<jobId>.json
-<appDir>/data/search/<searchRunId>.json
-<appDir>/data/rankings/<rankingRunId>.json   (+ data/rankings/latest.json for the list)
-<appDir>/data/state.json
-<appDir>/applications/<jobId>/{application.json, job.json, cv.json, cover.md, form-answers.md}
+<dataDir>/jobs/<jobId>.json
+<dataDir>/search/<searchRunId>.json
+<dataDir>/rankings/<rankingRunId>.json   (+ rankings/latest.json for the list)
+<dataDir>/state.json
+<dataDir>/applications/<jobId>/{application.json, job.json, cv.json, cover.md, form-answers.md}
 ```
 Normalize legacy records on migrate: ensure `id` === `jobId` (both present) and
 derive `applyUrl` from `url` when missing. Durable files SURVIVE browser reload;

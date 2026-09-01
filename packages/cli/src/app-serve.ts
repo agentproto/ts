@@ -59,7 +59,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "
 const APPS_JSON_PATH = join(homedir(), ".agentproto", "apps.json")
 
 interface AppsJsonFile {
-  apps?: { appId: string; dir: string }[]
+  apps?: { appId: string; dir: string; dataDir?: string }[]
   runs?: unknown[]
   applied?: unknown[]
 }
@@ -89,18 +89,44 @@ export function findInstalledAppDir(appId: string): string | undefined {
 }
 
 /** Register (or update) an app id → directory mapping in `~/.agentproto/apps.json`.
- *  Preserves unrelated keys (`runs`, `applied`) the daemon manages. */
-export function installAppDir(appId: string, dir: string): void {
+ *  Preserves unrelated keys (`runs`, `applied`) the daemon manages.
+ *
+ *  `dataDir` is the absolute root of the app's durable data (`app_data_*`).
+ *  Precedence mirrors the daemon's `performInstall`: an explicit `dataDir`
+ *  > the entry's previously registered `dataDir` (a bare re-install never
+ *  moves data) > `hintDir` (APP.md `data.dir`, relative to `dir`) >
+ *  `<dir>/data`. Returns the entry as written. */
+export function installAppDir(
+  appId: string,
+  dir: string,
+  opts?: { dataDir?: string; hintDir?: string },
+): { appId: string; dir: string; dataDir: string } {
   const data = loadAppsJson()
   const apps = data.apps ?? []
   const idx = apps.findIndex((a) => a.appId === appId)
+  const previous = idx === -1 ? undefined : apps[idx]?.dataDir
+  const raw = opts?.dataDir ?? previous ?? opts?.hintDir
+  const dataDir = raw === undefined ? resolve(dir, "data") : resolve(dir, expandHome(raw))
+  const entry = idx === -1 ? { appId, dir, dataDir } : { ...apps[idx], appId, dir, dataDir }
   if (idx === -1) {
-    apps.push({ appId, dir })
+    apps.push(entry)
   } else {
-    apps[idx] = { appId, dir }
+    apps[idx] = entry
   }
   data.apps = apps
   saveAppsJson(data)
+  return entry
+}
+
+/** Every registered app (`appId` → `dir`, plus its `dataDir` — defaulting to
+ *  `<dir>/data` for entries written before the field existed). */
+export function listInstalledApps(): { appId: string; dir: string; dataDir: string }[] {
+  const data = loadAppsJson()
+  return (Array.isArray(data.apps) ? data.apps : []).map((a) => ({
+    appId: a.appId,
+    dir: a.dir,
+    dataDir: a.dataDir ?? resolve(a.dir, "data"),
+  }))
 }
 
 const USAGE = `agentproto app serve — serve an app's UI as a standalone webapp

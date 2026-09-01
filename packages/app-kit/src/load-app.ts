@@ -29,7 +29,7 @@ import matter from "gray-matter"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent/manifest"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { parseWorkspaceManifest, workspaceFromManifest } from "@agentproto/workspace/manifest"
-import type { AgentEntry, AppArtifactDecl, AppDevDefinition, AppHandle } from "./types.js"
+import type { AgentEntry, AppArtifactDecl, AppDataDefinition, AppDevDefinition, AppHandle } from "./types.js"
 import { defineApp } from "./define-app.js"
 
 export class AppLoadError extends Error {
@@ -83,6 +83,7 @@ interface AppFrontmatter {
   readonly skill?: AppFrontmatterSkill
   readonly artifacts?: readonly AppArtifactDecl[]
   readonly dev?: AppDevDefinition
+  readonly data?: AppDataDefinition
   readonly externalReadRoots?: readonly string[]
 }
 
@@ -121,6 +122,18 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
   if (data.requires !== undefined) {
     if (!Array.isArray(data.requires) || !data.requires.every((e) => typeof e === "string")) {
       throw new AppLoadError(`'${appPath}': frontmatter 'requires' must be an array of strings.`)
+    }
+  }
+  if (data.data !== undefined) {
+    const d = data.data as { dir?: unknown } | null
+    if (
+      typeof d !== "object" ||
+      d === null ||
+      (d.dir !== undefined && (typeof d.dir !== "string" || d.dir.trim() === ""))
+    ) {
+      throw new AppLoadError(
+        `'${appPath}': frontmatter 'data' must be an object whose optional 'dir' is a non-empty string.`,
+      )
     }
   }
   if (data.externalReadRoots !== undefined) {
@@ -261,6 +274,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       : {}),
     ...(fm.artifacts !== undefined ? { artifacts: fm.artifacts } : {}),
     ...(fm.dev !== undefined ? { dev: fm.dev } : {}),
+    ...(fm.data !== undefined ? { data: fm.data } : {}),
     ...(fm.externalReadRoots !== undefined ? { externalReadRoots: fm.externalReadRoots } : {}),
   })
 }

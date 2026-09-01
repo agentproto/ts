@@ -54,6 +54,9 @@ export function defineApp(def: AppDefinition): AppHandle {
   if (def.dev !== undefined && (!Array.isArray(def.dev.launch) || def.dev.launch.length === 0)) {
     throw new AppDefinitionError("`dev.launch` must be a non-empty array when `dev` is present.")
   }
+  if (def.data !== undefined && def.data.dir !== undefined && (typeof def.data.dir !== "string" || def.data.dir.trim() === "")) {
+    throw new AppDefinitionError("`data.dir` must be a non-empty string when present.")
+  }
 if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.artifact.path.trim() === "")) {
     throw new AppDefinitionError("`artifact.path` must be a non-empty string when `artifact` is present.")
   }
@@ -78,6 +81,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ? Object.freeze({ launch: Object.freeze(def.dev.launch.map(l => Object.freeze({ ...l }))) })
     : undefined
   const externalReadRoots = def.externalReadRoots ? Object.freeze([...def.externalReadRoots]) : undefined
+  const data = def.data ? Object.freeze({ ...def.data }) : undefined
 
   validateAttachment(agents, workflows)
 
@@ -100,6 +104,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(skill !== undefined ? { skill } : {}),
     ...(artifacts !== undefined ? { artifacts } : {}),
     ...(dev !== undefined ? { dev } : {}),
+    ...(data !== undefined ? { data } : {}),
     ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
@@ -140,6 +145,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(skill !== undefined ? { skill } : {}),
           ...(artifacts !== undefined ? { artifacts } : {}),
           ...(dev !== undefined ? { dev } : {}),
+          ...(data !== undefined ? { data } : {}),
           ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
         },
         dir,
