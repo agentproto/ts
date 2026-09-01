@@ -16,6 +16,10 @@ import {
   assertPublishable,
   batchLookupRef,
   readAtCommit,
+  changelogSection,
+  findBatchRelease,
+  renderContext,
+  unwrapFence,
   CONSOLIDATED_TAG,
   RELEASE_DATE_LONG,
   THIS_YEAR,
@@ -282,4 +286,40 @@ test('readAtCommit reads a file as of a commit and returns null when absent', ()
   assert.equal(JSON.parse(pkg).name !== undefined, true)
   assert.equal(readAtCommit('HEAD', 'does/not/exist.md'), null)
   assert.equal(readAtCommit('', 'package.json'), null)
+})
+
+// ── lane ladder support: --check + the model's final message ─────────────────
+
+test('findBatchRelease matches on the batch marker only, never on tag or title', () => {
+  const sha = 'e'.repeat(40)
+  const releases = [
+    { tag_name: 'release/2026-09-01', body: `# x\n\n<!-- agentproto-batch: ${'f'.repeat(40)} -->` },
+    { tag_name: 'release/2026-09-01.2', body: `# y\n\n<!-- agentproto-batch: ${sha} -->` },
+    { tag_name: '@agentproto/cli@0.16.1', body: 'per-package release, no marker' },
+  ]
+  assert.equal(findBatchRelease(releases, sha)?.tag_name, 'release/2026-09-01.2')
+  assert.equal(findBatchRelease(releases, 'a'.repeat(40)), null)
+  assert.equal(findBatchRelease(releases, null), null)
+  assert.equal(findBatchRelease(undefined, sha), null)
+})
+
+test('unwrapFence strips one outer markdown fence and nothing else', () => {
+  assert.equal(unwrapFence('```markdown\n# Title\n\nbody\n```'), '# Title\n\nbody')
+  assert.equal(unwrapFence('```\n# Title\n```\n'), '# Title')
+  const plain = '# Title\n\n```bash\nnpm i\n```\n\nmore'
+  assert.equal(unwrapFence(plain), plain) // inner fences are content
+})
+
+test('changelogSection + renderContext hand the model the shipped version verbatim', () => {
+  const changelog = '# pkg\n\n## 0.2.2\n\n- next bump\n\n## 0.2.1\n\n- shipped\n'
+  assert.equal(changelogSection(changelog, '0.2.1'), '- shipped')
+  const ctx = renderContext({
+    commitHash: 'abc1234',
+    packages: [{ name: '@agentproto/tool-cli', version: '0.2.1', changelogPath: 'packages/tool-cli/CHANGELOG.md', entry: '- shipped' }],
+    tags: '@agentproto/tool-cli@0.2.1',
+  })
+  assert.match(ctx, /Version-bump commit: `abc1234`/)
+  assert.match(ctx, /### @agentproto\/tool-cli@0\.2\.1/)
+  assert.match(ctx, /- shipped/)
+  assert.doesNotMatch(ctx, /next bump/)
 })
