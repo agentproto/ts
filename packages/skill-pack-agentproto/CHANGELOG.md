@@ -1,10 +1,16 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.8.0
+
+### Minor Changes
+
+- 0259d5f: Rewrite the agentproto-plugin skill pack as a 3-layer family: an L0 master map (`agentproto`), 18 L1 primitives (`ap-*`) that each teach one daemon action, 4 L2 groupers that route to primitives without duplicating mechanics, and 6 L3 end-to-end playbooks (`pb-*`). Removes the old flat set (adapter-setup-kit, agent-session-orchestration-agentproto, durable-supervision, hermes-headless-background, light-coder-orchestration, nested-orchestration, supervisor-session). Keeps `agentproto-apps` (app-dir anatomy / `app serve` UI bridge / `app_data_migrate` / smoke-test recipe are not covered by the new primitives) and `agentproto-llm-endpoint` (its CLI `--base-url`/`--auth-token` guidance matches the current CLI; the rewrite's copy claims those flags don't exist). Ported from the already-reviewed rewrite in agentik-studio (agentik-studio#86).
+
 ## 0.6.1
 
 ### Patch Changes
 
-- 99fb2fb: Accuracy pass on skill documentation and AGENTS.md. Fixes ~20 tool names in skill documentation to match current runtime API (agent*output, command_log_tail, file*_, terminal\__, etc.). Corrects permissions_respond schema documentation. Removes diverged duplicate SKILL.md file from packages/cli/skill/ (never imported by code but shipped in npm tarball). Updates reference documentation paths and line numbers.
+- 99fb2fb: Accuracy pass on skill documentation and AGENTS.md. Fixes ~20 tool names in skill documentation to match current runtime API (agent*output, command_log_tail, file*\_, terminal\_\_, etc.). Corrects permissions_respond schema documentation. Removes diverged duplicate SKILL.md file from packages/cli/skill/ (never imported by code but shipped in npm tarball). Updates reference documentation paths and line numbers.
 - b941fd1: Translate French skill documentation to English. Includes supervisor-session, durable-supervision, agent-session-orchestration-agentproto, nested-orchestration, light-coder-orchestration, hermes-headless-background, adapter-setup-kit, and bureau quickstart. Preserves all API names, commands, JSON, paths, and code examples verbatim. Also applies bundled API reference fixes: execute_command → command_execute, read_file/write_file → file_read/file_write, get_agent_session_output → agent_output, create_tunnel → tunnel_create.
 
 ## 0.6.0

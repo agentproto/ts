@@ -1,5 +1,11 @@
 # @agentproto/tool-cli
 
+## 0.2.2
+
+### Patch Changes
+
+- bd86fe4: Add npm package metadata fields (repository, bugs, homepage) to improve package discoverability and provide users with clear reference links.
+
 ## 0.2.1
 
 ### Patch Changes
