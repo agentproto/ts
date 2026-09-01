@@ -760,6 +760,7 @@ export async function restartAgentSession(
         declaredOptions: resolved.declaredOptions,
         routeSelection: resolved.routeSelection,
         adapterProvider: resolved.authDescriptor?.provider,
+        modelDerivedApiKey: resolved.authDescriptor?.modelDerivedApiKey,
         prefix: "restart",
       })
     } catch (err) {
@@ -834,6 +835,9 @@ export async function restartAgentSession(
         : {}),
       ...(resolved.authDescriptor?.provider !== undefined
         ? { adapterProvider: resolved.authDescriptor.provider }
+        : {}),
+      ...(resolved.authDescriptor?.modelDerivedApiKey !== undefined
+        ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),

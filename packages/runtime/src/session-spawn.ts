@@ -2148,6 +2148,7 @@ export async function spawnAgentSession(
       declaredOptions: resolved?.declaredOptions,
       routeSelection: resolved?.routeSelection,
       adapterProvider: resolved?.authDescriptor?.provider,
+      modelDerivedApiKey: resolved?.authDescriptor?.modelDerivedApiKey,
       skills: spawnDefaults.skills,
       prefix: "agent_start",
     })
@@ -2360,6 +2361,9 @@ export async function spawnAgentSession(
           : {}),
         ...(resolved?.authDescriptor?.provider !== undefined
           ? { adapterProvider: resolved.authDescriptor.provider }
+          : {}),
+        ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
+          ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
           : {}),
         ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
@@ -2715,6 +2719,9 @@ export async function spawnAgentSession(
         : {}),
       ...(resolved?.authDescriptor?.provider !== undefined
         ? { adapterProvider: resolved.authDescriptor.provider }
+        : {}),
+      ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
+        ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
       ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
       ...(input.mode ? { mode: input.mode } : {}),

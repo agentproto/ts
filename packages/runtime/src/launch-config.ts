@@ -43,6 +43,10 @@ export interface RouteAwareLaunchConfigInput {
   routeSelection?: "free" | "derived-from-model"
   /** Fixed provider for this adapter (e.g. `"anthropic"`), used for wire-model prefix stripping. */
   adapterProvider?: string
+  /** `AdapterAuthDescriptor.modelDerivedApiKey` — see `normalizeModelForWire`'s
+   *  `ModelWireOptions.modelDerivedApiKey` doc for why this changes the wire
+   *  shape on a gateway-routed `derived-from-model` adapter. */
+  modelDerivedApiKey?: boolean
   /** Skills list folded into `options.skills` per the manifest's declared shape. */
   skills?: string[]
   /**
@@ -153,6 +157,7 @@ export function buildRouteAwareLaunchConfig(
         routeSelection: input.routeSelection,
         gateway: input.route?.gateway,
         fixedProvider: input.adapterProvider,
+        modelDerivedApiKey: input.modelDerivedApiKey,
       })
     : undefined
 

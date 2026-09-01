@@ -55,8 +55,10 @@ export type { RouteSpec } from "./session-config.js"
 
 /** Routers the catalog probes to widen beyond any adapter's declared model
  *  list (SPEC §5.1) — same three route-identity widens, `route-identity/
- *  index.ts:54-59`. */
-const WIDENING_ROUTES = ["openrouter", "requesty", "huggingface"] as const
+ *  index.ts:54-59`. Exported so `model-wire.ts` can reuse the SAME set when
+ *  deciding whether a wire model needs a literal router-prefix (never a
+ *  second hand-maintained list). */
+export const WIDENING_ROUTES = ["openrouter", "requesty", "huggingface"] as const
 
 /**
  * Vendor-specific compatibility routes: canonical protocol surfaces that can

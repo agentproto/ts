@@ -1213,6 +1213,16 @@ export interface SessionDescriptor {
    */
   adapterProvider?: string
   /**
+   * The adapter manifest's `authDescriptor.modelDerivedApiKey` — recorded at
+   * spawn time so a live `setModel` applies the SAME wire normalization the
+   * spawn path used (`normalizeModelForWire`'s `ModelWireOptions.modelDerivedApiKey`
+   * doc): for a `derived-from-model` adapter billed through a gateway/router,
+   * this decides whether the wire model needs the router re-added as a
+   * literal leading segment (opencode/mastracode/jcode/pi/mastra-agent) or
+   * left bare (hermes).
+   */
+  modelDerivedApiKey?: boolean
+  /**
    * AIP-45 mode the session was spawned with (`AgentCliStartOptions.config.
    * mode` — e.g. claude-code's `plan`/`accept-edits`, a gateway preset mode
    * like `moonshot`). Undefined for the adapter's default/native mode.
@@ -2995,6 +3005,10 @@ export interface SpawnAgentInput {
    *  {@link SessionDescriptor.adapterProvider} so live `setModel` knows when
    *  to bare a direct `vendor/product` ref; ignored for derived adapters. */
   adapterProvider?: string
+  /** Manifest-declared `authDescriptor.modelDerivedApiKey` — recorded onto
+   *  {@link SessionDescriptor.modelDerivedApiKey} so live `setModel` applies
+   *  the same router re-prefixing the spawn path used. */
+  modelDerivedApiKey?: boolean
   /** Optional initial prompt to dispatch immediately. The promise
    *  the registry returns resolves AFTER the spawn — the prompt
    *  runs in the background, projecting events into the ring
@@ -5832,6 +5846,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.adapterProvider !== undefined
           ? { adapterProvider: input.adapterProvider }
           : {}),
+        ...(input.modelDerivedApiKey !== undefined
+          ? { modelDerivedApiKey: input.modelDerivedApiKey }
+          : {}),
         // ACP-level session id — sticks across daemon restart so
         // `agentproto sessions restart <id>` can pass it as
         // `resumeSessionId` and the adapter reattaches to the prior
@@ -5977,6 +5994,9 @@ export function createSessionsRegistry(opts?: {
           : {}),
         ...(input.adapterProvider !== undefined
           ? { adapterProvider: input.adapterProvider }
+          : {}),
+        ...(input.modelDerivedApiKey !== undefined
+          ? { modelDerivedApiKey: input.modelDerivedApiKey }
           : {}),
         ...(input.label ? { label: input.label } : {}),
         ...(input.title ? { title: input.title } : {}),
@@ -6687,8 +6707,10 @@ export function createSessionsRegistry(opts?: {
       // keeps the old suffix-only fallback rather than losing live switching.
       let routeSelection = rt.desc.routeSelection
       let adapterProvider = rt.desc.adapterProvider
+      let modelDerivedApiKey = rt.desc.modelDerivedApiKey
       const needsAdapterMetadata =
         routeSelection === undefined ||
+        modelDerivedApiKey === undefined ||
         (routeSelection !== "derived-from-model" && adapterProvider === undefined)
       const adapterSlug = rt.desc.adapterSlug ?? rt.adapterSlug
       if (needsAdapterMetadata && resolveAgentAdapter && adapterSlug) {
@@ -6708,6 +6730,14 @@ export function createSessionsRegistry(opts?: {
             rt.desc.adapterProvider = adapterProvider
             hydrated = true
           }
+          if (
+            modelDerivedApiKey === undefined &&
+            resolved?.authDescriptor?.modelDerivedApiKey !== undefined
+          ) {
+            modelDerivedApiKey = resolved.authDescriptor.modelDerivedApiKey
+            rt.desc.modelDerivedApiKey = modelDerivedApiKey
+            hydrated = true
+          }
           if (hydrated) schedulePersist()
         } catch {
           // Preserve legacy best-effort behavior when an optional resolver is
@@ -6717,12 +6747,16 @@ export function createSessionsRegistry(opts?: {
       // Normalize the catalog model id to the adapter's wire form using the
       // same helper the spawn path uses, so live switches cannot drift.
       // Derived-from-model adapters (hermes, pi, opencode, …) keep the vendor
-      // prefix and only lose the `@route` suffix; fixed native adapters get
-      // the bare product id their manifest declares.
+      // prefix and only lose the `@route` suffix; a `modelDerivedApiKey`
+      // adapter among them (opencode/mastracode/jcode/pi/mastra-agent) also
+      // gets the router re-added as a literal leading segment when the target
+      // route is a gateway — see `ModelWireOptions.modelDerivedApiKey`'s doc.
+      // Fixed native adapters get the bare product id their manifest declares.
       const wireModel = normalizeModelForWire(modelId, {
         routeSelection,
         gateway: rt.desc.route?.gateway,
         fixedProvider: adapterProvider,
+        modelDerivedApiKey,
       })
       const result = await rt.agentSession.setModel(wireModel)
       if (result.applied) {
