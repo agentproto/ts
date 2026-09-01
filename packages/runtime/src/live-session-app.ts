@@ -904,10 +904,15 @@ initBridge().then(function() {
     return result;
   });
 }).then(function(init) {
-  // Only override the focus when live_session itself named a session — a
-  // tool-result notification may already have pinned one while the
-  // fallback tools/call above was in flight.
-  if (init.sessionId) { focusId = init.sessionId; focusSource = 'pinned'; }
+  // Only override the focus when live_session itself named a session AND a
+  // tool-result notification didn't already pin one while the fallback
+  // tools/call above was in flight — the host's push names the exact
+  // session this widget was mounted for, so it outranks the fallback's
+  // (argument-less, hence session-less in practice) self-call.
+  if (init.sessionId && focusSource !== 'pinned') {
+    focusId = init.sessionId;
+    focusSource = 'pinned';
+  }
   onHostContext(function() {
     applyDisplayMode();
     updateHeader();
