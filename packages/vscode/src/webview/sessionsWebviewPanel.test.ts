@@ -12,7 +12,8 @@ import type { Memento } from "vscode"
 import { describe, expect, it } from "vitest"
 
 import { UNASSIGNED_COLOR_INDEX, workspaceColorFor, WORKSPACE_PALETTE } from "./sessionsWebview.logic.js"
-import { COLOR_OVERRIDES_KEY, nextColorOverrides, readColorOverrides } from "./sessionsWebviewPanel.js"
+import type { SessionDescriptor, SessionSummary } from "../client/types.js"
+import { COLOR_OVERRIDES_KEY, nextColorOverrides, readColorOverrides, visibleRows } from "./sessionsWebviewPanel.js"
 
 /** Minimal in-memory stand-in for `vscode.ExtensionContext.globalState`. */
 function fakeMemento(initial: Record<string, unknown> = {}): Memento {
@@ -86,5 +87,34 @@ describe("workspace color persistence round-trip (set → persist → hydrate �
     expect(workspaceColorFor("studio", rehydrated)).toEqual({ index: 5, css: WORKSPACE_PALETTE[5] })
     // An untouched slug still falls back to its hash default through the same map.
     expect(workspaceColorFor("other", rehydrated)).toEqual(workspaceColorFor("other"))
+  })
+})
+
+describe("visibleRows — render pool == action pool", () => {
+  const summary = (id: string, status: SessionSummary["status"]): SessionSummary =>
+    ({ id, kind: "agent-cli", workspaceSlug: "ws", command: "claude", pid: 1, status, startedAt: "2026-01-01T00:00:00Z" }) as SessionSummary
+  const descriptor = (id: string, status: SessionDescriptor["status"]): SessionDescriptor =>
+    summary(id, status) as unknown as SessionDescriptor
+
+  it("pins live store sessions the paginated slice has not reached yet, after pending rows", () => {
+    const store = [descriptor("sess_a", "running"), descriptor("sess_b", "exited"), descriptor("sess_c", "running")]
+    const loaded = [summary("sess_a", "running"), summary("sess_b", "exited")]
+    expect(visibleRows(store, loaded).map(r => r.id)).toEqual(["sess_c", "sess_a", "sess_b"])
+  })
+
+  it("dedupes by id so a loaded summary is never doubled by its store twin", () => {
+    const store = [descriptor("sess_a", "running")]
+    const loaded = [summary("sess_a", "running")]
+    expect(visibleRows(store, loaded).map(r => r.id)).toEqual(["sess_a"])
+  })
+
+  it("resolves a live extra for an action (the Stop-button regression)", () => {
+    // 73 of 191 loaded: a supervisor's still-running child sorts past the
+    // slice, is rendered as a live extra with a Stop button, and must be
+    // findable by id when that button is clicked.
+    const store = [descriptor("sess_child", "running")]
+    const loaded: SessionSummary[] = [summary("sess_other", "exited")]
+    expect(visibleRows(store, loaded).find(r => r.id === "sess_child")).toBeDefined()
+    expect(loaded.find(r => r.id === "sess_child")).toBeUndefined()
   })
 })
