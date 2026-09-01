@@ -20,6 +20,7 @@ describe("app-registry persistence", () => {
     reg1.upsertApp({
       appId: "@test/persist-check",
       dir: "/tmp/fake-app",
+      dataDir: "/tmp/fake-app-data",
       agents: [],
       workflows: [],
       unvalidatedAgentTools: [],
@@ -31,6 +32,7 @@ describe("app-registry persistence", () => {
     expect(loaded).toBeDefined()
     expect(loaded!.appId).toBe("@test/persist-check")
     expect(loaded!.dir).toBe("/tmp/fake-app")
+    expect(loaded!.dataDir).toBe("/tmp/fake-app-data")
   })
 
   it("does not persist when persist: false", async () => {

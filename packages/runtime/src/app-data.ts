@@ -1,7 +1,8 @@
 /**
  * App-scoped durable data plane — path-traversal-guarded read/write/list
- * tools anchored under an installed app's own `dir` (see `AppRegistry`),
- * plus a one-time migration of legacy job-app data into the durable shape.
+ * tools anchored under an installed app's DATA directory (`dataDir` on the
+ * `AppRegistry` record, default `<dir>/data`), plus a one-time migration of
+ * legacy job-app data into the durable shape.
  *
  * Tools:
  *   app_data_read     read a file (JSON-parsed when it ends in `.json`)
@@ -10,14 +11,45 @@
  *   app_data_migrate  import legacy `ranked-jobs.json` + `dossiers/*` data
  *
  * Unlike the generic fs-tools (workspace-rooted), everything here resolves
- * strictly under the app's `dir` and refuses to escape it.
+ * strictly under the app's data dir (or, for legacy files, its source dir)
+ * and refuses to escape either.
+ *
+ * ## Resolution rule (the contract app UIs and agents rely on)
+ *
+ * An app-relative path `p` resolves as follows — see `locateAppDataPath`:
+ *
+ * 1. **Primary root is `dataDir`** — `InstalledApp.dataDir`, defaulting to
+ *    `<dir>/data` for records that predate the field. Custom roots are set
+ *    with `app_install {dataDir}` / `agentproto app install --data-dir`, or
+ *    hinted by APP.md `data: { dir }` (relative to the app dir).
+ * 2. **Legacy `data/` spelling collapses under the default layout.** Before
+ *    `dataDir` existed the plane was anchored at `<dir>` and apps addressed
+ *    files as `data/...`. When `dataDir` IS `<dir>/data`, a leading `data/`
+ *    segment is redundant and dropped: `data/trips/x.json` and
+ *    `trips/x.json` name the same file, for reads and writes alike. (A
+ *    custom `dataDir` is a fresh, intentional layout — no collapse.)
+ * 3. **Legacy root fallback.** If `p` — or its top-level folder — does not
+ *    exist under `dataDir` but does under the app's source `dir`, it
+ *    resolves under `dir`: reads find files written by pre-`dataDir`
+ *    installs, writes update them in place (or land next to their
+ *    siblings), and `app_data_list` merges both views. Move the folder into
+ *    `dataDir` and the fallback stops applying. Brand-new paths always land
+ *    under `dataDir`.
+ *
+ * Both roots get the same defence: `resolveAppDataPath` (no absolute paths,
+ * no drive letters, no `..` climbing) plus a realpath check so a symlink
+ * inside either root can never point outside it.
+ *
+ * Reserved: a future `store.sqlite` inside `dataDir`, exposed through an
+ * `app_data_query` tool — not implemented here, but the data dir is where it
+ * will live, which is one reason it must be separable from the source tree.
  */
 
 import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises"
-import { dirname, isAbsolute, join, resolve, sep } from "node:path"
+import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path"
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import type { AppRegistry } from "./app-registry.js"
+import type { AppRegistry, InstalledApp } from "./app-registry.js"
 
 /** Thrown when a relative app path resolves outside the app's own directory. */
 export class AppPathTraversalError extends Error {
@@ -26,6 +58,35 @@ export class AppPathTraversalError extends Error {
     super(`app-data: path traversal rejected for "${relPath}" — must resolve inside the app dir.`)
     this.name = "AppPathTraversalError"
   }
+}
+
+/** The sub-directory of the app dir the data plane defaults to. */
+export const DEFAULT_APP_DATA_SUBDIR = "data"
+
+/** Absolute data root for an installed app: its persisted `dataDir`, else
+ *  the default `<dir>/data` (records written before the field existed). */
+export function appDataDir(app: Pick<InstalledApp, "dir" | "dataDir">): string {
+  return app.dataDir ?? join(app.dir, DEFAULT_APP_DATA_SUBDIR)
+}
+
+/** True when the app's data root is the default `<dir>/data` — the only
+ *  layout under which the legacy `data/` spelling is collapsed. */
+export function isDefaultAppDataLayout(app: Pick<InstalledApp, "dir" | "dataDir">): boolean {
+  return resolve(appDataDir(app)) === resolve(app.dir, DEFAULT_APP_DATA_SUBDIR)
+}
+
+/** Drop a redundant leading `data/` segment (rule 2 above). Pure string
+ *  work on the normalized path — the traversal guard still runs on the
+ *  result, so `data/../../x` is rejected exactly as `../x` would be. */
+export function collapseLegacyDataPrefix(relPath: string): string {
+  const n = normalize(relPath)
+  if (n === DEFAULT_APP_DATA_SUBDIR) return "."
+  const prefix = DEFAULT_APP_DATA_SUBDIR + sep
+  if (n.startsWith(prefix)) {
+    const rest = n.slice(prefix.length)
+    return rest === "" ? "." : rest
+  }
+  return relPath
 }
 
 // Invariant: the only path-escape defence that matters.
@@ -47,24 +108,51 @@ export function resolveAppDataPath(appDir: string, relPath: string): string {
   return target
 }
 
-function textResult(body: unknown): { content: { type: "text"; text: string }[] } {
-  return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] }
+/** The two roots an app-relative path may resolve under. */
+export interface AppDataRoots {
+  /** Data root (rule 1) — realpath'd when it exists, else the resolved
+   *  absolute path it will be created at. */
+  readonly dataRoot: string
+  readonly dataRootExists: boolean
+  /** The app's source dir (rule 3), realpath'd. Undefined when it is gone
+   *  — then only the data root is consulted. */
+  readonly legacyRoot: string | undefined
+  /** Whether rule 2 (`data/` prefix collapse) applies. */
+  readonly defaultLayout: boolean
 }
 
-function errorResult(text: string): {
-  content: { type: "text"; text: string }[]
-  isError: true
-} {
-  return { content: [{ type: "text", text: JSON.stringify({ error: text }) }], isError: true }
-}
-
-/** Realpath-normalize the app root once so relative segments can never climb
- *  out through a symlinked app dir. Undefined when the dir is gone. */
-async function safeRoot(appDir: string): Promise<string | undefined> {
+async function pathExists(p: string): Promise<boolean> {
   try {
-    return await realpath(appDir)
+    await stat(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function realpathMaybe(p: string): Promise<string | undefined> {
+  try {
+    return await realpath(p)
   } catch {
     return undefined
+  }
+}
+
+/** Resolve both roots for an installed app. With `ensureDataDir`, the data
+ *  dir is created first (the write path) so it can be realpath-normalized. */
+export async function resolveAppDataRoots(
+  app: Pick<InstalledApp, "dir" | "dataDir">,
+  opts?: { ensureDataDir?: boolean },
+): Promise<AppDataRoots> {
+  const dataDir = resolve(appDataDir(app))
+  if (opts?.ensureDataDir) await mkdir(dataDir, { recursive: true })
+  const realData = await realpathMaybe(dataDir)
+  const legacyRoot = await realpathMaybe(app.dir)
+  return {
+    dataRoot: realData ?? dataDir,
+    dataRootExists: realData !== undefined,
+    legacyRoot,
+    defaultLayout: isDefaultAppDataLayout(app),
   }
 }
 
@@ -83,6 +171,89 @@ async function assertRealInside(root: string, target: string): Promise<void> {
   }
 }
 
+export interface LocatedAppDataPath {
+  /** Absolute path the app-relative input resolves to. */
+  readonly target: string
+  /** The root it was resolved under (`dataRoot` or `legacyRoot`). */
+  readonly root: string
+  /** True when rule 3 kicked in (resolved under the app's source dir). */
+  readonly legacy: boolean
+  /** Same-relative-path twin under the OTHER root, when it exists too —
+   *  `app_data_list` merges the two directory views. */
+  readonly sibling?: string
+}
+
+function firstSegment(rel: string): string | undefined {
+  const n = normalize(rel)
+  const seg = n.split(sep).find(s => s !== "" && s !== ".")
+  return seg === undefined || seg === ".." ? undefined : seg
+}
+
+/**
+ * Apply the resolution rule to one app-relative path. Throws
+ * `AppPathTraversalError` when the path escapes whichever root it lands
+ * under; never creates anything.
+ */
+export async function locateAppDataPath(roots: AppDataRoots, relPath: string): Promise<LocatedAppDataPath> {
+  const rel = roots.defaultLayout ? collapseLegacyDataPrefix(relPath) : relPath
+  const primary = resolveAppDataPath(roots.dataRoot, rel)
+  await assertRealInside(roots.dataRoot, primary)
+  const primaryExists = await pathExists(primary)
+
+  // Rule 3 — the legacy root is consulted with the path AS SPELLED by the
+  // caller (pre-dataDir installs anchored `<dir>/<relPath>` verbatim).
+  let legacyTarget: string | undefined
+  if (roots.legacyRoot !== undefined) {
+    try {
+      legacyTarget = resolveAppDataPath(roots.legacyRoot, relPath)
+    } catch {
+      legacyTarget = undefined
+    }
+    if (legacyTarget === primary) legacyTarget = undefined
+  }
+  let legacyExists = false
+  if (legacyTarget !== undefined) {
+    await assertRealInside(roots.legacyRoot!, legacyTarget)
+    legacyExists = await pathExists(legacyTarget)
+  }
+
+  if (primaryExists) {
+    return {
+      target: primary,
+      root: roots.dataRoot,
+      legacy: false,
+      ...(legacyExists && legacyTarget !== undefined ? { sibling: legacyTarget } : {}),
+    }
+  }
+  if (legacyExists && legacyTarget !== undefined) {
+    return { target: legacyTarget, root: roots.legacyRoot!, legacy: true }
+  }
+
+  // Neither exists yet: a brand-new path lands under the data root — unless
+  // its top-level folder already lives under the legacy root and not under
+  // the data root, in which case it joins its siblings there.
+  const top = firstSegment(relPath)
+  if (top !== undefined && roots.legacyRoot !== undefined && legacyTarget !== undefined) {
+    const primaryTop = resolveAppDataPath(roots.dataRoot, roots.defaultLayout ? collapseLegacyDataPrefix(top) : top)
+    const legacyTop = resolveAppDataPath(roots.legacyRoot, top)
+    if (legacyTop !== primaryTop && !(await pathExists(primaryTop)) && (await pathExists(legacyTop))) {
+      return { target: legacyTarget, root: roots.legacyRoot, legacy: true }
+    }
+  }
+  return { target: primary, root: roots.dataRoot, legacy: false }
+}
+
+function textResult(body: unknown): { content: { type: "text"; text: string }[] } {
+  return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] }
+}
+
+function errorResult(text: string): {
+  content: { type: "text"; text: string }[]
+  isError: true
+} {
+  return { content: [{ type: "text", text: JSON.stringify({ error: text }) }], isError: true }
+}
+
 async function atomicWrite(filePath: string, data: string): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true })
   const tmp = `${filePath}.tmp.${process.pid}`
@@ -90,12 +261,12 @@ async function atomicWrite(filePath: string, data: string): Promise<void> {
   await rename(tmp, filePath)
 }
 
-async function writeRaw(root: string, rel: string, data: string): Promise<void> {
-  await atomicWrite(resolveAppDataPath(root, rel), data)
+async function writeRaw(roots: AppDataRoots, rel: string, data: string): Promise<void> {
+  await atomicWrite((await locateAppDataPath(roots, rel)).target, data)
 }
 
-async function writeJson(root: string, rel: string, value: unknown): Promise<void> {
-  await writeRaw(root, rel, JSON.stringify(value, null, 2) + "\n")
+async function writeJson(roots: AppDataRoots, rel: string, value: unknown): Promise<void> {
+  await writeRaw(roots, rel, JSON.stringify(value, null, 2) + "\n")
 }
 
 async function readTextMaybe(path: string): Promise<string | undefined> {
@@ -160,18 +331,20 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
   server.tool(
     "app_data_read",
     "Read an app-scoped data file (app-relative path). JSON paths return the " +
-      "parsed value in `content`; everything else returns the raw text. Path " +
-      "traversal outside the app dir is rejected.",
-    { appId: z.string(), path: z.string().describe("App-relative path under the app's own dir.") },
+      "parsed value in `content`; everything else returns the raw text. Paths " +
+      "resolve under the app's data dir (`dataDir`, default `<dir>/data`); " +
+      "under the default layout a leading `data/` is accepted as the legacy " +
+      "spelling, and a file that only exists under the app's source dir (a " +
+      "pre-dataDir install) is still found there. Path traversal outside " +
+      "either root is rejected.",
+    { appId: z.string(), path: z.string().describe("App-relative path under the app's data dir.") },
     async input => {
       const installed = appRegistry.getApp(input.appId)
       if (!installed) return errorResult(`app_data_read: no installed app "${input.appId}".`)
-      const root = await safeRoot(installed.dir)
-      if (!root) return errorResult(`app_data_read: app dir "${installed.dir}" is not accessible.`)
       let target: string
       try {
-        target = resolveAppDataPath(root, input.path)
-        await assertRealInside(root, target)
+        const roots = await resolveAppDataRoots(installed)
+        target = (await locateAppDataPath(roots, input.path)).target
       } catch (err) {
         return errorResult(`app_data_read: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -193,21 +366,23 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
     "Write an app-scoped data file (app-relative path), creating parent " +
       "directories as needed. `.json` paths are JSON-stringified (pretty); " +
       "other paths write the raw string passed as `content.text` (or a plain " +
-      "string `content`). Atomic write (tmp + rename). Path traversal outside " +
-      "the app dir is rejected.",
+      "string `content`). Atomic write (tmp + rename). New files land under " +
+      "the app's data dir (`dataDir`, default `<dir>/data`); a file (or " +
+      "top-level folder) that already exists under the app's source dir from " +
+      "a pre-dataDir install is updated in place. Path traversal outside " +
+      "either root is rejected.",
     {
       appId: z.string(),
-      path: z.string().describe("App-relative path under the app's own dir."),
+      path: z.string().describe("App-relative path under the app's data dir."),
       content: z.unknown().describe("JSON value for `.json` paths, or `{ text }` / string for others."),
     },
     async input => {
       const installed = appRegistry.getApp(input.appId)
       if (!installed) return errorResult(`app_data_write: no installed app "${input.appId}".`)
-      const root = await safeRoot(installed.dir)
-      if (!root) return errorResult(`app_data_write: app dir "${installed.dir}" is not accessible.`)
       let target: string
       try {
-        target = resolveAppDataPath(root, input.path)
+        const roots = await resolveAppDataRoots(installed, { ensureDataDir: true })
+        target = (await locateAppDataPath(roots, input.path)).target
       } catch (err) {
         return errorResult(`app_data_write: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -239,8 +414,12 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
   server.tool(
     "app_data_list",
     "List entries (name + type + size) under an app-relative directory " +
-      "(default `.`). A missing directory returns empty entries, not an " +
-      "error. Path traversal outside the app dir is rejected.",
+      "(default `.`, the app's data dir). A missing directory returns empty " +
+      "entries, not an error. When the same directory also exists under the " +
+      "app's source dir (a pre-dataDir install) both views are merged, data " +
+      "dir entries winning on name clashes; `.` lists the data dir only " +
+      "(or the source dir while no data dir exists yet). Path traversal " +
+      "outside either root is rejected.",
     {
       appId: z.string(),
       dir: z.string().optional().describe("App-relative directory to list. Defaults to `.`."),
@@ -248,35 +427,40 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
     async input => {
       const installed = appRegistry.getApp(input.appId)
       if (!installed) return errorResult(`app_data_list: no installed app "${input.appId}".`)
-      const root = await safeRoot(installed.dir)
-      if (!root) return errorResult(`app_data_list: app dir "${installed.dir}" is not accessible.`)
       const relDir = input.dir ?? "."
-      let target: string
+      const dirs: string[] = []
       try {
-        target = resolveAppDataPath(root, relDir)
+        const roots = await resolveAppDataRoots(installed)
+        const located = await locateAppDataPath(roots, relDir)
+        const isRoot = located.target === roots.dataRoot || located.target === roots.legacyRoot
+        dirs.push(located.target)
+        if (!isRoot && located.sibling !== undefined) dirs.push(located.sibling)
       } catch (err) {
         return errorResult(`app_data_list: ${err instanceof Error ? err.message : String(err)}`)
       }
-      let dirents: { name: string; isDirectory(): boolean }[]
-      try {
-        dirents = await readdir(target, { withFileTypes: true })
-      } catch {
-        return textResult({ appId: input.appId, dir: relDir, entries: [] })
-      }
-      const entries: { name: string; type: "file" | "directory"; size: number }[] = []
-      for (const d of dirents) {
-        const isDirectory = d.isDirectory()
-        let size = 0
-        if (!isDirectory) {
-          try {
-            size = (await stat(join(target, d.name))).size
-          } catch {
-            size = 0
-          }
+      const seen = new Map<string, { name: string; type: "file" | "directory"; size: number }>()
+      for (const target of dirs) {
+        let dirents: { name: string; isDirectory(): boolean }[]
+        try {
+          dirents = await readdir(target, { withFileTypes: true })
+        } catch {
+          continue
         }
-        entries.push({ name: d.name, type: isDirectory ? "directory" : "file", size })
+        for (const d of dirents) {
+          if (seen.has(d.name)) continue
+          const isDirectory = d.isDirectory()
+          let size = 0
+          if (!isDirectory) {
+            try {
+              size = (await stat(join(target, d.name))).size
+            } catch {
+              size = 0
+            }
+          }
+          seen.set(d.name, { name: d.name, type: isDirectory ? "directory" : "file", size })
+        }
       }
-      entries.sort((a, b) => a.name.localeCompare(b.name))
+      const entries = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
       return textResult({ appId: input.appId, dir: relDir, entries })
     },
   )
@@ -284,10 +468,12 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
   server.tool(
     "app_data_migrate",
     "One-time import of legacy job-app data into the durable shape under the " +
-      "app dir: `data/jobs/<jobId>.json` (normalized id/jobId/applyUrl), " +
-      "`data/rankings/latest.json` (full ranked list) + per-job ranking " +
+      "app's data dir: `jobs/<jobId>.json` (normalized id/jobId/applyUrl), " +
+      "`rankings/latest.json` (full ranked list) + per-job ranking " +
       "artifacts, `applications/<jobId>/{job.json,cv.json,cover.md}` from " +
-      "matching `dossiers/*` folders, and `data/state.json`. Idempotent — " +
+      "matching `dossiers/*` folders, and `state.json`. The legacy inputs " +
+      "(`ranked-jobs.json`, `dossiers/`) are read from wherever they resolve " +
+      "— the app's source dir for pre-dataDir installs. Idempotent — " +
       "re-running after migration returns `alreadyMigrated` unless `force`.",
     {
       appId: z.string(),
@@ -296,16 +482,21 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
     async input => {
       const installed = appRegistry.getApp(input.appId)
       if (!installed) return errorResult(`app_data_migrate: no installed app "${input.appId}".`)
-      const root = await safeRoot(installed.dir)
-      if (!root) return errorResult(`app_data_migrate: app dir "${installed.dir}" is not accessible.`)
+      let roots: AppDataRoots
+      try {
+        roots = await resolveAppDataRoots(installed, { ensureDataDir: true })
+      } catch (err) {
+        return errorResult(`app_data_migrate: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      const at = async (rel: string): Promise<string> => (await locateAppDataPath(roots, rel)).target
 
-      const stateRel = "data/state.json"
-      if (!input.force && (await readJsonMaybe(resolveAppDataPath(root, stateRel))) !== undefined) {
+      const stateRel = "state.json"
+      if (!input.force && (await readJsonMaybe(await at(stateRel))) !== undefined) {
         return textResult({ appId: input.appId, migrated: false, alreadyMigrated: true })
       }
 
       let jobs: LegacyRankedJob[] = []
-      const rankedRaw = await readJsonMaybe(resolveAppDataPath(root, "ranked-jobs.json"))
+      const rankedRaw = await readJsonMaybe(await at("ranked-jobs.json"))
       if (Array.isArray(rankedRaw)) jobs = rankedRaw as LegacyRankedJob[]
 
       const normalized = jobs
@@ -314,14 +505,14 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
 
       for (const job of normalized) {
         const id = job.jobId as string
-        await writeJson(root, `data/jobs/${id}.json`, job)
-        await writeJson(root, `data/rankings/${id}.json`, job)
+        await writeJson(roots, `jobs/${id}.json`, job)
+        await writeJson(roots, `rankings/${id}.json`, job)
       }
-      await writeJson(root, "data/rankings/latest.json", normalized)
+      await writeJson(roots, "rankings/latest.json", normalized)
 
       let folderNames: string[] = []
       try {
-        folderNames = (await readdir(resolveAppDataPath(root, "dossiers"), { withFileTypes: true }))
+        folderNames = (await readdir(await at("dossiers"), { withFileTypes: true }))
           .filter(e => e.isDirectory())
           .map(e => e.name)
       } catch {
@@ -331,7 +522,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       const matched = new Set<string>()
       const skippedFolders: string[] = []
       for (const name of folderNames) {
-        const dossierDir = resolveAppDataPath(root, join("dossiers", name))
+        const dossierDir = await at(join("dossiers", name))
         const jobId = await readDossierJobId(dossierDir)
         const targetJob = normalized.find(j => j.jobId === jobId)
         if (!jobId || !targetJob) {
@@ -339,16 +530,16 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
           continue
         }
         matched.add(jobId)
-        await writeJson(root, `applications/${jobId}/job.json`, targetJob)
+        await writeJson(roots, `applications/${jobId}/job.json`, targetJob)
         const cv = await readJsonMaybe(join(dossierDir, "cv.json"))
-        if (cv !== undefined) await writeJson(root, `applications/${jobId}/cv.json`, cv)
+        if (cv !== undefined) await writeJson(roots, `applications/${jobId}/cv.json`, cv)
         const cover = await readTextMaybe(join(dossierDir, "cover.md"))
-        if (cover !== undefined) await writeRaw(root, `applications/${jobId}/cover.md`, cover)
+        if (cover !== undefined) await writeRaw(roots, `applications/${jobId}/cover.md`, cover)
       }
 
       const jobCount = normalized.length
       const dossierCount = matched.size
-      await writeJson(root, stateRel, {
+      await writeJson(roots, stateRel, {
         migratedAt: new Date().toISOString(),
         jobCount,
         dossierCount,

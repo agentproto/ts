@@ -203,6 +203,64 @@ describe("app_* verbs", () => {
     }
   })
 
+  it("app_install persists dataDir: explicit > previous (kept on bare re-install) > APP.md hint > <dir>/data", async () => {
+    const soloApp = (id: string, data?: { dir: string }) =>
+      defineApp({
+        id,
+        name: "Data App",
+        agents: [
+          {
+            agent: defineAgent({
+              schema: "agent/v1",
+              id: "worker",
+              description: "A worker agent.",
+              model: "claude-sonnet-5",
+            }),
+            body: "You do the thing.",
+          },
+        ],
+        ...(data ? { data } : {}),
+      })
+    const { client } = await setup()
+
+    // Default: <dir>/data (not created at install time).
+    await soloApp("@test/data-default").emit(dir)
+    let record = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    expect(record.dataDir).toBe(join(dir, "data"))
+
+    // APP.md hint, relative to the app dir.
+    const hintedDir = await mkdtemp(join(tmpdir(), "app-tools-hinted-"))
+    const explicitStore = await mkdtemp(join(tmpdir(), "app-tools-store-"))
+    try {
+      await soloApp("@test/data-hinted", { dir: "store" }).emit(hintedDir)
+      record = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir: hintedDir } }))
+      expect(record.dataDir).toBe(join(hintedDir, "store"))
+
+      // Explicit wins over the hint…
+      record = parseToolJson(
+        await client.callTool({ name: "app_install", arguments: { dir: hintedDir, dataDir: explicitStore } }),
+      )
+      expect(record.dataDir).toBe(explicitStore)
+      // …and a bare re-install keeps it rather than falling back to the hint.
+      record = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir: hintedDir } }))
+      expect(record.dataDir).toBe(explicitStore)
+
+      // app_list surfaces it.
+      const listed = parseToolJson(await client.callTool({ name: "app_list", arguments: {} }))
+      expect(listed.find((a: { appId: string }) => a.appId === "@test/data-hinted").dataDir).toBe(explicitStore)
+
+      // A dataDir that exists as a FILE is rejected.
+      const filePath = join(hintedDir, "not-a-dir")
+      await writeFile(filePath, "x", "utf8")
+      const bad = await client.callTool({ name: "app_install", arguments: { dir: hintedDir, dataDir: filePath } })
+      expect(isError(bad)).toBe(true)
+      expect(parseToolJson(bad).error).toContain("not a directory")
+    } finally {
+      await rm(hintedDir, { recursive: true, force: true })
+      await rm(explicitStore, { recursive: true, force: true })
+    }
+  })
+
   it("app_install fails fast when an externalReadRoots entry doesn't exist", async () => {
     const app = defineApp({
       id: "@test/external-app-missing",

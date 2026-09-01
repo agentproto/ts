@@ -276,3 +276,20 @@ describe("defineApp — multi-agent + attachment invariant", () => {
     expect(app.workflows[0]!.id).toBe("review-and-fix")
   })
 })
+
+describe("defineApp — data dir hint", () => {
+  it("carries `data.dir` through to the handle, frozen", () => {
+    const app = defineApp({ agents: [agent("solo", [])], data: { dir: "data" } })
+    expect(app.data).toEqual({ dir: "data" })
+    expect(Object.isFrozen(app.data)).toBe(true)
+  })
+
+  it("is absent when not declared", () => {
+    expect(defineApp({ agents: [agent("solo", [])] }).data).toBeUndefined()
+  })
+
+  it("throws when data.dir is empty", () => {
+    expect(() => defineApp({ agents: [agent("solo", [])], data: { dir: "" } })).toThrow(/data\.dir/)
+    expect(() => defineApp({ agents: [agent("solo", [])], data: { dir: "   " } })).toThrow(/data\.dir/)
+  })
+})

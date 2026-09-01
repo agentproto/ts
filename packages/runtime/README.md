@@ -65,7 +65,7 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 | `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Raw PTY sessions |
 | `session_list` / `session_tree` / `session_usage` / `session_restart` / `session_rename` | Session management |
 | `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` / `app_apply` / `app_unapply` / `app_list_applied` | App-kit apps |
-| `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane (new) |
+| `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane, anchored at the app's `dataDir` (default `<dir>/data`; `app_install {dataDir}`) |
 | `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets (new) |
 | `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (new) |
 | `conversation_export` | Export a daemon transcript to a target adapter's native store, e.g. `claude-code` (new) |

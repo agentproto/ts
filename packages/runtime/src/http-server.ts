@@ -757,6 +757,7 @@ export interface RuntimeHttpServerOptions {
     appRegistry: AppRegistry,
     listRegisteredToolIds: () => Promise<string[]>,
     resolveAgentAdapter?: AgentAdapterResolver,
+    opts?: { dataDir?: string },
   ) => Promise<{ ok: true; record: any } | { ok: false; error: string }>
   /** Optional — required when `appRegistry` is wired, for tool validation during install. */
   listRegisteredToolIds?: () => Promise<string[]>
@@ -6610,6 +6611,7 @@ async function handleApps(
     appRegistry: AppRegistry,
     listRegisteredToolIds: () => Promise<string[]>,
     resolveAgentAdapter?: AgentAdapterResolver,
+    opts?: { dataDir?: string },
   ) => Promise<{ ok: true; record: any } | { ok: false; error: string }>,
   listRegisteredToolIds: () => Promise<string[]>,
   resolveAgentAdapter?: AgentAdapterResolver,
@@ -6619,12 +6621,14 @@ async function handleApps(
   const applyMatch = path.match(/^\/apps\/([^/]+)\/apply$/)
   if (applyMatch && method === "POST") {
     const appId = decodeURIComponent(applyMatch[1]!)
-    const body = (await readJsonBody(req)) as { scopeId?: string; dir?: string } | null
+    const body = (await readJsonBody(req)) as { scopeId?: string; dir?: string; dataDir?: string } | null
     const scopeId = body?.scopeId ?? "root"
 
     let installed = appRegistry.getApp(appId)
     if (!installed && body?.dir) {
-      const installResult = await performInstall(body.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter)
+      const installResult = await performInstall(body.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+        ...(body.dataDir !== undefined ? { dataDir: body.dataDir } : {}),
+      })
       if (!installResult.ok) {
         res.writeHead(400, { "content-type": "application/json" })
         res.end(JSON.stringify({ error: installResult.error }))

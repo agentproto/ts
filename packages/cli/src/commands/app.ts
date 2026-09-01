@@ -32,15 +32,14 @@
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { createHash } from "node:crypto"
 import { basename, dirname, join, resolve } from "node:path"
-import { tmpdir, homedir } from "node:os"
+import { tmpdir } from "node:os"
 import { spawn } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 
 import matter from "gray-matter"
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
-import { runAppServe, findInstalledAppDir, installAppDir } from "../app-serve.js"
+import { runAppServe, findInstalledAppDir, installAppDir, listInstalledApps } from "../app-serve.js"
 import { runAppBuild } from "../app-build.js"
 import { runAppDev } from "../app-dev.js"
 
@@ -94,7 +93,7 @@ const USAGE = `agentproto app — package, unpack, install, serve, build, or dev
 Usage:
   agentproto app pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
-  agentproto app install <appDir>
+  agentproto app install <appDir> [--data-dir <path>]
   agentproto app list
   agentproto app serve [appDir] [--port <n>] [--app <appId>] [--json]
   agentproto app build <appDir> [--json]
@@ -116,9 +115,13 @@ install:
   \`agentproto app serve --app <id>\` can resolve it. Reads the app's
   .agentproto/APP.md for its id, then writes the mapping. Idempotent —
   re-running with the same directory updates the existing entry.
+  --data-dir <path> sets where the app's durable data (app_data_*) lives,
+  distinct from its source dir. Absolute, ~-relative, or relative to
+  <appDir>. Without it: the entry's existing data dir is kept, else the
+  APP.md \`data.dir\` hint (relative to <appDir>), else <appDir>/data.
 
 list:
-  List every registered app (id → dir) from ~/.agentproto/apps.json.
+  List every registered app (id → dir, data dir) from ~/.agentproto/apps.json.
 
 serve:
   Serve <appDir>'s .agentproto/ui/ as a standalone webapp with a window.McpApp
@@ -180,6 +183,7 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
     strict: false,
     options: {
       help: { type: "boolean", short: "h" },
+      "data-dir": { type: "string" },
     },
   })
 
@@ -195,6 +199,11 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  const dataDirArg = typeof values["data-dir"] === "string" ? values["data-dir"] : undefined
+  if (dataDirArg !== undefined && dataDirArg.trim() === "") {
+    process.stderr.write(`agentproto app install: --data-dir needs a path.\n`)
+    return 2
+  }
 
   const appDir = resolve(process.cwd(), expandHome(appDirArg))
   const appMdPath = join(appDir, ".agentproto", "APP.md")
@@ -207,11 +216,17 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  // Read the app id from APP.md frontmatter.
+  // Read the app id (and the optional `data.dir` hint) from APP.md frontmatter.
   let appId: string
+  let hintDir: string | undefined
   try {
     const raw = await readFile(appMdPath, "utf8")
     const front = matter(raw).data as Record<string, unknown>
+    const dataHint = front.data
+    if (typeof dataHint === "object" && dataHint !== null) {
+      const d = (dataHint as { dir?: unknown }).dir
+      if (typeof d === "string" && d.trim() !== "") hintDir = d
+    }
     appId =
       typeof front.id === "string" && front.id.length > 0
         ? front.id
@@ -232,37 +247,28 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  installAppDir(appId, appDir)
+  const entry = installAppDir(appId, appDir, {
+    ...(dataDirArg !== undefined ? { dataDir: dataDirArg } : {}),
+    ...(hintDir !== undefined ? { hintDir } : {}),
+  })
   process.stdout.write(
-    `agentproto: registered app '${appId}' -> ${appDir}\n`,
+    `agentproto: registered app '${appId}' -> ${appDir}\n` +
+      `  data dir: ${entry.dataDir}\n`,
   )
   return 0
 }
 
-/** `agentproto app list` — print every registered app id→dir mapping. */
+/** `agentproto app list` — print every registered app id→dir mapping,
+ *  with its data dir. */
 export async function runAppList(): Promise<number> {
-  const path = join(homedir(), ".agentproto", "apps.json")
-  if (!existsSync(path)) {
-    process.stdout.write("agentproto: no installed apps.\n")
-    return 0
-  }
-
-  let data: { apps?: { appId: string; dir: string }[] }
-  try {
-    data = JSON.parse(readFileSync(path, "utf8"))
-  } catch {
-    process.stdout.write("agentproto: no installed apps.\n")
-    return 0
-  }
-
-  const apps = Array.isArray(data.apps) ? data.apps : []
+  const apps = listInstalledApps()
   if (apps.length === 0) {
     process.stdout.write("agentproto: no installed apps.\n")
     return 0
   }
 
   for (const app of apps) {
-    process.stdout.write(`${app.appId} -> ${app.dir}\n`)
+    process.stdout.write(`${app.appId} -> ${app.dir}\n  data dir: ${app.dataDir}\n`)
   }
   return 0
 }

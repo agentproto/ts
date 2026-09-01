@@ -113,6 +113,14 @@ runtime app registry:
   declared for discovery.
 - **`dev`** — one or more local launch recipes (`name`, `runtimeExecutable`,
   `runtimeArgs`, `port`, `url`) for running the app in development.
+- **`data`** — `{ dir }`, the app's default **data dir** hint, relative to the
+  app dir (`"data"` ⇒ `<appDir>/data`, which is also the daemon's default when
+  the hint is absent). This is where the `app_data_*` plane reads and writes —
+  kept distinct from the source dir so generated output can live elsewhere. It
+  is only a hint: `app_install { dataDir }` / `agentproto app install
+  --data-dir` override it, and the resolved absolute path is persisted on the
+  installed-app record. Reserved for later: a `store.sqlite` inside that dir
+  behind an `app_data_query` tool.
 
 The three surfaces form the app's public contract:
 
@@ -259,9 +267,10 @@ whose frontmatter lists every agent + workflow the app bundles as `{ id, path }`
 refs (relative to `dir`), plus the app's own optional `id` / `name` / `version`
 (defaults to `"0.1.0"` when `id` is set) / `description`, an optional `requires`
 array of app ids it depends on, and, when the app has a home workspace, that
-workspace's `id`. When declared, `ui` metadata, `artifacts`, and `dev` launch
-configs are also carried in the frontmatter (the `ui.html` document is written
-next to `APP.md` and referenced by path). Nothing reads `AGENT.md`/`WORKFLOW.md`
+workspace's `id`. When declared, `ui` metadata, `artifacts`, `dev` launch
+configs, and the `data: { dir }` data-dir hint are also carried in the
+frontmatter (the `ui.html` document is written next to `APP.md` and referenced
+by path). Nothing reads `AGENT.md`/`WORKFLOW.md`
 files on their own today — `APP.md` is the thing a future daemon `app_install`
 discovers and consumes.
 

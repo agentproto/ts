@@ -20,6 +20,15 @@ export interface InstalledAppRef {
 export interface InstalledApp {
   readonly appId: string
   readonly dir: string
+  /** Absolute root of the app's durable data (the `app_data_*` plane).
+   *  Resolved once at install time by `performInstall` — explicit
+   *  `app_install {dataDir}` > the record's previous `dataDir` > the APP.md
+   *  `data.dir` hint (relative to `dir`) > `<dir>/data`. Absent only on
+   *  records written before the field existed; `appDataDir()` in
+   *  app-data.ts falls back to `<dir>/data` for those. Keeping it distinct
+   *  from `dir` is what lets multi-GB generated output live outside the
+   *  app's source tree. */
+  readonly dataDir?: string
   readonly version?: string
   readonly name?: string
   readonly description?: string

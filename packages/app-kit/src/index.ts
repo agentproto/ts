@@ -53,6 +53,7 @@ export type {
   AppSkillSurface,
   AppArtifactDecl,
   AppDevLaunchConfig,
+  AppDataDefinition,
   AppDevDefinition,
   ToMastraAgentOptions,
   EmittedApp,
