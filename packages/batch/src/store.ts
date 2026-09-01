@@ -122,7 +122,7 @@ export class BatchStore {
   /** All batch ids known to this store, most convenient for a caller doing
    *  `list().then(hs => hs.find(...))`-style lookups. */
   async list(): Promise<BatchHandle[]> {
-    const ids = await readdir(this.root).catch(() => [] as string[])
+    const ids = await readdir(this.root).catch((): string[] => [])
     const handles: BatchHandle[] = []
     for (const id of ids) {
       const record = await this.load(id)

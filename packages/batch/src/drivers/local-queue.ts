@@ -72,8 +72,9 @@ async function runWithConcurrency<T>(
   async function runNext(): Promise<void> {
     const index = cursor
     cursor += 1
-    if (index >= items.length) return
-    await worker(items[index] as T)
+    const item = items[index]
+    if (item === undefined) return
+    await worker(item)
     await runNext()
   }
   const workerCount = Math.max(1, Math.min(limit, items.length))
