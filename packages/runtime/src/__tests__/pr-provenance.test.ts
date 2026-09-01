@@ -1,3 +1,4 @@
+import { footerHasCost, replaceProvenanceFooter, MARKER as FOOTER_MARKER, buildFooter as buildFooterForRefresh } from "../pr-provenance.js"
 /**
  * Unit tests for the pure PR-provenance footer core (pr-provenance.ts):
  *   - buildFooter stays BYTE-IDENTICAL to the runner-lane format that
@@ -326,5 +327,33 @@ describe("hasProvenanceFooter", () => {
     const prose = "Explains the @agentproto-bot marker."
     expect(appendFooterOnce(prose, footer)).toBe(prose + footer)
     expect(appendFooterOnce(prose + footer, footer)).toBe(prose + footer)
+  })
+})
+
+describe("footer cost refresh", () => {
+  const render = (prov: Record<string, unknown>) =>
+    buildFooterForRefresh({ prov, authMode: "subscription", sha: undefined, kind: "PR" })
+
+  it("footerHasCost only sees a spend inside the footer line", () => {
+    const body = `Costs $5 to run.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · session \`s\`</sub>`
+    expect(footerHasCost(body)).toBe(false)
+    const withCost = `Body.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · $0.4200 · host \`h\`</sub>`
+    expect(footerHasCost(withCost)).toBe(true)
+  })
+
+  it("replaceProvenanceFooter swaps only the footer block and keeps the body", () => {
+    const first = render({ sessionId: "sess_a", adapter: "claude-code", host: "mac", cwd: "/x" })
+    const body = `# Title\n\nProse mentioning ${FOOTER_MARKER} in passing.${first}`
+    const fresh = render({ sessionId: "sess_a", adapter: "claude-code", costUsd: 1.5, host: "mac", cwd: "/x" })
+    const out = replaceProvenanceFooter(body, fresh)
+    expect(out.startsWith(`# Title\n\nProse mentioning ${FOOTER_MARKER} in passing.`)).toBe(true)
+    expect(out.endsWith(fresh)).toBe(true)
+    expect(out.match(new RegExp(`<sub>[^\\n]*${FOOTER_MARKER}`, "g"))?.length).toBe(1)
+    expect(footerHasCost(out)).toBe(true)
+  })
+
+  it("replaceProvenanceFooter appends when the body has no footer yet", () => {
+    const fresh = render({ sessionId: "sess_a", adapter: "claude-code", costUsd: 1.5, host: "mac", cwd: "/x" })
+    expect(replaceProvenanceFooter("Body.", fresh)).toBe(`Body.${fresh}`)
   })
 })

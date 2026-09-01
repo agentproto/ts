@@ -2581,7 +2581,7 @@ export async function spawnAgentSession(
 
     let agentSession: AgentSessionLike
     let commandPreview: string | undefined
-    let readUsage: (() => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
+    let readUsage: (() => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
     let sandboxId: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
 
@@ -3164,6 +3164,26 @@ async function bootSandboxAgentSession(opts: {
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
     sandboxTeardown: lifecyclePolicy.teardown,
+    // The proxy flattens the box's stream to text (documented limitation),
+    // so cost/tokens/model never ride the event stream out of the box. Read
+    // them back from the box daemon's own `session_usage` at each turn-end —
+    // the same `readUsage` hook hermes uses for its state.db — so the HOST
+    // descriptor (and every footer / session_usage built from it) carries
+    // the amount the sandboxed session actually spent.
+    ...(typeof host.usage === "function"
+      ? {
+          readUsage: async () => {
+            const snap = await host.usage!(remoteSessionId)
+            const usage = {
+              ...(typeof snap.model === "string" && snap.model.length > 0 ? { model: snap.model } : {}),
+              ...(typeof snap.costUsd === "number" ? { costUsd: snap.costUsd } : {}),
+              ...(typeof snap.tokensIn === "number" ? { tokensIn: snap.tokensIn } : {}),
+              ...(typeof snap.tokensOut === "number" ? { tokensOut: snap.tokensOut } : {}),
+            }
+            return Object.keys(usage).length > 0 ? usage : null
+          },
+        }
+      : {}),
   }
 }
 

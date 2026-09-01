@@ -220,6 +220,28 @@ export function hasProvenanceFooter(body: string): boolean {
   return new RegExp(`<sub>[^\\n]*${MARKER}`).test(body)
 }
 
+/** The rendered footer block, as {@link buildFooter} emits it (with the
+ *  `\n\n---\n` lead-in when present). */
+const FOOTER_BLOCK_RE = new RegExp(`(?:\\n+---)?\\n*<sub>[^\\n]*${MARKER}[^\\n]*</sub>`)
+
+/** True when a body's provenance footer already carries a spend figure. */
+export function footerHasCost(body: string): boolean {
+  const m = new RegExp(`<sub>[^\\n]*${MARKER}[^\\n]*</sub>`).exec(body)
+  return m !== null && /\$\d/.test(m[0])
+}
+
+/**
+ * Replace an existing footer with a fresh one (append when there is none).
+ * The daemon stamps a PR the instant `gh pr create` returns — mid-turn, when
+ * a claude-code/claude-sdk session has reported no usage yet (cost only
+ * arrives on the turn's `result`), so the first footer has no amount. At
+ * turn-end the reconciler re-renders it with what the session now knows.
+ */
+export function replaceProvenanceFooter(body: string, footer: string): string {
+  if (!hasProvenanceFooter(body)) return appendFooterOnce(body, footer)
+  return body.replace(FOOTER_BLOCK_RE, footer)
+}
+
 /**
  * Recognise a successful `gh pr create` from its argv + stdout and pull the
  * created PR's URL + number out. Returns null for anything that isn't a
