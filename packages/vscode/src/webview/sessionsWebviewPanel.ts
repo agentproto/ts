@@ -258,6 +258,30 @@ function toRenderGroup(
   }
 }
 
+/**
+ * The row pool the panel renders AND acts on: pending (still-starting) rows,
+ * then live sessions the paginated summary slice hasn't reached yet, then the
+ * loaded summaries. The store holds the FULL non-archived snapshot, so a
+ * long-running session (e.g. a supervisor's children) that sorts past the
+ * first page is still surfaced — it lands in Needs you / Running at the top,
+ * never buried behind "Load more". Deduped against the loaded summaries +
+ * pending rows by id.
+ *
+ * Shared by `post()` (render) and `runSessionAction()` (stop/archive/…) so a
+ * row drawn with an action button is always resolvable when clicked —
+ * previously the action path only searched `summaries`, so Stop on a pinned
+ * live extra bounced with "session … no longer exists".
+ */
+export function visibleRows(
+  storeSessions: readonly SessionDescriptor[],
+  summaries: readonly SessionSummary[],
+): SessionSummary[] {
+  const pendingRows = storeSessions.filter(isPendingSession)
+  const known = new Set<string>([...pendingRows, ...summaries].map(s => s.id))
+  const liveExtras = storeSessions.filter(s => !isPendingSession(s) && isLiveSession(s) && !known.has(s.id))
+  return [...pendingRows, ...liveExtras, ...summaries]
+}
+
 class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
   private lane: SessionLane = "agents"
@@ -442,7 +466,11 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       vscode.window.showWarningMessage(`agentproto: session ${id} is still starting.`)
       return
     }
-    const summary = this.summaries.find(s => s.id === id)
+    // Look the row up in the SAME pool `post()` renders from — a live session
+    // pinned past the paginated slice (a "live extra") has a Stop button too,
+    // and must not bounce with "no longer exists" just because it isn't in
+    // `this.summaries` yet.
+    const summary = visibleRows(this.store.sessions, this.summaries).find(s => s.id === id)
     if (!summary) {
       vscode.window.showWarningMessage(`agentproto: session ${id} no longer exists.`)
       return
@@ -567,18 +595,8 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 
   private post(): void {
     if (!this.view) return
-    const pendingRows = this.store.sessions.filter(isPendingSession)
-    // Pin live sessions the paginated summary slice hasn't reached yet. The
-    // store holds the FULL non-archived snapshot, so a long-running session
-    // (e.g. the conductor) that sorts past the first page is still surfaced —
-    // it lands in Needs you / Running at the top, never buried behind "Load
-    // more". Deduped against the loaded summaries + pending rows by id.
-    const known = new Set<string>([...pendingRows, ...this.summaries].map(s => s.id))
-    const liveExtras = this.store.sessions.filter(
-      s => !isPendingSession(s) && isLiveSession(s) && !known.has(s.id),
-    )
     const model = buildSessionsWebviewModel(
-      [...pendingRows, ...liveExtras, ...this.summaries],
+      visibleRows(this.store.sessions, this.summaries),
       this.filter.workspaces,
       {
         lane: this.lane,
