@@ -285,7 +285,7 @@ pkill -f "agentproto serve"
 ## See also
 
 - `agentproto` skill — general daemon/CLI/MCP usage
-- `adapter-setup-kit` skill — tunnel creation, adapter catalog
+- `ap-tunnels` / `ap-adapters` skills — tunnel creation, adapter catalog
 - `projects/agentproto/ts/packages/llm-endpoint` — proxy source
 - `projects/agentproto/ts/adapters/claude-sdk/src/index.ts` — SDK adapter
   manifest
