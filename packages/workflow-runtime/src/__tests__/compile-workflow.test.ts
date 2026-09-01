@@ -416,3 +416,378 @@ describe("compileWorkflow — declarative agent step", () => {
     await runWorkflow({ workflow: compiled, agents: host })
   })
 })
+
+describe("compileWorkflow — branch (forward-only goto)", () => {
+  it("first branch: the earliest truthy `when` wins", async () => {
+    const wf = defineWorkflow({
+      name: "Tiered",
+      id: "tiered-first",
+      description: "Route by size.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "gate",
+          kind: "branch",
+          branches: [
+            { when: "$input.n >= 10", next: "big" },
+            { when: "$input.n >= 5", next: "medium" },
+          ],
+          default: "small",
+        },
+        { id: "big", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "medium", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "small", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 20 } })
+    expect(bindings.steps.big).toEqual({ n: 40 })
+  })
+
+  it("second branch: the earlier arm is skipped entirely when its `when` is falsy", async () => {
+    const wf = defineWorkflow({
+      name: "Tiered",
+      id: "tiered-second",
+      description: "Route by size.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "gate",
+          kind: "branch",
+          branches: [
+            { when: "$input.n >= 10", next: "big" },
+            { when: "$input.n >= 5", next: "medium" },
+          ],
+          default: "small",
+        },
+        { id: "big", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "medium", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "small", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 7 } })
+    expect(bindings.steps.medium).toEqual({ n: 17 })
+    expect(bindings.steps.big).toBeUndefined()
+  })
+
+  it("default: no `when` matches, jumps to `default`, skipping the earlier arms", async () => {
+    const wf = defineWorkflow({
+      name: "Tiered",
+      id: "tiered-default",
+      description: "Route by size.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "gate",
+          kind: "branch",
+          branches: [
+            { when: "$input.n >= 10", next: "big" },
+            { when: "$input.n >= 5", next: "medium" },
+          ],
+          default: "small",
+        },
+        { id: "big", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "medium", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "small", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 2 } })
+    expect(bindings.steps.small).toEqual({ n: 4 })
+    expect(bindings.steps.big).toBeUndefined()
+    expect(bindings.steps.medium).toBeUndefined()
+  })
+
+  it("no default: falls through to the next sibling in document order", async () => {
+    const wf = defineWorkflow({
+      name: "No default",
+      id: "no-default",
+      description: "No `when` matches and there's no `default`.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "gate",
+          kind: "branch",
+          branches: [{ when: "$input.n >= 999", next: "far" }],
+        },
+        { id: "near", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "far", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 1 } })
+    expect(bindings.steps.near).toEqual({ n: 2 })
+  })
+
+  it("rejects a backward branch target", () => {
+    const wf = defineWorkflow({
+      name: "Backward",
+      id: "backward-branch",
+      description: "A branch target that points at an earlier sibling.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "a", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        {
+          id: "gate",
+          kind: "branch",
+          branches: [{ when: "$input.n >= 1", next: "a" }],
+        },
+        { id: "b", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      ],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/loop/)
+  })
+
+  it("rejects an unknown branch target", () => {
+    const wf = defineWorkflow({
+      name: "Unknown target",
+      id: "unknown-branch-target",
+      description: "A branch target that names no sibling.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "gate",
+          kind: "branch",
+          branches: [{ when: "$input.n >= 1", next: "ghost" }],
+        },
+        { id: "b", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      ],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
+  })
+
+  it("works nested inside a map's body, branching on $item", async () => {
+    // `neg` is the LAST sibling in the body, so the `default` jump to it is
+    // exclusive (skips `pos` entirely). `pos` sits earlier, so taking that
+    // arm falls through into `neg` too — the same forward-fallthrough
+    // semantics proven at the top level, just nested inside a map body.
+    const wf = defineWorkflow({
+      name: "Branch in map",
+      id: "branch-in-map",
+      description: "Sign each element.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "signed",
+          kind: "map",
+          over: "$input.xs",
+          steps: [
+            {
+              id: "check",
+              kind: "branch",
+              branches: [{ when: "$item >= 0", next: "pos" }],
+              default: "neg",
+            },
+            { id: "pos", kind: "tool", tool: "demo.double", inputs: { n: "$item" } },
+            { id: "neg", kind: "tool", tool: "demo.add-ten", inputs: { n: "$item" } },
+          ],
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const { output } = await runWorkflow({ workflow: compiled, input: { xs: [3, -2, 5] } })
+    // 3 → pos (double → 6), falls through to neg (add-ten → 13)
+    // -2 → default (neg only, exclusive) → add-ten → 8
+    // 5 → pos (double → 10), falls through to neg (add-ten → 15)
+    expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([13, 8, 15])
+  })
+
+  it("end-to-end: only the chosen arm's steps run, and the shared trailing sibling runs exactly once", async () => {
+    let finalizeCalls = 0
+    const finalizeTool = defineTool({
+      id: "demo.finalize",
+      description: "Counts its own invocations.",
+      inputSchema: z.object({ n: z.number() }),
+      outputSchema: z.object({ n: z.number() }),
+    })
+    const finalizeProvider = defineDriver({
+      id: "finalize-builtin",
+      name: "Finalize",
+      description: "Counts calls.",
+      kind: "builtin",
+      implements: [{ tool: "demo.finalize", version: "0.1.0" }],
+      implementations: [
+        implementTool(finalizeTool, ({ input }) => {
+          finalizeCalls++
+          return { n: input.n }
+        }),
+      ],
+    })
+    const wf = defineWorkflow({
+      name: "Branch e2e",
+      id: "branch-e2e",
+      description: "big is placed last so taking it skips small entirely.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "gate",
+          kind: "branch",
+          branches: [{ when: "$input.n >= 100", next: "big" }],
+          default: "small",
+        },
+        { id: "small", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "big", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "finalize", kind: "tool", tool: "demo.finalize", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools: { ...tools, "demo.finalize": finalizeTool },
+      candidates: [...candidates, finalizeProvider],
+    })
+    const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 500 } })
+    expect(bindings.steps.big).toEqual({ n: 1000 })
+    expect(bindings.steps.small).toBeUndefined()
+    expect(bindings.steps.finalize).toEqual({ n: 500 })
+    expect(finalizeCalls).toBe(1)
+  })
+})
+
+describe("compileWorkflow — subworkflow input projection", () => {
+  const childDoubles = defineWorkflow({
+    name: "Child (doubles $input.n)",
+    id: "child-doubles",
+    description: "Doubles n.",
+    version: "0.1.0",
+    inputs: {},
+    outputs: {},
+    steps: [{ id: "c", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } }],
+  })
+  const childNested = defineWorkflow({
+    name: "Child (nested input)",
+    id: "child-nested",
+    description: "Doubles meta.n.",
+    version: "0.1.0",
+    inputs: {},
+    outputs: {},
+    steps: [{ id: "c", kind: "tool", tool: "demo.double", inputs: { n: "$input.meta.n" } }],
+  })
+
+  it("mapping with a $steps ref", async () => {
+    const wf = defineWorkflow({
+      name: "Parent (ref mapping)",
+      id: "parent-ref-mapping",
+      description: "Projects a prior step's output into the child's input.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "d", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "sub", kind: "subworkflow", workflow: "child-doubles", inputs: { n: "$steps.d.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      workflows: { "child-doubles": childDoubles },
+    })
+    const { output } = await runWorkflow({ workflow: compiled, input: { n: 5 } })
+    // 5 → double 10 (parent) → double 20 (child)
+    expect((output as { n: number }).n).toBe(20)
+  })
+
+  it("mapping with a literal value", async () => {
+    const wf = defineWorkflow({
+      name: "Parent (literal mapping)",
+      id: "parent-literal-mapping",
+      description: "Projects a literal into the child's input.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "sub", kind: "subworkflow", workflow: "child-doubles", inputs: { n: 42 } }],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      workflows: { "child-doubles": childDoubles },
+    })
+    const { output } = await runWorkflow({ workflow: compiled, input: {} })
+    expect((output as { n: number }).n).toBe(84)
+  })
+
+  it("mapping with a nested object", async () => {
+    const wf = defineWorkflow({
+      name: "Parent (nested mapping)",
+      id: "parent-nested-mapping",
+      description: "Projects a nested object into the child's input.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "d", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        {
+          id: "sub",
+          kind: "subworkflow",
+          workflow: "child-nested",
+          inputs: { meta: { n: "$steps.d.n" } },
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      workflows: { "child-nested": childNested },
+    })
+    const { output } = await runWorkflow({ workflow: compiled, input: { n: 5 } })
+    // 5 → double 10 (parent) → double 20 (child, via meta.n)
+    expect((output as { n: number }).n).toBe(20)
+  })
+
+  it("absent mapping passes the parent's own input through unchanged", async () => {
+    const wf = defineWorkflow({
+      name: "Parent (pass-through)",
+      id: "parent-pass-through",
+      description: "No `inputs` on the subworkflow step.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "sub", kind: "subworkflow", workflow: "child-doubles" }],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      workflows: { "child-doubles": childDoubles },
+    })
+    const { output } = await runWorkflow({ workflow: compiled, input: { n: 7 } })
+    expect((output as { n: number }).n).toBe(14)
+  })
+
+  it("rejects a mapping ref to a missing step id at compile time", () => {
+    const wf = defineWorkflow({
+      name: "Parent (bad ref)",
+      id: "parent-bad-ref",
+      description: "Maps from a step id that doesn't exist.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "sub",
+          kind: "subworkflow",
+          workflow: "child-doubles",
+          inputs: { n: "$steps.ghost.n" },
+        },
+      ],
+    })
+    expect(() =>
+      compileWorkflow(wf, { tools, candidates, workflows: { "child-doubles": childDoubles } }),
+    ).toThrow(WorkflowCompileError)
+  })
+})
