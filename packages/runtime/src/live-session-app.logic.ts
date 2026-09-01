@@ -292,3 +292,35 @@ export function groupAdjacentToolCalls(
 
   return result
 }
+
+/**
+ * Pull a session id out of an ext-apps `ui/notifications/tool-result`
+ * payload — the host's push of the tool call that mounted the widget.
+ * Handles both wrapping shapes seen in hosts (`params` IS the
+ * CallToolResult, or nests it under `params.result`) and both body shapes
+ * this widget can be mounted from: an `agent_start` result (a session
+ * descriptor whose id lives in `id`) and a `live_session` result
+ * (`{sessionId, httpBaseUrl}`). `sessionId` wins over `id` when both are
+ * present. Returns `null` for error results, non-JSON text, or any shape
+ * mismatch — never throws. A hand-kept inlined copy lives in
+ * `live-session-app.ts`'s browser bundle (same convention as the reducer).
+ */
+export function extractToolResultSessionId(params: unknown): string | null {
+  if (!params || typeof params !== "object") return null
+  const outer = params as { result?: unknown }
+  const res = (
+    outer.result && typeof outer.result === "object" ? outer.result : params
+  ) as { content?: unknown; isError?: unknown }
+  if (res.isError) return null
+  const content = Array.isArray(res.content) ? res.content : []
+  const item = content[0] as { type?: unknown; text?: unknown } | undefined
+  if (!item || item.type !== "text" || typeof item.text !== "string") return null
+  try {
+    const body = JSON.parse(item.text) as { sessionId?: unknown; id?: unknown }
+    if (typeof body?.sessionId === "string" && body.sessionId) return body.sessionId
+    if (typeof body?.id === "string" && body.id) return body.id
+  } catch {
+    // non-JSON tool result (plain-text error message, etc.)
+  }
+  return null
+}

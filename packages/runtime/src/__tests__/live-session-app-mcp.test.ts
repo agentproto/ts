@@ -87,6 +87,11 @@ describe("live-session app — MCP protocol", () => {
     expect(content.text).toContain("app_session_events")
     expect(content.text).toContain("/events/stream")
     expect(content.text).toContain("ui/request-display-mode")
+    // The widget must pin itself to the session named by the tool result
+    // that mounted it (agent_start's descriptor) — not self-discover the
+    // newest running session for every card.
+    expect(content.text).toContain("ui/notifications/tool-result")
+    expect(content.text).toContain("extractToolResultSessionId")
 
     await client.close()
   })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  extractToolResultSessionId,
   initialTimelineState,
   isNearBottom,
   groupAdjacentToolCalls,
@@ -445,5 +446,42 @@ describe("groupAdjacentToolCalls", () => {
     // Confirm every input row is covered exactly once (flatten)
     const covered = result.flatMap(e => (e.kind === "tool-group" ? e.rows : [e.row]))
     expect(covered).toEqual(rows)
+  })
+})
+describe("extractToolResultSessionId", () => {
+  const asResult = (body: unknown) => ({
+    content: [{ type: "text", text: JSON.stringify(body) }],
+  })
+
+  it("pins the spawned session from an agent_start descriptor (id field)", () => {
+    const descriptor = { id: "sess_5d820e69", label: "agent-apps-reorg", status: "running" }
+    expect(extractToolResultSessionId(asResult(descriptor))).toBe("sess_5d820e69")
+  })
+
+  it("pins from a live_session result (sessionId field), preferring it over id", () => {
+    expect(
+      extractToolResultSessionId(asResult({ sessionId: "sess_aaa", id: "sess_bbb" })),
+    ).toBe("sess_aaa")
+  })
+
+  it("unwraps a params.result nesting", () => {
+    expect(
+      extractToolResultSessionId({ result: asResult({ id: "sess_ccc" }) }),
+    ).toBe("sess_ccc")
+  })
+
+  it("returns null for error results, non-JSON text, and shape mismatches", () => {
+    expect(
+      extractToolResultSessionId({ isError: true, content: [{ type: "text", text: "{\"id\":\"x\"}" }] }),
+    ).toBeNull()
+    expect(
+      extractToolResultSessionId(asResult({ sessionId: undefined, httpBaseUrl: "http://x" })),
+    ).toBeNull()
+    expect(
+      extractToolResultSessionId({ content: [{ type: "text", text: "agent_start: adapter is required" }] }),
+    ).toBeNull()
+    expect(extractToolResultSessionId(null)).toBeNull()
+    expect(extractToolResultSessionId("nope")).toBeNull()
+    expect(extractToolResultSessionId({ content: [] })).toBeNull()
   })
 })
