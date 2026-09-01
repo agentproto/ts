@@ -17,6 +17,7 @@ import {
   stripFixedNativeVendor,
   stripRouteSuffix,
 } from "@agentproto/model-catalog/route-identity"
+import { WIDENING_ROUTES } from "./catalog-models.js"
 
 export interface ModelWireOptions {
   /** AIP-45 `routeSelection`: how this adapter's billing route relates to the
@@ -31,6 +32,24 @@ export interface ModelWireOptions {
    *  the adapter is a single-provider native adapter. Used to bare a matching
    *  `vendor/product` direct ref. */
   fixedProvider?: string
+  /**
+   * `AdapterAuthDescriptor.modelDerivedApiKey` — this adapter parses the wire
+   * model id's OWN leading path segment to pick which provider key to inject
+   * (`modelIdPrefixProvider`, session-spawn.ts) and its own ACP model selector
+   * validates against that same literal shape. For a `derived-from-model`
+   * adapter billed through a gateway/router (openrouter/requesty/huggingface),
+   * that means the gateway must be a literal LEADING segment on the wire
+   * (`openrouter/z-ai/glm-5.3-flash`) — the catalog's bare `vendor/product`
+   * form (`z-ai/glm-5.3-flash`) 404s upstream even though the route resolves
+   * fine and the money-safety/adapter-capability guards both pass it (see
+   * `checkModelAdapterEligibility`'s doc: it proves the combination reachable
+   * by SOME curated shape, not that the caller's literal string IS that
+   * shape). opencode/mastracode/jcode/pi/mastra-agent all set this; hermes
+   * does not — its `/model` command path wants the bare `vendor/product` id
+   * (see `buildHermesModelMenu`'s `${bareId}@openrouter` catalog annotation,
+   * stripped to bare before the wire, same as today).
+   */
+  modelDerivedApiKey?: boolean
 }
 
 /**
@@ -49,7 +68,23 @@ export function normalizeModelForWire(
   opts: ModelWireOptions,
 ): string {
   if (opts.routeSelection === "derived-from-model") {
-    return stripRouteSuffix(model)
+    const bare = stripRouteSuffix(model)
+    // Re-add the router as a literal leading segment for a model-derived-
+    // API-key adapter billed through a widening gateway — see
+    // `ModelWireOptions.modelDerivedApiKey`'s doc. `startsWith` guards
+    // idempotency: a caller that already passed the router-prefixed shape
+    // (e.g. the Configuration Lab / change-model picker, sourced from the
+    // adapter's own advertised menu) is left untouched rather than
+    // double-prefixed.
+    if (
+      opts.modelDerivedApiKey &&
+      opts.gateway &&
+      (WIDENING_ROUTES as readonly string[]).includes(opts.gateway) &&
+      !bare.startsWith(`${opts.gateway}/`)
+    ) {
+      return `${opts.gateway}/${bare}`
+    }
+    return bare
   }
   const nativeVendor = opts.gateway ?? opts.fixedProvider
   if (nativeVendor) {

@@ -4335,7 +4335,7 @@ describe("spawnAgentSession — D2/D3: wire model form + adapter-declared provid
     expect(captured[0]?.auth?.setEnv).toBe("OPENAI_API_KEY")
   })
 
-  it("D2: a derived-from-model adapter KEEPS its vendor prefix (the prefix IS its route)", async () => {
+  it("D2: a modelDerivedApiKey adapter gets the router RE-ADDED as a literal leading segment (opencode/mastracode/jcode/pi/mastra-agent shape)", async () => {
     const { resolver, captured } = makeResolver(
       { modelDerivedApiKey: true },
       { routeSelection: "derived-from-model" },
@@ -4346,8 +4346,19 @@ describe("spawnAgentSession — D2/D3: wire model form + adapter-declared provid
       { adapter: "hermes", cwd: "/tmp", model: "z-ai/glm-5.2@openrouter", auth: { mode: "api-key" } },
     )
     expect(result.ok).toBe(true)
-    // Only the @route suffix goes; the vendor prefix is load-bearing here.
-    expect(captured[0]?.model).toBe("z-ai/glm-5.2")
+    // The @route suffix is catalog-join metadata and never reaches the wire —
+    // but for a `modelDerivedApiKey` adapter (opencode/mastracode/jcode/pi/
+    // mastra-agent all set this; the REAL hermes manifest does not, this
+    // fixture's `adapter: "hermes"` label is only a stand-in slug for the
+    // generic contract) the gateway must survive as a literal LEADING path
+    // segment: the adapter parses the wire model's own first segment to pick
+    // which provider key to inject AND its ACP model selector validates that
+    // same literal shape. Bare `z-ai/glm-5.2` is exactly the production bug
+    // (`z-ai/glm-5.3-flash` sent bare to opencode 404'd — see
+    // `model-wire.ts`'s `ModelWireOptions.modelDerivedApiKey` doc); the wire
+    // form opencode's own manifest actually advertises is
+    // `openrouter/z-ai/glm-5.2`.
+    expect(captured[0]?.model).toBe("openrouter/z-ai/glm-5.2")
   })
 
   it("D3: the adapter's OWN declared provider wins over the catalog (pi bills kimi via moonshot, not openrouter)", async () => {
