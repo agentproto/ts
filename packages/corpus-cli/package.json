@@ -57,6 +57,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/batch": "workspace:*",
     "@agentproto/cli-exec": "workspace:*",
     "@agentproto/corpus": "workspace:*",
     "@agentproto/corpus-presets": "workspace:*",

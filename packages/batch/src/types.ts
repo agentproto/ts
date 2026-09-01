@@ -17,6 +17,10 @@ import { z } from "zod"
 const anthropicContentBlockSchema = z
   .object({
     type: z.string(),
+    // Declared explicitly (rather than left to `.loose()`'s passthrough) so
+    // callers can read a text block's `text` without an `unknown` cast — the
+    // one content-block field every caller of this package needs.
+    text: z.string().optional(),
   })
   .loose()
 

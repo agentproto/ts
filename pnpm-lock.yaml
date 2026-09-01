@@ -1631,6 +1631,9 @@ importers:
 
   packages/corpus-cli:
     dependencies:
+      '@agentproto/batch':
+        specifier: workspace:*
+        version: link:../batch
       '@agentproto/cli-exec':
         specifier: workspace:*
         version: link:../cli-exec

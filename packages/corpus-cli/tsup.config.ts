@@ -14,6 +14,7 @@ export default createTsupConfig({
   splitting: false,
   dts: { entry: { index: "src/index.ts", "ports/index": "src/ports/index.ts" } },
   external: [
+    "@agentproto/batch",
     "@agentproto/corpus",
     "@agentproto/corpus-presets",
     "@agentproto/corpus-presets/marketing",
