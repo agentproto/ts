@@ -13,7 +13,10 @@
  */
 
 import { execSync } from 'node:child_process'
-import { runLlm, parseJsonLoose } from '../llm.mjs'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { runLlm, parseJsonLoose, parseLastJsonObject } from '../llm.mjs'
+import { connectDaemon, readDaemonToken, readSessionTail, runWorkflowFile } from '../../lib/daemon-mcp.mjs'
 
 export const DIFF_CAP = 16_000
 
@@ -47,7 +50,13 @@ const defaultExec = (cmd, root) =>
  *
  *  `exec` is injectable for tests — defaults to the real execSync-backed
  *  implementation. */
-export function gatherDiff(root, cap = DIFF_CAP, exec = defaultExec) {
+/** Fetch origin/main fresh (non-fatal on failure) and return just the changed
+ *  file names + count vs it — no full diff body. Shared by `gatherDiff` and
+ *  by callers (the daemon review engine) that only need file names/counts:
+ *  the daemon-driven reviewer reads the live checkout itself, so pre-reading
+ *  a diff that can run to hundreds of MB (see EXEC_MAX_BUFFER above) would be
+ *  pure waste. `exec` is injectable for tests. */
+export function gatherChangedFiles(root, exec = defaultExec) {
   try {
     // Explicit refspec, not just `git fetch origin main` -- a clone with a
     // narrowed fetch refspec (--single-branch, or an actions/checkout PR
@@ -61,10 +70,15 @@ export function gatherDiff(root, cap = DIFF_CAP, exec = defaultExec) {
     // slightly-stale review.
   }
   const changedFiles = exec('git diff --name-only origin/main...HEAD', root).trim()
+  return { changedFiles, fileCount: changedFiles ? changedFiles.split('\n').length : 0 }
+}
+
+export function gatherDiff(root, cap = DIFF_CAP, exec = defaultExec) {
+  const { changedFiles, fileCount } = gatherChangedFiles(root, exec)
   const full = changedFiles ? exec('git diff origin/main...HEAD', root) : ''
   return {
     changedFiles,
-    fileCount: changedFiles ? changedFiles.split('\n').length : 0,
+    fileCount,
     diff: full.slice(0, cap),
     truncated: full.length > cap,
   }
@@ -101,4 +115,84 @@ export async function reviewDiff({ changedFiles, diff, priorFindings, engine, mo
   const verdict = parseJsonLoose(raw)
   verdict.findings = Array.isArray(verdict.findings) ? verdict.findings : []
   return verdict
+}
+
+// ── engine "daemon" — the SAME review the CI lane runs ──────────────────────
+
+const PR_REVIEW_WORKFLOW = ['.github', 'agentproto-workflows', 'pr-review', 'WORKFLOW.md']
+
+/** Build the `reviewConfig` input for a "local" placement run of the pr-review
+ *  workflow: the parsed `.github/agentic-review.json`, with `reviewerSandbox`
+ *  removed (a local daemon run must be a HOST spawn on the dev's own daemon —
+ *  otherwise `sandboxRefFor` would try to route it through e2b, which the
+ *  dev's daemon has no way to provision) and `reviewerAdapter` overridden by
+ *  `adapterOverride` when given (default: keep the file's value — a dev's
+ *  daemon typically has `claude-code` available, not the CI lane's
+ *  `claude-sdk`). */
+function buildDaemonReviewConfig(root, adapterOverride) {
+  const raw = readFileSync(join(root, '.github', 'agentic-review.json'), 'utf8')
+  const reviewConfig = JSON.parse(raw)
+  delete reviewConfig.reviewerSandbox
+  if (adapterOverride) reviewConfig.reviewerAdapter = adapterOverride
+  return reviewConfig
+}
+
+/**
+ * Run the review primitive via engine "daemon": the SAME
+ * `.github/agentproto-workflows/pr-review/WORKFLOW.md` the CI lane runs, in
+ * `placement: "local"`, driven through the developer's already-running local
+ * agentproto daemon over MCP (`scripts/lib/daemon-mcp.mjs`). No diff cap —
+ * the agent reads the live checkout itself (see `gatherChangedFiles`).
+ *
+ * `client` is the connected MCP client; pass one in to reuse a connection
+ * made upfront (so a caller can surface "daemon unreachable" distinctly from
+ * "review failed") or for tests. When omitted, connects fresh using `port`.
+ *
+ * Returns `{ decision: 'approve' | 'request_changes', summary, findings[] }`
+ * — same shape `reviewDiff` returns, so callers don't need to branch on it.
+ * Throws a clear error when the run produced no session, or the session's
+ * final output has no parseable verdict.
+ */
+export async function reviewViaDaemon({
+  root,
+  baseRef = 'main',
+  port = 18790,
+  timeoutMs = 15 * 60_000,
+  pollMs,
+  adapter,
+  client,
+  onStatus,
+}) {
+  const reviewConfig = buildDaemonReviewConfig(root, adapter)
+  const daemonClient = client ?? (await connectDaemon({ port, token: readDaemonToken({ port }) }))
+  const path = join(root, ...PR_REVIEW_WORKFLOW)
+  const { runId, sessionIds } = await runWorkflowFile(daemonClient, {
+    path,
+    input: { placement: 'local', baseRef, prNumber: 0, reviewConfig },
+    cwd: root,
+    timeoutMs,
+    pollMs,
+    onStatus,
+  })
+  const sessionId = sessionIds.at(-1)
+  if (!sessionId) {
+    throw new Error(`[agentflow] daemon review: run ${runId} produced no session id`)
+  }
+  const tail = await readSessionTail(daemonClient, sessionId)
+  let raw
+  try {
+    // The verdict is the agent's FINAL message — parse the last object, not
+    // the first-brace…last-brace slice (earlier prose may contain braces).
+    raw = parseLastJsonObject(tail)
+  } catch {
+    throw new Error(`[agentflow] daemon review: no parseable verdict in session ${sessionId} output`)
+  }
+  return {
+    // Unknown/garbage conclusions fall to "request_changes" — silently
+    // treating an unparseable verdict as an approval would be worse than a
+    // false negative.
+    decision: raw.conclusion === 'approve' ? 'approve' : 'request_changes',
+    summary: raw.summary ?? '',
+    findings: Array.isArray(raw.findings) ? raw.findings : [],
+  }
 }
