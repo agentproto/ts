@@ -5,11 +5,13 @@
  * agent's pre-colored streamed output for agent-cli sessions (which have no
  * PTY anywhere — see terminalSwitch.logic.ts's `notPtyMessage`). One
  * terminal per session id; re-invoking reveals the existing one rather than
- * opening a duplicate. The tree's single-click still opens the CONVERSATION
- * webview (agentproto.openTranscript, unchanged) — this command is reached
- * from the tree's inline context menu and the transcript panel's editor
- * title bar instead, so it reads as a switch between two views of one
- * session rather than a second, unrelated feature.
+ * opening a duplicate. The tree's single-click now routes by session kind
+ * (agentproto.openSession, sessionOpen.logic.ts's `defaultOpenTarget`) and
+ * already opens this same terminal directly for a plain terminal PTY — this
+ * command is additionally reached from the tree's inline context menu and
+ * the transcript panel's editor title bar, so for everything else (agent-cli,
+ * a native-conversation PTY) it still reads as a switch between two views of
+ * one session rather than a second, unrelated feature.
  */
 
 import * as vscode from "vscode"

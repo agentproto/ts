@@ -293,6 +293,18 @@
         "icon": "$(open-preview)"
       },
       {
+        "command": "agentproto.openSession",
+        "title": "agentproto: Open Session",
+        "category": "agentproto",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "agentproto.openBrowser",
+        "title": "agentproto: Open Browser View",
+        "category": "agentproto",
+        "icon": "$(browser)"
+      },
+      {
         "command": "agentproto.openStory",
         "title": "agentproto: Open Story",
         "category": "agentproto",
