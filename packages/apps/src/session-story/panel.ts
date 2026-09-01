@@ -1,5 +1,9 @@
 /**
- * MCP App resource: agentproto session story panel.
+ * HTML bundle for the agentproto session story panel — the
+ * `SESSION_STORY_PANEL_HTML` served as the `ui://agentproto_session_story/view`
+ * resource. Mounted via the `agentproto_session_story` tool defined in
+ * ./index.ts. Also consumed directly by packages/vscode's story webview
+ * (`storyPanel.ts`), which relays this same HTML into a VS Code editor tab.
  *
  * Ported 1:1 from the validated mockup at docs/session-story-mockup.html —
  * same CSS, same DOM structure/classes, same interaction model (anchored
@@ -8,12 +12,14 @@
  * replaced with live data pulled through the MCP Apps postMessage bridge.
  *
  * The HTML must stay fully self-contained (CSP: inline CSS/JS only, no
- * CDN, no external fonts) — see mcp-apps-adapter.ts and the other panels
- * in this file family (sessions-panel.ts, agents-overview-app.ts) for the
- * same constraint. Because of that, this file cannot `import` the pure
- * `buildStory` module from session-story.ts — the folding/chaptering
- * heuristics are ported to vanilla JS below (`buildStoryJs`), mirroring
- * session-story.ts function-for-function so the two stay easy to diff.
+ * CDN, no external fonts) — see runtime's mcp-apps-adapter.ts and the other
+ * panels in this app family (sessions-panel, agents-overview) for the same
+ * constraint. Because of that, this file cannot `import` the pure
+ * `buildStory` module from @agentproto/runtime's session-story.ts (a
+ * separate, CLI-facing heuristics module that stays in runtime — it isn't
+ * a dependency of this panel) — the folding/chaptering heuristics are
+ * ported to vanilla JS below (`buildStoryJs`), mirroring session-story.ts
+ * function-for-function so the two stay easy to diff.
  *
  * Protocol: MCP Apps ext spec 2026-01-26
  *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage
@@ -22,12 +28,7 @@
  *     (timeline, re-fetched on turn boundaries) + agent_prompt (composer)
  */
 
-import { panelBridgeScript } from "./panel-bridge.js"
-
-const RESOURCE_URI = "ui://agentproto_session_story/view"
-const MIME_TYPE = "text/html;profile=mcp-app"
-void RESOURCE_URI
-void MIME_TYPE
+import { panelBridgeScript } from "../panel-bridge.js"
 
 export const SESSION_STORY_PANEL_HTML = `<!doctype html>
 <html lang="fr">

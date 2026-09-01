@@ -64,6 +64,31 @@
       "import": "./dist/session-viewer.mjs",
       "default": "./dist/session-viewer.mjs"
     },
+    "./sessions-panel": {
+      "types": "./dist/sessions-panel/index.d.ts",
+      "import": "./dist/sessions-panel.mjs",
+      "default": "./dist/sessions-panel.mjs"
+    },
+    "./agents-overview": {
+      "types": "./dist/agents-overview/index.d.ts",
+      "import": "./dist/agents-overview.mjs",
+      "default": "./dist/agents-overview.mjs"
+    },
+    "./bureau-sessions": {
+      "types": "./dist/bureau-sessions/index.d.ts",
+      "import": "./dist/bureau-sessions.mjs",
+      "default": "./dist/bureau-sessions.mjs"
+    },
+    "./session-story": {
+      "types": "./dist/session-story/index.d.ts",
+      "import": "./dist/session-story.mjs",
+      "default": "./dist/session-story.mjs"
+    },
+    "./live-session": {
+      "types": "./dist/live-session/index.d.ts",
+      "import": "./dist/live-session.mjs",
+      "default": "./dist/live-session.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -85,7 +110,8 @@
   "dependencies": {
     "@agentproto/agent": "workspace:*",
     "@agentproto/app-kit": "workspace:*",
-    "@agentproto/workflow": "workspace:*"
+    "@agentproto/workflow": "workspace:*",
+    "zod": "^4.5.4"
   },
   "peerDependencies": {
     "@mastra/core": ">=1.0.0"

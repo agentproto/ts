@@ -101,11 +101,6 @@
       "import": "./dist/session-story.mjs",
       "default": "./dist/session-story.mjs"
     },
-    "./session-story-panel": {
-      "types": "./dist/session-story-panel.d.ts",
-      "import": "./dist/session-story-panel.mjs",
-      "default": "./dist/session-story-panel.mjs"
-    },
     "./user-presets": {
       "types": "./dist/user-presets.d.ts",
       "import": "./dist/user-presets.mjs",
@@ -134,6 +129,7 @@
     "@agentproto/acp": "workspace:*",
     "@agentproto/agent": "workspace:*",
     "@agentproto/app-kit": "workspace:*",
+    "@agentproto/apps": "workspace:*",
     "@agentproto/auth": "workspace:*",
     "@agentproto/command-sandbox": "workspace:*",
     "@agentproto/driver": "workspace:*",

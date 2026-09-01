@@ -9,7 +9,7 @@ import {
   SCROLL_STICK_THRESHOLD_PX,
   TOOL_CALL_GROUP_THRESHOLD,
   type TimelineEventRecord,
-} from "../live-session-app.logic.js"
+} from "../live-session/logic.js"
 
 function reduceAll(records: TimelineEventRecord[]) {
   return records.reduce(reduceEvent, initialTimelineState())

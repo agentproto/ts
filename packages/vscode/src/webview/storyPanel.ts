@@ -4,8 +4,9 @@
  * panel.
  *
  * The panel HTML is NOT authored here: it is `SESSION_STORY_PANEL_HTML` from
- * `@agentproto/runtime`, reused byte-for-byte (the same validated surface the
- * MCP-Apps host renders). That html is fully self-contained (CSP inline-only)
+ * `@agentproto/apps` (the daemon-builtin session-story panel's house-app
+ * source), reused byte-for-byte (the same validated surface the MCP-Apps
+ * host renders). That html is fully self-contained (CSP inline-only)
  * and talks to its host over a JSON-RPC 2.0 postMessage bridge. Because a VS
  * Code webview reaches its extension through `acquireVsCodeApi()` — a raw
  * `window.parent.postMessage` (what the bridge does) never gets there — the
@@ -19,7 +20,7 @@
 
 import * as vscode from "vscode"
 
-import { SESSION_STORY_PANEL_HTML } from "@agentproto/runtime/session-story-panel"
+import { SESSION_STORY_PANEL_HTML } from "@agentproto/apps/session-story"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor } from "../client/types.js"

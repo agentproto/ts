@@ -1056,6 +1056,9 @@ importers:
       '@agentproto/workflow':
         specifier: workspace:*
         version: link:../workflow
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
     devDependencies:
       '@agentproto/mastra':
         specifier: workspace:*
@@ -3014,6 +3017,9 @@ importers:
       '@agentproto/app-kit':
         specifier: workspace:*
         version: link:../app-kit
+      '@agentproto/apps':
+        specifier: workspace:*
+        version: link:../apps
       '@agentproto/auth':
         specifier: workspace:*
         version: link:../auth
@@ -3512,6 +3518,9 @@ importers:
 
   packages/vscode:
     dependencies:
+      '@agentproto/apps':
+        specifier: workspace:*
+        version: link:../apps
       '@agentproto/runtime':
         specifier: workspace:*
         version: link:../runtime

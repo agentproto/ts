@@ -1558,7 +1558,8 @@ describe("app_catalog", () => {
     await client.callTool({ name: "app_install", arguments: { dir } })
 
     const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
-    expect(entries).toHaveLength(2)
+    const nonBuiltin = entries.filter((e: any) => e.category !== "builtin")
+    expect(nonBuiltin).toHaveLength(2)
 
     const fixture = entries.find((e: any) => e.appId === "@test/fixture-app")
     expect(fixture.installed).toBe(true)
@@ -1577,15 +1578,37 @@ describe("app_catalog", () => {
     await client.callTool({ name: "app_install", arguments: { dir } })
 
     const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
-    expect(entries).toHaveLength(1)
-    expect(entries[0].appId).toBe("@test/fixture-app")
-    expect(entries[0].installed).toBe(true)
+    const nonBuiltin = entries.filter((e: any) => e.category !== "builtin")
+    expect(nonBuiltin).toHaveLength(1)
+    expect(nonBuiltin[0].appId).toBe("@test/fixture-app")
+    expect(nonBuiltin[0].installed).toBe(true)
   })
 
-  it("returns an empty list when there's no catalog file and nothing installed", async () => {
+  it("returns just the builtin panels when there's no catalog file and nothing installed", async () => {
     const { client } = await setup({ catalogPath: join(catalogDir, "does-not-exist.json") })
     const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
-    expect(entries).toEqual([])
+    expect(entries.filter((e: any) => e.category !== "builtin")).toEqual([])
+    expect(entries.filter((e: any) => e.category === "builtin")).toHaveLength(5)
+  })
+
+  it("always lists the five builtin panels, installed with no app_install needed", async () => {
+    const { client } = await setup({ catalogPath: join(catalogDir, "does-not-exist.json") })
+    const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
+    const builtins = entries.filter((e: any) => e.category === "builtin")
+    expect(builtins.map((e: any) => e.toolId).sort()).toEqual(
+      [
+        "agentproto_agents_overview",
+        "agentproto_bureau_sessions",
+        "agentproto_session_story",
+        "agentproto_sessions",
+        "live_session",
+      ].sort(),
+    )
+    for (const entry of builtins) {
+      expect(entry.installed).toBe(true)
+      expect(entry.hasUi).toBe(true)
+      expect(entry.resourceUri).toBe(`ui://${entry.toolId}/view`)
+    }
   })
 
   it("reports hasArtifact=true for an installed app with an artifact", async () => {

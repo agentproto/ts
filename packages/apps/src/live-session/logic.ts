@@ -3,7 +3,7 @@
  *
  * This module is imported by BOTH the test suite AND (as a hand-kept
  * inlined copy, since the widget HTML is a self-contained script with no
- * bundler) `live-session-app.ts`'s browser bundle — see the "INLINED
+ * bundler) `live-session/index.ts`'s browser bundle — see the "INLINED
  * REDUCER COPY" section there. Keep this file plain TS (no zod, no node
  * imports, no external deps) so it stays trivially portable to that copy.
  *
@@ -303,7 +303,7 @@ export function groupAdjacentToolCalls(
  * (`{sessionId, httpBaseUrl}`). `sessionId` wins over `id` when both are
  * present. Returns `null` for error results, non-JSON text, or any shape
  * mismatch — never throws. A hand-kept inlined copy lives in
- * `live-session-app.ts`'s browser bundle (same convention as the reducer).
+ * `live-session/index.ts`'s browser bundle (same convention as the reducer).
  */
 export function extractToolResultSessionId(params: unknown): string | null {
   if (!params || typeof params !== "object") return null

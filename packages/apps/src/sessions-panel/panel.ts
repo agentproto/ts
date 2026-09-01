@@ -1,9 +1,8 @@
 /**
- * MCP App resource: agentproto sessions panel.
- *
- * Declares a `ui://agentproto/sessions-panel` resource (mimeType
- * `text/html;profile=mcp-app`) and an `open_sessions_panel` tool that
- * links to it via `_meta.ui.resourceUri`.
+ * HTML bundle for the agentproto sessions panel — the `PANEL_HTML` served
+ * as the `ui://agentproto_sessions/view` resource by `registerMcpApps`
+ * (see ../mcp-app-types.ts and runtime's mcp-apps-adapter.ts). Mounted via
+ * the `agentproto_sessions` tool defined in ./index.ts.
  *
  * Protocol: MCP Apps ext spec 2026-01-26
  *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage
@@ -18,11 +17,7 @@
  * progress bars don't corrupt the output.
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { panelBridgeScript } from "./panel-bridge.js"
-
-const RESOURCE_URI = "ui://agentproto/sessions-panel"
-const MIME_TYPE = "text/html;profile=mcp-app"
+import { panelBridgeScript } from "../panel-bridge.js"
 
 // ── HTML bundle ─────────────────────────────────────────────────────────────
 
@@ -383,78 +378,3 @@ initBridge().then(function() {
 </script>
 </body>
 </html>`
-
-// ── MCP registration ─────────────────────────────────────────────────────────
-
-export function registerSessionsPanelResource(server: McpServer): void {
-  // Resource — MCP Apps host (Claude) reads this and renders the HTML
-  // in a sandboxed iframe.
-  server.registerResource(
-    "sessions-panel",
-    RESOURCE_URI,
-    {
-      mimeType: MIME_TYPE,
-      description:
-        "Interactive sessions panel — browse, inspect output, and kill " +
-        "agentproto daemon sessions. Rendered as an MCP App in the host UI.",
-      _meta: {
-        ui: {
-          // No external CSP domains needed — fully autonomous bundle.
-          prefersBorder: true,
-        },
-      },
-    },
-    async () => ({
-      contents: [
-        {
-          uri: RESOURCE_URI,
-          mimeType: MIME_TYPE,
-          text: PANEL_HTML,
-        },
-      ],
-    }),
-  )
-
-  // Tool — links to the panel resource via _meta.ui.resourceUri so the
-  // host pre-associates the panel with this tool call and can show it
-  // immediately when the tool is invoked.
-  server.registerTool(
-    "open_sessions_panel",
-    {
-      description:
-        "Open the agentproto sessions panel — an interactive UI that shows all " +
-        "running and recent agent-CLI and terminal/PTY sessions. Raw shell-" +
-        "command runs are a log, not a resumable session, and don't appear " +
-        "here — see `command_list`. The panel polls live data and lets you " +
-        "inspect output or kill sessions. Rendered as an MCP App in the host " +
-        "interface.",
-      inputSchema: undefined,
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: false,
-      },
-      _meta: {
-        ui: {
-          resourceUri: RESOURCE_URI,
-          visibility: ["model", "app"],
-        },
-      },
-    },
-    async () => ({
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(
-            {
-              ok: true,
-              panel: RESOURCE_URI,
-              message: "Sessions panel available. The host should render it as an MCP App.",
-            },
-            null,
-            2,
-          ),
-        },
-      ],
-    }),
-  )
-}

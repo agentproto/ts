@@ -11,7 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { registerMcpApps } from "../mcp-apps-adapter.js"
-import { makeSessionStoryPanelApp } from "../session-story-panel-app.js"
+import { makeSessionStoryPanelApp } from "@agentproto/apps"
 
 function makeMockServer() {
   const server = new McpServer({
@@ -43,7 +43,7 @@ function makeMockServer() {
 
   registerMcpApps(server, [
     makeSessionStoryPanelApp({
-      listSessions: filter => {
+      listSessions: (filter?: "running" | "all") => {
         if (filter === "running") {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           return mockSessions.filter(s => s.status === "running") as any

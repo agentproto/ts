@@ -1,58 +1,13 @@
 /**
- * McpApp definition for the agentproto "bureau — sessions navigateur" panel.
- *
- * Shows the browser sessions (kind === "browser"): adapter, base URL, port,
- * status and uptime. One row per live/recent browser service so you can see
- * what's bound where at a glance.
- *
- * Uses the same AgnoMcpApp contract as sessions-panel-app.ts (no
- * @agstudio/mcp-apps dependency — agentproto is a standalone workspace).
- * Wire via `registerMcpApps`.
- *
- * Protocol flow:
- *   1. Tool `agentproto_bureau_sessions` is called by the host.
- *   2. execute() returns the browser-session snapshot.
- *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and polls
- *      `session_list {kind:'all'}` every ~5 s, filtering to kind==="browser".
+ * HTML bundle for the agentproto "bureau — sessions navigateur" panel — the
+ * `BUREAU_SESSIONS_HTML` served as the `ui://agentproto_bureau_sessions/view`
+ * resource. Mounted via the `agentproto_bureau_sessions` tool defined in
+ * ./index.ts.
  *
  * Data only — no server LLM. The whole bundle is inline (zero CDN).
  */
 
-import { z } from "zod"
-import { panelBridgeScript } from "./panel-bridge.js"
-import type { SessionDescriptor } from "./sessions.js"
-import type { AgnoMcpApp } from "./sessions-panel-app.js"
-
-export const bureauSessionsInputSchema = z.object({
-  filter: z
-    .enum(["running", "all"])
-    .optional()
-    .describe("`running` = only alive browser sessions; `all` = running + recent (default)."),
-})
-
-export type BureauSessionsInput = z.infer<typeof bureauSessionsInputSchema>
-export type BureauSessionsOutput = { sessions: SessionDescriptor[] }
-
-export interface BureauSessionsOps {
-  listSessions(filter?: "running" | "all"): SessionDescriptor[]
-}
-
-export function makeBureauSessionsApp(
-  ops: BureauSessionsOps,
-): AgnoMcpApp<BureauSessionsInput, BureauSessionsOutput> {
-  return {
-    id: "agentproto_bureau_sessions",
-    title: "Bureau — sessions navigateur",
-    description:
-      "Open the browser-sessions panel — one row per browser service " +
-      "(adapter, base URL, port, status, uptime). Polls live every ~5 s.",
-    inputSchema: bureauSessionsInputSchema,
-    execute: async input => ({
-      sessions: ops.listSessions(input.filter).filter(s => s.kind === "browser"),
-    }),
-    html: BUREAU_SESSIONS_HTML,
-  }
-}
+import { panelBridgeScript } from "../panel-bridge.js"
 
 // ── HTML bundle (zero CDN, CSP-safe inline) ──────────────────────────────────
 
