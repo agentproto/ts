@@ -1,5 +1,13 @@
 # @agentproto/catalog-sync
 
+## 0.5.10
+
+### Patch Changes
+
+- 139c198: Update model provider snapshots from pinned external sources (2026-09-01 sync).
+- Updated dependencies [139c198]
+  - @agentproto/model-catalog@0.9.1
+
 ## 0.5.9
 
 ### Patch Changes
