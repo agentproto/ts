@@ -61,6 +61,9 @@ export type { AnthropicDistillerOptions } from "./anthropic-distiller.js"
 export { CliAgentDistiller } from "./cli-agent-distiller.js"
 export type { CliAgentDistillerOptions } from "./cli-agent-distiller.js"
 
+export { BatchDistiller } from "./batch-distiller.js"
+export type { BatchDistillerOptions } from "./batch-distiller.js"
+
 export { CLI_ENGINES } from "./cli-engines.js"
 export type { CliEngine } from "./cli-engines.js"
 

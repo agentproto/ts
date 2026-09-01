@@ -107,11 +107,12 @@ export type {
 } from "./distill/runner.js"
 export type {
   DistillPort,
+  DistillBatchPort,
   DistillInput,
   DistilledItem,
   RefinedKind,
 } from "./distill/types.js"
-export { REFINED_KIND_SCHEMA, isRefinedKind } from "./distill/types.js"
+export { REFINED_KIND_SCHEMA, isRefinedKind, hasDistillMany } from "./distill/types.js"
 export { buildDistillPrompt, parseItems } from "./distill/prompt.js"
 export { scanDistilledSourceIds } from "./distill/scan.js"
 // Source scan — sources/**​/*.md → DistillSource[] (frontmatter-id provenance,
