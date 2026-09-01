@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/assembly",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/assembly — AIP-24 ASSEMBLY.md reference implementation. A workspace AIP for multi-agent collectives. Unifies four collaboration patterns — council (advisory overlay), voting (quorum decision body), peer (network of equals), and hierarchy (reporting tree) — under one doctype, with synthesis rules, locked traits, and audit policy as first-class workspace concerns.",
   "keywords": [
     "agentproto",

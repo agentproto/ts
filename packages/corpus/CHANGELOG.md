@@ -1,5 +1,46 @@
 # @agentproto/corpus
 
+## 0.6.0
+
+### Minor Changes
+
+- 2ac7025: Add optional book publishing features to report engine: `injectAnchors` parameter for HTML anchor injection, `outline` parameter for cross-chapter references in prompts, new schema fields for artifacts (`artifact`), cover body text (`body`), and print/ebook configuration (`bundleRepo`, `pageSize`, `pageBleed`, `epub`). All changes are backward compatible.
+- 5864268: Improve applyEdits edit safety: check each edit individually and surface pre-existing defects.
+
+  Previously, if any edit failed post-check (introducing an out-of-range cite or breaking the heading), the entire batch would be reverted silently. Now:
+  - Each edit is post-checked individually: a bad edit reverts itself, not the whole chapter
+  - Pre-existing defects (e.g., a writer-introduced stray `[0]` citation) no longer block valid edits from landing
+  - Contextual checking: replacements are checked both in isolation and in context (composing with surrounding text)
+  - New field in stats: `preExistingOutOfRange` surfaces defects that pre-existed the edits
+
+  This enables better resilience: valid edits always land even when the chapter carries pre-existing citation defects, and the draft defects are surfaced in the report rather than silently reverted.
+
+- b7d9221: Add bibliography content-SHA verification to prevent citations from silently mismatching when packs are regenerated mid-run. New exports: `bibliographySha`, `bibShaMarker`, `recordedBibSha`, `stripBibShaMarker`. New optional parameters: `bibSha` in `AssembleOptions`, `bibSha` and `checkBibSha` in `ApplyEditsOptions`/`CollectSectionsOptions`. Enhanced CLI output and error handling.
+
+### Patch Changes
+
+- dee9bd8: Fix citation parsing to safely ignore array indexing in code blocks and inline code; add support for anchor-prefixed chapters from `assembleChapters({ injectAnchors: true })`; improve post-check failure tracking with new `postCheckFailed` stats field.
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/collection@0.1.1
+  - @agentproto/knowledge@0.1.1
+  - @agentproto/operator@0.1.1
+  - @agentproto/playbook@0.1.1
+  - @agentproto/routine@0.2.1
+  - @agentproto/workflow@0.3.1
+
 ## 0.5.2
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/intent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/intent — AIP-28 INTENT.md reference implementation. A markdown + frontmatter format for declaring a user-facing agent intent — the verb a user surfaces (\"create image\", \"list PRs\"). Sits between SKILL (multi-step expertise) and TOOL (atomic technical call), carrying the catalog/UX layer (label, intent, surfaces, examples) and routing one or more underlying tools, with the standard `defineIntent` entry-point signature.",
   "keywords": [
     "agentproto",

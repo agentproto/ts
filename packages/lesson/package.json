@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/lesson",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/lesson — AIP-11 LESSON.md reference implementation. A markdown format for storing the transferable lessons an agent extracts from successful and failed runs — title, trigger, evidence, outcome — and a contract for how runtimes distill them and inject them back into future turns.",
   "keywords": [
     "agentproto",

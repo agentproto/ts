@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-claude-sdk",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "@agentproto/adapter-claude-sdk — first-party agentproto adapter that runs Claude Code's agent harness as a library via the Claude Agent SDK headless query(), behind an AIP-44 ACP server. 100% Anthropic-native I/O; clean model pinning + base_url; native usage telemetry.",
   "keywords": [
     "agentproto",

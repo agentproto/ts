@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-grok-cli",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "@agentproto/adapter-grok-cli — AIP-45 AGENT-CLI adapter for xAI's Grok Build CLI in ACP mode (`grok agent stdio`). Native billing-auth: \"use my existing Grok login\".",
   "keywords": [
     "agentproto",

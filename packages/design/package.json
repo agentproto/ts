@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/design",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/design — AIP-4 DESIGN.md reference implementation. A markdown + frontmatter format for portable design tokens, and the registry conventions used by designkit.sh to share community kits.",
   "keywords": [
     "agentproto",

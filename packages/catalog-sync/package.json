@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/catalog-sync",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "Build-time generator framework for @agentproto/model-catalog. Generates *.generated.ts from pinned provider sources (LLM, image, video, audio, voice).",
   "keywords": [
     "agentproto",

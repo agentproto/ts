@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/workspace",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/workspace — AIP-34 WORKSPACE.md reference implementation. A markdown + frontmatter format for declaring a workspace's identity — globally addressable id, owner, storage choice, defaults, publish posture. The root manifest of every AIP-organized workspace; pairs with STORAGE.md (AIP-35) for the storage policy block.",
   "keywords": [
     "agentproto",
