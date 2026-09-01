@@ -423,7 +423,44 @@ function elapsedText(rows, status) {
 
 var currentTree = [];
 var focusId = (window.__APP_INIT__ && window.__APP_INIT__.sessionId) || null;
+// Where the current focus came from: 'pinned' (the tool result that mounted
+// this widget named a session — never auto-switched away), 'auto' (self-
+// discovered newest running session, a guess the host may still correct),
+// 'user' (explicit click/selector choice — outranks everything).
+var focusSource = focusId ? 'pinned' : null;
+var bootDone = false;
 var treeTimer = null;
+
+// INLINED COPY of live-session-app.logic.ts extractToolResultSessionId —
+// keep in sync (same convention as the reducer copy below).
+function extractToolResultSessionId(params) {
+  if (!params || typeof params !== 'object') return null;
+  var res = (params.result && typeof params.result === 'object') ? params.result : params;
+  if (res.isError) return null;
+  var content = Array.isArray(res.content) ? res.content : [];
+  var item = content[0];
+  if (!item || item.type !== 'text' || typeof item.text !== 'string') return null;
+  try {
+    var body = JSON.parse(item.text);
+    if (body && typeof body.sessionId === 'string' && body.sessionId) return body.sessionId;
+    if (body && typeof body.id === 'string' && body.id) return body.id;
+  } catch (_) {}
+  return null;
+}
+
+// The host pushes the triggering tool call's result (ext-apps
+// ui/notifications/tool-result). For agent_start that result IS the spawned
+// session's descriptor — pin the widget to THAT session instead of leaving
+// pollTree() to self-discover the newest running one, which made every
+// agent_start card show the latest started session rather than its own.
+onHostNotification(function(method, params) {
+  if (method !== 'ui/notifications/tool-result') return;
+  var id = extractToolResultSessionId(params);
+  if (!id || focusSource === 'user' || id === focusId) return;
+  focusSource = 'pinned';
+  if (bootDone) setFocus(id);
+  else focusId = id; // boot's own startTimeline(focusId) picks it up
+});
 
 function findNode(nodes, id) {
   for (var i = 0; i < nodes.length; i++) {
@@ -493,6 +530,7 @@ function renderTree() {
     el.addEventListener('click', function() {
       var id = el.getAttribute('data-id');
       if (id === focusId) return;
+      focusSource = 'user';
       setFocus(id);
     });
   });
@@ -504,7 +542,7 @@ function pollTree() {
     currentTree = res.tree || [];
     if (!focusId) {
       focusId = pickInitialFocus(currentTree);
-      if (focusId) startTimeline(focusId);
+      if (focusId) { focusSource = 'auto'; startTimeline(focusId); }
     }
     renderTree();
     updateHeader();
@@ -866,14 +904,17 @@ initBridge().then(function() {
     return result;
   });
 }).then(function(init) {
-  focusId = init.sessionId || null;
+  // Only override the focus when live_session itself named a session — a
+  // tool-result notification may already have pinned one while the
+  // fallback tools/call above was in flight.
+  if (init.sessionId) { focusId = init.sessionId; focusSource = 'pinned'; }
   onHostContext(function() {
     applyDisplayMode();
     updateHeader();
   });
   document.getElementById('head-selector').addEventListener('change', function(evt) {
     var id = evt.target.value;
-    if (id && id !== focusId) setFocus(id);
+    if (id && id !== focusId) { focusSource = 'user'; setFocus(id); }
   });
   document.getElementById('new-pill').addEventListener('click', function() {
     var body = document.getElementById('timeline-body');
@@ -890,6 +931,7 @@ initBridge().then(function() {
     if (c !== compactMode) { applyDisplayMode(); }
   });
   applyDisplayMode();
+  bootDone = true;
   pollTree();
   treeTimer = setInterval(pollTree, 2000);
   setInterval(updateHeader, 1000); // keep the WP5 elapsed clock fresh
