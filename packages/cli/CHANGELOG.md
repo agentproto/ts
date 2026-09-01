@@ -1,5 +1,13 @@
 # @agentproto/cli
 
+## 0.16.1
+
+### Patch Changes
+
+- 0259d5f: Update test fixtures and CLI help text to reference skills from the new 3-layer agentproto pack structure. Changes legacy skill names (e.g., `agent-session-orchestration-agentproto`, `nested-orchestration`) to their new equivalents (`ap-spawn-agent`, `drive-agents`, `pb-supervise-parallel-mission`), ensuring examples and tests reflect the current skill-pack API.
+- Updated dependencies [139c198]
+  - @agentproto/model-catalog@0.9.1
+
 ## 0.16.0
 
 ### Minor Changes

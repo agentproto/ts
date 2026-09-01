@@ -1,5 +1,14 @@
 # @agentproto/runtime
 
+## 2.10.1
+
+### Patch Changes
+
+- 47653e3: Fix: re-add router prefix for modelDerivedApiKey adapters billed through gateways. Resolves production bug where adapters like opencode receive models without the router prefix when using gateway routes, causing 404s at the ACP boundary. The fix ensures adapters that derive their API key from the wire model's leading segment (opencode, mastracode, jcode, pi, mastra-agent) receive the properly prefixed model ID.
+- Updated dependencies [139c198]
+  - @agentproto/model-catalog@0.9.1
+  - @agentproto/providers-store@0.3.10
+
 ## 2.10.0
 
 ### Minor Changes
