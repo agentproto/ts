@@ -104,7 +104,14 @@ export function registerBrowserPanels(ctx: vscode.ExtensionContext, client: Daem
         (raw: unknown) => {
           if (typeof raw !== "object" || raw === null || !("type" in raw)) return
           const type = (raw as { type: unknown }).type
-          if (type === "pause") {
+          if (type === "ready") {
+            // The webview only attaches its `message` listener once this fires —
+            // posting the session (or a frame) any earlier is lost. Kick the poll
+            // loop off from here too, so the very first fetch isn't wasted on a
+            // frame nobody was listening for yet.
+            post({ type: "session", session })
+            startLoop(state, panel, fetchFrame)
+          } else if (type === "pause") {
             state.paused = true
             stopLoop(state)
           } else if (type === "resume") {
@@ -130,8 +137,6 @@ export function registerBrowserPanels(ctx: vscode.ExtensionContext, client: Daem
       })
 
       panel.webview.html = buildBrowserHostHtml(randomNonce())
-      post({ type: "session", session })
-      startLoop(state, panel, fetchFrame)
     },
   }
 }
@@ -224,12 +229,6 @@ export function buildBrowserHostHtml(nonce: string): string {
       let paused = false;
       let lastAt = null;
 
-      function escapeHtml(text) {
-        return String(text).replace(/[&<>"']/g, function (ch) {
-          return ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : ch === '"' ? '&quot;' : '&#39;';
-        });
-      }
-
       function renderSession(session) {
         titleEl.textContent = session.label || session.title || session.id;
         const parts = [];
@@ -265,7 +264,7 @@ export function buildBrowserHostHtml(nonce: string): string {
           lastAt = msg.at;
           renderUpdated();
         } else if (msg.type === 'error') {
-          errorEl.textContent = escapeHtml(msg.message);
+          errorEl.textContent = String(msg.message);
           errorEl.classList.add('visible');
         }
       });
@@ -278,6 +277,8 @@ export function buildBrowserHostHtml(nonce: string): string {
       btnRefresh.addEventListener('click', function () {
         vscode.postMessage({ type: 'refresh' });
       });
+
+      vscode.postMessage({ type: 'ready' });
     })();
   </script>
 </body>
