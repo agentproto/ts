@@ -58,7 +58,7 @@ Steps (both are also runnable standalone at any time):
 Options:
   --yes              non-interactive (forward to install-mcp)
   --no-skills        skip the skill-install step
-  --skills <slug>    install this skill instead of the full pack (e.g. nested-orchestration)
+  --skills <slug>    install this skill instead of the full pack (e.g. ap-spawn-agent)
   --agent <name>...  limit MCP registration to these agents (default: all detected)
 `
 
