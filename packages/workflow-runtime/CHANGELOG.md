@@ -1,5 +1,11 @@
 # @agentproto/workflow-runtime
 
+## 0.9.0
+
+### Minor Changes
+
+- 11b5564: Add forward-only branch step compilation and subworkflow input projection support to the workflow runtime compiler, plus validation of step references at compile time.
+
 ## 0.8.1
 
 ### Patch Changes

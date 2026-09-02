@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/batch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "One batch-inference contract over provider Batch APIs (Anthropic Message Batches, OpenRouter Batch) plus a local-queue emulation for providers without one — submit N Messages-shaped requests, poll, and collect results keyed by custom_id, all driver-agnostic. No SDK deps: raw fetch + zod.",
   "keywords": [
     "agentproto",

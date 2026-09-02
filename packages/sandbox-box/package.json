@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/sandbox-box",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "@agentproto/sandbox-box — ascii.dev Box `SandboxProvider` for @agentproto/sandbox. Boots a Box cloud computer, installs an always-on systemd unit for the agentproto daemon, and exposes its MCP endpoint as a URL so any AgentSessionHost consumer (worktreeAgentWorkflow, worktree-agent CLI) can run a coding-agent step inside the sandbox.",
   "keywords": [
     "agentproto",

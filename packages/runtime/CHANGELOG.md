@@ -1,5 +1,46 @@
 # @agentproto/runtime
 
+## 2.11.0
+
+### Minor Changes
+
+- 1541277: Add `extractToolResultSessionId()` utility to extract and validate session identifiers from tool result payloads, supporting both `agent_start` descriptors (id field) and `live_session` results (sessionId field). This enables proper session pinning in the live-session widget to display the session spawned by a tool call rather than auto-discovering the newest session.
+- 8215419: Give installed apps a data directory distinct from their source directory. The `app_data_*` plane now anchors to `InstalledApp.dataDir` (default `<dir>/data`) rather than the app's `dir`. Custom data directories are set with `app_install {dataDir}` / `agentproto app install --data-dir`, or hinted by APP.md `data: { dir }`. Full backward compatibility: pre-dataDir files under `<appDir>` are still found via fallback; under the default layout the legacy `data/` spelling is collapsed so existing paths continue to work.
+- dcb0bc5: P7 deliverables 1 & 2: Generic daemon MCP tool proxy and multi-adapter app_run support.
+
+  Deliverable 1 closes the gap where app agents couldn't reach daemon tools outside a hand-curated set: a new daemon MCP tool proxy discovers and proxies any `tools/list`-exposed tool an AGENT.md declares, with automatic `appId` injection for `app_*` tools so models never need to know their own app id.
+
+  Deliverable 2 extends `app_run` to support adapters that declare no `agent` option (claude-code, hermes, codex, ...): the spawn is now built FROM the AGENT.md (frontmatter model + body-as-prompt) instead of pointed at a path, with backward compatibility for mastra-agent (which still gets the path-based behavior).
+
+### Patch Changes
+
+- 5171a24: Add logging to dedupe hits in `spawnAgentSession` to improve observability. When an idempotency key hit occurs, the runtime now logs a warning message that includes the returned session ID, spawn context (adapter, cwd), and label if provided. This helps diagnose cases where a repeated `agent_start` call returns an existing session.
+- e655351: Support UI-only apps in app-kit; move builtin daemon panels into @agentproto/apps
+- 2fc4c69: Sandboxed sessions now report their spend, and PR footers pick it up.
+  - `HarnessClient.usage(sessionId)` (`session_usage`) and an optional `usage` on
+    `DaemonAgentSessionHost`. The runtime's sandbox spawn wires it as the session's
+    `readUsage` hook, so a box's cost/tokens/model reach the HOST descriptor at
+    every turn-end — the proxy's text stream never carried them, which is why the
+    CI review footer showed no amount and no model for e2b-sandboxed `claude-sdk`
+    reviews.
+  - `readUsage` may now return `model`; a descriptor spawned without one adopts it.
+  - PR-body footer cost refresh: a PR opened through the daemon is stamped the
+    instant `gh pr create` returns — mid-turn, before a claude-code/claude-sdk
+    session has reported any cost. The provenance reconciler now re-renders each
+    recorded PR's footer once the session knows its spend (`replaceProvenanceFooter`,
+    `stampFooterOnPr({ refresh: true })`), exactly once per PR.
+
+- Updated dependencies [11b5564]
+- Updated dependencies [8215419]
+- Updated dependencies [e655351]
+  - @agentproto/workflow-runtime@0.9.0
+  - @agentproto/apps@0.9.0
+  - @agentproto/app-kit@0.8.0
+  - @agentproto/workspace-brain@0.4.2
+  - @agentproto/sandbox@0.2.6
+  - @agentproto/eval-reporters@0.2.9
+  - @agentproto/telemetry-langfuse@0.2.7
+
 ## 2.10.1
 
 ### Patch Changes

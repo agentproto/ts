@@ -1,5 +1,25 @@
 # agentproto-vscode
 
+## 0.13.0
+
+### Minor Changes
+
+- 8a8ebb5: Mirror the daemon's installed-app registry in the Apps view: group all apps by catalog category, expand each to show bundled agents and workflows, and enable opening manifests and running workflows directly from the editor.
+- 3643ce2: Add browser live-view panel and session-routing logic for opening sessions by kind. Introduces `agentproto.openSession` command that routes to the terminal, browser live view, or webview chat panel based on session kind, plus `agentproto.openBrowser` for explicit browser-session opening.
+
+### Patch Changes
+
+- aa377fb: Fix Stop-button regression on live extra sessions. The button click handler now uses the same row pool as the render path, so sessions rendered past the paginated slice can always be resolved when actions are triggered.
+- Updated dependencies [1541277]
+- Updated dependencies [5171a24]
+- Updated dependencies [11b5564]
+- Updated dependencies [8215419]
+- Updated dependencies [e655351]
+- Updated dependencies [dcb0bc5]
+- Updated dependencies [2fc4c69]
+  - @agentproto/runtime@2.11.0
+  - @agentproto/apps@0.9.0
+
 ## 0.12.1
 
 ### Patch Changes
