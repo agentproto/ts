@@ -18,6 +18,16 @@ export default createTsupConfig({
     "bureau-sessions": "src/bureau-sessions/index.ts",
     "session-story": "src/session-story/index.ts",
     "live-session": "src/live-session/index.ts",
+    // HTML-only entries — no `@agentproto/app-kit` (and therefore
+    // `@mastra/core`) reachable from these, unlike the entries above. A
+    // consumer that only needs the panel HTML (packages/vscode's
+    // storyPanel.ts) imports one of these subpaths instead, so its own
+    // bundler never has a reason to trace into app-kit/mastra at all.
+    "sessions-panel/panel": "src/sessions-panel/panel.ts",
+    "agents-overview/panel": "src/agents-overview/panel.ts",
+    "bureau-sessions/panel": "src/bureau-sessions/panel.ts",
+    "session-story/panel": "src/session-story/panel.ts",
+    "live-session/panel": "src/live-session/panel.ts",
     "bin/sync": "src/bin/sync.ts",
   },
   format: ["esm"],

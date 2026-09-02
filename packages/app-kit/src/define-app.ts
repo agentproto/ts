@@ -18,9 +18,9 @@
  * agent attached to its workflows" means, made checkable.
  */
 
-import { buildMastraAgent } from "@agentproto/mastra"
 import { defineWorkspace } from "@agentproto/workspace"
 import type { AgentHandle, AnyRef } from "@agentproto/agent"
+import type { BuildMastraAgentResult } from "@agentproto/mastra"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
 import type {
@@ -111,7 +111,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
       const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
-      const out: Record<string, Awaited<ReturnType<typeof buildMastraAgent>>> = {}
+      const out: Record<string, BuildMastraAgentResult> = {}
       for (const entry of targets) {
         out[entry.agent.id] = await buildOne(entry, opts)
       }
@@ -200,7 +200,14 @@ function selectAgents(
   })
 }
 
-function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions) {
+async function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions): Promise<BuildMastraAgentResult> {
+  // Dynamic import, not a static top-level one: `@agentproto/mastra` pulls in
+  // `@mastra/core` (a documented peer dependency — see index.ts), which a
+  // bundler would otherwise inline into ANY host that merely calls
+  // `defineApp()` without ever calling `toMastraAgent(s)` (e.g. a UI-only app
+  // consumer). Loading it lazily, only from the one place it's actually used,
+  // keeps `defineApp()`/the rest of this module free of that cost.
+  const { buildMastraAgent } = await import("@agentproto/mastra")
   // `entry.body` (the AGENT.md body) wins as instructions; an explicit
   // `opts.body` still overrides, matching buildMastraAgent's contract.
   return buildMastraAgent(entry.agent, { body: entry.body, ...opts })
