@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/mastra",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "@agentproto/mastra — turn an AIP-42 AGENT.md handle into a runnable Mastra Agent. The package is a thin adapter: you supply resolvers (model, tool, workflow, memory) and it composes the manifest's identity, persona, body, boundaries, and tool refs into a constructed `new Agent({...})` from `@mastra/core/agent`. Reference implementation for the agent/v1 → Mastra runtime path.",
   "keywords": [
     "agentproto",

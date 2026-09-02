@@ -1,5 +1,12 @@
 # @agentproto/mastra
 
+## 0.2.10
+
+### Patch Changes
+
+- Updated dependencies [4fb28be]
+  - @agentproto/corpus@0.7.0
+
 ## 0.2.9
 
 ### Patch Changes

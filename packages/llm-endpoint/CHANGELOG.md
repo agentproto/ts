@@ -1,5 +1,12 @@
 # @agentproto/llm-endpoint
 
+## 0.5.10
+
+### Patch Changes
+
+- Updated dependencies [4fb28be]
+  - @agentproto/batch@0.2.0
+
 ## 0.5.9
 
 ### Patch Changes

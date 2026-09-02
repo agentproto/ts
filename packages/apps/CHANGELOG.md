@@ -1,5 +1,18 @@
 # @agentproto/apps
 
+## 0.9.0
+
+### Minor Changes
+
+- e655351: Support UI-only apps in app-kit; move builtin daemon panels into @agentproto/apps
+
+### Patch Changes
+
+- 11b5564: Add forward-only branch step compilation and subworkflow input projection support to the workflow runtime compiler, plus validation of step references at compile time.
+- Updated dependencies [8215419]
+- Updated dependencies [e655351]
+  - @agentproto/app-kit@0.8.0
+
 ## 0.8.2
 
 ### Patch Changes
