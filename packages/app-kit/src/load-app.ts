@@ -29,7 +29,7 @@ import matter from "gray-matter"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent/manifest"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { parseWorkspaceManifest, workspaceFromManifest } from "@agentproto/workspace/manifest"
-import type { AgentEntry, AppArtifactDecl, AppDataDefinition, AppDevDefinition, AppHandle } from "./types.js"
+import type { AgentEntry, AppArtifactDecl, AppDataDefinition, AppDevDefinition, AppHandle, AppLibraryDefinition } from "./types.js"
 import { defineApp } from "./define-app.js"
 
 export class AppLoadError extends Error {
@@ -85,6 +85,8 @@ interface AppFrontmatter {
   readonly dev?: AppDevDefinition
   readonly data?: AppDataDefinition
   readonly externalReadRoots?: readonly string[]
+  readonly category?: string
+  readonly library?: AppLibraryDefinition
 }
 
 function resolveRef(dir: string, path: string): string {
@@ -101,6 +103,19 @@ function isRefArray(v: unknown): v is AppRef[] {
         typeof (e as { id?: unknown }).id === "string" &&
         typeof (e as { path?: unknown }).path === "string",
     )
+  )
+}
+
+function isLibrary(v: unknown): v is AppLibraryDefinition {
+  if (typeof v !== "object" || v === null) return false
+  const books = (v as { books?: unknown }).books
+  if (!Array.isArray(books) || books.length === 0) return false
+  return books.every(
+    (b) =>
+      typeof b === "object" &&
+      b !== null &&
+      typeof (b as { id?: unknown }).id === "string" &&
+      (b as { id: string }).id.trim() !== "",
   )
 }
 
@@ -145,6 +160,14 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
         `'${appPath}': frontmatter 'externalReadRoots' must be an array of non-empty strings.`,
       )
     }
+  }
+  if (data.category !== undefined && (typeof data.category !== "string" || data.category.trim() === "")) {
+    throw new AppLoadError(`'${appPath}': frontmatter 'category' must be a non-empty string.`)
+  }
+  if (data.library !== undefined && !isLibrary(data.library)) {
+    throw new AppLoadError(
+      `'${appPath}': frontmatter 'library' must be an object with a non-empty 'books' array of { id, title?, progress? }.`,
+    )
   }
   return data as unknown as AppFrontmatter
 }
@@ -276,5 +299,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(fm.dev !== undefined ? { dev: fm.dev } : {}),
     ...(fm.data !== undefined ? { data: fm.data } : {}),
     ...(fm.externalReadRoots !== undefined ? { externalReadRoots: fm.externalReadRoots } : {}),
+    ...(fm.category !== undefined ? { category: fm.category } : {}),
+    ...(fm.library !== undefined ? { library: fm.library } : {}),
   })
 }

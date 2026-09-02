@@ -15,14 +15,14 @@ npx create-agentproto-app my-app
 
 ```
 create-agentproto-app <dir> [--id <@scope/app-id>] [--name <display name>]
-                            [--template react-ts] [--json]
+                            [--template react-ts|vanilla|book] [--json]
 ```
 
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--id` | the target dir's slug (no scope) | written to `.agentproto/APP.md` `id` |
 | `--name` | title-cased slug | written to `.agentproto/APP.md` `name` and the UI title |
-| `--template` | `react-ts` | the only template shipped today |
+| `--template` | `react-ts` | `react-ts` (Vite + TanStack `ui/`), `vanilla` (hand-written static UI, no build step), or `book` (`vanilla`'s shape plus the APP.md book contract + an install skill) |
 | `--json` | off | prints `{appDir, id, name, slug, template, fileCount}` instead of a human summary |
 
 `<dir>` must not exist, or must be empty — the scaffolder refuses (exit 2)

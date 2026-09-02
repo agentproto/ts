@@ -22,7 +22,7 @@ npx create-agentproto-app my-app
 
 ```
 create-agentproto-app <dir> [--id <@scope/app-id>] [--name <display name>]
-                            [--template react-ts|vanilla] [--json]
+                            [--template react-ts|vanilla|book] [--json]
 ```
 
 `<dir>` must not exist, or must be empty. The scaffolder refuses (exit 2)
@@ -45,12 +45,15 @@ folders (`.agentproto/agents/<slug>-assistant/`).
 | --- | --- | --- |
 | `react-ts` (default) | `.agentproto/` shell + a Vite + TanStack Router + TanStack Query `ui/` source project that builds to `.agentproto/ui/` | `pnpm install`, then `agentproto app build` / `app dev` |
 | `vanilla` | `.agentproto/` shell + a single hand-written `.agentproto/ui/index.html` (vanilla JS, no build step, no `ui/` dir, no root `package.json`) | none — `agentproto app serve` runs it directly |
+| `book` | `vanilla`'s shape, plus the APP.md "book contract" (`category: book` + a `library.books` entry — see `@agentproto/app-kit`'s `AppLibraryDefinition`) and a `.claude/skills/install-agentproto-app/` skill that shells out to `agentproto app install .` | none — `agentproto app serve` runs it directly |
 
-Both templates ship the same `.agentproto/APP.md` + one agent + one
-workflow shape; only the UI differs. `vanilla` is the shape a hand-written
-app like `job-application-kit` uses — pick it when you don't want a Vite
-toolchain at all. `agentproto app build` no-ops successfully against a
-`vanilla`-scaffolded app (no `ui/package.json` to compile) — see
+All three templates ship the same `.agentproto/APP.md` + one agent + one
+workflow shape; only the UI (and, for `book`, the APP.md frontmatter +
+bundled skill) differs. `vanilla` is the shape a hand-written app like
+`job-application-kit` uses — pick it when you don't want a Vite toolchain at
+all; `book` is the same shape for an app that wants to self-identify as a
+book bundle. `agentproto app build` no-ops successfully against a
+`vanilla`- or `book`-scaffolded app (no `ui/package.json` to compile) — see
 [`verbs/app.md`](../verbs/app.md#optional-ui-source-project).
 
 ### Version stamp
