@@ -562,6 +562,12 @@ export function adapterConfigDirFor(sessionId: string): string {
 export const SESSION_ID_ENV = "AGENTPROTO_SESSION_ID"
 export const WORKSPACE_SLUG_ENV = "AGENTPROTO_WORKSPACE_SLUG"
 export const PARENT_SESSION_ID_ENV = "AGENTPROTO_PARENT_SESSION_ID"
+/** Set only for a spawn made on behalf of an installed `@agentproto/app-kit`
+ *  app (`app_run` → `spawnAgentSession({appId})`) — the id a daemon-tool
+ *  proxy (mastra-agent's `daemon-mcp-tools.ts`, P7) auto-injects into an
+ *  `app_*` tool call that omits one, since the model driving the session has
+ *  no way to know its own appId unless told. Absent on any other spawn. */
+export const APP_ID_ENV = "AGENTPROTO_APP_ID"
 
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =

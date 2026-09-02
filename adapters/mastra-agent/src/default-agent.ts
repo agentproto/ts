@@ -22,8 +22,16 @@ import type {
 import { Workspace } from "@mastra/core/workspace"
 import type { Agent } from "@mastra/core/agent"
 import { createNotificationInboxTool } from "@mastra/core/notifications"
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { DaemonClient } from "./daemon-client.js"
 import { makeDaemonTools } from "./daemon-tools.js"
+import {
+  connectDaemonMcpClient,
+  listDaemonMcpTools,
+  makeDaemonMcpProxyTool,
+  type DaemonMcpToolDef,
+} from "./daemon-mcp-tools.js"
+import type { DiscoverDaemonOptions } from "./daemon-client.js"
 import { AgentprotoSignalProvider } from "./signal-provider.js"
 import { DaemonStateEmitter } from "./state-signals.js"
 import type { MastraMemoryLike } from "./memory.js"
@@ -71,6 +79,21 @@ export interface AgentSourceOptions {
    * — see this WP's report).
    */
   modes?: false | "default"
+  /** Auto-injected into `app_*` daemon tool calls that omit `appId` (see
+   *  `daemon-mcp-tools.ts`'s `injectAppId`). Defaults to
+   *  `AGENTPROTO_APP_ID` — an explicit value here is mainly a test hook. */
+  appId?: string
+  /** Test hook: skip discovering + connecting to a real daemon MCP endpoint.
+   *  `client` injects an already-connected client outright (e.g. one wired
+   *  to an in-memory fake server); `discoverOptions` isolates
+   *  `discoverDaemonEndpoint` (homeDir/registryDir/env) from a real
+   *  developer machine's `~/.agentproto` without faking a whole client.
+   *  Neither set ⇒ production behaviour (real discovery + connect, lazily,
+   *  only if an AGENT.md ref needs it). */
+  daemonMcp?: {
+    client?: Client
+    discoverOptions?: DiscoverDaemonOptions
+  }
 }
 
 /** Truthy env-var check matching this adapter's existing `AGENTPROTO_MASTRA_NO_EXEC` convention. */
@@ -232,6 +255,48 @@ export function makeAgentFactory(
       extraTools: opts.extraTools,
     })
 
+    // `false` (or the env var) selects WP-1 parity; anything else keeps the
+    // WP-3 default of real plan/build/review modes with tool approvals.
+    // Computed BEFORE `buildMastraAgent` (moved up from its original spot
+    // below) because `resolveTool` — invoked DURING that call — needs it to
+    // decide whether the daemon toolsets (curated sub-agent tools + the
+    // generic MCP proxy, both modes-on only) are even in play.
+    const modesEnabled = opts.modes !== false && !envFlag(process.env.AGENTPROTO_MASTRA_NO_MODES)
+
+    // Daemon sub-agent-spawning tools (WP-5) — cheap to build (no network
+    // call happens until a tool executes; discovery runs lazily), so moving
+    // this above `buildMastraAgent` (from its original post-build spot)
+    // costs nothing and lets `resolveTool` see it.
+    const daemonClient = new DaemonClient({ cwd })
+    const daemonSubAgentTools = modesEnabled ? makeDaemonTools({ client: daemonClient }) : {}
+
+    // P7 deliverable 1: generic daemon MCP tool proxy — lazily discovered
+    // and `tools/list`-fetched AT MOST ONCE, only if some AGENT.md ref isn't
+    // a workspace or curated daemon tool. Never attempted in parity mode.
+    // Populated as a side effect of `resolveTool` below so the SAME proxy
+    // instances (not rebuilt) land in `config.tools` further down.
+    let daemonMcpClient: Client | undefined
+    let daemonMcpToolDefsPromise: Promise<DaemonMcpToolDef[]> | undefined
+    const resolvedDaemonMcpTools: Record<string, ReturnType<typeof makeDaemonMcpProxyTool>> = {}
+    const appId = opts.appId ?? process.env.AGENTPROTO_APP_ID
+    async function getDaemonMcpToolDefs(): Promise<DaemonMcpToolDef[]> {
+      if (!daemonMcpToolDefsPromise) {
+        daemonMcpToolDefsPromise = (async () => {
+          try {
+            daemonMcpClient = opts.daemonMcp?.client ?? (await connectDaemonMcpClient({ cwd, ...opts.daemonMcp?.discoverOptions }))
+            return await listDaemonMcpTools(daemonMcpClient)
+          } catch {
+            // No daemon reachable (standalone `agentproto-mastra acp` run, or
+            // a test that isolated discovery on purpose) — every ref falls
+            // through to the "unwired" stub below, same as before this
+            // feature existed.
+            return []
+          }
+        })()
+      }
+      return daemonMcpToolDefsPromise
+    }
+
     // One LibSQL store shared between the agent's Memory and the controller's
     // storage — two stores on one SQLite file would contend on writes.
     const store = buildSqliteStore()
@@ -244,23 +309,41 @@ export function makeAgentFactory(
     const { agent } = await buildMastraAgent(handle, {
       inputProcessors: [historyCompat],
       resolveModel: (ref) => resolveMastraModel(ref),
-      // Match each declared tool ref against the workspace toolset by id. A
-      // ref with no matching executor still resolves — to a stub that fails
-      // fast and clearly on call — rather than being dropped: a dropped ref
-      // leaves the model unable to see it at all, and (if the model still
-      // tries the name from AGENT.md prose) surfaces as an opaque provider
-      // NoSuchToolError this adapter's ACP layer silently swallows (see
-      // tool-call-map.ts), which is how a declared-but-unwired tool used to
-      // hang a turn with zero recorded tool calls instead of failing fast.
-      resolveTool: (ref) => {
+      // Match each declared tool ref, in order: the workspace toolset, the
+      // curated daemon sub-agent tools, then (modes-on only) the generic
+      // daemon MCP proxy — ONLY for a ref an AGENT.md actually declares,
+      // which is what keeps the proxy an allowlist rather than a blanket
+      // grant of the daemon's whole toolset. A ref matching none of those
+      // still resolves — to a stub that fails fast and clearly on call —
+      // rather than being dropped: a dropped ref leaves the model unable to
+      // see it at all, and (if the model still tries the name from AGENT.md
+      // prose) surfaces as an opaque provider NoSuchToolError this adapter's
+      // ACP layer silently swallows (see tool-call-map.ts), which is how a
+      // declared-but-unwired tool used to hang a turn with zero recorded
+      // tool calls instead of failing fast.
+      resolveTool: async (ref) => {
         const id = toolRefId(ref)
         if (!id) return undefined
-        const tool = workspaceTools[id]
-        if (tool) return { name: id, tool }
+        const workspaceTool = workspaceTools[id]
+        if (workspaceTool) return { name: id, tool: workspaceTool }
+        const daemonSubAgentTool = daemonSubAgentTools[id]
+        if (daemonSubAgentTool) return { name: id, tool: daemonSubAgentTool }
+        if (modesEnabled) {
+          const def = (await getDaemonMcpToolDefs()).find(d => d.name === id)
+          if (def) {
+            const tool = makeDaemonMcpProxyTool(def, {
+              getClient: async () => daemonMcpClient!,
+              ...(appId !== undefined ? { appId } : {}),
+            })
+            resolvedDaemonMcpTools[id] = tool
+            return { name: id, tool }
+          }
+        }
         console.warn(
           `[@agentproto/adapter-mastra-agent] agent '${handle.id}' declares tool '${id}' but no ` +
-            `executor is wired for it in this adapter's workspace toolset — calls to it will fail ` +
-            `immediately instead of hanging. Wire it in workspace-tools.ts or pass it via extraTools.`,
+            `executor is wired for it (not in the workspace toolset, the daemon sub-agent tools, or ` +
+            `the daemon's own MCP tool list) — calls to it will fail immediately instead of hanging. ` +
+            `Wire it in workspace-tools.ts, pass it via extraTools, or expose it from the daemon.`,
         )
         return { name: id, tool: makeUnwiredToolStub(id) }
       },
@@ -269,22 +352,13 @@ export function makeAgentFactory(
       body,
     })
 
-    // `false` (or the env var) selects WP-1 parity; anything else keeps the
-    // WP-3 default of real plan/build/review modes with tool approvals.
-    const modesEnabled = opts.modes !== false && !envFlag(process.env.AGENTPROTO_MASTRA_NO_MODES)
     const { modes, defaultModeId } = modesEnabled
       ? resolveModes(body)
       : { modes: [{ id: "main", metadata: { default: true } }], defaultModeId: "main" }
 
-    // Daemon sub-agent-spawning tools (WP-5) and the daemon signal provider
-    // (WP-6) are additive, modes-on only — parity mode stays exactly the
-    // WP-1 raw-stream toolset. One `DaemonClient` is shared between them
-    // (cheap to build: no network call happens until a tool executes or a
-    // watch exists, and discovery runs lazily).
     let tools = workspaceTools
     if (modesEnabled) {
-      const daemonClient = new DaemonClient({ cwd })
-      tools = { ...workspaceTools, ...makeDaemonTools({ client: daemonClient }) }
+      tools = { ...workspaceTools, ...daemonSubAgentTools, ...resolvedDaemonMcpTools }
 
       // WP-6: attach the AgentprotoSignalProvider MANUALLY. `buildMastraAgent`
       // owns the `new Agent(...)` call and has no `signals` passthrough, so we

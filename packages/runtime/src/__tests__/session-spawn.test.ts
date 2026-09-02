@@ -95,6 +95,7 @@ import {
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
   PARENT_SESSION_ID_ENV,
+  APP_ID_ENV,
   type SessionsRegistry,
 } from "../sessions.js"
 import { cdContractLine } from "../agents-md.js"
@@ -188,6 +189,17 @@ describe("spawnAgentSession", () => {
     // across two spawns from the same deps/resolver.
     expect(secondEnv?.[SESSION_ID_ENV]).toBe(second.descriptor.id)
     expect(secondEnv?.[SESSION_ID_ENV]).not.toBe(firstEnv?.[SESSION_ID_ENV])
+  })
+
+  it("injects AGENTPROTO_APP_ID only when `appId` is set (P7 — app_run threading a daemon-tool proxy reads)", async () => {
+    const startSession = vi.fn(async (_opts: { env?: Record<string, string> }) => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", appId: "@agentik/seo-auditor" })
+    expect(startSession.mock.calls[0]?.[0]?.env?.[APP_ID_ENV]).toBe("@agentik/seo-auditor")
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    expect(startSession.mock.calls[1]?.[0]?.env?.[APP_ID_ENV]).toBeUndefined()
   })
 
   it("expands a user preset at the shared spawn boundary and records every axis", async () => {

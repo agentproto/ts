@@ -796,6 +796,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             ...(spawnPrompt ? { prompt: spawnPrompt } : {}),
             ...(spawnOptions ? { options: spawnOptions } : {}),
             ...(input.access ? { access: input.access } : {}),
+            appId: app.appId,
             label: `app:${app.appId}:${agentId}`,
           },
         )
