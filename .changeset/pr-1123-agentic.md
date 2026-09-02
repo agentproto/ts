@@ -1,5 +1,6 @@
 ---
 "@agentproto/app-kit": minor
+"@agentproto/cli": minor
 "create-agentproto-app": minor
 ---
 
