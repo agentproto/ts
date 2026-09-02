@@ -5,14 +5,17 @@
  *
  * These panels used to be plain files in this package; they moved to
  * @agentproto/apps as house-app-quality code (see that package's README).
- * They are NOT installed `AppHandle`s — `defineApp` requires a non-empty
- * `agents` array and these are pure read-only viewers with no agent of
- * their own — so instead of going through `app_install`/`AppRegistry`,
- * this module wraps each factory with runtime's own SessionDescriptor-typed
- * `listSessions` ops and feeds the result straight into `registerMcpApps`
- * (mcp-apps-adapter.ts) alongside `installedAppUiApps`, exactly where
- * `builtinPanelApps` used to be built inline in index.ts. Public tool ids,
- * input schemas, resourceUris (`ui://<id>/view`, derived by
+ * Each panel ships in two forms there: a real `defineApp()` `AppHandle`
+ * (`agents: []`, UI-only — the catalog/emit/`app_install` path) and a
+ * separate `make<Name>App(ops)` factory producing the `AgnoMcpApp` shape
+ * this file mounts directly. This module wraps each factory with runtime's
+ * own SessionDescriptor-typed `listSessions` ops and feeds the result
+ * straight into `registerMcpApps` (mcp-apps-adapter.ts) alongside
+ * `installedAppUiApps`, exactly where `builtinPanelApps` used to be built
+ * inline in index.ts — no `app_install`/`AppRegistry` step, because the
+ * factory needs LIVE daemon closures (`listSessions`, `httpBaseUrl`) that
+ * the static `AppHandle`'s emitted `ui.html` snapshot can't carry. Public
+ * tool ids, input schemas, resourceUris (`ui://<id>/view`, derived by
  * mcp-apps-adapter.ts), and `execute()` behavior are byte-identical to
  * before the move — only where the code lives changed.
  *
@@ -29,8 +32,14 @@ import {
   makeBureauSessionsApp,
   makeSessionStoryPanelApp,
   makeLiveSessionApp,
+  sessionsPanelApp,
+  agentsOverviewApp,
+  bureauSessionsApp,
+  sessionStoryApp,
+  liveSessionApp,
   type AgnoMcpApp,
 } from "@agentproto/apps"
+import type { AppHandle } from "@agentproto/app-kit"
 import type { SessionDescriptor } from "./sessions.js"
 
 export interface BuiltinPanelAppsOps {
@@ -60,18 +69,17 @@ export function makeBuiltinPanelApps(
   ]
 }
 
-/** Package-scoped catalog id + @agentproto/apps source slug for each
- *  builtin panel's MCP tool id — a SEPARATE namespace from the tool id
- *  itself (mirrors how an installed app has both an `appId` like
- *  `@agentproto/ops-panel` and a derived MCP tool id like
- *  `app_ui_ops_panel`). Used only for `app_catalog` / Apps-tree display. */
-const BUILTIN_PANEL_SLUGS: Readonly<Record<string, string>> = {
-  agentproto_sessions: "sessions-panel",
-  agentproto_agents_overview: "agents-overview",
-  agentproto_bureau_sessions: "bureau-sessions",
-  agentproto_session_story: "session-story",
-  live_session: "live-session",
-}
+/** The five panels' `AppHandle`s (catalog identity: `id`/`name`/
+ *  `description`), in the same order `makeBuiltinPanelApps` mounts their
+ *  `AgnoMcpApp` counterparts — zipped together below to pair each handle
+ *  with its actual mounted tool id / resource uri. */
+const PANEL_APP_HANDLES: readonly AppHandle[] = [
+  sessionsPanelApp,
+  agentsOverviewApp,
+  bureauSessionsApp,
+  sessionStoryApp,
+  liveSessionApp,
+]
 
 export interface BuiltinPanelCatalogEntry {
   readonly appId: string
@@ -94,20 +102,24 @@ export interface BuiltinPanelCatalogEntry {
  * Always present, independent of `~/.agentproto/apps.json` or the catalog
  * file: these panels need no `app_install` step, so `app_catalog`'s caller
  * (app-tools.ts) merges this list in directly rather than reading it off
- * disk. `listSessions`/`httpBaseUrl` below are never invoked — only the
- * static id/title/description metadata on each built `AgnoMcpApp` is read.
+ * disk. `appId`/`name`/`description` come from each panel's real `AppHandle`
+ * (`PANEL_APP_HANDLES`); `toolId`/`resourceUri` come from the actual mounted
+ * `AgnoMcpApp` (`app.id`) since those are the real MCP-visible identifiers,
+ * not the app-kit handle's. `listSessions`/`httpBaseUrl` below are never
+ * invoked — only the static id metadata on each built `AgnoMcpApp` is read.
  */
 export function builtinPanelCatalogEntries(): BuiltinPanelCatalogEntry[] {
   const apps = makeBuiltinPanelApps({
     listSessions: () => [],
     httpBaseUrl: "http://127.0.0.1:0",
   })
-  return apps.map(app => {
-    const slug = BUILTIN_PANEL_SLUGS[app.id] ?? app.id
+  return apps.map((app, i) => {
+    const handle = PANEL_APP_HANDLES[i]!
+    const slug = (handle.id ?? app.id).replace(/^@[^/]+\//, "")
     return {
-      appId: `@agentproto/${slug}`,
-      name: app.title,
-      description: app.description ?? app.title,
+      appId: handle.id ?? `@agentproto/${slug}`,
+      name: handle.name ?? app.title,
+      description: handle.description ?? app.description ?? app.title,
       dir: `packages/apps/src/${slug}`,
       category: "builtin",
       installed: true,

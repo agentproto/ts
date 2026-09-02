@@ -155,9 +155,14 @@ export interface AppDataDefinition {
 /**
  * Input to `defineApp`. Each `agents[]` entry is an already-validated
  * `AgentHandle` (bare, no body) or an `AgentEntry` (handle + body).
+ *
+ * `agents` may be empty or omitted for a UI-only app — one that ships a
+ * `ui` block and no agent behavior. In that case `ui` is required; an app
+ * with neither agents nor a `ui` block has nothing to do and `defineApp`
+ * rejects it.
  */
 export interface AppDefinition {
-  readonly agents: readonly (AgentEntry | AgentHandle)[]
+  readonly agents?: readonly (AgentEntry | AgentHandle)[]
   readonly workflows?: readonly WorkflowHandle[]
   /** Any other AIP handles to carry with the app (AIP-6/25/47/…). */
   readonly attach?: readonly DoctypeHandle[]

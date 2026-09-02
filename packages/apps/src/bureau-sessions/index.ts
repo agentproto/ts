@@ -17,9 +17,16 @@
  *      `session_list {kind:'all'}` every ~5 s, filtering to kind==="browser".
  *
  * Data only — no server LLM. The whole bundle is inline (zero CDN).
+ *
+ * This module also exports `bureauSessionsApp`, a real `defineApp()`
+ * `AppHandle` (`agents: []`, UI-only) — the catalog/emit/`app_install` path.
+ * It's separate from `makeBureauSessionsApp` above, which the daemon mounts
+ * directly at boot: that factory closes over LIVE `listSessions`, something
+ * a static emitted `ui.html` snapshot can't carry.
  */
 
 import { z } from "zod"
+import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { BUREAU_SESSIONS_HTML } from "./panel.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 
@@ -57,3 +64,17 @@ export function makeBureauSessionsApp<TSession extends { kind: string }>(
     html: BUREAU_SESSIONS_HTML,
   }
 }
+
+export const bureauSessionsApp: AppHandle = defineApp({
+  id: "@agentproto/bureau-sessions",
+  name: "Bureau — sessions navigateur",
+  description:
+    "Open the browser-sessions panel — one row per browser service (adapter, base URL, port, " +
+    "status, uptime).",
+  agents: [],
+  ui: {
+    html: BUREAU_SESSIONS_HTML,
+    title: "Bureau — sessions navigateur",
+    tools: ["session_list"],
+  },
+})

@@ -42,14 +42,16 @@ export class AppDefinitionError extends Error {
 }
 
 export function defineApp(def: AppDefinition): AppHandle {
-  if (!Array.isArray(def.agents) || def.agents.length === 0) {
-    throw new AppDefinitionError("`agents` must be a non-empty array.")
-  }
   if (def.id !== undefined && def.id.trim() === "") {
     throw new AppDefinitionError("`id` must be non-empty when present.")
   }
   if (def.ui !== undefined && (typeof def.ui.html !== "string" || def.ui.html.trim() === "")) {
     throw new AppDefinitionError("`ui.html` must be a non-empty string when `ui` is present.")
+  }
+  if ((def.agents === undefined || def.agents.length === 0) && def.ui === undefined) {
+    throw new AppDefinitionError(
+      "an app needs at least one agent, or a `ui` block for a UI-only app — got neither.",
+    )
   }
   if (def.dev !== undefined && (!Array.isArray(def.dev.launch) || def.dev.launch.length === 0)) {
     throw new AppDefinitionError("`dev.launch` must be a non-empty array when `dev` is present.")
@@ -64,7 +66,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     throw new AppDefinitionError("`skill.path` must be a non-empty string when `skill` is present.")
   }
 
-  const agents = def.agents.map(normalizeEntry)
+  const agents = (def.agents ?? []).map(normalizeEntry)
   const workflows = def.workflows ?? []
   const attachments = def.attach ?? []
   const workspace = def.workspace ? toWorkspaceHandle(def.workspace) : undefined

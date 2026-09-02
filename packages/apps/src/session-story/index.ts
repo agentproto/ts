@@ -29,9 +29,16 @@
  *      JS port of @agentproto/runtime's session-story.ts heuristics — the
  *      panel HTML is fully self-contained, so it cannot import that TS
  *      module directly), and `agent_prompt` for the composer.
+ *
+ * This module also exports `sessionStoryApp`, a real `defineApp()`
+ * `AppHandle` (`agents: []`, UI-only) — the catalog/emit/`app_install` path.
+ * It's separate from `makeSessionStoryPanelApp` above, which the daemon
+ * mounts directly at boot: that factory closes over LIVE `listSessions`,
+ * something a static emitted `ui.html` snapshot can't carry.
  */
 
 import { z } from "zod"
+import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { SESSION_STORY_PANEL_HTML } from "./panel.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 
@@ -88,3 +95,18 @@ export function makeSessionStoryPanelApp<TSession = unknown>(
     html: SESSION_STORY_PANEL_HTML,
   }
 }
+
+export const sessionStoryApp: AppHandle = defineApp({
+  id: "@agentproto/session-story",
+  name: "Session Story",
+  description:
+    "Open the session story panel — a readable, per-session timeline for two audiences at once: " +
+    "a plain-language summary of every step for beginners, expandable to raw tool-call detail for " +
+    "technical users.",
+  agents: [],
+  ui: {
+    html: SESSION_STORY_PANEL_HTML,
+    title: "Session Story",
+    tools: ["session_list", "agent_export", "agent_prompt"],
+  },
+})

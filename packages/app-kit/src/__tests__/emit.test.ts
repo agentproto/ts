@@ -342,6 +342,30 @@ describe("emit — manifests round-trip through the loaders", () => {
   })
 })
 
+describe("emit — UI-only apps (zero agents)", () => {
+  it("writes an APP.md with agents: [], no agent files, and .agentproto/ui/index.html", async () => {
+    const html = "<html><body><h1>UI-only</h1></body></html>"
+    const uiOnlyDir = await mkdtemp(join(tmpdir(), "app-kit-emit-ui-only-"))
+    try {
+      const app = defineApp({ ui: { html, title: "Panel" } })
+      const { agentPaths, workflowPaths, uiPath, appPath } = await app.emit(uiOnlyDir)
+
+      expect(agentPaths).toEqual({})
+      expect(workflowPaths).toEqual([])
+      expect(uiPath).toMatch(/\.agentproto\/ui\/index\.html$/)
+      expect(await readFile(uiPath!, "utf8")).toBe(html)
+
+      const parsed = matter(await readFile(appPath, "utf8"))
+      expect(parsed.data.agents).toEqual([])
+      expect(parsed.data.workflows).toEqual([])
+      expect(parsed.data.ui.path).toBe(".agentproto/ui/index.html")
+      expect(parsed.data.ui.title).toBe("Panel")
+    } finally {
+      await rm(uiOnlyDir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("emit — data dir hint", () => {
   it("writes `data` verbatim into APP.md frontmatter, and omits it when absent", async () => {
     const solo = () =>

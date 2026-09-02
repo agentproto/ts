@@ -40,9 +40,17 @@
  * `<select>` (WP4) and the timeline renders through `groupAdjacentToolCalls`
  * (inlined copy, SPEC §3) with a colour rail and collapsible tool-call
  * groups. `setFocus()` remains the only session-switch entry point.
+ *
+ * This module also exports `liveSessionApp`, a real `defineApp()`
+ * `AppHandle` (`agents: []`, UI-only) — the catalog/emit/`app_install` path.
+ * Its `ui.html` is a static snapshot (`LIVE_SESSION_HTML` called with the
+ * default `httpBaseUrl`) since `AppUiDefinition.ui.html` must be a plain
+ * string; it's separate from `makeLiveSessionApp` above, which the daemon
+ * mounts directly at boot with the real daemon origin baked in per-call.
  */
 
 import { z } from "zod"
+import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { panelBridgeScript } from "../panel-bridge.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 
@@ -107,6 +115,22 @@ export function makeLiveSessionApp(
     csp: { connectDomains: [httpOrigin] },
   }
 }
+
+const DEFAULT_HTTP_BASE_URL = "http://127.0.0.1:18790"
+
+export const liveSessionApp: AppHandle = defineApp({
+  id: "@agentproto/live-session",
+  name: "Live Session",
+  description:
+    "Open the live session widget — a two-pane view of a running agent session: a live tree on " +
+    "the left, a streaming timeline (text, tool calls/results, turn-end) on the right.",
+  agents: [],
+  ui: {
+    html: LIVE_SESSION_HTML({ httpBaseUrl: DEFAULT_HTTP_BASE_URL }),
+    title: "Live Session",
+    tools: ["app_session_tree", "app_session_events", "live_session"],
+  },
+})
 
 // ── HTML bundle (zero CDN, self-contained) ──────────────────────────────────
 

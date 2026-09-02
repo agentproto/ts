@@ -666,6 +666,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       }
       const app = appRegistry.upsertApp({ ...installed, agents: refs.agents, workflows: refs.workflows })
 
+      if (app.agents.length === 0) {
+        return errorResult(`app_run: app "${app.appId}" declares no agents; open its UI panel instead.`)
+      }
+
       // Resolve the runner (A). `harness` is canonical: it wins the harness
       // slot and (when `adapter` absent) the adapter slot too. A bare `adapter`
       // fills both. Neither → the long-standing default.
@@ -891,6 +895,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         agents: installed.agents,
         workflows: installed.workflows,
         unvalidatedAgentTools: installed.unvalidatedAgentTools,
+        ...(installed.agents.length === 0
+          ? { note: "app declares no agents — nothing to activate in this scope; open its UI panel directly." }
+          : {}),
       })
     },
   )
