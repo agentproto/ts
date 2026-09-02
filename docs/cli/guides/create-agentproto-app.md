@@ -94,7 +94,9 @@ before you've run a build.
 - **`.agentproto/APP.md`** — id, name, description, the declared `ui.tools`
   allowlist (extend this when a route calls a new tool).
 - **`.agentproto/agents/<slug>-assistant/AGENT.md`** — replace the
-  placeholder prompt/boundaries/tools with the agent's real job.
+  placeholder prompt/boundaries/tools with the agent's real job. See
+  [Which tools can an app agent call?](./app-agent-tools.md) before adding a
+  daemon tool id to `tools:` — it's an allowlist, not just a hint.
 - **`.agentproto/workflows/<slug>-flow/WORKFLOW.md`** — replace the single
   placeholder step with the app's real pipeline.
 - **`ui/src/router.tsx`** — add routes the same way `dashboard.tsx` /
