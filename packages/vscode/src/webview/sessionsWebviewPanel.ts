@@ -46,6 +46,7 @@ import {
 import {
   buildSessionsWebviewModel,
   isValidColorIndex,
+  subtreeRollup,
   summaryTextFor,
   UNASSIGNED_COLOR_CSS,
   workspaceColorFor,
@@ -137,6 +138,15 @@ interface RenderRow {
   action: RowAction | undefined
   workspace: (WebviewWorkspace & { css: string }) | undefined
   archived: boolean
+  /** True when this row has at least one nested descendant in the group's
+   *  rendered row list — drives whether a collapse triangle is rendered at
+   *  all (a leaf row gets none). */
+  hasChildren: boolean
+  /** Busiest {@link WebviewRow.status} across this row and its full
+   *  descendant subtree ({@link subtreeRollup}) — shown on the row's status
+   *  dot in place of `status` while the row is collapsed, so a busier
+   *  descendant still shows through. */
+  subtreeStatus: WebviewRow["status"]
 }
 
 interface RenderGroup {
@@ -207,6 +217,7 @@ function toRenderRow(
   colorOverrides: WorkspaceColorOverrides,
   webview: vscode.Webview,
   extensionUri: vscode.Uri,
+  rollup: { hasChildren: boolean; status: WebviewRow["status"] },
 ): RenderRow {
   return {
     id: row.id,
@@ -239,6 +250,8 @@ function toRenderRow(
       ? { ...row.workspace, css: workspaceColorFor(row.workspace.slug, colorOverrides).css }
       : undefined,
     archived: row.archived,
+    hasChildren: rollup.hasChildren,
+    subtreeStatus: rollup.status,
   }
 }
 
@@ -254,7 +267,9 @@ function toRenderGroup(
     key: group.key,
     label: group.label,
     hint: group.hint,
-    rows: group.rows.map(r => toRenderRow(r, activeSessionId, seen, colorOverrides, webview, extensionUri)),
+    rows: group.rows.map((r, i) =>
+      toRenderRow(r, activeSessionId, seen, colorOverrides, webview, extensionUri, subtreeRollup(group.rows, i)),
+    ),
   }
 }
 
@@ -815,6 +830,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .row.open .name > span:first-child { color: var(--fg); }
     .row.archived { opacity: 0.6; }
     .row.gone { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; transition: all 0.25s ease; }
+    /* A descendant of a collapsed row stays in the DOM (so shownCount/footer
+       stay truthful) but is not painted — mirrors .gbody[hidden] below. */
+    .row[hidden] { display: none; }
     .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
     .dot.working { background: var(--ws, var(--working)); animation: agentproto-pulse 2s infinite; }
     .dot.delegating { background: transparent; border: 2px solid var(--ws, var(--working)); }
@@ -860,6 +878,13 @@ export function buildHtml(nonce: string, cspSource: string): string {
        quiet left guide, so the parent→child stack reads without shouting. */
     .name .lineage { color: var(--faint); font-weight: 400; }
     .row.nested { border-left: 1px solid var(--border); }
+    /* Per-row disclosure triangle — only rendered when a row has nested
+       children (see subtreeRollup). Same visual language as .ghead .tw:
+       12s rotate transition, -90deg when collapsed. Collapsed is the
+       default (see expandedRows below), so most subagent subtrees start
+       hidden and this glyph starts rotated. */
+    .name .rtw { display: inline-flex; font-size: 8px; color: var(--faint); transition: transform 0.12s; cursor: pointer; }
+    .name .rtw.closed { transform: rotate(-90deg); }
     .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .meta-loc { margin-top: 3px; font-size: 11px; color: var(--faint); }
     .meta { display: flex; gap: 8px; margin-top: 1px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
@@ -973,6 +998,15 @@ export function buildHtml(nonce: string, cspSource: string): string {
       // Section collapse is a client-only concern; persist it across the
       // frequent live re-renders so a collapsed section stays collapsed.
       const collapsed = {};
+      // Row (subagent subtree) collapse is a client-only concern too, keyed by
+      // session id — same lifetime/semantics as the collapsed map above, but
+      // the DEFAULT is the opposite: a row absent from this map is COLLAPSED, so
+      // an empty map (first paint) starts every parent row collapsed.
+      const expandedRows = {};
+      // Most recent rendered groups, cached so a row-triangle toggle can
+      // redraw the list without waiting for the next 'model' message.
+      let lastGroups = [];
+      let lastShowArchived = false;
 
       const STOP_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.4" y="5.4" width="5.2" height="5.2" rx="1" fill="currentColor"/></svg>';
       const ARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5M6 7.5h4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 2.8h6l1 2.2H4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -1074,16 +1108,28 @@ export function buildHtml(nonce: string, cspSource: string): string {
         return parts.join('');
       }
 
-      function rowHTML(r) {
+      function rowHTML(r, hiddenRow, isCollapsedRow) {
         var depth = typeof r.depth === 'number' && r.depth > 0 ? r.depth : 0;
         var classes = 'row' + (r.open ? ' open' : '') + (r.archived ? ' archived' : '') + (depth > 0 ? ' nested' : '');
+        // While collapsed, the dot shows the busiest state in the now-hidden
+        // subtree (r.subtreeStatus, host-computed via subtreeRollup) rather
+        // than this row's own status — a busier descendant must still show
+        // through the parent's dot color.
+        var effectiveStatus = isCollapsedRow ? r.subtreeStatus : r.status;
         // Background tasks pending/running color the dot amber — except while
         // the row is already actively working, needs you, or is itself the
         // dedicated awaiting-bg status (already amber via its own dot class).
-        var hasBgWork = (r.childrenBusy > 0 || r.pendingBgTasks > 0) && r.status !== 'working' && r.status !== 'awaiting' && r.status !== 'awaiting-bg';
-        var dotClasses = 'dot ' + r.status + (r.status === 'done' && r.unread ? ' unread' : '') + (hasBgWork ? ' bg' : '');
+        var hasBgWork = (r.childrenBusy > 0 || r.pendingBgTasks > 0) && effectiveStatus !== 'working' && effectiveStatus !== 'awaiting' && effectiveStatus !== 'awaiting-bg';
+        var dotClasses = 'dot ' + effectiveStatus + (effectiveStatus === 'done' && r.unread ? ' unread' : '') + (hasBgWork ? ' bg' : '');
+        // Disclosure triangle — only on a row with nested children (a leaf
+        // row's rendering is otherwise unchanged). Collapsed by default
+        // (absent from expandedRows).
+        var triangle = r.hasChildren
+          ? '<span class="rtw' + (isCollapsedRow ? ' closed' : '') + '" data-row-toggle="' + escapeHtml(r.id) + '" role="button" tabindex="0" aria-expanded="' + (isCollapsedRow ? 'false' : 'true') + '" aria-label="' + (isCollapsedRow ? 'Expand nested sessions' : 'Collapse nested sessions') + '">▾</span>'
+          : '';
         var nameLine =
           (depth > 0 ? '<span class="lineage" aria-hidden="true">↳</span>' : '') +
+          triangle +
           '<span>' + escapeHtml(r.name) + '</span>' +
           (r.idMono ? '<span class="id mono">· ' + escapeHtml(r.idMono) + '</span>' : '') +
           (r.watched ? '<span class="watch" title="Kept alive — the idle-reaper never retires this session">◉</span>' : '') +
@@ -1097,7 +1143,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
         // Indent nested subagents; base padding-left is 12px (see .row CSS).
         var indent = depth > 0 ? ' style="padding-left:' + (12 + depth * 16) + 'px"' : '';
         var wsStyle = r.workspace ? ' style="--ws:' + escapeHtml(r.workspace.css) + '"' : '';
-        return '<div class="' + classes + '"' + indent + ' data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '" role="listitem" tabindex="0">' +
+        return '<div class="' + classes + '"' + indent + (hiddenRow ? ' hidden' : '') + ' data-id="' + escapeHtml(r.id) + '" data-status="' + r.status + '" role="listitem" tabindex="0">' +
           '<span class="' + dotClasses + '"' + wsStyle + '></span>' +
           '<div class="mid">' +
             '<div class="name">' + nameLine + '</div>' +
@@ -1110,13 +1156,34 @@ export function buildHtml(nonce: string, cspSource: string): string {
         '</div>';
       }
 
+      // Rows arrive flat, depth-first (nestByLineage order): a row's
+      // descendants are the contiguous run of immediately-following rows
+      // whose depth is strictly greater than its own. Walk that order once,
+      // tracking the shallowest depth currently hidden by a collapsed
+      // ancestor — reset the instant a row pops back out of that ancestor's
+      // subtree (its depth drops back at or below the trigger).
+      function rowsHTML(rows) {
+        var html = '';
+        var hideFromDepth = null;
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          var depth = typeof r.depth === 'number' ? r.depth : 0;
+          if (hideFromDepth !== null && depth < hideFromDepth) hideFromDepth = null;
+          var hiddenRow = hideFromDepth !== null;
+          var isCollapsedRow = r.hasChildren && !expandedRows[r.id];
+          if (isCollapsedRow && hideFromDepth === null) hideFromDepth = depth + 1;
+          html += rowHTML(r, hiddenRow, isCollapsedRow);
+        }
+        return html;
+      }
+
       function groupHTML(g) {
         var isClosed = collapsed[g.key] === true;
         var head = '<div class="ghead' + (isClosed ? ' closed' : '') + '" data-key="' + escapeHtml(g.key) + '" role="button" tabindex="0" aria-expanded="' + (isClosed ? 'false' : 'true') + '">' +
           '<span class="tw">▾</span>' + escapeHtml(g.label) + ' <span class="n">' + g.rows.length + '</span>' +
           (g.hint ? '<span class="hint">' + escapeHtml(g.hint) + '</span>' : '') + '</div>';
         var body = '<div class="gbody" data-body="' + escapeHtml(g.key) + '"' + (isClosed ? ' hidden' : '') + '>' +
-          g.rows.map(rowHTML).join('') + '</div>';
+          rowsHTML(g.rows) + '</div>';
         return head + body;
       }
 
@@ -1193,6 +1260,19 @@ export function buildHtml(nonce: string, cspSource: string): string {
         popoverTrigger = null;
       }
 
+      // Redraws just the list from the last rendered groups — used both by
+      // render() and by a row-triangle toggle, which changes what's visible
+      // without waiting for the next 'model' message from the host.
+      function renderList() {
+        listEl.innerHTML = lastGroups.map(groupHTML).join('');
+        var svgs = listEl.querySelectorAll('.logo.svg');
+        for (var s = 0; s < svgs.length; s++) loadSvg(svgs[s]);
+        var shown = 0;
+        for (var g = 0; g < lastGroups.length; g++) shown += lastGroups[g].rows.length;
+        emptyEl.hidden = shown !== 0;
+        emptyEl.textContent = lastShowArchived ? 'No archived sessions.' : 'No sessions match.';
+      }
+
       function render(payload) {
         currentProject = payload.project === undefined ? currentProject : payload.project;
         currentPalette = payload.palette || [];
@@ -1214,14 +1294,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
         renderRail(payload.rail || [], payload.lane);
 
         var showArchived = payload.showArchived === true;
-        var groups = payload.groups || [];
-        var shown = 0;
-        for (var g = 0; g < groups.length; g++) shown += groups[g].rows.length;
-        listEl.innerHTML = groups.map(groupHTML).join('');
-        var svgs = listEl.querySelectorAll('.logo.svg');
-        for (var s = 0; s < svgs.length; s++) loadSvg(svgs[s]);
-        emptyEl.hidden = shown !== 0;
-        emptyEl.textContent = showArchived ? 'No archived sessions.' : 'No sessions match.';
+        lastGroups = payload.groups || [];
+        lastShowArchived = showArchived;
+        renderList();
         summaryEl.textContent = payload.summary;
         archToggleEl.classList.toggle('on', showArchived);
         archToggleEl.setAttribute('aria-pressed', showArchived ? 'true' : 'false');
@@ -1317,6 +1392,13 @@ export function buildHtml(nonce: string, cspSource: string): string {
           if (body) body.hidden = collapsed[key];
           return;
         }
+        var rowToggle = e.target.closest('[data-row-toggle]');
+        if (rowToggle) {
+          var toggleId = rowToggle.getAttribute('data-row-toggle');
+          expandedRows[toggleId] = !expandedRows[toggleId];
+          renderList();
+          return;
+        }
         var action = e.target.closest('[data-action]');
         var row = e.target.closest('.row');
         if (action && row) {
@@ -1347,6 +1429,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
         if (e.key !== 'Enter' && e.key !== ' ') return;
         var head = e.target.closest('.ghead');
         if (head) { e.preventDefault(); head.click(); return; }
+        var rowToggle = e.target.closest('[data-row-toggle]');
+        if (rowToggle) { e.preventDefault(); rowToggle.click(); return; }
         var action = e.target.closest('[data-action]');
         if (action) { e.preventDefault(); action.click(); return; }
         var row = e.target.closest('.row');

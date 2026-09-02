@@ -17,6 +17,7 @@ import {
   sectionFor,
   stallTooltipFor,
   stripMarkdownToText,
+  subtreeRollup,
   summaryTextFor,
   UNASSIGNED_COLOR_INDEX,
   UNASSIGNED_SLUG,
@@ -24,6 +25,7 @@ import {
   WORKSPACE_PALETTE,
   workspaceColorFor,
   type WebviewRow,
+  type WebviewRowStatus,
 } from "./sessionsWebview.logic.js"
 
 function session(over: Partial<SessionSummary> = {}): SessionSummary {
@@ -152,6 +154,41 @@ describe("nestByLineage (item 6: subagents under their spawner)", () => {
       ["orphan", 0],
       ["plain", 0],
     ])
+  })
+})
+
+describe("subtreeRollup (row disclosure triangle + collapsed-dot rollup)", () => {
+  const row = (id: string, depth: number, status: WebviewRowStatus): WebviewRow =>
+    ({ id, depth, status, session: session({ id }) }) as unknown as WebviewRow
+
+  it("reports no children and its own status for a leaf row", () => {
+    const rows = [row("root", 0, "idle"), row("sibling", 0, "working")]
+    expect(subtreeRollup(rows, 0)).toEqual({ hasChildren: false, status: "idle" })
+  })
+
+  it("rolls up the busier status from a direct child", () => {
+    const rows = [row("root", 0, "idle"), row("child", 1, "working")]
+    expect(subtreeRollup(rows, 0)).toEqual({ hasChildren: true, status: "working" })
+  })
+
+  it("stops the walk at the next row whose depth is back at or below the root's", () => {
+    const rows = [row("root", 0, "idle"), row("child", 1, "idle"), row("sibling", 0, "working")]
+    // "sibling" is a following root, not a descendant — it must not leak into the rollup.
+    expect(subtreeRollup(rows, 0)).toEqual({ hasChildren: true, status: "idle" })
+  })
+
+  it("walks a 2+-level grandchild subtree for the busiest state anywhere below", () => {
+    const rows = [
+      row("root", 0, "idle"),
+      row("child", 1, "idle"),
+      row("grandchild", 2, "awaiting"),
+      row("other-root", 0, "working"),
+    ]
+    expect(subtreeRollup(rows, 0)).toEqual({ hasChildren: true, status: "awaiting" })
+    // A non-root index rolls up its OWN subtree only — "child" sees the
+    // grandchild below it, "other-root" (a separate top-level row) sees nothing.
+    expect(subtreeRollup(rows, 1)).toEqual({ hasChildren: true, status: "awaiting" })
+    expect(subtreeRollup(rows, 3)).toEqual({ hasChildren: false, status: "working" })
   })
 })
 

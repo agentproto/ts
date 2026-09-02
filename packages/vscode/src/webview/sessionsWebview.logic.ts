@@ -935,6 +935,36 @@ export function nestByLineage(rows: readonly WebviewRow[]): WebviewRow[] {
   return out
 }
 
+/**
+ * Rolled-up state for one row's rendered subtree — used when a row with
+ * nested children is collapsed, so its status dot still reflects the
+ * busiest state hiding underneath it. Operates on a single group's
+ * depth-ordered row array (the output of {@link nestByLineage}): a row's
+ * descendants are the contiguous run of immediately-following rows whose
+ * `depth` is strictly greater than the row's own, ending at the first row
+ * whose depth is `<=` it.
+ */
+export interface SubtreeRollup {
+  /** True when `rows[rootIndex]` has at least one nested descendant in this list — the triangle only renders when this is true. */
+  hasChildren: boolean
+  /** The busiest {@link WebviewRowStatus} across the row itself and its full descendant subtree. */
+  status: WebviewRowStatus
+}
+
+/** Compute {@link SubtreeRollup} for `rows[rootIndex]` within one group's depth-ordered row array. */
+export function subtreeRollup(rows: readonly WebviewRow[], rootIndex: number): SubtreeRollup {
+  const root = rows[rootIndex]!
+  let status = root.status
+  let hasChildren = false
+  for (let i = rootIndex + 1; i < rows.length; i++) {
+    const row = rows[i]!
+    if (row.depth <= root.depth) break
+    hasChildren = true
+    status = busierRowStatus(status, row.status)
+  }
+  return { hasChildren, status }
+}
+
 function buildSections(rows: readonly WebviewRow[]): WebviewGroup[] {
   const byKey = new Map<SectionKey, WebviewRow[]>()
   for (const row of rows) {
