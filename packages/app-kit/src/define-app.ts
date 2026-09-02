@@ -18,9 +18,9 @@
  * agent attached to its workflows" means, made checkable.
  */
 
-import { buildMastraAgent } from "@agentproto/mastra"
 import { defineWorkspace } from "@agentproto/workspace"
 import type { AgentHandle, AnyRef } from "@agentproto/agent"
+import type { BuildMastraAgentResult } from "@agentproto/mastra"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
 import type {
@@ -42,14 +42,16 @@ export class AppDefinitionError extends Error {
 }
 
 export function defineApp(def: AppDefinition): AppHandle {
-  if (!Array.isArray(def.agents) || def.agents.length === 0) {
-    throw new AppDefinitionError("`agents` must be a non-empty array.")
-  }
   if (def.id !== undefined && def.id.trim() === "") {
     throw new AppDefinitionError("`id` must be non-empty when present.")
   }
   if (def.ui !== undefined && (typeof def.ui.html !== "string" || def.ui.html.trim() === "")) {
     throw new AppDefinitionError("`ui.html` must be a non-empty string when `ui` is present.")
+  }
+  if ((def.agents === undefined || def.agents.length === 0) && def.ui === undefined) {
+    throw new AppDefinitionError(
+      "an app needs at least one agent, or a `ui` block for a UI-only app — got neither.",
+    )
   }
   if (def.dev !== undefined && (!Array.isArray(def.dev.launch) || def.dev.launch.length === 0)) {
     throw new AppDefinitionError("`dev.launch` must be a non-empty array when `dev` is present.")
@@ -64,7 +66,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     throw new AppDefinitionError("`skill.path` must be a non-empty string when `skill` is present.")
   }
 
-  const agents = def.agents.map(normalizeEntry)
+  const agents = (def.agents ?? []).map(normalizeEntry)
   const workflows = def.workflows ?? []
   const attachments = def.attach ?? []
   const workspace = def.workspace ? toWorkspaceHandle(def.workspace) : undefined
@@ -109,7 +111,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
       const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
-      const out: Record<string, Awaited<ReturnType<typeof buildMastraAgent>>> = {}
+      const out: Record<string, BuildMastraAgentResult> = {}
       for (const entry of targets) {
         out[entry.agent.id] = await buildOne(entry, opts)
       }
@@ -198,7 +200,14 @@ function selectAgents(
   })
 }
 
-function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions) {
+async function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions): Promise<BuildMastraAgentResult> {
+  // Dynamic import, not a static top-level one: `@agentproto/mastra` pulls in
+  // `@mastra/core` (a documented peer dependency — see index.ts), which a
+  // bundler would otherwise inline into ANY host that merely calls
+  // `defineApp()` without ever calling `toMastraAgent(s)` (e.g. a UI-only app
+  // consumer). Loading it lazily, only from the one place it's actually used,
+  // keeps `defineApp()`/the rest of this module free of that cost.
+  const { buildMastraAgent } = await import("@agentproto/mastra")
   // `entry.body` (the AGENT.md body) wins as instructions; an explicit
   // `opts.body` still overrides, matching buildMastraAgent's contract.
   return buildMastraAgent(entry.agent, { body: entry.body, ...opts })

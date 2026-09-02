@@ -12,9 +12,16 @@
  *      window.__APP_INIT__ (static initial render, no bridge needed).
  *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and polls
  *      `session_list` + `agent_output` every 3 s for live data.
+ *
+ * This module also exports `sessionsPanelApp`, a real `defineApp()`
+ * `AppHandle` (`agents: []`, UI-only) — the catalog/emit/`app_install` path.
+ * It's separate from `makeSessionsPanelApp` above, which the daemon mounts
+ * directly at boot: that factory closes over LIVE `listSessions`, something
+ * a static emitted `ui.html` snapshot can't carry.
  */
 
 import { z } from "zod"
+import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { PANEL_HTML } from "./panel.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 
@@ -65,3 +72,17 @@ export function makeSessionsPanelApp<TSession = unknown>(
     html: PANEL_HTML,
   }
 }
+
+export const sessionsPanelApp: AppHandle = defineApp({
+  id: "@agentproto/sessions-panel",
+  name: "Agent Sessions",
+  description:
+    "Open the agentproto sessions panel — an interactive UI that shows all running and recent " +
+    "agent-CLI and terminal/PTY sessions.",
+  agents: [],
+  ui: {
+    html: PANEL_HTML,
+    title: "Agent Sessions",
+    tools: ["session_list", "agent_output"],
+  },
+})

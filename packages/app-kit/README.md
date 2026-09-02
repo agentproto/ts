@@ -122,6 +122,13 @@ runtime app registry:
   installed-app record. Reserved for later: a `store.sqlite` inside that dir
   behind an `app_data_query` tool.
 
+An app can also be **UI-only**: omit `agents` (or pass `agents: []`) when the
+app is a pure UI panel with no agent behavior of its own. In that case `ui`
+becomes required — `defineApp` throws if both `agents` and `ui` are absent,
+since an app with neither has nothing to do. A UI-only app still emits a
+normal `APP.md` (with `agents: []`) and round-trips through `loadAppHandle`
+the same way; `toMastraAgent`/`toMastraAgents` simply have nothing to build.
+
 The three surfaces form the app's public contract:
 
 | Surface   | Type            | Emitted path                    | Daemon tool                     | Host side                     |

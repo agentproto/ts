@@ -23,9 +23,16 @@
  * (summarize-session-tool.ts) — it's tied to the runtime's session
  * ring-buffer/hot path, not to this panel's UI. Only the panel factory +
  * HTML live here.
+ *
+ * This module also exports `agentsOverviewApp`, a real `defineApp()`
+ * `AppHandle` (`agents: []`, UI-only) — the catalog/emit/`app_install` path.
+ * It's separate from `makeAgentsOverviewApp` above, which the daemon mounts
+ * directly at boot: that factory closes over LIVE `listSessions`, something
+ * a static emitted `ui.html` snapshot can't carry.
  */
 
 import { z } from "zod"
+import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { AGENTS_OVERVIEW_HTML } from "./panel.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 
@@ -63,3 +70,17 @@ export function makeAgentsOverviewApp<TSession = unknown>(
     html: AGENTS_OVERVIEW_HTML,
   }
 }
+
+export const agentsOverviewApp: AppHandle = defineApp({
+  id: "@agentproto/agents-overview",
+  name: "Agents — vue claire",
+  description:
+    "Open the agents overview — a plain-language card per agent session with one human sentence " +
+    "and a coarse state (à traiter / au travail / en attente / terminé).",
+  agents: [],
+  ui: {
+    html: AGENTS_OVERVIEW_HTML,
+    title: "Agents — vue claire",
+    tools: ["session_list", "summarize_session"],
+  },
+})

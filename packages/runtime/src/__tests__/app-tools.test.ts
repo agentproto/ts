@@ -1604,6 +1604,15 @@ describe("app_catalog", () => {
         "live_session",
       ].sort(),
     )
+    expect(builtins.map((e: any) => e.appId).sort()).toEqual(
+      [
+        "@agentproto/agents-overview",
+        "@agentproto/bureau-sessions",
+        "@agentproto/session-story",
+        "@agentproto/sessions-panel",
+        "@agentproto/live-session",
+      ].sort(),
+    )
     for (const entry of builtins) {
       expect(entry.installed).toBe(true)
       expect(entry.hasUi).toBe(true)
@@ -1719,5 +1728,91 @@ describe("installed-app UI panels — tools/list integration", () => {
 
     const { tools } = await uiClient.listTools()
     expect(tools.map(t => t.name)).toContain("app_ui_ui_toolslist_app")
+  })
+})
+
+async function buildUiOnlyApp(dir: string) {
+  const app = defineApp({
+    id: "@test/ui-only",
+    name: "UI Only App",
+    agents: [],
+    ui: { html: "<html><body>UI-only panel</body></html>", title: "UI Only Panel", tools: ["known_tool"] },
+  })
+  await app.emit(dir)
+}
+
+describe("app_* verbs — UI-only (zero-agent) apps", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-ui-only-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("app_install: installs a zero-agent app with agents: [] and unvalidatedAgentTools: []", async () => {
+    await buildUiOnlyApp(dir)
+    const { client } = await setup()
+
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(false)
+    const record = parseToolJson(res)
+    expect(record.appId).toBe("@test/ui-only")
+    expect(record.agents).toEqual([])
+    expect(record.unvalidatedAgentTools).toEqual([])
+  })
+
+  it("app_run: returns a clear error instead of spawning zero sessions", async () => {
+    await buildUiOnlyApp(dir)
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const res = await client.callTool({ name: "app_run", arguments: { appId: "@test/ui-only" } })
+    expect(isError(res)).toBe(true)
+    const content = (res as { content?: Array<{ type: string; text?: string }> }).content
+    const text = content?.find(c => c.type === "text")?.text ?? ""
+    expect(text).toContain("@test/ui-only")
+    expect(text).toContain("declares no agents")
+  })
+
+  it("app_apply: succeeds, mounts the app, and includes a note (unlike an agent-having app)", async () => {
+    await buildUiOnlyApp(dir)
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const res = await client.callTool({
+      name: "app_apply",
+      arguments: { appId: "@test/ui-only", scopeId: "guild-ui-only" },
+    })
+    expect(isError(res)).toBe(false)
+    const applied = parseToolJson(res)
+    expect(applied.agents).toEqual([])
+    expect(applied.note).toBe(
+      "app declares no agents — nothing to activate in this scope; open its UI panel directly.",
+    )
+
+    const mounts = parseToolJson(
+      await client.callTool({ name: "app_list_applied", arguments: { scopeId: "guild-ui-only" } }),
+    )
+    expect(mounts.some((m: any) => m.appId === "@test/ui-only")).toBe(true)
+  })
+
+  it("app_apply: omits `note` entirely for a normal, agent-having app", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "app-tools-ui-only-agentful-"))
+    try {
+      await buildFixtureApp(agentDir, { toolId: "known_tool" })
+      const { client } = await setup()
+      await client.callTool({ name: "app_install", arguments: { dir: agentDir } })
+
+      const applied = parseToolJson(
+        await client.callTool({
+          name: "app_apply",
+          arguments: { appId: "@test/fixture-app", scopeId: "guild-agentful" },
+        }),
+      )
+      expect("note" in applied).toBe(false)
+    } finally {
+      await rm(agentDir, { recursive: true, force: true })
+    }
   })
 })

@@ -277,6 +277,55 @@ describe("defineApp — multi-agent + attachment invariant", () => {
   })
 })
 
+describe("defineApp — UI-only apps (zero agents)", () => {
+  it("accepts an explicit empty agents array when ui is present", () => {
+    const app = defineApp({ agents: [], ui: { html: "<html></html>" } })
+    expect(app.agents).toEqual([])
+    expect(app.ui?.html).toBe("<html></html>")
+  })
+
+  it("accepts agents omitted entirely when ui is present", () => {
+    const app = defineApp({ ui: { html: "<html></html>" } })
+    expect(app.agents).toEqual([])
+    expect(app.ui?.html).toBe("<html></html>")
+  })
+
+  it("throws when agents is empty and ui is absent", () => {
+    expect(() => defineApp({ agents: [] })).toThrow(AppDefinitionError)
+    expect(() => defineApp({ agents: [] })).toThrow(/at least one agent.*ui.*block/i)
+  })
+
+  it("throws when both agents and ui are omitted", () => {
+    expect(() => defineApp({})).toThrow(AppDefinitionError)
+    expect(() => defineApp({})).toThrow(/at least one agent.*ui.*block/i)
+  })
+
+  it("still defaults version to 0.1.0 for a UI-only app with an id", () => {
+    const app = defineApp({ id: "@acme/ui-only", ui: { html: "<html></html>" } })
+    expect(app.version).toBe("0.1.0")
+  })
+
+  it("toMastraAgent throws on a zero-agent app", async () => {
+    const app = defineApp({ ui: { html: "<html></html>" } })
+    await expect(app.toMastraAgent({ resolveModel: () => { throw new Error("unreachable") } })).rejects.toThrow(
+      AppDefinitionError,
+    )
+  })
+
+  it("toMastraAgents resolves to an empty object on a zero-agent app", async () => {
+    const app = defineApp({ ui: { html: "<html></html>" } })
+    await expect(
+      app.toMastraAgents({ resolveModel: () => { throw new Error("unreachable") } }),
+    ).resolves.toEqual({})
+  })
+
+  it("pick([]) returns [] and pick with an unknown id still throws", () => {
+    const app = defineApp({ ui: { html: "<html></html>" } })
+    expect(app.pick([])).toEqual([])
+    expect(() => app.pick(["missing"])).toThrow(/not in this app/)
+  })
+})
+
 describe("defineApp — data dir hint", () => {
   it("carries `data.dir` through to the handle, frozen", () => {
     const app = defineApp({ agents: [agent("solo", [])], data: { dir: "data" } })

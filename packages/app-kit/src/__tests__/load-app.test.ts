@@ -374,6 +374,24 @@ describe("loadAppHandle — the inverse of emit", () => {
   })
 })
 
+describe("loadAppHandle — UI-only apps (zero agents)", () => {
+  it("round-trips a zero-agent app: agents: [], ui.html/title preserved", async () => {
+    const html = "<html><body><h1>UI-only</h1></body></html>"
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-ui-only-"))
+    try {
+      const original = defineApp({ ui: { html, title: "Panel" } })
+      await original.emit(d)
+
+      const loaded = await loadAppHandle(d)
+      expect(loaded.agents).toEqual([])
+      expect(loaded.ui?.html).toBe(html)
+      expect(loaded.ui?.title).toBe("Panel")
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("loadAppHandle — data dir hint", () => {
   const solo = () =>
     defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
