@@ -1710,7 +1710,8 @@ async function runExport(args: readonly string[]): Promise<number> {
  * `agentproto sessions story <id-or-name>` — CLI parity for the daemon's
  * `agentproto_session_story` MCP app. That app's panel computes its
  * chapters/steps client-side (a JS port of session-story.ts's heuristics,
- * driven live over a postMessage bridge — see session-story-panel-app.ts).
+ * driven live over a postMessage bridge — see @agentproto/apps's
+ * session-story/index.ts).
  * The CLI can't run that HTML/JS, so it reuses the canonical TS source of
  * truth directly: fetch the same transcript `sessions export --json`
  * already exposes over HTTP, then fold it with `buildStory` (the same

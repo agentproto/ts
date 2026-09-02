@@ -36,6 +36,7 @@ import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, type AppRegistry, type InstalledAppRef } from "./app-registry.js"
 import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
 import { loadAppCatalogFile } from "./app-catalog.js"
+import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 
 /** The only agent adapter this WP knows how to run an emitted AGENT.md
  *  under — see `adapters/mastra-agent`'s `agent` option (`--agent <path>`). */
@@ -1013,7 +1014,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     "app_catalog",
     "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
       "tolerates a missing file), merged with installed-app status — every entry reports " +
-      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Installed apps absent from the catalog file are included too.",
+      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Installed apps absent from the catalog file are included too, " +
+      "as are the five always-on builtin panels (category `builtin`) — they need no `app_install`.",
     {
       scopeId: z
         .string()
@@ -1057,6 +1059,11 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           hasSkill: app.skill !== undefined,
         })
       }
+
+      // Builtin panels (sessions-panel, agents-overview, bureau-sessions,
+      // session-story, live-session) — always present, no app_install
+      // step, never persisted to ~/.agentproto/apps.json.
+      entries.push(...builtinPanelCatalogEntries())
 
       return textResult(entries)
     },

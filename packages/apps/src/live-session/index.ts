@@ -19,7 +19,7 @@
  *   Both app_* tools are registered by WP-A (`app-pull-tools.ts`) and are
  *   `visibility: ["app"]`-only, i.e. reachable solely over this bridge.
  *
- * The timeline reducer lives in `live-session-app.logic.ts` as a pure,
+ * The timeline reducer lives in `live-session/logic.ts` as a pure,
  * dependency-free module so it's unit-testable outside the browser. This
  * file inlines a hand-kept COPY of that same logic into the HTML bundle
  * (see "INLINED REDUCER COPY" below) since the widget ships as one
@@ -43,8 +43,8 @@
  */
 
 import { z } from "zod"
-import { panelBridgeScript } from "./panel-bridge.js"
-import type { AgnoMcpApp } from "./sessions-panel-app.js"
+import { panelBridgeScript } from "../panel-bridge.js"
+import type { AgnoMcpApp } from "../mcp-app-types.js"
 
 export const liveSessionInputSchema = z.object({
   sessionId: z
@@ -77,8 +77,9 @@ export interface LiveSessionOps {
 /**
  * Factory: close over the daemon's own HTTP origin so execute() needs
  * nothing beyond the tool input (no registry access — mirrors
- * sessions-panel-app.ts/terminal-panel-app.ts; the app_* tools this widget
- * calls over the bridge are what actually touch the registry).
+ * sessions-panel/index.ts and runtime's terminal-panel-app.ts; the app_*
+ * tools this widget calls over the bridge are what actually touch the
+ * registry).
  */
 export function makeLiveSessionApp(
   ops?: LiveSessionOps,
@@ -214,7 +215,7 @@ window.__APP_INIT__ = ${JSON.stringify(initData)};
 ${panelBridgeScript("agentproto-live-session")}
 
 // ============================================================
-// INLINED REDUCER COPY — hand-kept mirror of live-session-app.logic.ts.
+// INLINED REDUCER COPY — hand-kept mirror of live-session/logic.ts.
 // Plain JS, same semantics: coalesce consecutive text-delta of the same
 // session (and rejoin an unterminated mid-line fragment split by an
 // interleaved record — see the TS module's text-delta arm), pair
@@ -331,7 +332,7 @@ function reduceEvent(state, record) {
 }
 
 // ============================================================
-// INLINED PURE HELPERS — exact copies of live-session-app.logic.ts's
+// INLINED PURE HELPERS — exact copies of live-session/logic.ts's
 // isNearBottom (SPEC §2) and groupAdjacentToolCalls (SPEC §3). Same names,
 // same signatures, same default thresholds; plain JS because the widget
 // has no import step.
@@ -431,7 +432,7 @@ var focusSource = focusId ? 'pinned' : null;
 var bootDone = false;
 var treeTimer = null;
 
-// INLINED COPY of live-session-app.logic.ts extractToolResultSessionId —
+// INLINED COPY of live-session/logic.ts extractToolResultSessionId —
 // keep in sync (same convention as the reducer copy below).
 function extractToolResultSessionId(params) {
   if (!params || typeof params !== 'object') return null;

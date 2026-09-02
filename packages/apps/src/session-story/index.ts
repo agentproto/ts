@@ -6,9 +6,10 @@
  * anchored side panel with plain-language + technical detail. Ported 1:1
  * from the validated mockup at docs/session-story-mockup.html.
  *
- * Uses the same AgnoMcpApp contract as sessions-panel-app.ts (a local
- * McpApp-compatible shape that does NOT depend on @agstudio/mcp-apps —
- * agentproto is a separate pnpm workspace). Wire via `registerMcpApps`.
+ * Uses the AgnoMcpApp contract (a local McpApp-compatible shape that does
+ * NOT depend on @agstudio/mcp-apps). The host (@agentproto/runtime) wires
+ * this factory's output via `registerMcpApps` at boot time — see runtime's
+ * builtin-apps.ts.
  *
  * Protocol flow:
  *   1. Tool `agentproto_session_story` is called by the host, optionally
@@ -17,23 +18,27 @@
  *      `sessionId` is given, it echoes that back and skips the sessions
  *      list entirely — the panel's own JS never reads the initial snapshot,
  *      it always re-fetches via `session_list` over the postMessage bridge
- *      on boot (see session-story-panel.ts's `loadSessions()`/boot
- *      sequence), so shipping the full list here would just be dead
- *      payload. When no `sessionId` is given (the picker case) it still
- *      returns the full sessions snapshot, since the model/host may surface
- *      it before the panel's own bridge call lands.
+ *      on boot (see panel.ts's `loadSessions()`/boot sequence), so shipping
+ *      the full list here would just be dead payload. When no `sessionId`
+ *      is given (the picker case) it still returns the full sessions
+ *      snapshot, since the model/host may surface it before the panel's
+ *      own bridge call lands.
  *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and drives
  *      everything else live: `session_list` for status polling,
  *      `agent_export` for the transcript (folded into chapters/steps with a
- *      JS port of session-story.ts's heuristics — the panel HTML is fully
- *      self-contained, so it cannot import the TS module directly), and
- *      `agent_prompt` for the composer.
+ *      JS port of @agentproto/runtime's session-story.ts heuristics — the
+ *      panel HTML is fully self-contained, so it cannot import that TS
+ *      module directly), and `agent_prompt` for the composer.
  */
 
 import { z } from "zod"
-import { SESSION_STORY_PANEL_HTML } from "./session-story-panel.js"
-import type { SessionDescriptor } from "./sessions.js"
-import type { AgnoMcpApp } from "./sessions-panel-app.js"
+import { SESSION_STORY_PANEL_HTML } from "./panel.js"
+import type { AgnoMcpApp } from "../mcp-app-types.js"
+
+// Re-exported so packages/vscode's storyPanel.ts (which reuses this HTML
+// byte-for-byte in a VS Code webview) can import it from this app's
+// subpath instead of reaching into ./panel.js directly.
+export { SESSION_STORY_PANEL_HTML }
 
 export const sessionStoryInputSchema = z.object({
   sessionId: z
@@ -46,19 +51,25 @@ export const sessionStoryInputSchema = z.object({
 })
 
 export type SessionStoryInput = z.infer<typeof sessionStoryInputSchema>
-export type SessionStoryOutput = { sessions: SessionDescriptor[]; sessionId?: string } | { sessionId: string }
+export type SessionStoryOutput<TSession = unknown> =
+  | { sessions: TSession[]; sessionId?: string }
+  | { sessionId: string }
 
-export interface SessionStoryOps {
-  listSessions(filter?: "running" | "all"): SessionDescriptor[]
+/** Generic over the host's own session-descriptor shape — see
+ *  sessions-panel/index.ts's SessionsPanelOps for why. */
+export interface SessionStoryOps<TSession = unknown> {
+  listSessions(filter?: "running" | "all"): TSession[]
 }
+
+export type { AgnoMcpApp }
 
 /**
  * Factory: close over the sessions registry so execute() doesn't need
  * an AppContext (agentproto has no userId/guildId concept).
  */
-export function makeSessionStoryPanelApp(
-  ops: SessionStoryOps,
-): AgnoMcpApp<SessionStoryInput, SessionStoryOutput> {
+export function makeSessionStoryPanelApp<TSession = unknown>(
+  ops: SessionStoryOps<TSession>,
+): AgnoMcpApp<SessionStoryInput, SessionStoryOutput<TSession>> {
   return {
     id: "agentproto_session_story",
     title: "Session Story",

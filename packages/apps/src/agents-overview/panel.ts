@@ -1,163 +1,17 @@
 /**
- * McpApp definition for the agentproto "agents — vue claire" panel.
+ * HTML bundle for the agentproto "agents — vue claire" panel — the
+ * `AGENTS_OVERVIEW_HTML` served as the `ui://agentproto_agents_overview/view`
+ * resource. Mounted via the `agentproto_agents_overview` tool defined in
+ * ./index.ts.
  *
- * A plain-language overview of agent-cli sessions: one card per session
- * with a single human sentence (what the agent is doing/last said) plus a
- * coarse state — `à traiter` / `au travail` / `en attente` / `terminé`.
- *
- * Uses the same AgnoMcpApp contract as sessions-panel-app.ts (a local
- * McpApp-compatible shape that does NOT depend on @agstudio/mcp-apps —
- * agentproto is a separate pnpm workspace). Wire via `registerMcpApps`.
- *
- * Protocol flow:
- *   1. Tool `agentproto_agents_overview` is called by the host.
- *   2. execute() returns the agent-session snapshot → injected into the
- *      HTML as the initial render via the tool result JSON.
- *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and polls
- *      `session_list` every ~12 s, then calls `summarize_session` for
- *      each visible session to fetch the plain sentence + state.
- *
- * The per-session summary is generated SERVER-SIDE by the
- * `summarize_session` tool (see registerSummarizeSessionTool below).
- * Today it is HEURISTIC — last meaningful output line + a state derived
- * from lifecycle/awaitingInput/recency. There is no LLM client wired into
- * @agentproto/runtime (egress/providers.ts is a proxy allowlist, not an
- * inference client; driver-agent-cli's `ModelLike.complete` would spawn a
- * fresh agent session per call — too heavy, and it would pollute the very
- * session list we render). When a real summarizer is wanted, swap the body
- * of `summarizeSession` for a `ModelLike.complete({system, prompt})` call;
- * the tool contract (1 sentence + state) stays the same.
+ * The panel polls `session_list` every ~12s, then calls the host's
+ * `summarize_session` tool (registered server-side by
+ * @agentproto/runtime's summarize-session-tool.ts, NOT part of this
+ * package — that tool is tied to the runtime's session ring-buffer/hot
+ * path) for each visible session to fetch the plain sentence + state.
  */
 
-import { z } from "zod"
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { panelBridgeScript } from "./panel-bridge.js"
-import type { SessionDescriptor } from "./sessions.js"
-import type { AgnoMcpApp } from "./sessions-panel-app.js"
-import { summarizeLines, deriveSessionState } from "./session-activity.js"
-import type { SessionState } from "./session-activity.js"
-
-// ── Heuristic summary (pure, server-side) ────────────────────────────────────
-//
-// `summarizeLines` / `deriveSessionState` / `SessionState` now live in
-// session-activity.ts so the session store can reuse the SAME heuristic to
-// stamp the descriptor's `activitySummary` on turn-end (see
-// `regenerateActivitySummary`) without pulling this panel's HTML bundle into
-// the hot path. Re-exported here so existing `summarize_session` callers keep
-// importing them from where they always did.
-export { summarizeLines, deriveSessionState }
-export type { SessionState }
-
-export interface SessionSummary {
-  sessionId: string
-  summary: string
-  state: SessionState
-  status: SessionDescriptor["status"]
-  label?: string
-  lastOutputAt?: string
-}
-
-/** Build the full per-session summary from a descriptor + recent lines. */
-export function summarizeSession(
-  desc: SessionDescriptor,
-  lines: readonly string[],
-  nowMs: number,
-): SessionSummary {
-  return {
-    sessionId: desc.id,
-    summary: summarizeLines(lines, desc),
-    state: deriveSessionState(desc, nowMs),
-    status: desc.status,
-    ...(desc.label ? { label: desc.label } : {}),
-    ...(desc.lastOutputAt ? { lastOutputAt: desc.lastOutputAt } : {}),
-  }
-}
-
-// ── summarize_session tool ───────────────────────────────────────────────────
-
-export interface SummarizeOps {
-  getSession(id: string): SessionDescriptor | undefined
-  /** Tail the recent ring buffer for a session (same source as
-   *  agent_output). Returns [] for unknown sessions. */
-  tailLines(id: string, lastN: number): string[]
-  /** Current epoch-ms, injectable for tests. Defaults to Date.now. */
-  now?: () => number
-}
-
-/**
- * Register the server-side `summarize_session` tool. The agents-overview
- * panel calls this via the bridge (callTool) for each visible session.
- */
-export function registerSummarizeSessionTool(server: McpServer, ops: SummarizeOps): void {
-  server.tool(
-    "summarize_session",
-    "Summarise a session in one plain sentence plus a coarse state " +
-      "(à traiter / au travail / en attente / terminé). Heuristic today " +
-      "(last meaningful output line + lifecycle/recency) — no LLM. Used by " +
-      "the agents overview panel.",
-    {
-      sessionId: z.string().describe("Session id to summarise."),
-      lastN: z
-        .number()
-        .int()
-        .min(1)
-        .max(500)
-        .optional()
-        .describe("Max recent lines to scan. Default 120."),
-    },
-    async input => {
-      const desc = ops.getSession(input.sessionId)
-      if (!desc) {
-        return {
-          content: [
-            { type: "text" as const, text: `summarize_session: no session "${input.sessionId}"` },
-          ],
-          isError: true,
-        }
-      }
-      const lines = ops.tailLines(input.sessionId, input.lastN ?? 120)
-      const nowMs = (ops.now ?? Date.now)()
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(summarizeSession(desc, lines, nowMs), null, 2) },
-        ],
-      }
-    },
-  )
-}
-
-// ── McpApp factory ───────────────────────────────────────────────────────────
-
-export const agentsOverviewInputSchema = z.object({
-  filter: z
-    .enum(["running", "all"])
-    .optional()
-    .describe("`running` = only alive agent sessions; `all` = running + recent (default)."),
-})
-
-export type AgentsOverviewInput = z.infer<typeof agentsOverviewInputSchema>
-export type AgentsOverviewOutput = { sessions: SessionDescriptor[] }
-
-export interface AgentsOverviewOps {
-  listSessions(filter?: "running" | "all"): SessionDescriptor[]
-}
-
-export function makeAgentsOverviewApp(
-  ops: AgentsOverviewOps,
-): AgnoMcpApp<AgentsOverviewInput, AgentsOverviewOutput> {
-  return {
-    id: "agentproto_agents_overview",
-    title: "Agents — vue claire",
-    description:
-      "Open the agents overview — a plain-language card per agent session " +
-      "with one human sentence (what it's doing / last said) and a coarse " +
-      "state (à traiter / au travail / en attente / terminé). Polls live and " +
-      "asks the server to summarise each session.",
-    inputSchema: agentsOverviewInputSchema,
-    execute: async input => ({ sessions: ops.listSessions(input.filter) }),
-    html: AGENTS_OVERVIEW_HTML,
-  }
-}
+import { panelBridgeScript } from "../panel-bridge.js"
 
 // ── HTML bundle (zero CDN, CSP-safe inline) ──────────────────────────────────
 

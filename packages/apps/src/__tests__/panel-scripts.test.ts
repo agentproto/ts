@@ -17,11 +17,11 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { PANEL_HTML } from "../sessions-panel.js"
-import { SESSION_STORY_PANEL_HTML } from "../session-story-panel.js"
-import { BUREAU_SESSIONS_HTML } from "../bureau-sessions-app.js"
-import { AGENTS_OVERVIEW_HTML } from "../agents-overview-app.js"
-import { makeLiveSessionApp } from "../live-session-app.js"
+import { PANEL_HTML } from "../sessions-panel/panel.js"
+import { SESSION_STORY_PANEL_HTML } from "../session-story/panel.js"
+import { BUREAU_SESSIONS_HTML } from "../bureau-sessions/panel.js"
+import { AGENTS_OVERVIEW_HTML } from "../agents-overview/panel.js"
+import { makeLiveSessionApp } from "../live-session/index.js"
 
 const liveSessionApp = makeLiveSessionApp()
 const liveSessionHtml =

@@ -10,7 +10,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 import { registerAgentTools } from "../agent-tools.js"
 import { registerAppPullTools } from "../app-pull-tools.js"
-import { makeLiveSessionApp } from "../live-session-app.js"
+import { makeLiveSessionApp } from "@agentproto/apps"
 import { registerMcpApps } from "../mcp-apps-adapter.js"
 import { createSessionsRegistry } from "../sessions.js"
 

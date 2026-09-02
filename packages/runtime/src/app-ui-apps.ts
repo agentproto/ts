@@ -14,7 +14,7 @@
 import { readFile } from "node:fs/promises"
 import { z } from "zod"
 import type { AppRegistry } from "./app-registry.js"
-import type { AgnoMcpApp } from "./sessions-panel-app.js"
+import type { AgnoMcpApp } from "@agentproto/apps"
 
 /** Derive the MCP tool id for an installed app's UI panel — strips the
  *  `@owner/` scope (if any) and maps every non `[a-z0-9]` character to `_`. */

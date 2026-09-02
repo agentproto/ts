@@ -46,15 +46,9 @@ import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
-import { makeSessionsPanelApp } from "./sessions-panel-app.js"
-import {
-  makeAgentsOverviewApp,
-  registerSummarizeSessionTool,
-} from "./agents-overview-app.js"
-import { makeBureauSessionsApp } from "./bureau-sessions-app.js"
-import { makeSessionStoryPanelApp } from "./session-story-panel-app.js"
+import { makeBuiltinPanelApps } from "./builtin-apps.js"
+import { registerSummarizeSessionTool } from "./summarize-session-tool.js"
 import { makeTerminalPanelApp } from "./terminal-panel-app.js"
-import { makeLiveSessionApp } from "./live-session-app.js"
 import { registerAppPullTools } from "./app-pull-tools.js"
 import {
   loadWorkspacesConfig,
@@ -104,7 +98,6 @@ import { registerAppDataTools } from "./app-data.js"
 import { registerAppExternalTools } from "./app-external.js"
 import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
-import type { AgnoMcpApp } from "./sessions-panel-app.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
@@ -1869,16 +1862,16 @@ export async function createGateway(
     // (tool-subset.ts, now registerTool-aware) can drop them on scoped/child
     // gateways — they belong only on the full /mcp surface a host connects to.
     registerAppPullTools(server, { registry: sessions })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const builtinPanelApps: AgnoMcpApp<any, any>[] = [
-      makeSessionsPanelApp({ listSessions: listSessionsFiltered }),
-      makeAgentsOverviewApp({ listSessions: listSessionsFiltered }),
-      makeBureauSessionsApp({ listSessions: listSessionsFiltered }),
-      makeSessionStoryPanelApp({ listSessions: listSessionsFiltered }),
-      // Live-session widget — resource ui://live_session/view, also bound to
-      // `agent_start` via _meta.ui.resourceUri so a launch auto-renders it.
-      // httpBaseUrl = this daemon's own origin (SSE stream + bridge fallback).
-      makeLiveSessionApp({ httpBaseUrl: `http://127.0.0.1:${port}` }),
+    // The five daemon-builtin panels — now house-app-quality code in
+    // @agentproto/apps, mounted here without an app_install step (see
+    // builtin-apps.ts for why they aren't AppHandles).
+    const builtinPanelApps = [
+      ...makeBuiltinPanelApps({
+        listSessions: listSessionsFiltered,
+        // httpBaseUrl = this daemon's own origin (SSE stream + bridge
+        // fallback for the live-session widget).
+        httpBaseUrl: `http://127.0.0.1:${port}`,
+      }),
       // Same ptyEnabled gate as terminal_start/terminal_input/… in
       // session-tools.ts — the panel would be able to open the WS but
       // every spawn/attach would fail once node-pty isn't available, so
@@ -1941,7 +1934,7 @@ export async function createGateway(
     )
     registerMcpApps(server, [...builtinPanelApps, ...installedAppUiApps])
     // Server-side per-session summariser backing the agents-overview panel.
-    // Heuristic today (no LLM in @agentproto/runtime) — see agents-overview-app.ts.
+    // Heuristic today (no LLM in @agentproto/runtime) — see summarize-session-tool.ts.
     registerSummarizeSessionTool(server, {
       getSession: (id) => sessions.get(id),
       tailLines: (id, lastN) => {
