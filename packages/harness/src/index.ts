@@ -25,6 +25,7 @@ export async function connectHarness(
 }
 
 export { HarnessClient, DEFAULT_MCP_URL, resolveMcpUrl } from "./client.js"
+export type { SessionUsageSnapshot } from "./types.js"
 export { makeHandle } from "./handle.js"
 
 export {

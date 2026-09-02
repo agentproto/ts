@@ -27,6 +27,8 @@ import {
   appendFooterOnce,
   buildSessionPrFooter,
   hasProvenanceFooter,
+  footerHasCost,
+  replaceProvenanceFooter,
   parseGhPrCreate,
   pickExecutorSession,
   type FooterSession,
@@ -71,7 +73,16 @@ export interface StampPrInput {
 
 export type StampOutcome =
   | { stamped: false; reason: string }
-  | { stamped: true; url: string; number: number; sessionId: string; alreadyStamped: boolean }
+  | {
+      stamped: true
+      url: string
+      number: number
+      sessionId: string
+      alreadyStamped: boolean
+      /** True when an existing footer was re-rendered (refresh mode) — see
+       *  {@link replaceProvenanceFooter}. */
+      refreshed?: boolean
+    }
 
 /**
  * Inspect a completed `command_execute` run and, if it was a successful
@@ -138,6 +149,12 @@ export async function stampFooterOnPr(input: {
   cwd: string
   run?: GhRunner
   host?: string
+  /** Re-render an ALREADY-stamped footer when the session has learned its
+   *  spend since the first stamp (the first stamp lands mid-turn, before a
+   *  claude-code/claude-sdk session reports any cost). Only edits when the
+   *  existing footer has no amount and the fresh one does; otherwise a no-op
+   *  (`stamped: true, alreadyStamped: true, refreshed: false`). */
+  refresh?: boolean
 }): Promise<StampOutcome> {
   try {
     const footer = buildSessionPrFooter(input.session, {
@@ -152,6 +169,15 @@ export async function stampFooterOnPr(input: {
     const body = view.stdout.replace(/\n+$/, "")
 
     const alreadyStamped = hasProvenanceFooter(body)
+    if (alreadyStamped && input.refresh === true) {
+      if (footerHasCost(body) || !footerHasCost(footer)) {
+        return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: false }
+      }
+      const refreshedBody = replaceProvenanceFooter(body, footer)
+      const edit = await run(["pr", "edit", input.prUrl, "--body", refreshedBody], input.cwd)
+      if (edit.exitCode !== 0) return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
+      return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: true }
+    }
     if (!alreadyStamped) {
       const newBody = appendFooterOnce(body, footer)
       const edit = await run(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)

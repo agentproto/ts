@@ -1424,6 +1424,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # The commit the reviewer actually reviewed (captured before this
+          # job's own "Commit changeset" step could move the branch head).
+          REVIEWED_SHA: ${{ steps.headsha.outputs.sha }}
+          CHANGESET_COMMITTED: ${{ steps.changeset.outputs.committed }}
         run: |
           # Re-resolve the head LIVE, same reasoning as the postcheck steps
           # above — a review's commit_id is stamped against the PR's head at
@@ -1458,8 +1462,22 @@ jobs:
             exit 1
           fi
           echo "Reviews posted against live head $SHA: $COUNT"
-          if [ "$COUNT" -gt 0 ] 2>/dev/null; then
+          REVIEWED="$SHA"
+          if ! [ "${COUNT:-0}" -gt 0 ] 2>/dev/null \
+            && [ "$CHANGESET_COMMITTED" = "true" ] \
+            && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$SHA" ]; then
+            # This job pushed the reviewer's changeset commit AFTER the review
+            # was posted (PR #1105: review at :12, changeset commit at :25), so
+            # the live head moved past the commit the reviewer saw. The review
+            # legitimately sits on that reviewed commit — count it there. The
+            # next run's bypass step applies the same parent-commit rule.
+            COUNT=$(count_reviews "$REVIEWED_SHA" || echo "")
+            echo "Head moved by this job's changeset commit — reviews posted against the reviewed commit $REVIEWED_SHA: ${COUNT:-?}"
+            REVIEWED="$REVIEWED_SHA"
+          fi
+          if [ "${COUNT:-0}" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "reviewed_sha=$REVIEWED" >> "$GITHUB_OUTPUT"
           else
             echo "posted=false" >> "$GITHUB_OUTPUT"
             echo "::error::No review found for the reviewed commit $SHA — the reviewer reported success but nothing landed on the PR."
@@ -1492,6 +1510,10 @@ jobs:
           # Artifact ledger (review id at creation time) — the stamp keys off
           # this id; empty ⇒ it falls back to sha discovery with a ::warning::.
           ARTIFACTS: ${{ steps.reviewer.outputs.artifacts }}
+          # The sha verify actually found the review on: the live head, or the
+          # reviewed commit when this job's own changeset commit moved the
+          # head past it (PR #1105 — the footer was silently skipped).
+          REVIEWED_SHA: ${{ steps.verify.outputs.reviewed_sha }}
         run: |
           # Same live-head re-resolution as the postcheck/verify steps above
           # (see "Verify review was posted"'s comment) — SHA here feeds both
@@ -1507,13 +1529,15 @@ jobs:
           # as its auth token — no separate GH_TOKEN needed. Retried like the
           # postcheck/verify steps: one flaky call here silently skips the
           # stamp (continue-on-error) even though the review posted fine.
-          SHA=""
-          for attempt in 1 2 3; do
-            if SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid); then break; fi
-            SHA=""
-            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
-          done
-          [ -n "$SHA" ] || { echo "::warning::stamp: could not resolve live head sha after 3 attempts."; exit 1; }
+          SHA="$REVIEWED_SHA"
+          if [ -z "$SHA" ]; then
+            for attempt in 1 2 3; do
+              if SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid); then break; fi
+              SHA=""
+              [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+            done
+          fi
+          [ -n "$SHA" ] || { echo "::warning::stamp: could not resolve a sha to stamp against after 3 attempts."; exit 1; }
           export SHA
           node scripts/stamp-review-footer.mjs
 

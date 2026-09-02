@@ -404,4 +404,44 @@ describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
 
     expect(recorded).toEqual([{ sessionId: "sess_exec", number: 42, url: PR.url }])
   })
+
+  it("refreshes a recorded PR's footer with the session's spend once it is known — once", async () => {
+    // Stamped mid-turn (no cost), then the session learns its spend.
+    const session = execSession({ openedPrs: [{ url: PR.url, number: PR.number }] })
+    const { reg } = fakeRegistry([session, SUPER])
+    let body = "Body.\n\n---\n<sub>🤖 **" + MARKER + "** — PR · session `sess_exec` · claude-code · host `h` · cwd `/wt`</sub>"
+    const edits: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: body }
+      if (args[1] === "edit") {
+        body = args[4] as string
+        edits.push(body)
+      }
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr: async () => null, run })
+
+    // No cost yet → nothing to refresh.
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(edits).toEqual([])
+
+    // Cost learned at turn-end → footer re-rendered exactly once.
+    session.costUsd = 0.42
+    bus.emit(exited("sess_exec"))
+    await flush()
+    expect(edits.length).toBe(1)
+    const refreshed = edits[0] ?? ""
+    expect(refreshed).toContain("$0.4200")
+    expect(refreshed.match(new RegExp("<sub>[^\\n]*" + MARKER, "g"))?.length).toBe(1)
+    expect(refreshed.startsWith("Body.")).toBe(true)
+
+    // A later turn-end with the same (or higher) cost does not edit again.
+    session.costUsd = 0.99
+    bus.emit(exited("sess_exec"))
+    await flush()
+    expect(edits.length).toBe(1)
+  })
 })

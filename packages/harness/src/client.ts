@@ -15,6 +15,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type {
   ConnectHarnessOptions,
   SessionDescriptor,
+  SessionUsageSnapshot,
   StartAgentArgs,
   TurnEvent,
   TurnResult,
@@ -96,6 +97,15 @@ export class HarnessClient {
   /** SIGTERM via `agent_kill`. */
   async kill(sessionId: string): Promise<void> {
     await this.#call("agent_kill", { sessionId })
+  }
+
+  /** Usage accounting via `session_usage` — model, cumulative USD cost, token
+   *  counts, context window, and where the cost came from. This is how a
+   *  sandbox's HOST daemon learns what the box's session spent: the sandbox
+   *  proxy flattens the box's stream to text, so cost never rides the event
+   *  stream across the box boundary — it is read back here at turn-end. */
+  async usage(sessionId: string): Promise<SessionUsageSnapshot> {
+    return this.#call<SessionUsageSnapshot>("session_usage", { idOrName: sessionId })
   }
 
   /**

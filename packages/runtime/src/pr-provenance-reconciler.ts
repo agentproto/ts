@@ -56,7 +56,14 @@ export type OpenPrResolver = (cwd: string) => Promise<{ number: number; url: str
  *  full `SessionDescriptor` satisfies this structurally. */
 export interface ReconcilerSession extends FooterSession {
   worktreePath?: string
-  openedPrs?: readonly { url: string }[]
+  openedPrs?: readonly { url: string; number?: number }[]
+}
+
+/** PR number from a forge PR url (`…/pull/42`), for `openedPrs` rows recorded
+ *  before the number was kept. Null when the url has no such segment. */
+export function prNumberFromUrl(url: string): number | null {
+  const m = /\/pull\/(\d+)(?:[/?#]|$)/.exec(url)
+  return m ? Number(m[1]) : null
 }
 
 /** The registry slice the reconciler needs — structurally satisfied by the full
@@ -93,6 +100,10 @@ export function createPrProvenanceReconciler(opts: {
   // session, so a session that opens several PRs stamps each one once. Also
   // short-circuited by the descriptor's own `openedPrs` (survives restarts).
   const stampedPrUrls = new Set<string>()
+  // PRs whose footer has been re-rendered with the session's spend (or
+  // already carried one) — the cost refresh is a once-per-PR follow-up to
+  // the first, mid-turn stamp that lands before any usage is known.
+  const costRefreshedPrUrls = new Set<string>()
   const lastPollAt = new Map<string, number>()
 
   const reconcile = async (sessionId: string, terminal: boolean): Promise<void> => {
@@ -167,9 +178,44 @@ export function createPrProvenanceReconciler(opts: {
     // Lane B — branch→PR reconciliation, the fallback for adapters whose tool
     // calls aren't recorded (or a PR opened by a path no record captured).
     const pr = await opts.resolveOpenPr(cwd)
-    if (!pr) return
-    if (!shouldStamp(pr.url)) return
-    await stamp(pr)
+    if (pr && shouldStamp(pr.url)) await stamp(pr)
+
+    await refreshCost(desc, supervisor, cwd)
+  }
+
+  // Cost refresh: a PR opened THROUGH the daemon (`command_execute`) is
+  // stamped the instant `gh pr create` returns — mid-turn, when a
+  // claude-code/claude-sdk session has reported no usage yet (cost only
+  // arrives on the turn's `result`). Once the session knows its spend,
+  // re-render each recorded PR's footer exactly once.
+  const refreshCost = async (
+    desc: ReconcilerSession,
+    supervisor: { id: string } | null,
+    cwd: string,
+  ): Promise<void> => {
+    if (typeof desc.costUsd !== "number") return
+    for (const opened of desc.openedPrs ?? []) {
+      if (costRefreshedPrUrls.has(opened.url)) continue
+      const number = opened.number ?? prNumberFromUrl(opened.url)
+      if (number === null) {
+        costRefreshedPrUrls.add(opened.url)
+        continue
+      }
+      const outcome = await stampFooterOnPr({
+        registry: opts.registry,
+        session: desc,
+        supervisor,
+        prNumber: number,
+        prUrl: opened.url,
+        cwd,
+        refresh: true,
+        ...(opts.run ? { run: opts.run } : {}),
+        ...(opts.host ? { host: opts.host } : {}),
+      })
+      // Settled either way (re-rendered, or already carried a cost); a
+      // failed gh call is retried at the next turn-end.
+      if (outcome.stamped) costRefreshedPrUrls.add(opened.url)
+    }
   }
 
   const safeReconcile = (sessionId: string, terminal: boolean): void => {
@@ -193,6 +239,7 @@ export function createPrProvenanceReconciler(opts: {
     dispose() {
       for (const unsubscribe of unsubscribes) unsubscribe()
       stampedPrUrls.clear()
+      costRefreshedPrUrls.clear()
       lastPollAt.clear()
     },
   }

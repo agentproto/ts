@@ -108,4 +108,16 @@ describe("makeDaemonAgentSessionHost", () => {
     await host.close()
     expect(client.close).toHaveBeenCalledTimes(1)
   })
+
+  it("usage forwards session_usage when the client has it, and is absent otherwise", async () => {
+    const snapshot = { sessionId: "sess_1", model: "claude-sonnet-4-6", costUsd: 0.42, tokensIn: 10, tokensOut: 5, source: "adapter" as const }
+    const withUsage = fakeClient({ usage: vi.fn(async () => snapshot) })
+    const host = makeDaemonAgentSessionHost(withUsage)
+    expect(host.usage).toBeTypeOf("function")
+    await expect(host.usage!("sess_1")).resolves.toEqual(snapshot)
+    expect(withUsage.usage).toHaveBeenCalledWith("sess_1")
+
+    const without = makeDaemonAgentSessionHost(fakeClient())
+    expect(without.usage).toBeUndefined()
+  })
 })

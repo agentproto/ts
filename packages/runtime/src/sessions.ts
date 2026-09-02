@@ -1845,7 +1845,7 @@ interface SessionRuntime {
   costBudget?: CostBudget
   /** Best-effort usage reader called after each turn. The adapter returns
    *  accumulated cost/token counts which are mirrored onto the descriptor. */
-  readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  readUsage?: () => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
   /** True once an authoritative cost has been observed from the adapter —
    *  either its `readUsage` returned a `costUsd`, or a `usage_update` carried
    *  a `cost` block. Drives the `"adapter"` vs `"computed"` source decision at
@@ -3105,7 +3105,7 @@ export interface SpawnAgentInput {
    *  cost/token fields on the descriptor. Adapter-specific (e.g. hermes
    *  reads its state.db keyed by the adapter session id). Omit for adapters
    *  with no usage source. */
-  readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  readUsage?: () => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
   /** Opt this session into Langfuse tracing (prompt/completion + tool spans +
    *  tokens/cost). Effective opt-in is `trace ?? opts.langfuseTracingDefault ?? false`. */
   trace?: boolean
@@ -3156,7 +3156,7 @@ export type PendingAgentOutcome =
       commandPreview?: string
       resumable?: boolean
       nativeTerminalResume?: boolean
-      readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+      readUsage?: () => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
       /** Dispatched now that the tree + driver session both exist — never
        *  passed to `spawnAgentPending`, which would race the tree. */
       initialPrompt?: string
@@ -5454,6 +5454,13 @@ export function createSessionsRegistry(opts?: {
           try {
             const usage = await rt.readUsage()
             if (usage) {
+              // A reader that knows the model (a sandbox box's `session_usage`)
+              // fills a descriptor that was spawned without one, so the
+              // provenance footer / session_usage can name it. Never
+              // overrides a model the spawn itself pinned.
+              if (typeof usage.model === "string" && usage.model.length > 0 && rt.desc.model === undefined) {
+                rt.desc.model = usage.model
+              }
               if (usage.costUsd !== undefined) {
                 rt.desc.costUsd = usage.costUsd
                 rt.adapterReportedCost = true

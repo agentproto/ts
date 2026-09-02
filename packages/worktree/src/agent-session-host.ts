@@ -3,6 +3,7 @@ import {
   resolveMcpUrl,
   type ConnectHarnessOptions,
   type SessionDescriptor,
+  type SessionUsageSnapshot,
   type StartAgentArgs,
   type TurnEvent,
   type TurnResult,
@@ -16,7 +17,11 @@ const MAX_POLL_MS = 49_000
 export type DaemonClient = Pick<
   HarnessClient,
   "start" | "prompt" | "output" | "kill" | "waitForAny" | "currentEventsCursor" | "close"
->
+> & {
+  /** `session_usage` — optional so pre-existing fakes/clients without it still
+   *  satisfy the type; the host simply exposes no `usage` then. */
+  usage?: HarnessClient["usage"]
+}
 
 export interface DaemonAgentSessionHost extends AgentSessionHost {
   close(): Promise<void>
@@ -44,6 +49,11 @@ export interface DaemonAgentSessionHost extends AgentSessionHost {
   /** Race-free cursor for a subsequent `waitForAny({ since })` — see
    *  `HarnessClient.currentEventsCursor`. */
   currentEventsCursor(): Promise<number>
+  /** Usage accounting for a session on this daemon (`session_usage`) — present
+   *  when the underlying client can answer it. `@agentproto/sandbox`'s host
+   *  inherits it, which is how a sandboxed session's cost/tokens/model reach
+   *  the HOST daemon's descriptor (the proxy's text stream carries none). */
+  usage?(sessionId: string): Promise<SessionUsageSnapshot>
 }
 
 /**
@@ -127,6 +137,14 @@ export function makeDaemonAgentSessionHost(client: DaemonClient): DaemonAgentSes
     async currentEventsCursor(): Promise<number> {
       return client.currentEventsCursor()
     },
+
+    ...(typeof client.usage === "function"
+      ? {
+          async usage(sessionId: string): Promise<SessionUsageSnapshot> {
+            return client.usage!(sessionId)
+          },
+        }
+      : {}),
 
     async close(): Promise<void> {
       await client.close()
