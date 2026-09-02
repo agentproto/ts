@@ -396,6 +396,53 @@ export async function readDeclaredUITools(appDir: string): Promise<string[] | un
 }
 
 /**
+ * Extract the app's declared `category` from `<dir>/.agentproto/APP.md`
+ * frontmatter — the coarse catalog/tree grouping `@agentproto/app-kit`'s
+ * `defineApp({ category })` writes (`packages/app-kit/src/emit.ts`). Returns
+ * undefined when absent/unparseable — never throws on a hand-edited APP.md.
+ */
+export async function readDeclaredCategory(appDir: string): Promise<string | undefined> {
+  const appMdPath = join(appDir, ".agentproto", "APP.md")
+  if (!(await pathExists(appMdPath))) return undefined
+  try {
+    const raw = await readFile(appMdPath, "utf8")
+    const data = matter(raw).data as Record<string, unknown>
+    return typeof data.category === "string" && data.category.length > 0 ? data.category : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Extract the book ids declared in `<dir>/.agentproto/APP.md`
+ * frontmatter's `library.books` — the book contract `@agentproto/app-kit`'s
+ * `defineApp({ library })` writes (`packages/app-kit/src/types.ts`
+ * `AppLibraryDefinition`). Returns an empty array when the app declares no
+ * library block, an empty one, or the file is missing/unparseable — never
+ * throws.
+ */
+export async function readDeclaredLibraryBookIds(appDir: string): Promise<string[]> {
+  const appMdPath = join(appDir, ".agentproto", "APP.md")
+  if (!(await pathExists(appMdPath))) return []
+  try {
+    const raw = await readFile(appMdPath, "utf8")
+    const data = matter(raw).data as Record<string, unknown>
+    const library = data.library
+    if (!library || typeof library !== "object") return []
+    const books = (library as Record<string, unknown>).books
+    if (!Array.isArray(books)) return []
+    return books
+      .filter(
+        (b): b is { id: string } =>
+          typeof b === "object" && b !== null && typeof (b as { id?: unknown }).id === "string",
+      )
+      .map((b) => b.id)
+  } catch {
+    return []
+  }
+}
+
+/**
  * Sanitize a client-supplied upload filename down to a safe basename, or
  * `null` if it can't be made safe. Strips any directory components (either
  * separator, regardless of host OS) and rejects the result if it's empty, a

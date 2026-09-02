@@ -37,6 +37,7 @@ import { runProviderPresets } from "./commands/presets.js"
 import { runPreset } from "./commands/preset.js"
 import { runBrowser } from "./commands/browser.js"
 import { runMcpBridge } from "./commands/mcp-bridge.js"
+import { runMcpApp } from "./commands/mcp-app.js"
 import { runInstallMcp } from "./commands/install-mcp.js"
 import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
@@ -103,8 +104,10 @@ Usage:
   agentproto presets  list [--json]          deprecated alias for provider-preset
   agentproto preset   <list|show|add|delete> saved user spawn configurations
   agentproto mcp-bridge                    stdio MCP proxy to daemon /mcp endpoint
+  agentproto mcp-app <appId>               stdio MCP server scoped to one installed app's tools
   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
                                            register the daemon's MCP server with coding CLIs
+                         [--app <appId>]  write a scoped mcp-app entry instead (book apps only)
   agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
                                            first-run: register MCP + install the skill pack
   agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]
@@ -189,6 +192,7 @@ const VERBS = new Set([
   "preset",
   "browser",
   "mcp-bridge",
+  "mcp-app",
   "install-mcp",
   "onboard",
   "cron",
@@ -281,6 +285,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runBrowser(rest)
     case "mcp-bridge":
       return runMcpBridge(rest)
+    case "mcp-app":
+      return runMcpApp(rest)
     case "install-mcp":
       return runInstallMcp(rest)
     case "onboard":

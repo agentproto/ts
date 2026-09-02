@@ -48,6 +48,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
 - [`agentproto install-mcp`](./verbs/install-mcp.md) — register the daemon's MCP server with installed coding CLIs
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
+- [`agentproto mcp-app`](./verbs/mcp-app.md) — stdio MCP server scoped to one installed app's tools
 - [`agentproto models`](./verbs/models.md) — list runnable models per adapter with provider-key status
 - [`agentproto onboard`](./verbs/onboard.md) — first-run: register MCP + install the skill pack in one pass
 - [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest

@@ -21,6 +21,8 @@ import {
   injectBridge,
   readDeclaredUIPort,
   readDeclaredUITools,
+  readDeclaredCategory,
+  readDeclaredLibraryBookIds,
   callDaemonTool,
   resolveListenHost,
   sanitizeUploadName,
@@ -218,6 +220,81 @@ describe("readDeclaredUITools", () => {
   it("returns undefined for a missing APP.md", async () => {
     const dir = await mktmp()
     expect(await readDeclaredUITools(dir)).toBeUndefined()
+  })
+})
+
+describe("readDeclaredCategory", () => {
+  async function writeAppMd(dir: string, frontmatter: string) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(dir, ".agentproto", "APP.md"),
+      `---\n${frontmatter}---\n`,
+      "utf8",
+    )
+  }
+
+  it("reads a declared category from APP.md frontmatter", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\ncategory: book\n")
+    expect(await readDeclaredCategory(dir)).toBe("book")
+  })
+
+  it("returns undefined when category is not declared", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nagents:\n  - id: a\n")
+    expect(await readDeclaredCategory(dir)).toBeUndefined()
+  })
+
+  it("returns undefined for a missing APP.md", async () => {
+    const dir = await mktmp()
+    expect(await readDeclaredCategory(dir)).toBeUndefined()
+  })
+
+  it("returns undefined for a non-string category value", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\ncategory: 42\n")
+    expect(await readDeclaredCategory(dir)).toBeUndefined()
+  })
+})
+
+describe("readDeclaredLibraryBookIds", () => {
+  async function writeAppMd(dir: string, frontmatter: string) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(dir, ".agentproto", "APP.md"),
+      `---\n${frontmatter}---\n`,
+      "utf8",
+    )
+  }
+
+  it("reads book ids from a declared library.books block", async () => {
+    const dir = await mktmp()
+    await writeAppMd(
+      dir,
+      "schema: app/v1\nlibrary:\n  books:\n    - id: book1\n      title: Book One\n    - id: book2\n",
+    )
+    expect(await readDeclaredLibraryBookIds(dir)).toEqual(["book1", "book2"])
+  })
+
+  it("returns an empty array when no library block is declared", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nagents:\n  - id: a\n")
+    expect(await readDeclaredLibraryBookIds(dir)).toEqual([])
+  })
+
+  it("returns an empty array when library.books is empty or malformed", async () => {
+    const emptyDir = await mktmp()
+    await writeAppMd(emptyDir, "schema: app/v1\nlibrary:\n  books: []\n")
+    expect(await readDeclaredLibraryBookIds(emptyDir)).toEqual([])
+
+    const malformedDir = await mktmp()
+    await writeAppMd(malformedDir, "schema: app/v1\nlibrary:\n  notBooks: true\n")
+    expect(await readDeclaredLibraryBookIds(malformedDir)).toEqual([])
+  })
+
+  it("returns an empty array for a missing APP.md", async () => {
+    const dir = await mktmp()
+    expect(await readDeclaredLibraryBookIds(dir)).toEqual([])
   })
 })
 
