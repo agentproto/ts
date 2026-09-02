@@ -26,6 +26,7 @@ import matter from "gray-matter"
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { loadAppHandle } from "@agentproto/app-kit"
+import { loadAgent } from "@agentproto/agent"
 import type { AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { createDaemonToolRegistry } from "./workflow-tool-registry.js"
@@ -109,6 +110,42 @@ export function resolveAgentRefsForWorkflow(
     refs[agent.id] = { adapter: DEFAULT_AGENT_ADAPTER, options: { agent: agent.path } }
   }
   return refs
+}
+
+/**
+ * `app_run`'s multi-adapter fallback (P7 deliverable 2): the adapter's
+ * manifest `agent` option (`adapters/mastra-agent/src/index.ts`) is how
+ * `app_run` normally hands a spawn "run THIS AGENT.md" — but claude-code,
+ * hermes, codex, etc. declare no such option (`composeSpawn` in
+ * `packages/driver/agent-cli/src/manifest/compose.ts` rejects any option id
+ * a manifest doesn't declare), so pointing them at a path does nothing.
+ * Instead, thread the AGENT.md's OWN declared content into the spawn: its
+ * frontmatter `model` becomes the default model (an explicit `model` arg
+ * from the caller still wins), and its body becomes the system/prefix of
+ * the first prompt — a caller-given `prompt` is appended after a blank
+ * line, and stands alone when there's no body. Pure (no I/O) so it's
+ * testable without touching disk; see `loadAgentPromptDefaults` for the
+ * AGENT.md read + parse this consumes.
+ */
+export function buildAgentRunSpawnConfig(
+  agent: { model?: string; body: string },
+  input: { model?: string; prompt?: string },
+): { model?: string; prompt?: string } {
+  const model = input.model ?? agent.model
+  const body = agent.body.trim()
+  const prompt = body ? (input.prompt ? `${body}\n\n${input.prompt}` : body) : input.prompt
+  return {
+    ...(model !== undefined ? { model } : {}),
+    ...(prompt !== undefined ? { prompt } : {}),
+  }
+}
+
+/** Load an AGENT.md's declared model (string form only — a structured
+ *  `ModelRef` has no single id to pass as `agent_start.model`) and body,
+ *  for `buildAgentRunSpawnConfig`. */
+export async function loadAgentPromptDefaults(agentPath: string): Promise<{ model?: string; body: string }> {
+  const { handle, body } = await loadAgent(agentPath)
+  return { ...(typeof handle.model === "string" ? { model: handle.model } : {}), body }
 }
 
 function textResult(body: unknown): { content: { type: "text"; text: string }[] } {
@@ -585,12 +622,22 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   server.tool(
     "app_run",
     "Run an installed app's agents as live sessions — one `agent_start`-equivalent " +
-      "spawn per selected agent (default adapter `mastra-agent`, pointed at that agent's " +
-      "emitted AGENT.md via the adapter's `agent` option), grouped under a fresh " +
-      "appRunId. Re-reads the app's directory first, so a stale install record " +
-      "(paths moved, a workflow renamed) is refreshed before spawning — the same " +
-      "refreshed paths are what make `workflow_run_file` work against this app's " +
-      "WORKFLOW.md files. Poll with `app_status`, kill with `app_stop`.\n\n" +
+      "spawn per selected agent, grouped under a fresh appRunId. Re-reads the app's " +
+      "directory first, so a stale install record (paths moved, a workflow renamed) " +
+      "is refreshed before spawning — the same refreshed paths are what make " +
+      "`workflow_run_file` work against this app's WORKFLOW.md files. Poll with " +
+      "`app_status`, kill with `app_stop`.\n\n" +
+      "Adapter support: with the default adapter `mastra-agent` (or any other adapter " +
+      "whose manifest declares an `agent` option), each spawn is pointed straight at " +
+      "the agent's emitted AGENT.md via that option. Any OTHER adapter (`claude-code`, " +
+      "`hermes`, `codex`, ...) declares no such option, so its spawn is built FROM the " +
+      "AGENT.md instead: the frontmatter `model` becomes the spawn's default model " +
+      "(an explicit `model` arg here still wins) and the AGENT.md body becomes the " +
+      "system/prefix of the first prompt (a `prompt` arg is appended after it). `cwd` " +
+      "is still the app's dir, and the daemon's own MCP gateway is still mounted for " +
+      "adapters that get it by default (claude-code, hermes) — see " +
+      "`shouldInjectDaemonSelfMount` — so the spawned agent still reaches " +
+      "`app_data_*`/`mcp_imported_call` natively.\n\n" +
       "Orchestration: pass `sequence` to run agents ONE-AT-A-TIME in the given " +
       "order (each waits for its predecessor's session to reach a terminal state, " +
       "bounded ~60×2s, before the next spawns) — the scout→tailor workflow. " +
@@ -601,8 +648,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "spawn and mirrored onto the run record for observability. `harness` is the " +
       "canonical slug and defaults `adapter` to itself when `adapter` is absent; " +
       "a bare `adapter` sets `harness` to itself; both default to `mastra-agent`. " +
-      "An unresolvable adapter is collected as a per-agent error rather than " +
-      "failing the whole run.",
+      "`access.profileRef` pins a named auth profile (see `agent_start.access`) on " +
+      "every spawn this run makes — needed when an adapter's default credential " +
+      "profile is disabled on this host. An unresolvable adapter is collected as a " +
+      "per-agent error rather than failing the whole run.",
     {
       appId: z.string(),
       agents: z
@@ -633,7 +682,18 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       model: z
         .string()
         .optional()
-        .describe("Model id passed through to each spawned session."),
+        .describe(
+          "Model id passed through to each spawned session. For an adapter with no " +
+            "`agent` option, this wins over the AGENT.md frontmatter's own `model`.",
+        ),
+      access: z
+        .object({ profileRef: z.string().optional() })
+        .optional()
+        .describe(
+          "Named auth-profile pin threaded to every spawn's `agent_start`-equivalent " +
+            "(see `agent_start.access`) — e.g. `{ profileRef: \"claude-subs-agentik\" }` " +
+            "when the adapter's default credential profile is disabled on this host.",
+        ),
       // follow-up: no sandbox support in this WP — the e2b image doesn't carry
       // the mastra-agent adapter yet (see output/phase-a-findings.md A3). Thread
       // a `sandbox` field through to `spawnAgentSession` here once an image
@@ -677,6 +737,22 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       const harness = input.harness ?? input.adapter ?? DEFAULT_AGENT_ADAPTER
       const model = input.model
 
+      // B — multi-adapter support (P7 deliverable 2): only an adapter whose
+      // manifest declares an `agent` option (mastra-agent today) can be
+      // pointed straight at the AGENT.md path; every other adapter needs its
+      // spawn built FROM the AGENT.md instead (buildAgentRunSpawnConfig).
+      // `declaredOptions === undefined` means the resolver reported no
+      // option info at all (same convention as `launch-config.ts`'s
+      // `declaredOptionsKnown`) — treat that as "might declare it" so a
+      // resolver stub that omits the field (or a genuinely unresolvable
+      // adapter) keeps today's mastra-agent behaviour instead of silently
+      // falling back; only a resolver that POSITIVELY lists options without
+      // `agent` (claude-code, hermes, codex, ...) takes the fallback path.
+      const resolvedAdapter = await resolveAgentAdapter(adapter)
+      const declaredOptionsKnown = resolvedAdapter?.declaredOptions !== undefined
+      const declaresAgentOption =
+        !declaredOptionsKnown || (resolvedAdapter!.declaredOptions!.some(o => o.id === "agent"))
+
       const ordered = input.sequence ?? input.agents ?? app.agents.map(a => a.id)
       const unknown = ordered.filter(id => !app.agents.some(a => a.id === id))
       if (unknown.length > 0) {
@@ -691,15 +767,36 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         agentId: string,
       ): Promise<{ agentId: string; sessionId: string } | null> => {
         const agentPath = app.agents.find(a => a.id === agentId)!.path
+        let spawnModel = model
+        let spawnPrompt = input.prompt
+        let spawnOptions: Record<string, boolean | number | string> | undefined
+        if (declaresAgentOption) {
+          spawnOptions = { agent: agentPath }
+        } else {
+          try {
+            const defaults = await loadAgentPromptDefaults(agentPath)
+            const built = buildAgentRunSpawnConfig(defaults, { model, prompt: input.prompt })
+            spawnModel = built.model
+            spawnPrompt = built.prompt
+          } catch (err) {
+            errors.push({
+              agentId,
+              error: `could not read AGENT.md "${agentPath}": ${err instanceof Error ? err.message : String(err)}`,
+            })
+            return null
+          }
+        }
         const result = await spawnAgentSession(
           { registry, resolveAgentAdapter },
           {
             adapter,
             ...(harness !== adapter ? { harness } : {}),
-            ...(model !== undefined ? { model } : {}),
+            ...(spawnModel !== undefined ? { model: spawnModel } : {}),
             cwd: input.cwd ?? app.dir,
-            ...(input.prompt ? { prompt: input.prompt } : {}),
-            options: { agent: agentPath },
+            ...(spawnPrompt ? { prompt: spawnPrompt } : {}),
+            ...(spawnOptions ? { options: spawnOptions } : {}),
+            ...(input.access ? { access: input.access } : {}),
+            appId: app.appId,
             label: `app:${app.appId}:${agentId}`,
           },
         )

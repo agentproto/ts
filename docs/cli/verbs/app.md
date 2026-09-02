@@ -10,6 +10,11 @@ agentproto app build  <appDir> [--json]
 agentproto app dev    <appDir> [--port <n>] [--json] [-- <viteArgs...>]
 ```
 
+> This page covers the `agentproto app` CLI verb (install/serve/pack/build/
+> dev). For what a bundled agent can actually reach at runtime — `app_run`,
+> and which tool ids an `AGENT.md` can declare — see [Which tools can an app
+> agent call?](../guides/app-agent-tools.md).
+
 Bundle an agentproto app folder (one carrying a valid `.agentproto/APP.md`)
 into a single self-contained `.agentapp` tar.gz — the "APK for agentproto
 apps" — and unpack that bundle back into a folder, verifying an aggregate

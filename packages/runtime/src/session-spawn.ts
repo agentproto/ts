@@ -8,7 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -815,6 +815,13 @@ export interface SpawnAgentSessionInput {
   boardId?: string
   /** Source label for this spawn (channel/harness). Descriptor-only. */
   origin?: string
+  /** Installed app id this spawn runs on behalf of (`app_run` sets this to
+   *  the app's own id). Forwarded to the child process as `APP_ID_ENV` — a
+   *  daemon-tool proxy the child builds (mastra-agent's `daemon-mcp-tools.ts`,
+   *  P7) auto-injects it into an `app_*` tool call that omits `appId`, since
+   *  the model driving the session has no way to know its own appId unless
+   *  told. Absent on a spawn made outside `app_run`. */
+  appId?: string
   /** Reattach to a pre-existing adapter-native session (claude-code's
    *  conversation id, hermes' chat handle, …) instead of starting
    *  blank. Not exposed on the MCP `agent_start` tool today — only the
@@ -2679,6 +2686,10 @@ export async function spawnAgentSession(
           // who spawned it without a registry round-trip. Absent on a
           // parentless root spawn.
           ...(parentSessionId ? { [PARENT_SESSION_ID_ENV]: parentSessionId } : {}),
+          // App identity (APP_ID_ENV's doc, sessions.ts) — set only for an
+          // `app_run` spawn, so a daemon-tool proxy the child builds can
+          // auto-fill `appId` into an `app_*` call that omits one.
+          ...(input.appId ? { [APP_ID_ENV]: input.appId } : {}),
         },
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)

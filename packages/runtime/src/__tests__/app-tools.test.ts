@@ -18,7 +18,12 @@ import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { compileWorkflow, type AgentStep } from "@agentproto/workflow-runtime"
-import { registerAppTools, resolveAgentRefsForWorkflow, sanitizeOutputBlocks } from "../app-tools.js"
+import {
+  registerAppTools,
+  resolveAgentRefsForWorkflow,
+  sanitizeOutputBlocks,
+  buildAgentRunSpawnConfig,
+} from "../app-tools.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -953,6 +958,148 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
       { type: "text", text: "real output" },
       { type: "image", text: "not text" },
     ])
+  })
+})
+
+describe("buildAgentRunSpawnConfig (P7 deliverable 2 — multi-adapter app_run)", () => {
+  it("uses the AGENT.md body as the prompt and its frontmatter model when the caller gives neither", () => {
+    expect(buildAgentRunSpawnConfig({ model: "claude-sonnet-5", body: "You do the thing." }, {})).toEqual({
+      model: "claude-sonnet-5",
+      prompt: "You do the thing.",
+    })
+  })
+
+  it("appends a caller-given prompt after the AGENT.md body, separated by a blank line", () => {
+    expect(
+      buildAgentRunSpawnConfig(
+        { model: "claude-sonnet-5", body: "You do the thing." },
+        { prompt: "Now go do it for site X." },
+      ),
+    ).toEqual({
+      model: "claude-sonnet-5",
+      prompt: "You do the thing.\n\nNow go do it for site X.",
+    })
+  })
+
+  it("an explicit input.model wins over the AGENT.md frontmatter model", () => {
+    expect(
+      buildAgentRunSpawnConfig({ model: "claude-sonnet-5", body: "You do the thing." }, { model: "gpt-5" }),
+    ).toEqual({ model: "gpt-5", prompt: "You do the thing." })
+  })
+
+  it("a caller prompt stands alone when the AGENT.md has no body", () => {
+    expect(buildAgentRunSpawnConfig({ body: "   " }, { prompt: "hello" })).toEqual({ prompt: "hello" })
+  })
+
+  it("returns neither field when there's no body and no caller prompt or model", () => {
+    expect(buildAgentRunSpawnConfig({ body: "" }, {})).toEqual({})
+  })
+
+  it("trims the AGENT.md body before using it as the prompt", () => {
+    expect(buildAgentRunSpawnConfig({ body: "\n  You do the thing.  \n" }, {})).toEqual({
+      prompt: "You do the thing.",
+    })
+  })
+})
+
+describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-multi-adapter-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("builds the spawn from the AGENT.md (model + body-as-prompt) for an adapter that declares no `agent` option", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const startSession = fakeStartSession()
+    // claude-code-shaped resolver: reports declaredOptions WITHOUT "agent" —
+    // the positive signal that this adapter can't be pointed at a path.
+    const resolveAgentAdapter: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent"
+        ? { startSession, commandPreview: "mock-adapter" }
+        : slug === "claude-code"
+          ? {
+              startSession,
+              commandPreview: "mock-claude-code",
+              declaredOptions: [{ id: "model", type: "string" }],
+            }
+          : null
+    const { client, registry } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: { appId: "@test/fixture-app", adapter: "claude-code" },
+      }),
+    )
+    expect(ran.errors).toBeUndefined()
+    expect(startSession).toHaveBeenCalledTimes(1)
+    const spawnArgs = startSession.mock.calls[0]![0] as Record<string, unknown>
+    // No `agent` option — claude-code's manifest doesn't declare one.
+    expect(spawnArgs.options).toBeUndefined()
+    // The fixture agent's own frontmatter model (`claude-sonnet-5`, see
+    // buildFixtureApp) became the spawn's default model...
+    expect(spawnArgs.model).toBe("claude-sonnet-5")
+    // ...and its body ("You do the thing.") became the prompt.
+    const desc = registry.get(ran.sessions[0].sessionId)!
+    expect(desc.model).toBe("claude-sonnet-5")
+  })
+
+  it("an explicit `model` arg still wins over the AGENT.md frontmatter model on the fallback path", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const startSession = fakeStartSession()
+    const resolveAgentAdapter: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent"
+        ? { startSession, commandPreview: "mock-adapter" }
+        : slug === "claude-code"
+          ? { startSession, commandPreview: "mock-claude-code", declaredOptions: [] }
+          : null
+    const { client } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    await client.callTool({
+      name: "app_run",
+      arguments: { appId: "@test/fixture-app", adapter: "claude-code", model: "gpt-5" },
+    })
+    const spawnArgs = startSession.mock.calls[0]![0] as Record<string, unknown>
+    expect(spawnArgs.model).toBe("gpt-5")
+  })
+
+  it("keeps pointing mastra-agent at the AGENT.md path via the `agent` option (unchanged default behaviour)", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const startSession = fakeStartSession()
+    const resolveAgentAdapter: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent"
+        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }] }
+        : null
+    const { client } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } })
+    const spawnArgs = startSession.mock.calls[0]![0] as Record<string, unknown>
+    expect(spawnArgs.options).toEqual({ agent: expect.stringContaining("AGENT.md") })
+  })
+
+  it("threads `access.profileRef` through to the underlying spawn", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    // No such profile exists in this test environment — the point is only to
+    // prove `access` reached spawnAgentSession's own resolution chain
+    // (its error is prefixed `agent_start: `, same as a direct agent_start
+    // call), not to exercise real credential resolution end-to-end.
+    const ran = parseToolJson(
+      await client.callTool({
+        name: "app_run",
+        arguments: { appId: "@test/fixture-app", access: { profileRef: "no-such-profile" } },
+      }),
+    )
+    expect(ran.errors).toHaveLength(1)
+    expect(ran.errors[0].error).toMatch(/agent_start: no auth profile "no-such-profile" found/)
   })
 })
 
