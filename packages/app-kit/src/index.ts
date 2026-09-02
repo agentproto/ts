@@ -55,6 +55,8 @@ export type {
   AppDevLaunchConfig,
   AppDataDefinition,
   AppDevDefinition,
+  AppLibraryBook,
+  AppLibraryDefinition,
   ToMastraAgentOptions,
   EmittedApp,
 } from "./types.js"

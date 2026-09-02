@@ -48,7 +48,7 @@ async function readAllFiles(root: string): Promise<Map<string, string>> {
 }
 
 describe("template source tree", () => {
-  it.each(["react-ts", "vanilla"] as const)(
+  it.each(["react-ts", "vanilla", "book"] as const)(
     "%s ships _agentproto/ (escaped), never a literal .agentproto/",
     async (template) => {
       // The monorepo root .gitignore ignores `.agentproto/` at any depth, so a
@@ -308,5 +308,89 @@ describe("scaffoldApp with --template vanilla", () => {
 
     const files = await readAllFiles(target)
     expect(files.has("ui/package.json")).toBe(false)
+  })
+})
+
+describe("scaffoldApp with --template book", () => {
+  it("ships _claude/ (escaped), never a literal .claude/", async () => {
+    const { readdir } = await import("node:fs/promises")
+    const { fileURLToPath } = await import("node:url")
+    const templateDir = fileURLToPath(new URL("../../templates/book", import.meta.url))
+    const entries = await readdir(templateDir)
+    expect(entries).toContain("_claude")
+    expect(entries).not.toContain(".claude")
+  })
+
+  it("writes the frozen book file set — vanilla's shape plus the install skill", async () => {
+    const root = await mktmp()
+    const target = join(root, "book-app")
+
+    const outcome = await scaffoldApp({ targetDir: target, template: "book" })
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+
+    expect(outcome.result.template).toBe("book")
+
+    const files = await readAllFiles(target)
+    for (const expected of [
+      ".gitignore",
+      ".agentproto/APP.md",
+      ".agentproto/agents/book-app-assistant/AGENT.md",
+      ".agentproto/workflows/book-app-flow/WORKFLOW.md",
+      ".agentproto/ui/index.html",
+      ".claude/skills/install-agentproto-app/SKILL.md",
+    ]) {
+      expect(files.has(expected), `missing ${expected}`).toBe(true)
+    }
+    expect(files.has("_gitignore")).toBe(false)
+    expect(files.has("package.json")).toBe(false)
+    expect(files.has("ui/package.json")).toBe(false)
+  })
+
+  it("leaves no __APP_ tokens in any written file (content or path)", async () => {
+    const root = await mktmp()
+    const target = join(root, "book-token-check")
+    const outcome = await scaffoldApp({
+      targetDir: target,
+      template: "book",
+      name: "Book Token Check",
+    })
+    expect(outcome.ok).toBe(true)
+
+    const files = await readAllFiles(target)
+    for (const [path, contents] of files) {
+      expect(path, `token left in path ${path}`).not.toMatch(/__APP_(ID|NAME|SLUG|CLIENT_VERSION)__/)
+      expect(contents, `token left in ${path}`).not.toMatch(/__APP_(ID|NAME|SLUG|CLIENT_VERSION)__/)
+    }
+  })
+
+  it("APP.md declares the book contract (category + library.books) via gray-matter", async () => {
+    const root = await mktmp()
+    const target = join(root, "book-parsed")
+    const outcome = await scaffoldApp({ targetDir: target, template: "book" })
+    expect(outcome.ok).toBe(true)
+
+    const raw = await readFile(join(target, ".agentproto", "APP.md"), "utf8")
+    const { data } = matter(raw)
+    expect(data.schema).toBe("app/v1")
+    expect(data.id).toBe("book-parsed")
+    expect(data.category).toBe("book")
+    expect(data.library).toEqual({ books: [{ id: "book-parsed", title: "Book Parsed" }] })
+  })
+
+  it("the bundled skill is a valid Claude Code skill (frontmatter name/description)", async () => {
+    const root = await mktmp()
+    const target = join(root, "book-skill")
+    const outcome = await scaffoldApp({ targetDir: target, template: "book" })
+    expect(outcome.ok).toBe(true)
+
+    const raw = await readFile(
+      join(target, ".claude", "skills", "install-agentproto-app", "SKILL.md"),
+      "utf8",
+    )
+    const { data, content } = matter(raw)
+    expect(data.name).toBe("install-agentproto-app")
+    expect(typeof data.description).toBe("string")
+    expect(content).toContain("agentproto app install .")
   })
 })

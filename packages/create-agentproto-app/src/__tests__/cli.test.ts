@@ -118,6 +118,18 @@ describe("runCreateApp", () => {
     expect(stdout.text()).not.toContain("agentproto app dev .")
   })
 
+  it("--template book scaffolds and prints `app serve` (not `app dev`) next steps", async () => {
+    const root = await mktmp()
+    const target = join(root, "book-app")
+    const stdout = captureStdout()
+
+    const code = await runCreateApp([target, "--template", "book"])
+    expect(code).toBe(0)
+    expect(stdout.text()).toContain("agentproto app serve .")
+    expect(stdout.text()).not.toContain("pnpm install")
+    expect(stdout.text()).not.toContain("agentproto app dev .")
+  })
+
   it("--help prints usage and exits 0 without touching the filesystem", async () => {
     const stdout = captureStdout()
     const code = await runCreateApp(["--help"])

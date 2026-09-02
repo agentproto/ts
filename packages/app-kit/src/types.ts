@@ -140,6 +140,35 @@ export interface AppDevDefinition {
 }
 
 /**
+ * One book an app's `library` block identifies. Usually a book-bundle app
+ * declares exactly one; `id` is the book's own identifier (distinct from
+ * the app id, though bundles typically set them equal).
+ */
+export interface AppLibraryBook {
+  readonly id: string
+  readonly title?: string
+  /**
+   * Path (relative to the app's data dir — see {@link AppDataDefinition})
+   * where this book's reading/completion progress is tracked. A hint only:
+   * app-kit neither creates nor reads this file, it just carries the
+   * declared location for later consumers (a library substrate, a scoped
+   * MCP proxy) to agree on without re-deriving a convention per bundle.
+   */
+  readonly progress?: string
+}
+
+/**
+ * Declares the app as (or containing) one or more books — the "book
+ * contract": the single shared surface a future library primitive, catalog,
+ * or scoped MCP proxy can read off `APP.md` frontmatter without any
+ * bundle-specific parsing. Additive/optional; omit entirely for a non-book
+ * app.
+ */
+export interface AppLibraryDefinition {
+  readonly books: readonly AppLibraryBook[]
+}
+
+/**
  * Where the app's durable data lives (the `app_data_*` plane). `dir` is a
  * path RELATIVE to the app dir — `"data"` means `<appDir>/data`, which is
  * also what the daemon uses when the hint is absent. It is a hint: an
@@ -215,6 +244,16 @@ export interface AppDefinition {
    * path for these roots anywhere in the daemon.
    */
   readonly externalReadRoots?: readonly string[]
+  /**
+   * Coarse grouping surfaced in catalogs/trees — e.g. `"book"` groups the
+   * VS Code Apps tree's "Books" section. Freeform: app-kit does not
+   * validate against a fixed enum, since new categories may appear without
+   * an app-kit release.
+   */
+  readonly category?: string
+  /** Declares this app as (or containing) one or more books — see
+   *  {@link AppLibraryDefinition}. */
+  readonly library?: AppLibraryDefinition
 }
 
 /** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
@@ -275,6 +314,11 @@ export interface AppHandle {
    *  {@link AppDefinition.externalReadRoots}). Not yet normalized/validated —
    *  that happens at install time in `performInstall`. */
   readonly externalReadRoots?: readonly string[]
+  /** Coarse grouping surfaced in catalogs/trees (see {@link AppDefinition.category}). */
+  readonly category?: string
+  /** Declares this app as (or containing) one or more books (see
+   *  {@link AppDefinition.library}). */
+  readonly library?: AppLibraryDefinition
 
   /**
    * Build agents into runnable Mastra agents whose `instructions` field is

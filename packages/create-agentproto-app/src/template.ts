@@ -10,6 +10,8 @@
  * plus a nearer trap: this monorepo's root `.gitignore` ignores
  * `.agentproto/` at any depth (it's the daemon's workspace-state dir), so a
  * literal `.agentproto/` template tree would silently never be committed.
+ * `_claude/` is renamed to `.claude/` for the same npm-publish reason — the
+ * `book` template ships a Claude Code skill there.
  */
 
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
@@ -46,6 +48,7 @@ function substitute(text: string, tokens: TemplateTokens): string {
 const RENAME_BY_NAME: Readonly<Record<string, string>> = {
   _gitignore: ".gitignore",
   _agentproto: ".agentproto",
+  _claude: ".claude",
 }
 
 function renameEntry(name: string): string {
