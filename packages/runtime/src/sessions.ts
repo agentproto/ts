@@ -6272,14 +6272,14 @@ export function createSessionsRegistry(opts?: {
         // real daemon.log line, so a restart that dies before its first
         // turn is loudly diagnosable instead of a silent, empty transcript.
         const wasKilled = rt.desc.status === "killed"
-        const abnormal = !wasKilled && (evt.exitCode !== 0 || evt.signal !== undefined)
+        const abnormal = !wasKilled && (evt.exitCode !== 0 || (evt.signal ?? 0) !== 0)
         if (!wasKilled) {
           rt.desc.status = abnormal ? "error" : "exited"
         }
         rt.desc.endedAt = new Date().toISOString()
         if (typeof evt.exitCode === "number") rt.desc.exitCode = evt.exitCode
         if (abnormal) {
-          const signalPart = evt.signal !== undefined ? `, signal ${evt.signal}` : ""
+          const signalPart = evt.signal ? `, signal ${evt.signal}` : ""
           const tail = terminalOutputTail(rt)
           rt.desc.lastError = tail
             ? `pty exited with code ${evt.exitCode}${signalPart}: ${tail}`

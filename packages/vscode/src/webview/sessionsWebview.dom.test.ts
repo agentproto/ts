@@ -116,6 +116,25 @@ const CRON_ROW = {
   action: "archive",
 }
 
+// A parent row with a nested child in the group's row list — hasChildren +
+// subtreeStatus are host-computed (subtreeRollup), same as the panel ships.
+const PARENT_ROW = {
+  ...ROW_A,
+  id: "p1",
+  status: "idle",
+  hasChildren: true,
+  subtreeStatus: "working",
+}
+
+const CHILD_ROW = {
+  ...ROW_DONE,
+  id: "c2",
+  depth: 1,
+  status: "idle",
+  hasChildren: false,
+  subtreeStatus: "idle",
+}
+
 function group(key: string, label: string, rows: unknown[], hint?: string) {
   return { key, label, hint, rows }
 }
@@ -590,6 +609,60 @@ describe("sessions webview — watched + nesting (items 5, 6)", () => {
     expect(nested).toBeTruthy()
     expect(htmlEl(nested).getAttribute("style")).toContain("padding-left")
     expect(htmlEl(nested).querySelector(".lineage")).not.toBeNull()
+  })
+})
+
+describe("sessions webview — row disclosure triangle (subtree collapse)", () => {
+  it("omits the triangle on a leaf row", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [ROW_A])] }))
+    expect(el(panel, "list").querySelector('[data-id="s1"] .rtw')).toBeNull()
+  })
+
+  it("renders a collapsed-by-default triangle on a row with nested children, hiding the descendant", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
+    const parent = el(panel, "list").querySelector('[data-id="p1"]')!
+    const child = el(panel, "list").querySelector('[data-id="c2"]')!
+    const triangle = htmlEl(parent.querySelector(".rtw"))
+    expect(triangle).toBeTruthy()
+    expect(triangle.className).toContain("closed")
+    expect(triangle.getAttribute("aria-expanded")).toBe("false")
+    expect(htmlEl(child).hidden).toBe(true)
+    // Collapsed dot rolls up to the busiest subtree state, not the parent's own idle status.
+    expect(parent.querySelector(".dot.working")).toBeTruthy()
+    expect(parent.querySelector(".dot.idle")).toBeNull()
+  })
+
+  it("clicking the triangle expands the row, revealing its child and flipping the dot back to its own status", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
+    click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!)
+    const parent = el(panel, "list").querySelector('[data-id="p1"]')!
+    const child = el(panel, "list").querySelector('[data-id="c2"]')!
+    expect(htmlEl(child).hidden).toBe(false)
+    const triangle = htmlEl(parent.querySelector(".rtw"))
+    expect(triangle.className).not.toContain("closed")
+    expect(triangle.getAttribute("aria-expanded")).toBe("true")
+    expect(parent.querySelector(".dot.idle")).toBeTruthy()
+    expect(parent.querySelector(".dot.working")).toBeNull()
+  })
+
+  it("clicking the triangle toggles the row, not the session (no 'open' message posted)", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
+    panel.posted.length = 0
+    click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!)
+    expect(panel.posted).toEqual([])
+  })
+
+  it("keeps a row's expand/collapse state across a live re-render of the same rows", () => {
+    const panel = renderPanel()
+    const payload = modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] })
+    send(panel, payload)
+    click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!) // expand
+    send(panel, payload) // a live status tick re-renders the same rows
+    expect(htmlEl(el(panel, "list").querySelector('[data-id="c2"]')!).hidden).toBe(false)
   })
 })
 

@@ -1916,6 +1916,46 @@ describe("createSessionsRegistry", () => {
         reg.shutdown()
       })
 
+      it("a clean exit with node-pty's real {exitCode: 0, signal: 0} shape stays status:exited with no lastError", () => {
+        // node-pty's actual clean-exit payload sets `signal` to the number
+        // 0, not `undefined` — a naive `evt.signal !== undefined` check
+        // reads that as "a signal fired" and misclassifies every normal
+        // exit as abnormal. This is the shape that must not regress.
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["bash"],
+          cols: 80,
+          rows: 24,
+        })
+        emitExit({ exitCode: 0, signal: 0 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("exited")
+        expect(after?.lastError).toBeUndefined()
+        reg.shutdown()
+      })
+
+      it("a nonzero signal with exitCode 0 and no operator kill() still sets status:error", () => {
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["bash"],
+          cols: 80,
+          rows: 24,
+        })
+        emitExit({ exitCode: 0, signal: 15 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("error")
+        expect(after?.lastError).toContain("signal 15")
+        reg.shutdown()
+      })
+
       it("an operator-targeted kill() is never relabeled — status stays killed, no lastError", () => {
         const { factory, emitExit } = controllablePtyFactory()
         const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
