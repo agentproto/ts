@@ -4842,7 +4842,9 @@ describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
   })
 
   it("preserves an inherited pointer and grants only its exact external AGENTS.md path to the adapter", async () => {
-    const startSession = vi.fn(async () => fakeAgentSession())
+    const startSession = vi.fn(
+      async (_opts?: { additionalReadPaths?: string[] }) => fakeAgentSession(),
+    )
     const { registry, deps } = baseDeps({
       resolveAgentAdapter: makeResolver(startSession),
       resolveAgentsMd: async () => ({
