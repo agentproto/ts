@@ -570,6 +570,42 @@ describe("MastraAcpAgent — suspended tool bridge", () => {
     ])
   })
 
+  it("folds agentproto/feedback from the outcome _meta into the resume data", async () => {
+    const { session } = await runSuspensionTurn({
+      respond: async () => ({
+        outcome: {
+          outcome: "selected",
+          optionId: "decline",
+          _meta: { "agentproto/feedback": "reject, but do X instead" },
+        },
+      }),
+    })
+    expect(session.resumes).toEqual([
+      {
+        resumeData: { approved: false, feedback: "reject, but do X instead" },
+        toolCallId: "tc9",
+      },
+    ])
+  })
+
+  it("explicit resumeData wins over agentproto/feedback", async () => {
+    const { session } = await runSuspensionTurn({
+      respond: async () => ({
+        outcome: {
+          outcome: "selected",
+          optionId: "approve",
+          _meta: {
+            "mastra-agent/resumeData": { approved: true },
+            "agentproto/feedback": "ignored",
+          },
+        },
+      }),
+    })
+    expect(session.resumes).toEqual([
+      { resumeData: { approved: true }, toolCallId: "tc9" },
+    ])
+  })
+
   it("voids the permission answer once the suspension is cancelled", async () => {
     let respondLate!: (r: RequestPermissionResponse) => void
     const lateAnswer = new Promise<RequestPermissionResponse>((resolve) => {

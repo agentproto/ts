@@ -5859,7 +5859,7 @@ async function handleTasks(
  * /permissions routes — the cross-session permission inbox:
  *   GET  /permissions            → { permissions: [...] } across all sessions
  *                                  (optional ?sessionId=<id> filter)
- *   POST /permissions/:id        → { decision, optionId?, scope? } approve/deny
+ *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny
  *
  * Mirrors the MCP `permissions_list` / `permissions_respond` tools over the
  * same SessionsRegistry inbox. Each list entry is enriched with the owning
@@ -5905,10 +5905,12 @@ async function handlePermissions(
     }
     const optionId = typeof b.optionId === "string" ? b.optionId : undefined
     const scope = b.scope === "always" || b.scope === "once" ? b.scope : undefined
+    const feedback = typeof b.feedback === "string" ? b.feedback : undefined
     const result = await registry.respondPermission(id, {
       decision,
       ...(optionId ? { optionId } : {}),
       ...(scope ? { scope } : {}),
+      ...(feedback ? { feedback } : {}),
     })
     if (!result.ok) {
       const status = result.error === "not_found" || result.error === "session_gone" ? 404 : 409

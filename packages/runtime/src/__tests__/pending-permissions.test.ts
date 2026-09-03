@@ -52,6 +52,7 @@ function holdSession(
   requestId = "perm-1",
   rawInput?: unknown,
   toolName = "Write",
+  meta?: unknown,
 ): {
   session: AgentSessionLike
   responded: Array<{ requestId: string; resolution: unknown }>
@@ -69,6 +70,7 @@ function holdSession(
         text: `Allow "${toolName}"?`,
         options: OPTIONS,
         ...(rawInput !== undefined ? { rawInput } : {}),
+        ...(meta !== undefined ? { _meta: meta } : {}),
       }
       await new Promise<void>(r => {
         release = r
@@ -181,6 +183,34 @@ describe("pending-permissions inbox — registry", () => {
       rawInput: { command: "rm -rf /tmp/x" },
     })
 
+    registry.shutdown()
+  })
+
+  it("carries the tool call's _meta (e.g. a mastra suspension payload) through to the pending permission", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const meta = { "mastra-agent/suspendPayload": { plan: "1. do things\n2. push" } }
+    const fake = holdSession("acp-meta", "perm-meta", { plan: "1. do things\n2. push" }, "submit_plan", meta)
+    const id = await spawnAndPark(registry, fake)
+
+    const pending = registry.listPendingPermissions()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({ id: "perm-meta", sessionId: id, _meta: meta })
+
+    registry.shutdown()
+  })
+
+  it("threads feedback through respondPermission onto the driver resolution", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = holdSession("acp-fb", "perm-fb")
+    await spawnAndPark(registry, fake)
+    const r = await registry.respondPermission("perm-fb", {
+      decision: "deny",
+      feedback: "reject, but do X instead",
+    })
+    expect(r.ok).toBe(true)
+    expect(fake.responded).toEqual([
+      { requestId: "perm-fb", resolution: { optionId: "opt-reject", feedback: "reject, but do X instead" } },
+    ])
     registry.shutdown()
   })
 
@@ -575,6 +605,30 @@ describe("pending-permissions inbox — REST routes", () => {
       const body = (await postRes.json()) as Record<string, unknown>
       expect(body).toMatchObject({ ok: true, id: "perm-http", decision: "approve", optionId: "opt-always" })
       expect(fake.responded).toEqual([{ requestId: "perm-http", resolution: { optionId: "opt-always" } }])
+    })
+    registry.shutdown()
+  })
+
+  it("GET /permissions carries the request's _meta and POST forwards feedback", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const meta = { "mastra-agent/suspendPayload": { plan: "1. do things" } }
+    const fake = holdSession("acp-http-meta", "perm-http-meta", undefined, "submit_plan", meta)
+    await spawnAndPark(registry, fake)
+
+    await withServer(registry, async base => {
+      const listRes = await fetch(`${base}/permissions`)
+      const list = (await listRes.json()) as { permissions: Array<Record<string, unknown>> }
+      expect(list.permissions[0]).toMatchObject({ id: "perm-http-meta", _meta: meta })
+
+      const postRes = await fetch(`${base}/permissions/perm-http-meta`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "deny", feedback: "do X instead" }),
+      })
+      expect(postRes.status).toBe(200)
+      expect(fake.responded).toEqual([
+        { requestId: "perm-http-meta", resolution: { optionId: "opt-reject", feedback: "do X instead" } },
+      ])
     })
     registry.shutdown()
   })
