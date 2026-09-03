@@ -135,6 +135,7 @@ import type { RunCommandInput, ExecuteResult } from "./command-tools.js"
 import { resolveAccessProfileAuth } from "./session-spawn.js"
 import type { RouteSpec } from "./session-config.js"
 import type { ResolvedAuthSpec } from "./spawn-defaults.js"
+import { stripAnsi } from "./agent-tools.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -555,12 +556,6 @@ const JUDGE_VERDICT_INSTRUCTION =
   "```\n" +
   '`decision` must be exactly "PASS" or "FAIL" and must match the VERDICT line. ' +
   "Do not write anything after the VERDICT line."
-/** Strip ANSI escape sequences (mirrors session-tools.stripAnsi). */
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g
-function stripAnsi(s: string): string {
-  return s.replace(ANSI_RE, "")
-}
 /**
  * Parse the judge verdict from its final reply. Scans for `VERDICT: PASS|FAIL`
  * (case-insensitive) and returns the LAST occurrence. Returns null when no
