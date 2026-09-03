@@ -43,7 +43,8 @@ By default this verb registers the **full daemon** (`agentproto mcp-bridge`,
 every tool). `--app <appId>` instead writes `agentproto mcp-app <appId>` — the
 curated, one-app proxy (see [`mcp-app.md`](./mcp-app.md)) — for an app that
 declares the book/library contract (`category: "book"` or a non-empty
-`library.books` in its `APP.md`, see `@agentproto/app-kit`'s `defineApp`).
+`library.books` in its `APP.md` frontmatter — a convention this CLI reads
+directly; app-kit has no typed support for it).
 The app must already be installed (`agentproto app install <dir>`).
 
 Only agents whose config format can hold multiple named MCP entries

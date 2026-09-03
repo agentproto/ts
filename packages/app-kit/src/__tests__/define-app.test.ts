@@ -343,51 +343,18 @@ describe("defineApp — data dir hint", () => {
   })
 })
 
-describe("defineApp — book contract (category + library)", () => {
-  it("carries category and library through to the handle, frozen", () => {
-    const app = defineApp({
-      agents: [agent("solo", [])],
-      category: "book",
-      library: { books: [{ id: "book-1", title: "Chapter One", progress: "progress.json" }] },
-    })
-    expect(app.category).toBe("book")
-    expect(app.library).toEqual({
-      books: [{ id: "book-1", title: "Chapter One", progress: "progress.json" }],
-    })
-    expect(Object.isFrozen(app.library)).toBe(true)
-    expect(Object.isFrozen(app.library!.books)).toBe(true)
-    expect(Object.isFrozen(app.library!.books[0])).toBe(true)
+describe("defineApp — category", () => {
+  it("carries category through to the handle", () => {
+    const app = defineApp({ agents: [agent("solo", [])], category: "widget" })
+    expect(app.category).toBe("widget")
   })
 
   it("is absent when not declared", () => {
-    const app = defineApp({ agents: [agent("solo", [])] })
-    expect(app.category).toBeUndefined()
-    expect(app.library).toBeUndefined()
+    expect(defineApp({ agents: [agent("solo", [])] }).category).toBeUndefined()
   })
 
   it("throws when category is empty", () => {
     expect(() => defineApp({ agents: [agent("solo", [])], category: "" })).toThrow(/category/)
     expect(() => defineApp({ agents: [agent("solo", [])], category: "   " })).toThrow(/category/)
-  })
-
-  it("throws when library.books is missing or empty", () => {
-    expect(() =>
-      defineApp({ agents: [agent("solo", [])], library: { books: [] } }),
-    ).toThrow(/library\.books/)
-  })
-
-  it("throws when a book id is empty", () => {
-    expect(() =>
-      defineApp({ agents: [agent("solo", [])], library: { books: [{ id: "" }] } }),
-    ).toThrow(/library\.books\[\]\.id/)
-  })
-
-  it("throws on duplicate book ids", () => {
-    expect(() =>
-      defineApp({
-        agents: [agent("solo", [])],
-        library: { books: [{ id: "book-1" }, { id: "book-1" }] },
-      }),
-    ).toThrow(/duplicate book id/)
   })
 })

@@ -27,7 +27,6 @@ import type {
   AgentEntry,
   AppDefinition,
   AppHandle,
-  AppLibraryDefinition,
   DoctypeHandle,
   ToMastraAgentOptions,
   WorkspaceInput,
@@ -69,9 +68,6 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   if (def.category !== undefined && def.category.trim() === "") {
     throw new AppDefinitionError("`category` must be a non-empty string when present.")
   }
-  if (def.library !== undefined) {
-    validateLibrary(def.library)
-  }
 
   const agents = (def.agents ?? []).map(normalizeEntry)
   const workflows = def.workflows ?? []
@@ -92,9 +88,6 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const externalReadRoots = def.externalReadRoots ? Object.freeze([...def.externalReadRoots]) : undefined
   const data = def.data ? Object.freeze({ ...def.data }) : undefined
   const category = def.category
-  const library = def.library
-    ? Object.freeze({ books: Object.freeze(def.library.books.map((b) => Object.freeze({ ...b }))) })
-    : undefined
 
   validateAttachment(agents, workflows)
 
@@ -120,7 +113,6 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(data !== undefined ? { data } : {}),
     ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
     ...(category !== undefined ? { category } : {}),
-    ...(library !== undefined ? { library } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
       const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
@@ -163,7 +155,6 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(data !== undefined ? { data } : {}),
           ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
           ...(category !== undefined ? { category } : {}),
-          ...(library !== undefined ? { library } : {}),
         },
         dir,
       )
@@ -286,28 +277,6 @@ function validateAttachment(
 
 function workflowRefs(agent: AgentHandle): readonly AnyRef[] {
   return agent.workflows ?? []
-}
-
-/**
- * `library.books` must be non-empty, and each book needs a non-empty, unique
- * `id` — the same shape discipline as the agent/workflow id checks above,
- * so a malformed book contract fails at authoring time rather than
- * surfacing as a silent no-op in a future catalog/library reader.
- */
-function validateLibrary(library: AppLibraryDefinition): void {
-  if (!Array.isArray(library.books) || library.books.length === 0) {
-    throw new AppDefinitionError("`library.books` must be a non-empty array when `library` is present.")
-  }
-  const seenIds = new Set<string>()
-  for (const book of library.books) {
-    if (typeof book.id !== "string" || book.id.trim() === "") {
-      throw new AppDefinitionError("`library.books[].id` must be a non-empty string.")
-    }
-    if (seenIds.has(book.id)) {
-      throw new AppDefinitionError(`duplicate book id '${book.id}' in \`library.books\`.`)
-    }
-    seenIds.add(book.id)
-  }
 }
 
 export type { DoctypeHandle }

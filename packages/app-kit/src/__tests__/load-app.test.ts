@@ -422,41 +422,20 @@ describe("loadAppHandle — data dir hint", () => {
   })
 })
 
-describe("loadAppHandle — book contract (category + library)", () => {
+describe("loadAppHandle — category", () => {
   const soloAgent = () =>
     defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
 
-  it("round-trips category and library", async () => {
-    const d = await mkdtemp(join(tmpdir(), "app-kit-load-book-"))
+  it("round-trips category", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-category-"))
     try {
       await defineApp({
         agents: [{ agent: soloAgent(), body: "Solo." }],
-        category: "book",
-        library: { books: [{ id: "book-1", title: "Chapter One", progress: "progress.json" }] },
+        category: "widget",
       }).emit(d)
 
       const loaded = await loadAppHandle(d)
-      expect(loaded.category).toBe("book")
-      expect(loaded.library).toEqual({
-        books: [{ id: "book-1", title: "Chapter One", progress: "progress.json" }],
-      })
-    } finally {
-      await rm(d, { recursive: true, force: true })
-    }
-  })
-
-  it("throws AppLoadError on a malformed `library` block", async () => {
-    const d = await mkdtemp(join(tmpdir(), "app-kit-load-badbook-"))
-    try {
-      const { appPath } = await defineApp({ agents: [{ agent: soloAgent(), body: "Solo." }] }).emit(d)
-      const parsed = matter(await readFile(appPath, "utf8"))
-      await writeFile(
-        appPath,
-        matter.stringify(parsed.content, { ...parsed.data, library: { books: [] } }),
-        "utf8",
-      )
-      await expect(loadAppHandle(d)).rejects.toThrow(AppLoadError)
-      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter 'library'/)
+      expect(loaded.category).toBe("widget")
     } finally {
       await rm(d, { recursive: true, force: true })
     }
