@@ -73,9 +73,34 @@ const sandboxSpecWithReuseSchema = z
   })
   .strict()
 
-/** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
+/** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
+ *
+ * Removes:
+ * - CSI/SGR sequences (\x1b[...): cursor movement, colors, etc.
+ * - Bare \r (carriage return not followed by \n): within each line, keeps only text after the last \r
+ *   This handles the case where bash echoes pasted content with \r as line separator,
+ *   which would otherwise create visible duplication when the \r is rendered (moves cursor to column 0).
+ *
+ * Exported for test access. */
 export function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+  // First remove CSI sequences
+  let result = s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+
+  // Then handle bare \r (carriage return) characters:
+  // Normalize line endings: \r\n becomes just \n (so CRLF is treated as a single line ending)
+  result = result.replace(/\r\n/g, "\n")
+
+  // Now for any remaining bare \r within lines (between \n), keep only text after the last \r.
+  // This simulates terminal behavior where \r resets to column 0.
+  const lines = result.split("\n")
+  result = lines
+    .map(line => {
+      const parts = line.split("\r")
+      return parts[parts.length - 1]
+    })
+    .join("\n")
+
+  return result
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
