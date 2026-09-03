@@ -849,12 +849,16 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         waitForSessionTerminal(registry, sessionId))
 
       if (input.sequence !== undefined) {
+        // Capture BEFORE entering any closure: `input.sequence`'s definedness
+        // is narrowed by this check, but a closure referencing it re-widens
+        // (TS18048) — a local binding keeps the narrowed `string[]` type.
+        const sequence = input.sequence
         if (input.wait === false) {
           // Match agent_start's non-waiting shape: wait for a real first
           // session descriptor, create the durable run, then release the MCP
           // call before waiting for that session to finish. Later sessions
           // are appended (and persisted) as the background sequence advances.
-          const firstAgentId = input.sequence[0]
+          const firstAgentId = sequence[0]
           const firstSpawned = firstAgentId === undefined ? null : await spawnOne(firstAgentId)
           if (firstSpawned) sessions.push(firstSpawned)
 
@@ -868,7 +872,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
 
           const continueSequence = async (): Promise<void> => {
             if (firstSpawned) await waitForTerminal(firstSpawned.sessionId)
-            for (const agentId of input.sequence.slice(1)) {
+            for (const agentId of sequence.slice(1)) {
               // app_stop owns a stopped run; it must also prevent the
               // background worker from spawning the next agent.
               if (run.status !== "running") return
@@ -900,7 +904,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
 
         // B — sequential orchestration: spawn one-at-a-time, each awaited to a
         // terminal state before the next spawns, all under ONE appRunId.
-        for (const agentId of input.sequence) {
+        for (const agentId of sequence) {
           const spawned = await spawnOne(agentId)
           if (!spawned) continue
           sessions.push(spawned)
