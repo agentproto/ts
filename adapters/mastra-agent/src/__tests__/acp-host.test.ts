@@ -587,6 +587,122 @@ describe("MastraAcpAgent — suspended tool bridge", () => {
   })
 })
 
+describe("MastraAcpAgent — parked suspension without a responder (submit_plan wedge)", () => {
+  /** Run one prompt whose run parks on a suspension and ENDS the turn there
+   *  (Mastra emits agent_end reason "suspended" and resolves sendMessage),
+   *  with a client permission request that is HELD — never answered (the
+   *  daemon permission-hold path with nobody responding). */
+  async function runParkedSuspendTurn(): Promise<{
+    host: MastraAcpAgent
+    session: ScriptedSession
+    permissionRequests: RequestPermissionRequest[]
+    sessionId: string
+    updates: Array<Record<string, unknown>>
+  }> {
+    const permissionRequests: RequestPermissionRequest[] = []
+    const updates: Array<Record<string, unknown>> = []
+    const session = scriptedSession()
+    let calls = 0
+    session.sendMessage = async () => {
+      if (calls++ === 0) {
+        session.emit({
+          type: "tool_suspended",
+          toolCallId: "tc9",
+          toolName: "submit_plan",
+          args: { plan: "do things" },
+          suspendPayload: { plan: "do things" },
+          resumeSchema: '{"type":"object"}',
+        })
+        session.emit({ type: "agent_end", reason: "suspended" })
+        return
+      }
+      // A follow-up turn after the suspension is gone runs normally.
+      session.emit({ type: "agent_end", reason: "complete" })
+    }
+    const host = new MastraAcpAgent(
+      fakeConn(updates, {
+        permissionRequests,
+        // The approval channel exists (daemon permission-hold) but nobody
+        // ever answers: the RPC parks forever.
+        respondPermission: () => new Promise(() => {}),
+      }),
+      async () => ({ controller: controllerOf(session) }),
+    )
+    const { sessionId } = await host.newSession({} as never)
+    return { host, session, permissionRequests, sessionId, updates }
+  }
+
+  it(
+    "the turn that parks a suspension ends with a visible waiting note on the wire",
+    async () => {
+      const { host, sessionId, updates } = await runParkedSuspendTurn()
+      const res = await host.prompt({
+        sessionId,
+        prompt: [{ type: "text", text: "plan it" }],
+      } as never)
+      expect(res.stopReason).toBe("end_turn")
+      const note = updates.find(
+        (u) =>
+          u.sessionUpdate === "agent_message_chunk" &&
+          String((u.content as { text?: string }).text).includes("suspended"),
+      )
+      expect(note).toBeDefined()
+    },
+    5000,
+  )
+
+  it(
+    "a follow-up prompt while parked is rejected loudly instead of deadlocking on a never-again agent_end",
+    async () => {
+      const { host, sessionId, updates } = await runParkedSuspendTurn()
+      await host.prompt({ sessionId, prompt: [{ type: "text", text: "plan it" }] } as never)
+
+      // The wedge: this prompt used to be accepted into the queue and then
+      // deadlocked the host handler forever (session looks idle,
+      // processAlive true, queue never drains).
+      const res = await host.prompt({
+        sessionId,
+        prompt: [{ type: "text", text: "anyone there?" }],
+      } as never)
+      expect(res.stopReason).toBe("refusal")
+      const note = updates.find(
+        (u) =>
+          u.sessionUpdate === "agent_message_chunk" &&
+          String((u.content as { text?: string }).text).includes(
+            "awaiting approval",
+          ),
+      )
+      expect(note).toBeDefined()
+    },
+    5000,
+  )
+
+  it(
+    "after the parked suspension is resolved, prompts are accepted again",
+    async () => {
+      const { host, session, sessionId } = await runParkedSuspendTurn()
+      await host.prompt({ sessionId, prompt: [{ type: "text", text: "plan it" }] } as never)
+
+      // The daemon inbox finally answers — the host sees the suspension
+      // lifted (same event the engine emits on abort/resume cleanup).
+      session.emit({
+        type: "tool_suspension_cancelled",
+        toolCallId: "tc9",
+        toolName: "submit_plan",
+        reason: "resolved",
+      })
+      await flush()
+
+      const res = await host.prompt({
+        sessionId,
+        prompt: [{ type: "text", text: "go on" }],
+      } as never)
+      expect(res.stopReason).toBe("end_turn")
+    },
+    5000,
+  )
+})
+
 describe("MastraAcpAgent — prompt delivery semantics", () => {
   it("a mid-turn prompt steers (abort + send) and cancels the active turn", async () => {
     const session = scriptedSession()
