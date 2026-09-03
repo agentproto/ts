@@ -1068,6 +1068,23 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     expect(spawnArgs.model).toBe("gpt-5")
   })
 
+  it("uses the AGENT.md frontmatter model while retaining an adapter's `agent` option", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const startSession = fakeStartSession()
+    const resolveAgentAdapter: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent"
+        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }] }
+        : null
+    const { client } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } })
+
+    const spawnArgs = startSession.mock.calls[0]![0] as Record<string, unknown>
+    expect(spawnArgs.model).toBe("claude-sonnet-5")
+    expect(spawnArgs.options).toEqual({ agent: expect.stringContaining("AGENT.md") })
+  })
+
   it("keeps pointing mastra-agent at the AGENT.md path via the `agent` option (unchanged default behaviour)", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
     const startSession = fakeStartSession()

@@ -627,13 +627,14 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "is refreshed before spawning — the same refreshed paths are what make " +
       "`workflow_run_file` work against this app's WORKFLOW.md files. Poll with " +
       "`app_status`, kill with `app_stop`.\n\n" +
-      "Adapter support: with the default adapter `mastra-agent` (or any other adapter " +
-      "whose manifest declares an `agent` option), each spawn is pointed straight at " +
-      "the agent's emitted AGENT.md via that option. Any OTHER adapter (`claude-code`, " +
-      "`hermes`, `codex`, ...) declares no such option, so its spawn is built FROM the " +
-      "AGENT.md instead: the frontmatter `model` becomes the spawn's default model " +
-      "(an explicit `model` arg here still wins) and the AGENT.md body becomes the " +
-      "system/prefix of the first prompt (a `prompt` arg is appended after it). `cwd` " +
+      "Adapter support: the AGENT.md frontmatter `model` becomes each spawn's model " +
+      "when `model` is omitted here; if neither is set, the adapter keeps its default. " +
+      "With the default adapter `mastra-agent` (or any other adapter whose manifest " +
+      "declares an `agent` option), each spawn is also pointed straight at the agent's " +
+      "emitted AGENT.md via that option. Any OTHER adapter (`claude-code`, `hermes`, " +
+      "`codex`, ...) declares no such option, so its spawn is built FROM the AGENT.md " +
+      "instead: the AGENT.md body becomes the system/prefix of the first prompt (a " +
+      "`prompt` arg is appended after it). An explicit `model` arg here always wins. `cwd` " +
       "is still the app's dir, and the daemon's own MCP gateway is still mounted for " +
       "adapters that get it by default (claude-code, hermes) — see " +
       "`shouldInjectDaemonSelfMount` — so the spawned agent still reaches " +
@@ -683,8 +684,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         .string()
         .optional()
         .describe(
-          "Model id passed through to each spawned session. For an adapter with no " +
-            "`agent` option, this wins over the AGENT.md frontmatter's own `model`.",
+          "Model id passed through to each spawned session. This wins over the " +
+            "AGENT.md frontmatter's own `model`; when both are omitted, the adapter " +
+            "keeps its default model.",
         ),
       access: z
         .object({ profileRef: z.string().optional() })
@@ -737,8 +739,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       const harness = input.harness ?? input.adapter ?? DEFAULT_AGENT_ADAPTER
       const model = input.model
 
-      // B — multi-adapter support (P7 deliverable 2): only an adapter whose
-      // manifest declares an `agent` option (mastra-agent today) can be
+      // B — multi-adapter support (P7 deliverable 2): every adapter inherits
+      // the AGENT.md model unless the caller supplied one. Only an adapter
+      // whose manifest declares an `agent` option (mastra-agent today) can be
       // pointed straight at the AGENT.md path; every other adapter needs its
       // spawn built FROM the AGENT.md instead (buildAgentRunSpawnConfig).
       // `declaredOptions === undefined` means the resolver reported no
@@ -772,6 +775,17 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         let spawnOptions: Record<string, boolean | number | string> | undefined
         if (declaresAgentOption) {
           spawnOptions = { agent: agentPath }
+          if (spawnModel === undefined) {
+            try {
+              spawnModel = (await loadAgentPromptDefaults(agentPath)).model
+            } catch (err) {
+              errors.push({
+                agentId,
+                error: `could not read AGENT.md "${agentPath}": ${err instanceof Error ? err.message : String(err)}`,
+              })
+              return null
+            }
+          }
         } else {
           try {
             const defaults = await loadAgentPromptDefaults(agentPath)
