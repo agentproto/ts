@@ -36,6 +36,27 @@ describe("stripAnsi", () => {
     const line = "\x1b[2m── turn-end (completed) ──\x1b[0m"
     expect(stripAnsi(line)).toBe("── turn-end (completed) ──")
   })
+
+  it("removes bare carriage returns within lines (heredoc echo artifact fix)", () => {
+    // When bash echoes lines in bracketed-paste mode, it uses \r as line
+    // separator instead of \n. A bare \r in the output causes the terminal
+    // to move cursor to column 0, which creates visible duplication/garbling.
+    // stripAnsi should keep only the text after the last \r on each line.
+    expect(stripAnsi("line1\rline1 (after CR)")).toBe("line1 (after CR)")
+    expect(stripAnsi("prefix\rkeep_this")).toBe("keep_this")
+  })
+
+  it("handles complex case: bare CR + CSI sequences together", () => {
+    // Realistic scenario: bash emits CSI sequences AND bare \r in paste echo
+    const input = "\x1b[1mold\x1b[0m\r\x1b[1mnew\x1b[0m"
+    expect(stripAnsi(input)).toBe("new")
+  })
+
+  it("preserves newlines when removing bare CRs", () => {
+    // Bare \r within a line should be stripped, but actual newlines preserved
+    const input = "line1\rafter1\nline2\rafter2"
+    expect(stripAnsi(input)).toBe("after1\nafter2")
+  })
 })
 
 // ── shared tmp dir ────────────────────────────────────────────────────────────
