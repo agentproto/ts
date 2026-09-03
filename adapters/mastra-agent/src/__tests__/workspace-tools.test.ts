@@ -114,6 +114,35 @@ describe("makeWorkspaceTools", () => {
     ).rejects.toThrow(/escapes the workspace/)
   })
 
+  it("allows only an exact additional read path outside cwd, never writes or sibling reads", async () => {
+    const outer = await fs.mkdtemp(join(tmpdir(), "mastra-ws-inherited-contract-"))
+    const cwd = join(outer, "app")
+    const agentsMd = join(outer, "AGENTS.md")
+    const sibling = join(outer, "sibling.txt")
+    try {
+      await fs.mkdir(cwd)
+      await fs.writeFile(agentsMd, "inherited contract")
+      await fs.writeFile(sibling, "not granted")
+      const tools = makeWorkspaceTools({ cwd, additionalReadPaths: [agentsMd] })
+
+      expect((await exec(tools.read_file)({ path: agentsMd })).content).toBe("inherited contract")
+      expect((await exec(tools.file_read)({ path: agentsMd })).content).toBe("inherited contract")
+      await expect(exec(tools.file_info)({ path: agentsMd })).resolves.toMatchObject({
+        name: "AGENTS.md",
+        type: "file",
+      })
+      await expect(exec(tools.write_file)({ path: agentsMd, content: "overwrite" })).rejects.toThrow(
+        /escapes the workspace/,
+      )
+      await expect(
+        exec(tools.edit_file)({ path: agentsMd, old_string: "inherited", new_string: "changed" }),
+      ).rejects.toThrow(/escapes the workspace/)
+      await expect(exec(tools.read_file)({ path: sibling })).rejects.toThrow(/escapes the workspace/)
+    } finally {
+      await fs.rm(outer, { recursive: true, force: true })
+    }
+  })
+
   it("file_read/file_write/directory_list are aliases of read_file/write_file/list_dir", async () => {
     const tools = makeWorkspaceTools({ cwd: dir })
     await exec(tools.file_write)({ path: "alias.txt", content: "aliased" })

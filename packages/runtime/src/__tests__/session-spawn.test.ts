@@ -4841,6 +4841,33 @@ describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
     expect(taskIdx).toBeGreaterThan(pointerIdx)
   })
 
+  it("preserves an inherited pointer and grants only its exact external AGENTS.md path to the adapter", async () => {
+    const startSession = vi.fn(
+      async (_opts?: { additionalReadPaths?: string[] }) => fakeAgentSession(),
+    )
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: async () => ({
+        mode: "pointer",
+        path: "/repo/AGENTS.md",
+        block: "Read the resolved AGENTS.md at /repo/AGENTS.md before your first tool call.",
+        contractLine: cdContractLine,
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/repo/apps/child",
+      prompt: "follow the inherited contract",
+      wait: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(sendPrompt.mock.calls[0]?.[1]).toContain("Read the resolved AGENTS.md")
+    expect(startSession.mock.calls[0]?.[0]?.additionalReadPaths).toEqual(["/repo/AGENTS.md"])
+  })
+
   it("inlines a small AGENTS.md when cwd is a non-repo dir carrying one (real resolver)", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agentproto-am-inline-"))
     writeFileSync(join(tmp, "AGENTS.md"), "short contract body")

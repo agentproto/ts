@@ -627,13 +627,14 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "is refreshed before spawning — the same refreshed paths are what make " +
       "`workflow_run_file` work against this app's WORKFLOW.md files. Poll with " +
       "`app_status`, kill with `app_stop`.\n\n" +
-      "Adapter support: with the default adapter `mastra-agent` (or any other adapter " +
-      "whose manifest declares an `agent` option), each spawn is pointed straight at " +
-      "the agent's emitted AGENT.md via that option. Any OTHER adapter (`claude-code`, " +
-      "`hermes`, `codex`, ...) declares no such option, so its spawn is built FROM the " +
-      "AGENT.md instead: the frontmatter `model` becomes the spawn's default model " +
-      "(an explicit `model` arg here still wins) and the AGENT.md body becomes the " +
-      "system/prefix of the first prompt (a `prompt` arg is appended after it). `cwd` " +
+      "Adapter support: the AGENT.md frontmatter `model` becomes each spawn's model " +
+      "when `model` is omitted here; if neither is set, the adapter keeps its default. " +
+      "With the default adapter `mastra-agent` (or any other adapter whose manifest " +
+      "declares an `agent` option), each spawn is also pointed straight at the agent's " +
+      "emitted AGENT.md via that option. Any OTHER adapter (`claude-code`, `hermes`, " +
+      "`codex`, ...) declares no such option, so its spawn is built FROM the AGENT.md " +
+      "instead: the AGENT.md body becomes the system/prefix of the first prompt (a " +
+      "`prompt` arg is appended after it). An explicit `model` arg here always wins. `cwd` " +
       "is still the app's dir, and the daemon's own MCP gateway is still mounted for " +
       "adapters that get it by default (claude-code, hermes) — see " +
       "`shouldInjectDaemonSelfMount` — so the spawned agent still reaches " +
@@ -641,9 +642,14 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "Orchestration: pass `sequence` to run agents ONE-AT-A-TIME in the given " +
       "order (each waits for its predecessor's session to reach a terminal state, " +
       "bounded ~60×2s, before the next spawns) — the scout→tailor workflow. " +
+      "By default the tool waits for the whole sequence, preserving existing " +
+      "behaviour. Pass `wait:false` to return the appRunId after the first session " +
+      "spawns and continue the remaining sequence in the background; follow it " +
+      "with `app_status`. " +
       "Without `sequence`, `agents` spawn concurrently (legacy behaviour). When " +
       "`sequence` is set every agent still lives under the SAME appRunId and is " +
-      "awaited; the run is marked `ended` once the last completes.\n\n" +
+      "awaited (unless `wait:false`); the run is marked `ended` once the last " +
+      "completes.\n\n" +
       "Runner selection: `adapter`/`harness`/`model` are passed through to every " +
       "spawn and mirrored onto the run record for observability. `harness` is the " +
       "canonical slug and defaults `adapter` to itself when `adapter` is absent; " +
@@ -662,6 +668,14 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         .array(z.string())
         .optional()
         .describe("Agent ids to run ONE-AT-A-TIME in this order — each waits for the previous to finish before the next spawns."),
+      wait: z
+        .boolean()
+        .optional()
+        .describe(
+          "Whether a sequential run waits for every agent to finish before returning. " +
+            "Defaults to true. With sequence + false, returns after the first spawn and " +
+            "continues in the background; poll with app_status.",
+        ),
       prompt: z.string().optional().describe("Prompt to send to each spawned agent session."),
       cwd: z
         .string()
@@ -683,8 +697,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         .string()
         .optional()
         .describe(
-          "Model id passed through to each spawned session. For an adapter with no " +
-            "`agent` option, this wins over the AGENT.md frontmatter's own `model`.",
+          "Model id passed through to each spawned session. This wins over the " +
+            "AGENT.md frontmatter's own `model`; when both are omitted, the adapter " +
+            "keeps its default model.",
         ),
       access: z
         .object({ profileRef: z.string().optional() })
@@ -737,8 +752,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       const harness = input.harness ?? input.adapter ?? DEFAULT_AGENT_ADAPTER
       const model = input.model
 
-      // B — multi-adapter support (P7 deliverable 2): only an adapter whose
-      // manifest declares an `agent` option (mastra-agent today) can be
+      // B — multi-adapter support (P7 deliverable 2): every adapter inherits
+      // the AGENT.md model unless the caller supplied one. Only an adapter
+      // whose manifest declares an `agent` option (mastra-agent today) can be
       // pointed straight at the AGENT.md path; every other adapter needs its
       // spawn built FROM the AGENT.md instead (buildAgentRunSpawnConfig).
       // `declaredOptions === undefined` means the resolver reported no
@@ -772,6 +788,17 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         let spawnOptions: Record<string, boolean | number | string> | undefined
         if (declaresAgentOption) {
           spawnOptions = { agent: agentPath }
+          if (spawnModel === undefined) {
+            try {
+              spawnModel = (await loadAgentPromptDefaults(agentPath)).model
+            } catch (err) {
+              errors.push({
+                agentId,
+                error: `could not read AGENT.md "${agentPath}": ${err instanceof Error ? err.message : String(err)}`,
+              })
+              return null
+            }
+          }
         } else {
           try {
             const defaults = await loadAgentPromptDefaults(agentPath)
@@ -822,9 +849,62 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         waitForSessionTerminal(registry, sessionId))
 
       if (input.sequence !== undefined) {
+        // Capture BEFORE entering any closure: `input.sequence`'s definedness
+        // is narrowed by this check, but a closure referencing it re-widens
+        // (TS18048) — a local binding keeps the narrowed `string[]` type.
+        const sequence = input.sequence
+        if (input.wait === false) {
+          // Match agent_start's non-waiting shape: wait for a real first
+          // session descriptor, create the durable run, then release the MCP
+          // call before waiting for that session to finish. Later sessions
+          // are appended (and persisted) as the background sequence advances.
+          const firstAgentId = sequence[0]
+          const firstSpawned = firstAgentId === undefined ? null : await spawnOne(firstAgentId)
+          if (firstSpawned) sessions.push(firstSpawned)
+
+          const run = appRegistry.createRun({
+            appId: app.appId,
+            sessions,
+            adapter,
+            harness,
+            ...(model !== undefined ? { model } : {}),
+          })
+
+          const continueSequence = async (): Promise<void> => {
+            if (firstSpawned) await waitForTerminal(firstSpawned.sessionId)
+            for (const agentId of sequence.slice(1)) {
+              // app_stop owns a stopped run; it must also prevent the
+              // background worker from spawning the next agent.
+              if (run.status !== "running") return
+              const spawned = await spawnOne(agentId)
+              if (!spawned) continue
+              appRegistry.addRunSession(run.appRunId, spawned)
+              await waitForTerminal(spawned.sessionId)
+            }
+            if (run.status === "running") {
+              appRegistry.endRun(run.appRunId, { status: "ended" })
+            }
+          }
+          void continueSequence().catch(err => {
+            console.error(
+              `app_run: background sequence "${run.appRunId}" failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+            if (run.status === "running") {
+              appRegistry.endRun(run.appRunId, { status: "failed" })
+            }
+          })
+
+          return textResult({
+            appRunId: run.appRunId,
+            status: run.status,
+            sessions,
+            ...(errors.length > 0 ? { errors } : {}),
+          })
+        }
+
         // B — sequential orchestration: spawn one-at-a-time, each awaited to a
         // terminal state before the next spawns, all under ONE appRunId.
-        for (const agentId of input.sequence) {
+        for (const agentId of sequence) {
           const spawned = await spawnOne(agentId)
           if (!spawned) continue
           sessions.push(spawned)
@@ -892,7 +972,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // is terminal, report `ended` with an `endedAt` even if the persisted
       // status is still "running". A run already terminal keeps its stored
       // status; a run with at least one live session reports "running".
-      const allSessionsTerminal = sessions.every(s => isSessionTerminal(s.descriptor?.status))
+      const allSessionsTerminal =
+        sessions.length > 0 && sessions.every(s => isSessionTerminal(s.descriptor?.status))
       const storedTerminal = run.status !== "running"
       const reconciledStatus = storedTerminal
         ? run.status

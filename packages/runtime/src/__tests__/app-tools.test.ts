@@ -929,6 +929,46 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     expect(run.model).toBe("claude-sonnet-5")
   })
 
+  it("app_run with sequence and wait:false returns after the first spawn, then continues in the background", async () => {
+    await buildTwoAgentApp(dir)
+    const startSession = fakeStartSession()
+    const releases: Array<() => void> = []
+    const waitForSessionTerminal = vi.fn(
+      () => new Promise<void>(resolve => releases.push(resolve)),
+    )
+    const { client, appRegistry } = await setup({ startSession, waitForSessionTerminal })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const result = await Promise.race([
+      client.callTool({
+        name: "app_run",
+        arguments: {
+          appId: "@test/seq-app",
+          sequence: ["job-scout", "job-tailor"],
+          wait: false,
+        },
+      }),
+      new Promise<"timed-out">(resolve => setTimeout(() => resolve("timed-out"), 1_000)),
+    ])
+
+    expect(result).not.toBe("timed-out")
+    const ran = parseToolJson(result)
+    expect(ran.status).toBe("running")
+    expect(ran.sessions.map((s: any) => s.agentId)).toEqual(["job-scout"])
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(appRegistry.getRun(ran.appRunId)?.status).toBe("running")
+
+    releases.shift()?.()
+    await vi.waitFor(() => expect(startSession).toHaveBeenCalledTimes(2))
+    expect(appRegistry.getRun(ran.appRunId)?.sessions.map(s => s.agentId)).toEqual([
+      "job-scout",
+      "job-tailor",
+    ])
+
+    releases.shift()?.()
+    await vi.waitFor(() => expect(appRegistry.getRun(ran.appRunId)?.status).toBe("ended"))
+  })
+
   it("empty text blocks don't break sequential completion (sanitized, not an error)", async () => {
     await buildTwoAgentApp(dir)
     const { client, appRegistry } = await setup()
@@ -1066,6 +1106,23 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     })
     const spawnArgs = startSession.mock.calls[0]![0] as Record<string, unknown>
     expect(spawnArgs.model).toBe("gpt-5")
+  })
+
+  it("uses the AGENT.md frontmatter model while retaining an adapter's `agent` option", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const startSession = fakeStartSession()
+    const resolveAgentAdapter: AgentAdapterResolver = async slug =>
+      slug === "mastra-agent"
+        ? { startSession, commandPreview: "mock-adapter", declaredOptions: [{ id: "agent", type: "string" }] }
+        : null
+    const { client } = await setup({ resolveAgentAdapter, startSession })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } })
+
+    const spawnArgs = startSession.mock.calls[0]![0] as Record<string, unknown>
+    expect(spawnArgs.model).toBe("claude-sonnet-5")
+    expect(spawnArgs.options).toEqual({ agent: expect.stringContaining("AGENT.md") })
   })
 
   it("keeps pointing mastra-agent at the AGENT.md path via the `agent` option (unchanged default behaviour)", async () => {
