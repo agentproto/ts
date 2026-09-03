@@ -15,7 +15,7 @@ the general answer to a question every AIP has answered differently:
 - app-kit's `attach` — a structural `DoctypeHandle` that serializes
   the whole bundle and carries no reliable discriminator.
 - AIP-42's `AnyRef` — bare strings, typed only by call-site convention.
-- AIP-53 (draft) — bespoke `appRef`/`packRef` per target kind.
+- AIP-55's first draft — bespoke `appRef`/`packRef` per target kind.
 
 A Ref IS NOT a handle. It is inert data pointing at one; the AIP-43
 registry owns the handle. A Ref IS NOT resolvable by itself —
@@ -55,6 +55,20 @@ const uri = refToUri(ref)            // "aip://52/the-agentic-coder@1.0.0"
    semantics live in the catalog + registries.
 5. **One family per aip.** Re-registering replaces the binding
    (hot-reload parity with AIP-43's `replace`).
+
+### Conventions for referenced handles
+
+- **Handles SHOULD carry `schema: "<doctype>/vN"`.** Several existing
+  handles don't (e.g. the in-memory AIP-42 `AppHandle` never carries
+  the `schema: "app/v1"` literal that `emit` writes into `APP.md`) —
+  until they do, `refFor` requires the family spec to be supplied
+  explicitly, and a bare serialized handle cannot self-describe into a
+  ref. New doctypes SHOULD include it in `createDoctype`'s default
+  `build()`.
+- **Family keys are the family's choice.** Most families key on `id`
+  (or `provider`/`slug` per AIP-43's default), but packs (AIP-52) key
+  on `name`. The `RefCatalog` owns the `aip → family + keyBy` table;
+  `refFor` MUST be given the same `keyBy` the family's registry uses.
 
 ## Migration notes for existing mechanisms
 
