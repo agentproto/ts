@@ -45,8 +45,8 @@ const USAGE = `agentproto permissions — approve/deny held tool-permission requ
 
 Usage:
   agentproto permissions ls        [--json]
-  agentproto permissions approve   <id> [--always]
-  agentproto permissions deny      <id>
+  agentproto permissions approve   <id> [--always] [--feedback <text>]
+  agentproto permissions deny      <id> [--feedback <text>]
   agentproto permissions watch     [--allow-tool <pat>]... [--deny-tool <pat>]...
                                    [--session <id>] [--rules-json <json|@file>]
                                    [--always] [--interval <dur>] [--timeout <dur>]
@@ -59,6 +59,9 @@ Usage:
   approve   Grant the request. --always picks the allow-always option when the
             request offers one (otherwise allow-once).
   deny      Reject the request (or cancel it when no reject option is offered).
+  --feedback <text>  Attach free text to the decision (either verb) — e.g.
+            "reject, but do X instead". Adapters that support it (mastra-agent
+            suspensions) fold it into the tool's resume data.
   watch     Poll the inbox and auto-resolve requests matching your rules;
             everything else stays parked for \`permissions ls\`. Requires at
             least one rule — there is no implicit "resolve everything".
@@ -106,6 +109,10 @@ interface PermissionEntry {
    *  driver supplied one. Harness-shaped and untyped — don't assume a
    *  stable schema. */
   rawInput?: unknown
+  /** The tool call's `_meta` (e.g. mastra-agent's `mastra-agent/suspendPayload`
+   *  carrying a submit_plan's plan text), when the driver supplied one.
+   *  Harness-shaped and untyped — don't assume a stable schema. */
+  _meta?: unknown
 }
 
 /** Compact one-line preview of a permission entry's raw input, for the `ls`
@@ -114,6 +121,28 @@ function previewRawInput(rawInput: unknown, maxLen = 40): string {
   if (rawInput === undefined) return "—"
   const text = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput)
   return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text
+}
+
+/** Extract a plan-tool's `_meta` suspension payload (mastra-agent's
+ *  `mastra-agent/suspendPayload` key) from a permission entry, when present.
+ *  Returns undefined for entries that don't carry one. */
+function suspensionPayload(entry: PermissionEntry): unknown {
+  const meta = entry._meta
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return undefined
+  const payload = (meta as Record<string, unknown>)["mastra-agent/suspendPayload"]
+  return payload === undefined ? undefined : payload
+}
+
+/** Best-effort human-readable plan text from a suspension payload: a plain
+ *  string is the plan itself; an object with a string `plan` field (the
+ *  built-in submit_plan shape) is that field. Anything else falls back to
+ *  JSON so the reader still sees something. */
+function planTextFrom(payload: unknown): string {
+  if (typeof payload === "string") return payload
+  if (payload && typeof payload === "object" && typeof (payload as Record<string, unknown>).plan === "string") {
+    return (payload as { plan: string }).plan
+  }
+  return JSON.stringify(payload, null, 2)
 }
 
 export async function runPermissions(args: readonly string[]): Promise<number> {
@@ -178,6 +207,18 @@ async function runLs(args: readonly string[]): Promise<number> {
   for (const p of permissions) {
     const age = typeof p.ageMs === "number" ? humaniseDelta(p.ageMs) : "?"
     const tool = (p.toolName ?? "—").slice(0, 18)
+    const payload = suspensionPayload(p)
+    if (payload !== undefined) {
+      // A plan-tool suspension: render the actual plan text as a readable
+      // multi-line block instead of the truncated tool-args preview.
+      process.stdout.write(
+        `${p.id.padEnd(10)}  ${p.sessionId.padEnd(14)}  ${tool.padEnd(18)}  ${age.padEnd(5)}  PLAN\n`,
+      )
+      for (const line of planTextFrom(payload).split("\n")) {
+        process.stdout.write(`    ${line}\n`)
+      }
+      continue
+    }
     const input = previewRawInput(p.rawInput)
     const question = (p.text ?? "").replace(/\s+/g, " ").slice(0, 60)
     process.stdout.write(
@@ -198,6 +239,7 @@ async function runRespond(
     options: {
       always: { type: "boolean" },
       "option-id": { type: "string" },
+      feedback: { type: "string" },
       json: { type: "boolean" },
     },
   })
@@ -228,6 +270,7 @@ async function runRespond(
   const reqBody: Record<string, unknown> = { decision }
   if (values["option-id"]) reqBody.optionId = values["option-id"]
   if (decision === "approve" && values.always) reqBody.scope = "always"
+  if (values.feedback) reqBody.feedback = values.feedback
 
   let result: { ok?: boolean; sessionId?: string; decision?: string; optionId?: string }
   try {

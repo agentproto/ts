@@ -311,6 +311,11 @@ export interface AgentStreamEvent {
    *  @agentproto/acp's `StreamEvent`'s `agent-prompt` kind. Harness-shaped
    *  and untyped; don't assume a stable schema across adapters. */
   rawInput?: unknown
+  /** "agent-prompt" `_meta` bag, e.g. an ACP `requestPermission`'s
+   *  `toolCall._meta` (mastra-agent's `mastra-agent/suspendPayload` carries a
+   *  submit_plan's plan text there) — see @agentproto/acp's `StreamEvent`'s
+   *  `agent-prompt` kind. Harness-shaped and untyped. */
+  _meta?: unknown
   /** "plan" event title — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
   title?: string
   /** "plan" event entries — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
@@ -2281,16 +2286,28 @@ export interface PendingPermission {
    * schema across adapters.
    */
   rawInput?: unknown
+  /**
+   * The tool call's `_meta` (e.g. mastra-agent's `mastra-agent/suspendPayload`
+   * carrying a submit_plan's plan text), carried through from the ACP
+   * `agent-prompt` event's `_meta` field when the driver supplied one.
+   * Harness-shaped and untyped — don't assume a stable schema across adapters.
+   */
+  _meta?: unknown
 }
 
 /** How a caller resolves a pending permission — an explicit `optionId` wins
  *  over the `decision`→option mapping (approve → an allow-flavored option,
  *  deny → a reject-flavored option). `scope: "always"` prefers an
- *  allow-always option when the request offers one. */
+ *  allow-always option when the request offers one. `feedback` is optional
+ *  free text (e.g. "reject, but do X instead") sent alongside the outcome —
+ *  the acp client forwards it on the ACP outcome's `_meta`
+ *  (`agentproto/feedback`) for adapters that consume it (mastra-agent folds
+ *  it into a suspension's resumeData). */
 export interface PermissionRespondInput {
   decision: "approve" | "deny"
   optionId?: string
   scope?: "once" | "always"
+  feedback?: string
 }
 
 export type PermissionRespondResult =
@@ -3773,6 +3790,7 @@ export function createSessionsRegistry(opts?: {
       options,
       requestedAt: new Date().toISOString(),
       ...(evt.rawInput !== undefined ? { rawInput: evt.rawInput } : {}),
+      ...(evt._meta !== undefined ? { _meta: evt._meta } : {}),
     }
     pendingPermissions.set(id, pending)
     rt.desc.awaitingPermission = true
@@ -3890,7 +3908,14 @@ export function createSessionsRegistry(opts?: {
     delete rt.desc.awaitingInput
     rt.desc.awaitingQuestion = undefined
     refreshAwaitingPermission(rt)
-    const okResolved = await respond(id, selected)
+    // Free-text feedback rides on the optionId resolution — the acp client
+    // forwards it on the ACP outcome's `_meta` (agentproto/feedback). A
+    // cancelled resolution has nothing to attach it to.
+    const resolution: { optionId: string; feedback?: string } | { cancelled: true } =
+      "optionId" in selected
+        ? { optionId: selected.optionId, ...(input.feedback ? { feedback: input.feedback } : {}) }
+        : selected
+    const okResolved = await respond(id, resolution)
     if (sessionEvents) {
       sessionEvents.emit({
         type: "session:permission-resolved",

@@ -150,6 +150,10 @@ const SUSPENSION_OPTIONS: PermissionOption[] = [
 const META_SUSPEND_PAYLOAD = "mastra-agent/suspendPayload"
 const META_RESUME_SCHEMA = "mastra-agent/resumeSchema"
 const META_RESUME_DATA = "mastra-agent/resumeData"
+/** Daemon convention (see @agentproto/acp's `ACP_META_FEEDBACK`): free-text
+ *  feedback the human attached to the approve/deny decision, forwarded on the
+ *  ACP outcome's `_meta`. */
+const META_FEEDBACK = "agentproto/feedback"
 
 interface SessionState {
   /** The controller session, created lazily on the first prompt. */
@@ -699,10 +703,15 @@ export class MastraAcpAgent implements AcpAgent {
       // "cancelled": abort() already dropped the parked suspension.
       if (outcome.outcome !== "selected") return
       const meta = outcome._meta as Record<string, unknown> | null | undefined
+      const feedback =
+        meta && typeof meta[META_FEEDBACK] === "string" ? (meta[META_FEEDBACK] as string) : undefined
       const resumeData =
         meta && META_RESUME_DATA in meta
           ? meta[META_RESUME_DATA]
-          : { approved: outcome.optionId === "approve" }
+          : {
+              approved: outcome.optionId === "approve",
+              ...(feedback ? { feedback } : {}),
+            }
       await session.respondToToolSuspension({
         resumeData,
         toolCallId: event.toolCallId,

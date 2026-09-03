@@ -21,6 +21,7 @@ import type {
   AcpPermissionResolution,
   StreamEvent,
 } from "../types.js"
+import { ACP_META_FEEDBACK } from "../types.js"
 
 export type { SessionConfigOption, SessionMode }
 
@@ -35,7 +36,7 @@ const PROTOCOL_VERSION_DEFAULT = 1
  * rationale on why the `outcome` field is nested.
  */
 type RequestPermissionResponse =
-  | { outcome: { outcome: "selected"; optionId: string } }
+  | { outcome: { outcome: "selected"; optionId: string; _meta?: Record<string, unknown> } }
   | { outcome: { outcome: "cancelled" } }
 
 /** A `session/request_permission` RPC parked by permission-hold mode. */
@@ -363,7 +364,15 @@ export async function createAcpClient(
     held.resolve(
       "cancelled" in resolution
         ? { outcome: { outcome: "cancelled" } }
-        : { outcome: { outcome: "selected", optionId: resolution.optionId } },
+        : {
+            outcome: {
+              outcome: "selected",
+              optionId: resolution.optionId,
+              ...(resolution.feedback
+                ? { _meta: { [ACP_META_FEEDBACK]: resolution.feedback } }
+                : {}),
+            },
+          },
     )
     return true
   }
@@ -832,6 +841,10 @@ interface RequestPermissionParams {
      *  Bash command string). Carried through as-is; see the `agent-prompt`
      *  event's `rawInput` field. */
     rawInput?: unknown
+    /** ACP `ToolCallUpdate._meta` — vendor-extension bag (e.g. mastra-agent's
+     *  `mastra-agent/suspendPayload`). Carried through as-is; see the
+     *  `agent-prompt` event's `_meta` field. */
+    _meta?: unknown
   }
   options?: Array<{ optionId?: string; name?: string; kind?: string }>
 }
@@ -868,6 +881,7 @@ function holdPermissionRequest(
     ? `Allow "${toolName}"?`
     : "The agent is requesting permission to run a tool."
   const rawInput = params.toolCall?.rawInput
+  const meta = params.toolCall?._meta
 
   const state = sessions.get(sessionId)
   if (state) {
@@ -879,6 +893,7 @@ function holdPermissionRequest(
       text,
       ...(toolName ? { toolName } : {}),
       ...(rawInput !== undefined ? { rawInput } : {}),
+      ...(meta !== undefined ? { _meta: meta } : {}),
     })
   } else {
     // No session slot for this id — the agent-prompt event can't be surfaced,

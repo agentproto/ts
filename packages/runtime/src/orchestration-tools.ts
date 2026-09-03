@@ -721,6 +721,14 @@ export function registerOrchestrationTools(
         .enum(["once", "always"])
         .optional()
         .describe("For approve: prefer allow-always when the request offers it."),
+      feedback: z
+        .string()
+        .optional()
+        .describe(
+          "Optional free text sent alongside the outcome (e.g. \"reject, but do X " +
+            "instead\"). Adapters that support it (mastra-agent suspensions) fold it " +
+            "into the tool's resume data.",
+        ),
     },
     async input => {
       // WP6 scoping: a scoped child may only resolve permissions for sessions
@@ -742,6 +750,7 @@ export function registerOrchestrationTools(
         decision: input.decision,
         ...(input.optionId ? { optionId: input.optionId } : {}),
         ...(input.scope ? { scope: input.scope } : {}),
+        ...(input.feedback ? { feedback: input.feedback } : {}),
       })
       if (!result.ok) {
         return {
