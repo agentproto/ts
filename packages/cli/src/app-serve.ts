@@ -415,11 +415,11 @@ export async function readDeclaredCategory(appDir: string): Promise<string | und
 
 /**
  * Extract the book ids declared in `<dir>/.agentproto/APP.md`
- * frontmatter's `library.books` — the book contract `@agentproto/app-kit`'s
- * `defineApp({ library })` writes (`packages/app-kit/src/types.ts`
- * `AppLibraryDefinition`). Returns an empty array when the app declares no
- * library block, an empty one, or the file is missing/unparseable — never
- * throws.
+ * frontmatter's `library.books` — a convention some apps (e.g. the
+ * `create-agentproto-app --template book` scaffold) hand-write directly
+ * into their APP.md frontmatter; `@agentproto/app-kit` has no typed
+ * support for it. Returns an empty array when the app declares no library
+ * block, an empty one, or the file is missing/unparseable — never throws.
  */
 export async function readDeclaredLibraryBookIds(appDir: string): Promise<string[]> {
   const appMdPath = join(appDir, ".agentproto", "APP.md")

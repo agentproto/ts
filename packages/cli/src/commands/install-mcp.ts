@@ -13,8 +13,9 @@
  * entry (`agentproto mcp-bridge`, ~100 tools), it writes
  * `agentproto mcp-app <appId>` — the curated, one-app proxy from
  * `mcp-app.ts` — for an installed app that declares the book/library
- * contract (`category: "book"` or a non-empty `library.books`, see
- * `@agentproto/app-kit`'s `defineApp`). Only agents whose config format can
+ * contract (`category: "book"` or a non-empty `library.books` in its
+ * APP.md frontmatter — a convention this CLI reads directly; app-kit has
+ * no typed support for it). Only agents whose config format can
  * hold multiple named MCP entries side-by-side support this today —
  * `cursor`, `codex`, `claude-desktop`, `windsurf`. `claude`/`hermes`
  * register over HTTP through a different mechanism, and `aider`'s writer

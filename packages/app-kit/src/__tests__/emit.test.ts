@@ -385,30 +385,25 @@ describe("emit — data dir hint", () => {
   })
 })
 
-describe("emit — book contract (category + library)", () => {
-  it("writes category and library verbatim into APP.md frontmatter, and omits them when absent", async () => {
+describe("emit — category", () => {
+  it("writes category verbatim into APP.md frontmatter, and omits it when absent", async () => {
     const solo = () =>
       defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
-    const withBook = await mkdtemp(join(tmpdir(), "app-kit-emit-book-"))
-    const without = await mkdtemp(join(tmpdir(), "app-kit-emit-nobook-"))
+    const withCategory = await mkdtemp(join(tmpdir(), "app-kit-emit-category-"))
+    const without = await mkdtemp(join(tmpdir(), "app-kit-emit-nocategory-"))
     try {
       const { appPath } = await defineApp({
         agents: [{ agent: solo(), body: "Solo." }],
-        category: "book",
-        library: { books: [{ id: "book-1", title: "Chapter One", progress: "progress.json" }] },
-      }).emit(withBook)
+        category: "widget",
+      }).emit(withCategory)
       const parsed = matter(await readFile(appPath, "utf8"))
-      expect(parsed.data.category).toBe("book")
-      expect(parsed.data.library).toEqual({
-        books: [{ id: "book-1", title: "Chapter One", progress: "progress.json" }],
-      })
+      expect(parsed.data.category).toBe("widget")
 
       const bare = await defineApp({ agents: [{ agent: solo(), body: "Solo." }] }).emit(without)
       const bareParsed = matter(await readFile(bare.appPath, "utf8"))
       expect("category" in bareParsed.data).toBe(false)
-      expect("library" in bareParsed.data).toBe(false)
     } finally {
-      await rm(withBook, { recursive: true, force: true })
+      await rm(withCategory, { recursive: true, force: true })
       await rm(without, { recursive: true, force: true })
     }
   })

@@ -45,7 +45,7 @@ folders (`.agentproto/agents/<slug>-assistant/`).
 | --- | --- | --- |
 | `react-ts` (default) | `.agentproto/` shell + a Vite + TanStack Router + TanStack Query `ui/` source project that builds to `.agentproto/ui/` | `pnpm install`, then `agentproto app build` / `app dev` |
 | `vanilla` | `.agentproto/` shell + a single hand-written `.agentproto/ui/index.html` (vanilla JS, no build step, no `ui/` dir, no root `package.json`) | none — `agentproto app serve` runs it directly |
-| `book` | `vanilla`'s shape, plus the APP.md "book contract" (`category: book` + a `library.books` entry — see `@agentproto/app-kit`'s `AppLibraryDefinition`) and a `.claude/skills/install-agentproto-app/` skill that shells out to `agentproto app install .` | none — `agentproto app serve` runs it directly |
+| `book` | `vanilla`'s shape, plus the APP.md "book contract" (`category: book` + a `library.books` entry, hand-written directly into the scaffolded frontmatter — app-kit has no typed support for it) and a `.claude/skills/install-agentproto-app/` skill that shells out to `agentproto app install .` | none — `agentproto app serve` runs it directly |
 
 All three templates ship the same `.agentproto/APP.md` + one agent + one
 workflow shape; only the UI (and, for `book`, the APP.md frontmatter +
