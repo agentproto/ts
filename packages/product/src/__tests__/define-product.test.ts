@@ -41,16 +41,16 @@ function buildWorld() {
   const cat = new RefCatalog()
   const apps = createRegistry<AppHandle>({ family: "app", keyBy: h => h.id! })
   apps.register(app)
-  cat.registerFamily(42, { family: "app", keyBy: h => h.id! }, apps)
+  cat.registerFamily<AppHandle>(42, { family: "app", keyBy: h => h.id! }, apps)
   const packs = createRegistry<PackHandle>({ family: "pack", keyBy: h => h.name })
   packs.register(pack)
-  cat.registerFamily(52, { family: "pack", keyBy: h => h.name }, packs)
+  cat.registerFamily<PackHandle>(52, { family: "pack", keyBy: h => h.name }, packs)
   const sandboxes = createRegistry<SandboxHandle>({ family: "sandbox", keyBy: h => h.id })
   sandboxes.register(sandbox)
-  cat.registerFamily(61, { family: "sandbox", keyBy: h => h.id }, sandboxes)
+  cat.registerFamily<SandboxHandle>(61, { family: "sandbox", keyBy: h => h.id }, sandboxes)
   const tools = createRegistry<{ id: string }>({ family: "tool", keyBy: h => h.id })
   tools.register(tool)
-  cat.registerFamily(14, { family: "tool", keyBy: h => h.id }, tools)
+  cat.registerFamily<{ id: string }>(14, { family: "tool", keyBy: h => h.id }, tools)
 
   return { cat, app, pack, sandbox, tool }
 }

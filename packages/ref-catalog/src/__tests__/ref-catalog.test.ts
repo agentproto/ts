@@ -42,16 +42,16 @@ function buildFixtures() {
   const cat = new RefCatalog()
   const apps = createRegistry<AppLike>({ family: "app", keyBy: h => h.id! })
   apps.register(app)
-  cat.registerFamily(42, { family: "app", keyBy: h => h.id! }, apps)
+  cat.registerFamily<AppLike>(42, { family: "app", keyBy: h => h.id! }, apps)
   const packs = createRegistry<PackLike>({ family: "pack", keyBy: h => h.name })
   packs.register(pack)
-  cat.registerFamily(52, { family: "pack", keyBy: h => h.name }, packs)
+  cat.registerFamily<PackLike>(52, { family: "pack", keyBy: h => h.name }, packs)
   const sandboxes = createRegistry<SandboxLike>({ family: "sandbox", keyBy: h => h.id })
   sandboxes.register(sandbox)
-  cat.registerFamily(61, { family: "sandbox", keyBy: h => h.id }, sandboxes)
+  cat.registerFamily<SandboxLike>(61, { family: "sandbox", keyBy: h => h.id }, sandboxes)
   const tools = createRegistry<ToolLike>({ family: "tool", keyBy: h => h.id })
   tools.register(tool)
-  cat.registerFamily(14, { family: "tool", keyBy: h => h.id }, tools)
+  cat.registerFamily<ToolLike>(14, { family: "tool", keyBy: h => h.id }, tools)
   return { cat, app, pack, sandbox, tool }
 }
 
@@ -90,7 +90,7 @@ describe("RefCatalog — AIP-54 invariants", () => {
     const sandboxes2 = createRegistry<SandboxLike>({ family: "sandbox", keyBy: h => h.id })
     const alt = { id: "e2b-main", provider: "e2b-alt" }
     sandboxes2.register(alt)
-    cat.registerFamily(61, { family: "sandbox", keyBy: h => h.id }, sandboxes2)
+    cat.registerFamily<SandboxLike>(61, { family: "sandbox", keyBy: h => h.id }, sandboxes2)
     expect(cat.resolveStrict(r(61, "e2b-main")).handle).toBe(alt)
     expect(cat.resolveStrict(r(61, "e2b-main")).handle).not.toBe(sandbox)
   })
