@@ -10,6 +10,15 @@ this doc against the real `@agentproto` packages (app-kit, pack, registry,
 tool/AIP-14) from their built `dist/`. Everything claimed below marked
 **[driven]** was executed by that suite, not asserted on paper.
 
+Verification note: because the scratch suite is intentionally uncommitted
+(this is a design note, not an implementation PR), claims marked
+**[driven]** cannot yet be re-run by a reviewer from this diff alone. When
+AIP-54/the capability primitive/AIP-40 v2 land as real implementation
+PRs, the corresponding tests MUST be committed alongside the code they
+drive, and every **[driven]** claim in this document must still pass
+under those committed tests before that follow-up work merges. Nothing
+marked **[driven]** here should be treated as settled until then.
+
 ## 0. The problem, restated precisely
 
 Three primitives each reinvent referencing and composition:
@@ -44,6 +53,35 @@ export interface ArtifactRef<A extends number = number> {
 // Optional URI serialization for YAML/JSON-string contexts:
 //   aip://<aip>/<id>[@version]     e.g. aip://42/book-companion@1.2.0
 ```
+
+**URI serialization — status: TBD for implementation, not [driven].** The
+sketch above is unvalidated and deliberately left underspecified here;
+before it ships as part of AIP-54 it needs:
+
+- **Escaping/encoding of `id`.** Registry keys are free-form strings today
+  (slugs, dotted names, etc.) and may contain `/`, `@`, or other URI
+  metacharacters. The serialization needs either a restriction on legal
+  `id` characters (e.g. registries already require slug-safe keys) or a
+  percent-encoding rule, decided per-family at the `RefCatalog`
+  registration point, not left to callers.
+- **Parsing rule for the optional `@version` suffix.** The rule is "split
+  on the last unescaped `@`"; if `id` itself may legally contain `@`
+  (unlikely for slugs, but not yet forbidden), that ambiguity must be
+  closed by the same `id`-character restriction above.
+- **Backwards compatibility with existing URI schemes.** `aip://` is a new
+  scheme and does not collide with `ws://` (AIP-18 `appliesTo`, AIP-20)
+  or `http(s)://` (AIP-52 `$resolver`) — those remain valid as
+  string-typed `AnyRef`/`$resolver` values and are not retroactively
+  reinterpreted. `ref/v1`'s typed `{aip, id, version?}` form is the
+  primary representation; `aip://` URIs are only a convenience
+  serialization for string-only contexts (YAML scalars, query params)
+  and MUST round-trip losslessly through the object form.
+
+None of the above is exercised by the dogfood suite; the object form
+(`ArtifactRef` as a plain TS value) is what `refFor`/`RefCatalog` use and
+is what's [driven]. Treat the `aip://` string format as a proposed
+convention to be finalized — with an explicit grammar and test coverage
+— during AIP-54 implementation, not as settled by this note.
 
 ### The two halves
 
@@ -233,10 +271,37 @@ doctype with a bespoke target union" to:
   draft carries over verbatim), and
 - `on: ArtifactRef` replacing the entire `target` oneOf.
 
+**This is architecture-only, not a complete field-by-field refactor of
+the AIP-53 draft.** The `target` oneOf (`kind`/`appRef`/`packRef`/
+knowledge-pack string) is the only part this proposal claims to replace,
+because it's the only part duplicating the reference problem solved in
+§1. AIP-53's other fields carry over into `CapabilityDefinition` as
+follows, and the mapping is deliberately conservative — no field is
+dropped:
+
+| AIP-53 draft field | Status under this proposal |
+|---|---|
+| `target` (oneOf `appRef`/`packRef`/pack string + `version`) | **replaced** by `on: ArtifactRef` (§1); the `version` sub-field moves onto `ArtifactRef.version`, unchanged in meaning |
+| `price` / `billingRail` | **unchanged**, becomes `CapabilityDefinition.payload` verbatim (already stated above) |
+| `id` (product id) | **unchanged**, becomes `CapabilityDefinition.id` (already required by the generic capability shape in §2) |
+| `title` (optional, human label) | **deferred, not dropped**: stays an optional field on the product/pricing capability, i.e. `CapabilityDefinition` gains an optional `title?: string` when AIP-53 is implemented as a capability kind. It has no interaction with `on`/`ArtifactRef` and needs no design beyond "pass it through" |
+| `metadata` (optional, free-form) | **deferred, not dropped**: same as `title` — carries through as an optional passthrough field on the capability (or inside `payload`, at the implementer's discretion), since `kind: "pricing"` payloads are already typed per-kind and can absorb it without a schema for the generic `CapabilityDefinition` |
+
+`title` and `metadata` are intentionally not designed further here: they
+don't touch the reference/attachment architecture this note is about,
+and speculative schema for them now would be guessing ahead of AIP-53's
+actual implementation. Concretely, this proposal defines the
+reference (§1) and capability-attachment (§2) architecture; **the full
+AIP-53-as-capability field mapping, including where `title`/`metadata`
+finally live, is implementation work for AIP-53 itself**, not settled
+here.
+
 The per-kind `appRef`/`packRef` fields are deleted. The worked example
 in `specs/resources/aip-53/draft/PRODUCT.md` keeps its Agentik examples
 (book1/coder pay-per-call, book3/SEO prepaid pool, default one-time);
-their manifests change only in the target stanza:
+their manifests change only in the target stanza (fields outside
+`target` — `id`, `price`, `billingRail`, and optional `title`/
+`metadata` — are unaffected and omitted here for brevity):
 
 ```yaml
 # before (AIP-53 draft)         # after (this proposal)
