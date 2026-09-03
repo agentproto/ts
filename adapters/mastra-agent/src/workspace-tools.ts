@@ -127,6 +127,18 @@ export interface WorkspaceToolsOptions {
   /** Per-tool execution timeout (ms), enforced on every tool by `withTimeoutGuard`. Default 120_000. */
   execTimeoutMs?: number
   /**
+   * Exact absolute paths OUTSIDE `cwd` the READ-ONLY tools (`read_file`,
+   * `file_read`, `file_info`) may additionally access. The daemon hands down
+   * the AGENTS.md file an inherited pointer prompt names
+   * (`AGENTPROTO_ADDITIONAL_READ_PATHS`, see `session-spawn.ts`) so the
+   * agent can actually read the contract it was told to load first.
+   * Deliberately narrow: exact files only (no parent-dir listing), the
+   * write tools (`write_file`, `edit_file`, …) never honour the grant, and
+   * sibling paths stay rejected — `escapes the workspace` still throws for
+   * everything else.
+   */
+  additionalReadPaths?: string[]
+  /**
    * Extra tools merged over the built-ins, keyed by id — lets an embedding
    * host add tools the built-in toolset doesn't cover. On id collision, an
    * extra tool wins over a built-in of the same id.
@@ -183,6 +195,31 @@ export function makeWorkspaceTools(
   const cwd = resolve(opts.cwd)
   const allowExec = opts.allowExec ?? true
   const execTimeoutMs = opts.execTimeoutMs ?? 120_000
+  // Exact-file READ grant (see WorkspaceToolsOptions.additionalReadPaths) —
+  // normalized to resolved absolute paths, deduped.
+  const additionalReadPaths = new Set(
+    (opts.additionalReadPaths ?? []).filter(isAbsolute).map(p => resolve(p)),
+  )
+  /**
+   * Resolve a path for a WRITE-capable tool: confined to cwd, no grant.
+   */
+  const resolveForWrite = (p: string): string => resolveInCwd(cwd, p)
+  /**
+   * Resolve a path for a READ-ONLY tool: cwd-confined like everything else,
+   * PLUS the exact-file grant — a path explicitly listed in
+   * `additionalReadPaths` (the daemon's AGENTS.md pointer contract) is
+   * allowed as an exact file, while everything outside cwd (including the
+   * granted files' parents and siblings) still throws.
+   */
+  const resolveForRead = (p: string): string => {
+    try {
+      return resolveInCwd(cwd, p)
+    } catch (err) {
+      const target = isAbsolute(p) ? resolve(p) : resolve(cwd, p)
+      if (additionalReadPaths.has(target)) return target
+      throw err
+    }
+  }
   /**
    * Shared env for all exec calls — sets GIT_CEILING_DIRECTORIES to prevent
    * git from discovering repos above cwd (fixes #818: read_diff escaping the
@@ -202,12 +239,12 @@ export function makeWorkspaceTools(
   }
 
   const doReadFile = async (input: { path: string }) => {
-    const file = resolveInCwd(cwd, input.path)
+    const file = resolveForRead(input.path)
     return { content: await fs.readFile(file, "utf8") }
   }
 
   const doWriteFile = async (input: { path: string; content: string }) => {
-    const file = resolveInCwd(cwd, input.path)
+    const file = resolveForWrite(input.path)
     await fs.mkdir(resolve(file, ".."), { recursive: true })
     await fs.writeFile(file, input.content, "utf8")
     return { path: input.path, bytes: Buffer.byteLength(input.content, "utf8") }
@@ -289,7 +326,7 @@ export function makeWorkspaceTools(
     }),
     outputSchema: z.object({ path: z.string(), replaced: z.boolean() }),
     execute: guard("edit_file", async (input: { path: string; old_string: string; new_string: string }) => {
-      const file = resolveInCwd(cwd, input.path)
+      const file = resolveForWrite(input.path)
       const current = await fs.readFile(file, "utf8")
       const count = current.split(input.old_string).length - 1
       if (count === 0) throw new Error(`old_string not found in '${input.path}'.`)
@@ -317,7 +354,7 @@ export function makeWorkspaceTools(
       created: z.string(),
     }),
     execute: guard("file_info", async (input: { path: string }) => {
-      const abs = resolveInCwd(cwd, input.path)
+      const abs = resolveForRead(input.path)
       const info = await fs.stat(abs)
       return {
         name: abs.split(sep).pop() ?? input.path,
@@ -448,7 +485,7 @@ export function makeWorkspaceTools(
       outputSchema: z.object({ diff: z.string() }),
       execute: guard("read_diff", async (input: { paths?: string[]; base?: string }) => {
         const relPaths = (input.paths ?? []).map((p) => {
-          const abs = resolveInCwd(cwd, p)
+          const abs = resolveForRead(p)
           return relative(cwd, abs) || "."
         })
         const args = [
@@ -481,7 +518,7 @@ export function makeWorkspaceTools(
       outputSchema: z.object({ applied: z.boolean(), output: z.string() }),
       execute: guard("apply_patch", async (input: { patch: string }) => {
         for (const p of extractPatchPaths(input.patch)) {
-          resolveInCwd(cwd, p) // throws if the patch touches a path outside cwd
+          resolveForWrite(p) // throws if the patch touches a path outside cwd
         }
         const patchFile = join(tmpdir(), `mastra-agent-patch-${randomUUID()}.diff`)
         await fs.writeFile(patchFile, input.patch, "utf8")

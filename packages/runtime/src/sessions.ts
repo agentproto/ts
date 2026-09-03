@@ -568,6 +568,15 @@ export const PARENT_SESSION_ID_ENV = "AGENTPROTO_PARENT_SESSION_ID"
  *  `app_*` tool call that omits one, since the model driving the session has
  *  no way to know its own appId unless told. Absent on any other spawn. */
 export const APP_ID_ENV = "AGENTPROTO_APP_ID"
+/** Set for a spawn whose composed prompt carries an AGENTS.md POINTER to a
+ *  file outside the session cwd (the daemon resolves AGENTS.md up to the git
+ *  toplevel, but a session's own workspace tools are confined to its cwd).
+ *  Value: a JSON array of absolute paths the adapter's workspace toolset may
+ *  READ (never write) — the exact contract files the prompt points at. This
+ *  is how the pointer contract stays actionable instead of erroring with
+ *  `path … escapes the workspace`. Daemon-authored only: mirrors the prompt's
+ *  own pointer block, never anything caller- or env-inherited. */
+export const ADDITIONAL_READ_PATHS_ENV = "AGENTPROTO_ADDITIONAL_READ_PATHS"
 
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =

@@ -83,6 +83,16 @@ export interface AgentSourceOptions {
    *  `daemon-mcp-tools.ts`'s `injectAppId`). Defaults to
    *  `AGENTPROTO_APP_ID` — an explicit value here is mainly a test hook. */
   appId?: string
+  /**
+   * Exact absolute paths OUTSIDE `cwd` the read-only workspace tools may
+   * also read — the daemon's AGENTS.md pointer contract grant. Defaults to
+   * parsing `AGENTPROTO_ADDITIONAL_READ_PATHS` (a JSON array, set by the
+   * driver when the spawn carries the grant); malformed values are ignored
+   * (the grant is advisory — a bad payload must never break a spawn) and an
+   * explicit value here is mainly a test hook. See
+   * `WorkspaceToolsOptions.additionalReadPaths`.
+   */
+  additionalReadPaths?: string[]
   /** Test hook: skip discovering + connecting to a real daemon MCP endpoint.
    *  `client` injects an already-connected client outright (e.g. one wired
    *  to an in-memory fake server); `discoverOptions` isolates
@@ -99,6 +109,29 @@ export interface AgentSourceOptions {
 /** Truthy env-var check matching this adapter's existing `AGENTPROTO_MASTRA_NO_EXEC` convention. */
 function envFlag(value: string | undefined): boolean {
   return Boolean(value)
+}
+
+/**
+ * Parse the daemon's exact-file read grant off the environment:
+ * `AGENTPROTO_ADDITIONAL_READ_PATHS` = JSON array of absolute paths (the
+ * AGENTS.md pointer contract — see `session-spawn.ts`'s
+ * `additionalReadPathsForAgentsMd`). Advisory: ANY parse/format problem
+ * (missing, non-JSON, non-array, non-string entries) yields `undefined` — a
+ * malformed payload must never break a spawn, it just means no grant.
+ */
+export function parseAdditionalReadPathsEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] | undefined {
+  const raw = env.AGENTPROTO_ADDITIONAL_READ_PATHS
+  if (!raw) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return undefined
+    const paths = parsed.filter((p): p is string => typeof p === "string" && p.length > 0)
+    return paths.length > 0 ? paths : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** The built-in AGENT.md used when no file is supplied. */
@@ -252,6 +285,9 @@ export function makeAgentFactory(
     const workspaceTools = makeWorkspaceTools({
       cwd,
       allowExec: opts.allowExec,
+      // The daemon's exact-file AGENTS.md read grant (pointer-mode contract)
+      // — explicit option wins, else the driver-set env var.
+      additionalReadPaths: opts.additionalReadPaths ?? parseAdditionalReadPathsEnv(),
       extraTools: opts.extraTools,
     })
 

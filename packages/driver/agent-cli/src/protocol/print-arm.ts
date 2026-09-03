@@ -64,6 +64,10 @@ export interface PrintArmOptions {
   /** Extra write-capable paths beyond the default toolchain set, e.g. the
    *  per-session `CLAUDE_CONFIG_DIR` temp dir set up by the caller. */
   extraWritePaths?: string[]
+  /** Extra READ-only paths beyond the confinement boundary — the exact-file
+   *  AGENTS.md grant (`AgentCliStartOptions.additionalReadPaths`). READ
+   *  exceptions only; never widens writes. */
+  extraReadPaths?: string[]
   /**
    * The explicitly requested model id — when set, a wire event that
    * truthfully reports which model the agent ACTUALLY started on (today:
@@ -174,6 +178,7 @@ export function createPrintSession(
         mode: opts.commandSandbox,
         cwd: opts.cwd,
         ...(opts.extraWritePaths ? { extraWritePaths: opts.extraWritePaths } : {}),
+        ...(opts.extraReadPaths ? { extraReadPaths: opts.extraReadPaths } : {}),
         label: "print-arm",
       })
       const child = spawn(execBin, execArgs, {

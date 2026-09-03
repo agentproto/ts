@@ -87,6 +87,43 @@ import {
   type WorkspaceRulesResolution,
 } from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
+import { isAbsolute } from "node:path"
+
+/**
+ * True when `p` (already absolute) sits inside `cwd` (or IS cwd). The
+ * AGENTS.md read grant only ever covers paths OUTSIDE the session cwd —
+ * inside-cwd files are already readable through the normal workspace
+ * confinement, so granting them would be a no-op at best.
+ */
+function isPathInsideCwd(p: string, cwd: string): boolean {
+  return p === cwd || p.startsWith(cwd.endsWith("/") ? cwd : cwd + "/")
+}
+
+/**
+ * The exact-file read grant backing an inherited AGENTS.md pointer
+ * (session-spawn WP-R2): when the daemon's prompt tells the agent to read an
+ * AGENTS.md that lives OUTSIDE its session cwd (pointer mode, cwd below the
+ * git toplevel), the session's own workspace tools are confined to that cwd
+ * and the read fails with `path … escapes the workspace` — an agent can
+ * then never act on the very contract it was told to load first. The fix is
+ * the narrowest grant that closes the gap: READ access to that one exact
+ * file, threaded to the adapter through
+ * `startSession({ additionalReadPaths })` (env + commandSandbox + the
+ * mastra-agent toolset). No parent-dir exposure, no write access, no extra
+ * sibling — inline mode needs nothing (content already in the prompt) and
+ * absent mode has no file to grant.
+ */
+function additionalReadPathsForAgentsMd(
+  resolution: AgentsMdResolution,
+  cwd: string,
+): string[] | undefined {
+  if (resolution.mode !== "pointer" || !resolution.path) return undefined
+  const resolvedPath = resolution.path
+  if (!isAbsolute(resolvedPath)) return undefined
+  if (isPathInsideCwd(resolvedPath, cwd)) return undefined
+  return [resolvedPath]
+}
+
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
@@ -2219,6 +2256,11 @@ export async function spawnAgentSession(
   const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
     (p): p is string => !!p,
   )
+  // Exact-file read grant backing an inherited AGENTS.md pointer — see
+  // additionalReadPathsForAgentsMd's doc. Threaded to the adapter below
+  // (startSession opts + env) so the pointer contract is actually readable
+  // through the session's own workspace tools.
+  const agentsMdReadPaths = additionalReadPathsForAgentsMd(agentsMdResolution, cwd)
   // Per-workspace RULES.md injection (WP-R4): resolve the workspace's
   // `RULES.md` (from its state bucket — see `workspace-rules.ts`) and, when
   // present, inline it in full into the composed prompt. Unlike AGENTS.md
@@ -2490,6 +2532,7 @@ export async function spawnAgentSession(
             ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
             ...(input.permissionHold ? { permissionHold: true } : {}),
             ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+            ...(agentsMdReadPaths ? { additionalReadPaths: agentsMdReadPaths } : {}),
             onActivity: () => registry.pulseActivity(pendingDesc.id),
           })
           let asyncPrompt = effectivePrompt
@@ -2691,6 +2734,11 @@ export async function spawnAgentSession(
           // auto-fill `appId` into an `app_*` call that omits one.
           ...(input.appId ? { [APP_ID_ENV]: input.appId } : {}),
         },
+        // Exact-file AGENTS.md read grant — the driver derives the
+        // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
+        // extra read paths) from this option itself, so the option is the
+        // single authority. See additionalReadPathsForAgentsMd above.
+        ...(agentsMdReadPaths ? { additionalReadPaths: agentsMdReadPaths } : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },

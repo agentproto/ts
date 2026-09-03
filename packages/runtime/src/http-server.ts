@@ -314,6 +314,17 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  no caller-facing `env` passthrough on `agent_start` today, so this is
      *  daemon-authored only, not a general escape hatch. */
     env?: Record<string, string>
+    /** Absolute paths OUTSIDE the session cwd the adapter's workspace
+     *  toolset may READ (never write). Daemon-authored only — used for the
+     *  exact AGENTS.md file an inherited (pointer-mode) prompt names, so a
+     *  cwd below the repo root can actually read the contract file its
+     *  prompt points at instead of erroring
+     *  (`path … escapes the workspace`). NOT a general escape hatch: the
+     *  driver forwards these to its confinement layer as extra READ paths
+     *  and (for the mastra-agent adapter) to `makeWorkspaceTools` as a
+     *  read-only grant; writes and sibling reads stay denied. Adapters
+     *  that can't model the grant ignore it. */
+    additionalReadPaths?: string[]
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string

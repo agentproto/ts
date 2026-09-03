@@ -308,6 +308,17 @@ export function createAgentCliRuntime(
       // doc for why even an absolute-path npx needs this.
       ensureExecDirOnPath(env)
 
+      // Exact-file read grant (`AgentCliStartOptions.additionalReadPaths`):
+      // the runtime hands down the exact AGENTS.md path(s) an inherited
+      // pointer prompt names (see `session-spawn.ts`'s
+      // `additionalReadPathsForAgentsMd`). Derive the child env var adapters
+      // read (`AGENTPROTO_ADDITIONAL_READ_PATHS`, a JSON array) HERE, from
+      // this one option as the single authority, so BOTH arms — ACP and
+      // print — carry it. Read-only by contract; nothing here widens writes.
+      if (opts?.additionalReadPaths?.length) {
+        env.AGENTPROTO_ADDITIONAL_READ_PATHS = JSON.stringify(opts.additionalReadPaths)
+      }
+
       // claude-code's ACP wrapper never reads `--permission-mode` from argv
       // (the `bin_args_append` above is a no-op against it) — it resolves
       // `permissions.defaultMode` exclusively via `CLAUDE_CONFIG_DIR`/
@@ -448,6 +459,10 @@ export function createAgentCliRuntime(
           printConfig: definition.print,
           commandSandbox: opts?.commandSandbox,
           ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+          // Exact-file read grant — see the ACP arm's wrapAgentCliSpawn call.
+          ...(opts?.additionalReadPaths?.length
+            ? { extraReadPaths: opts.additionalReadPaths }
+            : {}),
           ...(definition.routeSelection === "derived-from-model" && printModel
             ? { expectedModel: String(printModel) }
             : {}),
@@ -474,6 +489,11 @@ export function createAgentCliRuntime(
             mode: opts?.commandSandbox,
             cwd,
             ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+            // Exact-file read grant (see additionalReadPaths above):
+            // READ-only exceptions to the confinement boundary, never writes.
+            ...(opts?.additionalReadPaths?.length
+              ? { extraReadPaths: opts.additionalReadPaths }
+              : {}),
             label: definition.id,
           },
         )

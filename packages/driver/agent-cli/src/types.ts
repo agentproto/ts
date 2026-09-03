@@ -1198,6 +1198,17 @@ export interface AgentCliStartOptions {
    */
   contextProfile?: string
   /**
+   * Absolute paths OUTSIDE `cwd` the adapter's workspace toolset may READ
+   * (never write). Daemon-authored only (`spawnAgentSession` hands it down
+   * for the exact AGENTS.md an inherited pointer prompt names). Threaded two
+   * ways: onto the child env (`AGENTPROTO_ADDITIONAL_READ_PATHS`, for
+   * adapters that build their own toolset from it) and onto the
+   * `commandSandbox` confinement as extra READ paths — writes and sibling
+   * reads stay denied either way. Adapters that can't model the grant
+   * ignore it.
+   */
+  additionalReadPaths?: string[]
+  /**
    * OS-level confinement for the spawned child itself (macOS Seatbelt /
    * Linux bubblewrap, `@agentproto/command-sandbox`) — confines the
    * adapter's own process tree, unlike `posture`/`contextProfile` which

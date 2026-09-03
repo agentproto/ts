@@ -12,6 +12,7 @@ import type { AgentCliClient, AgentCliConnectOptions, AgentCliDefinition } from 
 // ---------------------------------------------------------------------------
 
 const FAKE_PID = 54321
+let capturedSandboxOpts: { extraReadPaths?: string[]; extraWritePaths?: string[] } | undefined
 
 // A real EventEmitter (not a plain object) so `spawned.once("spawn"|"error", ...)`
 // in define-agent-cli.ts's spawn guard works — emits "spawn" on the next
@@ -31,6 +32,13 @@ function fakeChild() {
 
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => fakeChild()),
+}))
+
+vi.mock("../command-sandbox-wrap.js", () => ({
+  wrapAgentCliSpawn: vi.fn(async (bin: string, args: string[], opts: typeof capturedSandboxOpts) => {
+    capturedSandboxOpts = opts
+    return [bin, args]
+  }),
 }))
 
 // Mock the ACP protocol arm so connect()/send() are fully controlled —
@@ -96,6 +104,7 @@ const minimalDef: AgentCliDefinition = {
 describe("createAgentCliRuntime(...).start() — pid + onActivity threading", () => {
   beforeEach(() => {
     capturedConnectOpts = undefined
+    capturedSandboxOpts = undefined
   })
 
   it("mirrors the spawned child's pid onto the returned runtime session", async () => {
@@ -115,6 +124,21 @@ describe("createAgentCliRuntime(...).start() — pid + onActivity threading", ()
     const runtime = createAgentCliRuntime(minimalDef)
     await runtime.start({ cwd: "/tmp" })
     expect(capturedConnectOpts?.onActivity).toBeUndefined()
+  })
+
+  it("threads daemon-authored exact read paths to the child and confinement without widening writes", async () => {
+    const runtime = createAgentCliRuntime(minimalDef)
+    const additionalReadPaths = ["/repo/AGENTS.md"]
+    await runtime.start({ cwd: "/repo/apps/child", additionalReadPaths })
+
+    const spawnOpts = vi.mocked(spawn).mock.calls.at(-1)?.[2] as
+      | { env?: Record<string, string> }
+      | undefined
+    expect(spawnOpts?.env?.AGENTPROTO_ADDITIONAL_READ_PATHS).toBe(
+      JSON.stringify(additionalReadPaths),
+    )
+    expect(capturedSandboxOpts?.extraReadPaths).toEqual(additionalReadPaths)
+    expect(capturedSandboxOpts?.extraWritePaths).toBeUndefined()
   })
 })
 
