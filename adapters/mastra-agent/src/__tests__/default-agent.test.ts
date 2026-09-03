@@ -111,6 +111,31 @@ describe("AgentController driven directly — modes", () => {
     expect(session.mode.get()).toBe("plan")
   })
 
+  it(
+    "a submit_plan suspend with NO responder parks the run silently — follow-up sendMessage resolves without running (the wedge the ACP host must reject loudly)",
+    async () => {
+      const model = createScriptedModel([
+        { type: "tool-call", toolCallId: "tc1", toolName: "submit_plan", input: { path: "PLAN.md" } },
+        { type: "text", text: "Proceeding with the plan." },
+      ])
+      const controller = await buildScriptedController(model)
+      const session = await controller.createSession({ resourceId: "no-responder" })
+
+      await session.sendMessage({ content: "please plan the work" })
+      // Parked: no agent_end "complete", mode untouched, nobody resumed it.
+      expect(session.mode.get()).toBe("plan")
+
+      // The controller-level wedge: a follow-up prompt is ACCEPTED (Mastra
+      // queues it) and resolves without ever running — the session then
+      // looks idle/healthy while nothing will ever execute. The ACP host
+      // (acp-host.ts) rejects such prompts loudly instead; this test pins
+      // the controller behavior the host guards against.
+      await session.sendMessage({ content: "anyone there?" })
+      expect(session.mode.get()).toBe("plan")
+    },
+    15000,
+  )
+
   it("session.mode.switch moves directly between modes", async () => {
     const controller = await buildScriptedController(createScriptedModel([{ type: "text", text: "ok" }]))
     const session = await controller.createSession({ resourceId: "direct-switch" })

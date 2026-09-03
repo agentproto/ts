@@ -376,6 +376,31 @@ export class MastraAcpAgent implements AcpAgent {
 
     const { text, files } = promptContent(params)
     try {
+      // A run parked on a tool suspension (e.g. `submit_plan` with no
+      // responder on the approval channel) has already fired its terminal
+      // `agent_end` (reason "suspended") — so a NEW prompt here would be
+      // accepted into the run's follow-up queue and then deadlock this
+      // handler forever awaiting an `agent_end` that never fires again:
+      // the session looks idle/healthy while every queued prompt silently
+      // evaporates (the observed submit_plan wedge). Reject the prompt
+      // loudly instead; the client must resolve the pending permission
+      // request (or cancel) before sending another turn. A mid-turn
+      // prompt (interrupted) is exempt — `steer` aborts the parked run,
+      // which drops its suspensions.
+      if (!interrupted && state.suspensions.size > 0) {
+        await this.#conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: "\n[mastra-agent] run is suspended awaiting approval — resolve the pending permission request (or cancel the session) before sending another prompt.\n",
+            },
+          },
+        })
+        return { stopReason: "refusal" }
+      }
+
       const session = await this.#ensureSession(params.sessionId, state)
 
       // One mapper per turn: it holds the per-message "text already relayed"
@@ -404,6 +429,27 @@ export class MastraAcpAgent implements AcpAgent {
         if (event.type === "agent_end") {
           endReason = event.reason ?? "complete"
           resolveAgentEnd?.()
+          if (event.reason === "suspended") {
+            // Make the parked run legible on the wire: the turn ends here
+            // with the permission request still in flight, and without
+            // this note the transcript shows a normal-looking end with no
+            // record that the run is parked (the submit_plan wedge's
+            // invisibility).
+            relay = relay
+              .then(() =>
+                this.#conn.sessionUpdate({
+                  sessionId: params.sessionId,
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: {
+                      type: "text",
+                      text: "\n[mastra-agent] run suspended — waiting for approval before continuing.\n",
+                    },
+                  },
+                }),
+              )
+              .catch(() => {})
+          }
           return
         }
         if (event.type === "tool_approval_required") {
@@ -702,8 +748,18 @@ export class MastraAcpAgent implements AcpAgent {
     })
     // Mode/model changes can fire outside a prompt turn (idle switches, mode
     // transitions), so they relay on this session-lifetime subscription — the
-    // per-turn mapper deliberately ignores them.
+    // per-turn mapper deliberately ignores them. Suspension cancellations
+    // ALSO arrive outside a turn (abort, error cleanup, an out-of-band
+    // resume): the per-turn subscriber that voids the pending bridge only
+    // lives during a prompt, so without this the parked entry leaks and
+    // every future prompt would be (wrongly) rejected as "still suspended".
     session.subscribe((event) => {
+      if (event.type === "tool_suspension_cancelled") {
+        const pending = state.suspensions.get(event.toolCallId)
+        if (pending) pending.cancelled = true
+        state.suspensions.delete(event.toolCallId)
+        return
+      }
       if (event.type === "mode_changed") {
         void this.#conn
           .sessionUpdate({
