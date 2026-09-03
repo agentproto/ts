@@ -1,4 +1,4 @@
-# AIP-53 — Product (pricing capability) · Implementer Guide
+# AIP-55 — Product (pricing capability) · Implementer Guide
 
 > **Status:** Draft (v2 — capability form)
 > **Schema:** `PRODUCT.schema.json`
@@ -15,7 +15,7 @@ addressed by an AIP-54 `ref/v1` and needs zero pricing awareness —
 
 A Product IS NOT:
 
-- an AIP-49 wallet `asset` — AIP-49 models value *movement*; AIP-53
+- an AIP-49 wallet `asset` — AIP-49 models value *movement*; AIP-55
   models the *catalog entry*. `defineAsset` is taken.
 - an AIP-18 collection item — no money type, no discriminated union,
   `refKind` is collection-scoped.

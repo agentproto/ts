@@ -1,4 +1,9 @@
-# Proposal: a `defineProduct` primitive (suggested AIP-53)
+# Proposal: a `defineProduct` primitive (renumbered **AIP-55**; originally mis-suggested as AIP-53)
+
+> **Numbering correction (2026-09-04):** the canonical AIP registry is
+> the separate `agentproto/agentproto` repo, where 53 is taken by
+> APP.md (app/v1). Final: **AIP-55** = this pricing capability, AIP-54
+> = REF. References to "AIP-53" below are historical.
 
 Status: pre-implementation design note. No spec draft, no package, no
 implementation — this is the "should we, and what shape" document.
@@ -47,7 +52,7 @@ Three plausible carriers, argued against:
   fields (price union, billing rail). This matches how the repo framed
   AIP-52 pack (a bundle referencing other doctypes).
 
-**Verdict: new AIP.** Suggested number: **AIP-53** — the highest spec
+**Verdict: new AIP.** Suggested number: **AIP-55** (corrected 2026-09-04 — see the numbering note in PROPOSAL-composable-primitives.md; originally mis-assigned AIP-53 from the local spec dirs; canonical 53 is APP.md in the agentproto/agentproto registry) — the highest spec
 present in `specs/resources/` is `aip-52` (pack); 51 has no directory
 (gap). Next free is 53. *Flagged as a suggestion, not a claim of
 authority.*

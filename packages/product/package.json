@@ -1,17 +1,17 @@
 {
   "name": "@agentproto/product",
   "version": "0.1.0",
-  "description": "@agentproto/product \u2014 AIP-53 reference implementation. The pricing capability: attach a price (one-time | prepaid-pool | pay-per-call) + a billingRail (stripe/autumn/tbd) to ANY AIP artifact via an AIP-54 ArtifactRef. Target AIPs need zero pricing awareness.",
+  "description": "@agentproto/product \u2014 AIP-55 reference implementation. The pricing capability: attach a price (one-time | prepaid-pool | pay-per-call) + a billingRail (stripe/autumn/tbd) to ANY AIP artifact via an AIP-54 ArtifactRef. Target AIPs need zero pricing awareness.",
   "keywords": [
     "agentproto",
-    "aip-53",
+    "aip-55",
     "product",
     "pricing",
     "billing",
     "open-standard",
     "agentic"
   ],
-  "homepage": "https://agentproto.sh/docs/aip-53",
+  "homepage": "https://agentproto.sh/docs/aip-55",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",

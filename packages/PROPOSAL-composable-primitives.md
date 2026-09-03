@@ -1,7 +1,16 @@
 # Proposal: Composable primitives — a typed reference primitive, capability attachment, and selective extension
 
-Status: pre-implementation design note. Supersedes the *architecture* of
-`PROPOSAL-product-primitive.md` / the AIP-53 draft; AIP-53 itself becomes
+Status: pre-implementation design note.
+
+> **Numbering correction (2026-09-04):** this doc was drafted against
+> `agentproto/ts`'s local `specs/resources/` as the source of truth and
+> called the pricing capability "AIP-53". The canonical registry is the
+> separate `agentproto/agentproto` repo, where 53 is already taken by
+> APP.md (app/v1). Final numbers: **AIP-54 = REF** (unchanged),
+> **AIP-55 = PRODUCT** (renumbered from 53). The references below have
+> been renumbered in place.
+ Supersedes the *architecture* of
+`PROPOSAL-product-primitive.md` / the AIP-55 draft; AIP-55 itself becomes
 the first consumer of this foundation rather than a one-off (see §5).
 
 Companion dogfood: `packages/wallet/scratch-composable.test.ts`
@@ -27,7 +36,7 @@ Three primitives each reinvent referencing and composition:
 |---|---|---|
 | AIP-18 collection | `ref` field → id string, scoped to ONE named collection (`specs/resources/aip-18/draft/COLLECTION.schema.json` `$defs.fieldDef.properties.refKind`: "The target collection's `name`. … items of this collection"); no shape guarantee | `extends` chain, merge-by-name |
 | AIP-40 extension | n/a (single parent) | add/tighten-only monotonic merge, wholesale (`packages/extension/src/spec-from-extension.ts:9-22`) |
-| AIP-53 product (draft) | bespoke `appRef`/`packRef` per target kind | one-off union |
+| AIP-55 product (draft) | bespoke `appRef`/`packRef` per target kind | one-off union |
 
 Plus four more ad-hoc ref shapes in the wild: AIP-42's `AnyRef`
 (`string | {ref|file|inline}`, `packages/agent/src/types.ts:13-21`),
@@ -35,9 +44,9 @@ Plus four more ad-hoc ref shapes in the wild: AIP-42's `AnyRef`
 AIP-52 harness's `$resolver`, and app-kit's structural `DoctypeHandle`
 (`packages/app-kit/src/types.ts:56`). Six mechanisms, zero interop.
 
-The tell: AIP-53 needed `appRef` AND `packRef` AND a knowledge-pack
+The tell: AIP-55 needed `appRef` AND `packRef` AND a knowledge-pack
 string. Every future primitive that references anything would add
-another. The gap is one level below AIP-53.
+another. The gap is one level below AIP-55.
 
 ## 1. Primitive A — typed artifact reference (suggested **AIP-54**, `ref/v1`)
 
@@ -128,7 +137,7 @@ unresolvable ref returns `undefined` loudly — never a dangling id string.
   not the type. `ref/v1` is the typed layer above them.
 - **Version pinning on the ref, not the target:** the referenced
   artifact evolves; the ref records what was meant at authoring time.
-  This is what AIP-53's `target.version` was reaching for — now
+  This is what AIP-55's `target.version` was reaching for — now
   inherited for free.
 
 ### What existing mechanisms become
@@ -145,7 +154,7 @@ unresolvable ref returns `undefined` loudly — never a dangling id string.
 
 ## 2. Primitive B — capability attachment, not wrapper-per-target-kind
 
-AIP-53 as drafted inverts badly: it's a Product that *contains* a target,
+AIP-55 as drafted inverts badly: it's a Product that *contains* a target,
 requiring a bespoke `appRef`/`packRef`/`knowledge-pack` union per kind.
 Invert it: **a capability is attached TO an artifact via the general
 ref**, and knows nothing about the target's kind.
@@ -163,8 +172,8 @@ export interface CapabilityHandle extends Readonly<CapabilityDefinition> {
 export function defineCapability(def: CapabilityDefinition): CapabilityHandle
 ```
 
-`pricing` is the first capability kind; its payload is exactly AIP-53's
-`price` union + `billingRail` (unchanged — see the AIP-53 draft). The
+`pricing` is the first capability kind; its payload is exactly AIP-55's
+`price` union + `billingRail` (unchanged — see the AIP-55 draft). The
 "product" concept becomes: *a pricing capability attached to something*.
 "a collection of priced things" = filter the capability registry by
 `kind === "pricing"`, join on `on.aip`/`on.id`.
@@ -215,7 +224,7 @@ inherit:                             # per-aspect selection
   path: true          # default
 add_fields:
   properties:
-    price: { $ref: "https://agentproto.sh/schemas/aip-53/PRODUCT.schema.json#/$defs/price" }
+    price: { $ref: "https://agentproto.sh/schemas/aip-55/PRODUCT.schema.json#/$defs/price" }
 ```
 
 Guards (normative):
@@ -255,56 +264,56 @@ parent's schema. AIP-40 v1's shape cannot express this at all.
 3. **AIP-52's legacy `pricing` block** still drifts from capability
    pricing (unitless `bundle: 49`). The capability is declared
    authoritative; a deprecation path for `pack.pricing` should be part
-   of the AIP-53 adoption, not silently left.
+   of the AIP-55 adoption, not silently left.
 4. **Extension `tighten` verification is still best-effort**
    (`spec-from-extension.ts:144-148` — the parent's raw schema isn't
    exposed for real monotonicity checks). Selective composition doesn't
    fix that; it adds `remove_fields` needing the same introspection.
 
-## 5. AIP-53 becomes a consumer, not a primitive
+## 5. AIP-55 becomes a consumer, not a primitive
 
-Under this foundation the AIP-53 draft collapses from "a product
+Under this foundation the AIP-55 draft collapses from "a product
 doctype with a bespoke target union" to:
 
 - the **pricing capability payload** (price union + billingRail +
-  Stripe/Autumn rail configs — all the commerce thought in the AIP-53
+  Stripe/Autumn rail configs — all the commerce thought in the AIP-55
   draft carries over verbatim), and
 - `on: ArtifactRef` replacing the entire `target` oneOf.
 
 **This is architecture-only, not a complete field-by-field refactor of
-the AIP-53 draft.** The `target` oneOf (`kind`/`appRef`/`packRef`/
+the AIP-55 draft.** The `target` oneOf (`kind`/`appRef`/`packRef`/
 knowledge-pack string) is the only part this proposal claims to replace,
 because it's the only part duplicating the reference problem solved in
-§1. AIP-53's other fields carry over into `CapabilityDefinition` as
+§1. AIP-55's other fields carry over into `CapabilityDefinition` as
 follows, and the mapping is deliberately conservative — no field is
 dropped:
 
-| AIP-53 draft field | Status under this proposal |
+| AIP-55 draft field | Status under this proposal |
 |---|---|
 | `target` (oneOf `appRef`/`packRef`/pack string + `version`) | **replaced** by `on: ArtifactRef` (§1); the `version` sub-field moves onto `ArtifactRef.version`, unchanged in meaning |
 | `price` / `billingRail` | **unchanged**, becomes `CapabilityDefinition.payload` verbatim (already stated above) |
 | `id` (product id) | **unchanged**, becomes `CapabilityDefinition.id` (already required by the generic capability shape in §2) |
-| `title` (optional, human label) | **deferred, not dropped**: stays an optional field on the product/pricing capability, i.e. `CapabilityDefinition` gains an optional `title?: string` when AIP-53 is implemented as a capability kind. It has no interaction with `on`/`ArtifactRef` and needs no design beyond "pass it through" |
+| `title` (optional, human label) | **deferred, not dropped**: stays an optional field on the product/pricing capability, i.e. `CapabilityDefinition` gains an optional `title?: string` when AIP-55 is implemented as a capability kind. It has no interaction with `on`/`ArtifactRef` and needs no design beyond "pass it through" |
 | `metadata` (optional, free-form) | **deferred, not dropped**: same as `title` — carries through as an optional passthrough field on the capability (or inside `payload`, at the implementer's discretion), since `kind: "pricing"` payloads are already typed per-kind and can absorb it without a schema for the generic `CapabilityDefinition` |
 
 `title` and `metadata` are intentionally not designed further here: they
 don't touch the reference/attachment architecture this note is about,
-and speculative schema for them now would be guessing ahead of AIP-53's
+and speculative schema for them now would be guessing ahead of AIP-55's
 actual implementation. Concretely, this proposal defines the
 reference (§1) and capability-attachment (§2) architecture; **the full
-AIP-53-as-capability field mapping, including where `title`/`metadata`
-finally live, is implementation work for AIP-53 itself**, not settled
+AIP-55-as-capability field mapping, including where `title`/`metadata`
+finally live, is implementation work for AIP-55 itself**, not settled
 here.
 
 The per-kind `appRef`/`packRef` fields are deleted. The worked example
-in `specs/resources/aip-53/draft/PRODUCT.md` keeps its Agentik examples
+in `specs/resources/aip-55/draft/PRODUCT.md` keeps its Agentik examples
 (book1/coder pay-per-call, book3/SEO prepaid pool, default one-time);
 their manifests change only in the target stanza (fields outside
 `target` — `id`, `price`, `billingRail`, and optional `title`/
 `metadata` — are unaffected and omitted here for brevity):
 
 ```yaml
-# before (AIP-53 draft)         # after (this proposal)
+# before (AIP-55 draft)         # after (this proposal)
 target:                         on: aip://42/book-companion@1.2.0
   kind: app
   appRef: book-companion
@@ -312,7 +321,7 @@ target:                         on: aip://42/book-companion@1.2.0
 ```
 
 Numbering suggestion (not authority): the reference primitive takes
-**AIP-54**; capability attachment can either extend AIP-53 in place
+**AIP-54**; capability attachment can either extend AIP-55 in place
 (pricing is just the first `kind`) or its own AIP-55 — extending 53 is
 cheaper and keeps "product" as the named consumer concept.
 

@@ -5,7 +5,7 @@
  * any AIP artifact can use to point at any OTHER AIP artifact. It
  * replaces the ad-hoc per-primitive reference fields (AIP-18's
  * collection-scoped `refKind`, app-kit's inline `DoctypeHandle`,
- * AIP-53's draft `appRef`/`packRef`, AIP-42's bare `AnyRef` strings,
+ * AIP-55's draft `appRef`/`packRef`, AIP-42's bare `AnyRef` strings,
  * AIP-52's `$resolver`) with one discriminated, resolvable object.
  *
  * Resolution is delegated to per-family AIP-43 registries, joined by

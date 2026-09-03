@@ -1,5 +1,5 @@
 /**
- * AIP-53 PRODUCT — `defineProduct` reference implementation.
+ * AIP-55 PRODUCT — `defineProduct` reference implementation.
  *
  * The pricing capability constructor. Attaches a price to any AIP
  * artifact through an `ArtifactRef` — the target needs zero pricing

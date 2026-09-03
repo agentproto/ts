@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/ref-catalog",
   "version": "0.1.0",
-  "description": "@agentproto/ref-catalog \u2014 AIP-54 reference implementation. One typed, cross-AIP reference primitive: ArtifactRef ({aip, id, version}) + aip:// URI serialization, resolved through per-family AIP-43 registries joined by RefCatalog. One reference mechanism for every AIP \u2014 replaces per-primitive xRef fields (AIP-18 refKind, app-kit inline handles, AIP-53 appRef/packRef).",
+  "description": "@agentproto/ref-catalog \u2014 AIP-54 reference implementation. One typed, cross-AIP reference primitive: ArtifactRef ({aip, id, version}) + aip:// URI serialization, resolved through per-family AIP-43 registries joined by RefCatalog. One reference mechanism for every AIP \u2014 replaces per-primitive xRef fields (AIP-18 refKind, app-kit inline handles, AIP-55 appRef/packRef).",
   "keywords": [
     "agentproto",
     "aip-54",

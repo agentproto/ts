@@ -1,5 +1,5 @@
 /**
- * AIP-53 PRODUCT — pricing capability types.
+ * AIP-55 PRODUCT — pricing capability types.
  *
  * A product is a pricing CAPABILITY attached to any referenced AIP
  * artifact via an AIP-54 `ArtifactRef` — not a wrapper doctype with a
@@ -7,7 +7,7 @@
  * needs zero awareness of pricing.
  *
  * The price union and billingRail config are the commerce surface
- * designed in the AIP-53 draft and preserved verbatim here.
+ * designed in the AIP-55 draft and preserved verbatim here.
  */
 
 import type { ArtifactRef } from "@agentproto/ref-catalog"
@@ -61,7 +61,7 @@ export interface ProductHandle extends Readonly<ProductDefinition> {
 
 export class ProductRefError extends Error {
   constructor(message: string) {
-    super(`defineProduct (AIP-53): ${message}`)
+    super(`defineProduct (AIP-55): ${message}`)
     this.name = "ProductRefError"
   }
 }
