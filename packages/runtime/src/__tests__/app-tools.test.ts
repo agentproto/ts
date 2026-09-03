@@ -929,6 +929,46 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     expect(run.model).toBe("claude-sonnet-5")
   })
 
+  it("app_run with sequence and wait:false returns after the first spawn, then continues in the background", async () => {
+    await buildTwoAgentApp(dir)
+    const startSession = fakeStartSession()
+    const releases: Array<() => void> = []
+    const waitForSessionTerminal = vi.fn(
+      () => new Promise<void>(resolve => releases.push(resolve)),
+    )
+    const { client, appRegistry } = await setup({ startSession, waitForSessionTerminal })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const result = await Promise.race([
+      client.callTool({
+        name: "app_run",
+        arguments: {
+          appId: "@test/seq-app",
+          sequence: ["job-scout", "job-tailor"],
+          wait: false,
+        },
+      }),
+      new Promise<"timed-out">(resolve => setTimeout(() => resolve("timed-out"), 1_000)),
+    ])
+
+    expect(result).not.toBe("timed-out")
+    const ran = parseToolJson(result)
+    expect(ran.status).toBe("running")
+    expect(ran.sessions.map((s: any) => s.agentId)).toEqual(["job-scout"])
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(appRegistry.getRun(ran.appRunId)?.status).toBe("running")
+
+    releases.shift()?.()
+    await vi.waitFor(() => expect(startSession).toHaveBeenCalledTimes(2))
+    expect(appRegistry.getRun(ran.appRunId)?.sessions.map(s => s.agentId)).toEqual([
+      "job-scout",
+      "job-tailor",
+    ])
+
+    releases.shift()?.()
+    await vi.waitFor(() => expect(appRegistry.getRun(ran.appRunId)?.status).toBe("ended"))
+  })
+
   it("empty text blocks don't break sequential completion (sanitized, not an error)", async () => {
     await buildTwoAgentApp(dir)
     const { client, appRegistry } = await setup()

@@ -91,7 +91,7 @@ export interface AppRunSession {
 export interface AppRun {
   readonly appRunId: string
   readonly appId: string
-  readonly sessions: readonly AppRunSession[]
+  readonly sessions: AppRunSession[]
   readonly startedAt: string
   /** Runner selected for this run — mirrored from `app_run`'s adapter/harness
    *  pass-through (A) so it stays observable through app_status/app_list even
@@ -139,6 +139,9 @@ export interface AppRegistry {
     harness?: string
     model?: string
   }): AppRun
+  /** Append a session spawned after a run was created (used by non-blocking
+   *  sequential app runs) and persist the updated run immediately. */
+  addRunSession(appRunId: string, session: AppRunSession): AppRun | undefined
   getRun(appRunId: string): AppRun | undefined
   listRuns(): AppRun[]
   /** Mark a run terminal (`endedAt` now, status `opts.status` defaulting to
@@ -236,7 +239,7 @@ export function createAppRegistry(opts?: {
       const run: AppRun = {
         appRunId: `apprun_${randomUUID()}`,
         appId: input.appId,
-        sessions: input.sessions,
+        sessions: [...input.sessions],
         startedAt: new Date().toISOString(),
         status: "running",
         ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
@@ -244,6 +247,13 @@ export function createAppRegistry(opts?: {
         ...(input.model !== undefined ? { model: input.model } : {}),
       }
       state.runs.push(run)
+      persist()
+      return run
+    },
+    addRunSession(appRunId, session) {
+      const run = state.runs.find(r => r.appRunId === appRunId)
+      if (!run) return undefined
+      run.sessions.push(session)
       persist()
       return run
     },
