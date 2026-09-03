@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-53/PRODUCT.schema.json",
+  "title": "product/v1 frontmatter (AIP-53)",
+  "description": "Validates the YAML frontmatter portion of an AIP-53 PRODUCT.md — a sellable thing with a kind and a price. A product REFERENCES existing AIP artifacts (an AIP-42 app, AIP-52 pack, AIP-10 knowledge, a git repo, a manuscript) but is not one of them; it carries the commerce fields (price, billing rail) that those doctypes deliberately omit. Doctype discriminator: 'product/v1'.",
+  "$defs": {
+    "price": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["model", "amountMinor", "currency"],
+          "additionalProperties": false,
+          "properties": {
+            "model": { "const": "one-time", "description": "Single payment for perpetual access." },
+            "amountMinor": { "type": "integer", "minimum": 0, "description": "Amount in MINOR units of the currency (cents for usd). Minor units are normative — major-unit floats are the x100 bug class." },
+            "currency": { "type": "string", "pattern": "^[a-z]{3}$", "description": "ISO-4217 lowercase, e.g. 'usd'." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["model", "unitPriceMinor", "currency", "grantUnits"],
+          "additionalProperties": false,
+          "properties": {
+            "model": { "const": "prepaid-pool", "description": "Buy a pool of meter units up front; consumption draws the pool down. Pool STATE is host-side — the rail only initiates the top-up payment." },
+            "unitPriceMinor": { "type": "integer", "minimum": 0, "description": "Price per unit in minor units of the currency." },
+            "currency": { "type": "string", "pattern": "^[a-z]{3}$" },
+            "grantUnits": { "type": "integer", "minimum": 1, "description": "Meter units granted per purchase. Unit semantics are declared by the host, not the spec; if a wallet asset backs the pool, units MUST be minor units of that asset's `decimals`." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["model", "unitPriceMinor", "currency", "meter"],
+          "additionalProperties": false,
+          "properties": {
+            "model": { "const": "pay-per-call", "description": "Post-paid metering: each unit consumed is billed." },
+            "unitPriceMinor": { "type": "integer", "minimum": 0, "description": "Price per meter unit in minor units." },
+            "currency": { "type": "string", "pattern": "^[a-z]{3}$" },
+            "meter": { "type": "string", "minLength": 1, "maxLength": 96, "description": "Host-declared meter id, e.g. 'agent-call', 'tokens-1k'. Open vocabulary; hosts SHOULD namespace host-specific meters." }
+          }
+        }
+      ]
+    },
+    "billingRail": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["rail"],
+          "additionalProperties": false,
+          "properties": {
+            "rail": { "const": "stripe" },
+            "productId": { "type": "string", "description": "Stripe Product id — a CACHE of the last projection, never the source of truth for the price." },
+            "priceId": { "type": "string", "description": "Stripe Price id. For pay-per-call, Stripe's separate Meter object id MUST be carried in `meterId`, not overloaded here." },
+            "meterId": { "type": "string", "description": "Stripe Meter id — REQUIRED when price.model is 'pay-per-call'; Stripe meters are created out-of-band and cannot be derived from the Price id." },
+            "recurrence": { "enum": ["month", "year", "week", "day"], "description": "Billing recurrence for metered prices. Absent = per-unit without period." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rail"],
+          "additionalProperties": false,
+          "properties": {
+            "rail": { "const": "autumn" },
+            "featureId": { "type": "string", "description": "Autumn feature id. Autumn natively models both metered usage and prepaid credit grants, so prepaid-pool and pay-per-call both project onto one featureId." },
+            "grantId": { "type": "string", "description": "Autumn credit-grant id for prepaid-pool products, if distinct from featureId." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rail"],
+          "additionalProperties": false,
+          "properties": {
+            "rail": { "const": "tbd", "description": "Commerce shape decided, provider not chosen yet." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rail"],
+          "additionalProperties": true,
+          "properties": {
+            "rail": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "not": { "enum": ["stripe", "autumn", "tbd"] }, "description": "Vendor-specific rail. Rail-specific config lives under namespaced keys; unknown rails MUST be tolerated by hosts that only consume the price union." }
+          }
+        }
+      ]
+    },
+    "target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "ref"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "content", "description": "Manuscript/corpus with NO backing AIP artifact — a plain relative path or URL. Deliberately unresolvable by any registry." },
+            "ref": { "type": "string", "minLength": 1, "maxLength": 512 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "ref"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "repo" },
+            "ref": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Git URL or 'org/name'." },
+            "private": { "type": "boolean", "default": false, "description": "Private bundle vs open-source companion." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "appRef"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "app" },
+            "appRef": { "type": "string", "minLength": 1, "maxLength": 512, "description": "The AIP-42 app's `id`. By-reference, NOT an inlined handle: AIP-42 AppHandles do not carry a `schema` field and serialize to the whole bundle — inlining fights `attach` and bloats the manifest. Resolution is host-side (install the app, or look the id up in an AIP-43 registry with `family: 'app'`; anonymous AIP-42 apps without an `id` CANNOT be sold — hosts MUST refuse). Hosts SHOULD record the app's version at sale time." },
+            "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$", "description": "App version pinned at sale time. Optional; absent = floating." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "packRef"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "pack" },
+            "packRef": { "type": "string", "minLength": 1, "maxLength": 512, "description": "The AIP-52 pack's `name` (packs key on `name`, not `id`). If a pack also carries its own `pricing` block, THIS product's price is authoritative; hosts SHOULD warn on divergence." },
+            "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "pack"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "knowledge-pack" },
+            "pack": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Path to a knowledge-cascade pack directory or an AIP-10 workspace name." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "not": { "enum": ["content", "repo", "app", "pack", "knowledge-pack"] }, "description": "Vendor-specific target kind. SHOULD be namespaced (e.g. 'wallet-credit-pool'); if a wallet asset backs it, ref MUST be the AIP-49 `AssetRef`." },
+            "ref": { "type": "string" }
+          }
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": ["schema", "id", "kind", "description", "price"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "product/v1", "description": "Doctype discriminator." },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "minLength": 2, "maxLength": 96, "description": "Stable kebab-case product id." },
+    "kind": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "What is being sold. MUST equal target.kind when target is present (cross-field rule, enforced in defineProduct's validate, not in JSON Schema). Core vocabulary: content | repo | app | pack | knowledge-pack; open to vendor kinds." },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Human-readable display name, e.g. a checkout label." },
+    "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$", "description": "Semver of the product itself, independent of the price." },
+    "price": { "$ref": "#/$defs/price", "description": "The source of truth for what is charged. billingRail is projection config; a generator derives Stripe Prices / Autumn features FROM this." },
+    "billingRail": { "$ref": "#/$defs/billingRail" },
+    "target": { "$ref": "#/$defs/target", "description": "What the buyer receives. Optional — a product MAY be priced without a target (e.g. a pure credit pool top-up); the `kind`/`target.kind` agreement is validated in defineProduct." },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Vendor-specific extensions, namespaced under <vendor>. Hosts MUST tolerate unknown keys."
+    }
+  }
+}
