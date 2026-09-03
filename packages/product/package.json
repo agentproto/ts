@@ -49,10 +49,12 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "dependencies": {
+    "@agentproto/ref-catalog": "workspace:*"
+  },
   "devDependencies": {
     "@agentproto/app-kit": "workspace:*",
     "@agentproto/pack": "workspace:*",
-    "@agentproto/ref-catalog": "workspace:*",
     "@agentproto/registry": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "@agentproto/tooling": "workspace:*",
