@@ -25,11 +25,12 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates git jq \
   && rm -rf /var/lib/apt/lists/*
 
-# Node 22 (matches the repo's CI runtime) unless the base image already
-# provides a >=22 node on PATH.
-RUN node --version || (curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+# Node 22 (matches the repo's CI runtime; a dependency of @agentproto/cli
+# declares engines >=22.19). Always install — the e2bdev base image ships
+# Node 20 (verified live).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y --no-install-recommends nodejs \
-  && rm -rf /var/lib/apt/lists/*)
+  && rm -rf /var/lib/apt/lists/*
 
 # Baked toolchain: pinned agentproto CLI + adapters + OpenCode runtime.
 # One `npm i -g` per layer group so a pin bump invalidates only its layer.
@@ -41,9 +42,11 @@ RUN npm i -g opencode-ai@${OPENCODE_RUNTIME_VERSION}
 
 # --- Build-time smoke checks: fail the build, not a live agent turn. ---
 
-# 1. The pinned CLI is what's on PATH.
-RUN test "$(agentproto --version)" = "${AGENTPROTO_CLI_VERSION}" \
-  || (echo "smoke: agentproto --version != ${AGENTPROTO_CLI_VERSION}" && exit 1)
+# 1. The pinned CLI is what's on PATH. Matched as a substring of
+#    `agentproto --version` output (that output is not specified as exactly
+#    the bare semver — verified live it can differ, e.g. a v-prefix).
+RUN agentproto --version | grep -q "${AGENTPROTO_CLI_VERSION}" \
+  || (echo "smoke: agentproto --version does not contain ${AGENTPROTO_CLI_VERSION}" && agentproto --version && exit 1)
 
 # 2. Adapter discovery sees every baked adapter.
 RUN agentproto adapters list --json | jq -e . >/dev/null \
