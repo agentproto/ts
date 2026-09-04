@@ -20,6 +20,7 @@ import {
   buildBridgeScript,
   injectBridge,
   readDeclaredUIPort,
+  resolveRequestedPort,
   readDeclaredUITools,
   readDeclaredCategory,
   readDeclaredLibraryBookIds,
@@ -139,6 +140,20 @@ describe("readDeclaredUIPort", () => {
       "utf8",
     )
   }
+
+  it("resolveRequestedPort: --port wins, then PORT env, else undefined", () => {
+    expect(resolveRequestedPort("8123", { PORT: "9000" })).toEqual({
+      value: "8123",
+      source: "--port",
+    })
+    expect(resolveRequestedPort(undefined, { PORT: " 9000 " })).toEqual({
+      value: "9000",
+      source: "PORT env",
+    })
+    expect(resolveRequestedPort("", { PORT: "9000" })?.source).toBe("PORT env")
+    expect(resolveRequestedPort(undefined, { PORT: "" })).toBeUndefined()
+    expect(resolveRequestedPort(undefined, {})).toBeUndefined()
+  })
 
   it("reads a valid ui.port from APP.md frontmatter", async () => {
     const dir = await mktmp()

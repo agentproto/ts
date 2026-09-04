@@ -32,7 +32,7 @@
  * keeps the injected bridge to a few lines of pure fetch.
  *
  * Port resolution (lowest wins):
- *   `--port <n>` > APP.md frontmatter `ui.port` > OS auto-assign (listen 0).
+ *   `--port <n>` > `PORT` env > APP.md frontmatter `ui.port` > OS auto-assign (listen 0).
  * A declared `ui.port` that's already taken falls back to auto-assign rather
  * than failing; an explicit `--port` that's taken is a hard error.
  */
@@ -144,7 +144,9 @@ appDir:
   Install an app first: agentproto app install <dir>
 
 --port <n>:
-  Port to bind. Defaults to the app's declared "ui.port" (APP.md frontmatter),
+  Port to bind. Falls back to the PORT env var (so launchers that assign a
+  port via PORT — e.g. Claude Code's autoPort — work without a hardcoded
+  flag), then the app's declared "ui.port" (APP.md frontmatter),
   else an OS-assigned free port. A taken declared port falls back to
   auto-assign; a taken explicit --port is an error.
 
@@ -345,6 +347,27 @@ export async function callDaemonTool(
   } catch (err) {
     return [502, { error: "tool_call_failed", message: err instanceof Error ? err.message : String(err) }]
   }
+}
+
+/**
+ * The port the caller asked for, before validation: an explicit `--port`
+ * wins; otherwise a non-empty `PORT` env var counts as an implicit `--port`
+ * (launchers such as Claude Code's `autoPort` hand the assigned port over
+ * this way). Both are treated as explicit — a taken port is an error, not a
+ * fall-back. Returns undefined when neither is set.
+ */
+export function resolveRequestedPort(
+  portOpt: string | undefined,
+  env: Record<string, string | undefined> = process.env,
+): { value: string; source: "--port" | "PORT env" } | undefined {
+  if (typeof portOpt === "string" && portOpt.length > 0) {
+    return { value: portOpt, source: "--port" }
+  }
+  const fromEnv = env.PORT
+  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
+    return { value: fromEnv.trim(), source: "PORT env" }
+  }
+  return undefined
 }
 
 /**
@@ -742,14 +765,17 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  // 2. Port resolution: explicit --port > declared ui.port > auto-assign.
+  // 2. Port resolution: explicit --port > PORT env > declared ui.port > auto-assign.
   let explicitPort: number | undefined
   let declaredPort: number | undefined
-  if (typeof values.port === "string" && values.port.length > 0) {
-    const p = Number(values.port)
+  const requested = resolveRequestedPort(
+    typeof values.port === "string" ? values.port : undefined,
+  )
+  if (requested !== undefined) {
+    const p = Number(requested.value)
     if (!Number.isInteger(p) || p < 1 || p > 65535) {
       process.stderr.write(
-        `agentproto app serve: invalid --port '${values.port}' (must be 1–65535).\n`,
+        `agentproto app serve: invalid ${requested.source} '${requested.value}' (must be 1–65535).\n`,
       )
       return 2
     }
