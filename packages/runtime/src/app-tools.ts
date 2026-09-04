@@ -36,6 +36,7 @@ import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, type AppRegistry, type InstalledAppRef } from "./app-registry.js"
 import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
+import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
 import { loadAppCatalogFile } from "./app-catalog.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 
@@ -984,6 +985,13 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         workflowRunner && app
           ? workflowRunner.list().filter(r => app.workflows.some(w => w.id === r.workflowId))
           : []
+      // Read-only state-ledger projection (app-state.ts): when the app has
+      // a ledger on disk, `app_status` carries the folded stage snapshot so
+      // a UI can render the stage board without a separate app_state_get.
+      let state: { snapshot: Awaited<ReturnType<typeof appStateSnapshot>> } | undefined
+      if (app && (await appStateLedgerExists(app))) {
+        state = { snapshot: await appStateSnapshot(app) }
+      }
       return textResult({
         appRunId: run.appRunId,
         appId: run.appId,
@@ -999,6 +1007,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         ...(run.model !== undefined ? { model: run.model } : {}),
         sessions,
         workflowRuns,
+        ...(state !== undefined ? { state } : {}),
       })
     },
   )

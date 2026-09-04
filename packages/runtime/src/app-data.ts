@@ -9,6 +9,11 @@
  *   app_data_write    atomic write, JSON-stringified for `.json` paths
  *   app_data_list     list entries under an app-relative dir
  *   app_data_migrate  import legacy `ranked-jobs.json` + `dossiers/*` data
+ *   app_state_append  append a validated event to the app's state ledger
+ *                     (app-state.ts) — NOT granted to agent sessions (see
+ *                     app-state.ts's access rule); runner + UI only
+ *   app_state_get     fold the ledger to a snapshot + last N events
+ *   app_state_list    filtered event listing (stage/item/kinds/since/limit)
  *
  * Unlike the generic fs-tools (workspace-rooted), everything here resolves
  * strictly under the app's data dir (or, for legacy files, its source dir)
@@ -50,6 +55,15 @@ import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path"
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
+import {
+  APP_STATE_APPEND_TOOL_NAME,
+  APP_STATE_KINDS,
+  appendAppStateEvent,
+  appStateEventInputSchema,
+  appStateSnapshot,
+  readAppStateEvents,
+} from "./app-state.js"
+import type { AppStateEvent } from "./app-state.js"
 
 /** Thrown when a relative app path resolves outside the app's own directory. */
 export class AppPathTraversalError extends Error {
@@ -547,6 +561,105 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       })
 
       return textResult({ appId: input.appId, migrated: true, jobCount, dossierCount, skippedFolders })
+    },
+  )
+
+  // --- App state ledger (app-state.ts) -------------------------------------
+  // `app_state_append` is NOT auto-granted to app agents: the /mcp factory
+  // (index.ts) strips this name from any request carrying
+  // `?callerSessionId=` — i.e. every daemon-spawned agent session — via the
+  // same withToolExclusion plumbing as the role denyTools gate. The daemon
+  // runner and UI actions (no caller session id) keep it. Reads are open.
+
+  server.tool(
+    APP_STATE_APPEND_TOOL_NAME,
+    "Append one event to an installed app's append-only state ledger " +
+      "(`<dataDir>/state/events.jsonl`). The envelope is zod-validated, " +
+      "including the per-kind payload (gate-report needs `{ok, exitCode}`, " +
+      "approval needs `{approved, who}`, blocked needs `{reason}`); `id` and " +
+      "`ts` are daemon-assigned. Writes are single-line O_APPEND appends — " +
+      "concurrent appends never interleave. This is the daemon-owned state " +
+      "plane: agents cannot call it (stripped from agent sessions at the " +
+      "gateway), it is for the daemon runner and explicit UI actions — do " +
+      "NOT list it in an app's `ui.tools` unless a human approval action " +
+      "genuinely needs it.",
+    {
+      appId: z.string(),
+      event: appStateEventInputSchema.describe(
+        "Event envelope: { appRunId?, stage, item?, kind, by, payload }.",
+      ),
+    },
+    async input => {
+      const installed = appRegistry.getApp(input.appId)
+      if (!installed) return errorResult(`app_state_append: no installed app "${input.appId}".`)
+      try {
+        const stored = await appendAppStateEvent(installed, input.event as never)
+        return textResult({ appId: input.appId, event: stored })
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    },
+  )
+
+  server.tool(
+    "app_state_get",
+    "Read an installed app's state ledger: the folded stage snapshot " +
+      "(`foldAppStateEvents` — see app-state.ts for the reducer) plus the " +
+      "last `tail` events (default 20). A missing ledger returns an empty " +
+      "snapshot, not an error.",
+    {
+      appId: z.string(),
+      tail: z.number().int().positive().optional().describe("How many trailing events to include. Default 20."),
+    },
+    async input => {
+      const installed = appRegistry.getApp(input.appId)
+      if (!installed) return errorResult(`app_state_get: no installed app "${input.appId}".`)
+      const { events, malformedLines } = await readAppStateEvents(installed)
+      const snapshot = await appStateSnapshot(installed)
+      const tail = input.tail ?? 20
+      return textResult({
+        appId: input.appId,
+        snapshot,
+        events: events.slice(-tail),
+        ...(malformedLines > 0 ? { malformedLines } : {}),
+      })
+    },
+  )
+
+  server.tool(
+    "app_state_list",
+    "List events from an installed app's state ledger in append order, " +
+      "optionally filtered by `stage`, `item`, `kinds`, and/or `since` (ISO " +
+      "timestamp — events at or after it), capped at `limit` (default 100).",
+    {
+      appId: z.string(),
+      stage: z.string().optional(),
+      item: z.string().optional(),
+      kinds: z.array(z.enum(APP_STATE_KINDS)).optional(),
+      since: z.string().optional().describe("ISO timestamp lower bound (inclusive)."),
+      limit: z.number().int().positive().optional().describe("Max events returned. Default 100."),
+    },
+    async input => {
+      const installed = appRegistry.getApp(input.appId)
+      if (!installed) return errorResult(`app_state_list: no installed app "${input.appId}".`)
+      const { events, malformedLines } = await readAppStateEvents(installed)
+      const kinds = input.kinds !== undefined ? new Set<string>(input.kinds) : undefined
+      const filtered: AppStateEvent[] = []
+      const limit = input.limit ?? 100
+      for (const e of events) {
+        if (input.stage !== undefined && e.stage !== input.stage) continue
+        if (input.item !== undefined && e.item !== input.item) continue
+        if (kinds !== undefined && !kinds.has(e.kind)) continue
+        if (input.since !== undefined && e.ts < input.since) continue
+        filtered.push(e)
+        if (filtered.length >= limit) break
+      }
+      return textResult({
+        appId: input.appId,
+        events: filtered,
+        total: events.length,
+        ...(malformedLines > 0 ? { malformedLines } : {}),
+      })
     },
   )
 }
