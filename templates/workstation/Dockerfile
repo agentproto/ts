@@ -5,8 +5,13 @@
 # `e2b template build` passes them automatically from the toml; for a plain
 # `docker build`, pass them explicitly (commands in README.md).
 
-ARG BASE_IMAGE=e2bdev/code-interpreter:latest
-FROM ${BASE_IMAGE}
+# NOTE: the FROM line is NOT parameterized via ARG — e2b's template builder
+# does not interpolate build args into FROM (verified live: `invalid image
+# reference '${BASE_IMAGE}'`). The base image is declared in versions.json
+# (baseImage) and e2b.template.toml; if it changes, edit the FROM line here
+# to match.
+
+FROM e2bdev/code-interpreter:latest
 
 ARG AGENTPROTO_CLI_VERSION
 ARG AGENTPROTO_ADAPTERS
