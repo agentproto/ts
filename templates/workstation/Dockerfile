@@ -56,9 +56,10 @@ RUN npm i -g opencode-ai@${OPENCODE_RUNTIME_VERSION}
 RUN agentproto --version | grep -q "${AGENTPROTO_CLI_VERSION}" \
   || (echo "smoke: agentproto --version does not contain ${AGENTPROTO_CLI_VERSION}" && agentproto --version && exit 1)
 
-# 2. Adapter discovery sees every baked adapter.
-RUN agentproto adapters list --json | jq -e 'type == "array" and length > 0' >/dev/null \
-  || (echo "smoke: agentproto adapters list --json is empty" && exit 1)
+# 2. Every baked adapter is globally installed. (`agentproto adapters list`
+#    shows ENABLED adapters from config — empty on a fresh bake even when
+#    installed, verified live — so it cannot prove installation here. The
+#    non-empty-args guard above makes this loop non-vacuous.)
 RUN for pkg in ${AGENTPROTO_ADAPTERS}; do \
       npm ls -g --depth=0 "${pkg%%@*}" >/dev/null \
         || (echo "smoke: baked adapter missing: $pkg" && exit 1); \
