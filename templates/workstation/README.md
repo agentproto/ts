@@ -94,8 +94,10 @@ script, and rely on `@agentproto/sandbox-e2b`'s `updateCliOnBoot` /
 
 The build fails (not the first live agent turn) if any of these fail:
 
-1. `agentproto --version` equals the `cli` pin.
-2. `agentproto adapters list --json` parses and every baked adapter is
-   globally installed.
+1. `agentproto --version` matches the `cli` pin as a substring (the version
+   string may include additional build metadata).
+2. `npm ls -g --depth=0` confirms each baked adapter package is actually
+   installed globally (a plain `agentproto adapters list --json` check would
+   pass vacuously on an empty list, so it is not used here).
 3. `agentproto serve` answers `/health` on the provider's default port
    (18790).
