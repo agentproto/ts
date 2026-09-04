@@ -223,11 +223,42 @@ export function createPrProvenanceReconciler(opts: {
     void reconcile(sessionId, terminal).catch(() => {})
   }
 
+  // Cost-only counterpart to `reconcile`'s PR-discovery lanes, for a turn
+  // that can't have opened a NEW PR but may still have just learned the
+  // session's spend. Some adapters (OpenRouter-routed models observed via
+  // hermes AND direct ACP harnesses alike — see `SessionTurnEndEvent.empty`'s
+  // doc) settle their cost on a trailing turn that carries no assistant text
+  // and no tool call — exactly the shape `emptyTurn` flags. Skipping
+  // `reconcile()` outright on that turn (as the turn-end handler below does,
+  // correctly, for PR discovery) also skipped this cost refresh, so a session
+  // whose PR-creating turn stamped a footer with no amount could go the rest
+  // of its life — every later turn "empty" the same way, then no `exited`
+  // event at all if it stays parked/kept-alive — without ever re-rendering
+  // the footer, even once `desc.costUsd` was known. Never throws.
+  const safeRefreshCostOnly = (sessionId: string): void => {
+    void (async () => {
+      const desc = opts.registry.get(sessionId)
+      if (!desc || desc.kind !== "agent-cli") return
+      const cwd = desc.cwd ?? desc.worktreePath
+      if (!cwd) return
+      const supervisor =
+        desc.parentSessionId != null
+          ? opts.registry.get(desc.parentSessionId) ?? { id: desc.parentSessionId }
+          : null
+      await refreshCost(desc, supervisor, cwd)
+    })().catch(() => {})
+  }
+
   const unsubscribes: Array<() => void> = [
     opts.sessionEvents.on("session:turn-end", ev => {
-      // Skip silent no-op turns (zero output, zero tool calls) — they can't
-      // have opened a PR.
-      if (ev.empty === true) return
+      // A silent no-op turn (zero output, zero tool calls) can't have opened
+      // a NEW PR, so the discovery lanes are skipped — but it CAN be the
+      // turn that finally reports the session's cost (see
+      // `safeRefreshCostOnly`'s doc), so that half still runs.
+      if (ev.empty === true) {
+        safeRefreshCostOnly(ev.sessionId)
+        return
+      }
       safeReconcile(ev.sessionId, false)
     }),
     opts.sessionEvents.on("session:exited", ev => {

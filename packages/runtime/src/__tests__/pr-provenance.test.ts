@@ -208,6 +208,32 @@ describe("sessionFooterProvenance", () => {
     expect(footer).toContain("supervisor `sess_super`")
     expect(footer).not.toContain("legacy fallback")
   })
+
+  it("renders cost/tokens for a non-claude-code harness with adapter-sourced usage (opencode/openrouter)", () => {
+    // The footer builder itself is adapter-agnostic — it only reads
+    // `session.costUsd`/tokensIn/tokensOut, regardless of `usageSource`. This
+    // pins that an opencode session with adapter-reported spend (not
+    // claude-code, not "computed" from the pricing catalog) renders its cost
+    // segment exactly like a claude-code session does.
+    const opencodeSession: FooterSession = {
+      id: "sess_33eb9dfc",
+      kind: "agent-cli",
+      status: "exited",
+      startedAt: "2026-09-04T21:00:00.000Z",
+      cwd: "/Users/dev/agentproto/e2b-template-baked",
+      adapterSlug: "opencode",
+      harness: "opencode",
+      model: "openrouter/z-ai/glm-5.3-flash",
+      costUsd: 0.0971799,
+      tokensIn: 4200,
+      tokensOut: 1800,
+    }
+    const footer = buildSessionPrFooter(opencodeSession, { host: "mac.home" })
+    expect(footer).toContain("opencode")
+    expect(footer).toContain("model `openrouter/z-ai/glm-5.3-flash`")
+    expect(footer).toContain("$0.0972")
+    expect(footer).toContain("4.2k in / 1.8k out")
+  })
 })
 
 describe("parseGhPrCreate", () => {

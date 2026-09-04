@@ -186,6 +186,55 @@ describe("createPrProvenanceReconciler", () => {
     expect(resolveOpenPr).not.toHaveBeenCalled()
   })
 
+  it("refreshes cost on an EMPTY turn-end — adapters (e.g. OpenRouter-routed opencode) that settle spend on a trailing no-op turn must not go unstamped forever", async () => {
+    // Mirrors a real opencode/openrouter session: the PR-creating turn stamps
+    // a footer with no amount (cost not known yet), then a LATER turn
+    // reports zero assistant text / zero tool calls (so `ev.empty === true`)
+    // but is exactly when the adapter's cost becomes known. PR discovery
+    // (resolveOpenPr) correctly stays skipped on an empty turn — there's
+    // nothing new to find — but the cost refresh must still run.
+    const session = execSession({
+      harness: "opencode",
+      adapterSlug: "opencode",
+      openedPrs: [{ url: PR.url, number: PR.number }],
+    })
+    const { reg } = fakeRegistry([session, SUPER])
+    let body =
+      "Body.\n\n---\n<sub>🤖 **" +
+      MARKER +
+      "** — PR · session `sess_exec` · opencode · model `openrouter/z-ai/glm-5.3-flash` · host `mac.home` · cwd `agentproto/e2b-template-baked`</sub>"
+    const edits: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: body }
+      if (args[1] === "edit") {
+        body = args[4] as string
+        edits.push(body)
+      }
+      return { exitCode: 0, stdout: "" }
+    }
+    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr,
+      run,
+    })
+
+    // The session learns its adapter-reported cost, then reports it on a
+    // trailing turn with no new output — `empty: true`.
+    session.costUsd = 0.0971799
+    bus.emit(turnEnd("sess_exec", true))
+    await flush()
+
+    // Discovery correctly never runs on an empty turn...
+    expect(resolveOpenPr).not.toHaveBeenCalled()
+    // ...but the footer IS refreshed with the now-known cost.
+    expect(edits.length).toBe(1)
+    expect(edits[0]).toContain("$0.0972")
+  })
+
   it("neither re-edits nor records when the PR body already carries the marker", async () => {
     const { reg, recorded } = fakeRegistry([execSession(), SUPER])
     const editCalls: number[] = []
