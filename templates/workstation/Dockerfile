@@ -17,6 +17,14 @@ ARG AGENTPROTO_CLI_VERSION
 ARG AGENTPROTO_ADAPTERS
 ARG OPENCODE_RUNTIME_VERSION
 
+# The pre-FROM ARG defaults do NOT cross the FROM boundary (Docker semantics:
+# a bare `ARG` re-declaration inherits the pre-FROM default; without it the
+# expansion is empty). Fail loudly rather than bake a half-empty image —
+# verified live: with empty args the adapter smoke loop below passes
+# vacuously and the image silently ships without the adapters.
+RUN [ -n "${AGENTPROTO_CLI_VERSION}" ] && [ -n "${AGENTPROTO_ADAPTERS}" ] && [ -n "${OPENCODE_RUNTIME_VERSION}" ] \
+  || (echo "smoke: pin build args are empty — re-declare ARGs after FROM" && exit 1)
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Node + git are the workstation baseline (the e2b base image ships Node;
@@ -49,8 +57,8 @@ RUN agentproto --version | grep -q "${AGENTPROTO_CLI_VERSION}" \
   || (echo "smoke: agentproto --version does not contain ${AGENTPROTO_CLI_VERSION}" && agentproto --version && exit 1)
 
 # 2. Adapter discovery sees every baked adapter.
-RUN agentproto adapters list --json | jq -e . >/dev/null \
-  || (echo "smoke: agentproto adapters list --json failed" && exit 1)
+RUN agentproto adapters list --json | jq -e 'type == "array" and length > 0' >/dev/null \
+  || (echo "smoke: agentproto adapters list --json is empty" && exit 1)
 RUN for pkg in ${AGENTPROTO_ADAPTERS}; do \
       npm ls -g --depth=0 "${pkg%%@*}" >/dev/null \
         || (echo "smoke: baked adapter missing: $pkg" && exit 1); \
