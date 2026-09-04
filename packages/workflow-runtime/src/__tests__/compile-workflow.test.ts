@@ -790,4 +790,31 @@ describe("compileWorkflow — subworkflow input projection", () => {
       compileWorkflow(wf, { tools, candidates, workflows: { "child-doubles": childDoubles } }),
     ).toThrow(WorkflowCompileError)
   })
+
+  it("rejects a mapping ref to a missing field at run time, naming step + key", async () => {
+    const wf = defineWorkflow({
+      name: "Parent (missing field)",
+      id: "parent-missing-field",
+      description: "Maps a parent input field that doesn't exist.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "sub",
+          kind: "subworkflow",
+          workflow: "child-doubles",
+          inputs: { topic: "$input.bookDir" },
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      workflows: { "child-doubles": childDoubles },
+    })
+    await expect(runWorkflow({ workflow: compiled, input: {} })).rejects.toThrow(
+      /subworkflow step 'sub' input key 'topic': reference '\$input\.bookDir' resolves to nothing/,
+    )
+  })
 })

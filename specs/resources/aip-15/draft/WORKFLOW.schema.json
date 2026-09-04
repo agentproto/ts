@@ -349,7 +349,11 @@
       "required": ["kind", "workflow"],
       "properties": {
         "kind": { "const": "subworkflow" },
-        "workflow": { "type": "string" }
+        "workflow": { "type": "string" },
+        "with": {
+          "type": "object",
+          "description": "Optional input projection for the child workflow — an alias of `inputs` with identical semantics. Each key is a field of the child's `$input`; each value is either a literal, a reference to a parent input field (`$input.*`), or a reference to a prior step's output (`$steps.<id>.*`), resolved against the PARENT's bindings when the step runs. A referenced field that does not exist is an error naming the step and key — never a silent `undefined`. A step with neither `with` nor `inputs` passes the parent's own input object to the child verbatim. Declaring both `with` and `inputs` on one step is invalid."
+        }
       }
     }
   }

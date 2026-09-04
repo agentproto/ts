@@ -58,3 +58,40 @@ describe("loadWorkflowHandle", () => {
     )
   })
 })
+
+describe("loadWorkflowHandle — subworkflow with: threading", () => {
+  it("compiles with: parent input fields into step inputs", async () => {
+    const h = await loadWorkflowHandle(fix("with-threading/WORKFLOW.md"))
+    const sub = h.steps.find((s) => s.id === "sub") as unknown as Record<string, unknown>
+    expect(sub.inputs).toMatchObject({
+      topic: "$input.bookDir",
+      audience: "$input.audience",
+    })
+    expect(sub.with).toBeUndefined()
+  })
+
+  it("compiles with: a prior step's output into step inputs", async () => {
+    const h = await loadWorkflowHandle(fix("with-threading/WORKFLOW.md"))
+    const sub = h.steps.find((s) => s.id === "sub") as unknown as Record<string, unknown>
+    expect(sub.inputs).toMatchObject({ n: "$steps.d.n" })
+  })
+
+  it("passes with: literals through as literal values", async () => {
+    const h = await loadWorkflowHandle(fix("with-threading/WORKFLOW.md"))
+    const sub = h.steps.find((s) => s.id === "sub") as unknown as Record<string, unknown>
+    expect(sub.inputs).toMatchObject({ limit: 3 })
+  })
+
+  it("leaves a subworkflow step without with: untouched (verbatim input)", async () => {
+    const h = await loadWorkflowHandle(fix("with-threading/WORKFLOW.md"))
+    const bare = h.steps.find((s) => s.id === "bare") as unknown as Record<string, unknown>
+    expect(bare.inputs).toBeUndefined()
+    expect(bare.with).toBeUndefined()
+  })
+
+  it("rejects a with: ref to an unknown step id, naming the step and key", async () => {
+    await expect(loadWorkflowHandle(fix("with-bad-ref/WORKFLOW.md"))).rejects.toThrow(
+      /subworkflow step 'sub' with\.topic references unknown step 'ghost'/,
+    )
+  })
+})

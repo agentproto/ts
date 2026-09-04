@@ -46,6 +46,88 @@ function isWorkflowHandle(v: unknown): v is WorkflowHandle {
   )
 }
 
+/**
+ * Translate a declarative `subworkflow` step's `with:` block into the `inputs`
+ * projection the runtime compiler threads into `step.input(b)` (AIP-16 ref
+ * grammar: `$input.*`, `$steps.<id>.*`, literals — resolved against the
+ * PARENT's bindings). Without this, a manifest `with:` is dead documentation:
+ * the child receives the parent's raw input verbatim. Steps without `with:`
+ * are left untouched. Nested step lists (map / loop / parallel bodies and
+ * branch arms) are walked too.
+ */
+function translateSubworkflowWith(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  steps: unknown,
+  knownStepIds: ReadonlySet<string>,
+): void {
+  if (!Array.isArray(steps)) return
+  for (const step of steps) {
+    if (step === null || typeof step !== "object") continue
+    const s = step as Record<string, unknown>
+    if (s.kind === "subworkflow" && s.with !== undefined) {
+      const id = typeof s.id === "string" ? s.id : "(unid)"
+      if (s.inputs !== undefined) {
+        throw new WorkflowLoadError(
+          `subworkflow step '${id}' declares both 'with' and 'inputs' — use one`,
+        )
+      }
+      assertWithStepRefs(s.with, `subworkflow step '${id}' with`, knownStepIds)
+      s.inputs = s.with
+      delete s.with
+    }
+    translateSubworkflowWith(s.steps, knownStepIds)
+    if (Array.isArray(s.branches)) {
+      for (const br of s.branches)
+        translateSubworkflowWith((br as Record<string, unknown>)?.steps, knownStepIds)
+    }
+  }
+}
+
+/** Statically reject a `$steps.<id>` ref in a `with:` block that names a step
+ *  id this workflow doesn't declare — at load time, naming the step + key. */
+function assertWithStepRefs(
+  node: unknown,
+  label: string,
+  knownStepIds: ReadonlySet<string>,
+): void {
+  if (typeof node === "string") {
+    if (node.startsWith("$$")) return
+    const m = node.match(/^\$steps\.([^.]+)/)
+    if (m && !knownStepIds.has(m[1]!)) {
+      throw new WorkflowLoadError(
+        `${label} references unknown step '${m[1]}' via '${node}' — ` +
+          `no step with that id exists in this workflow`,
+      )
+    }
+    return
+  }
+  if (Array.isArray(node)) {
+    node.forEach((n, i) => assertWithStepRefs(n, `${label}[${i}]`, knownStepIds))
+    return
+  }
+  if (node && typeof node === "object") {
+    for (const [k, v] of Object.entries(node as Record<string, unknown>))
+      assertWithStepRefs(v, `${label}.${k}`, knownStepIds)
+  }
+}
+
+/** Collect every step id declared anywhere in a manifest step list,
+ *  including nested map / loop / parallel / branch bodies. */
+function collectManifestStepIds(steps: unknown, ids: Set<string> = new Set()): Set<string> {
+  if (!Array.isArray(steps)) return ids
+  for (const step of steps) {
+    if (step === null || typeof step !== "object") continue
+    const s = step as Record<string, unknown>
+    if (typeof s.id === "string") ids.add(s.id)
+    collectManifestStepIds(s.steps, ids)
+    if (Array.isArray(s.branches)) {
+      for (const br of s.branches)
+        collectManifestStepIds((br as Record<string, unknown>)?.steps, ids)
+    }
+  }
+  return ids
+}
+
 async function importEntryHandle(
   workflowMdPath: string,
   entry: string,
@@ -112,7 +194,11 @@ export async function loadWorkflowHandle(
   }
   const manifest: WorkflowManifest = parseWorkflowManifest(source)
   const entry = manifest.frontmatter.entry
-  if (!entry) return workflowFromManifest(manifest)
+  if (!entry) {
+    const knownStepIds = collectManifestStepIds(manifest.frontmatter.steps)
+    translateSubworkflowWith(manifest.frontmatter.steps, knownStepIds)
+    return workflowFromManifest(manifest)
+  }
   const handle = await importEntryHandle(workflowMdPath, entry)
   reconcileEntry(manifest, handle)
   return handle

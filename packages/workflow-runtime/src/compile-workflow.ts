@@ -112,6 +112,60 @@ export function resolveValue(node: unknown, b: Bindings): unknown {
   return node
 }
 
+/** Like {@link resolveRef} but reports whether the referenced path actually
+ *  exists in the bindings — a strict subworkflow projection uses this to turn
+ *  a silently-`undefined` reference into a named error instead. */
+function refPathExists(ref: string, b: Bindings): boolean {
+  const m = ref.match(/^\$(input|item|steps)((?:\.[^.]+)*)$/)
+  if (!m) return false
+  const segs = m[2] ? m[2].slice(1).split(".") : []
+  let v: unknown
+  if (m[1] === "steps") {
+    const [stepId, ...rest] = segs
+    if (!stepId || !(stepId in b.steps)) return false
+    v = b.steps[stepId]
+    segs.length = 0
+    segs.push(...rest)
+  } else {
+    v = m[1] === "input" ? b.input : b.item
+  }
+  for (const seg of segs) {
+    if (v === null || typeof v !== "object") return false
+    const o = v as Record<string, unknown>
+    if (!(seg in o)) return false
+    v = o[seg]
+  }
+  return true
+}
+
+/** Strict variant of {@link resolveValue} for a subworkflow step's input
+ *  projection: an exact `$…` reference that resolves to `undefined` AND names
+ *  a path that doesn't exist in the bindings is a hard error naming the step
+ *  and key — never a silent `undefined` handed to the child. */
+export function resolveValueStrict(node: unknown, b: Bindings, label: string): unknown {
+  if (typeof node === "string") {
+    if (node.startsWith("$$")) return node.slice(1) // $$ → literal $
+    if (node.startsWith("$")) {
+      const v = resolveRef(node, b)
+      if (v === undefined && !refPathExists(node, b)) {
+        throw new WorkflowCompileError(
+          `${label}: reference '${node}' resolves to nothing — the referenced field does not exist`,
+        )
+      }
+      return v
+    }
+    return node
+  }
+  if (Array.isArray(node)) return node.map((n) => resolveValueStrict(n, b, label))
+  if (node && typeof node === "object") {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(node as Record<string, unknown>))
+      out[k] = resolveValueStrict(v, b, label)
+    return out
+  }
+  return node
+}
+
 const COMPARATORS: Record<string, (a: number, b: number) => boolean> = {
   "<": (a, c) => a < c,
   "<=": (a, c) => a <= c,
@@ -485,11 +539,19 @@ function compileStep(step: any, ctx: Ctx): RunStep {
         return { kind: "subworkflow", id, workflow: compiledChild }
       }
       assertKnownStepRefs(inputs, ctx.knownStepIds, `subworkflow step '${id}' inputs`)
+      const entries = Object.entries(inputs as Record<string, unknown>)
       return {
         kind: "subworkflow",
         id,
         workflow: compiledChild,
-        input: (b) => resolveValue(inputs, b),
+        // Each top-level key resolves strictly: a missing referenced field
+        // throws at run time naming this step + key (no silent `undefined`).
+        input: (b) => {
+          const out: Record<string, unknown> = {}
+          for (const [k, v] of entries)
+            out[k] = resolveValueStrict(v, b, `subworkflow step '${id}' input key '${k}'`)
+          return out
+        },
       }
     }
 
