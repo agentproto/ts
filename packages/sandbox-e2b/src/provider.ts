@@ -17,17 +17,22 @@
  * The workstation template MAY already autostart the daemon; since that
  * can't be verified without a live template, this provider checks health
  * first and only issues the start command when the daemon isn't already
- * responding — correct either way. When it does start the daemon, it first
- * updates the baked `@agentproto/cli` (the pre-built template can lag
- * behind — verified stale against a live template) so callers aren't stuck
- * on whatever agentproto version the template was last baked with.
+ * responding — correct either way. When it does start the daemon on a
+ * NON-baked template, it first updates the CLI (custom templates can lag
+ * behind). For the baked stable workstation template the boot install is
+ * skipped by default — the bake already carries the pinned CLI
+ * (`templates/workstation/versions.json` via the generated module); an
+ * explicit `updateCliOnBoot` overrides either way.
  */
 
 import { Sandbox } from "e2b"
 import type { BootedSandbox, SandboxBootOpts, SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
+import { BAKED_CLI_VERSION, DEFAULT_TEMPLATE } from "./template-versions.generated.js"
 
-/** Pre-built template that bakes @agentproto/cli + adapters + node + git. */
-export const DEFAULT_TEMPLATE = "53ybr99wdfgoebi9nee8"
+/** Re-exported from the generated module (single source:
+ *  `templates/workstation/versions.json` via scripts/sync-templates.mjs). */
+export { DEFAULT_TEMPLATE }
+export { BAKED_CLI_VERSION as BAKED_TEMPLATE_CLI_VERSION }
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
 const DEFAULT_PORT = 18790
@@ -62,10 +67,14 @@ interface E2bSandboxConfig {
   daemonReadyTimeoutMs?: number
   /** Delay between health-probe attempts. */
   pollIntervalMs?: number
-  /** Run `npm i -g @agentproto/cli@latest` before starting the daemon, so a
+  /** Run `npm i -g @agentproto/cli@...` before starting the daemon, so a
    *  stale template bake doesn't pin callers to an old agentproto version.
-   *  Default true. Only runs when this provider is the one starting the
-   *  daemon (skipped when the health probe finds it already autostarted). */
+   *  Default: false when the configured template is the baked stable
+   *  workstation one AND the requested cliVersion matches its baked pin
+   *  (the bake already carries exactly that CLI) — true otherwise (custom
+   *  templates can lag behind). Only runs when this provider is the one
+   *  starting the daemon (skipped when the health probe finds it already
+   *  autostarted). */
   updateCliOnBoot?: boolean
   /** CLI version to install on boot, pinned instead of a floating `@latest`.
    *  A broken `@agentproto/cli@latest` publish otherwise silently kills the
@@ -79,9 +88,11 @@ interface E2bSandboxConfig {
    *  `@agentproto/adapter-*` packages (verified against a live template) —
    *  so the adapter the caller intends to spawn must be (re)installed in the
    *  same breath, e.g. `["@agentproto/adapter-claude-sdk@latest"]` (plus
-   *  `"@anthropic-ai/claude-code@latest"` for the claude-code adapter's
-   *  underlying CLI). Ignored when `updateCliOnBoot` is false or the daemon
-   *  was already autostarted healthy. */
+ *  `"@anthropic-ai/claude-code@latest"` for the claude-code adapter's
+ *  underlying CLI). Ignored when `updateCliOnBoot` is false or the daemon
+ *  was already autostarted healthy. Declaring a non-empty list also
+ *  re-enables the boot install when `updateCliOnBoot` is unset — entries
+ *  are never silently dropped on the baked-template skip path. */
   installPackages?: string[]
   /** Timeout for the `npm i -g` update command. Default 120s. */
   updateCliTimeoutMs?: number
@@ -120,6 +131,26 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
 }
 
 /**
+ * Default the on-boot CLI update OFF for the baked stable workstation
+ * template whose bake already carries the requested CLI pin — the install
+ * would just re-download the same version (90-120s per cold boot, npm
+ * registry dependency, and it replaces the template's baked adapters).
+ * Everything else (custom templates, a different requested cliVersion, a
+ * caller-declared installPackages list, dev templates) keeps the legacy
+ * default of true. An explicit `updateCliOnBoot` always wins.
+ */
+function resolveUpdateCli(config: E2bSandboxConfig, template: string): boolean {
+  if (config.updateCliOnBoot !== undefined) return config.updateCliOnBoot
+  // Runtime escape hatch: a caller declaring installPackages wants an
+  // install to happen — never silently drop them on the skip path.
+  if ((config.installPackages?.length ?? 0) > 0) return true
+  const bakedStableWithMatchingCli =
+    template === DEFAULT_TEMPLATE &&
+    (config.cliVersion === undefined || config.cliVersion === BAKED_CLI_VERSION)
+  return !bakedStableWithMatchingCli
+}
+
+/**
  * Probe health, and — if the daemon isn't already up — update the (possibly
  * stale) baked CLI and start it, then re-probe. Shared by `boot` (a fresh
  * template's autostart may not have fired yet) and `connect` (a resumed box
@@ -134,6 +165,7 @@ async function ensureDaemonHealthy(
   workspace: string,
   config: E2bSandboxConfig,
   env: Record<string, string>,
+  updateCli: boolean,
 ): Promise<void> {
   const healthUrl = `https://${host}/health`
   const healthProbeTimeoutMs = config.healthProbeTimeoutMs ?? HEALTH_PROBE_TIMEOUT_MS
@@ -142,7 +174,7 @@ async function ensureDaemonHealthy(
 
   const alreadyUp = await probeHealth(healthUrl, healthProbeTimeoutMs, pollIntervalMs)
 
-  if (!alreadyUp && (config.updateCliOnBoot ?? true)) {
+  if (!alreadyUp && updateCli) {
     // One `npm i -g` for the CLI update AND any caller-declared extras
     // (`installPackages` — typically the adapter about to be spawned). The
     // CLI update alone replaces the global install and LOSES template-baked
@@ -231,7 +263,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     })
 
     const host = sandbox.getHost(port)
-    await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env)
+    await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
     return toBootedSandbox(sandbox, host)
   },
 
@@ -247,7 +279,9 @@ export const e2bSandboxProvider: SandboxProvider = {
     await sandbox.setTimeout(config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS)
 
     const host = sandbox.getHost(port)
-    await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env)
+    // A resumed box keeps its original template — resolve against the
+    // configured template the same way `boot` does.
+    await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, config.template ?? DEFAULT_TEMPLATE))
     // `opts.expose === "private"` (only ever set by `attachSandbox`, see
     // @agentproto/runtime) surfaces e2b's own "restricted public traffic"
     // token, when the sandbox has one — it gates access to EVERY exposed

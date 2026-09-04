@@ -17,6 +17,13 @@ import { fileURLToPath } from "node:url"
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, "..")
 const SCRIPT = path.join(REPO_ROOT, "scripts/sync-templates.mjs")
+const REPO_VERSIONS = JSON.parse(
+  readFileSync(path.join(REPO_ROOT, "templates/workstation/versions.json"), "utf8"),
+)
+const STABLE_ID = REPO_VERSIONS.templates.stable.id
+// The opaque template id may exist ONLY here (versions.json + the generated
+// module) — asserted below; never hardcoded anywhere else.
+const STABLE_ID_RE = new RegExp(STABLE_ID.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
 
 function makeFixture() {
   const root = mkdtempSync(path.join(import.meta.dirname, "sync-templates-fixture-"))
@@ -80,7 +87,7 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
 
     // generated module exports the canonical pins
     const gen = first["packages/sandbox-e2b/src/template-versions.generated.ts"]
-    assert.match(gen, /export const DEFAULT_TEMPLATE = "53ybr99wdfgoebi9nee8"/)
+    assert.match(gen, new RegExp(`export const DEFAULT_TEMPLATE = "${STABLE_ID}"`))
     assert.match(gen, /export const BAKED_CLI_VERSION = "0\.17\.0"/)
     assert.match(gen, /"@agentproto\/adapter-opencode": "1\.1\.10"/)
     assert.match(gen, /TEMPLATE_ALIASES = \{[^]*stable: "agentproto-workstation"/)
@@ -97,7 +104,7 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     // toml carries the build args
     assert.match(first["templates/workstation/e2b.template.toml"], /AGENTPROTO_CLI_VERSION = "0\.17\.0"/)
     // the opaque template id must NOT leak into the toml (alias only)
-    assert.doesNotMatch(first["templates/workstation/e2b.template.toml"], /53ybr99wdfgoebi9nee8/)
+    assert.doesNotMatch(first["templates/workstation/e2b.template.toml"], STABLE_ID_RE)
 
     // SECOND run: byte-identical tree — no diff
     runSync(root)
