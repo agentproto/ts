@@ -88,6 +88,28 @@ function validateVersions(v) {
     const entry = t[key]
     if (entry.id !== null && typeof entry.id !== "string") fail(`templates.${key}.id: string or null`)
     if (typeof entry.alias !== "string" || !entry.alias) fail(`templates.${key}.alias: required non-empty string`)
+    validateBaked(entry.baked, `templates.${key}.baked`)
+  }
+}
+
+function validateBaked(baked, label) {
+  if (typeof baked !== "object" || baked === null) fail(`${label}: required object`)
+  for (const field of ["cli", "adapters", "builtAt"]) {
+    if (!(field in baked)) fail(`${label}.${field}: required (use null when unknown)`)
+  }
+  if (baked.cli !== null && !SEMVER_RE.test(baked.cli)) {
+    fail(`${label}.cli: expected semver or null, got ${JSON.stringify(baked.cli)}`)
+  }
+  if (baked.adapters !== null) {
+    if (typeof baked.adapters !== "object") fail(`${label}.adapters: object or null`)
+    for (const [pkg, ver] of Object.entries(baked.adapters)) {
+      if (typeof ver !== "string" || !SEMVER_RE.test(ver)) {
+        fail(`${label}.adapters.${pkg}: expected semver, got ${JSON.stringify(ver)}`)
+      }
+    }
+  }
+  if (baked.builtAt !== null && Number.isNaN(Date.parse(baked.builtAt))) {
+    fail(`${label}.builtAt: expected ISO 8601 date or null`)
   }
 }
 
@@ -117,6 +139,23 @@ export const DEFAULT_TEMPLATE = "${templates.stable.id}"
 export const TEMPLATE_ALIASES = {
   stable: ${JSON.stringify(templates.stable.alias)},
   dev: ${JSON.stringify(templates.dev.alias)},
+} as const
+/**
+ * What each published image was PROVEN to contain at its last real e2b
+ * build. A null field means unknown (e.g. out-of-band bake) — consumers
+ * must assume the image does NOT match the declared pins.
+ */
+export const TEMPLATES = {
+  stable: {
+    id: ${JSON.stringify(templates.stable.id)},
+    alias: ${JSON.stringify(templates.stable.alias)},
+    baked: ${JSON.stringify(templates.stable.baked, null, 2).split("\n").map((l, i) => (i === 0 ? l : "    " + l)).join("\n")},
+  },
+  dev: {
+    id: ${JSON.stringify(templates.dev.id)},
+    alias: ${JSON.stringify(templates.dev.alias)},
+    baked: ${JSON.stringify(templates.dev.baked, null, 2).split("\n").map((l, i) => (i === 0 ? l : "    " + l)).join("\n")},
+  },
 } as const
 export const BAKED_CLI_VERSION = "${cli}"
 export const BAKED_ADAPTERS = {
@@ -174,12 +213,15 @@ const pinList = [
     .map(([pkg, ver]) => `\`${pkg}@${ver}\``),
 ]
 
-const README_BLOCK = `- The default \`${templates.stable.alias}\` template is baked from the pinned
-  declaration in \`templates/workstation/versions.json\`: ${pinList.slice(0, 2).join(", ")}, ${pinList.slice(2).join(", ")}. Because the bake
-  matches the declared pin, the provider skips the on-boot \`npm i -g\` for it by default.`
+const README_BLOCK = `- The default \`${templates.stable.alias}\` template is declared in
+  \`templates/workstation/versions.json\`: ${pinList.slice(0, 2).join(", ")}, ${pinList.slice(2).join(", ")}. The on-boot
+  \`npm i -g\` is skipped by default only once the template's recorded \`baked\`
+  block PROVES the image already carries the requested pin; until then the
+  legacy boot install stays on.`
 
-const DOCS_BLOCK = `The \`e2b\` provider's default template is baked from the pinned declaration in
-\`templates/workstation/versions.json\`: ${pinList.join(", ")}. On-boot CLI updates are skipped for this baked template.`
+const DOCS_BLOCK = `The \`e2b\` provider's default template is declared in
+\`templates/workstation/versions.json\`: ${pinList.join(", ")}. The on-boot CLI install is skipped only once the
+template's recorded \`baked\` block proves the image carries the requested pin.`
 
 const TS_DESCRIPTION_BLOCK = `"Runs the agentproto daemon inside an e2b Firecracker microVM (${templates.stable.alias} template, baked @agentproto/cli ${cli}).",`
 

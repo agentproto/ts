@@ -7,7 +7,9 @@ boots by default. Everything it bakes is pinned in
 - `cli` — the `@agentproto/cli` version
 - `adapters` — the agentproto adapter packages (with their pins)
 - `runtime` — agent runtime CLIs (`opencode-ai`)
-- `templates.stable` / `templates.dev` — published e2b template id + alias
+- `templates.stable` / `templates.dev` — published e2b template id + alias,
+  plus the `baked` block recording what the published image was PROVEN to
+  contain (`cli`, `adapters`, `builtAt`; all null = unproven bake)
 - `baseImage` — the image the Dockerfile builds `FROM`
 
 Derived files (the generated TS module, marked doc blocks, and
@@ -50,9 +52,22 @@ e2b template build --template-id agentproto-workstation-dev \
 
 `e2b template build` publishes a new template **version** under the same
 template id — existing sandboxes are untouched, new boots get the new
-version. The build prints the new `template_id` + version alias; if the
-opaque id changed (first publish of an alias), record it in
-`versions.json` (`templates.stable.id`) and re-run the sync script.
+version. After every real build, record the result back into
+`versions.json` and re-run the sync script:
+
+1. Set `templates.<channel>.id` to the built template id (if it changed).
+2. Fill in the `templates.<channel>.baked` block with what the image was
+   PROVEN to contain — `cli`, `adapters`, `builtAt` (verify inside the
+   image, e.g. `e2b sandbox` + `agentproto --version` /
+   `npm ls -g --depth=0`). A `null` baked field means *unknown*: consumers
+   (`@agentproto/sandbox-e2b`) treat an unproven bake as stale and keep the
+   on-boot `npm i -g` enabled — so an out-of-band or unverified bake never
+   silently boots the wrong CLI or loses adapters.
+3. Run `node scripts/sync-templates.mjs` and commit.
+
+TODO (not implemented): a `pnpm templates:refresh --channel dev` helper
+that builds the dev channel against unreleased pins and writes the
+resulting `baked` block automatically.
 
 ## Rollback
 

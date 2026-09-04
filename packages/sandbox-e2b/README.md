@@ -36,9 +36,11 @@ Requires `E2B_API_KEY` in the host process's environment.
   https://<getHost>`) so the host process can reach it over
   `https://<getHost>/mcp`.
 <!-- sync-templates:start -->
-- The default `agentproto-workstation` template is baked from the pinned
-  declaration in `templates/workstation/versions.json`: `@agentproto/cli@0.17.0`, `@agentproto/adapter-hermes@0.4.10`, `@agentproto/adapter-opencode@1.1.10`, `opencode-ai@1.18.28`. Because the bake
-  matches the declared pin, the provider skips the on-boot `npm i -g` for it by default.
+- The default `agentproto-workstation` template is declared in
+  `templates/workstation/versions.json`: `@agentproto/cli@0.17.0`, `@agentproto/adapter-hermes@0.4.10`, `@agentproto/adapter-opencode@1.1.10`, `opencode-ai@1.18.28`. The on-boot
+  `npm i -g` is skipped by default only once the template's recorded `baked`
+  block PROVES the image already carries the requested pin; until then the
+  legacy boot install stays on.
 <!-- sync-templates:end -->
 - Custom (non-baked) templates can lag behind: the provider runs `npm i -g
   @agentproto/cli@<cliVersion>` before starting the daemon on them (`cliVersion`

@@ -9,6 +9,31 @@ export const TEMPLATE_ALIASES = {
   stable: "agentproto-workstation",
   dev: "agentproto-workstation-dev",
 } as const
+/**
+ * What each published image was PROVEN to contain at its last real e2b
+ * build. A null field means unknown (e.g. out-of-band bake) — consumers
+ * must assume the image does NOT match the declared pins.
+ */
+export const TEMPLATES = {
+  stable: {
+    id: "53ybr99wdfgoebi9nee8",
+    alias: "agentproto-workstation",
+    baked: {
+      "cli": null,
+      "adapters": null,
+      "builtAt": null
+    },
+  },
+  dev: {
+    id: null,
+    alias: "agentproto-workstation-dev",
+    baked: {
+      "cli": null,
+      "adapters": null,
+      "builtAt": null
+    },
+  },
+} as const
 export const BAKED_CLI_VERSION = "0.17.0"
 export const BAKED_ADAPTERS = {
   "@agentproto/adapter-hermes": "0.4.10",

@@ -68,11 +68,11 @@ describe("e2bSandboxProvider.connect", () => {
     const reconnectSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
     await e2bSandboxProvider.connect!("sbx_abc", reconnectSpec, { env: { OPENROUTER_API_KEY: "k" } })
 
-    // the baked stable template already carries the pinned CLI — the on-boot
-    // npm install is SKIPPED by default on reconnect too
-    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
-      expect.stringContaining("npm i -g"),
-      expect.anything(),
+    // the stable template's recorded bake is null (unproven) — the legacy
+    // on-boot npm install STAYS ON on reconnect too
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@latest",
+      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
     )
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       expect.stringContaining("agentproto serve --port 18790 --bind 0.0.0.0"),

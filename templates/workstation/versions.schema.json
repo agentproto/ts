@@ -38,28 +38,42 @@
       "additionalProperties": false,
       "required": ["stable", "dev"],
       "properties": {
-        "stable": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["id", "alias"],
-          "properties": {
-            "id": {
-              "type": ["string", "null"],
-              "description": "The published e2b template id (opaque). null when not yet published."
-            },
-            "alias": { "type": "string" }
-          }
+        "stable": { "$ref": "#/$defs/templateEntry" },
+        "dev": { "$ref": "#/$defs/templateEntry" }
+      }
+    }
+  },
+  "$defs": {
+    "templateEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "alias", "baked"],
+      "properties": {
+        "id": {
+          "type": ["string", "null"],
+          "description": "The published e2b template id (opaque). null when not yet published."
         },
-        "dev": {
+        "alias": { "type": "string" },
+        "baked": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["id", "alias"],
+          "required": ["cli", "adapters", "builtAt"],
+          "description": "What the published image was PROVEN to contain at its last real e2b build. null = unknown / out-of-band bake — consumers must assume the image does NOT match the declared pins.",
           "properties": {
-            "id": {
+            "cli": {
               "type": ["string", "null"],
-              "description": "Template id of the dev (unreleased) variant. null when unpublished."
+              "description": "The @agentproto/cli version actually verified inside the published image."
             },
-            "alias": { "type": "string" }
+            "adapters": {
+              "type": ["object", "null"],
+              "description": "Adapter package -> version actually verified inside the published image.",
+              "additionalProperties": { "type": "string" }
+            },
+            "builtAt": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the published image was built (ISO 8601)."
+            }
           }
         }
       }

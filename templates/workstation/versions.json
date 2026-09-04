@@ -12,11 +12,21 @@
   "templates": {
     "stable": {
       "id": "53ybr99wdfgoebi9nee8",
-      "alias": "agentproto-workstation"
+      "alias": "agentproto-workstation",
+      "baked": {
+        "cli": null,
+        "adapters": null,
+        "builtAt": null
+      }
     },
     "dev": {
       "id": null,
-      "alias": "agentproto-workstation-dev"
+      "alias": "agentproto-workstation-dev",
+      "baked": {
+        "cli": null,
+        "adapters": null,
+        "builtAt": null
+      }
     }
   }
 }

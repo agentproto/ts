@@ -18,21 +18,22 @@
  * can't be verified without a live template, this provider checks health
  * first and only issues the start command when the daemon isn't already
  * responding — correct either way. When it does start the daemon on a
- * NON-baked template, it first updates the CLI (custom templates can lag
- * behind). For the baked stable workstation template the boot install is
- * skipped by default — the bake already carries the pinned CLI
- * (`templates/workstation/versions.json` via the generated module); an
- * explicit `updateCliOnBoot` overrides either way.
+ * non-proven template, it first updates the CLI (custom templates can lag
+ * behind). The boot install is skipped by default ONLY when the template's
+ * recorded `baked` block (templates/workstation/versions.json, via the
+ * generated module) proves the image already carries the requested pin —
+ * an unproven bake (`baked: null` fields, e.g. the current out-of-band
+ * stable image) keeps the legacy install. An explicit `updateCliOnBoot`
+ * overrides either way.
  */
 
 import { Sandbox } from "e2b"
 import type { BootedSandbox, SandboxBootOpts, SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
-import { BAKED_CLI_VERSION, DEFAULT_TEMPLATE } from "./template-versions.generated.js"
+import { DEFAULT_TEMPLATE, TEMPLATES } from "./template-versions.generated.js"
 
 /** Re-exported from the generated module (single source:
  *  `templates/workstation/versions.json` via scripts/sync-templates.mjs). */
-export { DEFAULT_TEMPLATE }
-export { BAKED_CLI_VERSION as BAKED_TEMPLATE_CLI_VERSION }
+export { DEFAULT_TEMPLATE, TEMPLATES }
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
 const DEFAULT_PORT = 18790
@@ -131,23 +132,29 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
 }
 
 /**
- * Default the on-boot CLI update OFF for the baked stable workstation
- * template whose bake already carries the requested CLI pin — the install
- * would just re-download the same version (90-120s per cold boot, npm
- * registry dependency, and it replaces the template's baked adapters).
- * Everything else (custom templates, a different requested cliVersion, a
- * caller-declared installPackages list, dev templates) keeps the legacy
- * default of true. An explicit `updateCliOnBoot` always wins.
+ * Default the on-boot CLI update OFF only for a template whose recorded
+ * `baked` block PROVES the image already carries the requested CLI pin —
+ * the install would just re-download the same version (90-120s per cold
+ * boot, npm registry dependency, and it replaces the template's baked
+ * adapters). The gate is on the RECORDED bake, not the template id: an
+ * out-of-band bake nobody has verified has `baked.cli: null` and keeps the
+ * legacy default of true. A requested cliVersion that differs from the
+ * recorded bake also installs. An explicit `updateCliOnBoot` always wins.
  */
-function resolveUpdateCli(config: E2bSandboxConfig, template: string): boolean {
+export function resolveUpdateCli(
+  config: Pick<E2bSandboxConfig, "updateCliOnBoot" | "cliVersion" | "installPackages">,
+  template: string,
+  templates: { [key: string]: { id: string | null; baked: { cli: string | null } } } = TEMPLATES,
+): boolean {
   if (config.updateCliOnBoot !== undefined) return config.updateCliOnBoot
   // Runtime escape hatch: a caller declaring installPackages wants an
   // install to happen — never silently drop them on the skip path.
   if ((config.installPackages?.length ?? 0) > 0) return true
-  const bakedStableWithMatchingCli =
-    template === DEFAULT_TEMPLATE &&
-    (config.cliVersion === undefined || config.cliVersion === BAKED_CLI_VERSION)
-  return !bakedStableWithMatchingCli
+  const baked = Object.values(templates).find(entry => entry.id !== null && entry.id === template)?.baked
+  if (!baked || baked.cli === null) return true
+  // Recorded bake matches the requested pin (an unset cliVersion means the
+  // bake itself is the pin) → nothing to install.
+  return config.cliVersion !== undefined && config.cliVersion !== baked.cli
 }
 
 /**
