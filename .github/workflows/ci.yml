@@ -239,6 +239,19 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs
 
+      # Guard the e2b workstation template's derived artifacts: the generated
+      # TS module, e2b.template.toml build args, marked doc blocks, and the
+      # sandbox-e2b package.json description must all match
+      # templates/workstation/versions.json. Zero-credential — no e2b access,
+      # just file comparison. (sync-specs --check has no CI home today; this
+      # is the same drift-check pattern, placed next to the other script
+      # gates in build-and-test.)
+      - name: Check template sync drift
+        run: node scripts/sync-templates.mjs --check
+
+      - name: Run sync-templates tests
+        run: node --test scripts/sync-templates.test.mjs
+
       # Guards docs-check.mjs's PreToolUse path-confinement guard — an
       # unattended `bypassPermissions` SDK run that reads/edits doc files is
       # otherwise not sandboxed to the repo root (verified live: a run read

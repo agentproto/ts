@@ -47,11 +47,13 @@ describe("e2bSandboxProvider.boot", () => {
       DEFAULT_TEMPLATE,
       expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
     )
-    // updates the (potentially stale) baked CLI before starting the daemon
+    // the stable template's baked record is NULL (out-of-band bake, never
+    // proven) — the legacy on-boot npm install STAYS ON by default
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       "sudo npm i -g @agentproto/cli@latest",
       expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
     )
+    // then starts the daemon;
     // opens the daemon's own origin allowlist for this sandbox's public host,
     // and DISABLES e2b's 60s default command timeout (timeoutMs: 0) — that
     // default applies to background commands too and was SIGKILLing the
@@ -135,14 +137,90 @@ describe("e2bSandboxProvider.boot", () => {
     )
   })
 
-  it("defaults the boot CLI install to @latest when no cliVersion is configured", async () => {
+  it("defaults the boot CLI install to @latest on a CUSTOM template with no cliVersion", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)
     fetchMock.mockRejectedValueOnce(new Error("connect refused"))
     fetchMock.mockResolvedValue({ ok: true })
 
     const { e2bSandboxProvider } = await import("../provider.js")
-    const bootSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: { healthProbeTimeoutMs: 0, template: "custom-template" },
+    }
+    await e2bSandboxProvider.boot(bootSpec, { env: {} })
+
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@latest",
+      expect.anything(),
+    )
+  })
+
+  it("keeps the boot install on while the template's recorded bake is null (unproven out-of-band bake)", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider, resolveUpdateCli, TEMPLATES } = await import("../provider.js")
+    // the committed stable record is unproven
+    expect(TEMPLATES.stable.baked.cli).toBeNull()
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: { healthProbeTimeoutMs: 0, cliVersion: "0.17.0" }, // matches the DECLARED pin…
+    }
+    await e2bSandboxProvider.boot(bootSpec, { env: {} })
+
+    // …but the bake is unproven, so the install still runs
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@0.17.0",
+      expect.anything(),
+    )
+    // unit-level: a NULL bake always keeps the legacy install
+    expect(resolveUpdateCli({ cliVersion: "0.17.0" }, TEMPLATES.stable.id!)).toBe(true)
+    expect(resolveUpdateCli({}, TEMPLATES.stable.id!)).toBe(true)
+  })
+
+  describe("resolveUpdateCli — recorded bake gates the skip", () => {
+    const templatesWithBake = {
+      stable: {
+        id: "bakedid000000000000",
+        baked: { cli: "0.17.0" },
+      },
+    }
+
+    it("skips when the recorded bake matches the declared pin (cliVersion unset — the bake IS the pin)", async () => {
+      const { resolveUpdateCli } = await import("../provider.js")
+      expect(resolveUpdateCli({}, "bakedid000000000000", templatesWithBake)).toBe(false)
+    })
+
+    it("skips when the recorded bake matches the requested cliVersion", async () => {
+      const { resolveUpdateCli } = await import("../provider.js")
+      expect(resolveUpdateCli({ cliVersion: "0.17.0" }, "bakedid000000000000", templatesWithBake)).toBe(false)
+    })
+
+    it("installs when the requested cliVersion differs from the recorded bake", async () => {
+      const { resolveUpdateCli } = await import("../provider.js")
+      expect(resolveUpdateCli({ cliVersion: "0.8.0" }, "bakedid000000000000", templatesWithBake)).toBe(true)
+    })
+
+    it("installs on an unknown template id (no bake record)", async () => {
+      const { resolveUpdateCli } = await import("../provider.js")
+      expect(resolveUpdateCli({}, "custom-template", templatesWithBake)).toBe(true)
+    })
+  })
+
+  it("explicit updateCliOnBoot: true overrides the baked-template skip", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: { healthProbeTimeoutMs: 0, updateCliOnBoot: true },
+    }
     await e2bSandboxProvider.boot(bootSpec, { env: {} })
 
     expect(sandbox.commands.run).toHaveBeenCalledWith(
@@ -170,6 +248,7 @@ describe("e2bSandboxProvider.boot", () => {
       provider: "e2b",
       config: {
         healthProbeTimeoutMs: 0,
+        template: "custom-template",
         setupCommands: ["install-hook-a", "install-hook-b"],
       },
     }
@@ -205,7 +284,7 @@ describe("e2bSandboxProvider.boot", () => {
     const bootSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
     await e2bSandboxProvider.boot(bootSpec, { env: {} })
 
-    // only the npm update + serve — no stray provision commands
+    // the npm update + serve — no stray provision commands
     expect(sandbox.commands.run).toHaveBeenCalledTimes(2)
   })
 

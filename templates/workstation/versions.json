@@ -1,0 +1,32 @@
+{
+  "$schema": "./versions.schema.json",
+  "baseImage": "e2bdev/code-interpreter:latest",
+  "cli": "0.17.0",
+  "adapters": {
+    "@agentproto/adapter-opencode": "1.1.10",
+    "@agentproto/adapter-hermes": "0.4.10"
+  },
+  "runtime": {
+    "opencode-ai": "1.18.28"
+  },
+  "templates": {
+    "stable": {
+      "id": "53ybr99wdfgoebi9nee8",
+      "alias": "agentproto-workstation",
+      "baked": {
+        "cli": null,
+        "adapters": null,
+        "builtAt": null
+      }
+    },
+    "dev": {
+      "id": "tnqtmeims5q9ex7j9k06",
+      "alias": "agentproto-workstation-dev",
+      "baked": {
+        "cli": null,
+        "adapters": null,
+        "builtAt": null
+      }
+    }
+  }
+}
