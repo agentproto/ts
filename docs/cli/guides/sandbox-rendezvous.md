@@ -22,6 +22,11 @@ Providers are resolved from a small built-in catalog by slug:
 | `box` | An ascii.dev [Box](https://ascii.dev) cloud computer, behind an always-on systemd unit. | `@agentproto/sandbox-box` |
 | `e2b` | An e2b Firecracker microVM (`agentproto-workstation` template). | `@agentproto/sandbox-e2b` |
 
+<!-- sync-templates:start -->
+The `e2b` provider's default template is baked from the pinned declaration in
+`templates/workstation/versions.json`: `@agentproto/cli@0.17.0`, `@agentproto/adapter-hermes@0.4.10`, `@agentproto/adapter-opencode@1.1.10`, `opencode-ai@1.18.28`. On-boot CLI updates are skipped for this baked template.
+<!-- sync-templates:end -->
+
 (`modal` and `daytona` are catalog placeholders — AIP-36 day-1 provider ids
 with no published package yet.)
 

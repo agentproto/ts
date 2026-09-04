@@ -1,4 +1,4 @@
-# agentproto-workstation — e2b template build declaration.
+# agentproto-workstation e2b template build declaration.
 #
 # Consumed by `e2b template build` (run from templates/workstation/ — see
 # README.md in this directory for build / publish / rollback commands).
@@ -21,7 +21,7 @@ dockerfile = "Dockerfile"
 [build.args]
 BASE_IMAGE = "e2bdev/code-interpreter:latest"
 AGENTPROTO_CLI_VERSION = "0.17.0"
-AGENTPROTO_ADAPTERS = "@agentproto/adapter-opencode@1.1.10 @agentproto/adapter-hermes@0.4.10"
+AGENTPROTO_ADAPTERS = "@agentproto/adapter-hermes@0.4.10 @agentproto/adapter-opencode@1.1.10"
 OPENCODE_RUNTIME_VERSION = "1.18.28"
 
 # Dev variant (unreleased pins, different template alias):

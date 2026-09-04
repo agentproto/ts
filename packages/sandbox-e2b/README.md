@@ -35,13 +35,15 @@ Requires `E2B_API_KEY` in the host process's environment.
   opens it for the sandbox's own public host (`--allow-origin
   https://<getHost>`) so the host process can reach it over
   `https://<getHost>/mcp`.
-- The pre-built `agentproto-workstation` template can lag behind the latest
-  `@agentproto/cli` release. This provider runs `npm i -g
-  @agentproto/cli@<cliVersion>` before starting the daemon (`cliVersion` defaults
-  to `@latest`; pin it in `spec.config` for reproducible boots). Set
-  `updateCliOnBoot: false` in `spec.config` to skip the install entirely — e.g.
-  once the template is rebuilt against a current release, which is the cleaner
-  long-term fix.
+<!-- sync-templates:start -->
+- The default `agentproto-workstation` template is baked from the pinned
+  declaration in `templates/workstation/versions.json`: `@agentproto/cli@0.17.0`, `@agentproto/adapter-hermes@0.4.10`, `@agentproto/adapter-opencode@1.1.10`, `opencode-ai@1.18.28`. Because the bake
+  matches the declared pin, the provider skips the on-boot `npm i -g` for it by default.
+<!-- sync-templates:end -->
+- Custom (non-baked) templates can lag behind: the provider runs `npm i -g
+  @agentproto/cli@<cliVersion>` before starting the daemon on them (`cliVersion`
+  defaults to `@latest`; pin it in `spec.config` for reproducible boots). Set
+  `updateCliOnBoot: false` in `spec.config` to skip the install entirely.
 
 ## License
 
