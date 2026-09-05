@@ -128,7 +128,7 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
-import { spawnAgentSession, type BuildOrchestratorMcp, type SpawnAgentSessionInput } from "./session-spawn.js"
+import { spawnAgentSession, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
   restartAgentSession,
   RestartOverrideError,
@@ -616,6 +616,12 @@ export interface RuntimeHttpServerOptions {
    *  no caller-supplied `mcpServers` defaults to mounting this gateway
    *  (same hermes safety net as the MCP tool). */
   daemonMcpUrl?: string
+  /** Optional — mirrors `RegisterAgentToolsOptions.resolveSandboxProvider`
+   *  (session-spawn.ts). When wired, `POST /sessions/agent`'s `sandbox`
+   *  field can boot or reconnect a sandbox session, exactly as the MCP
+   *  `agent_start` tool does (both share `spawnAgentSession`). Omitted →
+   *  a sandbox spawn fails with `sandbox_provider_not_found`. */
+  resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"]
   /** Optional — mirrors `RegisterAgentToolsOptions.provisionWorktree`. When
    *  wired, a `POST /sessions/agent` spawn honours `agent_start.worktree` and
    *  the daemon's `worktrees.isolation` policy, exactly as the MCP tool does
@@ -1667,6 +1673,7 @@ export async function startHttpServer(
             opts.daemonMcpUrl,
             opts.provisionWorktree,
             opts.listCatalogModels,
+            opts.resolveSandboxProvider,
           )
           if (handled) return
         }
@@ -3392,6 +3399,16 @@ function buildSpawnSessionHttpArgs(
           return k ? { keepAlive: true } : {}
         })()
       : {}),
+    // Sandbox spawn — the HTTP twin of the MCP `agent_start` tool's `sandbox`
+    // field. Accepts a provider slug string or an inline SandboxSpec object
+    // (optionally carrying `reuse` for the reconnect path). Provider-specific
+    // config is validated by the sandbox provider at boot time.
+    ...(b.sandbox !== undefined
+      ? (() => {
+          const parsed = parseSandboxField(b.sandbox)
+          return parsed !== undefined ? { sandbox: parsed } : {}
+        })()
+      : {}),
   }
 }
 
@@ -3622,6 +3639,27 @@ function parseRestartPolicyField(raw: unknown): RestartPolicy | undefined {
   }
 }
 
+/** Parse the `sandbox` body field — a provider slug string (e.g. `"e2b"`) or
+ *  an inline `SandboxSpecInput` object with at minimum a `provider: string`
+ *  field, optionally carrying `reuse: "<sandboxId>"` for the reconnect path.
+ *  Tolerates a JSON-stringified value. Config shape is provider-specific; the
+ *  sandbox provider resolver validates it at boot time — we only check the
+ *  structural minimum needed to route to the right boot path. */
+function parseSandboxField(raw: unknown): string | SandboxSpecInput | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) ?? raw : raw
+  if (typeof value === "string" && value.length > 0) return value
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  if (typeof obj.provider !== "string" || obj.provider.length === 0) return undefined
+  return {
+    provider: obj.provider,
+    config: obj.config && typeof obj.config === "object" && !Array.isArray(obj.config)
+      ? (obj.config as Record<string, unknown>)
+      : {},
+    ...(typeof obj.reuse === "string" && obj.reuse.length > 0 ? { reuse: obj.reuse } : {}),
+  } as SandboxSpecInput
+}
+
 /**
  * Reverse-map a cwd onto a registered workspace slug — the same rule
  * spawnAgentSession applies (session-spawn.ts), hoisted here so the terminal
@@ -3661,6 +3699,7 @@ async function handleSessions(
   daemonMcpUrl?: string,
   provisionWorktree?: WorktreeProvisioner,
   listCatalogModels?: CatalogModelsLister,
+  resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -3788,6 +3827,7 @@ async function handleSessions(
         daemonMcpUrl,
         ...(provisionWorktree ? { provisionWorktree } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
       },
       buildSpawnSessionHttpArgs(b, adapter, preset),
     )
@@ -3876,6 +3916,7 @@ async function handleSessions(
         daemonMcpUrl,
         ...(provisionWorktree ? { provisionWorktree } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
       },
       buildSpawnSessionHttpArgs(b, adapter, preset),
     )

@@ -2151,6 +2151,7 @@ export async function createGateway(
     buildOrchestratorMcp: orchestratorInjector,
     daemonMcpUrl,
     ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+    resolveSandboxProvider: resolveSandboxProviderResolved,
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),
