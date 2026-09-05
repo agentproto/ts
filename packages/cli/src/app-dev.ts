@@ -46,6 +46,7 @@ import {
   readDeclaredUIPort,
   resolveDaemonMcpUrl,
 } from "./app-serve.js"
+import { STAGEBOARD_JS_PATH, serveStageboard } from "./stageboard/serve.js"
 import { pathExists } from "./commands/skill-install/shared.js"
 import { expandHome } from "./commands/skill-install/pack-resolve.js"
 import { detectPackageManager } from "./app-build.js"
@@ -93,6 +94,10 @@ export function bindBridgeServer(
     }
     if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
       handleToolCallRequest(req, res, getClient)
+      return
+    }
+    if (req.method === "GET" && urlPath === STAGEBOARD_JS_PATH) {
+      void serveStageboard(res, urlPath)
       return
     }
     res.writeHead(404, { "content-type": "application/json" })
