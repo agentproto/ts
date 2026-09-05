@@ -145,6 +145,14 @@ export interface ResolvedSpawnAuthMaterial {
    *  key" (fail-fast) from "set nothing" (ambient) — both give no credential.
    *  DECISION 5. */
   explicit: boolean
+  /** True when the `auth` block came from CONFIG (`defaults.adapters.<slug>.auth`)
+   *  rather than the per-spawn `agent_start.auth` request. A sandboxed spawn
+   *  bills on the BOX daemon, which has neither the host's config nor its
+   *  keychain — the host uses this to know it must resolve the configured
+   *  wallet credential itself and forward it (see `session-spawn.ts`'s
+   *  `resolveHostAuth`). A per-spawn `auth` keeps its own raw-forward path
+   *  and never forces host adapter resolution. */
+  explicitConfig: boolean
   /** Subscription bearer token (per-spawn > config), if configured. STATIC
    *  material only — the self-refreshing {@link subscriptionSource} is resolved
    *  separately (and impurely) by the caller. */
@@ -195,6 +203,7 @@ export function resolveSpawnDefaults(
     options,
     auth: {
       explicit,
+      explicitConfig: adapterDefaults?.auth !== undefined,
       ...(requestedMode ? { requestedMode } : {}),
       ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
       ...(subscriptionSource !== undefined ? { subscriptionSource } : {}),

@@ -239,6 +239,79 @@ describe("agent_start sandbox — boot box + proxy session", () => {
     })
   })
 
+  it("forwards a CONFIG-default wallet to the fresh sandbox daemon — the host resolves the credential the box cannot", async () => {
+    // The wallet lives in the HOST's `defaults.adapters.<slug>.auth`; a fresh
+    // box has no config and no keychain, so the host must resolve the
+    // credential and hand it over — otherwise the sandboxed child shows
+    // "no wallet" and bills nothing.
+    const hostResolver = vi.fn(async (slug: string) =>
+      slug === "fake-cli"
+        ? {
+            commandPreview: "fake-cli (host)",
+            authDescriptor: CLAUDE_SDK_GATEWAY_AUTH,
+            async startSession(): Promise<AgentSessionLike> {
+              throw new Error("a sandboxed spawn must never start the host adapter")
+            },
+          }
+        : null,
+    )
+    const result = await spawnAgentSession(
+      {
+        ...deps,
+        resolveAgentAdapter: hostResolver,
+        loadDefaultsConfig: async () => ({
+          adapters: { "fake-cli": { auth: { mode: "api-key", apiKey: "cfg-default-key" } } },
+        }),
+      },
+      { adapter: "fake-cli", cwd: workspace, sandbox: "fake" },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(receivedStarts[0]).toMatchObject({
+      auth: {
+        mode: "api-key",
+        credential: "cfg-default-key",
+        setEnv: "ANTHROPIC_API_KEY",
+      },
+    })
+    // The host descriptor echoes the wallet it forwarded — the UI's access
+    // chip reads this instead of showing "no wallet".
+    expect(result.descriptor.auth).toMatchObject({ mode: "api-key", provider: "anthropic" })
+  })
+
+  it("fails LOUD when a config-default wallet needs the host adapter and the adapter is not resolvable on the host", async () => {
+    const result = await spawnAgentSession(
+      {
+        ...deps,
+        loadDefaultsConfig: async () => ({
+          adapters: { "fake-cli": { auth: { mode: "api-key", apiKey: "cfg-default-key" } } },
+        }),
+      },
+      { adapter: "fake-cli", cwd: workspace, sandbox: "fake" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("access_profile_ineligible")
+    expect(result.message).toContain("configured default wallet")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("an UNCONFIGURED sandbox spawn resolves no host wallet — the box stays credential-free, no host adapter call", async () => {
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: "fake",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(deps.resolveAgentAdapter).not.toHaveBeenCalled()
+    expect(result.descriptor.auth).toBeUndefined()
+    expect(result.descriptor.accessProfile).toBeUndefined()
+    const boxAuth = receivedStarts[0]?.auth as Record<string, unknown> | undefined
+    expect(boxAuth?.credential).toBeUndefined()
+  })
+
   it("agent_kill tears down the fake box, and the conversation stays readable after kill (amendment)", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "fake-cli",
