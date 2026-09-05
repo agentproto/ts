@@ -32,6 +32,7 @@ import {
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { paginate } from "./tool-envelope.js"
 
 export interface RegisterFsToolsOptions {
   workspace: string
@@ -94,11 +95,53 @@ export function registerFsTools(
         .describe(
           "\"utf8\" (default) for text files, \"base64\" for binary files.",
         ),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Start of the read window: LINES for utf8 reads, BYTES for base64 reads. " +
+            "Omit to read from the beginning.",
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          "Size of the read window: LINES for utf8 reads, BYTES for base64 reads. " +
+            "Omit to read to the end of the file.",
+        ),
     },
-    async ({ path, encoding }) => {
+    async ({ path, encoding, offset, limit }) => {
       const abs = anchor(path)
       const buf = await readFile(abs)
-      return text(buf.toString(encoding === "base64" ? "base64" : "utf8"))
+      const isBase64 = encoding === "base64"
+      if (offset === undefined && limit === undefined) {
+        return text(buf.toString(isBase64 ? "base64" : "utf8"))
+      }
+      if (isBase64) {
+        const start = Math.min(offset ?? 0, buf.length)
+        const end = limit === undefined ? buf.length : Math.min(start + limit, buf.length)
+        return text({
+          content: buf.subarray(start, end).toString("base64"),
+          truncated: end < buf.length,
+          offset: start,
+          returned: end - start,
+          total: buf.length,
+        })
+      }
+      const lines = buf.toString("utf8").split("\n")
+      const start = Math.min(offset ?? 0, lines.length)
+      const end = limit === undefined ? lines.length : Math.min(start + limit, lines.length)
+      return text({
+        content: lines.slice(start, end).join("\n"),
+        truncated: end < lines.length,
+        offset: start,
+        returned: end - start,
+        total: lines.length,
+      })
     },
   )
 
@@ -125,14 +168,28 @@ export function registerFsTools(
         .string()
         .optional()
         .describe("Workspace-relative directory (defaults to workspace root)."),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe("Max entries per page. Omit to return ALL entries (the default)."),
+      cursor: z
+        .string()
+        .optional()
+        .describe("Opaque token from a prior call's `nextCursor`."),
     },
-    async ({ path }) => {
+    async ({ path, limit, cursor }) => {
       const abs = anchor(path && path.length > 0 ? path : ".")
       const entries = await readdir(abs, { withFileTypes: true })
       const lines = entries.map(e =>
         e.isDirectory() ? `[DIR]  ${e.name}` : `[FILE] ${e.name}`,
       )
-      return text(lines.join("\n"))
+      if (limit === undefined && cursor === undefined) {
+        return text(lines.join("\n"))
+      }
+      const page = paginate(lines, { limit, cursor }, { maxLimit: 200 })
+      return text(page)
     },
   )
 

@@ -570,3 +570,112 @@ describe("readConversation — daemon fallback when the conversation store is no
     }
   })
 })
+
+// ── additive transcript windowing: lastN + message-index cursor ────────
+//
+// PR-5 pagination: `lastN` and `cursor` narrow the rendered transcript.
+// The default (neither given) MUST still return the FULL transcript —
+// covered by every test above; the first test here pins it explicitly.
+
+describe("readConversation — additive lastN + cursor windowing", () => {
+  function makeMultiMessageDesc(uuid: string, cwd: string): SessionDescriptor {
+    return makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      adapterSessionId: uuid,
+      cwd,
+    })
+  }
+
+  function writeMultiMessageTranscript(dir: string, uuid: string): void {
+    writeJsonl(dir, uuid, [1, 2, 3, 4, 5, 6].map(n => ({
+      type: "user",
+      timestamp: `2026-05-13T10:00:0${n}.000Z`,
+      message: { role: "user", content: [{ type: "text", text: `msg-${n}` }] },
+    })))
+  }
+
+  it("returns the FULL transcript when neither lastN nor cursor is given (default unchanged)", async () => {
+    setupFakeHome()
+    const cwd = "/window/full"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "eeeeeeee-0000-0000-0000-000000000001"
+    writeMultiMessageTranscript(dir, uuid)
+
+    const result = await readConversation(stubRegistry(makeMultiMessageDesc(uuid, cwd)), {
+      idOrName: "sess_test",
+    })
+    expect(result.conversation).not.toBeNull()
+    expect(result.window).toBeUndefined()
+    for (const n of [1, 2, 3, 4, 5, 6]) {
+      expect(result.content).toContain(`msg-${n}`)
+    }
+  })
+
+  it("lastN keeps only the last N messages and reports the window", async () => {
+    setupFakeHome()
+    const cwd = "/window/lastn"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "eeeeeeee-0000-0000-0000-000000000002"
+    writeMultiMessageTranscript(dir, uuid)
+
+    const result = await readConversation(stubRegistry(makeMultiMessageDesc(uuid, cwd)), {
+      idOrName: "sess_test",
+      lastN: 2,
+    })
+    expect(result.conversation?.messages.map(m => m.text)).toEqual(["msg-5", "msg-6"])
+    expect(result.content).toContain("msg-5")
+    expect(result.content).toContain("msg-6")
+    expect(result.content).not.toContain("msg-4")
+    expect(result.window).toEqual({
+      start: 4,
+      count: 2,
+      total: 6,
+      truncated: true,
+    })
+  })
+
+  it("cursor starts the window at the given message index and chains via nextCursor", async () => {
+    setupFakeHome()
+    const cwd = "/window/cursor"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "eeeeeeee-0000-0000-0000-000000000003"
+    writeMultiMessageTranscript(dir, uuid)
+    const desc = makeMultiMessageDesc(uuid, cwd)
+
+    const page1 = await readConversation(stubRegistry(desc), {
+      idOrName: "sess_test",
+      cursor: 2,
+    })
+    expect(page1.conversation?.messages.map(m => m.text)).toEqual(["msg-3", "msg-4", "msg-5", "msg-6"])
+    expect(page1.window).toEqual({
+      start: 2,
+      count: 4,
+      total: 6,
+      truncated: true,
+    })
+
+    const page2 = await readConversation(stubRegistry(desc), {
+      idOrName: "sess_test",
+      cursor: page1.window?.start ?? 0,
+      lastN: 2,
+    })
+    expect(page2.conversation?.messages.map(m => m.text)).toEqual(["msg-5", "msg-6"])
+    expect(page2.window?.start).toBe(4)
+  })
+
+  it("cursor past EOF yields an empty window, not an error", async () => {
+    setupFakeHome()
+    const cwd = "/window/past-eof"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "eeeeeeee-0000-0000-0000-000000000004"
+    writeMultiMessageTranscript(dir, uuid)
+
+    const result = await readConversation(stubRegistry(makeMultiMessageDesc(uuid, cwd)), {
+      idOrName: "sess_test",
+      cursor: 99,
+    })
+    expect(result.conversation?.messages).toEqual([])
+    expect(result.window).toEqual({ start: 6, count: 0, total: 6, truncated: true })
+  })
+})
