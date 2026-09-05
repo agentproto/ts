@@ -3156,6 +3156,9 @@ export interface SpawnAgentInput {
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
+  /** Port-to-URL map from the booted sandbox — see
+   *  `SessionDescriptor.sandboxPorts`. */
+  sandboxPorts?: Record<number, string>
   /** True when the driver session was started in permission-hold mode
    *  (`AgentCliStartOptions.permissionHold`) — its `agent-prompt` events carry
    *  respondable permission requests. Gates whether the registry registers
@@ -5947,6 +5950,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         // Restart lineage (see SessionDescriptor.resumedFrom's doc). `resumeVia`
         // can legitimately be "" (a fresh fallback spawn with no continuity),
         // so it's gated on `!== undefined` rather than truthiness — a truthy
@@ -6075,6 +6079,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
