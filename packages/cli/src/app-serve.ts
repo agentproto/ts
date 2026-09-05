@@ -50,6 +50,7 @@ import matter from "gray-matter"
 import { loadConfig } from "@agentproto/runtime/config"
 import { pathExists } from "./commands/skill-install/shared.js"
 import { expandHome } from "./commands/skill-install/pack-resolve.js"
+import { STAGEBOARD_JS_PATH, serveStageboard } from "./stageboard/serve.js"
 
 // ── installed-app registry (shared with daemon's ~/.agentproto/apps.json) ──
 
@@ -1142,6 +1143,10 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
         return
       }
       void handleUpload(req, res, appDir)
+      return
+    }
+    if (req.method === "GET" && urlPath === STAGEBOARD_JS_PATH) {
+      void serveStageboard(res, urlPath)
       return
     }
     void serveStatic(uiRoot, req.url ?? "/", bridgeScript, res)

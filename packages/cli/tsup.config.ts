@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process"
+import { copyFile } from "node:fs/promises"
 import { readFileSync } from "node:fs"
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
@@ -149,4 +150,14 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@agentproto/extension",
     "@agentproto/define-doctype",
   ],
+  // The stage board module is a plain-JS asset served verbatim by
+  // `app serve` / `app dev` (see src/stageboard/serve.ts) — esbuild only
+  // bundles TS entries, so copy it into dist next to cli.mjs where the
+  // runtime URL lookup lands.
+  onSuccess: async () => {
+    await copyFile(
+      new URL("./src/stageboard/stageboard.js", import.meta.url),
+      new URL("./dist/stageboard.js", import.meta.url),
+    )
+  },
 })
