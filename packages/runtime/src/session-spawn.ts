@@ -1350,44 +1350,6 @@ export async function spawnAgentSession(
   // skipped entirely for `input.sandbox`. See the sandbox branch below,
   // which short-circuits BEFORE `resolved.startSession(...)` is ever
   // reached.
-  // Sandboxed spawns normally resolve the adapter inside the sandbox, not on
-  // the host. A named host auth profile is the one exception: resolve the
-  // host descriptor just long enough to select the requested billing rail and
-  // turn the keychain-backed profile into the explicit credential a fresh box
-  // needs. Keep the normal sandbox path free of this host dependency.
-  const resolveHostAuth = input.sandbox !== undefined && input.access?.profileRef !== undefined
-  const resolved =
-    input.sandbox === undefined || resolveHostAuth ? await resolveAgentAdapter(input.adapter) : null
-  if (input.sandbox === undefined && !resolved) {
-    // `resolveAgentAdapter` collapses every failure reason to `null` by
-    // contract (it's injected across a dozen call sites that all assume it
-    // never throws — see its doc comment), so this message can't name the
-    // exact cause the way `resolveAdapter`'s own thrown error can. It CAN
-    // stop asserting "not found" as settled fact: an adapter that resolved
-    // moments ago and now doesn't is most likely mid-rebuild, not
-    // uninstalled — a resolver with a warm last-known-good cache (the CLI's
-    // `resolveAdapter`) already returns successfully through that window,
-    // so reaching this branch at all means either the adapter has never
-    // resolved in this process, or it went unresolvable long enough to
-    // exhaust that grace period.
-    return {
-      ok: false,
-      code: "adapter_not_found",
-      message:
-        `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
-        `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
-        `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
-    }
-  }
-  if (resolveHostAuth && !resolved) {
-    return {
-      ok: false,
-      code: "access_profile_ineligible",
-      message:
-        `agent_start: adapter "${input.adapter}" must be available on the host to resolve ` +
-        `access profile "${input.access?.profileRef}" for a sandbox spawn.`,
-    }
-  }
   // ── Recursion guardrails (WP4) ──────────────────────────────
   // When this call arrives through the scoped sub-gateway,
   // `callerScope` is the spawning orchestrator's identity. Enforce
@@ -1864,6 +1826,54 @@ export async function spawnAgentSession(
       undefined,
       spawnDefaults.contextContinuity,
     )
+  // Sandboxed spawns normally resolve the adapter inside the sandbox, not on
+  // the host. Two host wallets are the exceptions: a named `access.profileRef`
+  // AND a wallet configured in `defaults.adapters.<slug>.auth` (an explicit
+  // CONFIG auth block; a per-spawn `auth` keeps its own raw-forward path and
+  // never forces host resolution). In both, resolve the host descriptor just
+  // long enough to select the requested billing rail and turn the
+  // keychain/config-backed credential into the explicit auth a fresh box
+  // needs — a sandboxed child bills the SAME wallet the host would have
+  // billed. Keep the normal sandbox path free of this host dependency.
+  const resolveHostAuth =
+    input.sandbox !== undefined &&
+    (input.access?.profileRef !== undefined ||
+      (spawnDefaults.auth.explicitConfig && input.auth === undefined))
+  const resolved =
+    input.sandbox === undefined || resolveHostAuth ? await resolveAgentAdapter(input.adapter) : null
+  if (input.sandbox === undefined && !resolved) {
+    // `resolveAgentAdapter` collapses every failure reason to `null` by
+    // contract (it's injected across a dozen call sites that all assume it
+    // never throws — see its doc comment), so this message can't name the
+    // exact cause the way `resolveAdapter`'s own thrown error can. It CAN
+    // stop asserting "not found" as settled fact: an adapter that resolved
+    // moments ago and now doesn't is most likely mid-rebuild, not
+    // uninstalled — a resolver with a warm last-known-good cache (the CLI's
+    // `resolveAdapter`) already returns successfully through that window,
+    // so reaching this branch at all means either the adapter has never
+    // resolved in this process, or it went unresolvable long enough to
+    // exhaust that grace period.
+    return {
+      ok: false,
+      code: "adapter_not_found",
+      message:
+        `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
+        `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
+        `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
+    }
+  }
+  if (resolveHostAuth && !resolved) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message:
+        `agent_start: adapter "${input.adapter}" must be available on the host to resolve ` +
+        (input.access?.profileRef !== undefined
+          ? `access profile "${input.access.profileRef}"`
+          : "the configured default wallet") +
+        " for a sandbox spawn.",
+    }
+  }
   // ── Billing-auth resolution (DECISIONS 4/9/10) ──────────────────
   // The runtime decides provider → ordered mode → setEnv/scrub → credential
   // source → fingerprint, and emits BOTH the mechanical `spec` the driver
@@ -1871,8 +1881,12 @@ export async function spawnAgentSession(
   // on a configured-but-missing credential is the DRIVER's job (it engages
   // then throws `missing_auth_credential`); a requested-but-unsupported mode
   // fails LOUD right here (`unsupported_auth_mode`). No provider resolves ⇒
-  // no spec ⇒ ambient (no injection). Skipped for a sandbox spawn — the box's
-  // own daemon resolves its own credential independently.
+  // no spec ⇒ ambient (no injection). A sandbox spawn SKIPS this resolution
+  // and the box's own daemon resolves its own credential independently —
+  // EXCEPT when a host wallet must cross the boundary (a named
+  // `access.profileRef` or an explicit config-default wallet): `resolveHostAuth`
+  // above resolved the host adapter for exactly that, so the credential is
+  // resolved here and forwarded to the box via `sandboxAuthFromResolved`.
   // A `base_url` option targets this spawn at a non-Anthropic gateway
   // explicitly — the driver-level fix (define-agent-cli.ts's `engageAuth`)
   // already guarantees no native-Anthropic credential is ever injected into
@@ -1937,9 +1951,14 @@ export async function spawnAgentSession(
     accessProfileEcho = result.accessProfileEcho
   } else if (
     resolved &&
-    input.sandbox === undefined &&
     resolved.authDescriptor &&
-    !shouldSkipAuthResolution
+    !shouldSkipAuthResolution &&
+    // A sandbox spawn reaches this branch ONLY when `resolveHostAuth` forced
+    // host adapter resolution (profileRef handled above; here: the explicit
+    // config-default wallet). An unconfigured sandbox spawn keeps `resolved`
+    // null and skips resolution entirely — the box stays credential-free
+    // rather than inheriting ambient host auth.
+    (input.sandbox === undefined || resolveHostAuth)
   ) {
     const authModel = input.model ?? resolved.defaultModel
     const pinnedProvider = spawnDefaults.auth.provider
@@ -2861,9 +2880,11 @@ export async function spawnAgentSession(
       // fingerprint (never the credential). DECISION 9③/10②. Recorded only
       // when a credential actually resolved (fingerprint present); a
       // configured-but-missing-credential spawn fails fast in the driver
-      // before a descriptor exists. Absent for sandbox spawns (the box
-      // resolves its own credential, so a host-side echo would misrepresent
-      // it — `authEcho` is already left undefined for those above).
+      // before a descriptor exists. For a sandbox spawn the echo is present
+      // only when the HOST resolved the wallet (profileRef or config-default
+      // auth) and forwarded it — which is exactly what the box then bills;
+      // a credential-free box spawn (the box resolves its own or nothing)
+      // echoes nothing rather than misrepresenting it.
       ...(authEcho?.fingerprint
         ? {
             auth: {

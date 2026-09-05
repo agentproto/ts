@@ -23,7 +23,7 @@ import {
 
 // resolveSpawnDefaults now surfaces RAW auth material; with nothing
 // configured that's just `{ explicit: false }`.
-const NO_AUTH = { auth: { explicit: false } }
+const NO_AUTH = { auth: { explicit: false, explicitConfig: false } }
 
 // The claude-code auth descriptor the runtime projects from the manifest —
 // used by the resolver tests below to prove byte-identical #312 scrub sets.
@@ -125,7 +125,7 @@ describe("resolveSpawnDefaults", () => {
 describe("resolveSpawnDefaults auth — raw material precedence", () => {
   it("surfaces `explicit: false` and nothing else when nothing is configured", () => {
     const result = resolveSpawnDefaults(undefined, "claude-code", {})
-    expect(result.auth).toEqual({ explicit: false })
+    expect(result.auth).toEqual({ explicit: false, explicitConfig: false })
   })
 
   it("surfaces the per-adapter config mode + api key + explicit:true", () => {
@@ -135,6 +135,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     const result = resolveSpawnDefaults(defaults, "claude-code", {})
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       requestedMode: "api-key",
       apiKeyCredential: "sk-ant-api03-cfg",
     })
@@ -156,6 +157,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     // see availability before it picks.
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       requestedMode: "subscription",
       subscriptionCredential: "sk-ant-oat01-cfg",
       apiKeyCredential: "sk-ant-api03-cfg",
@@ -171,6 +173,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     })
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       requestedMode: "subscription",
       subscriptionCredential: "sk-ant-oat01-explicit",
     })
@@ -182,6 +185,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     })
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: false,
       requestedMode: "api-key",
       provider: "anthropic",
     })
@@ -192,7 +196,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
       adapters: { "claude-code": { auth: { mode: "api-key", apiKey: "sk-ant-api03-cfg" } } },
     }
     const result = resolveSpawnDefaults(defaults, "hermes", {})
-    expect(result.auth).toEqual({ explicit: false })
+    expect(result.auth).toEqual({ explicit: false, explicitConfig: false })
   })
 
   it("surfaces the config `auth.source` opt-in (Mode 3) as raw material", () => {
@@ -202,6 +206,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     const result = resolveSpawnDefaults(defaults, "claude-code", {})
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       subscriptionSource: "claude-code-oauth",
     })
   })
@@ -215,6 +220,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     })
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       subscriptionSource: "claude-code-oauth",
     })
   })
@@ -228,6 +234,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     const result = resolveSpawnDefaults(defaults, "claude-code", {})
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       subscriptionCredential: "sk-ant-oat01-cfg",
       subscriptionSource: "claude-code-oauth",
     })
