@@ -382,6 +382,71 @@ describe("tool_calls_list — unified logger over the proxy + in-agent paths (PR
     expect(JSON.parse(textOf(result))).toEqual({ records: [] })
     await close()
   })
+
+  it("(fields) projects each record down to exactly the requested keys", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const exec = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(exec))
+
+    const { records } = await pollUntil(
+      async () => {
+        const result = await client.callTool({
+          name: "tool_calls_list",
+          arguments: { sessionId, fields: ["tool", "sessionId"] },
+        })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length > 0,
+    )
+    expect(records).toHaveLength(1)
+    expect(Object.keys(records[0] as object).sort()).toEqual(["sessionId", "tool"])
+    expect(records[0]?.tool).toBe("command_execute")
+    expect(records[0]?.sessionId).toBe(sessionId)
+    // Projected fields the caller did not ask for must not leak through.
+    expect(records[0]?.command).toBeUndefined()
+    expect(records[0]?.exitCode).toBeUndefined()
+
+    await close()
+  })
+
+  it("(full: true) is the legacy escape hatch — output identical to the default", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const exec = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(exec))
+
+    const { records: fullRecords } = await pollUntil(
+      async () => {
+        const result = await client.callTool({
+          name: "tool_calls_list",
+          arguments: { sessionId, full: true },
+        })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length > 0,
+    )
+    const defaultResult = await client.callTool({
+      name: "tool_calls_list",
+      arguments: { sessionId },
+    })
+    const { records: defaultRecords } = JSON.parse(textOf(defaultResult)) as {
+      records: Array<Record<string, unknown>>
+    }
+    // full: true must be byte-for-byte what the default returns.
+    expect(JSON.stringify(fullRecords)).toBe(JSON.stringify(defaultRecords))
+    // And both are FULL records — no projection, no preview.
+    expect(Object.keys(defaultRecords[0] as object)).toContain("command")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("exitCode")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("durationMs")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("ts")
+
+    await close()
+  })
 })
 
 function sandboxConfig(workspace: string, json: string): void {

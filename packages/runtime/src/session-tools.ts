@@ -3237,7 +3237,10 @@ export function registerSessionTools(
     "Snapshot the recent byte buffer of a PTY session. Returns base64-encoded " +
       "bytes (the buffer is RAW including ANSI escapes) by default; pass " +
       "`clean: true` for ANSI-stripped plain text instead. `lastBytes` caps " +
-      "the read from the tail.",
+      "the read from the tail; when a `lastBytes` window is applied the " +
+      "result carries a `truncated` flag (true when the window was filled to " +
+      "capacity). Future default: the read will be capped at 4096 bytes — " +
+      "pass `lastBytes` explicitly for stable behaviour.",
     {
       sessionId: z
         .string()
@@ -3248,7 +3251,11 @@ export function registerSessionTools(
         .min(1)
         .max(64 * 1024)
         .optional()
-        .describe("Max bytes from the tail. Default: full ring buffer (~64 KiB)."),
+        .describe(
+          "Max bytes from the tail. Default: full ring buffer (~64 KiB). " +
+            "Note: a future default caps this at 4096 bytes — pass " +
+            "`lastBytes` explicitly for stable behaviour."
+        ),
       clean: mcpBool
         .optional()
         .describe(
@@ -3299,6 +3306,9 @@ export function registerSessionTools(
                   ? { secondsSinceLastActivity: desc.secondsSinceLastActivity }
                   : {}),
                 bytes: buf.byteLength,
+                ...(input.lastBytes !== undefined
+                  ? { truncated: buf.byteLength >= input.lastBytes }
+                  : {}),
                 ...(input.clean
                   ? { text: stripAnsi(buf.toString("utf8")) }
                   : { b64: buf.toString("base64") }),
