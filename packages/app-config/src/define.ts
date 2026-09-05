@@ -22,7 +22,7 @@
  * walk) and runtime type guards.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
-import { basename, join, relative } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { parse } from "yaml"
 import { z } from "zod"
 import {
@@ -35,26 +35,73 @@ import {
   sha256Hex,
   sortedCopy,
   type Layer,
+  type MergeOptions,
 } from "./merge.js"
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * How an `items[]` entry matches an item file. Either a field pair —
+ * `{ entry: "n", item: "n" }` compares `entry[entryField]` with
+ * `item[itemField]` — or a predicate over the raw entry and item objects.
+ * Default: the entry's `id` equals the item's `id`.
+ */
+export type MatchKey =
+  | { entry: string; item: string }
+  | ((entry: Record<string, unknown>, item: Record<string, unknown>) => boolean)
+
 export interface AppKitDefinition<
   A extends z.ZodObject<z.ZodRawShape>,
-  I extends z.ZodObject<z.ZodRawShape & { id: z.ZodString }>,
+  I extends z.ZodObject<z.ZodRawShape>,
 > {
   /** Schema for the whole app file (app.yaml). */
   app: A
-  /** Schema for one item — MUST carry `id: z.string()`. */
+  /**
+   * Schema for one item. An item file without a non-empty string `id` is
+   * keyed by its per-item directory name (`manuscripts/<dir>/book.yaml` → the
+   * directory basename) or, for a flat glob, its file basename.
+   */
   item: I
   /** Key on the app value holding the ordered item entries (e.g. `items`). */
   itemsKey: string
-  /** Key on the app value holding app-level defaults (e.g. `defaults`). */
+  /**
+   * Key on the app value holding app-level defaults — may be a nested dot
+   * path (`"defaults"` or `"presets.default"`).
+   */
   defaultsKey?: string
+  /** Entry ↔ item matching (see `MatchKey`). Default: `entry.id === item.id`. */
+  matchKey?: MatchKey
+  /**
+   * Keyed-array merge: `mergeArraysBy.knowledge = "workspace"` makes the
+   * `knowledge` array merge by its entries' `workspace` field — an overlay
+   * entry with the same key REPLACES the base entry, others append — instead
+   * of the default replace-wholesale.
+   */
+  mergeArraysBy?: Record<string, string>
+  /**
+   * Per-field projection over the merged raw value, before the item schema
+   * parses it (e.g. `accent: book.cover?.accent ?? collection.cover.accents[book.vertical]`).
+   * Return the object `item.parse` should validate.
+   */
+  project?: (merged: Record<string, unknown>, ctx: ProjectContext<z.output<A>>) => unknown
   /** Layer order, lowest → highest. Default: defaults → entry → item. */
   precedence?: readonly Layer[]
+}
+
+/** Context handed to a `project` hook for one item. */
+export interface ProjectContext<A = Record<string, unknown>> {
+  /** The item's resolved key (see `AppKitDefinition.item`). */
+  id: string
+  /** Item file path, absolute. */
+  itemPath: string
+  /** Directory containing the item file, absolute. */
+  dir: string
+  /** The app file, schema-validated (zod output of `app`). */
+  app: A
+  /** The matched raw `items[]` entry, or null when the item is file-only. */
+  entry: Record<string, unknown> | null
 }
 
 export interface LoadOptions {
@@ -70,6 +117,8 @@ export interface ResolvedItem<I = Record<string, unknown>> {
   value: I
   /** Item file path, absolute. */
   itemPath: string
+  /** Directory containing the item file, absolute. */
+  dir: string
   /** Position in the app's items[] entry list, or null when file-only. */
   entryIndex: number | null
 }
@@ -93,12 +142,32 @@ export interface JsonSchemaPair {
 export interface GateFinding {
   message: string
   item?: string
+  /** Free-form attributes an app attaches to a finding (e.g. `book`, `chapter`). */
+  attrs?: Record<string, string>
 }
 
-export interface GateRule {
+/** Context handed to a `GateRule.test`. */
+export interface GateContext<R extends Resolved = Resolved> {
+  /** The resolved app the gates run over. */
+  resolved: R
+  /**
+   * The item the rule is scoped to, when the runner supplies one; rules that
+   * sweep all items read them off `resolved` instead.
+   */
+  item?: ResolvedItem
+  /**
+   * Read an artifact file relative to `resolved.rootDir` (rejects with
+   * `AppConfigError` when it escapes the root or does not exist).
+   */
+  readArtifact(relPath: string): Promise<string>
+  /** A parsed contract object for `ctx.item`, when the runner supplies one. */
+  contract?: unknown
+}
+
+export interface GateRule<R extends Resolved = Resolved> {
   id: string
   level: "error" | "warn"
-  test: (resolved: Resolved) => GateFinding[]
+  test: (ctx: GateContext<R>) => GateFinding[] | Promise<GateFinding[]>
 }
 
 export interface GateResultFinding extends GateFinding {
@@ -124,6 +193,8 @@ export interface VerifyFinding {
   level: VerifyLevel
   message: string
   item?: string
+  /** Free-form attributes an app attaches to a finding (e.g. `book`, `chapter`). */
+  attrs?: Record<string, string>
 }
 
 export interface VerifyReport {
@@ -132,14 +203,19 @@ export interface VerifyReport {
   summary: { errors: number; warnings: number; skipped: number }
 }
 
-/** A caller scope function: its key in `scopes` is the scope it reports under. */
-export type ScopeFn = (resolved: Resolved) => VerifyFinding[]
+/**
+ * A caller scope function over the app's own resolved type: its key in
+ * `scopes` is the scope it reports under. `R` defaults to the kit's loose
+ * `Resolved`; an app registers scopes over its own `Resolved<…, ResolvedBook[]>`
+ * shape by passing the generic through.
+ */
+export type ScopeFn<R extends Resolved = Resolved> = (resolved: R) => VerifyFinding[]
 
-export interface VerifyInput {
-  rules?: readonly GateRule[]
+export interface VerifyInput<R extends Resolved = Resolved> {
+  rules?: readonly GateRule<R>[]
   template?: (item: ResolvedItem) => object
   contractsDir?: string
-  scopes?: Record<string, ScopeFn>
+  scopes?: Record<string, ScopeFn<R>>
 }
 
 export const DEFAULT_APP_FILE = "config/app.yaml"
@@ -152,7 +228,7 @@ export const DEFAULT_CONTRACTS_DIR = "contracts"
 
 export type AppKit<
   A extends z.ZodObject<z.ZodRawShape>,
-  I extends z.ZodObject<z.ZodRawShape & { id: z.ZodString }>,
+  I extends z.ZodObject<z.ZodRawShape>,
 > = {
   readonly def: AppKitDefinition<A, I>
   load(rootDir: string, opts?: LoadOptions): Resolved<z.output<A>, z.output<I>>
@@ -163,8 +239,14 @@ export type AppKit<
     template: (item: ResolvedItem<z.output<I>>) => object
     dir: string
   }): { write(): void; check(): ContractDrift[] }
-  gates(resolved: Resolved<z.output<A>, z.output<I>>, rules: readonly GateRule[]): GateResult
-  verify(resolved: Resolved<z.output<A>, z.output<I>>, input?: VerifyInput): VerifyReport
+  gates(
+    resolved: Resolved<z.output<A>, z.output<I>>,
+    rules: readonly GateRule<Resolved<z.output<A>, z.output<I>>>[],
+  ): Promise<GateResult>
+  verify(
+    resolved: Resolved<z.output<A>, z.output<I>>,
+    input?: VerifyInput<Resolved<z.output<A>, z.output<I>>>,
+  ): Promise<VerifyReport>
 }
 
 /**
@@ -181,13 +263,13 @@ export type AnyKit = {
     template: (item: ResolvedItem) => object
     dir: string
   }): { write(): void; check(): ContractDrift[] }
-  gates(resolved: Resolved, rules: readonly GateRule[]): GateResult
-  verify(resolved: Resolved, input?: VerifyInput): VerifyReport
+  gates(resolved: Resolved, rules: readonly GateRule[]): Promise<GateResult>
+  verify(resolved: Resolved, input?: VerifyInput): Promise<VerifyReport>
 }
 
 export function defineAppConfig<
   A extends z.ZodObject<z.ZodRawShape>,
-  I extends z.ZodObject<z.ZodRawShape & { id: z.ZodString }>,
+  I extends z.ZodObject<z.ZodRawShape>,
 >(def: AppKitDefinition<A, I>): AppKit<A, I> {
   const precedence = normalizePrecedence(def.precedence)
 
@@ -204,18 +286,23 @@ export function defineAppConfig<
 
     let defaults: Record<string, unknown> = {}
     if (def.defaultsKey !== undefined) {
-      const picked = pick(rawApp, def.defaultsKey)
-      if (picked.found && picked.value !== undefined) {
-        if (!isPlainObject(picked.value)) {
+      const resolved = resolveDefaultsPath(rawApp, def.defaultsKey, rootDir, appFile)
+      if (resolved.value !== undefined) {
+        if (isPlainObject(resolved.value)) {
+          defaults = resolved.value
+        } else if (Array.isArray(resolved.value) && resolved.mount !== undefined) {
+          // An array leaf (e.g. defaultsKey "knowledge.defaults") mounts under
+          // its parent segment so mergeArraysBy can key it by field name.
+          defaults = { [resolved.mount]: resolved.value }
+        } else {
           throw new AppConfigError(
-            `${relative(rootDir, appFile)}: "${def.defaultsKey}" must be an object, got ${typeof picked.value}`,
+            `${relative(rootDir, appFile)}: "${def.defaultsKey}" must be an object, got ${typeof resolved.value}`,
           )
         }
-        defaults = picked.value
       }
     }
 
-    let entries: readonly object[] = []
+    let entries: readonly Record<string, unknown>[] = []
     const pickedEntries = pick(rawApp, def.itemsKey)
     if (pickedEntries.found && pickedEntries.value !== undefined) {
       if (!Array.isArray(pickedEntries.value)) {
@@ -233,35 +320,51 @@ export function defineAppConfig<
       entries = pickedEntries.value
     }
 
-    const files = resolveItemFiles(rootDir, opts.itemsGlob ?? DEFAULT_ITEMS_GLOB)
+    const fileInfos = resolveItemFileInfos(rootDir, opts.itemsGlob ?? DEFAULT_ITEMS_GLOB)
     const items = new Map<string, ResolvedItem<z.output<I>>>()
-    for (const itemPath of files) {
-      const raw: unknown = parseYamlFile(itemPath)
+    const mergeOpts: MergeOptions = def.mergeArraysBy !== undefined ? { arraysBy: def.mergeArraysBy } : {}
+    for (const info of fileInfos) {
+      const raw: unknown = parseYamlFile(info.path)
       if (!isPlainObject(raw)) {
         throw new AppConfigError(
-          `${relative(rootDir, itemPath)}: item file must be an object`,
+          `${relative(rootDir, info.path)}: item file must be an object`,
         )
       }
       const idPick = pick(raw, "id")
-      if (!idPick.found || typeof idPick.value !== "string" || idPick.value === "") {
-        throw new AppConfigError(
-          `${relative(rootDir, itemPath)}: item file must carry a non-empty string "id"`,
-        )
-      }
-      const id = idPick.value
-      const entryIndex = entries.findIndex((e) => {
-        const eid = pick(e, "id")
-        return eid.found && eid.value === id
-      })
+      const id =
+        idPick.found && typeof idPick.value === "string" && idPick.value !== ""
+          ? idPick.value
+          : info.key
+      const entryIndex = entries.findIndex((e) => entryMatches(def.matchKey, e, raw))
       const entry = entryIndex >= 0 ? entries[entryIndex] : {}
       const byLayer: Record<Layer, unknown> = { defaults, entry, item: raw }
-      const merged = mergeLayers(precedence.map((layer) => byLayer[layer]))
+      let merged = mergeLayers(precedence.map((layer) => byLayer[layer]), mergeOpts)
+      if (def.project !== undefined) {
+        if (!isPlainObject(merged)) {
+          throw new AppConfigError(
+            `${relative(rootDir, info.path)}: merged item value must be an object for project()`,
+          )
+        }
+        merged = def.project(merged, {
+          id,
+          itemPath: info.path,
+          dir: info.dir,
+          app,
+          entry: entryIndex >= 0 && entry !== undefined ? entry : null,
+        })
+      }
       const value = def.item.parse(merged)
-      items.set(id, { id, value, itemPath, entryIndex: entryIndex >= 0 ? entryIndex : null })
+      items.set(id, {
+        id,
+        value,
+        itemPath: info.path,
+        dir: info.dir,
+        entryIndex: entryIndex >= 0 ? entryIndex : null,
+      })
     }
 
-    if (items.size !== files.length) {
-      throw new AppConfigError(`duplicate item ids across ${files.length} item files`)
+    if (items.size !== fileInfos.length) {
+      throw new AppConfigError(`duplicate item keys across ${fileInfos.length} item files`)
     }
 
     const all = [...items.values()]
@@ -337,32 +440,43 @@ export function defineAppConfig<
     }
   }
 
-  function gates(resolved: Resolved<z.output<A>, z.output<I>>, rules: readonly GateRule[]): GateResult {
+  async function gates(
+    resolved: Resolved<z.output<A>, z.output<I>>,
+    rules: readonly GateRule<Resolved<z.output<A>, z.output<I>>>[],
+  ): Promise<GateResult> {
     const findings: GateResultFinding[] = []
+    const readArtifact = makeReadArtifact(resolved.rootDir)
     for (const rule of rules) {
-      for (const f of rule.test(resolved)) {
+      const ctx: GateContext<Resolved<z.output<A>, z.output<I>>> = { resolved, readArtifact }
+      const out = await rule.test(ctx)
+      for (const f of out) {
         findings.push({
           rule: rule.id,
           level: rule.level,
           message: f.message,
           ...(f.item !== undefined ? { item: f.item } : {}),
+          ...(f.attrs !== undefined ? { attrs: f.attrs } : {}),
         })
       }
     }
     return { ok: !findings.some((f) => f.level === "error"), findings }
   }
 
-  function verify(resolved: Resolved<z.output<A>, z.output<I>>, input: VerifyInput = {}): VerifyReport {
+  async function verify(
+    resolved: Resolved<z.output<A>, z.output<I>>,
+    input: VerifyInput<Resolved<z.output<A>, z.output<I>>> = {},
+  ): Promise<VerifyReport> {
     const findings: VerifyFinding[] = []
 
     if (input.rules !== undefined) {
-      const result = gates(resolved, input.rules)
+      const result = await gates(resolved, input.rules)
       for (const f of result.findings) {
         findings.push({
           scope: "gates",
           level: f.level,
           message: `${f.rule}: ${f.message}`,
           ...(f.item !== undefined ? { item: f.item } : {}),
+          ...(f.attrs !== undefined ? { attrs: f.attrs } : {}),
         })
       }
     }
@@ -387,6 +501,7 @@ export function defineAppConfig<
           level: f.level,
           message: f.message,
           ...(f.item !== undefined ? { item: f.item } : {}),
+          ...(f.attrs !== undefined ? { attrs: f.attrs } : {}),
         })
       }
     }
@@ -406,6 +521,64 @@ export function defineAppConfig<
 // Filesystem helpers
 // ---------------------------------------------------------------------------
 
+/** Resolve a defaults key, which may be a nested dot path (`"presets.default"`).
+ * Returns the leaf value plus, for array leaves, the parent segment to mount
+ * the array under (so mergeArraysBy can key it by field name). */
+export function resolveDefaultsPath(
+  rawApp: object,
+  defaultsKey: string,
+  rootDir: string,
+  appFile: string,
+): { value: unknown; mount?: string } {
+  const segments = defaultsKey.split(".")
+  let current: unknown = rawApp
+  let walked = ""
+  for (const segment of segments) {
+    walked = walked === "" ? segment : `${walked}.${segment}`
+    if (!isPlainObject(current)) {
+      throw new AppConfigError(
+        `${relative(rootDir, appFile)}: "${walked}" (from defaultsKey "${defaultsKey}") must be an object, got ${typeof current}`,
+      )
+    }
+    const p = pick(current, segment)
+    if (!p.found || p.value === undefined) return { value: undefined }
+    current = p.value
+  }
+  const parent = segments.length > 1 ? segments[segments.length - 2] : undefined
+  return parent !== undefined ? { value: current, mount: parent } : { value: current }
+}
+
+/** Compare one `items[]` entry with one raw item under the kit's matchKey. */
+export function entryMatches(matchKey: MatchKey | undefined, entry: object, item: object): boolean {
+  if (matchKey === undefined) {
+    const eid = pick(entry, "id")
+    const iid = pick(item, "id")
+    return eid.found && iid.found && eid.value === iid.value
+  }
+  if (typeof matchKey === "function") {
+    return isPlainObject(entry) && isPlainObject(item) && matchKey(entry, item)
+  }
+  const e = pick(entry, matchKey.entry)
+  const i = pick(item, matchKey.item)
+  return e.found && i.found && canonicalJson(e.value) === canonicalJson(i.value)
+}
+
+/** Read an artifact relative to the resolved root, without letting it escape. */
+function makeReadArtifact(rootDir: string): (relPath: string) => Promise<string> {
+  return (relPath: string): Promise<string> => {
+    const abs = resolve(rootDir, relPath)
+    const rel = relative(rootDir, abs)
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      return Promise.reject(new AppConfigError(`artifact path escapes rootDir: ${relPath}`))
+    }
+    try {
+      return Promise.resolve(readFileSync(abs, "utf8"))
+    } catch {
+      return Promise.reject(new AppConfigError(`artifact not found: ${relPath}`))
+    }
+  }
+}
+
 function parseYamlFile(path: string): unknown {
   if (!existsSync(path)) {
     throw new AppConfigError(`config file not found: ${path}`)
@@ -418,25 +591,104 @@ function parseYamlFile(path: string): unknown {
 }
 
 /**
- * Resolve an items glob. Supports a single-directory pattern like
- * `config/items/*.yaml` and a recursive doublestar pattern (a leading
- * doublestar directory segment). Output is sorted for determinism.
+ * One resolved item file: its absolute path, the directory containing it,
+ * and the key the item will be registered under when its YAML carries no
+ * string `id` (the per-item directory name for `dir/<dir>/file.yaml` globs, the
+ * file basename otherwise).
  */
-export function resolveItemFiles(root: string, glob: string): string[] {
-  const recursive = glob.startsWith("**/")
+export interface ItemFileInfo {
+  path: string
+  dir: string
+  key: string
+}
+
+/**
+ * Resolve an items glob into item file infos. Supported shapes:
+ *
+ * - `config/items/x.yaml` with a `*` filename pattern — flat directory
+ * - a leading doublestar segment — recursive
+ * - `manuscripts/<dir>/book.yaml` — a fixed basename inside per-item directories
+ * - `groups/team-<n>/item.yaml` — wildcard directory segments
+ *
+ * Output is sorted by path for determinism.
+ */
+export function resolveItemFileInfos(root: string, glob: string): ItemFileInfo[] {
   const lastSlash = glob.lastIndexOf("/")
   const pattern = lastSlash >= 0 ? glob.slice(lastSlash + 1) : glob
   const dirPart = lastSlash >= 0 ? glob.slice(0, lastSlash) : ""
-  const base = dirPart === "" ? root : join(root, dirPart.replace(/^\*\*\//, ""))
-  if (!existsSync(base)) {
-    throw new AppConfigError(`items directory not found: ${base} (glob "${glob}")`)
+  const dirs = resolveDirs(root, dirPart === "" ? [] : dirPart.split("/"), glob)
+  const out: ItemFileInfo[] = []
+  if (pattern.includes("*")) {
+    if (!pattern.startsWith("*.")) {
+      throw new AppConfigError(`unsupported items glob "${glob}" (expected *.yaml / *.yml)`)
+    }
+    const ext = pattern.slice(1)
+    for (const d of dirs) {
+      for (const p of listYaml(d, ext)) out.push({ path: p, dir: d, key: basename(p, ext) })
+    }
+  } else {
+    for (const d of dirs) {
+      const p = join(d, pattern)
+      if (existsSync(p) && statSync(p).isFile()) out.push({ path: p, dir: d, key: basename(d) })
+    }
   }
-  const ext = pattern.startsWith("*.") ? pattern.slice(1) : null
-  if (ext === null) {
-    throw new AppConfigError(`unsupported items glob "${glob}" (expected *.yaml / *.yml)`)
+  return out.sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/** Resolve an items glob to file paths (see `resolveItemFileInfos`). */
+export function resolveItemFiles(root: string, glob: string): string[] {
+  return resolveItemFileInfos(root, glob).map((f) => f.path)
+}
+
+/** Expand directory segments — `**` (any depth), wildcard segments, literals — under root. */
+function resolveDirs(root: string, segments: readonly string[], glob: string): string[] {
+  let dirs = [root]
+  for (const seg of segments) {
+    if (seg === "**") {
+      const next: string[] = []
+      for (const d of dirs) {
+        next.push(d)
+        next.push(...descendantDirs(d))
+      }
+      dirs = next
+    } else if (seg.includes("*")) {
+      const re = segmentRegex(seg)
+      const next: string[] = []
+      for (const d of dirs) {
+        for (const name of readdirSync(d).sort()) {
+          const p = join(d, name)
+          if (statSync(p).isDirectory() && re.test(name)) next.push(p)
+        }
+      }
+      dirs = next
+    } else {
+      dirs = dirs.map((d) => join(d, seg)).filter((p) => {
+        if (!existsSync(p) || !statSync(p).isDirectory()) {
+          throw new AppConfigError(`items directory not found: ${p} (glob "${glob}")`)
+        }
+        return true
+      })
+    }
   }
-  const files = recursive ? walkYaml(base, ext) : listYaml(base, ext)
-  return files.sort()
+  return dirs
+}
+
+/** A directory segment with `*` wildcards → an anchored name regex. */
+function segmentRegex(segment: string): RegExp {
+  const escaped = segment.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")
+  return new RegExp(`^${escaped}$`)
+}
+
+function descendantDirs(dir: string): string[] {
+  const out: string[] = []
+  for (const name of readdirSync(dir).sort()) {
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) {
+      out.push(p)
+      out.push(...descendantDirs(p))
+    }
+  }
+  return out
 }
 
 function listYaml(dir: string, ext: string): string[] {
@@ -444,14 +696,4 @@ function listYaml(dir: string, ext: string): string[] {
     .filter((name) => name.endsWith(ext))
     .map((name) => join(dir, name))
     .filter((p) => statSync(p).isFile())
-}
-
-function walkYaml(dir: string, ext: string): string[] {
-  const out: string[] = []
-  for (const name of readdirSync(dir).sort()) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) out.push(...walkYaml(p, ext))
-    else if (name.endsWith(ext)) out.push(p)
-  }
-  return out
 }

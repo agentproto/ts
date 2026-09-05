@@ -218,7 +218,7 @@ export async function runCli(opts: CliOptions = {}): Promise<number> {
       return 0
     }
     // verify
-    const report = kit.verify(resolved, {
+    const report = await kit.verify(resolved, {
       rules: mod.rules,
       template: mod.template,
       contractsDir: contractsDirArg ?? mod.contractsDir,
