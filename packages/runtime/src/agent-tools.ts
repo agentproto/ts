@@ -1858,8 +1858,10 @@ export function registerAgentTools(
       vendor: z.string().optional().describe("Keep only this vendor's entry."),
       route: z.string().optional().describe("Keep only routes with this route id."),
       runnableOnly: mcpBool.optional().describe("Drop every route with runnable:false."),
+      limit: pageParamsShape.limit,
+      cursor: pageParamsShape.cursor,
     },
-    async ({ adapter, vendor, route, runnableOnly }) => {
+    async ({ adapter, vendor, route, runnableOnly, limit, cursor }) => {
       if (!listCatalogModels) {
         return {
           content: [
@@ -1881,6 +1883,24 @@ export function registerAgentTools(
           ...(route ? { route } : {}),
           ...(runnableOnly ? { runnableOnly: true } : {}),
         })
+        // Additive pagination (PR-3): when limit/cursor is supplied the
+        // nested vendor/product tree is flattened to per-route entries
+        // (vendor + product carried on each, every CatalogRoute field
+        // intact) and paged over the FILTERED array — the cursor's decoded
+        // `i` is the offset (no stable keyset in the catalog). Without
+        // either param the output stays byte-identical to the
+        // pre-pagination handler.
+        if (limit !== undefined || cursor !== undefined) {
+          const flat = catalog.vendors.flatMap(v =>
+            v.products.flatMap(p =>
+              p.routes.map(r => ({ vendor: v.vendor, product: p.product, ...r })),
+            ),
+          )
+          const page = paginate(flat, { limit, cursor }, { maxLimit: 200 })
+          return {
+            content: [{ type: "text", text: toolText(page) }],
+          }
+        }
         return {
           content: [{ type: "text", text: JSON.stringify(catalog, null, 2) }],
         }
@@ -1909,7 +1929,8 @@ export function registerAgentTools(
       "browses before any adapter/profile is chosen, so it takes no host " +
       "state. An unknown/empty provider returns `models: []`, never an error. " +
       "Large providers (openrouter is thousands) come back whole — paginate " +
-      "client-side.",
+      "client-side. Additively: pass `limit`/`cursor` to page the models " +
+      "array instead (shared `{ items, nextCursor?, total }` envelope).",
     {
       endpoint: z
         .string()
@@ -1919,8 +1940,10 @@ export function registerAgentTools(
         .string()
         .optional()
         .describe("Synonym for endpoint (takes precedence when both are given)."),
+      limit: pageParamsShape.limit,
+      cursor: pageParamsShape.cursor,
     },
-    async ({ endpoint, route }) => {
+    async ({ endpoint, route, limit, cursor }) => {
       // Never throws: an unknown provider is a valid empty answer, and the
       // catch is defence-in-depth so a malformed overlay can't 500 the picker.
       try {
@@ -1928,6 +1951,15 @@ export function registerAgentTools(
           ...(endpoint ? { endpoint } : {}),
           ...(route ? { route } : {}),
         })
+        // Additive pagination (PR-3): same convention as `catalog_models` —
+        // the cursor's decoded `i` is the offset over the models array.
+        // Without limit/cursor the output is byte-identical to before.
+        if (limit !== undefined || cursor !== undefined) {
+          const page = paginate(result.models, { limit, cursor }, { maxLimit: 200 })
+          return {
+            content: [{ type: "text", text: toolText(page) }],
+          }
+        }
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         }
