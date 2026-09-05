@@ -34,6 +34,11 @@
       "import": "./dist/react.mjs",
       "default": "./dist/react.mjs"
     },
+    "./runner-select": {
+      "types": "./dist/runner-select.d.ts",
+      "import": "./dist/runner-select.mjs",
+      "default": "./dist/runner-select.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
