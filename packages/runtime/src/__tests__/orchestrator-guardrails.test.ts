@@ -19,12 +19,16 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 import type { AcpMcpServer } from "@agentproto/acp"
 
 import { registerSessionTools } from "../session-tools.js"
+import { registerOrchestrationTools } from "../orchestration-tools.js"
+import { createEventRing } from "../event-ring.js"
+import { McpProxyRegistry, type ProxyToolDescriptor } from "../mcp-proxy.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorInjector,
@@ -93,6 +97,7 @@ async function harness(opts?: {
     scopeTokens: ScopeTokenRegistry,
     registry: SessionsRegistry,
   ) => OrchestratorScope | undefined
+  mcpProxy?: McpProxyRegistry
 }): Promise<Harness> {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
@@ -115,6 +120,7 @@ async function harness(opts?: {
     resolveAgentAdapter: makeResolver(capture),
     buildOrchestratorMcp: injector,
     ...(callerScope ? { callerScope } : {}),
+    ...(opts?.mcpProxy ? { mcpProxy: opts.mcpProxy } : {}),
   })
 
   const [clientTransport, serverTransport] =
@@ -544,6 +550,254 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
       expect(union).not.toContain(ids.D) // archived stays hidden
     } finally {
       await h.close()
+    }
+  })
+})
+
+// ── PR-6: mcp_imported_tool_list additive projections + pagination ───────────
+
+interface ProxyHarness extends Harness {
+  proxyTools: ProxyToolDescriptor[]
+}
+
+const PROXY_TOOLS: ProxyToolDescriptor[] = [
+  {
+    name: "navigate_page",
+    description: "Navigate to a URL.",
+    inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+  },
+  {
+    name: "take_screenshot",
+    description: "Screenshot the page.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "click",
+    description: "Click an element.",
+    inputSchema: { type: "object", properties: { uid: { type: "string" } } },
+    _meta: { "x-client-resolve": { read: "snapshot", inject: "uid" } },
+  },
+  {
+    name: "list_pages",
+    description: "List open pages.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "select_page",
+    description: "Focus a page.",
+    inputSchema: { type: "object", properties: { pageIdx: { type: "number" } } },
+  },
+]
+
+class FakeProxy extends McpProxyRegistry {
+  constructor(private readonly tools: ProxyToolDescriptor[]) {
+    super()
+  }
+  override async listTools(
+    _alias: string,
+  ): Promise<{ ok: true; tools: ProxyToolDescriptor[] } | { ok: false; error: string }> {
+    return { ok: true, tools: this.tools }
+  }
+}
+
+describe("PR-6 — mcp_imported_tool_list compact/schema/limit/cursor", () => {
+  async function proxyHarness(): Promise<ProxyHarness> {
+    const h = await harness({ mcpProxy: new FakeProxy(PROXY_TOOLS) })
+    return { ...h, proxyTools: PROXY_TOOLS }
+  }
+
+  it("default (no params) returns the full pre-PR-6 shape, byte-identical", async () => {
+    const h = await proxyHarness()
+    try {
+      const result = await h.client.callTool({
+        name: "mcp_imported_tool_list",
+        arguments: { alias: "chrome-devtools" },
+      })
+      const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+      expect(text).toBe(
+        JSON.stringify({ alias: "chrome-devtools", tools: PROXY_TOOLS }, null, 2),
+      )
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("compact:true returns only name+description per tool", async () => {
+    const h = await proxyHarness()
+    try {
+      const body = payload<{ alias: string; tools: Array<{ name: string; description?: string }> }>(
+        await h.client.callTool({
+          name: "mcp_imported_tool_list",
+          arguments: { alias: "chrome-devtools", compact: true },
+        }),
+      )
+      expect(body.tools).toHaveLength(PROXY_TOOLS.length)
+      for (const t of body.tools) {
+        expect(Object.keys(t).sort()).toEqual(["description", "name"])
+      }
+      expect(body.tools[0]).toEqual({
+        name: "navigate_page",
+        description: "Navigate to a URL.",
+      })
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("compact:true + schema:true keeps the upstream inputSchema alongside the compact projection", async () => {
+    const h = await proxyHarness()
+    try {
+      const body = payload<{
+        tools: Array<{ name: string; inputSchema?: unknown; description?: string }>
+      }>(
+        await h.client.callTool({
+          name: "mcp_imported_tool_list",
+          arguments: { alias: "chrome-devtools", compact: true, schema: true },
+        }),
+      )
+      const click = body.tools.find(t => t.name === "click")
+      expect(click).toBeDefined()
+      expect(click!.inputSchema).toEqual(
+        { type: "object", properties: { uid: { type: "string" } } },
+      )
+      // _meta stays dropped in the compact projection
+      expect(JSON.stringify(click)).not.toContain("x-client-resolve")
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("page-walk union over limit/cursor equals the full tool list", async () => {
+    const h = await proxyHarness()
+    try {
+      const expected = payload<{ tools: Array<{ name: string }> }>(
+        await h.client.callTool({
+          name: "mcp_imported_tool_list",
+          arguments: { alias: "chrome-devtools" },
+        }),
+      ).tools.map(t => t.name)
+
+      const union: string[] = []
+      let cursor: string | undefined
+      let total: number | undefined
+      do {
+        const page = payload<{
+          alias: string
+          items: Array<{ name: string }>
+          nextCursor?: string
+          total?: number
+        }>(
+          await h.client.callTool({
+            name: "mcp_imported_tool_list",
+            arguments: {
+              alias: "chrome-devtools",
+              limit: 2,
+              ...(cursor ? { cursor } : {}),
+            },
+          }),
+        )
+        expect(page.alias).toBe("chrome-devtools")
+        expect(page.total).toBe(PROXY_TOOLS.length)
+        total = page.total
+        union.push(...page.items.map(t => t.name))
+        cursor = page.nextCursor
+      } while (cursor)
+
+      expect(union).toEqual(expected)
+      expect(total).toBe(PROXY_TOOLS.length)
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("limit on a short list returns one page with no nextCursor", async () => {
+    const h = await proxyHarness()
+    try {
+      const page = payload<{ items: ProxyToolDescriptor[]; nextCursor?: string; total: number }>(
+        await h.client.callTool({
+          name: "mcp_imported_tool_list",
+          arguments: { alias: "chrome-devtools", limit: 200 },
+        }),
+      )
+      expect(page.items).toHaveLength(PROXY_TOOLS.length)
+      expect(page.total).toBe(PROXY_TOOLS.length)
+      expect(page.nextCursor).toBeUndefined()
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+// ── PR-6: session_events_poll accepts the additive `full` flag ───────────────
+
+describe("PR-6 — session_events_poll full flag (additive, no-op)", () => {
+  async function eventsHarness() {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const eventRing = createEventRing()
+    eventRing.wire(sessionEvents)
+
+    const server = new McpServer({ name: "events", version: "0" })
+    registerOrchestrationTools(server, { registry, sessionEvents, eventRing })
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "events-client", version: "0.0.1" })
+    await client.connect(clientTransport)
+
+    sessionEvents.emit({
+      type: "session:turn-end",
+      sessionId: "s1",
+      awaitingInput: false,
+      ts: new Date().toISOString(),
+    })
+
+    return {
+      client,
+      close: async () => {
+        await client.close()
+      },
+    }
+  }
+
+  it("since:0 replay returns the retained event (contract unchanged)", async () => {
+    const { client, close } = await eventsHarness()
+    try {
+      const body = payload<{
+        events: Array<{ type: string; sessionId: string }>
+        nextCursor: number
+      }>(
+        await client.callTool({
+          name: "session_events_poll",
+          arguments: { since: 0 },
+        }),
+      )
+      expect(body.events).toHaveLength(1)
+      expect(body.events[0]!.type).toBe("session:turn-end")
+      expect(body.events[0]!.sessionId).toBe("s1")
+      expect(body.nextCursor).toBe(1)
+    } finally {
+      await close()
+    }
+  })
+
+  it("full:true is accepted and leaves the output shape unchanged", async () => {
+    const { client, close } = await eventsHarness()
+    try {
+      const args = [{ since: 0 }, { since: 0, full: true }] as const
+      const [plain, withFull] = await Promise.all(
+        args.map(a => client.callTool({ name: "session_events_poll", arguments: a })),
+      )
+      expect(withFull).toEqual(plain)
+      const body = payload<{
+        events: Array<{ type: string }>
+        nextCursor: number
+      }>(withFull)
+      expect(body.events).toHaveLength(1)
+      expect(body.events[0]!.type).toBe("session:turn-end")
+      expect(body.nextCursor).toBe(1)
+    } finally {
+      await close()
     }
   })
 })
