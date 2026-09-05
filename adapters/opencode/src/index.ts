@@ -16,6 +16,8 @@
  *   await session.close()
  */
 
+import { homedir } from "node:os"
+import { join } from "node:path"
 import {
   createAgentCliRuntime,
   defineAgentCli,
@@ -213,6 +215,53 @@ export const opencode: AgentCliHandle = defineAgentCli({
 
 export function opencodeRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(opencode)
+}
+
+/**
+ * Best-effort per-session usage reader, mirroring `readHermesUsage` in
+ * `@agentproto/adapter-hermes`. OpenCode's live ACP `usage_update` event only
+ * ever carries `{used, size, cost}` — no token fields exist on that wire
+ * event at all (confirmed by disassembling the installed opencode acp
+ * binary) — so `session_usage` can't get tokensIn/tokensOut from the live
+ * stream the way it does for other adapters. OpenCode does persist full
+ * token detail to its own sqlite store though (the same store
+ * `exportOpenCodeSession` in `@agentproto/runtime`'s transcript-export.ts
+ * reads for `sessions export --json`), so this hook re-reads it directly.
+ */
+export async function readOpenCodeUsage(
+  sessionId: string,
+): Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null> {
+  try {
+    // node:sqlite is a Node 22+ builtin. Build the specifier at runtime so the
+    // bundler (esbuild/tsup) can't statically rewrite it — it strips the
+    // `node:` prefix off this not-yet-recognised builtin, turning the import
+    // into a missing `sqlite` package that throws and silently yields null.
+    const sqliteSpecifier = ["node", "sqlite"].join(":")
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as {
+      DatabaseSync: new (p: string, o?: { readOnly?: boolean }) => {
+        prepare(sql: string): { get(...a: unknown[]): unknown }
+        close(): void
+      }
+    }
+    const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")
+    const dbPath = join(dataHome, "opencode", "opencode.db")
+    const db = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const row = db
+        .prepare("SELECT cost, tokens_input AS ti, tokens_output AS to_ FROM session WHERE id = ?")
+        .get(sessionId) as { cost?: number; ti?: number; to_?: number } | undefined
+      if (!row) return null
+      return {
+        ...(row.cost != null ? { costUsd: Number(row.cost) } : {}),
+        ...(row.ti != null ? { tokensIn: row.ti } : {}),
+        ...(row.to_ != null ? { tokensOut: row.to_ } : {}),
+      }
+    } finally {
+      db.close()
+    }
+  } catch {
+    return null
+  }
 }
 
 export type { AgentCliHandle, AgentCliRuntime }
