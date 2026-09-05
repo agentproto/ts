@@ -989,7 +989,36 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # The reviewer's own artifact ledger — routed through env, not
+          # interpolated inline, same shell-injection reasoning as PR_TITLE
+          # elsewhere in this file (it's machine-written JSON, but the
+          # convention is uniform regardless of source).
+          REVIEWER_ARTIFACTS: ${{ steps.reviewer-agentproto.outputs.artifacts }}
         run: |
+          # Prefer the ledger over a live-head guess: on the sandbox lane,
+          # deliver-artifact.mjs records the review's id the INSTANT it posts
+          # — independent of wherever the PR head drifts to afterward. A live
+          # head recount below is vulnerable to exactly that drift: the
+          # reviewer's OWN changeset push (landing mid-turn, straight from the
+          # box — see entry.mjs's changesetDeliveryInstruction) moves the head
+          # AFTER the review posts but BEFORE this step runs, so counting
+          # reviews against the NEW head finds 0 and wrongly arms the
+          # fallback tier. Live on PR #1137: primary posted cleanly, its own
+          # changeset push moved the head, this recount read 0, the fallback
+          # account tier fired a genuine duplicate review against the new
+          # head. An empty ledger (host placement, no e2b box) falls straight
+          # through to the pre-existing live-head recount.
+          if node -e '
+            import("./scripts/lib/artifact-ledger.mjs").then(({ parseArtifacts, pickArtifact }) => {
+              const artifacts = parseArtifacts(process.env.REVIEWER_ARTIFACTS)
+              process.exit(pickArtifact(artifacts, "review") ? 0 : 1)
+            })
+          '; then
+            echo "Reviewer artifact ledger already records a posted review — trusting it over a live-head recount."
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Re-resolve the head LIVE — do not trust steps.headsha's
           # checkout-time value here. GitHub stamps a posted review's
           # commit_id against the PR's head at POST time, not against
@@ -1129,7 +1158,24 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # The fallback-account tier's own artifact ledger — same
+          # ledger-first reasoning as the postcheck step above.
+          REVIEWER_ARTIFACTS: ${{ steps.reviewer-agentproto-fallback.outputs.artifacts }}
         run: |
+          # Ledger-first, same reasoning as the postcheck step above: the
+          # fallback-account tier can ALSO push its own changeset mid-turn
+          # and move the head before this step's live recount runs.
+          if node -e '
+            import("./scripts/lib/artifact-ledger.mjs").then(({ parseArtifacts, pickArtifact }) => {
+              const artifacts = parseArtifacts(process.env.REVIEWER_ARTIFACTS)
+              process.exit(pickArtifact(artifacts, "review") ? 0 : 1)
+            })
+          '; then
+            echo "Fallback-account artifact ledger already records a posted review — trusting it over a live-head recount."
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Re-resolve the head LIVE, same reasoning as the postcheck step
           # above (see its comment) — the checkout-time steps.headsha sha can
           # be stale by the time a review actually posts and gets its
@@ -1347,6 +1393,21 @@ jobs:
           steps.bypass.outputs.skip != 'true' &&
           steps.buildwait.outputs.build_ok == 'true'
         id: changeset
+        # The sandboxed reviewer (reviewerSandbox) can ALSO push a changeset
+        # itself, mid-turn, straight from inside the box (see
+        # changesetDeliveryInstruction in pr-review/entry.mjs) — independent
+        # of this host-side step and often already landed by the time this
+        # runs. When that races this step's own stale local checkout, `git
+        # push` here rejects as non-fast-forward and this step fails. Without
+        # continue-on-error that failure cascaded (no `if: always()` below)
+        # into skipping "Verify review was posted" AND "Stamp review
+        # provenance footer" for the ENTIRE job — so a review that posted
+        # cleanly went out with no footer for a reason that has nothing to do
+        # with the review itself. This step's own outcome is cosmetic (the
+        # changeset either already landed via the box, or the
+        # changeset-check gate catches a genuinely missing one) — it must
+        # never gate the review's own verification/stamping.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
