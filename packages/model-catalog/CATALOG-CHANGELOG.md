@@ -42,3 +42,16 @@ for that.
 
 ### image:replicate
 - Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
+
+## 2026-09-05
+
+### llm:openrouter
+- Added: anthropic/claude-fable-5.1:batch, google/gemini-3.8-flash, google/gemini-3.8-flash:batch, inclusionai/ling-3.0-flash-fin, meta/muse-spark-1.3, meta/muse-spark-1.3-contributor, nvidia/nemotron-3.5-content-safety, openai/gpt-6-astra, openai/gpt-6-astra-pro, openai/gpt-6-astra-pro:batch, openai/gpt-6-astra:batch, qwen/qwen3.8-max-0902, x-ai/grok-4.3:batch, ~z-ai/glm-flash-latest
+- Removed: ibm-granite/granite-4.1-8b, nvidia/nemotron-3-ultra-550b-a55b:batch, qwen/qwen3.8-max
+
+### llm:huggingface
+- Added: deepseek-ai/DeepSeek-V4-Flash-Vision-Exp, inclusionAI/Ling-3.0-flash-Fin
+- Removed: Qwen/Qwen2.5-7B-Instruct, alpindale/WizardLM-2-8x22B
+
+### image:replicate
+- Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
