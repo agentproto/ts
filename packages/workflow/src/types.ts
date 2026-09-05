@@ -320,6 +320,10 @@ export interface KnowledgeSelector {
    *  the step cwd's `.knowledge/`); other values are rejected by the schema
    *  and the loader. */
   mode?: "files"
+  /** Internal — set by `@agentproto/workflow-loader` when a selector string
+   *  carries `$…` run-time references. Not user-authored; authoring it is
+   *  rejected by the loader. */
+  deferred?: boolean
 }
 /**
  * Harness pinning block on a `kind: "agent"` step. Every field is optional —

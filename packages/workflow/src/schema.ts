@@ -34,6 +34,7 @@ export const knowledgeSelectorSchema = z
     kinds: z.array(z.string()).optional(),
     maxEntries: z.number().int().gte(1).optional(),
     mode: z.enum(["files"]).optional(),
+    deferred: z.boolean().optional(),
   })
   .strict()
 

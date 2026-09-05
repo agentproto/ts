@@ -260,6 +260,11 @@ export interface HarnessKnowledgeSelector {
   maxEntries?: number
   /** Materialization mode — v1 supports only `"files"`. */
   mode?: "files"
+  /** Internal — set by `@agentproto/workflow-loader` when a selector string
+   *  carries `$…` run-time references that must be resolved against the run
+   *  bindings before materialization. Not user-authored; the loader rejects
+   *  an authored `deferred`, and resolution strips the flag. */
+  deferred?: boolean
 }
 
 /** Per-selector materialization record on an agent step's run output. */
