@@ -179,10 +179,195 @@ function hasRef(s: string): boolean {
  * other than the v1-only `"files"`.
  *
  * Exception: a selector whose `workspace` (or any tag/kind string) contains a
- * `$` carries run-time references (AIP-16 grammar) — its strings are left
- * verbatim, no relative resolution and no existence check happens here, and
- * the selector is flagged `deferred: true` (an internal field the runtime
- * consumes and strips; a user-authored `deferred` is rejected).
+ * `/**
+ * loadWorkflowHandle — read a WORKFLOW.md off disk into a WorkflowHandle.
+ *
+ * The pure packages stop at the page boundary: `@agentproto/workflow` parses a
+ * manifest *string*, `@agentproto/workflow-runtime` compiles an in-memory
+ * handle. Neither touches the filesystem. This is the host-side seam that does:
+ *
+ *   read file → parse manifest → (if `entry`) import the module + reconcile
+ *
+ * With no `entry`, the manifest IS the workflow (purely-declarative path). With
+ * an `entry`, its default-exported handle is the source of truth for runtime
+ * step logic and the manifest is reconciled against it — the two MUST agree.
+ *
+ * The entry import mirrors the CLI's adapter loader: resolve relative to the
+ * manifest's directory, import via a `file://` URL so an absolute path works
+ * without an `exports` declaration.
+ */
+
+import { readFile, stat } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { dirname, isAbsolute, join } from "node:path"
+import { pathToFileURL } from "node:url"
+
+import {
+  parseWorkflowManifest,
+  workflowFromManifest,
+  type WorkflowManifest,
+} from "@agentproto/workflow/manifest"
+import type { WorkflowHandle } from "@agentproto/workflow"
+
+import { reconcileEntry } from "./reconcile.js"
+
+export class WorkflowLoadError extends Error {
+  constructor(message: string) {
+    super(`loadWorkflow: ${message}`)
+    this.name = "WorkflowLoadError"
+  }
+}
+
+/** A handle is a plain object carrying an `id` and a `steps` array. */
+function isWorkflowHandle(v: unknown): v is WorkflowHandle {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as { id?: unknown }).id === "string" &&
+    Array.isArray((v as { steps?: unknown }).steps)
+  )
+}
+
+/**
+ * Translate a declarative `subworkflow` step's `with:` block into the `inputs`
+ * projection the runtime compiler threads into `step.input(b)` (AIP-16 ref
+ * grammar: `$input.*`, `$steps.<id>.*`, literals — resolved against the
+ * PARENT's bindings). Without this, a manifest `with:` is dead documentation:
+ * the child receives the parent's raw input verbatim. Steps without `with:`
+ * are left untouched. Nested step lists (map / loop / parallel bodies and
+ * branch arms) are walked too.
+ */
+function translateSubworkflowWith(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  steps: unknown,
+  knownStepIds: ReadonlySet<string>,
+): void {
+  if (!Array.isArray(steps)) return
+  for (const step of steps) {
+    if (step === null || typeof step !== "object") continue
+    const s = step as Record<string, unknown>
+    if (s.kind === "subworkflow" && s.with !== undefined) {
+      const id = typeof s.id === "string" ? s.id : "(unid)"
+      if (s.inputs !== undefined) {
+        throw new WorkflowLoadError(
+          `subworkflow step '${id}' declares both 'with' and 'inputs' — use one`,
+        )
+      }
+      assertWithStepRefs(s.with, `subworkflow step '${id}' with`, knownStepIds)
+      s.inputs = s.with
+      delete s.with
+    }
+    translateSubworkflowWith(s.steps, knownStepIds)
+    if (Array.isArray(s.branches)) {
+      for (const br of s.branches)
+        translateSubworkflowWith((br as Record<string, unknown>)?.steps, knownStepIds)
+    }
+  }
+}
+
+/** Statically reject a `$steps.<id>` ref in a `with:` block that names a step
+ *  id this workflow doesn't declare — at load time, naming the step + key. */
+function assertWithStepRefs(
+  node: unknown,
+  label: string,
+  knownStepIds: ReadonlySet<string>,
+): void {
+  if (typeof node === "string") {
+    if (node.startsWith("$$")) return
+    const m = node.match(/^\$steps\.([^.]+)/)
+    if (m && !knownStepIds.has(m[1]!)) {
+      throw new WorkflowLoadError(
+        `${label} references unknown step '${m[1]}' via '${node}' — ` +
+          `no step with that id exists in this workflow`,
+      )
+    }
+    return
+  }
+  if (Array.isArray(node)) {
+    node.forEach((n, i) => assertWithStepRefs(n, `${label}[${i}]`, knownStepIds))
+    return
+  }
+  if (node && typeof node === "object") {
+    for (const [k, v] of Object.entries(node as Record<string, unknown>))
+      assertWithStepRefs(v, `${label}.${k}`, knownStepIds)
+  }
+}
+
+/**
+ * Resolve every `kind: "agent"` step's `harness.promptFile` (AIP-15 P2),
+ * relative to the WORKFLOW.md's own directory: read the file's raw bytes,
+ * use its decoded text as the step's `prompt` (replacing any inline one),
+ * and record `harness.promptSha` (sha256 hex of the raw bytes) on the step
+ * so a consumer can verify exactly which prompt version a run used. Nested
+ * step lists (map / loop / parallel bodies, branch arms) are walked too —
+ * same traversal shape as {@link translateSubworkflowWith}.
+ */
+async function applyAgentHarnessPromptFiles(
+  steps: unknown,
+  workflowMdPath: string,
+): Promise<void> {
+  if (!Array.isArray(steps)) return
+  for (const step of steps) {
+    if (step === null || typeof step !== "object") continue
+    const s = step as Record<string, unknown>
+    if (s.kind === "agent" && s.harness && typeof s.harness === "object") {
+      const harness = s.harness as Record<string, unknown>
+      const promptFile = harness.promptFile
+      if (typeof promptFile === "string" && promptFile.length > 0) {
+        const abs = isAbsolute(promptFile)
+          ? promptFile
+          : join(dirname(workflowMdPath), promptFile)
+        let bytes: Buffer
+        try {
+          bytes = await readFile(abs)
+        } catch (err) {
+          const id = typeof s.id === "string" ? s.id : "(unid)"
+          throw new WorkflowLoadError(
+            `agent step '${id}': cannot read harness.promptFile '${promptFile}': ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          )
+        }
+        s.prompt = bytes.toString("utf8").trim()
+        harness.promptSha = createHash("sha256").update(bytes).digest("hex")
+      }
+      await applyAgentHarnessKnowledge(harness, s, workflowMdPath)
+    }
+    await applyAgentHarnessPromptFiles(s.steps, workflowMdPath)
+    if (Array.isArray(s.branches)) {
+      for (const br of s.branches) {
+        await applyAgentHarnessPromptFiles((br as Record<string, unknown>)?.steps, workflowMdPath)
+      }
+    }
+  }
+}
+
+/**
+ * True when a selector string carries a `$…` run-time reference — such a
+ * string is left untouched here and resolved per run by
+ * `resolveKnowledgeSelectors` in `@agentproto/workflow-runtime`.
+ */
+function hasRef(s: string): boolean {
+  return s.includes("$")
+}
+
+/**
+ * Resolve every `harness.knowledge[]` selector's `workspace` (AIP-15 P2),
+ * relative to the WORKFLOW.md's own directory — the same rule
+ * `harness.promptFile` follows — rewriting it in place to the absolute path
+ * so the runtime materializer never re-resolves against a different cwd. A
+ * workspace directory that does not exist fails the load, as does a `mode`
+ * other than the v1-only `"files"`.
+ *
+ carries run-time references (AIP-16 grammar) and is flagged
+ * `deferred: true` (an internal field the runtime consumes and strips; a
+ * user-authored `deferred` is rejected). No existence check happens here for
+ * a deferred selector. If the `workspace` itself carries a ref, it's left
+ * verbatim for the runtime to resolve against bindings. Otherwise — e.g. only
+ * a tag/kind carries a ref — the `workspace` has no ref of its own, so it's
+ * still resolved to an absolute path here, exactly as the non-deferred case
+ * below does; otherwise it would later be joined against the run cwd instead
+ * of the WORKFLOW.md directory.
  */
 async function applyAgentHarnessKnowledge(
   harness: Record<string, unknown>,
@@ -216,6 +401,16 @@ async function applyAgentHarnessKnowledge(
     ].filter((t): t is string => typeof t === "string")
     if (hasRef(workspace) || tagStrings.some(hasRef)) {
       selector.deferred = true
+      // The workspace itself may still be a plain (ref-free) relative path
+      // even when a tag/kind carries a ref — resolve it to absolute here so
+      // the runtime never re-joins it against the run cwd instead of the
+      // WORKFLOW.md directory. Only skip resolution (and the existence
+      // check below) when the workspace itself carries a ref.
+      if (!hasRef(workspace)) {
+        selector.workspace = isAbsolute(workspace)
+          ? workspace
+          : join(dirname(workflowMdPath), workspace)
+      }
       continue
     }
     const abs = isAbsolute(workspace)
