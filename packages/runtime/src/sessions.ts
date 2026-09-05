@@ -1599,6 +1599,10 @@ export interface SessionDescriptor {
    *  default, ephemeral) or `"pause"` (keeps `sandboxId` reconnectable via
    *  `agent_start.sandbox.reuse`). Only set when `remote` is true. */
   sandboxTeardown?: "kill" | "pause"
+  /** App ports exposed at boot time (`SandboxSpec.extraPorts`) — maps port
+   *  number to its public URL. Only present for sandbox sessions where the
+   *  provider resolved `extraPorts` into `BootedSandbox.ports`. */
+  sandboxPorts?: Record<number, string>
 }
 
 /**
@@ -1704,6 +1708,7 @@ export interface SessionSummary {
   remote?: boolean
   sandboxId?: string
   sandboxTeardown?: "kill" | "pause"
+  sandboxPorts?: Record<number, string>
 }
 
 /** Project a full SessionDescriptor down to the panel summary shape. */
@@ -1776,6 +1781,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     remote: desc.remote,
     sandboxId: desc.sandboxId,
     sandboxTeardown: desc.sandboxTeardown,
+    sandboxPorts: desc.sandboxPorts,
   }
 }
 

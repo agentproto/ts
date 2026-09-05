@@ -2634,6 +2634,7 @@ export async function spawnAgentSession(
     let readUsage: (() => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
     let sandboxId: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
+    let sandboxPorts: Record<number, string> | undefined
 
     if (input.sandbox !== undefined) {
       const booted = await bootSandboxAgentSession({
@@ -2664,6 +2665,7 @@ export async function spawnAgentSession(
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
       sandboxTeardown = booted.sandboxTeardown
+      sandboxPorts = booted.sandboxPorts
     } else {
       // `resolved` is guaranteed non-null here — the `input.sandbox ===
       // undefined` branch above already returned `adapter_not_found`
@@ -2857,6 +2859,7 @@ export async function spawnAgentSession(
         : {}),
       ...(sandboxId ? { remote: true, sandboxId } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
+      ...(sandboxPorts ? { sandboxPorts } : {}),
       // Hold mode is a local-driver capability; a sandbox spawn proxies to the
       // box's own daemon, which handles permissions there.
       ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
@@ -3067,6 +3070,7 @@ type SandboxBootResult =
       commandPreview: string
       sandboxId: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
+      sandboxPorts?: Record<number, string>
     }
   | {
       ok: false
@@ -3223,6 +3227,7 @@ async function bootSandboxAgentSession(opts: {
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
     sandboxTeardown: lifecyclePolicy.teardown,
+    ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
     // The proxy flattens the box's stream to text (documented limitation),
     // so cost/tokens/model never ride the event stream out of the box. Read
     // them back from the box daemon's own `session_usage` at each turn-end —

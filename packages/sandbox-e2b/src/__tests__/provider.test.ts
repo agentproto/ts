@@ -417,4 +417,46 @@ describe("e2bSandboxProvider.boot", () => {
     await booted.stop()
     expect(sandbox.kill).toHaveBeenCalledTimes(1)
   })
+
+  it("expose(port) returns https://<getHost(port)> for any port", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const booted = await e2bSandboxProvider.boot(spec, { env: {} })
+    const result = await booted.expose!(3210)
+    expect(sandbox.getHost).toHaveBeenCalledWith(3210)
+    expect(result.url).toBe("https://sbx-abc-3210.e2b.dev")
+  })
+
+  it("spec.extraPorts are resolved at boot into booted.ports", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: {},
+      extraPorts: [3210, 8080],
+    }
+    const booted = await e2bSandboxProvider.boot(bootSpec, { env: {} })
+    expect(booted.ports).toEqual({
+      3210: "https://sbx-abc-3210.e2b.dev",
+      8080: "https://sbx-abc-8080.e2b.dev",
+    })
+    expect(sandbox.getHost).toHaveBeenCalledWith(3210)
+    expect(sandbox.getHost).toHaveBeenCalledWith(8080)
+  })
+
+  it("booted.ports is absent when extraPorts is not declared", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const booted = await e2bSandboxProvider.boot(spec, { env: {} })
+    expect(booted.ports).toBeUndefined()
+  })
 })
