@@ -82,6 +82,7 @@ import {
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
+import type { SessionAppServeInfo } from "./sandbox-app-serve.js"
 import type { WorktreeAutoReclaimer } from "./worktree-isolation.js"
 import type { AgentsMdMode } from "./agents-md.js"
 import {
@@ -1613,6 +1614,11 @@ export interface SessionDescriptor {
    *  number to its public URL. Only present for sandbox sessions where the
    *  provider resolved `extraPorts` into `BootedSandbox.ports`. */
   sandboxPorts?: Record<number, string>
+  /** WP3 — an app UI served from INSIDE this sandbox session's box
+   *  (`agent_start.appServe`): the box-installed appId, the in-box dir, the
+   *  serve port, and the provider-resolved public URL. See
+   *  `sandbox-app-serve.ts`. */
+  appServe?: SessionAppServeInfo
 }
 
 /**
@@ -1719,6 +1725,7 @@ export interface SessionSummary {
   sandboxId?: string
   sandboxTeardown?: "kill" | "pause"
   sandboxPorts?: Record<number, string>
+  appServe?: SessionAppServeInfo
 }
 
 /** Project a full SessionDescriptor down to the panel summary shape. */
@@ -1792,6 +1799,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     sandboxId: desc.sandboxId,
     sandboxTeardown: desc.sandboxTeardown,
     sandboxPorts: desc.sandboxPorts,
+    appServe: desc.appServe,
   }
 }
 
@@ -3169,6 +3177,9 @@ export interface SpawnAgentInput {
   /** Port-to-URL map from the booted sandbox — see
    *  `SessionDescriptor.sandboxPorts`. */
   sandboxPorts?: Record<number, string>
+  /** WP3 — in-box app-serve echo (`agent_start.appServe`), recorded verbatim
+   *  onto {@link SessionDescriptor.appServe}. See `sandbox-app-serve.ts`. */
+  appServe?: SessionAppServeInfo
   /** True when the driver session was started in permission-hold mode
    *  (`AgentCliStartOptions.permissionHold`) — its `agent-prompt` events carry
    *  respondable permission requests. Gates whether the registry registers
@@ -6064,6 +6075,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
+        ...(input.appServe ? { appServe: input.appServe } : {}),
         // Restart lineage (see SessionDescriptor.resumedFrom's doc). `resumeVia`
         // can legitimately be "" (a fresh fallback spawn with no continuity),
         // so it's gated on `!== undefined` rather than truthiness — a truthy

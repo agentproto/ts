@@ -145,6 +145,7 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
+import { parseJsonRecordText, DEFAULT_APP_SERVE_PORT, type SandboxAppServeSpec } from "./sandbox-app-serve.js"
 import { listPresets } from "./preset-tools.js"
 import {
   resolveWorktreeQueryRoot,
@@ -3420,6 +3421,15 @@ export function buildSpawnSessionHttpArgs(
           return parsed !== undefined ? { sandbox: parsed } : {}
         })()
       : {}),
+    // WP3 in-box app serve — the HTTP twin of the MCP `agent_start` tool's
+    // `appServe` field. Accepts an object or a JSON-stringified one; requires
+    // `dir` (and an integer `port` when given).
+    ...(b.appServe !== undefined
+      ? (() => {
+          const parsed = parseAppServeField(b.appServe)
+          return parsed !== undefined ? { appServe: parsed } : {}
+        })()
+      : {}),
   }
 }
 
@@ -3673,6 +3683,23 @@ function parseSandboxField(raw: unknown): string | SandboxSpecInput | undefined 
   const parsed = sandboxSpecWithReuseSchema.safeParse(candidate)
   if (!parsed.success) return undefined
   return parsed.data as SandboxSpecInput
+}
+
+/** Parse the `appServe` body field (WP3) — `{ dir, port? }`, tolerant of a
+ *  JSON-stringified value (same lenient shape as `parseSandboxField`).
+ *  `port` defaults to `DEFAULT_APP_SERVE_PORT`; anything without a non-empty
+ *  string `dir` ⇒ undefined (dropped, matching this route's body parsing). */
+function parseAppServeField(raw: unknown): SandboxAppServeSpec | undefined {
+  const text = typeof raw === "string" ? raw : JSON.stringify(raw)
+  const record = parseJsonRecordText(text)
+  if (!record) return undefined
+  const dir = record.dir
+  const port = record.port
+  if (typeof dir !== "string" || dir.length === 0) return undefined
+  if (port !== undefined && (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)) {
+    return undefined
+  }
+  return { dir, port: typeof port === "number" ? port : DEFAULT_APP_SERVE_PORT }
 }
 
 /**

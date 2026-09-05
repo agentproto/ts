@@ -155,6 +155,10 @@ export interface CreateSandboxAgentSessionHostOpts {
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
+  /** The booted sandbox daemon's MCP endpoint (`BootedSandbox.mcpUrl`) —
+   *  surfaced so a caller can drive the box's OTHER daemon tools (app_install,
+   *  command_execute, …) the same way the session host drives agent_start. */
+  mcpUrl: string
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`) — surfaced so a
    *  caller can record it (there's no local PID for a sandboxed session). */
   sandboxId: string
@@ -204,6 +208,7 @@ export async function createSandboxAgentSessionHost(
   }
   return {
     ...host,
+    mcpUrl: booted.mcpUrl,
     sandboxId: booted.sandboxId,
     ...(booted.ports ? { ports: booted.ports } : {}),
     ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
