@@ -1,5 +1,5 @@
 ---
-"@agentproto/runtime": minor
+"@agentproto/runtime": patch
 ---
 
-Add shared paginated tool envelope helper (tool-envelope.ts).
+Add internal paginated tool envelope helper (tool-envelope.ts), not yet wired to any tool.
