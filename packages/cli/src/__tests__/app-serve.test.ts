@@ -16,6 +16,7 @@ import { tmpdir } from "node:os"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
+import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import {
   applyCors,
   buildBridgeScript,
@@ -85,6 +86,18 @@ describe("buildBridgeScript", () => {
   it("onTeardown registers a beforeunload cleanup (standalone tab lifecycle)", () => {
     const script = buildBridgeScript("/x")
     expect(script).toContain('addEventListener("beforeunload"')
+  })
+})
+
+describe("buildBridgeScript + RUNNER_SELECT_SCRIPT", () => {
+  it("concatenates cleanly so injectBridge places both before app scripts, bridge first", () => {
+    const combined = buildBridgeScript("/__agentproto/tool-call") + RUNNER_SELECT_SCRIPT
+    const html = "<html><head><title>t</title></head><body><script>window.McpApp.connect();</script></body></html>"
+    const out = injectBridge(html, combined)
+    expect(out).toContain("window.McpApp")
+    expect(out).toContain("window.AgentprotoUI")
+    expect(out.indexOf("window.McpApp = {")).toBeLessThan(out.indexOf("window.AgentprotoUI = window.AgentprotoUI"))
+    expect(out.indexOf("window.AgentprotoUI")).toBeLessThan(out.indexOf("</head>"))
   })
 })
 
@@ -492,6 +505,38 @@ describe("callDaemonTool", () => {
     expect((body as { error: string }).error).toBe("forbidden")
     expect((body as { message: string }).message).toContain("(empty)")
     expect(called).toHaveLength(0)
+  })
+
+  it("allows APP_UI_DISCOVERY_TOOLS even when the declared ui.tools allowlist omits them", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    for (const tool of APP_UI_DISCOVERY_TOOLS) {
+      const [status] = await callDaemonTool(
+        () => Promise.resolve(fakeClient as unknown as Client),
+        { name: tool, args: {} },
+        ["app_run"],
+      )
+      expect(status).toBe(200)
+    }
+    expect(called).toEqual([...APP_UI_DISCOVERY_TOOLS])
+  })
+
+  it("still blocks a non-discovery tool when allowedTools is an empty array", async () => {
+    const fakeClient = {
+      callTool: () => Promise.resolve({ content: [] }),
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "command_execute", args: {} },
+      [],
+    )
+    expect(status).toBe(403)
+    expect((body as { error: string }).error).toBe("forbidden")
   })
 })
 

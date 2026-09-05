@@ -68,6 +68,20 @@ function runWorkflow() {
 
 document.getElementById("run-btn").addEventListener("click", runWorkflow);
 
+// Every host (a served app UI or an installed MCP-Apps panel) injects
+// window.AgentprotoUI alongside window.McpApp, so a harness/model picker is
+// available with no extra wiring. Uncomment to let the user pick which
+// installed harness (+ optional model) app_run below spawns through:
+//
+//   var runner = window.AgentprotoUI.mountRunnerSelect(
+//     document.getElementById("content"),
+//     { callTool: function (tool, args) { return callApp(tool, args); } },
+//   );
+//
+// Then spread runner.getRunner() (= { harness, model? }) into the app_run
+// call in runWorkflow() above, e.g.:
+//   callApp("app_run", Object.assign({ appId: APP_ID, prompt: "..." }, runner.getRunner()))
+
 (window.McpApp ? window.McpApp.connect() : Promise.reject(new Error("window.McpApp bridge missing")))
   .then(function (bridge) {
     callTool = bridge.callTool;

@@ -108,6 +108,37 @@ function ItemList() {
 - Mount `McpAppProvider` once near the root with stable `options` — it
   connects once on mount and does not reconnect on re-renders.
 
+## Runner selector (harness + model)
+
+`@agentproto/app-client/runner-select` exports `RUNNER_SELECT_SCRIPT`, a
+plain ES5 `<script>` block (`injectRunnerSelect(html)` inlines it into a
+served page, the same way a host injects the `window.McpApp` bridge) that
+defines `window.AgentprotoUI.mountRunnerSelect`. It discovers the host's
+installed harnesses/models via `adapter_list` + `harness_preset_list` (an
+app's own `callTool` — no daemon coupling), so an app UI never has to
+hardcode a harness/model `<select>` again:
+
+```html
+<script>
+  const runner = window.AgentprotoUI.mountRunnerSelect(
+    document.getElementById("runner-slot"),
+    { callTool: callApp }, // your app's own tool-call wrapper
+  )
+
+  async function run() {
+    const { appId, agents } = await callApp("app_run", {
+      appId: "my-app",
+      agents: ["writer"],
+      prompt: "...",
+      ...runner.getRunner(), // { harness, model? }
+    })
+  }
+</script>
+```
+
+`getRunner()` never returns `access`/`profileRef` — the daemon's default
+harness preset resolves billing for whichever harness the caller picked.
+
 ## License
 
 Apache-2.0 — see [LICENSE](./LICENSE).

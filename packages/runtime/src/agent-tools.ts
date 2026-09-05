@@ -1645,9 +1645,20 @@ export function registerAgentTools(
       "hermes, aider, …). Returns slug + display name + version + protocol so " +
       "callers can let users pick from the installed set instead of guessing. " +
       "Use before `agent_start` when the model doesn't already know " +
-      "what's available.",
-    {},
-    async () => {
+      "what's available. Pass `summary: true` for a lightweight projection " +
+      "(`slug`, `name`, `version`, `protocol`, `models`) — the full payload " +
+      "carries every adapter's commands/modes/model details and can run to " +
+      "hundreds of KB, far heavier than a UI picker needs.",
+    {
+      summary: z
+        .boolean()
+        .optional()
+        .describe(
+          "Return only { slug, name, version, protocol, models } per adapter " +
+            "instead of the full manifest projection. Default false.",
+        ),
+    },
+    async ({ summary }) => {
       if (!listAgentAdapters) {
         return {
           content: [
@@ -1664,8 +1675,17 @@ export function registerAgentTools(
       }
       try {
         const adapters = await listAgentAdapters()
+        const projected = summary
+          ? adapters.map(a => ({
+              slug: a.slug,
+              name: a.name,
+              version: a.version,
+              protocol: a.protocol,
+              models: a.models ?? [],
+            }))
+          : adapters
         return {
-          content: [{ type: "text", text: JSON.stringify({ adapters }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ adapters: projected }, null, 2) }],
         }
       } catch (err) {
         return {

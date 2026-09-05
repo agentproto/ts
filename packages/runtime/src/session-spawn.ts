@@ -1081,6 +1081,7 @@ export type SpawnAgentSessionResult =
         | "auth_source_unresolved"
         | "access_profile_not_found"
         | "access_profile_ineligible"
+        | "harness_preset_profile_unavailable"
         | "model_wallet_ineligible"
         | "model_adapter_incompatible"
         | "gateway_base_url_unsupported"
@@ -1160,6 +1161,23 @@ export async function spawnAgentSession(
   if (!input.access?.profileRef) {
     const preset = await getDefaultHarnessPreset(input.harness ?? input.adapter)
     if (preset) {
+      // A default preset that bills through a since-disabled (or deleted)
+      // auth profile must fail HERE, with a message that names the preset
+      // and the profile — letting the spawn proceed would fail later anyway,
+      // deep inside credential resolution, with an opaque eligibility error
+      // that never mentions the preset that silently applied.
+      const presetProfile = await getAuthProfile(preset.profileRef)
+      if (!presetProfile || presetProfile.disabled) {
+        return {
+          ok: false,
+          code: "harness_preset_profile_unavailable",
+          message:
+            `harness preset "${preset.id}" (default for ${preset.harnessSlug}) bills through auth ` +
+            `profile "${preset.profileRef}" which is ${!presetProfile ? "missing" : "disabled"} — ` +
+            "re-enable it, or point the harness default elsewhere with harness_preset_create / " +
+            "harness_preset_set_default.",
+        }
+      }
       input = {
         ...input,
         access: { profileRef: preset.profileRef },

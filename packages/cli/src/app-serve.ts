@@ -48,6 +48,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import matter from "gray-matter"
 
 import { loadConfig } from "@agentproto/runtime/config"
+import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { pathExists } from "./commands/skill-install/shared.js"
 import { expandHome } from "./commands/skill-install/pack-resolve.js"
 import { STAGEBOARD_JS_PATH, serveStageboard } from "./stageboard/serve.js"
@@ -417,10 +418,13 @@ export function handleToolCallRequest(
  * chooses the error framing; carries `isError` results as 200 (the same way a
  * postMessage host's `tools/call` reply RESOLVES with them).
  *
- * `allowedTools`: when defined, only listed tool names are forwarded (403
- * otherwise). When `undefined` (APP.md omits `ui.tools`), all tools pass.
- * Mirrors the `ui.tools` allowlist that `/apps/:appId/tool-call` enforces
- * via `performAppToolCall` in the daemon.
+ * `allowedTools`: when defined, only listed tool names — UNION
+ * `APP_UI_DISCOVERY_TOOLS` (`adapter_list`, `harness_preset_list`, always
+ * allowed so `@agentproto/app-client/runner-select`'s `mountRunnerSelect`
+ * works out of the box) — are forwarded (403 otherwise). When `undefined`
+ * (APP.md omits `ui.tools`), all tools pass. Mirrors the `ui.tools`
+ * allowlist that `/apps/:appId/tool-call` enforces via `performAppToolCall`
+ * in the daemon.
  */
 export async function callDaemonTool(
   getClient: () => Promise<Client>,
@@ -444,7 +448,8 @@ export async function callDaemonTool(
     name === "app_tool_call" && args && typeof args === "object" && typeof (args as { tool?: unknown }).tool === "string"
       ? (args as { tool: string }).tool
       : name
-  if (allowedTools !== undefined && !allowedTools.includes(effectiveName)) {
+  const isDiscoveryTool = (APP_UI_DISCOVERY_TOOLS as readonly string[]).includes(effectiveName)
+  if (allowedTools !== undefined && !allowedTools.includes(effectiveName) && !isDiscoveryTool) {
     return [
       403,
       {
@@ -1114,7 +1119,11 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
   // bind already limits exposure to the local machine).
   const allowedTools = await readDeclaredUITools(appDir)
 
-  const bridgeScript = buildBridgeScript(TOOL_CALL_PATH)
+  // The runner selector is injected alongside the McpApp bridge so a served
+  // UI can call window.AgentprotoUI.mountRunnerSelect without hand-rolling
+  // its own harness/model picker — same discovery tools (adapter_list,
+  // harness_preset_list) callDaemonTool always allows above.
+  const bridgeScript = buildBridgeScript(TOOL_CALL_PATH) + RUNNER_SELECT_SCRIPT
   const runJson = values.json === true
 
   // 4. Build the HTTP server.

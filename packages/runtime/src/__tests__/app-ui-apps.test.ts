@@ -159,9 +159,24 @@ describe("injectMcpAppBridge", () => {
     expect(out.indexOf("window.McpApp")).toBeLessThan(out.indexOf("Panel"))
   })
 
-  it("is idempotent: a no-op when the html already defines window.McpApp", () => {
-    const html = "<html><head><script>window.McpApp = {};</script></head><body>Panel</body></html>"
+  it("is idempotent: a no-op when the html already defines window.McpApp AND window.AgentprotoUI", () => {
+    const html =
+      "<html><head><script>window.McpApp = {}; window.AgentprotoUI = {};</script></head><body>Panel</body></html>"
     expect(injectMcpAppBridge(html)).toBe(html)
+  })
+
+  it("still injects the runner-select script when window.McpApp is already defined but window.AgentprotoUI isn't", () => {
+    const html = "<html><head><script>window.McpApp = {};</script></head><body>Panel</body></html>"
+    const out = injectMcpAppBridge(html)
+    expect(out).toContain("AgentprotoUI")
+    expect(out).not.toContain("ui/initialize")
+  })
+
+  it("also injects the runner-select script, after the bridge", () => {
+    const html = "<html><body>Panel</body></html>"
+    const out = injectMcpAppBridge(html)
+    expect(out).toContain("AgentprotoUI")
+    expect(out.indexOf("window.McpApp")).toBeLessThan(out.indexOf("AgentprotoUI"))
   })
 
   it("still injects when the html only CONSUMES window.McpApp.connect()", () => {
@@ -232,5 +247,19 @@ describe("injectStandaloneAppBridge", () => {
     expect(out).toContain("openLink")
     expect(out).toContain("onTeardown")
     expect(out).toContain("window.open")
+  })
+
+  it("also injects the runner-select script, after the standalone bridge", () => {
+    const html = "<html><body>Panel</body></html>"
+    const out = injectStandaloneAppBridge(html)
+    expect(out).toContain("AgentprotoUI")
+    expect(out.indexOf('fetch("./tool-call"')).toBeLessThan(out.indexOf("AgentprotoUI"))
+  })
+
+  it("does not re-inject the runner-select script on a second pass", () => {
+    const html = "<html><body>Panel</body></html>"
+    const once = injectStandaloneAppBridge(html)
+    const twice = injectStandaloneAppBridge(once)
+    expect(twice.match(/window\.AgentprotoUI\s*=/g)?.length).toBe(1)
   })
 })

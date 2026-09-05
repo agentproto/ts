@@ -29,6 +29,7 @@ import { loadAppHandle } from "@agentproto/app-kit"
 import { loadAgent } from "@agentproto/agent"
 import type { AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
+import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 import { createDaemonToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
 import type { SessionsRegistry } from "./sessions.js"
@@ -174,11 +175,15 @@ export interface AppToolCallDeps {
 
 /**
  * The `app_tool_call` gateway's whole behaviour — allowlist enforcement
- * against the installed app's `ui.tools`, then dispatch through the daemon's
- * own tools or an imported MCP server — shared verbatim between the MCP verb
- * below and the HTTP twin (`POST /apps/:appId/tool-call`, http-server.ts) so
- * the two surfaces can never drift. Returns the MCP result envelope both
- * callers hand back untouched.
+ * against the installed app's `ui.tools` UNION the read-only, non-secret
+ * `APP_UI_DISCOVERY_TOOLS` (`adapter_list`, `harness_preset_list` — every
+ * app UI gets these for free, regardless of what it declared, so
+ * `@agentproto/app-client/runner-select`'s `mountRunnerSelect` works out of
+ * the box) — then dispatch through the daemon's own tools or an imported MCP
+ * server. Shared verbatim between the MCP verb below and the HTTP twin
+ * (`POST /apps/:appId/tool-call`, http-server.ts) so the two surfaces can
+ * never drift. Returns the MCP result envelope both callers hand back
+ * untouched.
  */
 export async function performAppToolCall(
   appRegistry: AppRegistry,
@@ -189,11 +194,12 @@ export async function performAppToolCall(
   if (!installed || !installed.ui) {
     return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
   }
-  const allowlist = installed.ui.tools ?? []
-  if (!allowlist.includes(input.tool)) {
+  const declaredAllowlist = installed.ui.tools ?? []
+  const effectiveAllowlist: readonly string[] = [...declaredAllowlist, ...APP_UI_DISCOVERY_TOOLS]
+  if (!effectiveAllowlist.includes(input.tool)) {
     return errorResult(
       `app_tool_call: tool "${input.tool}" is not in app "${input.appId}"'s ui.tools allowlist: ` +
-        `${allowlist.length > 0 ? allowlist.join(", ") : "(empty)"}`,
+        `${declaredAllowlist.length > 0 ? declaredAllowlist.join(", ") : "(empty)"}`,
     )
   }
 
