@@ -15,6 +15,7 @@ const ID_EXACT_RE = /^[a-z0-9]{20}$/
 let root = DEFAULT_ROOT
 let channel = null
 let latest = false
+let pinned = false
 let dryRun = false
 let check = false
 let suppliedTemplateId = null
@@ -23,10 +24,13 @@ const args = process.argv.slice(2)
 function usage(exitCode = 0) {
   const out = exitCode === 0 ? process.stdout : process.stderr
   out.write(
-    "Usage: pnpm templates:refresh --channel dev (--latest | --check) [--dry-run] [--template-id <id>]\n\n" +
-      "Builds and proves a new dev E2B template before updating versions.json.\n" +
-      "--latest is required for a publish and resolves npm's latest dist-tag.\n" +
-      "--check is credential-free and verifies generated files plus the recorded dev proof.\n",
+    "Usage: pnpm templates:refresh --channel dev (--latest | --check) [--dry-run] [--template-id <id>]\n" +
+      "       pnpm templates:refresh --channel stable --pin [--dry-run] [--template-id <id>]\n\n" +
+      "Builds and proves a new E2B template before updating versions.json.\n" +
+      "dev: --latest is required for a publish and resolves npm's latest dist-tag.\n" +
+      "stable: --pin is required and bakes exactly the versions pinned in versions.json\n" +
+      "  (stable never resolves npm latest).\n" +
+      "--check is credential-free and verifies generated files plus the recorded proofs.\n",
   )
   process.exit(exitCode)
 }
@@ -36,6 +40,7 @@ for (let i = 0; i < args.length; i++) {
   if (arg === "--channel") channel = args[++i]
   else if (arg === "--root") root = path.resolve(args[++i])
   else if (arg === "--latest") latest = true
+  else if (arg === "--pin") pinned = true
   else if (arg === "--dry-run") dryRun = true
   else if (arg === "--check") check = true
   else if (arg === "--template-id") suppliedTemplateId = args[++i]
@@ -55,13 +60,22 @@ function fail(message) {
   process.exit(1)
 }
 
-if (channel !== "dev") {
-  fail("only --channel dev is supported; stable is pinned and this command never publishes or mutates it")
+if (channel !== "dev" && channel !== "stable") {
+  fail("only --channel dev or --channel stable is supported")
 }
-if (check && (latest || dryRun || suppliedTemplateId)) {
-  fail("--check cannot be combined with --latest, --dry-run, or --template-id")
+if (channel === "dev" && pinned) {
+  fail("--channel dev publishes only with --latest; --pin is a stable-only mode")
 }
-if (!check && !latest) fail("refusing an implicit registry update; pass --latest explicitly")
+if (channel === "stable" && latest) {
+  fail("stable must never pull npm latest; pass --pin to bake exactly the versions.json pins")
+}
+if (channel === "stable" && !pinned && !check) {
+  fail("--channel stable requires --pin to bake the declared versions.json pins")
+}
+if (check && (latest || pinned || dryRun || suppliedTemplateId)) {
+  fail("--check cannot be combined with --latest, --pin, --dry-run, or --template-id")
+}
+if (!check && !latest && !pinned) fail("refusing an implicit registry update; pass --latest (dev) or --pin (stable) explicitly")
 if (suppliedTemplateId !== null && !ID_EXACT_RE.test(suppliedTemplateId)) {
   fail("--template-id must be an opaque 20-character lowercase E2B template id")
 }
@@ -103,10 +117,12 @@ function checkOnly(versions) {
   } catch (error) {
     fail(error.message)
   }
-  if (!isExactProof(versions.templates.dev, versions)) {
-    fail("dev does not have a complete recorded proof for the declared pins; run pnpm templates:refresh --channel dev --latest")
+  for (const ch of ["dev", "stable"]) {
+    if (!isExactProof(versions.templates[ch], versions)) {
+      fail(`${ch} does not have a complete recorded proof for the declared pins; run pnpm templates:refresh --channel ${ch} ${ch === "stable" ? "--pin" : "--latest"}`)
+    }
   }
-  process.stdout.write("templates:refresh: generated files are in sync and the dev template has a complete recorded proof.\n")
+  process.stdout.write("templates:refresh: generated files are in sync and both channels have complete recorded proofs.\n")
 }
 
 function requireCleanTree() {
@@ -132,15 +148,23 @@ function resolvePins(versions) {
   }
 }
 
-function withLatestPins(versions, pins) {
+function withChannelPins(versions, channel, pins) {
   const next = structuredClone(versions)
   next.cli = pins.cli
   next.adapters = pins.adapters
   next.runtime = pins.runtime
   // The temporary Dockerfile is generated from these pins; an old proof must
   // never be carried over to a new image.
-  next.templates.dev.baked = { cli: null, adapters: null, builtAt: null }
+  next.templates[channel].baked = { cli: null, adapters: null, builtAt: null }
   return next
+}
+
+function resolveStablePins(versions) {
+  return {
+    cli: versions.cli,
+    adapters: Object.fromEntries(Object.keys(versions.adapters).sort().map(pkg => [pkg, versions.adapters[pkg]])),
+    runtime: Object.fromEntries(Object.keys(versions.runtime).sort().map(pkg => [pkg, versions.runtime[pkg]])),
+  }
 }
 
 function makeBuildDirectory(nextVersions) {
@@ -236,8 +260,12 @@ if (check) {
 
 requireCleanTree()
 let pins
-try { pins = resolvePins(versions) } catch (error) { fail(error.message) }
-const nextVersions = withLatestPins(versions, pins)
+if (pinned) {
+  pins = resolveStablePins(versions)
+} else {
+  try { pins = resolvePins(versions) } catch (error) { fail(error.message) }
+}
+const nextVersions = withChannelPins(versions, channel, pins)
 const pinLines = [
   `@agentproto/cli@${pins.cli}`,
   ...Object.entries(pins.adapters).map(([pkg, version]) => `${pkg}@${version}`),
@@ -245,9 +273,9 @@ const pinLines = [
 ]
 
 if (dryRun) {
-  process.stdout.write("templates:refresh (dry-run): would publish and prove dev with explicit latest pins:\n")
+  process.stdout.write(`templates:refresh (dry-run): would publish and prove ${channel} with explicit pins:\n`)
   for (const pin of pinLines) process.stdout.write(`  ${pin}\n`)
-  process.stdout.write(`  alias: ${versions.templates.dev.alias}\n  stable: unchanged\n`)
+  process.stdout.write(`  alias: ${versions.templates[channel].alias}\n`)
   process.exit(0)
 }
 
@@ -257,12 +285,13 @@ let templateId = suppliedTemplateId
 try {
   tempRoot = makeBuildDirectory(nextVersions)
   if (!templateId) {
-    const buildOutput = run("e2b", ["template", "create", versions.templates.dev.alias, "--cpu-count", String(versions.resources.cpuCount), "--memory-mb", String(versions.resources.memoryMb), "-d", "Dockerfile"], { cwd: path.join(tempRoot, "templates/workstation") })
+    const buildOutput = run("e2b", ["template", "create", versions.templates[channel].alias, "--cpu-count", String(versions.resources.cpuCount), "--memory-mb", String(versions.resources.memoryMb), "-d", "Dockerfile"], { cwd: path.join(tempRoot, "templates/workstation") })
     templateId = extractId(buildOutput, "template")
   }
   const proof = proveTemplate(templateId, pins)
-  nextVersions.templates.dev = { ...nextVersions.templates.dev, id: templateId, baked: { cli: pins.cli, adapters: pins.adapters, builtAt: new Date().toISOString() } }
-  if (JSON.stringify(nextVersions.templates.stable) !== JSON.stringify(versions.templates.stable)) throw new Error("internal safety check failed: refresh attempted to alter stable")
+  nextVersions.templates[channel] = { ...nextVersions.templates[channel], id: templateId, baked: { cli: pins.cli, adapters: pins.adapters, builtAt: new Date().toISOString() } }
+  const otherChannel = channel === "dev" ? "stable" : "dev"
+  if (JSON.stringify(nextVersions.templates[otherChannel]) !== JSON.stringify(versions.templates[otherChannel])) throw new Error(`internal safety check failed: refresh attempted to alter ${otherChannel}`)
   const snapshot = snapshotGeneratedFiles()
   try {
     writeFileSync(VERSIONS_PATH, JSON.stringify(nextVersions, null, 2) + "\n")
@@ -275,7 +304,7 @@ try {
     }
     throw new Error(`local metadata transaction rolled back after failure: ${error.message}`)
   }
-  process.stdout.write(`templates:refresh: published and proved dev template ${templateId} (proof sandbox ${proof.sandboxId}).\nRecorded ${pinLines.join(", ")}; stable was not changed. Review and commit the generated diff.\n`)
+  process.stdout.write(`templates:refresh: published and proved ${channel} template ${templateId} (proof sandbox ${proof.sandboxId}).\nRecorded ${pinLines.join(", ")}; ${channel === "dev" ? "stable" : "dev"} was not changed. Review and commit the generated diff.\n`)
 } catch (error) {
   fail(error.message)
 } finally {

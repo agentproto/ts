@@ -48,7 +48,10 @@ case "$2" in
 esac`)
   write("e2b", `
 if [ "$1" = auth ] && [ "$2" = info ]; then echo logged-in; exit 0; fi
-if [ "$1" = template ] && [ "$2" = create ]; then echo "created devtemplate000000001"; exit 0; fi
+if [ "$1" = template ] && [ "$2" = create ]; then
+  if [ "$3" = agentproto-workstation-dev ]; then echo "created devtemplate000000001"; else echo "created stabletemplate000001"; fi
+  exit 0
+fi
 if [ "$1" = sandbox ] && [ "$2" = create ]; then echo "created sandboxproof00000001"; exit 0; fi
 if [ "$1" = sandbox ] && [ "$2" = kill ]; then exit 0; fi
 if [ "$1" = sandbox ] && [ "$2" = exec ]; then
@@ -63,6 +66,63 @@ fi
 exit 8`)
   return bin
 }
+
+function runExpectingFailure(root, args, env = {}) {
+  try {
+    run(root, args, env)
+  } catch (error) {
+    return String(error.stderr)
+  }
+  throw new Error(`expected ${args.join(" ")} to fail`)
+}
+
+test("stable --pin bakes exactly the versions.json pins and never touches dev", () => {
+  const root = fixture()
+  try {
+    const before = JSON.parse(readFileSync(path.join(root, "templates/workstation/versions.json"), "utf8"))
+    const bin = fakeBinaries(root)
+    const out = run(root, ["--channel", "stable", "--pin"], { PATH: `${bin}:${process.env.PATH}` })
+    assert.match(out, /published and proved stable template stabletemplate000001/)
+    const after = JSON.parse(readFileSync(path.join(root, "templates/workstation/versions.json"), "utf8"))
+    assert.deepEqual(after.templates.dev, before.templates.dev)
+    assert.equal(after.templates.stable.id, "stabletemplate000001")
+    assert.equal(after.templates.stable.baked.cli, before.cli)
+    assert.deepEqual(after.templates.stable.baked.adapters, before.adapters)
+    assert.ok(after.templates.stable.baked.builtAt)
+    assert.equal(after.cli, before.cli)
+    assert.deepEqual(after.adapters, before.adapters)
+    assert.match(readFileSync(path.join(root, "packages/sandbox-e2b/src/template-versions.generated.ts"), "utf8"), /stabletemplate000001/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("stable --pin --dry-run resolves pins from versions.json without registry access", () => {
+  const root = fixture()
+  try {
+    const bin = fakeBinaries(root)
+    // Only git is needed pre-dry-run; npm/e2b must not be consulted for pins.
+    const out = run(root, ["--channel", "stable", "--pin", "--dry-run"], { PATH: `${bin}:${process.env.PATH}` })
+    assert.match(out, /would publish and prove stable/)
+    assert.match(out, /@agentproto\/cli@0\.17\.0/)
+    assert.match(out, /agentproto-workstation\n/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("stable must never pull npm latest and dev must never use --pin", () => {
+  const root = fixture()
+  try {
+    const bin = fakeBinaries(root)
+    assert.match(runExpectingFailure(root, ["--channel", "stable", "--latest"], { PATH: `${bin}:${process.env.PATH}` }), /stable must never pull npm latest/)
+    assert.match(runExpectingFailure(root, ["--channel", "stable"], { PATH: `${bin}:${process.env.PATH}` }), /requires --pin/)
+    assert.match(runExpectingFailure(root, ["--channel", "dev", "--pin"], { PATH: `${bin}:${process.env.PATH}` }), /--pin is a stable-only mode/)
+    assert.equal(existsSync(path.join(root, "templates/workstation/versions.json.bak")), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test("--check is zero-credential and validates generated drift plus the exact dev proof", () => {
   const root = fixture()
