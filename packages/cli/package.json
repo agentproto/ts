@@ -79,6 +79,7 @@
   "dependencies": {
     "@agentproto/acp": "workspace:*",
     "@agentproto/adapter-browser": "workspace:*",
+    "@agentproto/app-client": "workspace:*",
     "@agentproto/auth": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
