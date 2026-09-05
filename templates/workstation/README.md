@@ -29,29 +29,31 @@ runs from this repo's CI — publishing is a deliberate, credentialed act.**
 
 ```sh
 cd templates/workstation
-e2b template build
+e2b template create agentproto-workstation -d Dockerfile
 ```
 
-The template alias (`agentproto-workstation`) comes from
-`e2b.template.toml`; the version pins ride in as build args declared there.
-When `versions.json` changes, re-run `node scripts/sync-templates.mjs` first
-so the toml's `[build.args]` match the new pins.
+The e2b CLI has **no `--build-arg`** (`e2b template build` is deprecated in
+favour of `e2b template create`), so the pins are baked into the Dockerfile's
+`ARG` defaults by `scripts/sync-templates.mjs` — one ARG per package, never a
+space-separated list (E2B rewrites each `ARG` into an `ENV` and mangles spaces
+in ENV values). When `versions.json` changes, re-run
+`node scripts/sync-templates.mjs` first so the generated `Dockerfile` (and the
+`e2b.template.toml` pin record) match the new pins.
 
 ### Dev variant
 
-Build the same Dockerfile against unreleased pins under the `-dev` alias:
+The dev channel is the **same generated Dockerfile** published under the
+`-dev` alias (the pins differ only when `versions.json` declares different
+ones):
 
 ```sh
-e2b template build --template-id agentproto-workstation-dev \
-  --build-arg AGENTPROTO_CLI_VERSION=<dev-pin> \
-  --build-arg AGENTPROTO_ADAPTERS="@agentproto/adapter-opencode@<dev-pin> ..." \
-  --build-arg OPENCODE_RUNTIME_VERSION=<dev-pin>
+e2b template create agentproto-workstation-dev -d Dockerfile
 ```
 
 ## Publish / release
 
-`e2b template build` publishes a new template **version** under the same
-template id — existing sandboxes are untouched, new boots get the new
+`e2b template create <alias>` publishes a new template **version** under the
+same template id — existing sandboxes are untouched, new boots get the new
 version. After every real build, record the result back into
 `versions.json` and re-run the sync script:
 
@@ -94,10 +96,16 @@ script, and rely on `@agentproto/sandbox-e2b`'s `updateCliOnBoot` /
 
 The build fails (not the first live agent turn) if any of these fail:
 
-1. `agentproto --version` matches the `cli` pin as a substring (the version
-   string may include additional build metadata).
-2. `npm ls -g --depth=0` confirms each baked adapter package is actually
-   installed globally (a plain `agentproto adapters list --json` check would
-   pass vacuously on an empty list, so it is not used here).
+1. `agentproto --version` contains the `cli` pin (the output is
+   `agentproto <semver> (sha, built ...)`, not bare semver).
+2. Every baked adapter is globally installed — checked with
+   `npm ls -g --depth=0 <pkg>` per adapter (`agentproto adapters list` shows
+   ENABLED adapters from config, empty on a fresh bake, so it cannot prove
+   installation).
 3. `agentproto serve` answers `/health` on the provider's default port
    (18790).
+
+These build-time checks are **necessary but not sufficient**: E2B can report a
+build step `CACHED` against a stale layer, so the trusted proof is booting the
+published image and inspecting `/usr/lib/node_modules/@agentproto` +
+`agentproto --version` (with no on-boot `npm i -g`).
