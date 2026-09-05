@@ -66,10 +66,36 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 | `session_list` / `session_tree` / `session_usage` / `session_restart` / `session_rename` | Session management |
 | `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` / `app_apply` / `app_unapply` / `app_list_applied` | App-kit apps |
 | `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane, anchored at the app's `dataDir` (default `<dir>/data`; `app_install {dataDir}`) |
+| `app_state_append` / `app_state_get` / `app_state_list` | App-scoped **state ledger** (`<dataDir>/state/events.jsonl`) — append-only, zod-validated event envelope, fold to a stage snapshot; see below |
 | `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets (new) |
 | `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (new) |
 | `conversation_export` | Export a daemon transcript to a target adapter's native store, e.g. `claude-code` (new) |
 | `llm_endpoint_*` (`start`, `stop`, `status`, `set_upstream_link`, `list_links`) | Local LLM Endpoint proxy sidecar — only when `features.llmEndpoint` is enabled (new) |
+
+### App state ledger (`app_state_*`)
+
+Per installed app, an append-only JSONL event log lives at
+`<dataDir>/state/events.jsonl` (`src/app-state.ts`). One JSON object per
+line: `{ id (ULID), ts, appRunId?, stage, item?, kind, by, payload }` with
+`kind ∈ stage-started | gate-report | approval | stage-done | blocked | note`
+and `by ∈ runner | human | policy | system`. Payloads are validated per kind
+(`gate-report` needs `{ok, exitCode, report?}`, `approval` needs
+`{approved, who}`, `blocked` needs `{reason}`).
+
+- **Fold** — `foldAppStateEvents(events)` reduces the ledger to a stage-board
+  snapshot `{ stages: { [stage]: { status: pending|running|gated-failed|
+  blocked|done|approved, items?, lastGate?, lastEvent? } }, updatedAt }`.
+  `stage-done` re-opens from any state (including `blocked`); `approval`
+  marks the stage `approved`; events with `item` drive that item, not the
+  stage status.
+- **Access rule** — `app_state_append` is the daemon-owned write path and is
+  NOT granted to app agents: the `/mcp` factory strips it from any request
+  carrying `?callerSessionId=` (every daemon-spawned agent session), the same
+  hard-gate plumbing as the role `denyTools` gate. The daemon runner (server
+  side) and UI actions keep it, and it is never listed in an app's
+  `ui.tools` unless a human-approval action explicitly needs it. Reads
+  (`app_state_get`, `app_state_list`) are open, and `app_status` projects the
+  folded snapshot read-only as `state.snapshot` whenever a ledger exists.
 
 ### Auth model
 

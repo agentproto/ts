@@ -95,6 +95,7 @@ import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { registerAppTools, resolveAgentRefsForWorkflow, performInstall } from "./app-tools.js"
 import { registerAppDataTools } from "./app-data.js"
+import { APP_STATE_APPEND_TOOL_NAME } from "./app-state.js"
 import { registerAppExternalTools } from "./app-external.js"
 import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
@@ -1683,6 +1684,16 @@ export async function createGateway(
     // all, regardless of `alwaysOn`.
     if (denyTools && denyTools.size > 0) {
       server = withToolExclusion(server, denyTools)
+    }
+    // App state ledger write gate (app-state.ts's access rule): a request
+    // identified as coming from a daemon-spawned agent session
+    // (`?callerSessionId=` — the same identity plumbing command provenance
+    // uses) never gets `app_state_append` registered. App agents cannot
+    // self-certify state; the daemon runner and UI actions (no caller
+    // session id) keep it. Same hard-gate style as denyTools: the name is
+    // stripped at registration, not merely unlisted.
+    if (callerSessionId) {
+      server = withToolExclusion(server, new Set([APP_STATE_APPEND_TOOL_NAME]))
     }
     // Canonical filesystem tools so remote MCP clients (cloud
     // workspace-providers, IDEs, ad-hoc tooling) can read/write the
