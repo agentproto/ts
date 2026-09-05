@@ -37,6 +37,9 @@ import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { RoutinePolicy, RoutineStepState } from "./step-run-types.js"
 import { SessionsRegistryAgentHost } from "./sessions-registry-agent-host.js"
 import { createFileStepCache } from "./workflow-step-cache.js"
+import { appendAppStateEvent } from "./app-state.js"
+import type { AppStateEventInput } from "./app-state.js"
+import type { AppRegistry, InstalledApp } from "./app-registry.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -90,6 +93,13 @@ export interface WorkflowRun {
   notifyUrl?: string
   error?: string
   result?: { sessionIds: string[] }
+  /** App provenance — set when the run was started on behalf of an
+   *  installed app (explicit input, or the workflow id is owned by exactly
+   *  one installed app per the registry). Drives the app state ledger
+   *  appends in `executeRunWorkflow` (see `createLedgerAppender`). */
+  appId?: string
+  /** The app_run this run belongs to, when started through an app. */
+  appRunId?: string
 }
 
 export interface WorkflowRunner {
@@ -101,6 +111,12 @@ export interface WorkflowRunner {
     notifyUrl?: string
     /** Enable journal caching for this run; cacheable steps replay unchanged outputs. */
     cacheKey?: string
+    /** App provenance — the installed app this run belongs to. Omit to let
+     *  the runner resolve it from the registry (workflow id owned by exactly
+     *  one installed app). */
+    appId?: string
+    /** The app_run this run belongs to, when started through an app. */
+    appRunId?: string
   }): Promise<WorkflowRun>
 
   startFromFile(input: {
@@ -109,6 +125,9 @@ export interface WorkflowRunner {
     cwd?: string
     workspaceSlug?: string
     cacheKey?: string
+    /** App provenance — same resolution as `start`. */
+    appId?: string
+    appRunId?: string
   }): Promise<WorkflowRun>
 
   status(runId: string): WorkflowRun | undefined
@@ -421,6 +440,87 @@ function fillStepStates(
   return sessionIds
 }
 
+// ── App state ledger bridge (WP-Q) ───────────────────────────────────
+
+/**
+ * Resolve an app run's provenance: an explicit `appId` wins; otherwise the
+ * workflow id is looked up across the installed-app registry and adopted
+ * only when EXACTLY ONE installed app owns it (ambiguous/unknown ids stay
+ * unattributed — a generic workflow id like "review" must not silently pin
+ * itself to whichever app happens to be installed).
+ */
+function resolveAppProvenance(
+  appRegistry: Pick<AppRegistry, "getApp" | "listApps"> | undefined,
+  workflowId: string,
+  explicit: { appId?: string; appRunId?: string },
+): { appId?: string; appRunId?: string } {
+  if (explicit.appId !== undefined || appRegistry === undefined) return explicit
+  const owners = appRegistry.listApps().filter(a => a.workflows.some(w => w.id === workflowId))
+  if (owners.length !== 1) return explicit
+  return { ...explicit, appId: owners[0]!.appId }
+}
+
+/** Static step-kind lookup for the `stage-started` payload — walks the
+ *  compiled step graph by id. `map`/`pipeline` bodies are runtime
+ *  functions with no static step list (see `collectAgentSteps`), so steps
+ *  they produce resolve to `undefined` and the `kind` key is omitted. */
+function findStepKind(steps: readonly RuntimeStep[], id: string): string | undefined {
+  for (const step of steps) {
+    if (step.id === id) return step.kind
+    if (step.kind === "parallel") {
+      for (const branch of step.branches) {
+        const found = findStepKind(branch.steps, id)
+        if (found !== undefined) return found
+      }
+    } else if (step.kind === "group") {
+      const found = findStepKind(step.steps, id)
+      if (found !== undefined) return found
+    } else if (step.kind === "branch") {
+      const thenKind = findStepKind(step.then, id)
+      if (thenKind !== undefined) return thenKind
+      if (step.otherwise) {
+        const elseKind = findStepKind(step.otherwise, id)
+        if (elseKind !== undefined) return elseKind
+      }
+    } else if (step.kind === "loop") {
+      const found = findStepKind(step.body, id)
+      if (found !== undefined) return found
+    } else if (step.kind === "subworkflow") {
+      const found = findStepKind(step.workflow.steps, id)
+      if (found !== undefined) return found
+    }
+  }
+  return undefined
+}
+
+/**
+ * Best-effort app state ledger appender for one workflow run — the
+ * runner-written side of the trame rule ("state is written only by the
+ * daemon's ledger from gate results and approvals"): every append is
+ * serialized through a promise chain so ledger order matches emission
+ * order, and ANY failure (unknown app, invalid payload, fs error) logs a
+ * warning and never fails the run.
+ */
+function createLedgerAppender(
+  app: Pick<InstalledApp, "dir" | "dataDir">,
+  appRunId: string | undefined,
+  runId: string,
+): { append: (input: Omit<AppStateEventInput, "by" | "appRunId">) => void; flush: () => Promise<void> } {
+  let chain: Promise<void> = Promise.resolve()
+  const append = (input: Omit<AppStateEventInput, "by" | "appRunId">): void => {
+    chain = chain
+      .then(async () => {
+        await appendAppStateEvent(app, { ...input, by: "runner", ...(appRunId !== undefined ? { appRunId } : {}) })
+      })
+      .catch((err: unknown) => {
+        console.warn(
+          `[workflow-runner] app ledger append failed for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      })
+  }
+  return { append, flush: () => chain }
+}
+
 // ── Background execution ─────────────────────────────────────────────
 
 async function executeRunWorkflow(
@@ -433,7 +533,22 @@ async function executeRunWorkflow(
   cacheKey?: string,
   input?: unknown,
   persist?: () => void,
+  appRegistry?: Pick<AppRegistry, "getApp" | "listApps">,
 ): Promise<void> {
+  // App state ledger bridge (WP-Q): when the run belongs to an installed
+  // app, mirror the run's progress onto the app's ledger with `by: "runner"`
+  // — stage-started / gate-report / stage-done / blocked — so the app's
+  // stage board (`app_state_get`) reflects reality without any agent
+  // self-certifying state. Best-effort: failures warn, never fail the run.
+  const ledgerApp = state.run.appId !== undefined ? appRegistry?.getApp(state.run.appId) : undefined
+  const ledger = ledgerApp
+    ? createLedgerAppender(ledgerApp, state.run.appRunId, state.run.runId)
+    : undefined
+  const ledgerAppend = ledger?.append.bind(ledger)
+  // Steps that started but never completed — the blocked-event candidates
+  // when the run throws (step failed / gate retries exhausted / aborted).
+  const runningSteps = new Set<string>()
+
   try {
     await runWorkflow({
       workflow: runtimeWf,
@@ -454,6 +569,17 @@ async function executeRunWorkflow(
           attempt: ev.attempt,
           ts: new Date().toISOString(),
         })
+        ledgerAppend?.({
+          stage: ev.stepId,
+          kind: "gate-report",
+          payload: {
+            ok: ev.ok,
+            exitCode: ev.exitCode,
+            ...(ev.report !== undefined ? { report: ev.report } : {}),
+            attempt: ev.attempt,
+            runId: state.run.runId,
+          },
+        })
         // Best-effort: keep a matching WorkflowStageState row (if one is
         // ever surfaced for a gate step id) in sync too.
         for (const stage of state.run.stages) {
@@ -466,6 +592,18 @@ async function executeRunWorkflow(
         }
       },
       onStepStart: (stepId) => {
+        runningSteps.add(stepId)
+        ledgerAppend?.({
+          stage: stepId,
+          kind: "stage-started",
+          payload: {
+            runId: state.run.runId,
+            ...(() => {
+              const kind = findStepKind(runtimeWf.steps, stepId)
+              return kind !== undefined ? { kind } : {}
+            })(),
+          },
+        })
         // Find and mark the step as running
         for (const stage of state.run.stages) {
           const step = stage.steps.find((s) => s.label === stepId)
@@ -484,10 +622,13 @@ async function executeRunWorkflow(
         }
       },
       onStepComplete: (stepId, output) => {
+        runningSteps.delete(stepId)
         // Find and mark the step as done
+        let doneStep: (typeof state.run.stages)[number]["steps"][number] | undefined
         for (const stage of state.run.stages) {
           const step = stage.steps.find((s) => s.label === stepId)
           if (step) {
+            doneStep = step
             step.status = "done"
             step.endedAt = new Date().toISOString()
             // Extract sessionId from output if present
@@ -503,6 +644,21 @@ async function executeRunWorkflow(
             break
           }
         }
+        // Ledger append regardless of whether the step is tracked in
+        // `run.stages` — gate steps have no tracked row (collectAgentSteps
+        // skips them) but must still reach the app's stage board.
+        ledgerAppend?.({
+          stage: stepId,
+          kind: "stage-done",
+          payload: {
+            runId: state.run.runId,
+            ...(() => {
+              if (doneStep?.startedAt === undefined || doneStep?.endedAt === undefined) return {}
+              const durationMs = Date.parse(doneStep.endedAt) - Date.parse(doneStep.startedAt)
+              return Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}
+            })(),
+          },
+        })
       },
     })
 
@@ -522,6 +678,15 @@ async function executeRunWorkflow(
     const sessionIds = fillStepStates(state.run.stages, state.stages, agents)
     if (sessionIds.length > 0) state.run.result = { sessionIds }
   } catch (err) {
+    const blockedReason = signal.aborted ? "run aborted" : err instanceof Error ? err.message : String(err)
+    for (const stepId of runningSteps) {
+      ledgerAppend?.({
+        stage: stepId,
+        kind: "blocked",
+        payload: { reason: blockedReason, runId: state.run.runId },
+      })
+    }
+    runningSteps.clear()
     if (signal.aborted) {
       state.run.status = "cancelled"
       state.run.endedAt = new Date().toISOString()
@@ -556,6 +721,10 @@ async function executeRunWorkflow(
     }
   }
 
+  // Drain the ledger append queue before the run's terminal state is
+  // persisted, so the file reflects the run by the time status() flips.
+  if (ledger) await ledger.flush()
+
   fireNotifyUrl(state.run)
 }
 
@@ -579,6 +748,14 @@ export function createWorkflowRunner(opts: {
    * tool/map/parallel/etc steps; omitted/unsupported workflows return an error.
    */
   compileWorkflow?: (handle: WorkflowHandle) => RuntimeWorkflow | Promise<RuntimeWorkflow>
+  /**
+   * Installed-app registry — enables the app state ledger bridge: when a
+   * run's workflow id is owned by exactly one installed app (or `appId` is
+   * passed explicitly), the runner mirrors stage progress onto that app's
+   * ledger (`<dataDir>/state/events.jsonl`, `by: "runner"`). Omitted ⇒ no
+   * ledger writes, behaviour unchanged.
+   */
+  appRegistry?: Pick<AppRegistry, "getApp" | "listApps">
 }): WorkflowRunner {
   const { registry, sessionEvents, resolveAgentAdapter, compileWorkflow } = opts
   const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
@@ -611,6 +788,10 @@ export function createWorkflowRunner(opts: {
           })),
         })),
         ...(input.notifyUrl ? { notifyUrl: input.notifyUrl } : {}),
+        ...resolveAppProvenance(opts.appRegistry, input.workflowId, {
+          ...(input.appId !== undefined ? { appId: input.appId } : {}),
+          ...(input.appRunId !== undefined ? { appRunId: input.appRunId } : {}),
+        }),
       }
       const abort = new AbortController()
       const state: RunState = {
@@ -643,7 +824,7 @@ export function createWorkflowRunner(opts: {
 
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
-      void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, input.cacheKey, undefined, persist).then(() => {
+      void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, input.cacheKey, undefined, persist, opts.appRegistry).then(() => {
         persist()
       })
 
@@ -675,6 +856,10 @@ export function createWorkflowRunner(opts: {
             status: "pending" as const,
           })),
         })),
+        ...resolveAppProvenance(opts.appRegistry, handle.id, {
+          ...(args.appId !== undefined ? { appId: args.appId } : {}),
+          ...(args.appRunId !== undefined ? { appRunId: args.appRunId } : {}),
+        }),
       }
       const abort = new AbortController()
       const state: RunState = {
@@ -714,6 +899,7 @@ export function createWorkflowRunner(opts: {
         args.cacheKey,
         args.input,
         persist,
+        opts.appRegistry,
       ).then(() => {
         persist()
       })
