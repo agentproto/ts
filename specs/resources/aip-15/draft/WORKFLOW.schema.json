@@ -179,7 +179,9 @@
             "approval",
             "map",
             "loop",
-            "subworkflow"
+            "subworkflow",
+            "agent",
+            "gate"
           ]
         },
         "inputs": { "type": "object" },
@@ -204,7 +206,9 @@
             { "$ref": "#/$defs/stepApproval" },
             { "$ref": "#/$defs/stepMap" },
             { "$ref": "#/$defs/stepLoop" },
-            { "$ref": "#/$defs/stepSubworkflow" }
+            { "$ref": "#/$defs/stepSubworkflow" },
+            { "$ref": "#/$defs/stepAgent" },
+            { "$ref": "#/$defs/stepGate" }
           ]
         }
       ]
@@ -353,6 +357,129 @@
         "with": {
           "type": "object",
           "description": "Optional input projection for the child workflow — an alias of `inputs` with identical semantics. Each key is a field of the child's `$input`; each value is either a literal, a reference to a parent input field (`$input.*`), or a reference to a prior step's output (`$steps.<id>.*`), resolved against the PARENT's bindings when the step runs. A referenced field that does not exist is an error naming the step and key — never a silent `undefined`. A step with neither `with` nor `inputs` passes the parent's own input object to the child verbatim. Declaring both `with` and `inputs` on one step is invalid."
+        }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "description": "Harness pinning for a `kind: \"agent\"` step's spawn. Precedence when a field is also set elsewhere: step `harness` (highest) > the resolved AGENT.md's own frontmatter > `app_run` caller args > the adapter's own default (lowest).",
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string", "description": "Model id override for this spawn." },
+        "effort": { "type": "string", "description": "Reasoning-effort override for this spawn (adapter-defined vocabulary, e.g. \"low\" | \"medium\" | \"high\")." },
+        "role": { "type": "string", "description": "Spawn-time role governing the child's tool-policy disposition (e.g. \"executor\" | \"supervisor\")." },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Per-spawn tool allowlist. Applied where the resolved adapter supports a generic per-spawn allowlist mechanism; where it doesn't, the host records `toolsApplied: false` on the step's run record and emits a warning event instead of silently ignoring the field."
+        },
+        "skills": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Skill ids auto-mounted into the spawn — adapters with no such option (e.g. claude-code, which auto-discovers skills) ignore it."
+        },
+        "cwd": { "type": "string", "description": "Working directory override for this step's spawn; takes precedence over the run-level cwd." },
+        "promptFile": { "type": "string", "description": "Read this file (relative to the WORKFLOW.md's directory) at load time and use its contents as the step's `prompt`, replacing any inline `prompt`." },
+        "promptSha": { "type": "string", "description": "Computed by the loader at load time — sha256 (hex) of `promptFile`'s raw bytes. Not hand-authored; present only when `promptFile` was resolved." }
+      }
+    },
+    "stepAgent": {
+      "type": "object",
+      "description": "Spawn or reuse an agent session and send it a prompt.",
+      "required": ["kind", "prompt"],
+      "properties": {
+        "kind": { "const": "agent" },
+        "agent": {
+          "type": "object",
+          "description": "App-scoped agent id to resolve at compile time. Omit to spawn a plain `adapter` (no app-ref resolution) or reuse via `sessionRef`.",
+          "required": ["ref"],
+          "properties": {
+            "ref": { "type": "string" }
+          }
+        },
+        "prompt": { "type": "string" },
+        "adapter": {
+          "type": "string",
+          "description": "Adapter slug for spawning a NEW session. Ignored (and unnecessary) when `agent.ref` resolves one for you. Omit both to reuse via `sessionRef`."
+        },
+        "sessionRef": {
+          "type": "string",
+          "description": "Reuse an earlier agent step's spawned session, by that step's id."
+        },
+        "sandbox": {
+          "anyOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "required": ["provider"],
+              "properties": { "provider": { "type": "string" } }
+            }
+          ]
+        },
+        "cacheable": {
+          "type": "boolean",
+          "description": "Cache this step's output under the run's cacheKey. Default false."
+        },
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Re-prompt-and-retry attempts on `outputSchema` mismatch. Default 2."
+        },
+        "outputSchema": {
+          "description": "A JSON Schema (or, in a TS-authored workflow, a zod ZodType) validating the session's final message; re-prompts on mismatch."
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": ["awaiting", "prompt"],
+              "properties": {
+                "awaiting": { "const": "auto-allow" },
+                "prompt": { "type": "string" }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["awaiting"],
+              "properties": {
+                "awaiting": { "const": "escalate" },
+                "webhookUrl": { "type": "string" },
+                "timeoutMs": { "type": "integer", "minimum": 1 }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["awaiting"],
+              "properties": { "awaiting": { "const": "fail" } }
+            }
+          ]
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": { "type": ["boolean", "number", "string"] },
+          "description": "Manifest-declared adapter option id → value, forwarded to a NEW spawn's `startSession({ options })` — e.g. mastra-agent's `agent` option, set by `agent.ref` resolution at compile time. Only meaningful with `adapter`; ignored on a `sessionRef` reuse. May also be authored directly on the step."
+        },
+        "harness": { "$ref": "#/$defs/harness" }
+      }
+    },
+    "stepGate": {
+      "type": "object",
+      "description": "Run a shell command through the host's subprocess runner (AIP-17) as a deterministic pass/fail check. Exit code 0 is a pass; any other exit code is a failure, subject to `retry`. The process' stdout, if it parses as JSON, becomes the gate's report; otherwise, when `report` names a file, that file is read (relative to `cwd`) and parsed as JSON instead. The report — plus `ok` and `exitCode` — is bound at `$steps.<id>.report` / `.ok` / `.exitCode`, and emitted as a `gate-report` lifecycle event on the run's event stream.",
+      "required": ["kind", "command"],
+      "properties": {
+        "kind": { "const": "gate" },
+        "command": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string", "description": "Working directory. Defaults to the workflow run's own cwd." },
+        "report": { "type": "string", "description": "Path (relative to `cwd`) of a JSON report file, consulted when stdout doesn't itself parse as JSON." },
+        "on_fail": {
+          "type": "object",
+          "required": ["reprompt"],
+          "description": "Re-prompt-and-rerun on a failing exit code, bounded by `retry.max_attempts`. Runs BEFORE each retry attempt after the first: sends the named prior agent step's session (reused the same way a `kind: \"agent\"` step's `sessionRef` reuse works) a prompt with this gate's last report injected, waits for its turn, then re-runs the gate command.",
+          "properties": {
+            "reprompt": { "type": "string", "description": "The prior `kind: \"agent\"` step id to re-prompt." },
+            "with": { "type": "object", "description": "Extra literal context merged into the reprompt, alongside the gate's `$steps.<id>.report`." }
+          }
         }
       }
     }

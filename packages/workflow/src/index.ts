@@ -14,4 +14,11 @@ export const SPEC_NAME = "agentworkflow/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineWorkflow } from "./define-workflow.js"
-export type { WorkflowDefinition, WorkflowHandle } from "./types.js"
+export type {
+  WorkflowDefinition,
+  WorkflowHandle,
+  Step,
+  StepAgent,
+  StepGate,
+  Harness,
+} from "./types.js"

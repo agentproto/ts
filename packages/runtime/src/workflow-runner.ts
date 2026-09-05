@@ -25,7 +25,7 @@ import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
 import { buildAgentStep, runWorkflow } from "@agentproto/workflow-runtime"
-import type { AgentSandboxRef, Bindings, RuntimeWorkflow } from "@agentproto/workflow-runtime"
+import type { AgentSandboxRef, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import type { WorkflowHandle } from "@agentproto/workflow"
@@ -227,6 +227,11 @@ function collectAgentSteps(steps: readonly RuntimeStep[]): CollectedAgentStep[] 
       collected.push(...collectAgentSteps(step.body))
     } else if (step.kind === "subworkflow") {
       collected.push(...collectAgentSteps(step.workflow.steps))
+    } else if (step.kind === "gate") {
+      // No agent session — a `kind: "gate"` step is a subprocess check
+      // (AIP-15 P3), not a spawn. Explicit branch (rather than falling
+      // through the chain) so this stays true if a future kind reuses the
+      // "no session" default.
     }
     // tool / transform / approval / suspend have no agent sessions.
   }
@@ -423,6 +428,7 @@ async function executeRunWorkflow(
   runtimeWf: RuntimeWorkflow,
   agents: SessionsRegistryAgentHost,
   signal: AbortSignal,
+  sessionEvents: SessionEventBus,
   cache?: StepCache,
   cacheKey?: string,
   input?: unknown,
@@ -437,6 +443,28 @@ async function executeRunWorkflow(
       workspaceSlug: state.workspaceSlug,
       input,
       ...(cache ? { cache, cacheKey } : {}),
+      onGateReport: (ev: GateReportEvent) => {
+        sessionEvents.emit({
+          type: "workflow:gate-report",
+          runId: state.run.runId,
+          stepId: ev.stepId,
+          ok: ev.ok,
+          exitCode: ev.exitCode,
+          report: ev.report,
+          attempt: ev.attempt,
+          ts: new Date().toISOString(),
+        })
+        // Best-effort: keep a matching WorkflowStageState row (if one is
+        // ever surfaced for a gate step id) in sync too.
+        for (const stage of state.run.stages) {
+          const step = stage.steps.find((s) => s.label === ev.stepId)
+          if (step) {
+            step.gateReport = { ok: ev.ok, exitCode: ev.exitCode, report: ev.report, attempt: ev.attempt }
+            persist?.()
+            break
+          }
+        }
+      },
       onStepStart: (stepId) => {
         // Find and mark the step as running
         for (const stage of state.run.stages) {
@@ -615,7 +643,7 @@ export function createWorkflowRunner(opts: {
 
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
-      void executeRunWorkflow(state, workflow, agents, abort.signal, cache, input.cacheKey, undefined, persist).then(() => {
+      void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, input.cacheKey, undefined, persist).then(() => {
         persist()
       })
 
@@ -681,6 +709,7 @@ export function createWorkflowRunner(opts: {
         workflow,
         agents,
         abort.signal,
+        sessionEvents,
         cache,
         args.cacheKey,
         args.input,

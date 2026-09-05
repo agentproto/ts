@@ -44,6 +44,8 @@ export type SessionEventType =
   | "cron:failed"
   | "activity:changed"
   | "task:changed"
+  | "workflow:gate-report"
+  | "session:harness-warning"
 
 /**
  * Fixed severity vocabulary for a judge-gate finding (WP-D). Deliberately
@@ -666,6 +668,40 @@ export interface TaskChangedEvent {
   ts: string
 }
 
+/**
+ * Emitted by the workflow runner (`workflow-runner.ts`) for every `kind:
+ * "gate"` step command attempt — not just the last — carrying that attempt's
+ * pass/fail, exit code, and parsed report (AIP-15 P3). Rides the same bus
+ * fan-out as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, `session_monitor`), giving a live watcher visibility
+ * into a retry-with-reprompt loop as it happens, not just its final state.
+ */
+export interface WorkflowGateReportEvent {
+  type: "workflow:gate-report"
+  runId: string
+  stepId: string
+  ok: boolean
+  exitCode: number
+  report: unknown
+  attempt: number
+  ts: string
+}
+
+/**
+ * Emitted when a `kind: "agent"` step's `harness` block declared a field the
+ * spawn couldn't honor (today: `harness.tools` — no adapter exposes a
+ * generic per-spawn tool allowlist this runtime can drive; see
+ * `AgentHarness.tools`'s doc) — the "never silently ignore" fallback AIP-15
+ * P2 requires. Same bus distribution as every other lifecycle event.
+ */
+export interface SessionHarnessWarningEvent {
+  type: "session:harness-warning"
+  sessionId: string
+  warnings: string[]
+  label?: string
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
@@ -696,6 +732,8 @@ export type SessionEvent =
   | CronFailedEvent
   | ActivityChangedEvent
   | TaskChangedEvent
+  | WorkflowGateReportEvent
+  | SessionHarnessWarningEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

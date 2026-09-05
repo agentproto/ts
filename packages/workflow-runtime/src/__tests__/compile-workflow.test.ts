@@ -18,6 +18,7 @@ import {
   resolveRef,
   evalPredicate,
   type AgentStep,
+  type GateStep,
 } from "../index.js"
 
 const doubleTool = defineTool({
@@ -816,5 +817,73 @@ describe("compileWorkflow — subworkflow input projection", () => {
     await expect(runWorkflow({ workflow: compiled, input: {} })).rejects.toThrow(
       /subworkflow step 'sub' input key 'topic': reference '\$input\.bookDir' resolves to nothing/,
     )
+  })
+})
+
+describe("compileWorkflow — declarative gate step (AIP-15 P3)", () => {
+  it("compiles command/args/cwd/report/timeout_ms field-for-field", () => {
+    const wf = defineWorkflow({
+      name: "Gate",
+      id: "gate-fields",
+      description: "A gate step with every scalar field set.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "g",
+          kind: "gate",
+          command: "pnpm",
+          args: ["test"],
+          cwd: "/repo",
+          report: "gate-report.json",
+          timeout_ms: 5000,
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const step = compiled.steps[0] as GateStep
+    expect(step.kind).toBe("gate")
+    expect(step.id).toBe("g")
+    expect(step.command).toBe("pnpm")
+    expect(step.args).toEqual(["test"])
+    expect(step.cwd).toBe("/repo")
+    expect(step.reportPath).toBe("gate-report.json")
+    expect(step.timeoutMs).toBe(5000)
+  })
+
+  it("maps retry.max_attempts/backoff/initial_ms and on_fail.reprompt/with to camelCase", () => {
+    const wf = defineWorkflow({
+      name: "Gate",
+      id: "gate-retry",
+      description: "A gate step with retry + on_fail.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "g",
+          kind: "gate",
+          command: "pnpm test",
+          retry: { max_attempts: 3, backoff: "exponential", initial_ms: 100 },
+          on_fail: { reprompt: "implement", with: { note: "fix it" } },
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const step = compiled.steps[0] as GateStep
+    expect(step.retry).toEqual({ maxAttempts: 3, backoff: "exponential", initialMs: 100 })
+    expect(step.onFail).toEqual({ reprompt: "implement", with: { note: "fix it" } })
+  })
+
+  it("rejects a gate step with an empty command at compile time too (ENTRY bypass of the loader check)", () => {
+    const handle = {
+      id: "entry-gate",
+      description: "demo",
+      steps: [{ kind: "gate", id: "g", command: "" }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(WorkflowCompileError)
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(/non-empty 'command'/)
   })
 })

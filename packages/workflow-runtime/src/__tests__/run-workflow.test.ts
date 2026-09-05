@@ -6,6 +6,9 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
@@ -668,6 +671,195 @@ describe("runWorkflow — agent step", () => {
     expect((bindings.steps.step2 as { text: string }).text).toBe("Step 2 verification complete.")
     // Second prompt should contain the first step's output
     expect(prompts[1]).toContain("Step 1 found 3 issues.")
+  })
+})
+
+describe("runWorkflow — agent step harness (AIP-15 P2)", () => {
+  it("threads the harness block onto host.spawn's opts", async () => {
+    const host = fakeHost()
+    const harness = {
+      model: "opus",
+      effort: "high",
+      role: "executor",
+      tools: ["read"],
+      skills: ["review"],
+      cwd: "/work",
+    }
+    const wf: RuntimeWorkflow = {
+      id: "agent-harness",
+      steps: [{ kind: "agent", id: "s1", adapter: "mock-adapter", prompt: () => "hello", harness }],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledWith("mock-adapter", expect.objectContaining({ harness }))
+  })
+
+  it("harness.cwd overrides both the step's own cwd and the run's cwd", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-harness-cwd",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          prompt: () => "hi",
+          cwd: () => "/step-cwd",
+          harness: { cwd: "/harness-cwd" },
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, cwd: "/run-cwd" })
+    expect(host.spawn).toHaveBeenCalledWith(
+      "mock-adapter",
+      expect.objectContaining({ cwd: "/harness-cwd" }),
+    )
+  })
+
+  it("harness.tools with no generic per-spawn allowlist records toolsApplied:false on the step's own output — never silently ignored", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-harness-tools",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          prompt: () => "hi",
+          harness: { tools: ["read"] },
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toMatchObject({ harness: { tools: ["read"], toolsApplied: false } })
+  })
+})
+
+describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
+  it("passes on exit code 0, parses stdout as the report, and binds { ok, exitCode, report }", async () => {
+    const runGateCommand = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ checked: 3 }),
+      stderr: "",
+    }))
+    const onGateReport = vi.fn()
+    const wf: RuntimeWorkflow = {
+      id: "gate-pass",
+      steps: [{ kind: "gate", id: "g", command: "pnpm", args: ["test"] }],
+    }
+    const { output, bindings } = await runWorkflow({ workflow: wf, runGateCommand, onGateReport })
+    expect(output).toEqual({ ok: true, exitCode: 0, report: { checked: 3 } })
+    expect(bindings.steps.g).toEqual(output)
+    expect(onGateReport).toHaveBeenCalledWith({
+      stepId: "g",
+      ok: true,
+      exitCode: 0,
+      report: { checked: 3 },
+      attempt: 1,
+    })
+  })
+
+  it("reads the report from a file (relative to cwd) when stdout doesn't parse as JSON", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-report-"))
+    try {
+      writeFileSync(join(dir, "report.json"), JSON.stringify({ checked: 7 }), "utf8")
+      const runGateCommand = vi.fn(async () => ({ exitCode: 0, stdout: "not json", stderr: "" }))
+      const wf: RuntimeWorkflow = {
+        id: "gate-report-file",
+        steps: [{ kind: "gate", id: "g", command: "pnpm", cwd: dir, reportPath: "report.json" }],
+      }
+      const { output } = await runWorkflow({ workflow: wf, runGateCommand })
+      expect(output).toEqual({ ok: true, exitCode: 0, report: { checked: 7 } })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails after exhausting retry.maxAttempts, throwing with the last exit code + report attached", async () => {
+    const runGateCommand = vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "boom" }))
+    const wf: RuntimeWorkflow = {
+      id: "gate-fail",
+      steps: [
+        { kind: "gate", id: "g", command: "pnpm", retry: { maxAttempts: 2, backoff: "fixed" } },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, runGateCommand })).rejects.toThrow(
+      /gate failed after 2 attempt\(s\) — exit code 1/,
+    )
+    expect(runGateCommand).toHaveBeenCalledTimes(2)
+  })
+
+  it("retries on a failing attempt and succeeds once the command passes", async () => {
+    let calls = 0
+    const runGateCommand = vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? { exitCode: 1, stdout: "", stderr: "" }
+        : { exitCode: 0, stdout: "{}", stderr: "" }
+    })
+    const onGateReport = vi.fn()
+    const wf: RuntimeWorkflow = {
+      id: "gate-retry-ok",
+      steps: [
+        { kind: "gate", id: "g", command: "pnpm", retry: { maxAttempts: 2, backoff: "fixed" } },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, runGateCommand, onGateReport })
+    expect(output).toMatchObject({ ok: true, exitCode: 0 })
+    expect(runGateCommand).toHaveBeenCalledTimes(2)
+    expect(onGateReport.mock.calls.map((c) => c[0].attempt)).toEqual([1, 2])
+    expect(onGateReport.mock.calls.map((c) => c[0].ok)).toEqual([false, true])
+  })
+
+  it("on_fail.reprompt sends the named prior agent step's session the gate's report before retrying, then re-runs", async () => {
+    const sendPromptAndWait = vi.fn(async (_sessionId: string, _prompt: string) => {})
+    // Every step's session id is the same constant here — the test only
+    // cares that the reprompt targets the same session the 'implement'
+    // step's own prompt was sent to.
+    const host = fakeHost({ sendPromptAndWait, resolveByLabel: vi.fn(() => "sess_fake") })
+    let calls = 0
+    const runGateCommand = vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? { exitCode: 1, stdout: JSON.stringify({ err: "boom" }), stderr: "" }
+        : { exitCode: 0, stdout: "{}", stderr: "" }
+    })
+    const wf: RuntimeWorkflow = {
+      id: "gate-reprompt",
+      steps: [
+        { kind: "agent", id: "implement", adapter: "mock", prompt: () => "implement it" },
+        {
+          kind: "gate",
+          id: "g",
+          command: "pnpm",
+          retry: { maxAttempts: 2, backoff: "fixed" },
+          onFail: { reprompt: "implement" },
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, runGateCommand })
+    expect(runGateCommand).toHaveBeenCalledTimes(2)
+    expect(sendPromptAndWait).toHaveBeenCalledTimes(2)
+    const [reSessionId, reprompt] = sendPromptAndWait.mock.calls[1]!
+    expect(reSessionId).toBe("sess_fake")
+    expect(reprompt).toContain("Gate 'g' failed (exit code 1)")
+    expect(reprompt).toContain('"err": "boom"')
+  })
+
+  it("forwards timeoutMs to the command runner and fails on a timed-out attempt", async () => {
+    const runGateCommand = vi.fn(async (spec: { timeoutMs?: number }) => {
+      expect(spec.timeoutMs).toBe(50)
+      return { exitCode: 1, stdout: "", stderr: "", timedOut: true }
+    })
+    const wf: RuntimeWorkflow = {
+      id: "gate-timeout",
+      steps: [{ kind: "gate", id: "g", command: "sleep", args: ["5"], timeoutMs: 50 }],
+    }
+    await expect(runWorkflow({ workflow: wf, runGateCommand })).rejects.toThrow(
+      /gate failed after 1 attempt\(s\) — exit code 1/,
+    )
+    expect(runGateCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "sleep", args: ["5"], timeoutMs: 50 }),
+    )
   })
 })
 

@@ -203,6 +203,36 @@ export interface SubworkflowStep {
 }
 
 /**
+ * Harness pinning for an {@link AgentStep}'s spawn (AIP-15 P2) — mirrors
+ * `@agentproto/workflow`'s manifest `Harness` block, compiled onto the
+ * runtime step. Precedence when a field is also set elsewhere: this block
+ * (highest) > the resolved AGENT.md's own frontmatter > `app_run` caller
+ * args > the adapter's own default (lowest).
+ */
+export interface AgentHarness {
+  /** Model id override for this spawn. */
+  model?: string
+  /** Reasoning-effort override for this spawn (adapter-defined vocabulary). */
+  effort?: string
+  /** Spawn-time role — governs the child's tool-policy disposition. */
+  role?: string
+  /** Per-spawn tool allowlist. Applied where the resolved adapter supports a
+   *  generic per-spawn allowlist mechanism; where it doesn't, the host MUST
+   *  record `toolsApplied: false` on the step's output and emit a warning
+   *  rather than silently ignoring the field. */
+  tools?: readonly string[]
+  /** Skill ids auto-mounted into the spawn. */
+  skills?: readonly string[]
+  /** Working directory override for this step's spawn — takes precedence
+   *  over {@link AgentStep.cwd} and the run-level `ctx.cwd`. */
+  cwd?: string
+  /** sha256 (hex) of the `harness.promptFile` this step's prompt was read
+   *  from, computed by `@agentproto/workflow-loader` at load time. Absent
+   *  when the step's prompt was authored inline. */
+  promptSha?: string
+}
+
+/**
  * Where an {@link AgentStep}'s session runs when not on the host: a sandbox
  * provider slug (e.g. `"local"`, `"e2b"`) or an inline AIP-36 SandboxSpec-like
  * object (`{ provider, config, env?, … }`). This runtime stays structural —
@@ -252,6 +282,73 @@ export interface AgentStep {
    *  declarative `agent.ref` names an app-scoped agent. Only meaningful with
    *  `adapter`; ignored on a `sessionRef` reuse. */
   options?: Record<string, boolean | number | string>
+  /** Harness pinning for this step's spawn. See {@link AgentHarness}. */
+  harness?: AgentHarness
+}
+
+/**
+ * `kind: "gate"` — run a shell command through the host's subprocess runner
+ * as a deterministic pass/fail check (AIP-15 P3 / AIP-17). Exit code 0 is a
+ * pass; any other code is a failure. Bound output is `{ ok, exitCode, report
+ * }`; `report` is the process' stdout (if it parses as JSON) or the file at
+ * `reportPath` (relative to `cwd`), parsed as JSON.
+ */
+export interface GateStep {
+  kind: "gate"
+  id: string
+  command: string
+  args?: readonly string[]
+  /** Working directory. Selector form resolves per-run; omit for the run's
+   *  own `ctx.cwd`. */
+  cwd?: Selector<string> | string
+  /** Path (relative to `cwd`), of a JSON report file, consulted when stdout
+   *  doesn't itself parse as JSON. */
+  reportPath?: string
+  /** Hard wall-clock cap for a single command invocation, in ms. */
+  timeoutMs?: number
+  /** Re-run on a failing exit code, up to `maxAttempts` (default 1 = no
+   *  retry — a single attempt, fail immediately on a non-zero exit). */
+  retry?: {
+    maxAttempts: number
+    backoff: "fixed" | "exponential"
+    initialMs?: number
+  }
+  /** Re-prompt-and-rerun on a failing attempt, BEFORE each retry after the
+   *  first: send the named prior {@link AgentStep}'s session (resolved via
+   *  {@link AgentSessionHost.resolveByLabel}, the same lookup a `sessionRef`
+   *  reuse uses) a prompt with this gate's last report injected, wait for
+   *  its turn, then re-run the gate command. */
+  onFail?: {
+    reprompt: string
+    with?: Record<string, unknown>
+  }
+}
+
+/** One gate command invocation's raw result — before report resolution. */
+export interface GateCommandResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+  timedOut?: boolean
+}
+
+/** Host-injectable subprocess runner for {@link GateStep}. Undefined ⇒ the
+ *  runtime's own `node:child_process`-backed default. */
+export type GateCommandRunner = (spec: {
+  command: string
+  args: readonly string[]
+  cwd: string
+  timeoutMs?: number
+}) => Promise<GateCommandResult>
+
+/** One `kind: "gate"` command attempt's outcome, reported as it happens
+ *  (every attempt, not just the last) — the `gate-report` lifecycle event. */
+export interface GateReportEvent {
+  stepId: string
+  ok: boolean
+  exitCode: number
+  report: unknown
+  attempt: number
 }
 
 /** What a declarative agent-step's `agent.ref` resolves to — the adapter to
@@ -288,6 +385,7 @@ export type RunStep =
   | GroupStep
   | SubworkflowStep
   | AgentStep
+  | GateStep
 
 export interface RuntimeWorkflow {
   id: string
@@ -322,6 +420,8 @@ export interface AgentSessionHost {
       sandbox?: AgentSandboxRef
       /** Adapter option id → value for this spawn (see {@link AgentStep.options}). */
       options?: Record<string, boolean | number | string>
+      /** Harness pinning for this spawn (see {@link AgentStep.harness}). */
+      harness?: AgentHarness
     },
   ): Promise<string>
   /** Send a prompt to an existing session and wait for its turn to end. */
@@ -376,6 +476,12 @@ export interface RunWorkflowArgs {
   onStepStart?: (stepId: string) => void
   /** Called when a step completes execution, with its output. */
   onStepComplete?: (stepId: string, output: unknown) => void
+  /** Host-injectable subprocess runner for `kind: "gate"` steps. Undefined ⇒
+   *  the runtime's own `node:child_process`-backed default. */
+  runGateCommand?: GateCommandRunner
+  /** Called once per `kind: "gate"` command attempt (every attempt, not just
+   *  the last) — the `gate-report` lifecycle event. */
+  onGateReport?: (ev: GateReportEvent) => void
 }
 
 export interface WorkflowRunResult {

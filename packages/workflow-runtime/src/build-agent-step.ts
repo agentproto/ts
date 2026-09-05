@@ -7,7 +7,7 @@
  * instead of drifting apart.
  */
 
-import type { AgentSandboxRef, AgentStep, Bindings, Selector } from "./types.js"
+import type { AgentHarness, AgentSandboxRef, AgentStep, Bindings, Selector } from "./types.js"
 
 export interface AgentStepFields {
   /** A literal prompt string, or a per-run selector (declarative manifest
@@ -21,6 +21,7 @@ export interface AgentStepFields {
   outputSchema?: AgentStep["outputSchema"]
   maxRetries?: number
   options?: Record<string, boolean | number | string>
+  harness?: AgentHarness
 }
 
 /** Build a runtime {@link AgentStep} from field values, applying the same
@@ -39,5 +40,6 @@ export function buildAgentStep(id: string, fields: AgentStepFields): AgentStep {
     policy: fields.policy ?? { awaiting: "fail" as const },
     ...(fields.outputSchema !== undefined ? { outputSchema: fields.outputSchema } : {}),
     ...(fields.maxRetries !== undefined ? { maxRetries: fields.maxRetries } : {}),
+    ...(fields.harness !== undefined ? { harness: fields.harness } : {}),
   }
 }

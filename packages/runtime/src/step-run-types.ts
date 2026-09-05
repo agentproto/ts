@@ -16,4 +16,7 @@ export interface RoutineStepState {
   startedAt?: string
   endedAt?: string
   error?: string
+  /** Last `kind: "gate"` command attempt's outcome, when this step is a
+   *  gate (AIP-15 P3) — updated on every attempt, not just the final one. */
+  gateReport?: { ok: boolean; exitCode: number; report: unknown; attempt: number }
 }
