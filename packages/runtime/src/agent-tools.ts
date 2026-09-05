@@ -21,6 +21,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { AcpMcpServer } from "@agentproto/acp"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 import type { SessionsRegistry } from "./sessions.js"
 import {
   exportAgentSession,
@@ -1635,6 +1636,7 @@ export function registerAgentTools(
         .enum(["starting", "running", "exited", "killed", "error"])
         .optional()
         .describe("Filter by exact status (overrides onlyAlive)."),
+      ...pageParamsShape,
     },
     async input => {
       // Full list (includeArchived) for subtree correctness — see
@@ -1656,6 +1658,15 @@ export function registerAgentTools(
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
         )
+      }
+      // Pagination last — after subtree scoping and the archived/kind/
+      // status filters. Without limit/cursor the output is byte-identical
+      // to the pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
+        return {
+          content: [{ type: "text", text: toolText(page) }],
+        }
       }
       return {
         content: [

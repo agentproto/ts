@@ -478,4 +478,72 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
       await h.close()
     }
   })
+
+  it("(§4 PR-2) paginated session_list still scopes: page-walk union equals the unpaginated scoped call exactly", async () => {
+    // C is the calling orchestrator. Its subtree: 6 descendants, mixed
+    // alive/exited, one archived mid-chain (D). X is an unrelated root.
+    // collectSubtree must run over the FULL registry (so archived D keeps
+    // its descendant G/H connected) and pagination must apply LAST — a
+    // regression that paginates before collectSubtree feeds the BFS only
+    // the 2-row window of a page and orphans descendants, which the
+    // union-equality assertion below catches.
+    let ids!: {
+      C: string
+      D: string
+      E: string
+      F: string
+      G: string
+      H: string
+      X: string
+    }
+    const h = await harness({
+      caller: (st, reg) => {
+        const C = spawnNode(reg, undefined, 0)
+        const D = spawnNode(reg, C.id, 1) // archived mid-chain
+        const E = spawnNode(reg, C.id, 1)
+        const F = spawnNode(reg, C.id, 1)
+        const G = spawnNode(reg, D.id, 2) // child of the archived node
+        const H = spawnNode(reg, G.id, 3)
+        const X = spawnNode(reg, undefined, 0)
+        reg.kill(D.id) // archive needs terminal status
+        reg.archiveSession(D.id)
+        reg.kill(E.id) // exited descendant
+        ids = { C: C.id, D: D.id, E: E.id, F: F.id, G: G.id, H: H.id, X: X.id }
+        const scope = st.mint({ depth: 0 })
+        st.bindOwner(scope.token, C.id)
+        return scope
+      },
+    })
+    try {
+      const unpaginated = payload<{ sessions: SessionDescriptor[] }>(
+        await h.client.callTool({ name: "session_list", arguments: {} }),
+      )
+      const expected = unpaginated.sessions.map(s => s.id)
+      // Default view: archived D hidden, but its non-archived descendants
+      // G/H stay connected and visible through the full-registry BFS.
+      expect(new Set(expected)).toEqual(
+        new Set([ids.C, ids.E, ids.F, ids.G, ids.H]),
+      )
+
+      // Walk pages of 2 through the SAME scoped gateway.
+      const union: string[] = []
+      let cursor: string | undefined
+      do {
+        const page = payload<{ items: SessionDescriptor[]; nextCursor?: string }>(
+          await h.client.callTool({
+            name: "session_list",
+            arguments: { limit: 2, ...(cursor ? { cursor } : {}) },
+          }),
+        )
+        union.push(...page.items.map(s => s.id))
+        cursor = page.nextCursor
+      } while (cursor)
+
+      expect(union).toEqual(expected)
+      expect(union).not.toContain(ids.X) // no root-level session leaked
+      expect(union).not.toContain(ids.D) // archived stays hidden
+    } finally {
+      await h.close()
+    }
+  })
 })
