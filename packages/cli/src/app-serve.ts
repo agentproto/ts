@@ -435,12 +435,20 @@ export async function callDaemonTool(
     return [400, { error: "bad_request", message: 'body must be `{ "name": string, args?: object }`.' }]
   }
   const { name, args } = body as { name: string; args?: unknown }
-  if (allowedTools !== undefined && !allowedTools.includes(name)) {
+  // The UI's callTool wrapper always sends `name: "app_tool_call"` with the
+  // real tool nested at `args.tool` (see http-server.ts's `/apps/:appId/
+  // tool-call` route). Check that inner name against the allowlist instead
+  // of the wrapper name, or every UI call 403s regardless of ui.tools.
+  const effectiveName =
+    name === "app_tool_call" && args && typeof args === "object" && typeof (args as { tool?: unknown }).tool === "string"
+      ? (args as { tool: string }).tool
+      : name
+  if (allowedTools !== undefined && !allowedTools.includes(effectiveName)) {
     return [
       403,
       {
         error: "forbidden",
-        message: `tool "${name}" is not in this app's ui.tools allowlist: ${allowedTools.length > 0 ? allowedTools.join(", ") : "(empty)"}`,
+        message: `tool "${effectiveName}" is not in this app's ui.tools allowlist: ${allowedTools.length > 0 ? allowedTools.join(", ") : "(empty)"}`,
       },
     ]
   }

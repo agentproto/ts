@@ -402,6 +402,45 @@ describe("callDaemonTool", () => {
     expect(called).toHaveLength(0)
   })
 
+  it("checks the inner tool of an app_tool_call meta-call against the allowlist, not the wrapper name", async () => {
+    // The scaffolded UI bridge (create-agentproto-app templates, vscode app
+    // panel) always sends `callTool("app_tool_call", { appId, tool, args })`.
+    // The daemon's /apps/:appId/tool-call route unwraps that before checking
+    // ui.tools; `app serve` must do the same or every UI call 403s.
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    const [status] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "app_tool_call", args: { appId: "demo", tool: "app_run", args: {} } },
+      ["app_run", "app_status"],
+    )
+    expect(status).toBe(200)
+    expect(called).toEqual(["app_tool_call"])
+  })
+
+  it("rejects an app_tool_call meta-call whose inner tool is outside the allowlist", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [] })
+      },
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "app_tool_call", args: { appId: "demo", tool: "command_execute", args: {} } },
+      ["app_run", "app_status"],
+    )
+    expect(status).toBe(403)
+    expect((body as { message: string }).message).toContain('tool "command_execute"')
+    expect(called).toHaveLength(0)
+  })
+
   it("forwards a tool that is in the allowlist", async () => {
     const called: string[] = []
     const fakeClient = {
