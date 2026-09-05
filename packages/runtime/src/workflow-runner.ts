@@ -100,6 +100,10 @@ export interface WorkflowRun {
   appId?: string
   /** The app_run this run belongs to, when started through an app. */
   appRunId?: string
+  /** Optional ledger `item` — stamped on EVERY app-ledger event this run
+   *  appends, scoping them to one sub-key inside each stage (e.g. the map
+   *  item or entity the run processes). */
+  item?: string
 }
 
 export interface WorkflowRunner {
@@ -117,6 +121,8 @@ export interface WorkflowRunner {
     appId?: string
     /** The app_run this run belongs to, when started through an app. */
     appRunId?: string
+    /** Ledger `item` stamped on every ledger event this run appends. */
+    item?: string
   }): Promise<WorkflowRun>
 
   startFromFile(input: {
@@ -128,6 +134,7 @@ export interface WorkflowRunner {
     /** App provenance — same resolution as `start`. */
     appId?: string
     appRunId?: string
+    item?: string
   }): Promise<WorkflowRun>
 
   status(runId: string): WorkflowRun | undefined
@@ -452,8 +459,8 @@ function fillStepStates(
 function resolveAppProvenance(
   appRegistry: Pick<AppRegistry, "getApp" | "listApps"> | undefined,
   workflowId: string,
-  explicit: { appId?: string; appRunId?: string },
-): { appId?: string; appRunId?: string } {
+  explicit: { appId?: string; appRunId?: string; item?: string },
+): { appId?: string; appRunId?: string; item?: string } {
   if (explicit.appId !== undefined || appRegistry === undefined) return explicit
   const owners = appRegistry.listApps().filter(a => a.workflows.some(w => w.id === workflowId))
   if (owners.length !== 1) return explicit
@@ -505,12 +512,18 @@ function createLedgerAppender(
   app: Pick<InstalledApp, "dir" | "dataDir">,
   appRunId: string | undefined,
   runId: string,
-): { append: (input: Omit<AppStateEventInput, "by" | "appRunId">) => void; flush: () => Promise<void> } {
+  item: string | undefined,
+): { append: (input: Omit<AppStateEventInput, "by" | "appRunId" | "item">) => void; flush: () => Promise<void> } {
   let chain: Promise<void> = Promise.resolve()
-  const append = (input: Omit<AppStateEventInput, "by" | "appRunId">): void => {
+  const append = (input: Omit<AppStateEventInput, "by" | "appRunId" | "item">): void => {
     chain = chain
       .then(async () => {
-        await appendAppStateEvent(app, { ...input, by: "runner", ...(appRunId !== undefined ? { appRunId } : {}) })
+        await appendAppStateEvent(app, {
+          ...input,
+          by: "runner",
+          ...(appRunId !== undefined ? { appRunId } : {}),
+          ...(item !== undefined ? { item } : {}),
+        })
       })
       .catch((err: unknown) => {
         console.warn(
@@ -542,7 +555,7 @@ async function executeRunWorkflow(
   // self-certifying state. Best-effort: failures warn, never fail the run.
   const ledgerApp = state.run.appId !== undefined ? appRegistry?.getApp(state.run.appId) : undefined
   const ledger = ledgerApp
-    ? createLedgerAppender(ledgerApp, state.run.appRunId, state.run.runId)
+    ? createLedgerAppender(ledgerApp, state.run.appRunId, state.run.runId, state.run.item)
     : undefined
   const ledgerAppend = ledger?.append.bind(ledger)
   // Steps that started but never completed — the blocked-event candidates
@@ -791,6 +804,7 @@ export function createWorkflowRunner(opts: {
         ...resolveAppProvenance(opts.appRegistry, input.workflowId, {
           ...(input.appId !== undefined ? { appId: input.appId } : {}),
           ...(input.appRunId !== undefined ? { appRunId: input.appRunId } : {}),
+          ...(input.item !== undefined ? { item: input.item } : {}),
         }),
       }
       const abort = new AbortController()
@@ -859,6 +873,7 @@ export function createWorkflowRunner(opts: {
         ...resolveAppProvenance(opts.appRegistry, handle.id, {
           ...(args.appId !== undefined ? { appId: args.appId } : {}),
           ...(args.appRunId !== undefined ? { appRunId: args.appRunId } : {}),
+          ...(args.item !== undefined ? { item: args.item } : {}),
         }),
       }
       const abort = new AbortController()

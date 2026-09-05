@@ -165,7 +165,7 @@ steps:
       appRegistry,
     })
 
-    const run = await runner.startFromFile({ path, appRunId: APP_RUN_ID })
+    const run = await runner.startFromFile({ path, appRunId: APP_RUN_ID, item: "book3" })
     // Provenance resolved from the registry: the workflow id is owned by
     // exactly one installed app.
     expect(run.appId).toBe(APP_ID)
@@ -191,6 +191,8 @@ steps:
     const mine = events.filter(e => e.appRunId === APP_RUN_ID)
     expect(mine.length).toBeGreaterThan(0)
     for (const e of mine) expect(e.by).toBe("runner")
+    // The run's `item` is stamped on EVERY ledger event when given.
+    for (const e of mine) expect(e.item).toBe("book3")
 
     const kindsFor = (stage: string): string[] =>
       mine.filter(e => e.stage === stage).map(e => e.kind)
@@ -213,17 +215,18 @@ steps:
     const done = mine.filter(e => e.kind === "stage-done")
     for (const e of done) expect(e.payload.runId).toBe(run.runId)
 
-    // The fold produces sensible stage statuses from these events as-is —
-    // no reducer change needed.
+    // The fold produces sensible statuses from these events as-is — no
+    // reducer change needed. Every event carries the run's `item`, so the
+    // statuses live on the stage's item sub-board (item-scoped events drive
+    // `stage.items[item]`, never the stage-level status).
     const snapshot = await appStateSnapshot(app)
-    expect(snapshot.stages.prep?.status).toBe("done")
-    expect(snapshot.stages.check?.status).toBe("done")
-    expect(snapshot.stages.verify?.status).toBe("blocked")
-    expect(snapshot.stages.check?.lastGate).toMatchObject({ ok: true, exitCode: 0 })
+    expect(snapshot.stages.prep?.items?.book3?.status).toBe("done")
+    expect(snapshot.stages.check?.items?.book3?.status).toBe("done")
+    expect(snapshot.stages.verify?.items?.book3?.status).toBe("blocked")
+    expect(snapshot.stages.prep?.status).toBe("pending")
   })
 
-  it("writes nothing to the ledger when the run has no app provenance", async () => {
-    tmpDir = mkdtempSync(join(inRootTmpBase, ".workflow-app-ledger-noapp-test-"))
+  it("writes nothing to the ledger when the run has no app provenance", async () => {    tmpDir = mkdtempSync(join(inRootTmpBase, ".workflow-app-ledger-noapp-test-"))
     bus = createSessionEventBus()
 
     const path = join(tmpDir, "WORKFLOW.md")
@@ -266,6 +269,54 @@ steps:
     const { events } = await readAppStateEvents({ dir: tmpDir, dataDir: join(tmpDir, "data") })
     expect(events).toHaveLength(0)
     expect(appStateEventsPath({ dir: tmpDir, dataDir: join(tmpDir, "data") })).toContain("state")
+  })
+
+  it("omits item on ledger events when the run carries none", async () => {
+    tmpDir = mkdtempSync(join(inRootTmpBase, ".workflow-app-ledger-noitem-test-"))
+    bus = createSessionEventBus()
+    const appRegistry = setupApp(join(tmpDir, "WORKFLOW.md"))
+    const path = join(tmpDir, "WORKFLOW.md")
+    writeFileSync(
+      path,
+      `---
+name: Ledger no item
+id: ${WORKFLOW_ID}
+description: A passing gate with no item.
+version: 0.1.0
+inputs: {}
+outputs: {}
+steps:
+  - id: g
+    kind: gate
+    command: node
+    args: ["-e", "process.exit(0)"]
+---
+`,
+      "utf8",
+    )
+
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+      appRegistry,
+    })
+
+    const run = await runner.startFromFile({ path, appRunId: APP_RUN_ID })
+    expect(run.appId).toBe(APP_ID)
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 200 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 20))
+      final = runner.status(run.runId)
+    }
+    expect(final?.status).toBe("done")
+
+    const app = { dir: tmpDir, dataDir: join(tmpDir, "data") }
+    const events = (await readAppStateEvents(app)).events.filter(e => e.appRunId === APP_RUN_ID)
+    expect(events.length).toBeGreaterThan(0)
+    for (const e of events) expect(e.item).toBeUndefined()
   })
 
   it("a ledger append failure never fails the run (best-effort)", async () => {
