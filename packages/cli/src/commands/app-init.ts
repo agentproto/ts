@@ -72,6 +72,10 @@ const KNOWN_NON_APP_TOOLS: readonly string[] = [
   "task_claim",
   "task_update",
   "daemon_health",
+  // Reached by app UIs through the served stage board (/agentproto/stageboard.js):
+  // Approve resolves a parked approval step via the escalation seam.
+  "workflow_escalation_resolve",
+  "workflow_status",
 ]
 
 function isKnownUiTool(name: string): boolean {

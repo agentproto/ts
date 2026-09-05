@@ -235,6 +235,26 @@ describe("agentproto app validate", () => {
     ).toBe(true)
   })
 
+  it("accepts the stage-board approval tools in ui.tools", async () => {
+    const appDir = await scaffoldTrame("stageboard-tools")
+    const appMdPath = join(appDir, ".agentproto", "APP.md")
+    const appMd = await readFile(appMdPath, "utf8")
+    await writeFile(
+      appMdPath,
+      appMd.replace(
+        "    - app_state_list\n",
+        "    - app_state_list\n    - workflow_escalation_resolve\n    - workflow_status\n",
+      ),
+      "utf8",
+    )
+
+    const { stdout } = await captureJson(() =>
+      runAppValidate([appDir, "--json"]),
+    )
+    const report = parseReport(stdout)
+    expect(report.findings.some((f) => f.scope === "ui.tools")).toBe(false)
+  })
+
   it("fails when ui.tools declares an unknown tool", async () => {
     const appDir = await scaffoldTrame("unknown-tool")
     const appMdPath = join(appDir, ".agentproto", "APP.md")
