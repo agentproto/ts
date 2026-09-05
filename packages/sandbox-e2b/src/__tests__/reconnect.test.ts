@@ -107,6 +107,27 @@ describe("e2bSandboxProvider.connect", () => {
     expect(sandbox.kill).not.toHaveBeenCalled()
   })
 
+  it("never leaks the box when a reconnect's daemon never becomes healthy (kills, then rethrows)", async () => {
+    const sandbox = fakeSandbox()
+    sandboxConnectMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValue(new Error("connect refused")) // never healthy
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const reconnectSpec: SandboxSpec = {
+      provider: "e2b",
+      config: {
+        healthProbeTimeoutMs: 0,
+        daemonReadyTimeoutMs: 5,
+        pollIntervalMs: 5,
+        updateCliOnBoot: false,
+      },
+    }
+    await expect(
+      e2bSandboxProvider.connect!("sbx_abc", reconnectSpec, { env: {} }),
+    ).rejects.toThrow(/did not become healthy/)
+    expect(sandbox.kill).toHaveBeenCalledTimes(1)
+  })
+
   describe("expose: \"private\" (attachSandbox's token-gated path)", () => {
     it("omits the token when expose is not requested, even if the sandbox has one", async () => {
       const sandbox = fakeSandbox({ trafficAccessToken: "e2b_secret" })
