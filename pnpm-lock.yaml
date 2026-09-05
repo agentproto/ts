@@ -1288,6 +1288,9 @@ importers:
       '@agentproto/adapter-browser':
         specifier: workspace:*
         version: link:../../adapters/browser
+      '@agentproto/app-client':
+        specifier: workspace:*
+        version: link:../app-client
       '@agentproto/app-kit':
         specifier: workspace:*
         version: link:../app-kit
@@ -3162,6 +3165,9 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
+      '@agentproto/app-client':
+        specifier: workspace:*
+        version: link:../app-client
       '@agentproto/app-kit':
         specifier: workspace:*
         version: link:../app-kit
