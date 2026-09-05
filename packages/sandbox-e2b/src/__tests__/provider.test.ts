@@ -47,11 +47,12 @@ describe("e2bSandboxProvider.boot", () => {
       DEFAULT_TEMPLATE,
       expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
     )
-    // the stable template's baked record is NULL (out-of-band bake, never
-    // proven) — the legacy on-boot npm install STAYS ON by default
-    expect(sandbox.commands.run).toHaveBeenCalledWith(
-      "sudo npm i -g @agentproto/cli@latest",
-      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
+    // the stable template's recorded bake is PROVEN (cli 0.17.0) and no
+    // cliVersion was requested, so the on-boot npm install is SKIPPED — the
+    // baked image already carries the pinned CLI + adapters.
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("npm i -g"),
+      expect.anything(),
     )
     // then starts the daemon;
     // opens the daemon's own origin allowlist for this sandbox's public host,
@@ -156,29 +157,30 @@ describe("e2bSandboxProvider.boot", () => {
     )
   })
 
-  it("keeps the boot install on while the template's recorded bake is null (unproven out-of-band bake)", async () => {
+  it("skips the boot install on the PROVEN stable template when the pin matches", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)
     fetchMock.mockRejectedValueOnce(new Error("connect refused"))
     fetchMock.mockResolvedValue({ ok: true })
 
     const { e2bSandboxProvider, resolveUpdateCli, TEMPLATES } = await import("../provider.js")
-    // the committed stable record is unproven
-    expect(TEMPLATES.stable.baked.cli).toBeNull()
+    // the committed stable record is PROVEN against a real bake
+    expect(TEMPLATES.stable.baked.cli).toBe("0.17.0")
     const bootSpec: SandboxSpec = {
       provider: "e2b",
-      config: { healthProbeTimeoutMs: 0, cliVersion: "0.17.0" }, // matches the DECLARED pin…
+      config: { healthProbeTimeoutMs: 0, cliVersion: "0.17.0" }, // matches the baked pin
     }
     await e2bSandboxProvider.boot(bootSpec, { env: {} })
 
-    // …but the bake is unproven, so the install still runs
-    expect(sandbox.commands.run).toHaveBeenCalledWith(
-      "sudo npm i -g @agentproto/cli@0.17.0",
+    // proven bake + matching pin → the on-boot install is skipped
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("npm i -g"),
       expect.anything(),
     )
-    // unit-level: a NULL bake always keeps the legacy install
-    expect(resolveUpdateCli({ cliVersion: "0.17.0" }, TEMPLATES.stable.id!)).toBe(true)
-    expect(resolveUpdateCli({}, TEMPLATES.stable.id!)).toBe(true)
+    // unit-level: a proven bake matching the pin (or an unset cliVersion,
+    // where the bake IS the pin) skips the legacy install
+    expect(resolveUpdateCli({ cliVersion: "0.17.0" }, TEMPLATES.stable.id!)).toBe(false)
+    expect(resolveUpdateCli({}, TEMPLATES.stable.id!)).toBe(false)
   })
 
   describe("resolveUpdateCli — recorded bake gates the skip", () => {
@@ -284,8 +286,9 @@ describe("e2bSandboxProvider.boot", () => {
     const bootSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
     await e2bSandboxProvider.boot(bootSpec, { env: {} })
 
-    // the npm update + serve — no stray provision commands
-    expect(sandbox.commands.run).toHaveBeenCalledTimes(2)
+    // proven stable bake + no cliVersion → install skipped; only the daemon
+    // serve command runs (no stray provision commands)
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1)
   })
 
   it("defaults the sandbox LIFETIME to 45min — never e2b's 5-minute default (mid-turn reaper)", async () => {
