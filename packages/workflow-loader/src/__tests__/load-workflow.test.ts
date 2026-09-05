@@ -115,6 +115,33 @@ describe("loadWorkflowHandle — harness.promptFile (AIP-15 P2)", () => {
   })
 })
 
+describe("loadWorkflowHandle — harness.knowledge (AIP-15 P2)", () => {
+  it("resolves relative knowledge workspaces against the WORKFLOW.md dir, leaving absolute ones untouched", async () => {
+    const h = await loadWorkflowHandle(fix("harness-knowledge/WORKFLOW.md"))
+    const step = h.steps.find((s) => s.id === "s1") as unknown as Record<string, unknown>
+    const harness = step.harness as {
+      knowledge?: { workspace: string }[]
+    }
+    expect(harness.knowledge).toHaveLength(2)
+    expect(harness.knowledge![0]!.workspace).toBe(fix("harness-knowledge/corpus"))
+    expect(harness.knowledge![1]!.workspace).toBe("/tmp")
+  })
+
+  it("throws a clear error when a knowledge workspace directory does not exist", async () => {
+    await expect(
+      loadWorkflowHandle(fix("harness-knowledge-missing/WORKFLOW.md")),
+    ).rejects.toThrow(
+      /agent step 's1': harness\.knowledge\[0\]\.workspace '\.\/no-such-corpus' does not name an existing directory/,
+    )
+  })
+
+  it("rejects a knowledge selector whose mode is not the v1 'files'", async () => {
+    await expect(
+      loadWorkflowHandle(fix("harness-knowledge-bad-mode/WORKFLOW.md")),
+    ).rejects.toThrow(/harness\.knowledge\[0\]\.mode must be "files"/)
+  })
+})
+
 describe("loadWorkflowHandle — kind: gate (AIP-15 P3)", () => {
   it("rejects a declarative gate step with no command", async () => {
     await expect(loadWorkflowHandle(fix("gate-no-command/WORKFLOW.md"))).rejects.toThrow(

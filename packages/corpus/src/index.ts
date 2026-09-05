@@ -189,7 +189,7 @@ export type {
 } from "./distill/windows.js"
 
 // Knowledge resolver — the `knowledge:` binding (KNOWLEDGE → SKILL link)
-export { resolveKnowledge } from "./knowledge/resolve.js"
+export { resolveKnowledge, filterEntriesByAllOf } from "./knowledge/resolve.js"
 export type {
   CorpusEntryQuery,
   ResolvedEntry,

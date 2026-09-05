@@ -168,3 +168,23 @@ export async function resolveKnowledge(
   hits.sort((a, b) => b.confidence - a.confidence)
   return query.maxResults !== undefined ? hits.slice(0, query.maxResults) : hits
 }
+
+/**
+ * Thin post-filter next to {@link resolveKnowledge} (whose signature stays
+ * stable): keep only entries whose tags include ALL of `allOf`
+ * (case-insensitive). Empty/absent `allOf` = no-op. Used by consumers that
+ * need an AND-semantics tag constraint on top of the OR-semantics
+ * `query.tags` (e.g. AIP-15 `harness.knowledge[].allOf`).
+ */
+export function filterEntriesByAllOf(
+  entries: readonly ResolvedEntry[],
+  allOf?: readonly string[],
+): readonly ResolvedEntry[] {
+  if (!allOf || allOf.length === 0) return entries
+  const want = new Set(allOf.map((t) => t.toLowerCase()))
+  return entries.filter((e) => {
+    const have = new Set(e.tags.map((t) => t.toLowerCase()))
+    for (const t of want) if (!have.has(t)) return false
+    return true
+  })
+}

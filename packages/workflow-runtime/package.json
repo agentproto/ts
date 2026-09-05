@@ -47,6 +47,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/corpus": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "@agentproto/workflow": "workspace:*"

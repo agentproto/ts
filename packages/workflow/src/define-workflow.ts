@@ -1,5 +1,5 @@
 import { createDoctype } from "@agentproto/define-doctype"
-import { workflowFrontmatterSchema } from "./schema.js"
+import { harnessSchema, workflowFrontmatterSchema } from "./schema.js"
 import type { WorkflowDefinition, WorkflowHandle } from "./types.js"
 
 /**
@@ -52,12 +52,26 @@ export const defineWorkflow = createDoctype<WorkflowDefinition, WorkflowHandle>(
     // instead. See @agentproto/operator's autonomy=gated rule for the
     // pattern this follows.
     walkSteps((def as { steps?: unknown }).steps, (step) => {
-      if (step.kind !== "gate") return
-      const command = step.command
-      if (typeof command !== "string" || command.trim().length === 0) {
-        throw new Error(
-          `defineWorkflow (AIP-15): gate step '${typeof step.id === "string" ? step.id : "(unid)"}' needs a non-empty 'command'`,
-        )
+      if (step.kind === "gate") {
+        const command = step.command
+        if (typeof command !== "string" || command.trim().length === 0) {
+          throw new Error(
+            `defineWorkflow (AIP-15): gate step '${typeof step.id === "string" ? step.id : "(unid)"}' needs a non-empty 'command'`,
+          )
+        }
+      }
+      // AIP-15 P2: validate the agent-step `harness` block (incl. the
+      // `knowledge[]` selectors — bad `mode`, missing `workspace`, unknown
+      // fields) with the strict hand-tuned zod from ./schema.ts.
+      if (step.kind === "agent" && step.harness !== undefined) {
+        const parsed = harnessSchema.safeParse(step.harness)
+        if (!parsed.success) {
+          throw new Error(
+            `defineWorkflow (AIP-15): agent step '${typeof step.id === "string" ? step.id : "(unid)"}' has an invalid harness block — ${parsed.error.issues
+              .map((i) => `${i.path.join(".")}: ${i.message}`)
+              .join("; ")}`,
+          )
+        }
       }
     })
   },

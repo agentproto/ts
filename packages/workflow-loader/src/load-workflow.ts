@@ -150,6 +150,7 @@ async function applyAgentHarnessPromptFiles(
         s.prompt = bytes.toString("utf8").trim()
         harness.promptSha = createHash("sha256").update(bytes).digest("hex")
       }
+      await applyAgentHarnessKnowledge(harness, s, workflowMdPath)
     }
     await applyAgentHarnessPromptFiles(s.steps, workflowMdPath)
     if (Array.isArray(s.branches)) {
@@ -157,6 +158,52 @@ async function applyAgentHarnessPromptFiles(
         await applyAgentHarnessPromptFiles((br as Record<string, unknown>)?.steps, workflowMdPath)
       }
     }
+  }
+}
+
+/**
+ * Resolve every `harness.knowledge[]` selector's `workspace` (AIP-15 P2),
+ * relative to the WORKFLOW.md's own directory — the same rule
+ * `harness.promptFile` follows — rewriting it in place to the absolute path
+ * so the runtime materializer never re-resolves against a different cwd. A
+ * workspace directory that does not exist fails the load, as does a `mode`
+ * other than the v1-only `"files"`.
+ */
+async function applyAgentHarnessKnowledge(
+  harness: Record<string, unknown>,
+  step: Record<string, unknown>,
+  workflowMdPath: string,
+): Promise<void> {
+  const knowledge = harness.knowledge
+  if (!Array.isArray(knowledge)) return
+  const id = typeof step.id === "string" ? step.id : "(unid)"
+  for (const [i, sel] of knowledge.entries()) {
+    if (sel === null || typeof sel !== "object") continue
+    const selector = sel as Record<string, unknown>
+    if (selector.mode !== undefined && selector.mode !== "files") {
+      throw new WorkflowLoadError(
+        `agent step '${id}': harness.knowledge[${i}].mode must be "files" (v1 supports no other mode); got ${
+          typeof selector.mode === "string" ? `"${selector.mode}"` : String(selector.mode)
+        }`,
+      )
+    }
+    const workspace = selector.workspace
+    if (typeof workspace !== "string" || workspace.length === 0) continue
+    const abs = isAbsolute(workspace)
+      ? workspace
+      : join(dirname(workflowMdPath), workspace)
+    let st
+    try {
+      st = await stat(abs)
+    } catch {
+      st = null
+    }
+    if (st === null || !st.isDirectory()) {
+      throw new WorkflowLoadError(
+        `agent step '${id}': harness.knowledge[${i}].workspace '${workspace}' does not name an existing directory (resolved to '${abs}')`,
+      )
+    }
+    selector.workspace = abs
   }
 }
 

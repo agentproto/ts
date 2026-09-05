@@ -19,6 +19,8 @@ export {
 } from "./compile-workflow.js"
 export { compileWorkflowManifest } from "./load-workflow.js"
 export { buildAgentStep, type AgentStepFields } from "./build-agent-step.js"
+export { materializeKnowledge, type MaterializedKnowledge } from "./knowledge.js"
+export { NodeFsPort } from "./node-fs-port.js"
 export type {
   Bindings,
   Selector,
@@ -38,6 +40,8 @@ export type {
   SubworkflowStep,
   AgentStep,
   AgentHarness,
+  HarnessKnowledgeSelector,
+  KnowledgeAppliedRecord,
   GateStep,
   GateCommandResult,
   GateCommandRunner,
