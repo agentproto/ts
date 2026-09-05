@@ -1016,9 +1016,6 @@ importers:
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
-      zod:
-        specifier: ^4.5.4
-        version: 4.5.4
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -1035,6 +1032,9 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.13)(yaml@2.9.0)
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
 
   packages/app-kit:
     dependencies:

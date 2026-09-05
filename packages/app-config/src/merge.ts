@@ -37,27 +37,78 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)
 }
 
+/** Merge options: `arraysBy[field] = keyField` turns the array at that field
+ * into a keyed merge (overlay entries with the same key REPLACE the base
+ * entry, others append) instead of the replace-by-default. */
+export interface MergeOptions {
+  arraysBy?: Record<string, string>
+}
+
 /**
  * Deep merge two parsed YAML values. Objects merge recursively; every other
  * shape (arrays included) is replaced by the overlay when the overlay is
- * defined. `undefined` overlays leave the base untouched.
+ * defined — except arrays listed in `opts.arraysBy`, which merge keyed by
+ * their entry key field. `undefined` overlays leave the base untouched.
  */
-export function mergeValues(base: unknown, overlay: unknown): unknown {
+export function mergeValues(base: unknown, overlay: unknown, opts?: MergeOptions): unknown {
+  return mergeInto(base, overlay, opts ?? {}, "")
+}
+
+function mergeInto(base: unknown, overlay: unknown, opts: MergeOptions, field: string): unknown {
   if (overlay === undefined) return base
   if (isPlainObject(base) && isPlainObject(overlay)) {
     const out: Record<string, unknown> = { ...base }
     for (const [k, v] of Object.entries(overlay)) {
-      out[k] = k in base ? mergeValues(base[k], v) : v
+      out[k] = k in base ? mergeInto(base[k], v, opts, k) : v
     }
     return out
+  }
+  if (Array.isArray(base) && Array.isArray(overlay)) {
+    const keyField = opts.arraysBy?.[field]
+    if (keyField !== undefined) return mergeArraysByKey(base, overlay, keyField)
   }
   return overlay
 }
 
+/**
+ * Keyed array merge: an overlay entry whose `keyField` matches a base entry
+ * REPLACES it in place (a book that narrows its knowledge slice must not
+ * inherit the series-wide selector for the same workspace); overlay entries
+ * with new keys append, in overlay order.
+ */
+export function mergeArraysByKey(base: readonly unknown[], overlay: readonly unknown[], keyField: string): unknown[] {
+  function keyOf(entry: unknown): string {
+    if (!isPlainObject(entry)) return canonicalJson(entry)
+    const p = pick(entry, keyField)
+    return p.found ? canonicalJson(p.value) : ""
+  }
+  const overlayByKey = new Map<string, unknown>()
+  for (const o of overlay) overlayByKey.set(keyOf(o), o)
+  const out: unknown[] = []
+  const consumed = new Set<string>()
+  for (const b of base) {
+    const k = keyOf(b)
+    if (overlayByKey.has(k)) {
+      out.push(overlayByKey.get(k))
+      consumed.add(k)
+    } else {
+      out.push(b)
+    }
+  }
+  for (const o of overlay) {
+    const k = keyOf(o)
+    if (!consumed.has(k)) {
+      out.push(o)
+      consumed.add(k)
+    }
+  }
+  return out
+}
+
 /** Fold mergeValues over layers in precedence order, starting from an empty object. */
-export function mergeLayers(layers: readonly unknown[]): unknown {
+export function mergeLayers(layers: readonly unknown[], opts?: MergeOptions): unknown {
   let acc: unknown = {}
-  for (const layer of layers) acc = mergeValues(acc, layer)
+  for (const layer of layers) acc = mergeValues(acc, layer, opts)
   return acc
 }
 

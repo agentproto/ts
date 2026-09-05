@@ -31,10 +31,10 @@ export const rules: GateRule[] = [
   {
     id: "title-length",
     level: "error",
-    test: (resolved) =>
-      resolved.order
+    test: (ctx) =>
+      ctx.resolved.order
         .filter((id) => {
-          const item = resolved.items.get(id)
+          const item = ctx.resolved.items.get(id)
           return item !== undefined && item.value.title.length > 20
         })
         .map((id) => ({ message: "title too long", item: id })),
