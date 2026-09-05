@@ -236,16 +236,30 @@ async function ensureDaemonHealthy(
  *  `boot` and `connect`. `pause()` always keeps the full memory snapshot
  *  (`keepMemory: true`, the SDK default) — a filesystem-only pause would
  *  cold-boot the box on resume, dropping the running agentproto daemon and
- *  any open connections (PR3 risk "e2b pause loses in-memory state"). */
+ *  any open connections (PR3 risk "e2b pause loses in-memory state").
+ *
+ *  `extraPorts` (from `spec.extraPorts`) are resolved eagerly at boot time
+ *  into the returned `ports` map (port → `https://<getHost(port)>`).
+ *  `expose(port)` works for any port — not just pre-declared ones — so
+ *  callers can also expose ports lazily after boot. */
 function toBootedSandbox(
   sandbox: Awaited<ReturnType<typeof Sandbox.create>>,
   host: string,
   token?: string,
+  extraPorts?: number[],
 ): BootedSandbox {
+  const ports: Record<number, string> = {}
+  for (const port of extraPorts ?? []) {
+    ports[port] = `https://${sandbox.getHost(port)}`
+  }
   return {
     mcpUrl: `https://${host}/mcp`,
     sandboxId: sandbox.sandboxId,
     ...(token ? { token } : {}),
+    ...(Object.keys(ports).length > 0 ? { ports } : {}),
+    expose(port: number): Promise<{ url: string }> {
+      return Promise.resolve({ url: `https://${sandbox.getHost(port)}` })
+    },
     async stop(): Promise<void> {
       await sandbox.kill()
     },
@@ -271,7 +285,7 @@ export const e2bSandboxProvider: SandboxProvider = {
 
     const host = sandbox.getHost(port)
     await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
-    return toBootedSandbox(sandbox, host)
+    return toBootedSandbox(sandbox, host, undefined, spec.extraPorts)
   },
 
   async connect(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
@@ -299,7 +313,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     // reconnect for a sandbox that wasn't created with traffic restriction
     // enabled. Unverified against a live sandbox.
     const token = opts.expose === "private" ? sandbox.trafficAccessToken : undefined
-    return toBootedSandbox(sandbox, host, token)
+    return toBootedSandbox(sandbox, host, token, spec.extraPorts)
   },
 }
 

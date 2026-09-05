@@ -74,7 +74,10 @@ function makeFakeCliResolver(receivedPrompts: string[]): AgentAdapterResolver {
  * — a `connect()` in these tests reconnects to the SAME live gateway a prior
  * `boot()` would have produced, exactly like e2b reconnecting to the same box.
  */
-async function bootFakeReconnectableBox(receivedPrompts: string[]): Promise<{
+async function bootFakeReconnectableBox(
+  receivedPrompts: string[],
+  opts?: { ports?: Record<number, string> },
+): Promise<{
   provider: SandboxProvider
   gateway: GatewayHandle
   workspace: string

@@ -29,6 +29,36 @@ try {
 
 Requires `E2B_API_KEY` in the host process's environment.
 
+## Port exposure
+
+Each booted sandbox exposes an `expose(port)` method that returns the public
+URL for any port the sandboxed process listens on:
+
+```ts
+const host = await createSandboxAgentSessionHost({ provider: e2bSandboxProvider, spec, secrets })
+// After booting, expose any app port the sandboxed process is listening on:
+const { url } = await host.expose!(3210)
+// url → "https://3210-<sandboxId>.e2b.app"
+```
+
+To pre-expose ports at boot time, declare `extraPorts` in the spec. The
+returned `BootedSandbox.ports` map (and the session descriptor's `sandboxPorts`
+field) are populated immediately so orchestrators can read the URL without a
+separate `expose()` call:
+
+```ts
+const host = await createSandboxAgentSessionHost({
+  provider: e2bSandboxProvider,
+  spec: { provider: "e2b", config: {}, extraPorts: [3210] },
+  secrets: { slugs: ["E2B_API_KEY"] },
+})
+console.log(host.ports) // { 3210: "https://3210-<sandboxId>.e2b.app" }
+```
+
+Loopback bind is enough inside the VM — e2b's edge handles forwarding. See
+`SandboxPortExposureUnsupportedError` in `@agentproto/sandbox` for the error
+thrown when calling `exposePort()` on a provider that does not support exposure.
+
 ## Notes
 
 - The daemon's own origin allowlist defaults to `localhost:*`; this provider

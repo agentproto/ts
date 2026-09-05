@@ -264,6 +264,37 @@ or rely on agentproto's own no-auto-stop default from boot) and reach for
 `agentproto sandbox attach box bx_abc123 --keep-alive` once that flag ships
 in your CLI version, so the attachment itself doesn't go stale either.
 
+## 6. Exposing app ports (e2b)
+
+An agent running inside an e2b sandbox can start its own HTTP server (e.g.
+`agentproto app serve --port 3210`) and the host can reach it publicly via
+e2b's `getHost(port)` forwarding — no extra tunnel needed.
+
+**At boot time** — declare `extraPorts` in the spec and the provider resolves
+them immediately. The resulting URLs appear in the session descriptor's
+`sandboxPorts` field so an orchestrator can read them without an extra call:
+
+```json
+{ "provider": "e2b", "config": {}, "extraPorts": [3210] }
+```
+
+The spawned session's descriptor then carries:
+```json
+{ "sandboxPorts": { "3210": "https://3210-<sandboxId>.e2b.app" } }
+```
+
+**At runtime** — call `expose(port)` on the booted sandbox handle (or via
+`exposePort()` from `@agentproto/sandbox`):
+
+```ts
+import { exposePort } from "@agentproto/sandbox"
+const { url } = await exposePort(host, 3210)
+// url → "https://3210-<sandboxId>.e2b.app"
+```
+
+Providers that do not support port exposure (Box, local) do not implement
+`expose()`. Calling `exposePort()` on them throws `SandboxPortExposureUnsupportedError`.
+
 ## See also
 
 - [`verbs/sandbox.md`](../verbs/sandbox.md) — `sandbox attach` flag reference

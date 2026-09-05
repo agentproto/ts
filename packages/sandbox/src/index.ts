@@ -28,6 +28,8 @@ export { sandboxFrontmatterSchema as SandboxSpecSchema } from "./schema.js"
 
 export {
   createSandboxAgentSessionHost,
+  exposePort,
+  SandboxPortExposureUnsupportedError,
   type SandboxSpec,
   type BootedSandbox,
   type SandboxBootOpts,

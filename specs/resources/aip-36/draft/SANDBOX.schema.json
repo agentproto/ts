@@ -100,6 +100,11 @@
       "default": false,
       "description": "Reject command execution at the sandbox layer. Read-only sandbox calls fail with `sandbox_read_only`."
     },
+    "extraPorts": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "description": "App ports to expose at boot time. Resolved into BootedSandbox.ports (port → public URL) by providers that support port exposure."
+    },
     "metadata": {
       "type": "object",
       "additionalProperties": true,

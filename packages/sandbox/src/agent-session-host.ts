@@ -19,6 +19,19 @@ import type { SandboxHandle } from "./types.js"
 /** AIP-36 sandbox manifest handle — provider id, config, env passthrough, limits. */
 export type SandboxSpec = SandboxHandle
 
+/**
+ * Thrown when a caller requests port exposure on a `BootedSandbox` whose
+ * provider does not support it — i.e. the sandbox handle has no `expose()`
+ * method. Callers should check for `expose` before calling it, or catch
+ * this error and fall back gracefully.
+ */
+export class SandboxPortExposureUnsupportedError extends Error {
+  constructor(message?: string) {
+    super(message ?? "This sandbox provider does not support port exposure.")
+    this.name = "SandboxPortExposureUnsupportedError"
+  }
+}
+
 /** What a `SandboxProvider` hands back once the box is up and reachable. */
 export interface BootedSandbox {
   /** The booted agentproto daemon's MCP endpoint, reachable from this process. */
@@ -43,6 +56,24 @@ export interface BootedSandbox {
    *  token-only provider that omits this is treated by `buildMcpConfigSnippet`
    *  as `Authorization: Bearer <token>`. */
   authHeaders?: Record<string, string>
+  /**
+   * Expose an app port on the sandbox and return its public URL. E2B returns
+   * `https://<port>-<sandboxId>.e2b.app`. Loopback bind is enough inside the
+   * VM — the provider's edge handles the forwarding.
+   *
+   * Optional: providers that cannot expose arbitrary ports omit this method.
+   * Callers should check for presence before calling, or catch
+   * `SandboxPortExposureUnsupportedError` when using `exposePort()`.
+   */
+  expose?(port: number): Promise<{ url: string }>
+  /**
+   * Ports resolved at boot time from `SandboxSpec.extraPorts` — a map of
+   * port number to public URL. Only present when the spec declared
+   * `extraPorts` AND the provider supports exposure. Callers that need a
+   * port URL at runtime should use `expose()` directly when this map is
+   * absent or doesn't include the target port.
+   */
+  ports?: Record<number, string>
   /** Tear down the sandbox. */
   stop(): Promise<void>
   /** Pause the sandbox instead of killing it — keeps it reconnectable via
@@ -50,6 +81,20 @@ export interface BootedSandbox {
    *  that can't pause (or don't support reconnect at all) omit it; callers
    *  that want to pause fall back to `stop()` when it's absent. */
   pause?(): Promise<void>
+}
+
+/**
+ * Expose a port on a booted sandbox. Throws `SandboxPortExposureUnsupportedError`
+ * when the provider's sandbox handle has no `expose()` method.
+ */
+export async function exposePort(booted: BootedSandbox, port: number): Promise<{ url: string }> {
+  if (!booted.expose) {
+    throw new SandboxPortExposureUnsupportedError(
+      `sandbox "${booted.sandboxId}" does not support port exposure — ` +
+        "the provider has no expose() implementation.",
+    )
+  }
+  return booted.expose(port)
 }
 
 /** Env resolved from secrets, handed to `provider.boot`. */
@@ -113,6 +158,13 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`) — surfaced so a
    *  caller can record it (there's no local PID for a sandboxed session). */
   sandboxId: string
+  /** Ports resolved at boot from `SandboxSpec.extraPorts` — forwarded from
+   *  `BootedSandbox.ports` so the runtime can record them on the session
+   *  descriptor without reaching into the booted handle after the fact. */
+  ports?: Record<number, string>
+  /** Expose an app port and return its public URL — forwarded from
+   *  `BootedSandbox.expose`. Absent when the provider doesn't support it. */
+  expose?: BootedSandbox["expose"]
   /** Close the daemon connection AND tear down the sandbox. */
   stop(): Promise<void>
   /** Close the daemon connection and PAUSE the sandbox instead of killing
@@ -153,6 +205,8 @@ export async function createSandboxAgentSessionHost(
   return {
     ...host,
     sandboxId: booted.sandboxId,
+    ...(booted.ports ? { ports: booted.ports } : {}),
+    ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
     async stop(): Promise<void> {
       await host.close()
       await booted.stop()
