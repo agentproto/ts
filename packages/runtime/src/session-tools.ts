@@ -60,6 +60,7 @@ import {
   enrichRollupWithProviderQuota,
 } from "./usage-rollup-service.js"
 import { withToolSubset } from "./tool-subset.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type {
@@ -397,6 +398,7 @@ export function registerSessionTools(
           "When true, also include archived sessions (hidden from every " +
             "other view by `session_archive`). Default false.",
         ),
+      ...pageParamsShape,
     },
     async input => {
       // Always pull the FULL list (archived included) — subtree scoping
@@ -431,6 +433,16 @@ export function registerSessionTools(
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
         )
+      }
+      // Pagination (PR-2): ALWAYS last — after subtree scoping and the
+      // archived/kind/status filters. Without limit/cursor the output is
+      // byte-identical to the pre-pagination handler. `full` is accepted
+      // but a no-op until the projection flip (PR-10).
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
+        return {
+          content: [{ type: "text", text: toolText(page) }],
+        }
       }
       return {
         content: [
@@ -971,6 +983,7 @@ export function registerSessionTools(
         .enum(["starting", "running", "exited", "killed", "error"])
         .optional()
         .describe("Filter by exact status (overrides onlyAlive)."),
+      ...pageParamsShape,
     },
     async input => {
       // Full list (includeArchived) for subtree correctness — see
@@ -992,6 +1005,14 @@ export function registerSessionTools(
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
         )
+      }
+      // Pagination last — see session_list. Without limit/cursor the
+      // output is byte-identical to the pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
+        return {
+          content: [{ type: "text", text: toolText(page) }],
+        }
       }
       return {
         content: [
@@ -1022,6 +1043,7 @@ export function registerSessionTools(
         .enum(["starting", "running", "exited", "killed", "error"])
         .optional()
         .describe("Filter by exact status (overrides onlyAlive)."),
+      ...pageParamsShape,
     },
     async input => {
       // Full list (includeArchived) for subtree correctness — see
@@ -1043,6 +1065,14 @@ export function registerSessionTools(
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
         )
+      }
+      // Pagination last — see session_list. Without limit/cursor the
+      // output is byte-identical to the pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
+        return {
+          content: [{ type: "text", text: toolText(page) }],
+        }
       }
       return {
         content: [
