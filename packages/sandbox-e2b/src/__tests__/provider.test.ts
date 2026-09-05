@@ -410,6 +410,87 @@ describe("e2bSandboxProvider.boot", () => {
     expect(sandbox.kill).toHaveBeenCalledTimes(1)
   })
 
+  it("fails FAST with the box daemon's captured output when the serve process exits during boot", async () => {
+    // A box whose daemon crashes on boot (e.g. it can't load a baked adapter)
+    // must surface that crash to the caller and reclaim the VM — never hang
+    // the HTTP/MCP call waiting out the full readiness window, never leak.
+    const serveHandle = {
+      // wait() rejects on a non-zero exit, just like a real CommandHandle for
+      // a crashed process.
+      wait: vi.fn(async () => {
+        throw new Error("command exited with code 1")
+      }),
+      exitCode: 1,
+      stdout: "",
+      stderr: "agentproto: FATAL cannot find module '@agentproto/adapter-mastra-agent'",
+    }
+    const sandbox = fakeSandbox({
+      commands: {
+        run: vi.fn(async (cmd: string) =>
+          cmd.includes("agentproto serve") ? serveHandle : {},
+        ),
+      },
+    })
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    // health never comes up; the fast path is the process-exit signal, not the
+    // (long) readiness deadline.
+    fetchMock.mockRejectedValue(new Error("connect refused"))
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      // A LONG readiness window on purpose: a correct fail-fast must not wait
+      // for it — the exit race short-circuits well before 5 minutes.
+      config: {
+        healthProbeTimeoutMs: 0,
+        template: "custom-template",
+        daemonReadyTimeoutMs: 300_000,
+        pollIntervalMs: 1,
+        updateCliOnBoot: false,
+      },
+    }
+    const err = await e2bSandboxProvider.boot(bootSpec, { env: {} }).then(
+      () => null,
+      (e: unknown) => (e instanceof Error ? e : new Error(String(e))),
+    )
+    expect(err).not.toBeNull()
+    expect(err!.message).toMatch(/did not become healthy/)
+    // the box's own daemon output is surfaced in the error (diagnosable) …
+    expect(err!.message).toContain("cannot find module '@agentproto/adapter-mastra-agent'")
+    // … and the early-exit is called out
+    expect(err!.message).toMatch(/box daemon process exited during boot/)
+    // … and the VM is reclaimed exactly once.
+    expect(sandbox.kill).toHaveBeenCalledTimes(1)
+  })
+
+  it("never leaks the box when the boot npm install throws (kills, then rethrows)", async () => {
+    // The live 2026-09-05 leak: a slow/failing `npm i -g` under registry load
+    // threw AFTER Sandbox.create, and nothing reclaimed the running box.
+    const sandbox = fakeSandbox({
+      commands: {
+        run: vi.fn(async (cmd: string) => {
+          if (cmd.startsWith("sudo npm i -g")) throw new Error("npm ETIMEDOUT registry")
+          return {}
+        }),
+      },
+    })
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused")) // initial probe: not up → triggers npm install
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: { healthProbeTimeoutMs: 0, template: "custom-template" },
+    }
+    await expect(e2bSandboxProvider.boot(bootSpec, { env: {} })).rejects.toThrow(/npm ETIMEDOUT/)
+    // the VM is reclaimed, and the serve command was never reached
+    expect(sandbox.kill).toHaveBeenCalledTimes(1)
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("agentproto serve"),
+      expect.anything(),
+    )
+  })
+
   it("stop() kills the sandbox", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)

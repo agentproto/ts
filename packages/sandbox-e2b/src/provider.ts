@@ -210,7 +210,14 @@ async function ensureDaemonHealthy(
 
   if (alreadyUp) return
 
-  await sandbox.commands.run(
+  // Start the daemon in the background and KEEP THE HANDLE. Its stdout/stderr
+  // accumulate on the handle, and `probeHealthOrExit` races the health poll
+  // against the process's own exit: if the daemon dies during boot (e.g. it
+  // crashes loading a baked adapter on a broken image) we fail fast with its
+  // captured output instead of blocking the caller for the whole readiness
+  // window. See PR fix (2026-09-05): a boot that can't become healthy must
+  // fail fast with the box's daemon output, never hang the HTTP/MCP call.
+  const serve = await sandbox.commands.run(
     `agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace} --allow-origin https://${host}`,
     // timeoutMs: 0 disables e2b's per-command timeout — which DEFAULTS TO 60
     // SECONDS and applies to `background: true` commands too, silently
@@ -222,12 +229,19 @@ async function ensureDaemonHealthy(
     // SANDBOX (lifetime cap above), not as long as a shell command.
     { background: true, envs: env, timeoutMs: 0 },
   )
-  const ready = await probeHealth(healthUrl, daemonReadyTimeoutMs, pollIntervalMs)
-  if (!ready) {
-    await sandbox.kill()
+  const outcome = await probeHealthOrExit(healthUrl, serve, daemonReadyTimeoutMs, pollIntervalMs)
+  if (!outcome.healthy) {
+    // Deliberately do NOT kill the box here — `boot`/`connect` own that
+    // cleanup so EVERY failure path (a throwing npm install, a failing setup
+    // hook, or this one) reclaims the VM through a single place and can never
+    // leak a running, session-less box (observed live 2026-09-05: the daemon
+    // gave up but the box kept running with no session record).
+    const detail = boxDaemonOutput(serve)
     throw new Error(
       `@agentproto/sandbox-e2b: agentproto daemon did not become healthy at ${healthUrl} ` +
-        `within ${daemonReadyTimeoutMs}ms (sandbox ${sandbox.sandboxId}).`,
+        `within ${daemonReadyTimeoutMs}ms (sandbox ${sandbox.sandboxId})` +
+        `${outcome.exited ? " — the box daemon process exited during boot" : ""}.` +
+        `${detail ? `\n--- box daemon output ---\n${detail}` : ""}`,
     )
   }
 }
@@ -283,9 +297,20 @@ export const e2bSandboxProvider: SandboxProvider = {
       timeoutMs: config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS,
     })
 
-    const host = sandbox.getHost(port)
-    await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
-    return toBootedSandbox(sandbox, host, undefined, spec.extraPorts)
+    // Once the VM exists, EVERY failure after this point must reclaim it —
+    // a slow/failed `npm i -g`, a throwing setup hook, or a daemon that never
+    // becomes healthy. Otherwise the caller's request (which may have already
+    // timed out and walked away) leaves a running, session-less box behind
+    // (observed live 2026-09-05, six leaked boxes). This single catch is the
+    // only owner of that cleanup — `ensureDaemonHealthy` never kills.
+    try {
+      const host = sandbox.getHost(port)
+      await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, template))
+      return toBootedSandbox(sandbox, host, undefined, spec.extraPorts)
+    } catch (err) {
+      await sandbox.kill().catch(() => undefined)
+      throw err
+    }
   },
 
   async connect(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
@@ -299,22 +324,41 @@ export const e2bSandboxProvider: SandboxProvider = {
     // 5-minute-default trap as `boot`, see DEFAULT_SANDBOX_TIMEOUT_MS).
     await sandbox.setTimeout(config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS)
 
-    const host = sandbox.getHost(port)
-    // A resumed box keeps its original template — resolve against the
-    // configured template the same way `boot` does.
-    await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, config.template ?? DEFAULT_TEMPLATE))
-    // `opts.expose === "private"` (only ever set by `attachSandbox`, see
-    // @agentproto/runtime) surfaces e2b's own "restricted public traffic"
-    // token, when the sandbox has one — it gates access to EVERY exposed
-    // port, this one included, at e2b's edge (distinct from `SandboxOpts.
-    // secure`, which only covers envd's own control-plane traffic — see
-    // module docs). Best-effort: e2b's SDK only exposes the token as a
-    // readonly property with no documented guarantee it's populated on a
-    // reconnect for a sandbox that wasn't created with traffic restriction
-    // enabled. Unverified against a live sandbox.
-    const token = opts.expose === "private" ? sandbox.trafficAccessToken : undefined
-    return toBootedSandbox(sandbox, host, token, spec.extraPorts)
+    // Same never-leak contract as `boot`: a reconnect whose daemon won't come
+    // back healthy must reclaim the box rather than leave it running orphaned.
+    try {
+      const host = sandbox.getHost(port)
+      // A resumed box keeps its original template — resolve against the
+      // configured template the same way `boot` does.
+      await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env, resolveUpdateCli(config, config.template ?? DEFAULT_TEMPLATE))
+      return finishConnect(sandbox, host, opts, spec)
+    } catch (err) {
+      await sandbox.kill().catch(() => undefined)
+      throw err
+    }
   },
+}
+
+/** Tail of `connect` — surface e2b's private-traffic token (when asked) and
+ *  wrap the healthy handle. Split out so the `connect` body's try/catch stays
+ *  a thin never-leak guard around the boot work. */
+function finishConnect(
+  sandbox: Sandbox,
+  host: string,
+  opts: SandboxBootOpts,
+  spec: SandboxSpec,
+): BootedSandbox {
+  // `opts.expose === "private"` (only ever set by `attachSandbox`, see
+  // @agentproto/runtime) surfaces e2b's own "restricted public traffic"
+  // token, when the sandbox has one — it gates access to EVERY exposed
+  // port, this one included, at e2b's edge (distinct from `SandboxOpts.
+  // secure`, which only covers envd's own control-plane traffic — see
+  // module docs). Best-effort: e2b's SDK only exposes the token as a
+  // readonly property with no documented guarantee it's populated on a
+  // reconnect for a sandbox that wasn't created with traffic restriction
+  // enabled. Unverified against a live sandbox.
+  const token = opts.expose === "private" ? sandbox.trafficAccessToken : undefined
+  return toBootedSandbox(sandbox, host, token, spec.extraPorts)
 }
 
 /** Poll `url` until it responds OK, or return false once `timeoutMs` elapses. */
@@ -330,4 +374,77 @@ async function probeHealth(url: string, timeoutMs: number, pollIntervalMs: numbe
     if (Date.now() >= deadline) return false
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
   }
+}
+
+/** A background `commands.run` handle, narrowed to just what boot-readiness
+ *  needs. Kept structural (not `import type { CommandHandle }`) so the health
+ *  race stays trivially fakeable in unit tests and tolerant of a provider/SDK
+ *  that returns a plainer object. */
+interface BackgroundCommand {
+  /** Resolves when the process finishes; REJECTS (`CommandExitError`) on a
+   *  non-zero exit. Either way the process is gone. Absent ⇒ we can't observe
+   *  an early exit and fall back to polling the deadline. */
+  wait?: () => Promise<unknown>
+  /** `undefined` while the process is still running. */
+  exitCode?: number
+  stdout?: string
+  stderr?: string
+}
+
+/**
+ * Poll `url` until the daemon is healthy, the deadline elapses, OR the daemon
+ * process (`handle`) exits — whichever comes first. Returns `{ healthy,
+ * exited }`. `exited: true` means the serve process died during boot, so the
+ * caller can fail FAST (with the daemon's captured output) instead of waiting
+ * out the full readiness window — the difference between a crashing image
+ * surfacing its stderr in ~1s and hanging the HTTP/MCP call for 30s+.
+ */
+async function probeHealthOrExit(
+  url: string,
+  handle: BackgroundCommand,
+  timeoutMs: number,
+  pollIntervalMs: number,
+): Promise<{ healthy: boolean; exited: boolean }> {
+  const deadline = Date.now() + timeoutMs
+  let exited = false
+  // `wait()` rejects with CommandExitError on a non-zero exit and resolves on
+  // a zero exit — either way the daemon is no longer running, so treat both
+  // identically. Only observe the exit when the handle actually supports it;
+  // a plain `{}` (some tests/providers) must NOT be read as an instant exit.
+  if (typeof handle.wait === "function") {
+    void handle.wait().then(
+      () => {
+        exited = true
+      },
+      () => {
+        exited = true
+      },
+    )
+  }
+  for (;;) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(pollIntervalMs) })
+      if (res.ok) return { healthy: true, exited: false }
+    } catch {
+      // not up yet — fall through to the exit/deadline checks
+    }
+    if (exited || handle.exitCode !== undefined) return { healthy: false, exited: true }
+    if (Date.now() >= deadline) return { healthy: false, exited: false }
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+  }
+}
+
+/** Best-effort tail of a background daemon handle's captured output, for
+ *  embedding in a boot-failure error so a broken image is diagnosable from the
+ *  caller's error alone. Empty when nothing was captured — a still-running but
+ *  unhealthy daemon buffers its stdout until exit, so this is populated mainly
+ *  when the process actually died. Bounded so a chatty crash can't bloat the
+ *  error. */
+function boxDaemonOutput(handle: BackgroundCommand): string {
+  const joined = [handle.stderr ?? "", handle.stdout ?? ""]
+    .map(s => s.trim())
+    .filter(Boolean)
+    .join("\n")
+  const MAX = 2_000
+  return joined.length > MAX ? `…${joined.slice(-MAX)}` : joined
 }
