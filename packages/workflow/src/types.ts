@@ -293,6 +293,39 @@ export interface StepAgent {
  * an unset field falls through to the next layer in the precedence chain
  * documented on {@link StepAgent.harness}.
  */
+/**
+ * One AIP-10 corpus workspace attachment on a `kind: "agent"` step's
+ * `harness.knowledge[]`. Entries matching the selector are materialized
+ * into the step's cwd (`.knowledge/`) before the step's session runs —
+ * v1 mode is `"files"` only (`"tool"` is reserved for a later revision
+ * and rejected by the schema).
+ */
+export interface KnowledgeSelector {
+  /** Path to an AIP-10 corpus workspace root — relative to the WORKFLOW.md's
+   *  directory (resolved by the loader to an absolute path) or absolute. */
+  workspace: string
+  /** Tags with OR semantics — an entry matching ANY of these passes (maps to
+   *  `resolveKnowledge`'s `query.tags`). Empty/absent = no tag filter. */
+  anyOf?: string[]
+  /** Tags that must ALL be present on an entry (post-filter, applied after
+   *  `anyOf`). */
+  allOf?: string[]
+  /** Refined-kind filter (e.g. `"fact"` | `"howto"`) — only entries of these
+   *  kinds pass. */
+  kinds?: string[]
+  /** Cap on materialized entries, applied after sorting by slug ascending
+   *  (deterministic). Default 50. */
+  maxEntries?: number
+  /** Materialization mode. v1 supports only `"files"` (write entries into
+   *  the step cwd's `.knowledge/`); other values are rejected by the schema
+   *  and the loader. */
+  mode?: "files"
+}
+/**
+ * Harness pinning block on a `kind: "agent"` step. Every field is optional —
+ * an unset field falls through to the next layer in the precedence chain
+ * documented on {@link StepAgent.harness}.
+ */
 export interface Harness {
   /** Model id override for this spawn. */
   model?: string
@@ -325,6 +358,9 @@ export interface Harness {
    *  resolved. Exposed on the compiled step and in run records so a
    *  consumer can verify which exact prompt version a run used. */
   promptSha?: string
+  /** AIP-10 corpus knowledge to materialize into this step's cwd (under
+   *  `.knowledge/`) before the session runs. See {@link KnowledgeSelector}. */
+  knowledge?: KnowledgeSelector[]
 }
 /**
  * `kind: "gate"` — run a shell command through the host's subprocess runner

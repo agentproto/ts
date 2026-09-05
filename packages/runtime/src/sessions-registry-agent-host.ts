@@ -214,6 +214,23 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     return this.sessionsByLabel.get(stepId)
   }
 
+  /** Pass-through behind `AgentSessionHost.emitHarnessWarning` — the runtime
+   *  uses it for `harness.knowledge` empty matches (`knowledge-empty`); it
+   *  surfaces as the same `session:harness-warning` event #1144 introduced. */
+  emitHarnessWarning(input: {
+    sessionId: string
+    warnings: readonly string[]
+    label?: string
+  }): void {
+    this.sessionEvents.emit({
+      type: "session:harness-warning",
+      sessionId: input.sessionId,
+      warnings: [...input.warnings],
+      ...(input.label ? { label: input.label } : {}),
+      ts: new Date().toISOString(),
+    })
+  }
+
   /** Reverse lookup: the step id that spawned `sessionId`, if any — used to
    *  locate an escalated step's position for `onEscalate`. */
   private labelForSession(sessionId: string): string | undefined {

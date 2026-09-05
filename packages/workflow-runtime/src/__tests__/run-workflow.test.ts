@@ -6,9 +6,9 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
@@ -359,6 +359,7 @@ function fakeHost(
     resolveByLabel: AgentSessionHost["resolveByLabel"]
     readFinalMessage: AgentSessionHost["readFinalMessage"]
     readCostUsd: AgentSessionHost["readCostUsd"]
+    emitHarnessWarning: AgentSessionHost["emitHarnessWarning"]
   }> = {},
 ): AgentSessionHost {
   return {
@@ -369,6 +370,7 @@ function fakeHost(
       vi.fn((stepId: string) => `sess_${stepId}`),
     readFinalMessage: overrides.readFinalMessage,
     readCostUsd: overrides.readCostUsd,
+    ...(overrides.emitHarnessWarning ? { emitHarnessWarning: overrides.emitHarnessWarning } : {}),
   }
 }
 
@@ -1446,5 +1448,174 @@ describe("step cache", () => {
     const r2 = await runWorkflow({ workflow: wf, cache, cacheKey: "run-tool" })
     expect(toolRuns).toBe(1)
     expect(r2.output).toEqual(r1.output)
+  })
+})
+
+describe("runWorkflow — agent step harness.knowledge materialization (AIP-15 P2)", () => {
+  const entry = (slug: string, tags: string[], extra = ""): string =>
+    [
+      "---",
+      "schema: knowledge.entry/v1",
+      `slug: ${slug}`,
+      "kind: fact",
+      `title: ${slug[0]!.toUpperCase()}${slug.slice(1)}`,
+      `tags: [${tags.join(", ")}]`,
+      ...(extra ? [extra] : []),
+      "---",
+      "",
+      `Body of ${slug}.`,
+      "",
+    ].join("\n")
+
+  /** A minimal AIP-10 corpus workspace: three matching-tag entries, one
+   *  without the allOf tag, one archived tombstone. */
+  function makeCorpus(): string {
+    const ws = mkdtempSync(join(tmpdir(), "corpus-"))
+    mkdirSync(join(ws, "entries"), { recursive: true })
+    writeFileSync(join(ws, "entries", "alpha.md"), entry("alpha", ["book-factory", "style-guide"]))
+    writeFileSync(join(ws, "entries", "beta.md"), entry("beta", ["book-factory"]))
+    writeFileSync(
+      join(ws, "entries", "gamma.md"),
+      entry("gamma", ["book-factory"], "metadata:\n  corpus:\n    status: archived"),
+    )
+    writeFileSync(join(ws, "entries", "delta.md"), entry("delta", ["book-factory", "style-guide"]))
+    return ws
+  }
+
+  function stepHarness(workspace: string, extra: Record<string, unknown> = {}) {
+    return {
+      knowledge: [{ workspace, anyOf: ["book-factory"], ...extra }],
+    }
+  }
+
+  it("materializes matching entries into .knowledge/, prepends the prompt note, and records knowledgeApplied", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const prompts: string[] = []
+    const host = fakeHost({
+      sendPromptAndWait: async (_sid, prompt) => {
+        prompts.push(prompt)
+      },
+    })
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-materialize",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "write the chapter",
+          cwd: () => stepCwd,
+          harness: stepHarness(ws),
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    // gamma (archived tombstone) is skipped → 3 matched/written
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: ws, matched: 3, written: 3 },
+    ])
+    // Prompt note prepended, original prompt preserved after it
+    expect(prompts[0]).toContain(".knowledge/INDEX.md, 3 entries")
+    expect(prompts[0]).toContain("write the chapter")
+    // Raw entries (frontmatter + body) written under .knowledge/<basename>/
+    const kdir = join(stepCwd, ".knowledge", basename(ws))
+    const alpha = readFileSync(join(kdir, "alpha.md"), "utf8")
+    expect(alpha).toContain("schema: knowledge.entry/v1")
+    expect(alpha).toContain("Body of alpha.")
+    expect(readFileSync(join(kdir, "beta.md"), "utf8")).toContain("Body of beta.")
+    expect(readFileSync(join(kdir, "delta.md"), "utf8")).toContain("Body of delta.")
+    // Deterministic INDEX: slug-ascending, one line per entry
+    const index = readFileSync(join(stepCwd, ".knowledge", "INDEX.md"), "utf8")
+    expect(index).toContain(`## ${basename(ws)}`)
+    expect(index.indexOf("alpha.md")).toBeLessThan(index.indexOf("beta.md"))
+    expect(index.indexOf("beta.md")).toBeLessThan(index.indexOf("delta.md"))
+    expect(index).toContain(`- [Alpha](${basename(ws)}/alpha.md) — fact, book-factory, style-guide`)
+  })
+
+  it("applies allOf as a post-filter and caps at maxEntries", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-allof-cap",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: stepHarness(ws, { allOf: ["style-guide"], maxEntries: 1 }),
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    // beta lacks style-guide; gamma is archived → matched 2, capped to 1
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: ws, matched: 2, written: 1 },
+    ])
+    const kdir = join(stepCwd, ".knowledge", basename(ws))
+    expect(readFileSync(join(kdir, "alpha.md"), "utf8")).toContain("Body of alpha.")
+    expect(readFileSync(join(stepCwd, ".knowledge", "INDEX.md"), "utf8")).not.toContain("delta.md")
+  })
+
+  it("is idempotent — a second run rewrites the same deterministic file set", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-idempotent",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: stepHarness(ws),
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: fakeHost() })
+    const index1 = readFileSync(join(stepCwd, ".knowledge", "INDEX.md"), "utf8")
+    await runWorkflow({ workflow: wf, agents: fakeHost() })
+    expect(readFileSync(join(stepCwd, ".knowledge", "INDEX.md"), "utf8")).toBe(index1)
+    expect(readFileSync(join(stepCwd, ".knowledge", basename(ws), "alpha.md"), "utf8")).toContain(
+      "Body of alpha.",
+    )
+  })
+
+  it("records matched: 0 without failing and emits a knowledge-empty harness warning", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const warnings: unknown[] = []
+    const host = fakeHost({
+      emitHarnessWarning: (w) => {
+        warnings.push(w)
+      },
+    })
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-empty",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: stepHarness(ws, { anyOf: ["no-such-tag"] }),
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: ws, matched: 0, written: 0 },
+    ])
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatchObject({
+      sessionId: "sess_fake",
+      label: "s1",
+      warnings: [expect.stringContaining("knowledge-empty")],
+    })
   })
 })

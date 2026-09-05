@@ -3849,6 +3849,9 @@ importers:
 
   packages/workflow-runtime:
     dependencies:
+      '@agentproto/corpus':
+        specifier: workspace:*
+        version: link:../corpus
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core

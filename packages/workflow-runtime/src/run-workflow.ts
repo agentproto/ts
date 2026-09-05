@@ -19,12 +19,14 @@ import type {
   FanOutOutcome,
   GateCommandResult,
   GateStep,
+  KnowledgeAppliedRecord,
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
+import { materializeKnowledge } from "./knowledge.js"
 
 /** Thrown by a `suspend` step when no host `resume` hook is provided. */
 export class WorkflowSuspendedError extends Error {
@@ -184,6 +186,30 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   // frontmatter / app_run args / adapter default are resolved upstream of
   // this runtime, by the host's spawn implementation).
   const cwd = step.harness?.cwd ?? (step.cwd ? resolveSel(step.cwd, b) : ctx.cwd)
+  // AIP-15 P2 `harness.knowledge`: materialize matched corpus entries into
+  // the step cwd's `.knowledge/` BEFORE the spawn, and prepend the prompt
+  // note pointing the session at the INDEX. An empty match is not an error —
+  // it's recorded (`matched: 0`) and surfaced as a harness warning after the
+  // spawn gives us a session to attribute it to.
+  let knowledgeOut: KnowledgeAppliedRecord[] | undefined
+  let knowledgeWarnings: readonly string[] = []
+  if (step.harness?.knowledge && step.harness.knowledge.length > 0) {
+    if (cwd === undefined) {
+      throw new Error(
+        `step '${step.id}': harness.knowledge requires a resolvable working directory (set step cwd, harness.cwd, or the run cwd)`,
+      )
+    }
+    const materialized = await materializeKnowledge(step.id, step.harness.knowledge, cwd)
+    knowledgeOut = materialized.records
+    knowledgeWarnings = materialized.warnings
+    if (materialized.written > 0) {
+      const note =
+        `Knowledge for this step is materialized under .knowledge/ ` +
+        `(see .knowledge/INDEX.md, ${materialized.written} entries).`
+      const inner = step.prompt
+      step = { ...step, prompt: (b: Bindings) => `${note}\n\n${inner(b)}` }
+    }
+  }
   // Sandbox ref: a selector resolves per-run (undefined ⇒ host spawn); a
   // literal (slug string or inline spec object) passes through as-is.
   const sandbox =
@@ -199,6 +225,13 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
       })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
+  if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
+    ctx.agents!.emitHarnessWarning({
+      sessionId,
+      warnings: knowledgeWarnings,
+      label: step.id,
+    })
+  }
   // `harness.tools` has no generic per-spawn allowlist mechanism reaching
   // this runtime today (see `AgentHarness.tools`'s doc) — record that
   // honestly on the run record rather than silently dropping the field.
@@ -229,7 +262,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         // ignore
       }
     }
-    return { sessionId, ...(text !== undefined ? { text } : {}), ...(harnessOut ? { harness: harnessOut } : {}) }
+    return { sessionId, ...(text !== undefined ? { text } : {}), ...(harnessOut ? { harness: harnessOut } : {}), ...(knowledgeOut ? { knowledgeApplied: knowledgeOut } : {}) }
   }
 
   // Validate-and-retry loop
@@ -256,7 +289,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
       continue
     }
     const res = step.outputSchema.safeParse(value)
-    if (res.success) return { sessionId, output: res.data, ...(harnessOut ? { harness: harnessOut } : {}) }
+    if (res.success) return { sessionId, output: res.data, ...(harnessOut ? { harness: harnessOut } : {}), ...(knowledgeOut ? { knowledgeApplied: knowledgeOut } : {}) }
     lastErr = formatZodError(res.error)
     if (attempt < maxRetries) {
       await ctx.agents!.sendPromptAndWait(

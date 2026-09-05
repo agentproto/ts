@@ -230,6 +230,41 @@ export interface AgentHarness {
    *  from, computed by `@agentproto/workflow-loader` at load time. Absent
    *  when the step's prompt was authored inline. */
   promptSha?: string
+  /** AIP-10 corpus knowledge materialized into the step's cwd (under
+   *  `.knowledge/`) before the session runs. See
+   *  {@link HarnessKnowledgeSelector}. */
+  knowledge?: readonly HarnessKnowledgeSelector[]
+}
+
+/**
+ * One AIP-10 corpus workspace attachment on an {@link AgentStep}'s
+ * `harness.knowledge[]` — mirrors `@agentproto/workflow`'s manifest
+ * `KnowledgeSelector`, with the `workspace` path already resolved to an
+ * absolute path by `@agentproto/workflow-loader` (or authored absolute).
+ */
+export interface HarnessKnowledgeSelector {
+  /** Absolute path to an AIP-10 corpus workspace root. */
+  workspace: string
+  /** Tags with OR semantics (maps to `resolveKnowledge`'s `query.tags`). */
+  anyOf?: readonly string[]
+  /** Tags that must ALL be present (post-filter after `anyOf`). */
+  allOf?: readonly string[]
+  /** Refined-kind filter. */
+  kinds?: readonly string[]
+  /** Cap on materialized entries after slug-ascending sort. Default 50. */
+  maxEntries?: number
+  /** Materialization mode — v1 supports only `"files"`. */
+  mode?: "files"
+}
+
+/** Per-selector materialization record on an agent step's run output. */
+export interface KnowledgeAppliedRecord {
+  /** The (absolute) corpus workspace root the selector resolved against. */
+  workspace: string
+  /** Entries matching the selector after allOf + kind filtering. */
+  matched: number
+  /** Entries actually written (≤ matched, after the `maxEntries` cap). */
+  written: number
 }
 
 /**
@@ -434,6 +469,16 @@ export interface AgentSessionHost {
   readFinalMessage?(sessionId: string): Promise<string>
   /** Current cumulative cost (USD) of a session, for run-level budgeting. */
   readCostUsd?(sessionId: string): Promise<number>
+  /** Emit a harness-warning for a session — the pass-through channel behind
+   *  the AIP-15 "never silently ignore" `session:harness-warning` event (used
+   *  by the runtime for `harness.knowledge` empty matches, reason
+   *  `knowledge-empty`). Optional: hosts without an event bus omit it and
+   *  the runtime degrades to the run-record entry alone. */
+  emitHarnessWarning?(input: {
+    sessionId: string
+    warnings: readonly string[]
+    label?: string
+  }): void
 }
 
 /** One journal entry: a cached step output plus the hash of the inputs that produced it. */
