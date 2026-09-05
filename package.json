@@ -22,6 +22,7 @@
     "scaffold-aip": "node scripts/scaffold-aip.mjs",
     "sync-specs": "node scripts/sync-specs.mjs",
     "sync-specs:check": "node scripts/sync-specs.mjs --check",
+    "templates:refresh": "node scripts/refresh-template.mjs",
     "changeset": "changeset",
     "changeset:auto": "node scripts/auto-changeset.mjs --engine cloud",
     "changeset:ai": "node scripts/auto-changeset.mjs",
