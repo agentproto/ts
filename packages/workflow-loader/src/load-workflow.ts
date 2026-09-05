@@ -216,7 +216,11 @@ async function applyAgentHarnessKnowledge(
     ].filter((t): t is string => typeof t === "string")
     if (hasRef(workspace) || tagStrings.some(hasRef)) {
       selector.deferred = true
-      continue
+      // A workspace without a ref still resolves (and is still existence-
+      // checked) against the WORKFLOW.md dir even when only the tags/kinds
+      // carry refs — otherwise a relative `./corpus` would be joined to the
+      // run cwd at materialization time, which is not its base.
+      if (hasRef(workspace)) continue
     }
     const abs = isAbsolute(workspace)
       ? workspace
@@ -318,6 +322,12 @@ export async function loadWorkflowHandle(
     )
   }
   const manifest: WorkflowManifest = parseWorkflowManifest(source)
+  // gray-matter memoizes its YAML parse by content — a second load of an
+  // identical manifest would otherwise hand back the SAME objects a previous
+  // load already rewrote in place (absolute workspaces, prompt text, the
+  // internal `deferred` flag), breaking the authored-field rejection and
+  // re-resolving against a stale base. Clone so every load starts clean.
+  manifest.frontmatter = structuredClone(manifest.frontmatter)
   const entry = manifest.frontmatter.entry
   if (!entry) {
     const knownStepIds = collectManifestStepIds(manifest.frontmatter.steps)

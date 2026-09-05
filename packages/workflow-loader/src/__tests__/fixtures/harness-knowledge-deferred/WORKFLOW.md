@@ -15,6 +15,9 @@ steps:
         - workspace: $input.bookDir/knowledge
           anyOf: [$input.topicTag]
           mode: files
+        - workspace: ./corpus
+          anyOf: [$input.topicTag]
+          mode: files
 ---
 
 # Harness knowledge deferred

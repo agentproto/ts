@@ -147,10 +147,22 @@ describe("loadWorkflowHandle — harness.knowledge (AIP-15 P2)", () => {
     const harness = step.harness as {
       knowledge?: { workspace: string; anyOf?: string[]; deferred?: boolean }[]
     }
-    expect(harness.knowledge).toHaveLength(1)
+    expect(harness.knowledge).toHaveLength(2)
     expect(harness.knowledge![0]!.workspace).toBe("$input.bookDir/knowledge")
     expect(harness.knowledge![0]!.anyOf).toEqual(["$input.topicTag"])
     expect(harness.knowledge![0]!.deferred).toBe(true)
+  })
+
+  it("resolves a ref-free relative workspace against the WORKFLOW.md dir even when only the tags carry refs", async () => {
+    const h = await loadWorkflowHandle(fix("harness-knowledge-deferred/WORKFLOW.md"))
+    const step = h.steps.find((s) => s.id === "s1") as unknown as Record<string, unknown>
+    const harness = step.harness as {
+      knowledge?: { workspace: string; anyOf?: string[]; deferred?: boolean }[]
+    }
+    expect(harness.knowledge).toHaveLength(2)
+    expect(harness.knowledge![1]!.workspace).toBe(fix("harness-knowledge-deferred/corpus"))
+    expect(harness.knowledge![1]!.anyOf).toEqual(["$input.topicTag"])
+    expect(harness.knowledge![1]!.deferred).toBe(true)
   })
 
   it("rejects a user-authored deferred field on a knowledge selector", async () => {
