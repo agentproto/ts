@@ -12,6 +12,10 @@ import {
 } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { sessionTranscriptDir } from "../transcript-writer.js"
+import {
+  CONTEXT_CONTINUITY_DEFAULTS,
+  type ResolvedContextContinuityPolicy,
+} from "../context-continuity.js"
 
 /**
  * Tests covering the registry behaviours that have historically
@@ -775,6 +779,171 @@ describe("createSessionsRegistry", () => {
     expect(reg.get(desc.id)?.awaitingInput).toBe(true)
     expect(reg.get(desc.id)?.awaitingQuestion).toBeUndefined()
     reg.shutdown()
+  })
+
+  describe("structured-question answers — context-continuity ask mode", () => {
+    // Low, evenly-spaced thresholds so a small usage_update swing crosses
+    // them deterministically without needing a huge fake context window.
+    const askPolicy: ResolvedContextContinuityPolicy = {
+      ...CONTEXT_CONTINUITY_DEFAULTS,
+      mode: "ask",
+      warnAtPct: 10,
+      compactAtPct: 15,
+      continueFreshAtPct: 20,
+      hardStopAtPct: 90,
+      label: "ask",
+    }
+
+    it("'keep-going' clears the question without starting a turn, and re-asking is suppressed until context grows further", async () => {
+      const bus = createSessionEventBus()
+      const answeredHandler = vi.fn()
+      bus.on("session:awaiting-question-answered", answeredHandler)
+      const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+      let call = 0
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-ask-keep-going",
+        async *send() {
+          call += 1
+          const used = call < 3 ? 25 : 30
+          yield { kind: "usage_update", size: 100, used }
+          yield { kind: "turn-end" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+        contextContinuity: askPolicy,
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+      expect(reg.get(desc.id)?.awaitingQuestion).toEqual({
+        source: "structured",
+        text: "Context is at 25%. Continue fresh to avoid losing continuity?",
+        options: ["continue-fresh", "keep-going"],
+      })
+
+      await reg.sendPrompt(desc.id, "  Keep-Going  ") // case/whitespace-insensitive match
+      expect(call).toBe(1) // answering never dispatched a second turn
+      expect(reg.get(desc.id)?.awaitingInput).toBeFalsy()
+      expect(reg.get(desc.id)?.awaitingQuestion).toBeUndefined()
+      expect(answeredHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "session:awaiting-question-answered",
+          sessionId: desc.id,
+          answer: "keep-going",
+        }),
+      )
+
+      // A further turn at the SAME pct must not immediately re-ask.
+      await reg.sendPrompt(desc.id, "still working on it")
+      expect(call).toBe(2)
+      expect(reg.get(desc.id)?.awaitingInput).toBeFalsy()
+      expect(reg.get(desc.id)?.awaitingQuestion).toBeUndefined()
+
+      // Context climbs past the acknowledged pct — the question returns.
+      await reg.sendPrompt(desc.id, "still working on it")
+      expect(call).toBe(3)
+      expect(reg.get(desc.id)?.awaitingQuestion).toEqual({
+        source: "structured",
+        text: "Context is at 30%. Continue fresh to avoid losing continuity?",
+        options: ["continue-fresh", "keep-going"],
+      })
+
+      reg.shutdown()
+    })
+
+    it("'continue-fresh' answer routes into the continue-fresh handoff, not a normal turn", async () => {
+      const bus = createSessionEventBus()
+      const answeredHandler = vi.fn()
+      bus.on("session:awaiting-question-answered", answeredHandler)
+      // No `resolveAgentAdapter` configured — `performContextContinueFresh`
+      // takes its documented "hard-stop instead" fallback, which is fully
+      // in-memory/deterministic and distinguishable (by its own log line and
+      // by NOT setting `contextContinuityHardStopped` via the separate
+      // automatic hard-stop path) from both the automatic hard-stop action
+      // and a normal turn.
+      const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+      let call = 0
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-ask-continue-fresh",
+        async *send() {
+          call += 1
+          yield { kind: "usage_update", size: 100, used: 25 }
+          yield { kind: "turn-end" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+        contextContinuity: askPolicy,
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+      expect(reg.get(desc.id)?.awaitingQuestion?.options).toEqual(["continue-fresh", "keep-going"])
+
+      await reg.sendPrompt(desc.id, "continue-fresh")
+
+      expect(call).toBe(1) // the original session's agent never got a second turn
+      expect(answeredHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "session:awaiting-question-answered",
+          sessionId: desc.id,
+          answer: "continue-fresh",
+        }),
+      )
+      const lines: string[] = []
+      const unsub = reg.attach(desc.id, line => { lines.push(line) })
+      if (unsub) unsub()
+      expect(
+        lines.some(l => l.includes("continue-fresh requested but no adapter resolver is configured")),
+      ).toBe(true)
+      expect(reg.get(desc.id)?.status).toBe("killed")
+
+      reg.shutdown()
+    })
+
+    it("prompt text that doesn't match a declared option still runs a normal turn", async () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+
+      let call = 0
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-ask-unrelated",
+        async *send() {
+          call += 1
+          yield { kind: "usage_update", size: 100, used: 25 }
+          yield { kind: "turn-end" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+        contextContinuity: askPolicy,
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+      expect(reg.get(desc.id)?.awaitingQuestion?.options).toEqual(["continue-fresh", "keep-going"])
+
+      await reg.sendPrompt(desc.id, "actually let's just keep debugging this")
+      expect(call).toBe(2) // a real second turn ran — the text was not treated as an answer
+      // never acknowledged, so the ask state re-fires exactly as before.
+      expect(reg.get(desc.id)?.awaitingQuestion?.options).toEqual(["continue-fresh", "keep-going"])
+
+      reg.shutdown()
+    })
   })
 
   it("WP0: emits session:exited when kill() is called on an agent-cli session", async () => {
