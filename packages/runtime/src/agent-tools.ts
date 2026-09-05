@@ -852,6 +852,33 @@ export function registerAgentTools(
             "The two are independent and combine (or not) freely; `commandSandbox` is " +
             "ignored for a `sandbox` spawn (the box's own daemon would need to apply it)."
         ),
+      appServe: jsonTolerant(
+        z
+          .object({
+            dir: z
+              .string()
+              .min(1)
+              .describe("Absolute path to the app's directory INSIDE the sandbox box (e.g. '/home/user/apps/<slug>')."),
+            port: z
+              .number()
+              .int()
+              .min(1)
+              .max(65535)
+              .optional()
+              .describe("Port the UI binds inside the box (default 3210). The port is exposed by the sandbox provider and its public URL returned."),
+          })
+          .strict(),
+      )
+        .optional()
+        .describe(
+          "WP3 — serve an agentproto app's UI from INSIDE the sandbox box and return its public " +
+            "URL. Requires `sandbox` (rejected otherwise). The box daemon installs the app " +
+            "(`app_install` on the in-box `dir`), launches `agentproto app serve --host 0.0.0.0 " +
+            "--port <port>` detached through the box's `command_execute`, and the spawn result " +
+            "+ descriptor carry `appServe: { appId, dir, port, url, ready }` — `url` is the " +
+            "provider-resolved public URL for the served UI (the port is also added to the " +
+            "spec's `extraPorts` and echoed in `sandboxPorts`)."
+        ),
       commandSandbox: z
         .enum(["off", "workspace", "strict"])
         .optional()

@@ -716,11 +716,6 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             "(see `agent_start.access`) — e.g. `{ profileRef: \"claude-subs-agentik\" }` " +
             "when the adapter's default credential profile is disabled on this host.",
         ),
-      // follow-up: no sandbox support in this WP — the e2b image doesn't carry
-      // the mastra-agent adapter yet (see output/phase-a-findings.md A3). Thread
-      // a `sandbox` field through to `spawnAgentSession` here once an image
-      // provisions it (or `app_install`/boot does `agentproto install
-      // mastra-agent` inside the box).
     },
     async input => {
       if (!resolveAgentAdapter) return notEnabled("app_run")

@@ -133,6 +133,12 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import {
+  DEFAULT_APP_SERVE_PORT,
+  startSandboxAppServe,
+  type SandboxAppServeSpec,
+  type SessionAppServeInfo,
+} from "./sandbox-app-serve.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import {
   decideWorktreeIsolation,
@@ -956,6 +962,17 @@ export interface SpawnAgentSessionInput {
    *  `SandboxAgentSessionProxy` in place of the local `resolveAgentAdapter`
    *  path — see `sandbox-agent-session-proxy.ts`. */
   sandbox?: string | SandboxSpecInput
+  /** WP3 — serve an agentproto app's UI from INSIDE the sandbox box and
+   *  return its public URL on the descriptor + result. Requires `sandbox`
+   *  (a non-sandbox spawn carrying `appServe` is rejected): the app dir is
+   *  resolved INSIDE the box (e.g. `/home/user/apps/<slug>` on the
+   *  workstation image), installed via the box daemon's `app_install`, and
+   *  `agentproto app serve --host 0.0.0.0 --port <port>` is launched
+   *  detached through the box's `command_execute`. The port is appended to
+   *  the spec's `extraPorts` so the provider resolves its public URL (also
+   *  stamped into `sandboxPorts`), and the serve result lands on the
+   *  descriptor's `appServe` field. See `sandbox-app-serve.ts`. */
+  appServe?: SandboxAppServeSpec
   /** Isolate this session into its own git worktree instead of spawning in
    *  `cwd` directly. `true` provisions a worktree with an auto-minted branch/
    *  slug; `{ slug?, base? }` pins the slug and/or the base ref it's cut from.
@@ -1090,6 +1107,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_boot_failed"
         | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
+        | "sandbox_app_serve_failed"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -1342,6 +1360,18 @@ export async function spawnAgentSession(
         "agent_start: no cwd resolvable. Pass `cwd` explicitly, " +
         "or pass `workspaceSlug` matching `agentproto workspace list`, " +
         "or set an active workspace via `agentproto workspace use <slug>`.",
+    }
+  }
+  // WP3 — `appServe` only makes sense against a box: reject a non-sandbox
+  // spawn that carries it instead of silently ignoring the request.
+  if (input.appServe !== undefined && input.sandbox === undefined) {
+    return {
+      ok: false,
+      code: "sandbox_app_serve_failed",
+      message:
+        "agent_start: `appServe` requires `sandbox` — the app dir is installed and served " +
+        "INSIDE the box, so there is nothing to serve on a local spawn. Pass `sandbox` " +
+        "(a provider slug or inline spec) together with `appServe`.",
     }
   }
   // A sandboxed spawn runs `adapter` on the BOX's own `agent_start` — the
@@ -2672,6 +2702,7 @@ export async function spawnAgentSession(
     let sandboxId: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
     let sandboxPorts: Record<number, string> | undefined
+    let appServe: SessionAppServeInfo | undefined
 
     if (input.sandbox !== undefined) {
       const booted = await bootSandboxAgentSession({
@@ -2696,6 +2727,7 @@ export async function spawnAgentSession(
         // profile; raw explicit auth remains supported for existing callers.
         ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec) } : input.auth ? { auth: input.auth } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
+        ...(input.appServe ? { appServe: input.appServe } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -2703,6 +2735,7 @@ export async function spawnAgentSession(
       sandboxId = booted.sandboxId
       sandboxTeardown = booted.sandboxTeardown
       sandboxPorts = booted.sandboxPorts
+      appServe = booted.appServe
     } else {
       // `resolved` is guaranteed non-null here — the `input.sandbox ===
       // undefined` branch above already returned `adapter_not_found`
@@ -2899,6 +2932,7 @@ export async function spawnAgentSession(
       ...(sandboxId ? { remote: true, sandboxId } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
+      ...(appServe ? { appServe } : {}),
       // Hold mode is a local-driver capability; a sandbox spawn proxies to the
       // box's own daemon, which handles permissions there.
       ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
@@ -3110,10 +3144,18 @@ type SandboxBootResult =
       sandboxId: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
       sandboxPorts?: Record<number, string>
+      /** WP3 — the in-box app-serve outcome (`input.appServe`), stamped onto
+       *  the descriptor by the caller. Absent when no appServe was requested. */
+      appServe?: SessionAppServeInfo
     }
   | {
       ok: false
-      code: "sandbox_provider_not_found" | "sandbox_boot_failed" | "sandbox_reconnect_failed" | "sandbox_proxy_failed"
+      code:
+        | "sandbox_provider_not_found"
+        | "sandbox_boot_failed"
+        | "sandbox_reconnect_failed"
+        | "sandbox_proxy_failed"
+        | "sandbox_app_serve_failed"
       message: string
     }
 
@@ -3166,6 +3208,9 @@ async function bootSandboxAgentSession(opts: {
    *  the call-site comment (fresh boxes have no config and claude-code never
    *  inherits shell-env subscription auth). */
   auth?: DefaultsAdapterAuthConfig
+  /** WP3 — serve an app UI from inside the box; see
+   *  `SpawnAgentSessionInput.appServe`. */
+  appServe?: SandboxAppServeSpec
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
   if (!opts.resolveSandboxProvider) {
@@ -3189,6 +3234,19 @@ async function bootSandboxAgentSession(opts: {
   }
   const spec: SandboxSpec =
     typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox
+  // WP3 — the serve port must be publicly reachable: append it to the spec's
+  // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
+  // hands back its URL in `BootedSandbox.ports` (which also stamps the
+  // descriptor's `sandboxPorts`). Providers without boot-time exposure fall
+  // back to the lazily-called `expose(port)` inside `startSandboxAppServe`.
+  const serveSpec: SandboxSpec = opts.appServe
+    ? {
+        ...spec,
+        extraPorts: Array.from(
+          new Set([...(spec.extraPorts ?? []), opts.appServe.port ?? DEFAULT_APP_SERVE_PORT]),
+        ),
+      }
+    : spec
   // Reuse target (PR3) — `agent_start.sandbox.reuse`. Undefined ⇒ boot a
   // fresh box, exactly as PR2. Also feeds `resolveLifecyclePolicy` below:
   // a reused box defaults to PAUSE (not kill) on close, since it would be
@@ -3208,7 +3266,7 @@ async function bootSandboxAgentSession(opts: {
   try {
     host = await createSandboxAgentSessionHost({
       provider: handle.provider,
-      spec,
+      spec: serveSpec,
       ...(reuseSandboxId !== undefined ? { sandboxId: reuseSandboxId } : {}),
       // AMENDMENT — do NOT default to `process.env`: always pass an
       // explicit resolver backed by the host's own secrets broker
@@ -3260,6 +3318,22 @@ async function bootSandboxAgentSession(opts: {
     }
   }
 
+  // WP3 — install + serve the requested app INSIDE the box, then hand the
+  // public URL back on the result (the caller stamps it onto the descriptor).
+  let appServe: SessionAppServeInfo | undefined
+  if (opts.appServe) {
+    const serve = await startSandboxAppServe(host, opts.appServe)
+    if (!serve.ok) {
+      await host.stop().catch(() => undefined)
+      return {
+        ok: false,
+        code: "sandbox_app_serve_failed",
+        message: `agent_start: ${serve.message}`,
+      }
+    }
+    appServe = serve.appServe
+  }
+
   return {
     ok: true,
     agentSession: createSandboxAgentSessionProxy({ host, remoteSessionId, lifecyclePolicy }),
@@ -3267,6 +3341,7 @@ async function bootSandboxAgentSession(opts: {
     sandboxId: host.sandboxId,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
+    ...(appServe ? { appServe } : {}),
     // The proxy flattens the box's stream to text (documented limitation),
     // so cost/tokens/model never ride the event stream out of the box. Read
     // them back from the box daemon's own `session_usage` at each turn-end —
