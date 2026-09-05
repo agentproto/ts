@@ -235,6 +235,58 @@ describe("createPrProvenanceReconciler", () => {
     expect(edits[0]).toContain("$0.0972")
   })
 
+  it("recognizes a gh-PATH-shim-stamped PR as its own, records it (never happened before), then upgrades once cost is known", async () => {
+    // The REAL end-to-end gap this closes: `provenance.wrapGh` stamps a THIN
+    // footer (gh-provenance-shim.ts — session/adapter/model/host/cwd only)
+    // the instant `gh pr create` returns, entirely outside the daemon. By
+    // the time this session's first turn ends, the PR already carries a
+    // footer naming it — but `openedPrs` has never heard of it, so the
+    // cost-refresh below (which only iterates `openedPrs`) had nothing to
+    // find, for ANY adapter (this isn't opencode-specific — the shim runs
+    // for every local session regardless of harness).
+    const session = execSession({ harness: "opencode", adapterSlug: "opencode", model: "openrouter/z-ai/glm-5.3-flash" })
+    const { reg, recorded } = fakeRegistry([session, SUPER])
+    let body =
+      "Some PR body.\n\n---\n<sub>🤖 **" +
+      MARKER +
+      "** — PR · session `sess_exec` · opencode · model `openrouter/z-ai/glm-5.3-flash` · host `mac.home` · cwd `agentproto/e2b-template-baked`</sub>"
+    const edits: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: body }
+      if (args[1] === "edit") {
+        body = args[4] as string
+        edits.push(body)
+      }
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      run,
+    })
+
+    // First turn-end: Lane B (branch resolution) finds the shim-stamped PR.
+    // Recognized as OUR OWN session → recorded — but no cost known yet and
+    // this fixture carries no auth-profile either, so genuinely nothing to
+    // upgrade.
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(recorded).toEqual([{ sessionId: "sess_exec", number: PR.number, url: PR.url }])
+    expect(edits).toEqual([])
+
+    // Cost becomes known → the reconciler's cost-refresh can now find this
+    // PR via `openedPrs` (it couldn't before this fix) and re-renders it.
+    session.costUsd = 0.0971799
+    bus.emit(exited("sess_exec"))
+    await flush()
+    expect(edits.length).toBe(1)
+    expect(edits[0]).toContain("$0.0972")
+    expect(edits[0]).toContain("opencode")
+  })
+
   it("neither re-edits nor records when the PR body already carries the marker", async () => {
     const { reg, recorded } = fakeRegistry([execSession(), SUPER])
     const editCalls: number[] = []

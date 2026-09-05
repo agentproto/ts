@@ -224,10 +224,58 @@ export function hasProvenanceFooter(body: string): boolean {
  *  `\n\n---\n` lead-in when present). */
 const FOOTER_BLOCK_RE = new RegExp(`(?:\\n+---)?\\n*<sub>[^\\n]*${MARKER}[^\\n]*</sub>`)
 
+/** Just the `<sub>…</sub>` span of a rendered footer within `body` (or a
+ *  standalone footer string, which is itself `<sub>…</sub>`-shaped) — every
+ *  "read a signal out of an existing footer" helper below shares this
+ *  extraction so they agree on what "the footer" means. Undefined when `body`
+ *  carries no rendered footer at all. */
+function extractFooterBlock(body: string): string | undefined {
+  return new RegExp(`<sub>[^\\n]*${MARKER}[^\\n]*</sub>`).exec(body)?.[0]
+}
+
 /** True when a body's provenance footer already carries a spend figure. */
 export function footerHasCost(body: string): boolean {
-  const m = new RegExp(`<sub>[^\\n]*${MARKER}[^\\n]*</sub>`).exec(body)
-  return m !== null && /\$\d/.test(m[0])
+  const block = extractFooterBlock(body)
+  return block !== undefined && /\$\d/.test(block)
+}
+
+/**
+ * The `session \`<id>\`` a rendered footer names, or undefined when the body
+ * carries no footer or the footer names no session (the legacy-fallback
+ * shape, e.g. a bare CI API-key run with no agent session behind it).
+ *
+ * Used to recognize "this footer already names ME" — both the daemon's own
+ * `buildSessionPrFooter` render and the `gh` PATH shim's thin one
+ * (gh-provenance-shim.ts) render the SAME `session \`<id>\`` segment, so a
+ * footer this returns OUR session id for is safe to enrich/upgrade: the
+ * misattribution risk `hasProvenanceFooter`'s callers guard against is a
+ * footer naming a DIFFERENT session, not our own.
+ */
+export function footerSessionId(body: string): string | undefined {
+  const block = extractFooterBlock(body)
+  if (block === undefined) return undefined
+  return /session `([^`]+)`/.exec(block)?.[1]
+}
+
+/**
+ * Whether `candidate` (a standalone footer, as {@link buildFooter} renders
+ * it, or a full body containing one) carries a provenance signal — spend,
+ * bound auth-profile identity, or token counts — that `existing` doesn't.
+ * Used to decide whether replacing an already-posted footer with a fresh
+ * daemon render is a genuine UPGRADE rather than a no-op re-render: the `gh`
+ * PATH shim's thin footer (gh-provenance-shim.ts) can only ever render
+ * session/adapter/model/host/cwd — never cost, auth-profile, or tokens, since
+ * those aren't known to a bare `gh` subprocess — so a shim-stamped body
+ * always has ROOM for this kind of upgrade once the daemon knows more.
+ */
+export function footerIsRicherThan(candidate: string, existing: string): boolean {
+  const candidateBlock = extractFooterBlock(candidate) ?? ""
+  const existingBlock = extractFooterBlock(existing) ?? ""
+  const gained = (has: (block: string) => boolean) => has(candidateBlock) && !has(existingBlock)
+  const hasCost = (block: string) => /\$\d/.test(block)
+  const hasAuthProfile = (block: string) => /auth-profile `/.test(block)
+  const hasTokens = (block: string) => / in \/ .{1,20} out\b/.test(block)
+  return gained(hasCost) || gained(hasAuthProfile) || gained(hasTokens)
 }
 
 /**

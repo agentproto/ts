@@ -21,6 +21,8 @@ import {
   parseGhPrCreate,
   detectShellPrCreate,
   hasProvenanceFooter,
+  footerSessionId,
+  footerIsRicherThan,
   pickExecutorSession,
   sessionFooterProvenance,
   type FooterSession,
@@ -381,5 +383,51 @@ describe("footer cost refresh", () => {
   it("replaceProvenanceFooter appends when the body has no footer yet", () => {
     const fresh = render({ sessionId: "sess_a", adapter: "claude-code", costUsd: 1.5, host: "mac", cwd: "/x" })
     expect(replaceProvenanceFooter("Body.", fresh)).toBe(`Body.${fresh}`)
+  })
+})
+
+describe("footerSessionId", () => {
+  it("extracts the session id a rendered footer names", () => {
+    const body = `Body.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · session \`sess_33eb9dfc\` · opencode · host \`mac.home\`</sub>`
+    expect(footerSessionId(body)).toBe("sess_33eb9dfc")
+  })
+
+  it("recognizes the gh PATH shim's own thin footer shape too — same 'session `<id>`' segment", () => {
+    // gh-provenance-shim.ts's inlined buildFooter() renders this exact shape:
+    // session + adapter + model + host + cwd, nothing else.
+    const shimFooter = `Body.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · session \`sess_exec\` · opencode · model \`openrouter/z-ai/glm-5.3-flash\` · host \`mac.home\` · cwd \`e2b-template-baked\`</sub>`
+    expect(footerSessionId(shimFooter)).toBe("sess_exec")
+  })
+
+  it("returns undefined for a footer that names no session (legacy fallback) or no footer at all", () => {
+    expect(footerSessionId(`Body.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · legacy fallback (api-key)</sub>`)).toBeUndefined()
+    expect(footerSessionId("Body with no footer at all.")).toBeUndefined()
+  })
+})
+
+describe("footerIsRicherThan", () => {
+  const render = (prov: Record<string, unknown>) =>
+    buildFooterForRefresh({ prov, authMode: "subscription", sha: undefined, kind: "PR" })
+  const thinShimFooter = (sessionId: string) =>
+    `\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · session \`${sessionId}\` · opencode · model \`openrouter/z-ai/glm-5.3-flash\` · host \`mac.home\` · cwd \`e2b-template-baked\`</sub>`
+
+  it("a full daemon render is richer than the shim's thin footer once cost is known", () => {
+    const fresh = render({ sessionId: "sess_exec", adapter: "opencode", model: "openrouter/z-ai/glm-5.3-flash", costUsd: 0.0971799, host: "mac.home", cwd: "e2b-template-baked" })
+    expect(footerIsRicherThan(fresh, thinShimFooter("sess_exec"))).toBe(true)
+  })
+
+  it("an auth-profile gain alone counts as richer, even with no cost yet", () => {
+    const fresh = render({ sessionId: "sess_exec", adapter: "claude-code", authProfile: "Jeremy Max", host: "h", cwd: "/x" })
+    expect(footerIsRicherThan(fresh, thinShimFooter("sess_exec"))).toBe(true)
+  })
+
+  it("re-rendering the identical thin footer is NOT richer (no-op guard)", () => {
+    const same = thinShimFooter("sess_exec")
+    expect(footerIsRicherThan(same, same)).toBe(false)
+  })
+
+  it("a footer that only reformats without adding cost/auth-profile/tokens is not richer", () => {
+    const fresh = render({ sessionId: "sess_exec", adapter: "opencode", model: "openrouter/z-ai/glm-5.3-flash", host: "different-host", cwd: "e2b-template-baked" })
+    expect(footerIsRicherThan(fresh, thinShimFooter("sess_exec"))).toBe(false)
   })
 })

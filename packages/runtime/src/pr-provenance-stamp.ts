@@ -28,6 +28,8 @@ import {
   buildSessionPrFooter,
   hasProvenanceFooter,
   footerHasCost,
+  footerSessionId,
+  footerIsRicherThan,
   replaceProvenanceFooter,
   parseGhPrCreate,
   pickExecutorSession,
@@ -139,6 +141,21 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
  * hasProvenanceFooter} — a body that merely MENTIONS the marker in prose
  * still gets its footer); never throws (every failure is swallowed into the
  * returned {@link StampOutcome}).
+ *
+ * A body that already carries a footer naming THIS session (own-footer,
+ * {@link footerSessionId}) is a distinct case from a body naming a DIFFERENT
+ * session: same-session attribution is always safe, whether the existing
+ * footer is a prior daemon stamp or the `gh` PATH shim's own thin one
+ * (gh-provenance-shim.ts — session id + adapter + model + host + cwd only,
+ * NEVER cost/tokens/auth-profile, since a bare `gh` subprocess can't know
+ * any of that). Before this, an own-footer body other than "not yet stamped"
+ * fell all the way through to the final no-op return with no
+ * `recordOpenedPr` call at all — so a PR opened via the shim (every PR a
+ * local session opens through its OWN shell when `provenance.wrapGh` is on,
+ * which is every adapter, not just claude-code) was NEVER recorded on
+ * `openedPrs`, and the reconciler's cost-refresh (which only ever iterates
+ * `openedPrs`) had nothing to find — cost/auth NEVER rendered for it, no
+ * matter how many later turns learned the session's spend.
  */
 export async function stampFooterOnPr(input: {
   registry: StampRegistry
@@ -169,8 +186,32 @@ export async function stampFooterOnPr(input: {
     const body = view.stdout.replace(/\n+$/, "")
 
     const alreadyStamped = hasProvenanceFooter(body)
-    if (alreadyStamped && input.refresh === true) {
-      if (footerHasCost(body) || !footerHasCost(footer)) {
+    const ownFooter = alreadyStamped && footerSessionId(body) === input.session.id
+
+    // Record an own-footer PR the FIRST time it's seen (not on a `refresh`
+    // pass — a refresh call only ever iterates PRs the reconciler already
+    // pulled from `openedPrs`, so it's already recorded and re-recording
+    // would just be a wasted registry call). Attribution is safe: the
+    // footer names this exact session.
+    if (ownFooter && input.refresh !== true) {
+      input.registry.recordOpenedPr(input.session.id, {
+        adapter: input.session.harness ?? input.session.adapterSlug ?? "gh",
+        number: input.prNumber,
+        url: input.prUrl,
+      })
+    }
+
+    if (ownFooter || (alreadyStamped && input.refresh === true)) {
+      // Own-footer: upgrade whenever the fresh render carries a genuinely
+      // new signal (cost/auth-profile/tokens) — covers both a first-seen
+      // shim stamp learning cost immediately, and any later refresh pass.
+      // A footer naming a DIFFERENT session only ever reaches here via an
+      // explicit `refresh: true` call (defensive — the reconciler's own
+      // `openedPrs` should never hold another session's PR); keep the
+      // narrower cost-only check for that case so it stays exactly as
+      // conservative as before.
+      const upgrade = ownFooter ? footerIsRicherThan(footer, body) : footerHasCost(footer) && !footerHasCost(body)
+      if (!upgrade) {
         return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: false }
       }
       const refreshedBody = replaceProvenanceFooter(body, footer)
@@ -178,6 +219,7 @@ export async function stampFooterOnPr(input: {
       if (edit.exitCode !== 0) return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
       return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: true }
     }
+
     if (!alreadyStamped) {
       const newBody = appendFooterOnce(body, footer)
       const edit = await run(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)
