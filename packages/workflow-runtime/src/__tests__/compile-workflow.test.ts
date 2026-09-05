@@ -16,6 +16,7 @@ import {
   runWorkflow,
   WorkflowCompileError,
   resolveRef,
+  resolveRefPrefixed,
   evalPredicate,
   type AgentStep,
   type GateStep,
@@ -76,6 +77,28 @@ describe("compileWorkflow", () => {
     expect(resolveRef("$index", b)).toBe(1)
     expect(evalPredicate("$steps.d.n >= 6", b)).toBe(true)
     expect(evalPredicate("$input.n == 4", b)).toBe(false)
+  })
+
+  it("resolveRefPrefixed resolves a leading ref token and returns the literal rest", () => {
+    const b = { input: { bookDir: "/books", n: 3 }, steps: { d: { n: 6 } }, item: { x: 9 }, index: 1 }
+    expect(resolveRefPrefixed("$input.bookDir/knowledge", b)).toEqual({
+      resolved: "/books",
+      rest: "/knowledge",
+    })
+    expect(resolveRefPrefixed("$input.n", b)).toEqual({ resolved: 3, rest: "" })
+    expect(resolveRefPrefixed("$steps.d.n/app", b)).toEqual({ resolved: 6, rest: "/app" })
+    expect(resolveRefPrefixed("$item.x/y", b)).toEqual({ resolved: 9, rest: "/y" })
+    expect(resolveRefPrefixed("$index", b)).toEqual({ resolved: 1, rest: "" })
+    expect(resolveRefPrefixed("$index/n", b)).toEqual({ resolved: 1, rest: "/n" })
+    // No leading ref token → undefined (caller decides pass-through vs error)
+    expect(resolveRefPrefixed("plain/path", b)).toBeUndefined()
+    expect(resolveRefPrefixed("no ref $input.n here", b)).toBeUndefined()
+    expect(resolveRefPrefixed("$unknown.x/y", b)).toBeUndefined()
+    expect(resolveRefPrefixed("$$literal", b)).toBeUndefined()
+    // Token stops at the first `.`, `$`, or `/`
+    expect(resolveRefPrefixed("$input.a$b", b)).toEqual({ resolved: undefined, rest: "$b" })
+    // Malformed token that matches the prefix grammar still throws like resolveRef
+    expect(() => resolveRefPrefixed("$steps/x", b)).toThrow(/'\$steps' needs a step id/)
   })
 
   it("compiles a linear two-step manifest and threads $steps refs", async () => {

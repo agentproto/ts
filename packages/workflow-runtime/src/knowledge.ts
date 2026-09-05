@@ -16,7 +16,7 @@ import {
   type RefinedKind,
 } from "@agentproto/corpus"
 
-import { resolveRef } from "./compile-workflow.js"
+import { resolveRefPrefixed } from "./compile-workflow.js"
 import type { Bindings } from "./types.js"
 import type {
   HarnessKnowledgeSelector,
@@ -30,14 +30,15 @@ const DEFAULT_MAX_ENTRIES = 50
  * Resolve one selector string against the run bindings (AIP-16 ref grammar).
  *
  * Rule: refs are only recognized at the START of the string. The leading
- * reference token — the longest match of `^\$(input|item|steps|index)((?:\.[^.$/]+)*)`
- * (so it stops at the first `/`, e.g. `$input.bookDir` in
- * `$input.bookDir/knowledge`) — is resolved against the bindings and
- * `String()`-ed; the remainder of the string is appended verbatim. A string
- * that is exactly a ref resolves to that value's string form. `$$` escapes to
- * a literal `$`. A string without a leading ref (including one with `$`
- * elsewhere) passes through untouched. An unresolvable or malformed ref
- * throws naming the step, the selector index, and the field.
+ * reference token — the shared AIP-16 prefix grammar in
+ * {@link resolveRefPrefixed} (it stops at the first `/`, e.g.
+ * `$input.bookDir` in `$input.bookDir/knowledge`) — is resolved against the
+ * bindings and `String()`-ed; the remainder of the string is appended
+ * verbatim. A string that is exactly a ref resolves to that value's string
+ * form. `$$` escapes to a literal `$`. A string without a leading ref
+ * (including one with `$` elsewhere) passes through untouched. An
+ * unresolvable or malformed ref throws naming the step, the selector index,
+ * and the field.
  */
 function resolveSelectorString(
   stepId: string,
@@ -47,23 +48,22 @@ function resolveSelectorString(
   b: Bindings,
 ): string {
   if (value.startsWith("$$")) return value.slice(1)
-  const m = value.match(/^\$(?:input|item|steps|index)((?:\.[^.$/]+)*)/)
-  if (!m) return value
-  const token = value.slice(0, m[0].length)
-  let resolved: unknown
+  let hit: ReturnType<typeof resolveRefPrefixed>
   try {
-    resolved = resolveRef(token, b)
+    hit = resolveRefPrefixed(value, b)
   } catch (err) {
     throw new Error(
       `step '${stepId}': harness.knowledge[${index}].${field} '${value}' is not a valid reference — ${err instanceof Error ? err.message : String(err)}`,
     )
   }
-  if (resolved === undefined) {
+  if (!hit) return value
+  const token = value.slice(0, value.length - hit.rest.length)
+  if (hit.resolved === undefined) {
     throw new Error(
       `step '${stepId}': harness.knowledge[${index}].${field} '${token}' resolves to nothing — the referenced field does not exist`,
     )
   }
-  return String(resolved) + value.slice(m[0].length)
+  return String(hit.resolved) + hit.rest
 }
 
 function resolveStringArray(

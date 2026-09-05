@@ -13,6 +13,7 @@ export {
   compileWorkflow,
   WorkflowCompileError,
   resolveRef,
+  resolveRefPrefixed,
   resolveValue,
   evalPredicate,
   type CompileWorkflowOptions,

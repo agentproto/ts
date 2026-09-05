@@ -76,10 +76,21 @@ function dig(value: unknown, path: readonly string[]): unknown {
   return v
 }
 
+const REF_RE = /^\$(input|item|steps)((?:\.[^.]+)*)$/
+
+/**
+ * The prefix form of the ref grammar: a ref token at the START of a string
+ * that continues with a literal suffix (e.g. `$input.bookDir/knowledge` —
+ * resolve `$input.bookDir`, append `/knowledge` verbatim). The token's path
+ * segments stop at the first `.`, `$`, or `/` — so `$input.a$b/c` resolves
+ * `$input.a` with rest `$b/c`. `$index` is recognized as a whole token too.
+ */
+const REF_PREFIX_RE = /^\$(?:input|item|steps|index)((?:\.[^.$/]+)*)/
+
 /** Resolve a single `$…` reference string against the run bindings. */
 export function resolveRef(ref: string, b: Bindings): unknown {
   if (ref === "$index") return b.index
-  const m = ref.match(/^\$(input|item|steps)((?:\.[^.]+)*)$/)
+  const m = ref.match(REF_RE)
   if (!m) throw new WorkflowCompileError(`bad reference '${ref}'`)
   const segs = m[2] ? m[2].slice(1).split(".") : []
   switch (m[1]) {
@@ -93,6 +104,22 @@ export function resolveRef(ref: string, b: Bindings): unknown {
       return dig(b.steps[stepId], rest)
     }
   }
+}
+
+/** Resolve the leading ref token of a string (see {@link REF_PREFIX_RE}):
+ *  if `value` starts with a `$input`/`$item`/`$steps`/`$index` reference
+ *  token, resolve it against the bindings and return the resolved value plus
+ *  the literal remainder (`rest`). Throws exactly like {@link resolveRef} for
+ *  a matched-but-malformed token; returns `undefined` when the string does
+ *  not START with a ref token at all (caller decides pass-through vs error). */
+export function resolveRefPrefixed(
+  value: string,
+  b: Bindings,
+): { resolved: unknown; rest: string } | undefined {
+  const m = value.match(REF_PREFIX_RE)
+  if (!m) return undefined
+  const token = value.slice(0, m[0].length)
+  return { resolved: resolveRef(token, b), rest: value.slice(m[0].length) }
 }
 
 /** Recursively resolve a value node: refs in strings, into arrays/objects. */
@@ -116,7 +143,7 @@ export function resolveValue(node: unknown, b: Bindings): unknown {
  *  exists in the bindings — a strict subworkflow projection uses this to turn
  *  a silently-`undefined` reference into a named error instead. */
 function refPathExists(ref: string, b: Bindings): boolean {
-  const m = ref.match(/^\$(input|item|steps)((?:\.[^.]+)*)$/)
+  const m = ref.match(REF_RE)
   if (!m) return false
   const segs = m[2] ? m[2].slice(1).split(".") : []
   let v: unknown
