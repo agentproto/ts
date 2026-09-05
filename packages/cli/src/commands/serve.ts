@@ -108,6 +108,7 @@ import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
+import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
 import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
@@ -497,6 +498,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
+        ...(slug === "opencode" ? { readUsage: (sid: string) => readOpenCodeUsage(sid) } : {}),
         declaredOptions: (adapter.handle.options ?? []).map(o => ({
           id: o.id,
           type: o.type,
