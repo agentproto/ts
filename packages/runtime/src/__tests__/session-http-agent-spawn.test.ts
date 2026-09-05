@@ -13,7 +13,8 @@ import { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
 import type { AcpMcpServer } from "@agentproto/acp"
 
-import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
+import { startHttpServer, buildSpawnSessionHttpArgs, type AgentAdapterResolver } from "../http-server.js"
+import type { SpawnAgentSessionInput } from "../session-spawn.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike, AgentStreamEvent, SessionDescriptor } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
@@ -313,5 +314,59 @@ describe("POST /sessions/agent — sandbox field forwarding", () => {
     } finally {
       await http.stop()
     }
+  })
+
+  it("forwards the WHOLE inline sandbox spec — extraPorts + env survive the mapper (regression for #1150)", () => {
+    const args = buildSpawnSessionHttpArgs(
+      {
+        adapter: "opencode",
+        cwd: "/home/user",
+        sandbox: {
+          provider: "e2b",
+          config: { template: "tnqtmeims5q9ex7j9k06", timeoutMs: 3_600_000 },
+          extraPorts: [3210],
+          env: { passthrough: ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"] },
+          lifecycle: { destroy_on: "workspace-close" },
+        },
+      },
+      "opencode",
+    )
+
+    expect(typeof args.sandbox).toBe("object")
+    const spec = args.sandbox as Extract<typeof args.sandbox, { provider: string }>
+    // The fields the old hand-rolled mapper silently DROPPED must now survive.
+    expect(spec.provider).toBe("e2b")
+    expect(spec.config).toMatchObject({ template: "tnqtmeims5q9ex7j9k06", timeoutMs: 3_600_000 })
+    expect(spec.extraPorts).toEqual([3210])
+    expect(spec.env?.passthrough).toEqual(["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"])
+    expect(spec.lifecycle?.destroy_on).toBe("workspace-close")
+  })
+
+  it("tolerates a JSON-stringified sandbox spec and still forwards extraPorts/env", () => {
+    const args = buildSpawnSessionHttpArgs(
+      {
+        adapter: "opencode",
+        sandbox: JSON.stringify({
+          provider: "e2b",
+          config: {},
+          extraPorts: [8080, 5173],
+          env: { passthrough: ["FOO"] },
+        }),
+      },
+      "opencode",
+    )
+    const spec = args.sandbox as Extract<typeof args.sandbox, { provider: string }>
+    expect(spec.extraPorts).toEqual([8080, 5173])
+    expect(spec.env?.passthrough).toEqual(["FOO"])
+  })
+
+  it("still accepts a bare provider slug string and a minimal {provider} object", () => {
+    expect(buildSpawnSessionHttpArgs({ adapter: "opencode", sandbox: "e2b" }, "opencode").sandbox).toBe("e2b")
+    const minimal = buildSpawnSessionHttpArgs(
+      { adapter: "opencode", sandbox: { provider: "local" } },
+      "opencode",
+    ).sandbox as Extract<SpawnAgentSessionInput["sandbox"], { provider: string }>
+    expect(minimal.provider).toBe("local")
+    expect(minimal.config).toEqual({})
   })
 })

@@ -45,33 +45,13 @@ import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import { buildCatalogProviderModels } from "./catalog-provider-models.js"
-import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import type {
   WorktreeIsolationMode,
   WorktreeProvisioner,
 } from "./worktree-isolation.js"
-
-/** `SandboxSpecSchema` plus the PR3 reuse field — `{ provider, reuse: "<sandboxId>" }`
- *  reconnects to an existing box (via `SandboxProvider.connect`) instead of
- *  booting a fresh one. Built from the same shape (rather than `.extend()`)
- *  so it stays a plain `.strict()` object independent of that schema's own
- *  extend semantics. */
-const sandboxSpecWithReuseSchema = z
-  .object({
-    ...SandboxSpecSchema.shape,
-    reuse: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "Existing sandbox id (a prior session's `sandboxId`) to reconnect to instead of " +
-          "booting a new box. Requires the provider to support reconnect (e.g. e2b); " +
-          "omit to boot fresh (default)."
-      ),
-  })
-  .strict()
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
  *

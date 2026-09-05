@@ -144,6 +144,7 @@ import {
 } from "./user-presets.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
+import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import { listPresets } from "./preset-tools.js"
 import {
   resolveWorktreeQueryRoot,
@@ -3199,7 +3200,12 @@ async function* transcriptDiskRecords(id: string): AsyncGenerator<Record<string,
  * two surfaces can't drift from each other (or from the MCP `agent_start` core
  * they both delegate to).
  */
-function buildSpawnSessionHttpArgs(
+/** Map a `POST /sessions/agent` JSON body onto `SpawnAgentSessionInput` — the
+ *  HTTP twin of the MCP `agent_start` arg mapping. Exported for unit tests
+ *  (`session-http-agent-spawn.test.ts`) that assert field-forwarding parity —
+ *  notably that the inline `sandbox` spec's `extraPorts`/`env` survive the map
+ *  (the #1150 drop this guards against). */
+export function buildSpawnSessionHttpArgs(
   b: Record<string, unknown>,
   adapter: string,
   preset?: UserPreset,
@@ -3640,24 +3646,28 @@ function parseRestartPolicyField(raw: unknown): RestartPolicy | undefined {
 }
 
 /** Parse the `sandbox` body field — a provider slug string (e.g. `"e2b"`) or
- *  an inline `SandboxSpecInput` object with at minimum a `provider: string`
- *  field, optionally carrying `reuse: "<sandboxId>"` for the reconnect path.
- *  Tolerates a JSON-stringified value. Config shape is provider-specific; the
- *  sandbox provider resolver validates it at boot time — we only check the
- *  structural minimum needed to route to the right boot path. */
+ *  an inline `SandboxSpecInput` object, optionally carrying `reuse:
+ *  "<sandboxId>"` for the reconnect path. Tolerates a JSON-stringified value.
+ *
+ *  The inline object is validated against the SAME `sandboxSpecWithReuseSchema`
+ *  the MCP `agent_start` tool uses, and the WHOLE validated spec is forwarded.
+ *  The previous hand-rolled version pulled out only `provider`/`config`/`reuse`
+ *  and silently dropped `extraPorts`, `env` (passthrough/auth), `lifecycle`,
+ *  and everything else — so a box booted via HTTP came up with no ports and no
+ *  secrets while the identical MCP call worked (the #1150 regression). An
+ *  object that fails validation yields `undefined` (the caller then spawns
+ *  with no sandbox) rather than a half-populated spec. */
 function parseSandboxField(raw: unknown): string | SandboxSpecInput | undefined {
   const value = typeof raw === "string" ? tryParseJson(raw) ?? raw : raw
   if (typeof value === "string" && value.length > 0) return value
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
-  const obj = value as Record<string, unknown>
-  if (typeof obj.provider !== "string" || obj.provider.length === 0) return undefined
-  return {
-    provider: obj.provider,
-    config: obj.config && typeof obj.config === "object" && !Array.isArray(obj.config)
-      ? (obj.config as Record<string, unknown>)
-      : {},
-    ...(typeof obj.reuse === "string" && obj.reuse.length > 0 ? { reuse: obj.reuse } : {}),
-  } as SandboxSpecInput
+  // `config` is required by the schema; default it so a minimal `{provider}`
+  // spec still validates (matching the prior tolerant behaviour) while every
+  // other field flows through the schema untouched.
+  const candidate = { config: {}, ...(value as Record<string, unknown>) }
+  const parsed = sandboxSpecWithReuseSchema.safeParse(candidate)
+  if (!parsed.success) return undefined
+  return parsed.data as SandboxSpecInput
 }
 
 /**
