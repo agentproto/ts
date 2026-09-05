@@ -7,6 +7,10 @@ boots by default. Everything it bakes is pinned in
 - `cli` — the `@agentproto/cli` version
 - `adapters` — the agentproto adapter packages (with their pins)
 - `runtime` — agent runtime CLIs (`opencode-ai`)
+- `resources` — sandbox `cpuCount` / `memoryMb` the template is created with.
+  These are passed as `e2b template create` **flags** (`--cpu-count` /
+  `--memory-mb`), NOT read from any toml — see [Build](#build). The e2b default
+  is 512 MB, which OOMs a heavy adapter install (mastra); we bake 2048 MB / 2 vCPU.
 - `templates.stable` / `templates.dev` — published e2b template id + alias,
   plus the `baked` block recording what the published image was PROVEN to
   contain (`cli`, `adapters`, `builtAt`; all null = unproven bake)
@@ -29,8 +33,19 @@ runs from this repo's CI — publishing is a deliberate, credentialed act.**
 
 ```sh
 cd templates/workstation
-e2b template create agentproto-workstation -d Dockerfile
+e2b template create agentproto-workstation --cpu-count 2 --memory-mb 2048 -d Dockerfile
 ```
+
+**The `--cpu-count` / `--memory-mb` flags are required, not optional.** `e2b
+template create -d Dockerfile` builds the Dockerfile directly and does **not**
+read `e2b.template.toml` (the e2b CLI's own config file is `e2b.toml`; ours is a
+record only), so the `cpu_count` / `memory_mb` keys recorded there are ignored
+at build time — resources come only from the flags. The e2b default is **512 MB**,
+which OOMs the mastra adapter's runtime install and wedges the box; 2048 MB / 2
+vCPU (the `resources` block in `versions.json`) is what the generator threads
+into every documented build command. Keep the flag values in sync with
+`versions.json` — re-run `node scripts/sync-templates.mjs` and copy the command
+it records into `e2b.template.toml`.
 
 The e2b CLI has **no `--build-arg`** (`e2b template build` is deprecated in
 favour of `e2b template create`), so the pins are baked into the Dockerfile's
@@ -47,7 +62,7 @@ The dev channel is the **same generated Dockerfile** published under the
 ones):
 
 ```sh
-e2b template create agentproto-workstation-dev -d Dockerfile
+e2b template create agentproto-workstation-dev --cpu-count 2 --memory-mb 2048 -d Dockerfile
 ```
 
 ## Publish / release

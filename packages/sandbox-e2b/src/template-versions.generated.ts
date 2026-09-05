@@ -34,15 +34,17 @@ export const TEMPLATES = {
       "cli": "0.17.0",
       "adapters": {
         "@agentproto/adapter-hermes": "0.4.10",
+        "@agentproto/adapter-mastra-agent": "0.6.0",
         "@agentproto/adapter-opencode": "1.1.10"
       },
-      "builtAt": "2026-09-05T01:05:44Z"
+      "builtAt": "2026-09-05T16:08:13Z"
     },
   },
 } as const
 export const BAKED_CLI_VERSION = "0.17.0"
 export const BAKED_ADAPTERS = {
   "@agentproto/adapter-hermes": "0.4.10",
+  "@agentproto/adapter-mastra-agent": "0.6.0",
   "@agentproto/adapter-opencode": "1.1.10",
 } as const
 export const BAKED_RUNTIME = {

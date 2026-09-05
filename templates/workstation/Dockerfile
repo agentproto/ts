@@ -2,7 +2,8 @@
 # DO NOT EDIT — edit versions.json and re-run the sync script instead.
 #
 # agentproto-workstation e2b template image. Build (from this directory):
-#   e2b template create agentproto-workstation -d Dockerfile   # see README.md
+#   e2b template create agentproto-workstation --cpu-count 2 --memory-mb 2048 -d Dockerfile   # see README.md
+# (the resource flags are REQUIRED — e2b.template.toml is not read by `template create`).
 #
 # The e2b CLI has NO --build-arg; the pins below are ARG DEFAULTS resolved
 # from versions.json at generation time.
@@ -14,6 +15,7 @@
 # reach the post-FROM stage ONLY if not re-declared bare after FROM.
 ARG AGENTPROTO_CLI_VERSION=0.17.0
 ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.10
+ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.6.0
 ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.1.10
 ARG OPENCODE_RUNTIME_VERSION=1.18.28
 
@@ -28,6 +30,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # half-empty image.
 RUN [ -n "${AGENTPROTO_CLI_VERSION}" ] \
   && [ -n "${AGENTPROTO_ADAPTER_HERMES}" ] \
+  && [ -n "${AGENTPROTO_ADAPTER_MASTRA_AGENT}" ] \
   && [ -n "${AGENTPROTO_ADAPTER_OPENCODE}" ] \
   && [ -n "${OPENCODE_RUNTIME_VERSION}" ] \
   || (echo "smoke: pin ARGs are empty — check ARG propagation" && exit 1)
@@ -50,6 +53,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN npm i -g \
       @agentproto/cli@${AGENTPROTO_CLI_VERSION} \
       ${AGENTPROTO_ADAPTER_HERMES} \
+      ${AGENTPROTO_ADAPTER_MASTRA_AGENT} \
       ${AGENTPROTO_ADAPTER_OPENCODE} \
       opencode-ai@${OPENCODE_RUNTIME_VERSION}
 
@@ -68,6 +72,8 @@ RUN agentproto --version | grep -q "${AGENTPROTO_CLI_VERSION}" \
 #    prove installation here; npm ls -g can. One explicit check per adapter.)
 RUN npm ls -g --depth=0 @agentproto/adapter-hermes >/dev/null \
   || (echo "smoke: baked adapter missing: @agentproto/adapter-hermes" && exit 1)
+RUN npm ls -g --depth=0 @agentproto/adapter-mastra-agent >/dev/null \
+  || (echo "smoke: baked adapter missing: @agentproto/adapter-mastra-agent" && exit 1)
 RUN npm ls -g --depth=0 @agentproto/adapter-opencode >/dev/null \
   || (echo "smoke: baked adapter missing: @agentproto/adapter-opencode" && exit 1)
 

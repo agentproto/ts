@@ -24,7 +24,7 @@ Providers are resolved from a small built-in catalog by slug:
 
 <!-- sync-templates:start -->
 The `e2b` provider's default template is declared in
-`templates/workstation/versions.json`: `@agentproto/cli@0.17.0`, `@agentproto/adapter-hermes@0.4.10`, `@agentproto/adapter-opencode@1.1.10`, `opencode-ai@1.18.28`. The on-boot CLI install is skipped only once the
+`templates/workstation/versions.json`: `@agentproto/cli@0.17.0`, `@agentproto/adapter-hermes@0.4.10`, `@agentproto/adapter-mastra-agent@0.6.0`, `@agentproto/adapter-opencode@1.1.10`, `opencode-ai@1.18.28`. The on-boot CLI install is skipped only once the
 template's recorded `baked` block proves the image carries the requested pin.
 <!-- sync-templates:end -->
 
