@@ -861,6 +861,53 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
       expect.objectContaining({ command: "sleep", args: ["5"], timeoutMs: 50 }),
     )
   })
+
+  it("expands $… reference args against the bindings before running the command", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "gate-ref-args",
+      steps: [
+        {
+          kind: "gate",
+          id: "g",
+          command: "node",
+          args: ["-e", "process.exit(process.argv[1] === 'book3' ? 0 : 1)", "$input.book"],
+        },
+      ],
+    }
+    // The ref expands to "book3" (exit 0); a literal "$input.book" would make
+    // node exit 1. $$ stays a literal $.
+    const { output } = await runWorkflow({ workflow: wf, input: { book: "book3" } })
+    expect(output).toMatchObject({ ok: true, exitCode: 0 })
+
+    const literal: RuntimeWorkflow = {
+      id: "gate-literal-arg",
+      steps: [
+        {
+          kind: "gate",
+          id: "g",
+          command: "node",
+          args: ["-e", "process.exit(process.argv[1] === '$input.book' ? 0 : 1)", "$$input.book"],
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: literal, input: { book: "book3" } })).resolves.toMatchObject({
+      output: { ok: true, exitCode: 0 },
+    })
+  })
+
+  it("throws a clear error naming the step and the arg when a ref resolves to nothing", async () => {
+    const runGateCommand = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }))
+    const wf: RuntimeWorkflow = {
+      id: "gate-bad-ref",
+      steps: [
+        { kind: "gate", id: "g", command: "node", args: ["--version", "$input.nonexistent"] },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, input: {}, runGateCommand })).rejects.toThrow(
+      /step 'g': args\[1\] '\$input\.nonexistent' resolves to nothing/,
+    )
+    expect(runGateCommand).not.toHaveBeenCalled()
+  })
 })
 
 // ── AgentStep outputSchema tests ─────────────────────────────────────

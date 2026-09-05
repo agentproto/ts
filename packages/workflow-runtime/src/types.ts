@@ -297,7 +297,10 @@ export interface GateStep {
   kind: "gate"
   id: string
   command: string
-  args?: readonly string[]
+  /** Command arguments. A `$…` reference string (or a selector function)
+   *  resolves per-run against the bindings before the command runs —
+   *  `$$…` stays a literal `$`; a ref that resolves to nothing throws. */
+  args?: readonly (Selector<string> | string)[]
   /** Working directory. Selector form resolves per-run; omit for the run's
    *  own `ctx.cwd`. */
   cwd?: Selector<string> | string

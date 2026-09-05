@@ -851,6 +851,9 @@ export function registerOrchestrationTools(
         cwd: z.string().optional().describe("Working directory for spawned sessions."),
         notifyUrl: z.string().url().optional().describe("Webhook URL to call on run completion or escalation."),
         cacheKey: z.string().optional().describe("Enable journal caching for this run. On a re-invocation with the same cacheKey, cacheable steps whose inputs are unchanged replay their cached output instead of re-spawning."),
+        appId: z.string().optional().describe("App provenance — the installed app this run belongs to. Omit to let the runner resolve it from the app registry when the workflow id is owned by exactly one installed app."),
+        appRunId: z.string().optional().describe("The app_run this run belongs to, when started through an app."),
+        item: z.string().optional().describe("Optional ledger item — stamped as `item` on every app-ledger event this run appends, scoping them to one sub-key inside each stage."),
       },
       async input => {
         const run = await workflowRunner.start(input)

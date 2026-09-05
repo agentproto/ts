@@ -1431,6 +1431,10 @@ export async function createGateway(
             ...createDaemonToolRegistry(handle, dispatchTool),
             agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
           }),
+        // App state ledger bridge: runs whose workflow belongs to an
+        // installed app append stage-started/gate-report/stage-done/blocked
+        // events to that app's ledger (see workflow-runner.ts, WP-Q).
+        appRegistry,
       })
     : undefined
 

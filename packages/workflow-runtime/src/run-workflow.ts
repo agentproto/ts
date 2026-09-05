@@ -13,6 +13,7 @@ import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 import type { ZodError } from "zod"
+import { resolveRef } from "./compile-workflow.js"
 import type {
   AgentStep,
   Bindings,
@@ -333,10 +334,37 @@ async function resolveGateReport(
   }
 }
 
+/**
+ * Resolve one gate `args` element against the run bindings. A selector
+ * function resolves per-run (`resolveSel`); a plain string passes through
+ * unless it is a `$…` reference (`$$…` → literal `$`), which expands against
+ * the bindings — a ref that resolves to nothing (or is malformed) throws a
+ * clear error naming the step and the arg, never a literal `"$input.x"`
+ * handed to the subprocess verbatim. A resolved non-string is String()-ed.
+ */
+function resolveGateArg(step: GateStep, arg: string, b: Bindings, index: number): string {
+  if (arg.startsWith("$$")) return arg.slice(1) // $$ → literal $
+  if (!arg.startsWith("$")) return arg
+  let resolved: unknown
+  try {
+    resolved = resolveRef(arg, b)
+  } catch (err) {
+    throw new Error(
+      `step '${step.id}': args[${index}] '${arg}' is not a valid reference — ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  if (resolved === undefined) {
+    throw new Error(
+      `step '${step.id}': args[${index}] '${arg}' resolves to nothing — the referenced field does not exist`,
+    )
+  }
+  return String(resolved)
+}
+
 /** Execute the full GateStep body — run, parse report, retry-with-reprompt. */
 async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<unknown> {
   const cwd = (step.cwd ? resolveSel(step.cwd, b) : ctx.cwd) ?? process.cwd()
-  const args = step.args ?? []
+  const args = (step.args ?? []).map((arg, index) => resolveGateArg(step, resolveSel(arg, b), b, index))
   const maxAttempts = Math.max(1, step.retry?.maxAttempts ?? 1)
 
   let last: { ok: boolean; exitCode: number; report: unknown } | undefined
