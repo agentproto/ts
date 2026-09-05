@@ -189,3 +189,54 @@ describe("terminal_output — clean plaintext mode", () => {
     await close()
   })
 })
+
+describe("terminal_output — truncated companion flag (PR-4, additive)", () => {
+  it("truncated: true appears only when a lastBytes window is applied and filled", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("0123456789abcdef")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+      clean: true,
+      lastBytes: 4,
+    })
+    expect(out.text).toBe("cdef")
+    expect(out.truncated).toBe(true)
+    await close()
+  })
+
+  it("truncated: false when the window is larger than the buffer", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("small")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+      clean: true,
+      lastBytes: 4096,
+    })
+    expect(out.text).toBe("small")
+    expect(out.truncated).toBe(false)
+    await close()
+  })
+
+  it("default (no lastBytes) carries no truncated flag — output shape unchanged", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("plain-chunk")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+    })
+    expect(out.truncated).toBeUndefined()
+    expect(typeof out.b64).toBe("string")
+    await close()
+  })
+})

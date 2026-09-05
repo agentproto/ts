@@ -457,6 +457,54 @@ export function registerCommandTools(
     },
   )
 
+  // --- tool_calls_list shaping helpers (additive, PR-4) -------------------
+  // Both helpers are no-ops for the default call (no `fields`, no explicit
+  // `full: false`), so default output stays byte-identical to the
+  // pre-pagination tool. The `result`-text preview is DISABLED by default
+  // and only arms when a caller explicitly passes `full: false`; the
+  // default flips in the PR-10 posture change.
+
+  /** Enriched record shape `tool_calls_list` returns (ToolCallRecord joined
+   *  with the owning session's descriptor provenance). */
+  type EnrichedToolCallRecord = ToolCallRecord & {
+    harness?: string
+    origin?: string
+    callerSessionId?: string
+  }
+
+  const RESULT_PREVIEW_CHARS = 500
+
+  const previewResultText = (text: string): string =>
+    text.length > RESULT_PREVIEW_CHARS
+      ? `${text.slice(0, RESULT_PREVIEW_CHARS)}…`
+      : text
+
+  /**
+   * Project/preview records for `tool_calls_list` output. With neither
+   * param supplied this is the identity map (same key order, same JSON);
+   * `fields` keeps only the requested keys per record; `full: false`
+   * additionally truncates any long string `result` field (~500 chars).
+   */
+  const shapeToolCallRecords = (
+    records: readonly EnrichedToolCallRecord[],
+    fields: readonly string[] | undefined,
+    full: boolean | undefined,
+  ): Array<Record<string, string | number | boolean | string[] | undefined>> =>
+    records.map(record => {
+      let entries = Object.entries(record)
+      if (fields !== undefined) {
+        entries = entries.filter(([key]) => fields.includes(key))
+      }
+      if (full === false) {
+        entries = entries.map(([key, value]) =>
+          key === "result" && typeof value === "string"
+            ? [key, previewResultText(value)]
+            : [key, value],
+        )
+      }
+      return Object.fromEntries(entries)
+    })
+
   server.tool(
     "tool_calls_list",
     "Read back normalized ToolCallRecord entries — ONE unified log covering " +
@@ -477,8 +525,24 @@ export function registerCommandTools(
         .max(500)
         .optional()
         .describe("Max records to return. Default 50, max 500."),
+      fields: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Explicit field projection — keep only these keys per record. " +
+            "Absent: full records (current default).",
+        ),
+      full: z
+        .boolean()
+        .optional()
+        .describe(
+          "Legacy escape hatch. `full: true` is today's behaviour (full " +
+            "records, no preview). `full: false` opts into the future " +
+            "`result`-preview posture early — long result text truncated " +
+            "to ~500 chars. Default (absent): full records.",
+        ),
     },
-    async ({ sessionId, lastN }) => {
+    async ({ sessionId, lastN, fields, full }) => {
       const limit = lastN ?? 50
       const enrich = (sid: string, records: ToolCallRecord[]) => {
         const desc = opts.registry.get(sid)
@@ -494,7 +558,14 @@ export function registerCommandTools(
         records.sort((a, b) => a.ts.localeCompare(b.ts))
         return {
           content: [
-            { type: "text" as const, text: JSON.stringify({ records: records.slice(-limit) }, null, 2) },
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                { records: shapeToolCallRecords(records.slice(-limit), fields, full) },
+                null,
+                2,
+              ),
+            },
           ],
         }
       }
@@ -514,7 +585,14 @@ export function registerCommandTools(
       collected.sort((a, b) => a.ts.localeCompare(b.ts))
       return {
         content: [
-          { type: "text" as const, text: JSON.stringify({ records: collected.slice(-limit) }, null, 2) },
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              { records: shapeToolCallRecords(collected.slice(-limit), fields, full) },
+              null,
+              2,
+            ),
+          },
         ],
       }
     },
