@@ -17,6 +17,7 @@
  */
 
 import { readFile, stat } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import { dirname, isAbsolute, join } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -111,6 +112,54 @@ function assertWithStepRefs(
   }
 }
 
+/**
+ * Resolve every `kind: "agent"` step's `harness.promptFile` (AIP-15 P2),
+ * relative to the WORKFLOW.md's own directory: read the file's raw bytes,
+ * use its decoded text as the step's `prompt` (replacing any inline one),
+ * and record `harness.promptSha` (sha256 hex of the raw bytes) on the step
+ * so a consumer can verify exactly which prompt version a run used. Nested
+ * step lists (map / loop / parallel bodies, branch arms) are walked too —
+ * same traversal shape as {@link translateSubworkflowWith}.
+ */
+async function applyAgentHarnessPromptFiles(
+  steps: unknown,
+  workflowMdPath: string,
+): Promise<void> {
+  if (!Array.isArray(steps)) return
+  for (const step of steps) {
+    if (step === null || typeof step !== "object") continue
+    const s = step as Record<string, unknown>
+    if (s.kind === "agent" && s.harness && typeof s.harness === "object") {
+      const harness = s.harness as Record<string, unknown>
+      const promptFile = harness.promptFile
+      if (typeof promptFile === "string" && promptFile.length > 0) {
+        const abs = isAbsolute(promptFile)
+          ? promptFile
+          : join(dirname(workflowMdPath), promptFile)
+        let bytes: Buffer
+        try {
+          bytes = await readFile(abs)
+        } catch (err) {
+          const id = typeof s.id === "string" ? s.id : "(unid)"
+          throw new WorkflowLoadError(
+            `agent step '${id}': cannot read harness.promptFile '${promptFile}': ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          )
+        }
+        s.prompt = bytes.toString("utf8").trim()
+        harness.promptSha = createHash("sha256").update(bytes).digest("hex")
+      }
+    }
+    await applyAgentHarnessPromptFiles(s.steps, workflowMdPath)
+    if (Array.isArray(s.branches)) {
+      for (const br of s.branches) {
+        await applyAgentHarnessPromptFiles((br as Record<string, unknown>)?.steps, workflowMdPath)
+      }
+    }
+  }
+}
+
 /** Collect every step id declared anywhere in a manifest step list,
  *  including nested map / loop / parallel / branch bodies. */
 function collectManifestStepIds(steps: unknown, ids: Set<string> = new Set()): Set<string> {
@@ -197,6 +246,7 @@ export async function loadWorkflowHandle(
   if (!entry) {
     const knownStepIds = collectManifestStepIds(manifest.frontmatter.steps)
     translateSubworkflowWith(manifest.frontmatter.steps, knownStepIds)
+    await applyAgentHarnessPromptFiles(manifest.frontmatter.steps, workflowMdPath)
     return workflowFromManifest(manifest)
   }
   const handle = await importEntryHandle(workflowMdPath, entry)

@@ -9,11 +9,16 @@
 
 import { runTool } from "@agentproto/driver"
 import { createHash } from "node:crypto"
+import { execFile } from "node:child_process"
+import { readFile } from "node:fs/promises"
+import { isAbsolute, join } from "node:path"
 import type { ZodError } from "zod"
 import type {
   AgentStep,
   Bindings,
   FanOutOutcome,
+  GateCommandResult,
+  GateStep,
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
@@ -57,6 +62,8 @@ interface RunCtx {
   readonly cacheKey?: RunWorkflowArgs["cacheKey"]
   readonly onStepStart?: RunWorkflowArgs["onStepStart"]
   readonly onStepComplete?: RunWorkflowArgs["onStepComplete"]
+  readonly runGateCommand?: RunWorkflowArgs["runGateCommand"]
+  readonly onGateReport?: RunWorkflowArgs["onGateReport"]
 }
 
 function view(state: RunState, item?: unknown, index?: number): Bindings {
@@ -171,7 +178,12 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
       `step '${step.id}': budget_exceeded — run spend $${spentUsd(ctx.state).toFixed(4)} >= cap $${ctx.state.maxTotalCostUsd}`,
     )
   }
-  const cwd = step.cwd ? resolveSel(step.cwd, b) : ctx.cwd
+  // Harness precedence: step `harness.cwd` (highest, among what this runtime
+  // sees) beats the step's own `cwd` selector, which beats the run-level
+  // `ctx.cwd` — see `AgentHarness`'s doc for the full chain (AGENT.md
+  // frontmatter / app_run args / adapter default are resolved upstream of
+  // this runtime, by the host's spawn implementation).
+  const cwd = step.harness?.cwd ?? (step.cwd ? resolveSel(step.cwd, b) : ctx.cwd)
   // Sandbox ref: a selector resolves per-run (undefined ⇒ host spawn); a
   // literal (slug string or inline spec object) passes through as-is.
   const sandbox =
@@ -183,9 +195,22 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         stepId: step.id,
         ...(sandbox !== undefined ? { sandbox } : {}),
         ...(step.options !== undefined ? { options: step.options } : {}),
+        ...(step.harness !== undefined ? { harness: step.harness } : {}),
       })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
+  // `harness.tools` has no generic per-spawn allowlist mechanism reaching
+  // this runtime today (see `AgentHarness.tools`'s doc) — record that
+  // honestly on the run record rather than silently dropping the field.
+  const harnessOut =
+    step.harness !== undefined
+      ? {
+          ...step.harness,
+          ...(step.harness.tools && step.harness.tools.length > 0
+            ? { toolsApplied: false as const }
+            : {}),
+        }
+      : undefined
   await ctx.agents!.sendPromptAndWait(sessionId, step.prompt(b))
   if (step.policy && ctx.agents!.onAwaitingInput) {
     await ctx.agents!.onAwaitingInput(sessionId, step.policy)
@@ -204,7 +229,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         // ignore
       }
     }
-    return { sessionId, ...(text !== undefined ? { text } : {}) }
+    return { sessionId, ...(text !== undefined ? { text } : {}), ...(harnessOut ? { harness: harnessOut } : {}) }
   }
 
   // Validate-and-retry loop
@@ -231,7 +256,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
       continue
     }
     const res = step.outputSchema.safeParse(value)
-    if (res.success) return { sessionId, output: res.data }
+    if (res.success) return { sessionId, output: res.data, ...(harnessOut ? { harness: harnessOut } : {}) }
     lastErr = formatZodError(res.error)
     if (attempt < maxRetries) {
       await ctx.agents!.sendPromptAndWait(
@@ -242,6 +267,129 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
     }
   }
   throw new Error(`step '${step.id}': output_invalid — final message never matched outputSchema (${lastErr})`)
+}
+
+/** Best-effort `JSON.parse` — `undefined` (never a throw) on blank/invalid text. */
+function tryParseJson(text: string): unknown {
+  const trimmed = text.trim()
+  if (!trimmed) return undefined
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The runtime's own subprocess runner for `kind: "gate"` steps, used when no
+ * `runGateCommand` host hook is injected — a plain `node:child_process`
+ * argv-vector invocation (no shell interpolation). Exit code 0 always
+ * resolves (never rejects on a non-zero exit); a timeout resolves with
+ * `timedOut: true` and whatever partial output was captured.
+ */
+function defaultRunGateCommand(spec: {
+  command: string
+  args: readonly string[]
+  cwd: string
+  timeoutMs?: number
+}): Promise<GateCommandResult> {
+  return new Promise((resolve) => {
+    execFile(
+      spec.command,
+      [...spec.args],
+      { cwd: spec.cwd, timeout: spec.timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (!err) {
+          resolve({ exitCode: 0, stdout, stderr })
+          return
+        }
+        const nodeErr = err as NodeJS.ErrnoException & { code?: number | string; killed?: boolean; signal?: string }
+        const timedOut = nodeErr.killed === true && nodeErr.signal !== undefined && spec.timeoutMs !== undefined
+        const exitCode = typeof nodeErr.code === "number" ? nodeErr.code : 1
+        resolve({ exitCode, stdout, stderr, ...(timedOut ? { timedOut: true } : {}) })
+      },
+    )
+  })
+}
+
+/** Resolve a gate's report: the command's stdout if it parses as JSON, else
+ *  the file at `reportPath` (relative to `cwd`), parsed as JSON. `undefined`
+ *  when neither yields parseable JSON — never a throw (a gate that emits no
+ *  structured report is still a valid pass/fail signal on its own). */
+async function resolveGateReport(
+  cmd: GateCommandResult,
+  cwd: string,
+  reportPath: string | undefined,
+): Promise<unknown> {
+  const fromStdout = tryParseJson(cmd.stdout)
+  if (fromStdout !== undefined) return fromStdout
+  if (!reportPath) return undefined
+  try {
+    const abs = isAbsolute(reportPath) ? reportPath : join(cwd, reportPath)
+    const raw = await readFile(abs, "utf8")
+    return tryParseJson(raw)
+  } catch {
+    return undefined
+  }
+}
+
+/** Execute the full GateStep body — run, parse report, retry-with-reprompt. */
+async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<unknown> {
+  const cwd = (step.cwd ? resolveSel(step.cwd, b) : ctx.cwd) ?? process.cwd()
+  const args = step.args ?? []
+  const maxAttempts = Math.max(1, step.retry?.maxAttempts ?? 1)
+
+  let last: { ok: boolean; exitCode: number; report: unknown } | undefined
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1 && step.onFail?.reprompt) {
+      if (!ctx.agents) {
+        throw new Error(`step '${step.id}': on_fail.reprompt requires a host agents implementation`)
+      }
+      const targetSessionId = ctx.agents.resolveByLabel(step.onFail.reprompt)
+      if (!targetSessionId) {
+        throw new Error(
+          `step '${step.id}': on_fail.reprompt targets unknown step '${step.onFail.reprompt}' — no session found`,
+        )
+      }
+      const reportText = JSON.stringify(last?.report ?? null, null, 2)
+      const extra = step.onFail.with ? `\n\nAdditional context:\n${JSON.stringify(step.onFail.with, null, 2)}` : ""
+      await ctx.agents.sendPromptAndWait(
+        targetSessionId,
+        `Gate '${step.id}' failed (exit code ${last?.exitCode}). Report:\n${reportText}${extra}\n\n` +
+          `Please address the findings above, then reply when done.`,
+      )
+    }
+
+    if (attempt > 1 && step.retry?.initialMs) {
+      const delayMs =
+        step.retry.backoff === "exponential"
+          ? step.retry.initialMs * 2 ** (attempt - 2)
+          : step.retry.initialMs
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+
+    const cmdResult = await (ctx.runGateCommand ?? defaultRunGateCommand)({
+      command: step.command,
+      args,
+      cwd,
+      timeoutMs: step.timeoutMs,
+    })
+    const report = await resolveGateReport(cmdResult, cwd, step.reportPath)
+    const ok = cmdResult.exitCode === 0
+    last = { ok, exitCode: cmdResult.exitCode, report }
+    ctx.onGateReport?.({ stepId: step.id, ok, exitCode: cmdResult.exitCode, report, attempt })
+    if (ok) break
+  }
+
+  if (!last!.ok) {
+    const err = new Error(
+      `step '${step.id}': gate failed after ${maxAttempts} attempt(s) — exit code ${last!.exitCode}`,
+    ) as Error & { exitCode?: number; report?: unknown }
+    err.exitCode = last!.exitCode
+    err.report = last!.report
+    throw err
+  }
+  return last
 }
 
 async function execStep(
@@ -423,6 +571,8 @@ async function execStep(
         workspaceSlug: ctx.workspaceSlug,
         cache: ctx.cache,
         cacheKey: ctx.cacheKey,
+        runGateCommand: ctx.runGateCommand,
+        onGateReport: ctx.onGateReport,
       })
       return child.output
     }
@@ -441,13 +591,16 @@ async function execStep(
       await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
       return out
     }
+
+    case "gate":
+      return execGateStep(step, ctx, b)
   }
 }
 
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd }
@@ -482,5 +635,7 @@ export async function runWorkflow(
     cacheKey: args.cacheKey,
     onStepStart: args.onStepStart,
     onStepComplete: args.onStepComplete,
+    runGateCommand: args.runGateCommand,
+    onGateReport: args.onGateReport,
   }, args.maxTotalCostUsd)
 }

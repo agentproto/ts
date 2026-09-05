@@ -11,12 +11,13 @@
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
-import type { AgentSandboxRef, AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
+import type { AgentHarness, AgentSandboxRef, AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import { spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
 import { exportAgentSession } from "./transcript-export.js"
 import type { RoutinePolicy } from "./step-run-types.js"
+import { normalizeSkillsOption } from "./spawn-defaults.js"
 
 export class SessionsRegistryAgentHost implements AgentSessionHost {
   private readonly sessionsByLabel = new Map<string, string>()
@@ -59,6 +60,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       stepId?: string
       sandbox?: AgentSandboxRef
       options?: Record<string, boolean | number | string>
+      harness?: AgentHarness
     },
   ): Promise<string> {
     const workspaceSlug = opts.workspaceSlug ?? this.opts?.workspaceSlug ?? "default"
@@ -100,6 +102,14 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           sandbox,
           label: `agent-step:${adapter}`,
           ...(opts.options !== undefined ? { options: opts.options } : {}),
+          // AIP-15 P2 harness pinning: model/effort/role/skills all map onto
+          // `spawnAgentSession`'s own top-level fields, which already resolve
+          // role (against the built-in + pack registry) and fold skills into
+          // the adapter's declared options — no duplicate logic needed here.
+          ...(opts.harness?.model !== undefined ? { model: opts.harness.model } : {}),
+          ...(opts.harness?.effort !== undefined ? { effort: opts.harness.effort } : {}),
+          ...(opts.harness?.role !== undefined ? { role: opts.harness.role } : {}),
+          ...(opts.harness?.skills !== undefined ? { skills: [...opts.harness.skills] } : {}),
         },
       )
       if (!result.ok) {
@@ -107,6 +117,21 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       }
       if (opts.stepId) {
         this.sessionsByLabel.set(opts.stepId, result.descriptor.id)
+      }
+      // `harness.tools` has no generic per-spawn allowlist mechanism this
+      // runtime can drive — `run-workflow.ts` already records
+      // `toolsApplied: false` on the step's own output; this is the
+      // "never silently ignore" warning event alongside it.
+      if (opts.harness?.tools && opts.harness.tools.length > 0) {
+        this.sessionEvents.emit({
+          type: "session:harness-warning",
+          sessionId: result.descriptor.id,
+          warnings: [
+            "harness.tools: no generic per-spawn tool allowlist exists for this adapter — not applied",
+          ],
+          ...(opts.stepId ? { label: opts.stepId } : {}),
+          ts: new Date().toISOString(),
+        })
       }
       return result.descriptor.id
     }
@@ -116,6 +141,33 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     // Minted BEFORE the spawn so it can be injected as AGENTPROTO_SESSION_ID
     // into the child's own env, then reused (not re-minted) on `spawnAgent`.
     const stepSessionId = mintSessionId()
+    const harness = opts.harness
+    // AIP-15 P2 harness pinning, host (non-sandbox) spawn path. `skills`
+    // folds into the adapter's declared option the same way `spawn-defaults
+    // .ts`'s `normalizeSkillsOption` does for `spawnAgentSession` — this path
+    // just isn't wired through that richer pipeline at all, so it's applied
+    // directly here instead of duplicating role/orchestrator machinery this
+    // simplified host has never composed for any step, harness or not.
+    const harnessOptions =
+      harness?.skills && harness.skills.length > 0
+        ? normalizeSkillsOption([...harness.skills], opts.options ?? {}, resolved.declaredOptions)
+        : opts.options
+    const harnessWarnings: string[] = []
+    if (harness?.tools && harness.tools.length > 0) {
+      harnessWarnings.push(
+        "harness.tools: no generic per-spawn tool allowlist exists for this adapter — not applied",
+      )
+    }
+    if (harness?.role !== undefined) {
+      // Unlike the sandboxed branch (which routes through `spawnAgentSession`
+      // and gets full role resolution + tool-policy gating), this direct
+      // host path never composes an orchestrator/tool-policy surface for
+      // ANY step — so `harness.role` has no effect here today. Warn rather
+      // than silently pretend it took hold.
+      harnessWarnings.push(
+        `harness.role ("${harness.role}"): this spawn path applies no role-based tool policy — not applied`,
+      )
+    }
     const agentSession = await resolved.startSession({
       cwd,
       configDir: adapterConfigDirFor(stepSessionId),
@@ -123,7 +175,9 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         [SESSION_ID_ENV]: stepSessionId,
         [WORKSPACE_SLUG_ENV]: workspaceSlug,
       },
-      ...(opts.options !== undefined ? { options: opts.options } : {}),
+      ...(harnessOptions !== undefined ? { options: harnessOptions } : {}),
+      ...(harness?.model !== undefined ? { model: harness.model } : {}),
+      ...(harness?.effort !== undefined ? { effort: harness.effort } : {}),
     })
     const desc = this.registry.spawnAgent({
       id: stepSessionId,
@@ -137,6 +191,15 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     })
     if (opts.stepId) {
       this.sessionsByLabel.set(opts.stepId, desc.id)
+    }
+    if (harnessWarnings.length > 0) {
+      this.sessionEvents.emit({
+        type: "session:harness-warning",
+        sessionId: desc.id,
+        warnings: harnessWarnings,
+        ...(opts.stepId ? { label: opts.stepId } : {}),
+        ts: new Date().toISOString(),
+      })
     }
     return desc.id
   }

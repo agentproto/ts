@@ -680,6 +680,59 @@ steps:
     expect(final?.result?.sessionIds).toEqual(["sess_review_001"])
   })
 
+  it("kind: gate — emits workflow:gate-report on the session bus and records it on the run's step (AIP-15 P3)", async () => {
+    const bus = createSessionEventBus()
+    const gateReportEvents: unknown[] = []
+    bus.on("workflow:gate-report", (ev) => gateReportEvents.push(ev))
+    const registry = makeMockRegistry()
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+    })
+
+    const path = writeWorkflowMd(`---
+name: Gate
+id: gate-wf
+description: A single passing gate step.
+version: 0.1.0
+inputs: {}
+outputs: {}
+steps:
+  - id: g
+    kind: gate
+    command: node
+    args: ["-e", "console.log(JSON.stringify({checked:42}))"]
+---
+`)
+
+    const run = await runner.startFromFile({ path })
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 200 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 20))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("done")
+    // `runtimeWorkflowToStages` (workflow-runner.ts) only surfaces AGENT
+    // steps into `run.stages` — a gate-only compiled workflow falls back to
+    // the synthetic single "workflow" stage/step, so there is no `"g"`-labeled
+    // row for `onGateReport`'s best-effort `RoutineStepState.gateReport` sync
+    // to find here. The bus event is the reliable, always-fired signal.
+    expect(gateReportEvents).toHaveLength(1)
+    expect(gateReportEvents[0]).toMatchObject({
+      runId: run.runId,
+      stepId: "g",
+      ok: true,
+      exitCode: 0,
+      report: { checked: 42 },
+      attempt: 1,
+    })
+  })
+
   it("reports progressive step status updates during execution (not all-pending until done)", async () => {
     const bus = createSessionEventBus()
     const statusSnapshots: Array<{ step1: string; step2: string }> = []

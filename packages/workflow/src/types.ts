@@ -18,6 +18,7 @@ export type Step = StepCommon &
     | StepLoop
     | StepSubworkflow
     | StepAgent
+    | StepGate
   )
 export type Approval = ("auto" | "always" | "on-mutate" | "per-step") | string
 export type Trigger =
@@ -108,6 +109,7 @@ export interface StepCommon {
     | "loop"
     | "subworkflow"
     | "agent"
+    | "gate"
   inputs?: {}
   outputs?: JsonSchema
   next?: string
@@ -276,6 +278,88 @@ export interface StepAgent {
     | { awaiting: "auto-allow"; prompt: string }
     | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
     | { awaiting: "fail" }
+  /** Manifest-declared adapter option id → value, forwarded to a NEW spawn's
+   *  `startSession({ options })` — e.g. mastra-agent's `agent` option, set by
+   *  `agent.ref` resolution at compile time. Only meaningful with `adapter`;
+   *  ignored on a `sessionRef` reuse. May also be authored directly. */
+  options?: Record<string, boolean | number | string>
+  /** Harness pinning for this step's spawn (AIP-15 P2). Precedence when a
+   *  field is also set elsewhere: step `harness` > the resolved AGENT.md's
+   *  own frontmatter > `app_run` caller args > the adapter's own default. */
+  harness?: Harness
+}
+/**
+ * Harness pinning block on a `kind: "agent"` step. Every field is optional —
+ * an unset field falls through to the next layer in the precedence chain
+ * documented on {@link StepAgent.harness}.
+ */
+export interface Harness {
+  /** Model id override for this spawn. */
+  model?: string
+  /** Reasoning-effort override for this spawn (adapter-defined vocabulary,
+   *  e.g. `"low"` | `"medium"` | `"high"`). */
+  effort?: string
+  /** Spawn-time role (see `@agentproto/runtime`'s `resolveRole`) — governs
+   *  the child's tool-policy disposition (e.g. `"executor"` | `"supervisor"`). */
+  role?: string
+  /** Per-spawn tool allowlist. Applied where the resolved adapter supports a
+   *  generic per-spawn allowlist mechanism; where it doesn't, the host MUST
+   *  record `toolsApplied: false` on the step's run record and emit a
+   *  warning event rather than silently ignoring the field. */
+  tools?: string[]
+  /** Skill ids auto-mounted into the spawn (the same mechanism
+   *  `config.json`'s `defaults.skills` / `defaults.adapters.<slug>.skills`
+   *  drives) — adapters with no such option (e.g. claude-code, which
+   *  auto-discovers skills) ignore it. */
+  skills?: string[]
+  /** Working directory override for this step's spawn. Takes precedence over
+   *  the run-level cwd. */
+  cwd?: string
+  /** Read this file (relative to the WORKFLOW.md's directory) at load time
+   *  and use its contents as the step's `prompt`. Mutually informational
+   *  with an inline `prompt` — when both are present, the file wins and the
+   *  inline `prompt` is replaced. */
+  promptFile?: string
+  /** Computed by the loader at load time — sha256 (hex) of `promptFile`'s
+   *  raw bytes. Not hand-authored; present only when `promptFile` was
+   *  resolved. Exposed on the compiled step and in run records so a
+   *  consumer can verify which exact prompt version a run used. */
+  promptSha?: string
+}
+/**
+ * `kind: "gate"` — run a shell command through the host's subprocess runner
+ * (AIP-17) as a deterministic pass/fail check. Exit code 0 is a pass; any
+ * other exit code is a failure, subject to `StepCommon.retry`. The process'
+ * stdout, if it parses as JSON, becomes the gate's report; otherwise, when
+ * `report` names a file, that file is read (relative to `cwd`) and parsed as
+ * JSON instead. The report — plus `ok` and `exitCode` — is bound at
+ * `$steps.<id>.report` / `.ok` / `.exitCode` for later steps to read, and
+ * emitted as a `gate-report` lifecycle event on the run's event stream.
+ */
+export interface StepGate {
+  kind: "gate"
+  /** The command to execute. No shell interpolation — invoked as an argv
+   *  vector (`command` + `args`), never through a shell. */
+  command: string
+  args?: string[]
+  /** Working directory. Defaults to the workflow run's own cwd. */
+  cwd?: string
+  /** Path (relative to `cwd`) of a JSON report file, consulted when stdout
+   *  doesn't itself parse as JSON. */
+  report?: string
+  /** Re-prompt-and-rerun on a failing exit code, bounded by
+   *  `StepCommon.retry.max_attempts`. Runs BEFORE each retry attempt after
+   *  the first: sends the named prior agent step's session (reused via that
+   *  step's `sessionRef`, same as a `kind: "agent"` step reuse) a prompt with
+   *  this gate's last report injected, waits for its turn, then re-runs the
+   *  gate command. */
+  on_fail?: {
+    /** The prior `kind: "agent"` step id to re-prompt. */
+    reprompt: string
+    /** Extra literal context merged into the reprompt, alongside the gate's
+     *  `$steps.<id>.report`. */
+    with?: Record<string, unknown>
+  }
 }
 /**
  * Defined by AIP-16 — the IO `inputsFiles` block.

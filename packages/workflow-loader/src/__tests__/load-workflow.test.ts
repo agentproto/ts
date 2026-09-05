@@ -7,6 +7,8 @@
 import { describe, it, expect } from "vitest"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
+import { readFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 import {
   loadWorkflowHandle,
   WorkflowLoadError,
@@ -92,6 +94,31 @@ describe("loadWorkflowHandle — subworkflow with: threading", () => {
   it("rejects a with: ref to an unknown step id, naming the step and key", async () => {
     await expect(loadWorkflowHandle(fix("with-bad-ref/WORKFLOW.md"))).rejects.toThrow(
       /subworkflow step 'sub' with\.topic references unknown step 'ghost'/,
+    )
+  })
+})
+
+describe("loadWorkflowHandle — harness.promptFile (AIP-15 P2)", () => {
+  it("reads harness.promptFile relative to the WORKFLOW.md dir into the step's prompt + sha256", async () => {
+    const h = await loadWorkflowHandle(fix("harness-promptfile/WORKFLOW.md"))
+    const step = h.steps.find((s) => s.id === "s1") as unknown as Record<string, unknown>
+    const raw = readFileSync(fix("harness-promptfile/prompt.txt"))
+    expect(step.prompt).toBe(raw.toString("utf8").trim())
+    const harness = step.harness as Record<string, unknown>
+    expect(harness.promptSha).toBe(createHash("sha256").update(raw).digest("hex"))
+  })
+
+  it("throws a clear error naming the step when harness.promptFile does not exist", async () => {
+    await expect(
+      loadWorkflowHandle(fix("harness-promptfile-missing/WORKFLOW.md")),
+    ).rejects.toThrow(/agent step 's1': cannot read harness\.promptFile/)
+  })
+})
+
+describe("loadWorkflowHandle — kind: gate (AIP-15 P3)", () => {
+  it("rejects a declarative gate step with no command", async () => {
+    await expect(loadWorkflowHandle(fix("gate-no-command/WORKFLOW.md"))).rejects.toThrow(
+      /gate step 'g' needs a non-empty 'command'/,
     )
   })
 })

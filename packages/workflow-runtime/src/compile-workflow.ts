@@ -28,7 +28,7 @@
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
-import type { AgentRefResolution, AgentStep, Bindings, RunStep, RuntimeWorkflow } from "./types.js"
+import type { AgentRefResolution, AgentStep, Bindings, GateStep, RunStep, RuntimeWorkflow } from "./types.js"
 import { buildAgentStep } from "./build-agent-step.js"
 
 export interface CompileWorkflowOptions {
@@ -437,7 +437,56 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     policy: step.policy,
     ...(step.outputSchema !== undefined ? { outputSchema: step.outputSchema } : {}),
     ...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),
+    ...(step.harness !== undefined ? { harness: step.harness } : {}),
   })
+}
+
+/**
+ * Compile a declarative `kind:"gate"` manifest step — `{ command, args?,
+ * cwd?, report?, timeout_ms?, retry?, on_fail? }` — into a real
+ * {@link GateStep}. `command` is re-validated here (compile time) even
+ * though `@agentproto/workflow`'s `defineWorkflow` already rejects an
+ * empty one at LOAD time — an ENTRY-based handle that hand-builds a gate
+ * step in TS bypasses that manifest-only check.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compileGateStep(step: any, id: string): GateStep {
+  const command = f<string>(step, "command")
+  if (typeof command !== "string" || command.trim().length === 0) {
+    throw new WorkflowCompileError(`gate step '${id}' needs a non-empty 'command'`)
+  }
+  const args = f<string[] | undefined>(step, "args")
+  const cwd = f<string | undefined>(step, "cwd")
+  const reportPath = f<string | undefined>(step, "report")
+  const timeoutMs = f<number | undefined>(step, "timeout_ms")
+  const retry = f<
+    { max_attempts: number; backoff: "fixed" | "exponential"; initial_ms?: number } | undefined
+  >(step, "retry")
+  const onFail = f<{ reprompt: string; with?: Record<string, unknown> } | undefined>(
+    step,
+    "on_fail",
+  )
+  return {
+    kind: "gate",
+    id,
+    command,
+    ...(args !== undefined ? { args } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(reportPath !== undefined ? { reportPath } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(retry !== undefined
+      ? {
+          retry: {
+            maxAttempts: retry.max_attempts,
+            backoff: retry.backoff,
+            ...(retry.initial_ms !== undefined ? { initialMs: retry.initial_ms } : {}),
+          },
+        }
+      : {}),
+    ...(onFail !== undefined
+      ? { onFail: { reprompt: onFail.reprompt, ...(onFail.with !== undefined ? { with: onFail.with } : {}) } }
+      : {}),
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -568,6 +617,9 @@ function compileStep(step: any, ctx: Ctx): RunStep {
       }
       return compileAgentStep(step, id, ctx)
     }
+
+    case "gate":
+      return compileGateStep(step, id)
 
     case "transform": {
       // Not a declarative manifest kind — no string expression language for
