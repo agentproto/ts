@@ -105,6 +105,11 @@
       "types": "./dist/user-presets.d.ts",
       "import": "./dist/user-presets.mjs",
       "default": "./dist/user-presets.mjs"
+    },
+    "./tool-envelope": {
+      "types": "./dist/tool-envelope.d.ts",
+      "import": "./dist/tool-envelope.mjs",
+      "default": "./dist/tool-envelope.mjs"
     }
   },
   "files": [

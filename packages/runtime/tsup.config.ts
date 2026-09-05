@@ -23,6 +23,7 @@ export default createTsupConfig({
     "user-presets": "src/user-presets.ts",
     "pr-provenance": "src/pr-provenance.ts",
     "telegram-proxy": "src/telegram-proxy.ts",
+    "tool-envelope": "src/tool-envelope.ts",
   },
   format: ["esm"],
   splitting: false,
