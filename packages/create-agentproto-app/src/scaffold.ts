@@ -47,7 +47,7 @@ function resolveAppClientVersion(): string {
   }
 }
 
-export type ScaffoldTemplate = "react-ts" | "vanilla" | "book"
+export type ScaffoldTemplate = "react-ts" | "vanilla" | "book" | "trame"
 
 export interface ScaffoldOptions {
   readonly targetDir: string
@@ -81,7 +81,12 @@ export interface ScaffoldSuccess {
 export type ScaffoldOutcome = ScaffoldSuccess | ScaffoldFailure
 
 function isScaffoldTemplate(value: string): value is ScaffoldTemplate {
-  return value === "react-ts" || value === "vanilla" || value === "book"
+  return (
+    value === "react-ts" ||
+    value === "vanilla" ||
+    value === "book" ||
+    value === "trame"
+  )
 }
 
 export async function scaffoldApp(options: ScaffoldOptions): Promise<ScaffoldOutcome> {
@@ -90,7 +95,7 @@ export async function scaffoldApp(options: ScaffoldOptions): Promise<ScaffoldOut
     return {
       ok: false,
       reason: "unknown-template",
-      message: `unknown template '${templateArg}' (available: react-ts, vanilla, book).`,
+      message: `unknown template '${templateArg}' (available: react-ts, vanilla, book, trame).`,
     }
   }
   const template = templateArg

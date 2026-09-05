@@ -13,7 +13,7 @@ This installs the `agentproto` executable on your `PATH`.
 ```text
 agentproto auth         <login|status|logout> [--host <url>]        authenticate against a remote host
 agentproto config       <show|path|get|set|unset|edit>              read/write ~/.agentproto/config.json
-agentproto app          <pack|unpack|serve|build|dev>                         package or serve an agentproto app bundle
+agentproto app          <init|validate|pack|unpack|serve|build|dev>           package or serve an agentproto app bundle
 agentproto daemon       <install|uninstall|start|restart|stop|status|logs>  manage launchd/systemd service
 agentproto install      <slug> [--force] [--dry-run] [--allow-unverified]  install an adapter's underlying CLI
 agentproto plugins      <list|show|install|uninstall|enable|disable> manage runtime plugins

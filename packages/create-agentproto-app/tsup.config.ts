@@ -6,10 +6,10 @@ export default createTsupConfig({
  * create-agentproto-app v0.1.0
  * Scaffold an agentproto agent app (Vite + TanStack ui/ + .agentproto shell).
  */`,
-  entry: { index: "src/index.ts" },
+  entry: { index: "src/index.ts", scaffold: "src/scaffold.ts" },
   format: ["esm"],
   splitting: false,
-  dts: false,
+  dts: true,
   external: ["gray-matter"],
   noExternal: [],
 })

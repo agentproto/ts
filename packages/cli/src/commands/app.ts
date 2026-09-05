@@ -42,6 +42,7 @@ import { expandHome } from "./skill-install/pack-resolve.js"
 import { runAppServe, findInstalledAppDir, installAppDir, listInstalledApps } from "../app-serve.js"
 import { runAppBuild } from "../app-build.js"
 import { runAppDev } from "../app-dev.js"
+import { runAppInit, runAppValidate } from "./app-init.js"
 
 // ── types ────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,8 @@ Usage:
   agentproto app serve [appDir] [--port <n>] [--app <appId>] [--json]
   agentproto app build <appDir> [--json]
   agentproto app dev <appDir> [--port <n>] [--json] [-- <viteArgs...>]
+  agentproto app init <template> [dir]
+  agentproto app validate [dir] [--json]
 
 pack:
   Walk <appDir> (must contain .agentproto/APP.md), write manifest.json and a
@@ -166,6 +169,12 @@ export async function runApp(args: readonly string[]): Promise<number> {
   }
   if (subVerb === "dev") {
     return runAppDev(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "init") {
+    return runAppInit(args.filter((a) => a !== subVerb))
+  }
+  if (subVerb === "validate") {
+    return runAppValidate(args.filter((a) => a !== subVerb))
   }
 
   process.stderr.write(
