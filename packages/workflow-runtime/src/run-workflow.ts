@@ -16,6 +16,7 @@ import type { ZodError } from "zod"
 import { resolveRef } from "./compile-workflow.js"
 import type {
   AgentStep,
+  ApprovalDecision,
   Bindings,
   FanOutOutcome,
   GateCommandResult,
@@ -603,14 +604,26 @@ async function execStep(
     case "approval": {
       const prompt = step.prompt(b)
       const approvers = step.approvers ?? []
-      const approved = ctx.approve
-        ? await ctx.approve({ stepId: step.id, prompt, approvers })
+      const raw = ctx.approve
+        ? await ctx.approve({
+            stepId: step.id,
+            prompt,
+            approvers,
+            ...(step.artifacts !== undefined ? { artifacts: step.artifacts } : {}),
+            ...(step.timeoutMs !== undefined ? { timeoutMs: step.timeoutMs } : {}),
+          })
         : true
+      // A bare boolean is a host that doesn't record who decided — normalize
+      // it to a full decision so downstream ledger/audit writes always have a
+      // `who`.
+      const decision: ApprovalDecision =
+        typeof raw === "boolean" ? { approved: raw, who: "host" } : raw
+      const approved = decision.approved
       const followups = approved
         ? (step.onApprove ?? [])
         : (step.onReject ?? [])
       await runSequence(followups, ctx, item, index)
-      return { approved }
+      return { approved, who: decision.who, ...(decision.note !== undefined ? { note: decision.note } : {}) }
     }
 
     case "suspend": {

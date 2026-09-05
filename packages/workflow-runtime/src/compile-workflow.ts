@@ -558,10 +558,14 @@ function compileStep(step: any, ctx: Ctx): RunStep {
       const approvers = (f<any[]>(step, "approvers") ?? []).map(
         (a) => a.role ?? a.userId ?? String(a),
       )
+      const artifacts = f<string[]>(step, "artifacts")
+      const timeoutMs = f<number>(step, "timeout_ms")
       return {
         kind: "approval",
         id,
         approvers,
+        ...(artifacts !== undefined ? { artifacts } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         prompt: (b) => String(resolveValue(prompt, b)),
       }
     }

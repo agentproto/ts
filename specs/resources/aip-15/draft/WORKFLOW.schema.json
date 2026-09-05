@@ -294,6 +294,7 @@
     },
     "stepApproval": {
       "type": "object",
+      "description": "A human-in-the-loop gate. The HOST resolves the step — it MUST park the run (visible in its status output, e.g. an `awaitingApproval` record) and wait for a human decision; it MUST NOT auto-approve. The decision carries `who` (who decided) and an optional `note`, and is recorded on the host's state ledger (`by: \"human\"`) — state is written only from gate results and approvals. `timeout_ms` bounds the wait: when it elapses with no human decision, the host resolves the step as REJECTED with `who: \"timeout\"` (the `on_timeout`/`on_reject` branch, never an approval).",
       "required": ["kind", "prompt", "approvers"],
       "properties": {
         "kind": { "const": "approval" },

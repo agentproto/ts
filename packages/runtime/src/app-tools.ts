@@ -985,6 +985,21 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         workflowRunner && app
           ? workflowRunner.list().filter(r => app.workflows.some(w => w.id === r.workflowId))
           : []
+      // WP-S: parked human approvals across the app's workflow runs — what a
+      // UI renders as the permissions inbox for this app.
+      const awaitingApprovals = workflowRuns
+        .filter(r => r.awaitingApproval !== undefined)
+        .map(r => {
+          const aa = r.awaitingApproval!
+          return {
+            runId: r.runId,
+            approvalId: aa.approvalId,
+            stepId: aa.stepId,
+            prompt: aa.prompt,
+            since: aa.since,
+            ...(r.appRunId !== undefined ? { appRunId: r.appRunId } : {}),
+          }
+        })
       // Read-only state-ledger projection (app-state.ts): when the app has
       // a ledger on disk, `app_status` carries the folded stage snapshot so
       // a UI can render the stage board without a separate app_state_get.
@@ -1007,6 +1022,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         ...(run.model !== undefined ? { model: run.model } : {}),
         sessions,
         workflowRuns,
+        ...(awaitingApprovals.length > 0 ? { awaitingApprovals } : {}),
         ...(state !== undefined ? { state } : {}),
       })
     },

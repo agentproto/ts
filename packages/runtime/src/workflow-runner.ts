@@ -25,7 +25,7 @@ import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
 import { buildAgentStep, runWorkflow } from "@agentproto/workflow-runtime"
-import type { AgentSandboxRef, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
+import type { AgentSandboxRef, ApprovalDecision, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import type { WorkflowHandle } from "@agentproto/workflow"
@@ -72,6 +72,7 @@ export type WorkflowRunStatus =
   | "idle"
   | "running"
   | "awaiting-input"
+  | "awaiting-approval"
   | "done"
   | "failed"
   | "cancelled"
@@ -104,6 +105,15 @@ export interface WorkflowRun {
    *  appends, scoping them to one sub-key inside each stage (e.g. the map
    *  item or entity the run processes). */
   item?: string
+  /** Set while the run is parked at a `kind: "approval"` step (status
+   *  "awaiting-approval") — the human-in-the-loop inbox entry. Cleared on
+   *  decision; survives a daemon restart (see loadRuns). */
+  awaitingApproval?: {
+    approvalId: string
+    stepId: string
+    prompt: string
+    since: string
+  }
 }
 
 export interface WorkflowRunner {
@@ -142,6 +152,14 @@ export interface WorkflowRunner {
 
   resolve(runId: string, stageIndex: number, stepIndex: number, response: string): void
 
+  /** Resolve a `kind: "approval"` step's parked human decision (the
+   *  "awaiting-approval" inbox). `who` records who decided (e.g. "jeremy");
+   *  `approvalId`, when given, must match the parked request. */
+  resolveApproval(
+    runId: string,
+    input: { approvalId?: string; approved: boolean; who: string; note?: string },
+  ): { ok: true } | { ok: false; error: "run_not_found" | "not_awaiting_approval" | "approval_id_mismatch"; message: string }
+
   cancel(runId: string): void
 }
 
@@ -162,6 +180,13 @@ interface RunState {
    * `WorkflowRunner.resolve()` fulfils it.
    */
   pendingResolve?: { stageIndex: number; stepIndex: number; resolver: (response: string) => void }
+  /**
+   * Set while a `kind: "approval"` step is parked (run.status ===
+   * "awaiting-approval"), waiting for a human decision through
+   * `WorkflowRunner.resolveApproval()`. `approvalId` ties the parked entry
+   * to the run's `awaitingApproval` record across a daemon restart.
+   */
+  pendingApproval?: { approvalId: string; resolve: (decision: ApprovalDecision) => void }
 }
 
 // ── Translation: WorkflowStage[] → RuntimeWorkflow ──────────────────
@@ -313,6 +338,10 @@ function loadRuns(persistPath: string): Map<string, RunState> {
       run.error = "interrupted by daemon restart"
       run.endedAt = run.endedAt ?? new Date().toISOString()
     }
+    // WP-S: a run parked awaiting a human approval is NOT failed on reload —
+    // its `awaitingApproval` record is durable. The runner re-registers the
+    // pending item below so the decision is still taken and ledgered (the
+    // run's in-flight execution itself can't resume; see the reload resolver).
     result.set(run.runId, { run, cancelled: false, abort: new AbortController(), stages: [] })
   }
   return result
@@ -513,14 +542,19 @@ function createLedgerAppender(
   appRunId: string | undefined,
   runId: string,
   item: string | undefined,
-): { append: (input: Omit<AppStateEventInput, "by" | "appRunId" | "item">) => void; flush: () => Promise<void> } {
+): {
+  append: (input: Omit<AppStateEventInput, "by" | "appRunId" | "item"> & { by?: AppStateEventInput["by"] }) => void
+  flush: () => Promise<void>
+} {
   let chain: Promise<void> = Promise.resolve()
-  const append = (input: Omit<AppStateEventInput, "by" | "appRunId" | "item">): void => {
+  const append = (
+    input: Omit<AppStateEventInput, "by" | "appRunId" | "item"> & { by?: AppStateEventInput["by"] },
+  ): void => {
     chain = chain
       .then(async () => {
         await appendAppStateEvent(app, {
           ...input,
-          by: "runner",
+          by: input.by ?? "runner",
           ...(appRunId !== undefined ? { appRunId } : {}),
           ...(item !== undefined ? { item } : {}),
         })
@@ -571,6 +605,84 @@ async function executeRunWorkflow(
       workspaceSlug: state.workspaceSlug,
       input,
       ...(cache ? { cache, cacheKey } : {}),
+      // WP-S — human-resolved approval steps: a `kind: "approval"` step parks
+      // the run as "awaiting-approval" with a pending inbox entry, instead of
+      // the engine's silent auto-approve. A human answers through
+      // `resolveApproval` (wired to `workflow_escalation_resolve`'s approval
+      // form); the decision lands on the app ledger (`kind: "approval"`,
+      // `by: "human"`) per the trame rule.
+      approve: (req) =>
+        new Promise<boolean | ApprovalDecision>((resolve) => {
+          const approvalId = `wfappr_${randomUUID()}`
+          const requestedAt = new Date().toISOString()
+          state.run.status = "awaiting-approval"
+          state.run.awaitingApproval = {
+            approvalId,
+            stepId: req.stepId,
+            prompt: req.prompt,
+            since: requestedAt,
+          }
+          persist?.()
+          sessionEvents.emit({
+            type: "workflow:approval-requested",
+            runId: state.run.runId,
+            approvalId,
+            stepId: req.stepId,
+            prompt: req.prompt,
+            approvers: [...req.approvers],
+            ...(req.artifacts !== undefined ? { artifacts: [...req.artifacts] } : {}),
+            requestedAt,
+            ts: requestedAt,
+          })
+
+          let timer: ReturnType<typeof setTimeout> | undefined
+          const onAbort = (): void => {
+            finish({ approved: false, who: "cancelled" })
+          }
+          const finish = (decision: ApprovalDecision): void => {
+            if (timer !== undefined) clearTimeout(timer)
+            signal.removeEventListener("abort", onAbort)
+            state.pendingApproval = undefined
+            if (state.run.awaitingApproval?.approvalId === approvalId) {
+              state.run.awaitingApproval = undefined
+            }
+            if (state.run.status === "awaiting-approval") state.run.status = "running"
+            persist?.()
+            const ts = new Date().toISOString()
+            sessionEvents.emit({
+              type: "workflow:approval-resolved",
+              runId: state.run.runId,
+              approvalId,
+              stepId: req.stepId,
+              approved: decision.approved,
+              who: decision.who,
+              ...(decision.note !== undefined ? { note: decision.note } : {}),
+              ts,
+            })
+            // The trame rule: the human decision — not the agent — writes the
+            // approval onto the ledger. Daemon-side verdicts (timeout, cancel)
+            // are not human decisions and carry `by: "system"`.
+            ledgerAppend?.({
+              stage: req.stepId,
+              kind: "approval",
+              by: decision.who === "timeout" || decision.who === "cancelled" ? "system" : "human",
+              payload: {
+                approved: decision.approved,
+                who: decision.who,
+                ...(decision.note !== undefined ? { note: decision.note } : {}),
+                runId: state.run.runId,
+              },
+            })
+            resolve(decision)
+          }
+          if (req.timeoutMs !== undefined) {
+            timer = setTimeout(() => {
+              finish({ approved: false, who: "timeout" })
+            }, req.timeoutMs)
+          }
+          signal.addEventListener("abort", onAbort, { once: true })
+          state.pendingApproval = { approvalId, resolve: finish }
+        }),
       onGateReport: (ev: GateReportEvent) => {
         sessionEvents.emit({
           type: "workflow:gate-report",
@@ -780,6 +892,68 @@ export function createWorkflowRunner(opts: {
     if (shouldPersist) saveRuns(runs, persistPath)
   }
 
+  // ── Reload re-registration (WP-S restart safety) ────────────────────
+  //
+  // A run parked at "awaiting-approval" survives the restart with its
+  // `awaitingApproval` record intact. The live approve hook died with the
+  // old process, so re-register a pending item here: a decision still
+  // resolves (emit + ledger `approval` event, exactly once — the live hook
+  // is gone, so no double write), but the run itself can't resume execution
+  // and is marked failed with a clear reason.
+  const reRegisterReloadedApprovals = (): void => {
+    for (const state of runs.values()) {
+      const run = state.run
+      const aa = run.awaitingApproval
+      if (run.status !== "awaiting-approval" || !aa) continue
+      const resolveAfterRestart = (decision: ApprovalDecision): void => {
+        // Only the FIRST decision wins — the pending entry is cleared before
+        // anything else runs.
+        if (state.pendingApproval?.approvalId !== aa.approvalId) return
+        state.pendingApproval = undefined
+        run.awaitingApproval = undefined
+        run.status = "failed"
+        run.error =
+          "approval resolved after daemon restart — the run's execution could not resume"
+        run.endedAt = run.endedAt ?? new Date().toISOString()
+        persist()
+        sessionEvents.emit({
+          type: "workflow:approval-resolved",
+          runId: run.runId,
+          approvalId: aa.approvalId,
+          stepId: aa.stepId,
+          approved: decision.approved,
+          who: decision.who,
+          ...(decision.note !== undefined ? { note: decision.note } : {}),
+          ts: new Date().toISOString(),
+        })
+        if (run.appId !== undefined && opts.appRegistry) {
+          const app = opts.appRegistry.getApp(run.appId)
+          if (app) {
+            const ledger = createLedgerAppender(app, run.appRunId, run.runId, run.item)
+            ledger.append({
+              stage: aa.stepId,
+              kind: "approval",
+              by: decision.who === "timeout" || decision.who === "cancelled" ? "system" : "human",
+              payload: {
+                approved: decision.approved,
+                who: decision.who,
+                ...(decision.note !== undefined ? { note: decision.note } : {}),
+                runId: run.runId,
+              },
+            })
+            void ledger.flush().catch((err: unknown) => {
+              console.warn(
+                `[workflow-runner] post-restart approval ledger append failed for run ${run.runId}: ${err instanceof Error ? err.message : String(err)}`,
+              )
+            })
+          }
+        }
+      }
+      state.pendingApproval = { approvalId: aa.approvalId, resolve: resolveAfterRestart }
+    }
+  }
+  reRegisterReloadedApprovals()
+
   // ── Public interface ───────────────────────────────────────────────
 
   return {
@@ -938,12 +1112,47 @@ export function createWorkflowRunner(opts: {
       }
     },
 
+    // Resolve a parked `kind: "approval"` decision (WP-S). Works both for a
+    // live run (the approve hook's resolver) and for a run re-registered
+    // after a daemon restart.
+    resolveApproval: (runId, input) => {
+      const state = runs.get(runId)
+      if (!state) {
+        return {
+          ok: false,
+          error: "run_not_found",
+          message: `no workflow run "${runId}"`,
+        }
+      }
+      const pa = state.pendingApproval
+      if (!pa) {
+        return {
+          ok: false,
+          error: "not_awaiting_approval",
+          message: `run "${runId}" is not awaiting an approval (status: ${state.run.status})`,
+        }
+      }
+      if (input.approvalId !== undefined && input.approvalId !== pa.approvalId) {
+        return {
+          ok: false,
+          error: "approval_id_mismatch",
+          message: `run "${runId}" is awaiting approval "${pa.approvalId}", not "${input.approvalId}"`,
+        }
+      }
+      pa.resolve({
+        approved: input.approved,
+        who: input.who,
+        ...(input.note !== undefined ? { note: input.note } : {}),
+      })
+      return { ok: true }
+    },
+
     cancel: (runId) => {
       const state = runs.get(runId)
       if (!state) return
       state.cancelled = true
       state.abort.abort()
-      if (state.run.status === "running" || state.run.status === "awaiting-input") {
+      if (state.run.status === "running" || state.run.status === "awaiting-input" || state.run.status === "awaiting-approval") {
         state.run.status = "cancelled"
         state.run.endedAt = new Date().toISOString()
         persist()

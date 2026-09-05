@@ -169,6 +169,11 @@ export interface ApprovalStep {
   id: string
   prompt: Selector<string>
   approvers?: readonly string[]
+  /** Artifacts attached to the approval request (e.g. paths to review). */
+  artifacts?: readonly string[]
+  /** Give up waiting after this long — the step resolves as REJECTED with
+   *  `who: "timeout"` (the host decides; the runtime enforces it). */
+  timeoutMs?: number
   onApprove?: readonly RunStep[]
   onReject?: readonly RunStep[]
 }
@@ -433,10 +438,22 @@ export interface RuntimeWorkflow {
   output?: Selector<unknown>
 }
 
+/** A human/host decision on one approval request. `who` records WHO decided
+ *  ("human", "timeout", "cancelled", …); `note` is optional free text. */
+export interface ApprovalDecision {
+  approved: boolean
+  who: string
+  note?: string
+}
+
 export interface ApprovalRequest {
   stepId: string
   prompt: string
   approvers: readonly string[]
+  artifacts?: readonly string[]
+  /** The step's `timeoutMs` when set — the host may enforce it itself; the
+   *  runtime's default when the host doesn't is to wait forever. */
+  timeoutMs?: number
 }
 
 export interface ResumeRequest {
@@ -502,8 +519,10 @@ export interface RunWorkflowArgs {
   workflow: RuntimeWorkflow
   input?: unknown
   signal?: AbortSignal
-  /** Decide an {@link ApprovalStep}. Default: auto-approve. */
-  approve?: (req: ApprovalRequest) => boolean | Promise<boolean>
+  /** Decide an {@link ApprovalStep}. Default: auto-approve. May return a bare
+   *  boolean (equivalent to `{approved, who: "host"}`) or a full
+   *  {@link ApprovalDecision} recording who decided. */
+  approve?: (req: ApprovalRequest) => boolean | ApprovalDecision | Promise<boolean | ApprovalDecision>
   /** Supply a {@link SuspendStep}'s resume payload. Default: throw + suspend. */
   resume?: (req: ResumeRequest) => unknown | Promise<unknown>
   /** Host-injected agent session runtime. Undefined ⇒ {@link AgentStep} throws. */
