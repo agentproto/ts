@@ -8,6 +8,8 @@ agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
 agentproto app serve  [appDir] [--port <n>] [--remote-mcp-url <url>] [--json]
 agentproto app build  <appDir> [--json]
 agentproto app dev    <appDir> [--port <n>] [--json] [-- <viteArgs...>]
+agentproto app init   <template> [dir]
+agentproto app validate [dir] [--json]
 ```
 
 > This page covers the `agentproto app` CLI verb (install/serve/pack/build/
@@ -197,6 +199,75 @@ exits with the child's exit code. `--json` prints
 `{"bridgeUrl":"...","appDir":"..."}` on one line before handing the
 terminal to the dev server.
 
+### `init <template> [dir]`
+
+Scaffold `[dir]` (default: the current directory) from `<template>` — the
+same `scaffoldApp` operation `pnpm create agentproto-app <dir>` drives, so
+no second package install is needed. Refuses a non-empty target directory
+(exit `2`, reason `target-not-empty`); an unknown template is also exit `2`.
+
+Templates:
+
+| Template | Shape |
+|----------|-------|
+| `react-ts` | Vite + TanStack Router/Query `ui/` source project + `.agentproto/` shell (the `create-agentproto-app` default) |
+| `vanilla` | minimal `.agentproto/` shell + static UI |
+| `book` | the book-app trame (category `book`, library stub, install skill) |
+| `trame` | the minimal AIP app trame — see below |
+
+The `trame` template emits everything `validate` (below) knows how to
+check, mirroring the book-factory app layout:
+
+```text
+<dir>/.agentproto/APP.md                       (id from the dir slug, one agent, one workflow,
+                                               ui.tools incl. app_state_get/app_state_list,
+                                               verify.command: "node scripts/verify.mjs")
+<dir>/.agentproto/agents/<slug>-agent/AGENT.md
+<dir>/.agentproto/workflows/<slug>-flow/WORKFLOW.md
+<dir>/.agentproto/workflows/<slug>-flow/prompts/run.md
+<dir>/.agentproto/ui/index.html                (single file, window.McpApp-aware stage board)
+<dir>/gates/example.mjs                        (exit 0 + one-line JSON report)
+<dir>/scripts/verify.mjs                       (runs the gates, prints {ok, findings})
+<dir>/data/DATA.md                             (the data-plane key dictionary)
+<dir>/tests/gate.test.mjs                      (node --test suite)
+```
+
+The workflow ships ONE `kind: agent` step (harness-pinned: `model`,
+`effort`, `role`, `promptFile` — the file wins over the inline prompt)
+followed by ONE `kind: gate` step running `node gates/example.mjs` from the
+app root.
+
+### `validate [dir] [--json]`
+
+Check `[dir]` (default: the current directory) against the app loader.
+Exit `0` iff ALL of:
+
+1. `loadAppHandle` (`@agentproto/app-kit`) succeeds — `APP.md` parses, every
+   `AGENT.md` loads, and the `defineApp` attachment invariant holds.
+2. Every declared workflow loads via `@agentproto/workflow-loader` —
+   harness blocks, `promptFile` resolution, and `kind: gate` steps are
+   validated there.
+3. Every `ui.tools` entry is a known daemon tool or any `app_*` tool. There
+   is no authoritative exported tool-name list in the daemon today, so the
+   CLI validates against a documented static list of the
+   orchestration/session surface (`agent_start`, `agent_prompt`,
+   `agent_output`, `agent_kill`, `agent_export`, `session_list`,
+   `session_monitor`, `session_events_poll`, `session_tree`,
+   `session_set_keepalive`, `message_parent`, `command_execute`,
+   `permissions_list`, `permissions_respond`, `task_create`, `task_list`,
+   `task_claim`, `task_update`, `daemon_health`) plus the whole `app_*`
+   family.
+4. When APP.md declares `data.dir`, `<dir>/<data.dir>/DATA.md` exists (the
+   data plane must ship its key dictionary — see `data/DATA.md`).
+5. When APP.md declares `verify.command`, it is run — argv-split on
+   whitespace, NO shell, cwd = the app dir, 10-minute cap. Its stdout is
+   printed verbatim and its exit code propagated: with no other findings,
+   `validate` exits with the verify command's own exit code.
+
+Findings print one per line as `[error] <scope>: <message>` on stderr.
+`--json` prints `{ ok, findings: [{scope, level, message}] }` on stdout;
+exit `0` iff `ok`.
+
 ## Optional `ui/` source project
 
 An app's `.agentproto/ui/` is always the thing actually served — a plain
@@ -262,6 +333,10 @@ agentproto app unpack kit.agentapp --dir ./my-app
 
 # An unpacked folder is itself packable again (round-trip stable)
 agentproto app pack ./my-app
+
+# Scaffold the minimal app trame, then prove it is sound
+agentproto app init trame ./my-app
+agentproto app validate ./my-app --json
 
 # Build a ui/ source project into .agentproto/ui/ (no-ops for a static UI)
 agentproto app build ./my-app

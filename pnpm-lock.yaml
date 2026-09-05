@@ -1263,6 +1263,9 @@ importers:
       '@agentproto/adapter-browser':
         specifier: workspace:*
         version: link:../../adapters/browser
+      '@agentproto/app-kit':
+        specifier: workspace:*
+        version: link:../app-kit
       '@agentproto/auth':
         specifier: workspace:*
         version: link:../auth
@@ -1293,6 +1296,9 @@ importers:
       '@agentproto/secrets':
         specifier: workspace:*
         version: link:../secrets
+      '@agentproto/workflow-loader':
+        specifier: workspace:*
+        version: link:../workflow-loader
       '@agentproto/worktree':
         specifier: workspace:*
         version: link:../worktree
@@ -1317,6 +1323,9 @@ importers:
       cli-highlight:
         specifier: ^2.1.11
         version: 2.1.11
+      create-agentproto-app:
+        specifier: workspace:*
+        version: link:../create-agentproto-app
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3

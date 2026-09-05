@@ -90,6 +90,13 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@modelcontextprotocol/sdk",
     "@modelcontextprotocol/sdk/*",
     "gray-matter",
+    // create-agentproto-app resolves its templates/ tree relative to its OWN
+    // module (`new URL("../templates", import.meta.url)` in scaffold.ts) —
+    // bundling it would bake a cli/dist/templates path that doesn't exist.
+    // Externalised so it (and its published templates/) resolves from
+    // node_modules; declared under `dependencies` in package.json.
+    "create-agentproto-app",
+    "create-agentproto-app/*",
     // pi-tui is externalised — it's pure ESM with no monorepo react conflict.
     // Chalk is also externalised (it's widely available and ESM-safe).
     "@earendil-works/pi-tui",
