@@ -427,6 +427,11 @@ export interface AdapterListEntry {
    * cli`'s `AdapterInfo.routeSelection` without importing it.
    */
   routeSelection?: "free" | "derived-from-model"
+  /** Known-valid model identifiers for this adapter (`@agentproto/cli`'s
+   *  `AdapterInfo.models`, forwarded verbatim). Undefined when the lister
+   *  behind `AgentAdapterLister` doesn't populate it — `adapter_list`'s
+   *  `summary` projection depends on this being present. */
+  models?: string[]
 }
 
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>

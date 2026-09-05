@@ -128,6 +128,7 @@
   "dependencies": {
     "@agentproto/acp": "workspace:*",
     "@agentproto/agent": "workspace:*",
+    "@agentproto/app-client": "workspace:*",
     "@agentproto/app-kit": "workspace:*",
     "@agentproto/apps": "workspace:*",
     "@agentproto/auth": "workspace:*",

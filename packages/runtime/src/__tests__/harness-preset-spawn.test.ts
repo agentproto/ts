@@ -214,4 +214,53 @@ describe("spawnAgentSession — harness default preset fallback", () => {
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.accessProfile).toBeUndefined()
   })
+
+  it("fails early, before spawning, when the default preset's profile is disabled", async () => {
+    presetState.value = {
+      id: "hm-cheap",
+      harnessSlug: "hermes",
+      name: "Cheap",
+      profileRef: "openrouter-cheap",
+      defaultModel: "z-ai/glm-5.2",
+      isDefault: true,
+    }
+    authProfileState.profiles["openrouter-cheap"] = eligibleProfile({ disabled: true })
+
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const deps = depsWithProvider("openrouter", startSession)
+
+    const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("harness_preset_profile_unavailable")
+    expect(result.message).toContain('"hm-cheap"')
+    expect(result.message).toContain("hermes")
+    expect(result.message).toContain('"openrouter-cheap"')
+    expect(result.message).toContain("disabled")
+    expect(startSession).not.toHaveBeenCalled()
+  })
+
+  it("fails early, before spawning, when the default preset's profile no longer exists", async () => {
+    presetState.value = {
+      id: "hm-cheap",
+      harnessSlug: "hermes",
+      name: "Cheap",
+      profileRef: "openrouter-ghost",
+      defaultModel: "z-ai/glm-5.2",
+      isDefault: true,
+    }
+    // No entry in authProfileState.profiles for "openrouter-ghost" — deleted
+    // since the preset was created.
+
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const deps = depsWithProvider("openrouter", startSession)
+
+    const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("harness_preset_profile_unavailable")
+    expect(result.message).toContain('"openrouter-ghost"')
+    expect(result.message).toContain("missing")
+    expect(startSession).not.toHaveBeenCalled()
+  })
 })

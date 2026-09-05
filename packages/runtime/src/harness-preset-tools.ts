@@ -16,12 +16,14 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { getAuthProfile } from "@agentproto/auth"
 import {
   addHarnessPreset,
   listHarnessPresets,
   removeHarnessPreset,
   setDefaultPreset,
   HarnessPresetValidationError,
+  type HarnessPresetValidationDeps,
 } from "./harness-preset-store.js"
 
 function text(value: string | object): {
@@ -44,7 +46,17 @@ function errorText(message: string): {
   return { content: [{ type: "text", text: message }], isError: true }
 }
 
-export function registerHarnessPresetTools(server: McpServer): void {
+export interface HarnessPresetToolsDeps {
+  /** Profile lookup backing each listed preset's `profileDisabled`/
+   *  `profileMissing` status. Defaults to the real `@agentproto/auth`
+   *  lookup — same seam `HarnessPresetValidationDeps.getProfile` is
+   *  injected through on the store side, so tests can stub it here too. */
+  getProfile?: HarnessPresetValidationDeps["getProfile"]
+}
+
+export function registerHarnessPresetTools(server: McpServer, deps: HarnessPresetToolsDeps = {}): void {
+  const getProfile = deps.getProfile ?? getAuthProfile
+
   // ── harness_preset_list ───────────────────────────────────────
   server.tool(
     "harness_preset_list",
@@ -52,9 +64,12 @@ export function registerHarnessPresetTools(server: McpServer): void {
       "`~/.agentproto/harness-presets.json`). Each preset pins, for one adapter " +
       "harness, which auth profile (`profileRef`) and default model " +
       "(`defaultModel`) a fresh spawn bills through when the caller names " +
-      "neither, plus whether it is that harness's default (`isDefault`). No " +
-      "secret is returned — only profile ids. Optionally filter to one harness " +
-      "slug.",
+      "neither, plus whether it is that harness's default (`isDefault`). Each " +
+      "entry also carries `profileDisabled` (true when `profileRef` is a " +
+      "disabled or missing profile — a preset a spawn cannot actually bill " +
+      "through) and `profileMissing` (true only when `profileRef` references " +
+      "no profile at all). No secret is returned — only profile ids. " +
+      "Optionally filter to one harness slug.",
     {
       harnessSlug: z
         .string()
@@ -64,7 +79,14 @@ export function registerHarnessPresetTools(server: McpServer): void {
     async ({ harnessSlug }) => {
       try {
         const presets = await listHarnessPresets(harnessSlug)
-        return text({ presets })
+        const withStatus = await Promise.all(
+          presets.map(async preset => {
+            const profile = await getProfile(preset.profileRef)
+            if (!profile) return { ...preset, profileDisabled: true, profileMissing: true }
+            return { ...preset, profileDisabled: profile.disabled === true }
+          }),
+        )
+        return text({ presets: withStatus })
       } catch (err) {
         return errorText(
           `harness_preset_list failed: ${err instanceof Error ? err.message : String(err)}`,

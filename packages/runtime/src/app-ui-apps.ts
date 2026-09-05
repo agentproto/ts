@@ -13,6 +13,7 @@
 
 import { readFile } from "node:fs/promises"
 import { z } from "zod"
+import { RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import type { AppRegistry } from "./app-registry.js"
 import type { AgnoMcpApp } from "@agentproto/apps"
 
@@ -112,16 +113,24 @@ function injectAfterStructuralTag(html: string, script: string): string {
   return script + html
 }
 
-/** Inject `MCP_APP_BRIDGE_SCRIPT` (see `injectAfterStructuralTag` for the
- *  placement rule). Idempotent: a no-op if the document already DEFINES
- *  `window.McpApp` (e.g. an app that inlines its own shim, or html already
- *  injected by an earlier pass through this same cache). The guard matches
- *  an assignment only — every app panel CONSUMES `window.McpApp.connect()`,
- *  so matching any mention would skip injection for exactly the documents
- *  that need it, leaving `window.McpApp` undefined in the host iframe. */
+/** Inject `MCP_APP_BRIDGE_SCRIPT` followed by `RUNNER_SELECT_SCRIPT` — every
+ *  installed app UI gets `window.AgentprotoUI.mountRunnerSelect` for free,
+ *  same as it gets `window.McpApp` (see `injectAfterStructuralTag` for the
+ *  placement rule). Both halves are independently idempotent, so a single
+ *  `injectAfterStructuralTag` call inserts only whichever ones the document
+ *  doesn't already define — inserting them one call each would place the
+ *  second BEFORE the first (both target "right after the same structural
+ *  tag"), which is why they're concatenated first instead. The bridge guard
+ *  matches an assignment only — every app panel CONSUMES
+ *  `window.McpApp.connect()`, so matching any mention would skip injection
+ *  for exactly the documents that need it, leaving `window.McpApp` undefined
+ *  in the host iframe. */
 export function injectMcpAppBridge(html: string): string {
-  if (/window\.McpApp\s*=/.test(html)) return html
-  return injectAfterStructuralTag(html, MCP_APP_BRIDGE_SCRIPT)
+  const hasBridge = /window\.McpApp\s*=/.test(html)
+  const hasRunnerSelect = /window\.AgentprotoUI\s*=/.test(html)
+  if (hasBridge && hasRunnerSelect) return html
+  const script = (hasBridge ? "" : MCP_APP_BRIDGE_SCRIPT) + (hasRunnerSelect ? "" : RUNNER_SELECT_SCRIPT)
+  return injectAfterStructuralTag(html, script)
 }
 
 /**
@@ -180,12 +189,18 @@ const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
 </script>
 `
 
-/** Inject the standalone REST bridge (placement rule shared with
- *  `injectMcpAppBridge`). Meant for raw `ui.path` html — the script guards
- *  on an existing `window.McpApp` at runtime, so an app shipping its own
- *  shim keeps it. */
+/** Inject the standalone REST bridge followed by (idempotently)
+ *  `RUNNER_SELECT_SCRIPT` — same pairing `injectMcpAppBridge` does, in one
+ *  `injectAfterStructuralTag` call for the same reason (see its doc: two
+ *  separate calls targeting the same tag would place the second script
+ *  BEFORE the first). Meant for raw `ui.path` html — the bridge script
+ *  itself is always (re-)injected, unguarded at the html level, same as
+ *  before this change; the script's own `if (window.McpApp) return;` guard
+ *  is the runtime-level idempotency, not this function. */
 export function injectStandaloneAppBridge(html: string): string {
-  return injectAfterStructuralTag(html, STANDALONE_REST_BRIDGE_SCRIPT)
+  const hasRunnerSelect = /window\.AgentprotoUI\s*=/.test(html)
+  const script = STANDALONE_REST_BRIDGE_SCRIPT + (hasRunnerSelect ? "" : RUNNER_SELECT_SCRIPT)
+  return injectAfterStructuralTag(html, script)
 }
 
 /** Per-path HTML cache keyed by `(path, version)` — a request rebuilds the
