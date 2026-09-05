@@ -50,6 +50,7 @@ export type {
   RuntimeWorkflow,
   RunWorkflowArgs,
   ApprovalRequest,
+  ApprovalDecision,
   ResumeRequest,
   WorkflowRunResult,
 } from "./types.js"

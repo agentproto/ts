@@ -931,14 +931,97 @@ export function registerOrchestrationTools(
     server.tool(
       "workflow_escalation_resolve",
       "Provide an external answer to a workflow step that escalated because a " +
-        "session asked for human input (policy=escalate).",
+        "session asked for human input (policy=escalate), OR resolve a " +
+        "workflow run's parked human APPROVAL (`kind: \"approval\"` step): " +
+        "pass `approvalId` (from `workflow_status`'s `awaitingApproval`) plus " +
+        "`approved` + `who` (+ optional `note`) — the run resumes on the " +
+        "approve/reject branch and the decision is ledgered.",
       {
         runId: z.string().describe("Run id."),
-        stageIndex: z.number().int().min(0).describe("Stage index containing the escalated step (0-based)."),
-        stepIndex: z.number().int().min(0).describe("Step index within the stage to resolve (0-based)."),
-        response: z.string().describe("The answer to inject into the awaiting session."),
+        stageIndex: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Stage index containing the escalated step (0-based). Legacy escalate form."),
+        stepIndex: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Step index within the stage to resolve (0-based). Legacy escalate form."),
+        response: z
+          .string()
+          .optional()
+          .describe("The answer to inject into the awaiting session. Legacy escalate form."),
+        approvalId: z
+          .string()
+          .optional()
+          .describe("Parked approval id from `workflow_status`'s `awaitingApproval.approvalId`. Presence selects the approval form."),
+        approved: z
+          .boolean()
+          .optional()
+          .describe("Approval form: true → the step's onApprove branch; false → onReject."),
+        who: z
+          .string()
+          .optional()
+          .describe("Approval form: who decided (recorded on the run + app ledger). Defaults to \"human\"."),
+        note: z.string().optional().describe("Approval form: optional free-text note recorded with the decision."),
       },
       async input => {
+        const approvalForm =
+          input.approvalId !== undefined ||
+          input.approved !== undefined ||
+          input.note !== undefined
+        if (approvalForm) {
+          if (input.approved === undefined) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: "missing_approved",
+                    message: "the approval form requires boolean `approved`",
+                  }),
+                },
+              ],
+              isError: true,
+            }
+          }
+          const result = workflowRunner.resolveApproval(input.runId, {
+            ...(input.approvalId !== undefined ? { approvalId: input.approvalId } : {}),
+            approved: input.approved,
+            who: input.who ?? "human",
+            ...(input.note !== undefined ? { note: input.note } : {}),
+          })
+          if (!result.ok) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: result.error, message: result.message }) }],
+              isError: true,
+            }
+          }
+          const run = workflowRunner.status(input.runId)
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ ok: true, runId: input.runId, status: run?.status }) },
+            ],
+          }
+        }
+        if (input.stageIndex === undefined || input.stepIndex === undefined || input.response === undefined) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "missing_fields",
+                  message:
+                    "escalate form requires `stageIndex` + `stepIndex` + `response`; approval form requires `approved` (+ `approvalId`)",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
         workflowRunner.resolve(input.runId, input.stageIndex, input.stepIndex, input.response)
         return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }
       },

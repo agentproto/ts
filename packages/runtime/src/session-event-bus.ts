@@ -688,6 +688,41 @@ export interface WorkflowGateReportEvent {
 }
 
 /**
+ * Emitted by the workflow runner (`workflow-runner.ts`) when a `kind:
+ * "approval"` step parks its run awaiting a human decision — the run's
+ * status flips to `awaiting-approval`, `workflow_status` carries
+ * `awaitingApproval`, and `workflow_escalation_resolve` (approval form)
+ * resolves it. Same bus distribution as every other lifecycle event.
+ */
+export interface WorkflowApprovalRequestedEvent {
+  type: "workflow:approval-requested"
+  runId: string
+  approvalId: string
+  stepId: string
+  prompt: string
+  approvers: readonly string[]
+  artifacts?: readonly string[]
+  requestedAt: string
+  ts: string
+}
+
+/**
+ * Emitted by the workflow runner when a parked approval is resolved — by a
+ * human (`workflow_escalation_resolve`), a timeout (`who: "timeout"`), or a
+ * cancel. The run resumes (or unwinds) right after this fires.
+ */
+export interface WorkflowApprovalResolvedEvent {
+  type: "workflow:approval-resolved"
+  runId: string
+  approvalId: string
+  stepId: string
+  approved: boolean
+  who: string
+  note?: string
+  ts: string
+}
+
+/**
  * Emitted when a `kind: "agent"` step's `harness` block declared a field the
  * spawn couldn't honor (today: `harness.tools` — no adapter exposes a
  * generic per-spawn tool allowlist this runtime can drive; see
@@ -733,6 +768,8 @@ export type SessionEvent =
   | ActivityChangedEvent
   | TaskChangedEvent
   | WorkflowGateReportEvent
+  | WorkflowApprovalRequestedEvent
+  | WorkflowApprovalResolvedEvent
   | SessionHarnessWarningEvent
 
 export interface SessionEventBus {
