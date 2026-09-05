@@ -162,12 +162,27 @@ async function applyAgentHarnessPromptFiles(
 }
 
 /**
+ * True when a selector string carries a `$…` run-time reference — such a
+ * string is left untouched here and resolved per run by
+ * `resolveKnowledgeSelectors` in `@agentproto/workflow-runtime`.
+ */
+function hasRef(s: string): boolean {
+  return s.includes("$")
+}
+
+/**
  * Resolve every `harness.knowledge[]` selector's `workspace` (AIP-15 P2),
  * relative to the WORKFLOW.md's own directory — the same rule
  * `harness.promptFile` follows — rewriting it in place to the absolute path
  * so the runtime materializer never re-resolves against a different cwd. A
  * workspace directory that does not exist fails the load, as does a `mode`
  * other than the v1-only `"files"`.
+ *
+ * Exception: a selector whose `workspace` (or any tag/kind string) contains a
+ * `$` carries run-time references (AIP-16 grammar) — its strings are left
+ * verbatim, no relative resolution and no existence check happens here, and
+ * the selector is flagged `deferred: true` (an internal field the runtime
+ * consumes and strips; a user-authored `deferred` is rejected).
  */
 async function applyAgentHarnessKnowledge(
   harness: Record<string, unknown>,
@@ -187,8 +202,26 @@ async function applyAgentHarnessKnowledge(
         }`,
       )
     }
+    if (selector.deferred !== undefined) {
+      throw new WorkflowLoadError(
+        `agent step '${id}': harness.knowledge[${i}].deferred is an internal loader field and cannot be authored`,
+      )
+    }
     const workspace = selector.workspace
     if (typeof workspace !== "string" || workspace.length === 0) continue
+    const tagStrings = [
+      ...(Array.isArray(selector.anyOf) ? selector.anyOf : []),
+      ...(Array.isArray(selector.allOf) ? selector.allOf : []),
+      ...(Array.isArray(selector.kinds) ? selector.kinds : []),
+    ].filter((t): t is string => typeof t === "string")
+    if (hasRef(workspace) || tagStrings.some(hasRef)) {
+      selector.deferred = true
+      // A workspace without a ref still resolves (and is still existence-
+      // checked) against the WORKFLOW.md dir even when only the tags/kinds
+      // carry refs — otherwise a relative `./corpus` would be joined to the
+      // run cwd at materialization time, which is not its base.
+      if (hasRef(workspace)) continue
+    }
     const abs = isAbsolute(workspace)
       ? workspace
       : join(dirname(workflowMdPath), workspace)
@@ -289,6 +322,12 @@ export async function loadWorkflowHandle(
     )
   }
   const manifest: WorkflowManifest = parseWorkflowManifest(source)
+  // gray-matter memoizes its YAML parse by content — a second load of an
+  // identical manifest would otherwise hand back the SAME objects a previous
+  // load already rewrote in place (absolute workspaces, prompt text, the
+  // internal `deferred` flag), breaking the authored-field rejection and
+  // re-resolving against a stale base. Clone so every load starts clean.
+  manifest.frontmatter = structuredClone(manifest.frontmatter)
   const entry = manifest.frontmatter.entry
   if (!entry) {
     const knownStepIds = collectManifestStepIds(manifest.frontmatter.steps)

@@ -16,6 +16,8 @@ import {
   type RefinedKind,
 } from "@agentproto/corpus"
 
+import { resolveRef } from "./compile-workflow.js"
+import type { Bindings } from "./types.js"
 import type {
   HarnessKnowledgeSelector,
   KnowledgeAppliedRecord,
@@ -23,6 +25,91 @@ import type {
 import { NodeFsPort } from "./node-fs-port.js"
 
 const DEFAULT_MAX_ENTRIES = 50
+
+/**
+ * Resolve one selector string against the run bindings (AIP-16 ref grammar).
+ *
+ * Rule: refs are only recognized at the START of the string. The leading
+ * reference token — the longest match of `^\$(input|item|steps|index)((?:\.[^.$/]+)*)`
+ * (so it stops at the first `/`, e.g. `$input.bookDir` in
+ * `$input.bookDir/knowledge`) — is resolved against the bindings and
+ * `String()`-ed; the remainder of the string is appended verbatim. A string
+ * that is exactly a ref resolves to that value's string form. `$$` escapes to
+ * a literal `$`. A string without a leading ref (including one with `$`
+ * elsewhere) passes through untouched. An unresolvable or malformed ref
+ * throws naming the step, the selector index, and the field.
+ */
+function resolveSelectorString(
+  stepId: string,
+  index: number,
+  field: string,
+  value: string,
+  b: Bindings,
+): string {
+  if (value.startsWith("$$")) return value.slice(1)
+  const m = value.match(/^\$(?:input|item|steps|index)((?:\.[^.$/]+)*)/)
+  if (!m) return value
+  const token = value.slice(0, m[0].length)
+  let resolved: unknown
+  try {
+    resolved = resolveRef(token, b)
+  } catch (err) {
+    throw new Error(
+      `step '${stepId}': harness.knowledge[${index}].${field} '${value}' is not a valid reference — ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  if (resolved === undefined) {
+    throw new Error(
+      `step '${stepId}': harness.knowledge[${index}].${field} '${token}' resolves to nothing — the referenced field does not exist`,
+    )
+  }
+  return String(resolved) + value.slice(m[0].length)
+}
+
+function resolveStringArray(
+  stepId: string,
+  index: number,
+  field: string,
+  values: readonly string[] | undefined,
+  b: Bindings,
+): string[] | undefined {
+  if (values === undefined) return undefined
+  return values.map((v) => resolveSelectorString(stepId, index, field, v, b))
+}
+
+/**
+ * Resolve every `$…`-bearing string of each `harness.knowledge[]` selector
+ * (`workspace`, `anyOf[]`, `allOf[]`, `kinds[]`) against the run bindings,
+ * producing selectors whose strings are run-resolved and stripped of the
+ * loader's internal `deferred` flag. Selectors without refs pass through
+ * unchanged (a copy). See {@link resolveSelectorString} for the ref rule.
+ */
+export function resolveKnowledgeSelectors(
+  stepId: string,
+  selectors: readonly HarnessKnowledgeSelector[],
+  b: Bindings,
+): HarnessKnowledgeSelector[] {
+  return selectors.map((sel, index) => {
+    const deferred = sel.deferred === true
+    const workspace = deferred
+      ? resolveSelectorString(stepId, index, "workspace", sel.workspace, b)
+      : sel.workspace
+    return {
+      ...sel,
+      deferred: undefined,
+      workspace,
+      ...(sel.anyOf !== undefined
+        ? { anyOf: deferred ? resolveStringArray(stepId, index, "anyOf", sel.anyOf, b) : [...sel.anyOf] }
+        : {}),
+      ...(sel.allOf !== undefined
+        ? { allOf: deferred ? resolveStringArray(stepId, index, "allOf", sel.allOf, b) : [...sel.allOf] }
+        : {}),
+      ...(sel.kinds !== undefined
+        ? { kinds: deferred ? resolveStringArray(stepId, index, "kinds", sel.kinds, b) : [...sel.kinds] }
+        : {}),
+    }
+  })
+}
 
 /** `../corpus-writer` → `corpus-writer`; `.` → the dir's own basename. */
 function workspaceDirName(workspace: string): string {
@@ -80,9 +167,14 @@ export async function materializeKnowledge(
     const fs = new NodeFsPort(workspace)
     const rootStat = await fs.stat(".")
     if (rootStat === null || rootStat.kind !== "directory") {
-      throw new Error(
-        `step '${stepId}': harness.knowledge[${i}].workspace '${workspace}' does not name an existing directory`,
-      )
+      // A missing workspace after ref resolution is not a throw — the app's
+      // gate decides (same seam as `knowledge-empty`); record the selector as
+      // matching nothing and warn with the `knowledge-workspace-missing`
+      // reason so hosts can distinguish it from an empty match.
+      const warning = `knowledge-workspace-missing: harness.knowledge[${i}] (workspace '${workspace}') does not name an existing directory`
+      warnings.push(warning)
+      records.push({ workspace, matched: 0, written: 0 })
+      continue
     }
 
     const kinds = (sel.kinds ?? []).filter((k): k is RefinedKind => isRefinedKind(k))

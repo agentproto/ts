@@ -1665,4 +1665,158 @@ describe("runWorkflow — agent step harness.knowledge materialization (AIP-15 P
       warnings: [expect.stringContaining("knowledge-empty")],
     })
   })
+
+  it("resolves $-bearing workspace and anyOf refs against the run bindings before materializing", async () => {
+    // Corpus at `<base>/knowledge` so `$input.bookDir/knowledge` lands on it.
+    const base = mkdtempSync(join(tmpdir(), "book-"))
+    const ws = join(base, "knowledge")
+    mkdirSync(join(ws, "entries"), { recursive: true })
+    writeFileSync(join(ws, "entries", "alpha.md"), entry("alpha", ["book-factory"]))
+    writeFileSync(join(ws, "entries", "beta.md"), entry("beta", ["book-factory"]))
+    writeFileSync(
+      join(ws, "entries", "gamma.md"),
+      entry("gamma", ["book-factory"], "metadata:\n  corpus:\n    status: archived"),
+    )
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const prompts: string[] = []
+    const host = fakeHost({
+      sendPromptAndWait: async (_sid, prompt) => {
+        prompts.push(prompt)
+      },
+    })
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-refs",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "write the chapter",
+          cwd: () => stepCwd,
+          harness: {
+            knowledge: [
+              {
+                workspace: "$input.bookDir/knowledge",
+                anyOf: ["$input.topicTag"],
+                deferred: true,
+              },
+            ],
+          },
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({
+      workflow: wf,
+      agents: host,
+      input: { bookDir: base, topicTag: "book-factory" },
+    })
+    // The workspace carried the ref: `$input.bookDir/knowledge` resolved to
+    // the corpus dir itself; the tag ref resolved to `book-factory`.
+    // gamma (archived) is skipped → 2 matched/written
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: ws, matched: 2, written: 2 },
+    ])
+    const kdir = join(stepCwd, ".knowledge", basename(ws))
+    expect(readFileSync(join(kdir, "alpha.md"), "utf8")).toContain("Body of alpha.")
+    expect(prompts[0]).toContain(".knowledge/INDEX.md, 2 entries")
+  })
+
+  it("throws naming the step and field when a selector ref resolves to nothing", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-ref-missing",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: {
+            knowledge: [{ workspace: "$input.noSuchDir/knowledge", deferred: true }],
+          },
+        },
+      ],
+    }
+    await expect(
+      runWorkflow({ workflow: wf, agents: fakeHost(), input: { bookDir: ws } }),
+    ).rejects.toThrow(
+      /step 's1': harness\.knowledge\[0\]\.workspace '\$input\.noSuchDir' resolves to nothing/,
+    )
+  })
+
+  it("warns knowledge-workspace-missing (not a throw) when the resolved workspace does not exist", async () => {
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const warnings: unknown[] = []
+    const host = fakeHost({
+      emitHarnessWarning: (w) => {
+        warnings.push(w)
+      },
+    })
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-missing-after-resolve",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: {
+            knowledge: [{ workspace: "$input.bookDir/no-such-corpus", deferred: true }],
+          },
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({
+      workflow: wf,
+      agents: host,
+      input: { bookDir: stepCwd },
+    })
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: join(stepCwd, "no-such-corpus"), matched: 0, written: 0 },
+    ])
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatchObject({
+      sessionId: "sess_fake",
+      label: "s1",
+      warnings: [expect.stringContaining("knowledge-workspace-missing")],
+    })
+  })
+
+  it("joins a relative resolved workspace to the run cwd and materializes", async () => {
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    // Corpus INSIDE the step cwd, referenced by a ref that resolves to a
+    // RELATIVE workspace — it must join against the run cwd.
+    const relName = "corpus-rel"
+    mkdirSync(join(stepCwd, relName, "entries"), { recursive: true })
+    writeFileSync(join(stepCwd, relName, "entries", "alpha.md"), entry("alpha", ["book-factory"]))
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-relative",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: {
+            knowledge: [{ workspace: "$input.rel", deferred: true }],
+          },
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({
+      workflow: wf,
+      agents: fakeHost(),
+      input: { rel: relName },
+    })
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: join(stepCwd, relName), matched: 1, written: 1 },
+    ])
+    expect(
+      readFileSync(join(stepCwd, ".knowledge", relName, "alpha.md"), "utf8"),
+    ).toContain("Body of alpha.")
+  })
 })

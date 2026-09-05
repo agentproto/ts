@@ -28,7 +28,7 @@ import type {
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
-import { materializeKnowledge } from "./knowledge.js"
+import { materializeKnowledge, resolveKnowledgeSelectors } from "./knowledge.js"
 
 /** Thrown by a `suspend` step when no host `resume` hook is provided. */
 export class WorkflowSuspendedError extends Error {
@@ -201,7 +201,15 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         `step '${step.id}': harness.knowledge requires a resolvable working directory (set step cwd, harness.cwd, or the run cwd)`,
       )
     }
-    const materialized = await materializeKnowledge(step.id, step.harness.knowledge, cwd)
+    // Deferred selectors (loader-flagged `$…` refs) resolve per run against
+    // the bindings; a relative resolved workspace joins to this run cwd.
+    const knowledgeSelectors = resolveKnowledgeSelectors(step.id, step.harness.knowledge, b).map(
+      (sel) => ({
+        ...sel,
+        workspace: isAbsolute(sel.workspace) ? sel.workspace : join(cwd, sel.workspace),
+      }),
+    )
+    const materialized = await materializeKnowledge(step.id, knowledgeSelectors, cwd)
     knowledgeOut = materialized.records
     knowledgeWarnings = materialized.warnings
     if (materialized.written > 0) {
