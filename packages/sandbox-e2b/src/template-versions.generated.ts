@@ -19,9 +19,12 @@ export const TEMPLATES = {
     id: "53ybr99wdfgoebi9nee8",
     alias: "agentproto-workstation",
     baked: {
-      "cli": null,
-      "adapters": null,
-      "builtAt": null
+      "cli": "0.17.0",
+      "adapters": {
+        "@agentproto/adapter-hermes": "0.4.10",
+        "@agentproto/adapter-opencode": "1.1.10"
+      },
+      "builtAt": "2026-09-05T11:32:25Z"
     },
   },
   dev: {
