@@ -5,7 +5,7 @@ agentproto app install <appDir> [--data-dir <path>]
 agentproto app list
 agentproto app pack   <appDir> [--out <path.agentapp>] [--json]
 agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
-agentproto app serve  [appDir] [--port <n>] [--json]
+agentproto app serve  [appDir] [--port <n>] [--remote-mcp-url <url>] [--json]
 agentproto app build  <appDir> [--json]
 agentproto app dev    <appDir> [--port <n>] [--json] [-- <viteArgs...>]
 ```
@@ -80,9 +80,12 @@ browser tab with full MCP connectivity.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `appDir` | current directory | Directory holding `.agentproto/APP.md` + `.agentproto/ui/`. |
-| `--port <n>` | declared `ui.port` in `APP.md`, else OS-assigned | Port to bind. A declared `ui.port` that is already taken falls back to auto-assign; an explicit `--port` that is taken is a hard error. |
-| `--json` | `false` | Print `{ url, appDir, daemonMcpUrl }` on stdout instead of a human summary. |
+| `appDir` | current directory | Directory holding `.agentproto/APP.md` + `.agentproto/ui/`. Ignored in remote mode (see below). |
+| `--port <n>` | declared `ui.port` in `APP.md`, else OS-assigned | Port to bind. A declared `ui.port` that is already taken falls back to auto-assign; an explicit `--port` that is taken is a hard error. Not read in remote mode (no `APP.md`) — there `--port` or auto-assign applies. |
+| `--remote-mcp-url <url>` | unset | Streamable-HTTP MCP endpoint of a remote server (e.g. `https://api.example.com/mcp`). Setting this enables **remote mode** (see below). Env: `AGENTPROTO_REMOTE_MCP_URL`. |
+| `--remote-mcp-auth <token>` | unset | Bearer token sent as the `Authorization` header on every MCP request to the remote server. Env: `AGENTPROTO_REMOTE_MCP_AUTH`. |
+| `--remote-app-id <appId>` | unset | The MCP-Apps app id to render in remote mode, or a full `ui://…` resource URI. A bare id is fetched as `ui://<appId>`. Env: `AGENTPROTO_REMOTE_APP_ID`. |
+| `--json` | `false` | Print `{ url, appDir, daemonMcpUrl }` (or, in remote mode, `{ url, mode: "remote", appId, resourceUri, daemonMcpUrl }`) on stdout instead of a human summary. |
 
 Start the daemon first (`agentproto serve`); the bridge proxies tool calls to
 `http://127.0.0.1:<daemon.port>/mcp`.
@@ -91,6 +94,14 @@ Start the daemon first (`agentproto serve`); the bridge proxies tool calls to
 `POST /__agentproto/upload?filename=<name>` with the raw file bytes as the
 body. Files land in `<appDir>/inbox/` with a sanitized, collision-avoided
 name, and the endpoint returns `{ path, bytes }`. Uploads are capped at 200 MB.
+
+**Remote mode** (`--remote-mcp-url` set): instead of serving a local app dir
+and proxying tool calls to the local daemon, `app serve` connects its MCP
+client to a REMOTE MCP server and renders one of ITS MCP-Apps `ui://`
+resources as a browser tab. There is no local app directory in this mode —
+the HTML is fetched over MCP (`readResource`) and no `ui.tools` allowlist
+applies: every tool the remote server exposes is forwarded, with the
+loopback-only bind as the safety gate.
 
 ### `pack <appDir> [--out <path.agentapp>] [--json]`
 

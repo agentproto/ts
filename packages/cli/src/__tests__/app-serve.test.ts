@@ -7,13 +7,14 @@
  * bind is done here; `runAppServe`'s full flow is covered by the pieces below.
  */
 
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import {
   applyCors,
@@ -30,7 +31,25 @@ import {
   resolveInboxTarget,
   UploadSizeTracker,
   MAX_UPLOAD_BYTES,
+  resolveRemoteMcpTarget,
+  resolveRemoteAppResourceUri,
+  createDaemonMcpClientGetter,
 } from "../app-serve.js"
+
+// Captures the options `createDaemonMcpClientGetter` hands to the transport
+// constructor, without a real network connection: the transport's
+// constructor runs synchronously before `client.connect()` is awaited, so
+// this still captures the auth header even though connect() then fails
+// (this fake has no `start`/`send`) and the returned getter rejects.
+vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => {
+  class FakeTransport {
+    static lastOpts: unknown
+    constructor(_url: URL, opts?: unknown) {
+      FakeTransport.lastOpts = opts
+    }
+  }
+  return { StreamableHTTPClientTransport: FakeTransport }
+})
 
 const tmpRoots: string[] = []
 
@@ -512,5 +531,120 @@ describe("UploadSizeTracker", () => {
     const tracker = new UploadSizeTracker()
     expect(tracker.add(MAX_UPLOAD_BYTES)).toBe(false)
     expect(tracker.add(1)).toBe(true)
+  })
+})
+
+describe("resolveRemoteMcpTarget", () => {
+  const ENV_KEYS = [
+    "AGENTPROTO_REMOTE_MCP_URL",
+    "AGENTPROTO_REMOTE_MCP_AUTH",
+    "AGENTPROTO_REMOTE_APP_ID",
+  ] as const
+  const saved: Record<string, string | undefined> = {}
+
+  function clearEnv() {
+    for (const k of ENV_KEYS) {
+      saved[k] = process.env[k]
+      delete process.env[k]
+    }
+  }
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+  })
+
+  it("returns undefined when neither the flag nor the env var is set (default local-daemon path)", () => {
+    clearEnv()
+    expect(resolveRemoteMcpTarget({})).toBeUndefined()
+  })
+
+  it("enables remote mode from --remote-mcp-url alone", () => {
+    clearEnv()
+    expect(resolveRemoteMcpTarget({ "remote-mcp-url": "https://api.example.com/mcp" })).toEqual({
+      url: "https://api.example.com/mcp",
+    })
+  })
+
+  it("falls back to AGENTPROTO_REMOTE_MCP_URL / _AUTH / _APP_ID env vars", () => {
+    clearEnv()
+    process.env.AGENTPROTO_REMOTE_MCP_URL = "https://api.example.com/mcp"
+    process.env.AGENTPROTO_REMOTE_MCP_AUTH = "gld_env_token"
+    process.env.AGENTPROTO_REMOTE_APP_ID = "dashboard"
+    expect(resolveRemoteMcpTarget({})).toEqual({
+      url: "https://api.example.com/mcp",
+      authToken: "gld_env_token",
+      appId: "dashboard",
+    })
+  })
+
+  it("prefers an explicit flag over its env-var fallback", () => {
+    clearEnv()
+    process.env.AGENTPROTO_REMOTE_MCP_URL = "https://env.example.com/mcp"
+    process.env.AGENTPROTO_REMOTE_MCP_AUTH = "gld_env_token"
+    process.env.AGENTPROTO_REMOTE_APP_ID = "env-app"
+    expect(
+      resolveRemoteMcpTarget({
+        "remote-mcp-url": "https://flag.example.com/mcp",
+        "remote-mcp-auth": "gld_flag_token",
+        "remote-app-id": "flag-app",
+      }),
+    ).toEqual({
+      url: "https://flag.example.com/mcp",
+      authToken: "gld_flag_token",
+      appId: "flag-app",
+    })
+  })
+
+  it("trims whitespace and omits authToken/appId when blank", () => {
+    clearEnv()
+    expect(
+      resolveRemoteMcpTarget({
+        "remote-mcp-url": "  https://api.example.com/mcp  ",
+        "remote-mcp-auth": "   ",
+        "remote-app-id": "",
+      }),
+    ).toEqual({ url: "https://api.example.com/mcp" })
+  })
+
+  it("treats a blank --remote-mcp-url (and blank env fallback) as unset", () => {
+    clearEnv()
+    expect(resolveRemoteMcpTarget({ "remote-mcp-url": "   " })).toBeUndefined()
+  })
+})
+
+describe("resolveRemoteAppResourceUri", () => {
+  it("maps a bare app id to its ui:// resource URI", () => {
+    expect(resolveRemoteAppResourceUri("dashboard")).toBe("ui://dashboard")
+  })
+
+  it("passes a full ui:// URI through unchanged", () => {
+    expect(resolveRemoteAppResourceUri("ui://dashboard")).toBe("ui://dashboard")
+  })
+
+  it("passes any other schemed URI through unchanged", () => {
+    expect(resolveRemoteAppResourceUri("https://example.com/dashboard")).toBe(
+      "https://example.com/dashboard",
+    )
+  })
+})
+
+describe("createDaemonMcpClientGetter", () => {
+  it("sends no Authorization header for the local daemon (no authToken)", async () => {
+    const getClient = createDaemonMcpClientGetter("http://127.0.0.1:18790/mcp", "test")
+    await getClient().catch(() => {})
+    expect((StreamableHTTPClientTransport as unknown as { lastOpts: unknown }).lastOpts).toEqual({})
+  })
+
+  it("sends a Bearer Authorization header when authToken is given (remote-target path)", async () => {
+    const getClient = createDaemonMcpClientGetter("https://api.example.com/mcp", "test", {
+      authToken: "gld_abc123",
+    })
+    await getClient().catch(() => {})
+    expect((StreamableHTTPClientTransport as unknown as { lastOpts: unknown }).lastOpts).toEqual({
+      requestInit: { headers: { Authorization: "Bearer gld_abc123" } },
+    })
   })
 })

@@ -132,23 +132,46 @@ export function listInstalledApps(): { appId: string; dir: string; dataDir: stri
 const USAGE = `agentproto app serve — serve an app's UI as a standalone webapp
 
 Usage:
-  agentproto app serve [appDir] [--port <n>] [--host <addr>] [--app <appId>] [--json]
+  agentproto app serve [appDir] [--port <n>] [--host <addr>] [--app <appId>]
+                       [--remote-mcp-url <url>] [--remote-mcp-auth <token>]
+                       [--remote-app-id <appId>] [--json]
 
 appDir:
   Directory holding a valid .agentproto/APP.md + .agentproto/ui/. Defaults to
-  the current directory. Ignored when --app is given.
+  the current directory. Ignored when --app is given. Ignored in remote mode.
 
 --app <appId>:
   Serve an INSTALLED app by its id (resolved from ~/.agentproto/apps.json).
   When given, appDir is ignored — the registered directory is used instead.
   Install an app first: agentproto app install <dir>
 
+Remote mode (--remote-mcp-url set):
+  Instead of serving a local app dir and proxying tool calls to the local
+  daemon, connect the MCP bridge to a REMOTE MCP server and render one of
+  ITS MCP-Apps \`ui://\` resources as a browser tab. There is no local app
+  directory in this mode — the HTML is fetched over MCP (readResource) and
+  no APP.md ui.tools allowlist applies (all tools the remote server exposes
+  are forwarded; the loopback bind is the safety gate).
+
+  --remote-mcp-url <url>:
+    Streamable-HTTP MCP endpoint of the remote server (e.g.
+    https://api.example.com/mcp). Enables remote mode. Env:
+    AGENTPROTO_REMOTE_MCP_URL.
+  --remote-mcp-auth <token>:
+    Bearer token sent as the Authorization header on every MCP request to
+    the remote server (e.g. a \`gld_…\` API key for Guilde). Env:
+    AGENTPROTO_REMOTE_MCP_AUTH.
+  --remote-app-id <appId>:
+    The MCP-Apps app id to render, or a full \`ui://…\` resource URI.
+    A bare id is fetched as \`ui://<appId>\`. Env: AGENTPROTO_REMOTE_APP_ID.
+
 --port <n>:
   Port to bind. Falls back to the PORT env var (so launchers that assign a
   port via PORT — e.g. Claude Code's autoPort — work without a hardcoded
   flag), then the app's declared "ui.port" (APP.md frontmatter),
   else an OS-assigned free port. A taken declared port falls back to
-  auto-assign; a taken explicit --port is an error.
+  auto-assign; a taken explicit --port is an error. (No APP.md is read in
+  remote mode — there, --port or auto-assign applies.)
 
 --host <addr>:
   Address to bind (default: 127.0.0.1 — loopback only). Pass 0.0.0.0 to
@@ -156,8 +179,9 @@ appDir:
   to stderr when a non-default address is used.
 
 The served UI gets a window.McpApp bridge whose callTool forwards to the
-daemon's /mcp endpoint (http://127.0.0.1:<daemon.port>/mcp). Start the daemon
-first: agentproto serve`
+daemon's /mcp endpoint (http://127.0.0.1:<daemon.port>/mcp) — or, in remote
+mode, to the configured remote MCP server. Start the daemon first:
+agentproto serve`
 
 // reserved route the in-page bridge POSTs tool calls to — a double-underscore
 // prefix no app's ui/ static files should collide with. Exported so `app dev`
@@ -219,10 +243,15 @@ export async function resolveDaemonMcpUrl(): Promise<string> {
  * next call retries rather than permanently surfacing the first failure.
  * Shared by `app serve` and `app dev` — both hold their own protocol client
  * to the daemon rather than proxying through an installed appId.
+ *
+ * `authToken` (optional) is sent as the Authorization header on every
+ * request — the remote-target path (`--remote-mcp-url`); the local daemon
+ * needs no auth header.
  */
 export function createDaemonMcpClientGetter(
   daemonMcpUrl: string,
   clientName: string,
+  opts?: { authToken?: string },
 ): () => Promise<Client> {
   let clientPromise: Promise<Client> | null = null
   return (): Promise<Client> => {
@@ -232,7 +261,9 @@ export function createDaemonMcpClientGetter(
           { name: clientName, version: "0.1.0" },
           { capabilities: {} },
         )
-        const transport = new StreamableHTTPClientTransport(new URL(daemonMcpUrl))
+        const transport = new StreamableHTTPClientTransport(new URL(daemonMcpUrl), {
+          ...(opts?.authToken ? { requestInit: { headers: { Authorization: `Bearer ${opts.authToken}` } } } : {}),
+        })
         await client.connect(transport)
         return client
       })().catch((err) => {
@@ -241,6 +272,100 @@ export function createDaemonMcpClientGetter(
       })
     }
     return clientPromise
+  }
+}
+
+/** Remote-target configuration for `app serve` — parsed from CLI flags with
+ *  env-var fallbacks. When `url` is set, `app serve` connects its MCP client
+ *  to the remote server instead of the local daemon and renders one of ITS
+ *  `ui://` resources. */
+export interface RemoteMcpTarget {
+  /** Remote Streamable-HTTP MCP endpoint (e.g. https://api.example.com/mcp). */
+  url: string
+  /** Bearer token sent as the Authorization header (e.g. a Guilde `gld_` API key). */
+  authToken?: string
+  /** MCP-Apps app id to render (bare id → `ui://<id>`; a full `ui://` URI passes through). */
+  appId?: string
+}
+
+/** `parseArgs` with `strict:false` widens option values to
+ *  `string | boolean | undefined` — same loose shape `runAppServe` narrows
+ *  with `typeof` checks below. */
+type LooseArgsValues = Record<string, string | boolean | undefined>
+
+function looseString(v: string | boolean | undefined): string | undefined {
+  return typeof v === "string" ? v : undefined
+}
+
+/** Resolve the remote-target configuration from CLI values + env fallbacks.
+ *  Returns undefined when neither a flag nor its env var is set (the default
+ *  local-daemon path, byte-for-byte today's behavior). */
+export function resolveRemoteMcpTarget(
+  values: LooseArgsValues,
+): RemoteMcpTarget | undefined {
+  const url = (
+    looseString(values["remote-mcp-url"]) ?? process.env.AGENTPROTO_REMOTE_MCP_URL
+  )?.trim()
+  if (!url) return undefined
+  const appId = (
+    looseString(values["remote-app-id"]) ?? process.env.AGENTPROTO_REMOTE_APP_ID
+  )?.trim()
+  const authToken = (
+    looseString(values["remote-mcp-auth"]) ?? process.env.AGENTPROTO_REMOTE_MCP_AUTH
+  )?.trim()
+  return {
+    url,
+    ...(authToken ? { authToken } : {}),
+    ...(appId ? { appId } : {}),
+  }
+}
+
+/** Normalize a bare MCP-Apps app id to its `ui://` resource URI; a value that
+ *  already carries a scheme (e.g. `ui://dashboard`) passes through unchanged. */
+export function resolveRemoteAppResourceUri(appId: string): string {
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(appId)) return appId
+  return `ui://${appId}`
+}
+
+/**
+ * Fetch the HTML of a remote MCP-Apps resource (`ui://…`) through the MCP
+ * client's resource-read mechanism — the remote twin of reading
+ * `<appDir>/.agentproto/ui/index.html` off disk. Returns the resource's
+ * text content (stripped of its leading `data:` URI prefix when the server
+ * encodes it that way), or null when the resource is missing / unreadable.
+ */
+export async function readRemoteAppHtml(
+  client: Client,
+  resourceUri: string,
+): Promise<string | null> {
+  let result
+  try {
+    result = await client.readResource({ uri: resourceUri })
+  } catch {
+    return null
+  }
+  for (const content of result.contents) {
+    const raw = "text" in content ? content.text : undefined
+    if (typeof raw !== "string" || raw.length === 0) continue
+    // MCP-Apps hosts commonly emit the HTML as a data: URI (`text/html;base64,…`)
+    // — unwrap it so the static server can serve the bare HTML like a local ui/ dir.
+    const text = raw.startsWith("data:") ? fromDataUri(raw) : raw
+    if (text) return text
+  }
+  return null
+}
+
+/** Decode the payload of a `data:[<mediatype>][;base64],<data>` URI into text. */
+function fromDataUri(dataUri: string): string | null {
+  const comma = dataUri.indexOf(",")
+  if (comma === -1) return null
+  const meta = dataUri.slice("data:".length, comma)
+  const payload = dataUri.slice(comma + 1)
+  try {
+    if (meta.includes(";base64")) return Buffer.from(payload, "base64").toString("utf8")
+    return decodeURIComponent(payload)
+  } catch {
+    return null
   }
 }
 
@@ -700,6 +825,174 @@ export function applyCors(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 }
 
+/** Parse `--port <n>`: a validated port number, `undefined` when absent, or a
+ *  message when invalid (caller prints it). */
+function parsePortOpt(port: string | undefined): number | undefined | string {
+  if (typeof port !== "string" || port.length === 0) return undefined
+  const p = Number(port)
+  if (!Number.isInteger(p) || p < 1 || p > 65535) {
+    return `invalid --port '${port}' (must be 1–65535).`
+  }
+  return p
+}
+
+/**
+ * Remote branch of `app serve` — host a MCP-Apps `ui://` dashboard sourced
+ * from a REMOTE MCP server instead of a local app dir.
+ *
+ * Differences from the local path:
+ *   - The MCP client (carrying the Authorization header when a token was
+ *     given) targets the remote server, not `resolveDaemonMcpUrl()`.
+ *   - The HTML comes from `readResource` of the `ui://<appId>` resource —
+ *     there is no local `ui/` dir, no disk read, and no APP.md (so no
+ *     `ui.tools` allowlist: every tool the remote server exposes is
+ *     forwarded; the loopback bind is the safety gate). Uploads are not
+ *     wired (there is no local app dir to land files in).
+ *   - No APP.md `ui.port` hint: `--port` or auto-assign applies.
+ */
+async function runAppServeRemote(
+  values: {
+    port?: string
+    host?: string
+    json?: boolean
+    "remote-mcp-url"?: string
+    "remote-mcp-auth"?: string
+    "remote-app-id"?: string
+  },
+  remote: RemoteMcpTarget,
+  positionals: readonly string[],
+): Promise<number> {
+  // Priority: --remote-app-id flag > env var (already folded into `remote`)
+  // > the first non-dir positional (parseArgs' positionals — NOT a raw-args
+  // scan, which would mistake an option's value for the appId).
+  const posAppId = positionals.find((a) => a !== "." && !a.startsWith("."))
+  const appId = looseString(values["remote-app-id"]) ?? remote.appId ?? posAppId
+  if (!appId) {
+    process.stderr.write(
+      `agentproto app serve: remote mode needs an app id — pass ` +
+        `--remote-app-id <appId> (or a positional <appId>).\n${USAGE}\n`,
+    )
+    return 2
+  }
+  const resourceUri = resolveRemoteAppResourceUri(appId)
+
+  const listenHost = resolveListenHost(values.host)
+  if (values.host !== undefined) {
+    process.stderr.write(
+      `agentproto app serve: warning: --host ${listenHost} exposes the ` +
+        `tool-call bridge beyond loopback. Make sure this is intentional.\n`,
+    )
+  }
+
+  const parsedPort = parsePortOpt(values.port)
+  if (typeof parsedPort === "string") {
+    process.stderr.write(`agentproto app serve: ${parsedPort}\n`)
+    return 2
+  }
+
+  const getClient = createDaemonMcpClientGetter(remote.url, "agentproto-app-serve", {
+    authToken: remote.authToken,
+  })
+
+  // Fetch the dashboard HTML through the remote server's resource-read
+  // mechanism — the remote twin of reading ui/index.html off disk. Fetched
+  // once at startup; re-run `app serve` to pick up server-side changes.
+  const client = await getClient().catch((err) => {
+    process.stderr.write(
+      `agentproto app serve: could not connect to the remote MCP server ` +
+        `(${remote.url}): ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return null
+  })
+  if (!client) return 1
+  const html = await readRemoteAppHtml(client, resourceUri)
+  if (html === null) {
+    process.stderr.write(
+      `agentproto app serve: the remote MCP server exposed no readable ` +
+        `HTML for '${resourceUri}'. Check the app id and that the server ` +
+        `advertises this ui:// resource.\n`,
+    )
+    return 2
+  }
+
+  const bridgeScript = buildBridgeScript(TOOL_CALL_PATH)
+  const runJson = values.json === true
+
+  const server = createServer((req, res) => {
+    // Same permissive CORS as the local path: the tool-call route exposes no
+    // session state — and here every forwarded call rides the operator's
+    // Bearer-authenticated MCP client, so the loopback bind is the gate.
+    applyCors(req, res)
+    if (req.method === "OPTIONS") {
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
+    const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
+    if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
+      handleToolCallRequest(req, res, getClient, undefined)
+      return
+    }
+    // Single-resource serve: every path (/, /index.html, anything) renders
+    // the fetched HTML with the bridge injected. `..` segments are flattened
+    // by the inner normalize, matching serveStatic's containment check.
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+    res.end(injectBridge(html, bridgeScript))
+  })
+
+  const bind = (port: number): Promise<{ port: number } | { inUse: boolean }> =>
+    new Promise((resPromise, rejPromise) => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE") resPromise({ inUse: true })
+        else rejPromise(err)
+      }
+      server.once("error", onError)
+      server.listen(port, listenHost, () => {
+        server.off("error", onError)
+        const addr = server.address()
+        resPromise({ port: addr && typeof addr === "object" ? addr.port : port })
+      })
+    })
+
+  const bound = await bind(parsedPort ?? 0)
+  if ("inUse" in bound) {
+    process.stderr.write(
+      `agentproto app serve: port ${parsedPort} is already in use.\n`,
+    )
+    return 1
+  }
+  return reportListeningRemote(bound.port, runJson, appId, resourceUri, remote.url)
+}
+
+function reportListeningRemote(
+  port: number,
+  runJson: boolean,
+  appId: string,
+  resourceUri: string,
+  remoteUrl: string,
+): number {
+  const url = `http://127.0.0.1:${port}/`
+  if (runJson) {
+    process.stdout.write(
+      JSON.stringify({
+        url,
+        mode: "remote",
+        appId,
+        resourceUri,
+        daemonMcpUrl: remoteUrl,
+      }) + "\n",
+    )
+  } else {
+    process.stdout.write(
+      `agentproto app: serving remote app '${appId}' (${resourceUri}) at ${url}\n` +
+        `  MCP bridge -> ${remoteUrl}\n` +
+        `  (Ctrl-C to stop)\n`,
+    )
+  }
+  return 0
+}
+
 /** `agentproto app serve <appDir> [--port <n>] [--host <addr>] [--json]`. */
 export async function runAppServe(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -710,6 +1003,9 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
       port: { type: "string" },
       host: { type: "string" },
       app: { type: "string" },
+      "remote-mcp-url": { type: "string" },
+      "remote-mcp-auth": { type: "string" },
+      "remote-app-id": { type: "string" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -718,6 +1014,22 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
   if (values.help) {
     process.stdout.write(`${USAGE}\n`)
     return 0
+  }
+
+  const remote = resolveRemoteMcpTarget(values)
+  if (remote) {
+    return runAppServeRemote(
+      values as {
+        port?: string
+        host?: string
+        json?: boolean
+        "remote-mcp-url"?: string
+        "remote-mcp-auth"?: string
+        "remote-app-id"?: string
+      },
+      remote,
+      positionals,
+    )
   }
 
   const appDirArg = positionals[0] ?? "."
