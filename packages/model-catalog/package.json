@@ -130,6 +130,7 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@agentproto/provider-presets": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
     "tsup": "^8.5.1",

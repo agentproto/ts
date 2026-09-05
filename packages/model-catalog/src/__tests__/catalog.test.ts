@@ -36,6 +36,8 @@ import {
   resolveContextWindow,
   listNativeModelIds,
 } from "../llm/catalog.js"
+import { PROVIDER_KEY_ENV } from "../schema/base.js"
+import { ANTHROPIC_GATEWAY_PRESETS } from "@agentproto/provider-presets"
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -638,6 +640,37 @@ describe("shouldDebit", () => {
     expect(result.debit).toBe(true)
     expect(result.shadow).toBe(false)
     expect(result.reason).toBe("non-byok")
+  })
+})
+
+describe("PROVIDER_KEY_ENV", () => {
+  it("huggingface reads HF_TOKEN, not HUGGINGFACE_API_KEY (regression)", () => {
+    // opencode's bundled huggingface provider only reads HF_TOKEN; the old
+    // HUGGINGFACE_API_KEY value left the model-derived-api-key path injecting
+    // a credential no consumer reads. See schema/base.ts's PROVIDER_KEY_ENV
+    // comment for the full story.
+    expect(PROVIDER_KEY_ENV.huggingface).toBe("HF_TOKEN")
+  })
+
+  it("stays in sync with ANTHROPIC_GATEWAY_PRESETS.keyEnv for every provider present in both maps", () => {
+    // PROVIDER_KEY_ENV (model-catalog) and ANTHROPIC_GATEWAY_PRESETS
+    // (provider-presets) are two independent source-of-truth maps for the
+    // same fact — which env var carries a provider's key. They cover
+    // different provider sets (gateway presets include non-catalog gateways
+    // like moonshot/deepseek/groq; PROVIDER_KEY_ENV covers every catalog
+    // provider including non-gateway ones like anthropic/replicate), so this
+    // only cross-checks the overlap rather than requiring full parity.
+    const providers = Object.keys(PROVIDER_KEY_ENV) as (keyof typeof PROVIDER_KEY_ENV)[]
+    const checked: string[] = []
+    for (const provider of providers) {
+      const preset = (ANTHROPIC_GATEWAY_PRESETS as Record<string, { keyEnv?: string }>)[provider]
+      if (!preset?.keyEnv) continue
+      checked.push(provider)
+      expect(PROVIDER_KEY_ENV[provider]).toBe(preset.keyEnv)
+    }
+    // Sanity: the overlap check actually exercised at least one provider
+    // (huggingface), so a refactor that empties both maps can't pass silently.
+    expect(checked).toContain("huggingface")
   })
 })
 
