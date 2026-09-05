@@ -26,6 +26,7 @@
  */
 
 import type { WorkflowHandle } from "@agentproto/workflow"
+import { assertKnownStepRefs } from "@agentproto/workflow"
 import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
 import type { AgentRefResolution, AgentStep, Bindings, GateStep, RunStep, RuntimeWorkflow } from "./types.js"
@@ -269,30 +270,6 @@ function collectStepIds(steps: any[], ids: Set<string> = new Set()): Set<string>
   return ids
 }
 
-/** Statically reject a `$steps.<id>` reference to a step id that doesn't
- *  exist anywhere in this workflow — the same typo class an unresolved
- *  reference would otherwise silently pass through as `undefined` at
- *  runtime. */
-function assertKnownStepRefs(node: unknown, knownStepIds: ReadonlySet<string>, label: string): void {
-  if (typeof node === "string") {
-    if (node.startsWith("$$")) return
-    const m = node.match(/^\$steps\.([^.]+)/)
-    if (m && !knownStepIds.has(m[1]!)) {
-      throw new WorkflowCompileError(
-        `${label} references unknown step '${m[1]}' via '${node}' — no step with that id exists in this workflow`,
-      )
-    }
-    return
-  }
-  if (Array.isArray(node)) {
-    node.forEach((n) => assertKnownStepRefs(n, knownStepIds, label))
-    return
-  }
-  if (node && typeof node === "object") {
-    for (const v of Object.values(node as Record<string, unknown>)) assertKnownStepRefs(v, knownStepIds, label)
-  }
-}
-
 /** Per-compile context: the public options plus the full set of step ids
  *  declared anywhere in THIS workflow (recomputed fresh for each nested
  *  `subworkflow` child, which has its own id namespace). */
@@ -528,7 +505,9 @@ function compileStep(step: any, ctx: Ctx): RunStep {
       if (!tool)
         throw new WorkflowCompileError(`no tool registered for '${toolId}'`)
       const inputs = f<unknown>(step, "inputs") ?? {}
-      assertKnownStepRefs(inputs, ctx.knownStepIds, `tool step '${id}' inputs`)
+      assertKnownStepRefs(inputs, ctx.knownStepIds, `tool step '${id}' inputs`, {
+        makeError: (message) => new WorkflowCompileError(message),
+      })
       return {
         kind: "tool",
         id,
@@ -618,7 +597,9 @@ function compileStep(step: any, ctx: Ctx): RunStep {
       if (inputs === undefined) {
         return { kind: "subworkflow", id, workflow: compiledChild }
       }
-      assertKnownStepRefs(inputs, ctx.knownStepIds, `subworkflow step '${id}' inputs`)
+      assertKnownStepRefs(inputs, ctx.knownStepIds, `subworkflow step '${id}' inputs`, {
+        makeError: (message) => new WorkflowCompileError(message),
+      })
       const entries = Object.entries(inputs as Record<string, unknown>)
       return {
         kind: "subworkflow",

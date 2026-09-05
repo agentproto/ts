@@ -27,6 +27,7 @@ import {
   type WorkflowManifest,
 } from "@agentproto/workflow/manifest"
 import type { WorkflowHandle } from "@agentproto/workflow"
+import { assertKnownStepRefs } from "@agentproto/workflow"
 
 import { reconcileEntry } from "./reconcile.js"
 
@@ -72,7 +73,15 @@ function translateSubworkflowWith(
           `subworkflow step '${id}' declares both 'with' and 'inputs' — use one`,
         )
       }
-      assertWithStepRefs(s.with, `subworkflow step '${id}' with`, knownStepIds)
+      assertKnownStepRefs(
+        s.with,
+        knownStepIds,
+        `subworkflow step '${id}' with`,
+        {
+          makeError: (message) => new WorkflowLoadError(message),
+          extendLabel: true,
+        },
+      )
       s.inputs = s.with
       delete s.with
     }
@@ -81,34 +90,6 @@ function translateSubworkflowWith(
       for (const br of s.branches)
         translateSubworkflowWith((br as Record<string, unknown>)?.steps, knownStepIds)
     }
-  }
-}
-
-/** Statically reject a `$steps.<id>` ref in a `with:` block that names a step
- *  id this workflow doesn't declare — at load time, naming the step + key. */
-function assertWithStepRefs(
-  node: unknown,
-  label: string,
-  knownStepIds: ReadonlySet<string>,
-): void {
-  if (typeof node === "string") {
-    if (node.startsWith("$$")) return
-    const m = node.match(/^\$steps\.([^.]+)/)
-    if (m && !knownStepIds.has(m[1]!)) {
-      throw new WorkflowLoadError(
-        `${label} references unknown step '${m[1]}' via '${node}' — ` +
-          `no step with that id exists in this workflow`,
-      )
-    }
-    return
-  }
-  if (Array.isArray(node)) {
-    node.forEach((n, i) => assertWithStepRefs(n, `${label}[${i}]`, knownStepIds))
-    return
-  }
-  if (node && typeof node === "object") {
-    for (const [k, v] of Object.entries(node as Record<string, unknown>))
-      assertWithStepRefs(v, `${label}.${k}`, knownStepIds)
   }
 }
 
