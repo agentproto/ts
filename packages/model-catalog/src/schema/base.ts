@@ -79,7 +79,22 @@ export const PROVIDER_KEY_ENV: Record<CatalogProvider, string> = {
   elevenlabs: "ELEVENLABS_API_KEY",
   "gemini-live": "GOOGLE_GENERATIVE_AI_API_KEY",
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  huggingface: "HUGGINGFACE_API_KEY",
+  // Ecosystem convention, not our own invention: every HF tool (transformers,
+  // huggingface_hub, the `hf` CLI) and — load-bearing here — opencode's own
+  // bundled huggingface provider (`@ai-sdk/openai-compatible`, reads
+  // `env:["HF_TOKEN"]` off its models.dev-style catalog entry, confirmed by
+  // inspecting the shipped `opencode acp` binary) read `HF_TOKEN`, never
+  // `HUGGINGFACE_API_KEY`. `ANTHROPIC_GATEWAY_PRESETS.huggingface.keyEnv`
+  // (`provider-presets/src/anthropic-gateways.ts`) already got this right for
+  // the explicit `route.gateway` path; this was the other half — the
+  // model-derived-api-key path (`resolveAuthSpec`'s non-gateway branch calls
+  // `providerEnvVar(provider)`, i.e. THIS map, directly) still injected the
+  // wrong var, so any `<model>@huggingface` spawn through a model-derived
+  // router (opencode) got a credential opencode's huggingface provider never
+  // reads — it sees no HF_TOKEN, treats the provider as unconfigured, and
+  // 404s with "model not found: huggingface/<model>" even though the model
+  // itself is present in opencode's own catalog.
+  huggingface: "HF_TOKEN",
   minimax: "MINIMAX_API_KEY",
   mistral: "MISTRAL_API_KEY",
   moonshot: "MOONSHOT_API_KEY",
