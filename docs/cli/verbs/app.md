@@ -245,6 +245,66 @@ concatenated bytes of every bundled file in `files` order (excluding
 `manifest.json` itself), which is exactly what `unpack` recomputes to
 verify integrity.
 
+## Stage board
+
+`app serve` and `app dev` both respond to
+`GET /agentproto/stageboard.js` with a dependency-free vanilla ES module
+(`content-type: text/javascript`, no-store caching — never stale in dev)
+that renders the app's state ledger as a stage board. There is nothing to
+build or bundle: import it from any served UI page and mount it on an
+element.
+
+```html
+<div id="stages"></div>
+<script type="module">
+  import { mountStageBoard } from "/agentproto/stageboard.js";
+  window.McpApp.connect().then((bridge) => {
+    mountStageBoard(document.getElementById("stages"), {
+      appId: "@you/your-app",          // the installed app id
+      callTool: bridge.callTool,       // the window.McpApp bridge
+      refreshMs: 15000,                // auto-refresh (optional)
+      // onValidate: () => …,          // optional hook for a Validate button
+      // onApprove: (approval) => …,   // optional custom approval handler
+    });
+  });
+</script>
+```
+
+What it renders:
+
+- One column per stage in first-seen order (the folded snapshot's key
+  order), one row per item — or a single stage-level row for ledgers that
+  never used items.
+- Per status chips using the daemon's vocabulary (`pending`, `running`,
+  `gated-failed`, `blocked`, `done`, `approved`).
+- A collapsible per-row gate detail: last `gate-report` findings (from
+  `payload.report.findings` when present, else the raw payload), attempt
+  count, and the `appRunId` of the most recent run that touched the row.
+- A visible "last updated" timestamp and a Refresh button; auto-refresh
+  every `refreshMs` (default 15s).
+- A Validate button when you pass `onValidate`; otherwise the app's
+  `verify.command` is shown if `app_status` exposes one, and the button is
+  hidden when neither exists.
+- An Approvals block listing `app_status.awaitingApprovals[]` (when that
+  field is present) with an Approve button per entry. Approving asks `who`
+  via a prompt input and calls `workflow_escalation_resolve`; if that tool
+  is not in the app's `ui.tools` allowlist, the board degrades gracefully
+  (feature-detected from the 403). Pass `onApprove` to handle approvals
+  yourself instead.
+
+All styles are scoped under `.ap-stageboard` and driven by CSS variables —
+theme it by overriding e.g. `--ap-stageboard-accent`, `--ap-stageboard-line`,
+`--ap-stageboard-good`, `--ap-stageboard-bad`, `--ap-stageboard-warn` on an
+ancestor element.
+
+The pure fold behind the render (`toRows(snapshot, events)`) is exported
+from the module too, so tests and other renderers can reuse it without a
+DOM.
+
+> Note: the `create-agentproto-app` trame template does not yet ship this
+> snippet — until it does, copy the `<script type="module">` block above
+> into your app's UI by hand.
+
 ## Examples
 
 ```bash
