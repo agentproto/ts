@@ -14,6 +14,7 @@ import { AppShell } from "./shell/AppShell"
 import { Composer } from "./shell/Composer"
 import { MainHeader } from "./shell/MainHeader"
 import { PermissionBanner } from "./shell/PermissionBanner"
+import { QuestionBanner } from "./shell/QuestionBanner"
 import { SessionRail, type DiffStat } from "./shell/SessionRail"
 import { SpawnModal } from "./shell/SpawnModal"
 import { Titlebar, type ConnState } from "./shell/Titlebar"
@@ -282,6 +283,7 @@ function App() {
             </div>
             <SubagentStrip total={subagents.total} running={subagents.running} />
             <WorkingRow session={selected} />
+            <QuestionBanner session={selected} daemonUrl={daemonUrl} />
             <Composer session={selected} />
           </>
         ) : (

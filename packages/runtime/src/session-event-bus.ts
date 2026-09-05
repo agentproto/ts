@@ -18,6 +18,7 @@ export type SessionEventType =
   | "session:turn-end"
   | "session:awaiting-input"
   | "session:awaiting-input-flagged"
+  | "session:awaiting-question-answered"
   | "session:permission-request"
   | "session:permission-resolved"
   | "session:exited"
@@ -179,6 +180,27 @@ export interface SessionPermissionRequestEvent {
   permissionId: string
   toolName?: string
   text: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a client's next prompt text matched one of a structured
+ * `awaitingQuestion`'s `options` (case-insensitive, trimmed) and was
+ * therefore treated as an answer instead of a normal turn — see
+ * `sessions.ts`'s structured-question-answer dispatch. Distinct from
+ * `session:awaiting-input-flagged`: that fires for an EXTERNAL manual
+ * override of the flag; this fires when the session's own declared options
+ * were used as intended, by whichever seam the prompt came through
+ * (`agent_prompt`, the HTTP prompt route, or the CLI).
+ */
+export interface SessionAwaitingQuestionAnsweredEvent {
+  type: "session:awaiting-question-answered"
+  sessionId: string
+  /** The matched option string, verbatim from `question.options`. */
+  answer: string
+  /** The question that was answered. */
+  question: SessionAwaitingQuestion
   label?: string
   ts: string
 }
@@ -706,6 +728,7 @@ export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
   | SessionAwaitingInputFlaggedEvent
+  | SessionAwaitingQuestionAnsweredEvent
   | SessionPermissionRequestEvent
   | SessionPermissionResolvedEvent
   | SessionExitedEvent

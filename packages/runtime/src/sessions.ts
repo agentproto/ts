@@ -1517,6 +1517,16 @@ export interface SessionDescriptor {
   /** True when the session has been hard-stopped by the context-continuity
    *  policy — no new prompt may be admitted. */
   contextContinuityHardStopped?: boolean
+  /** The context percentage at which the user last answered "keep-going" to
+   *  the `ask`-mode continue-fresh question. `evaluateContextContinuity`
+   *  won't re-raise the same question until `contextPct` climbs past this
+   *  value again — otherwise the very next turn-boundary check (context
+   *  hasn't moved) would immediately re-ask, since the `ask` state covers
+   *  the whole `[compactAtPct, hardStopAtPct)` band, not just the instant it
+   *  was crossed. The hard-stop threshold is never suppressed by this — it
+   *  is checked ahead of `ask` in `contextContinuityStateForPct` and fires
+   *  regardless of any acknowledgment. */
+  contextContinuityAckedAtPct?: number
   /** Id of the most recent checkpoint created for this session. */
   checkpointId?: string
   /** When this session was continued fresh, the source session id. */
@@ -4770,6 +4780,11 @@ export function createSessionsRegistry(opts?: {
       try {
         await maybeResumeAgent(rt)
         const liveRt = validateAgentTurn(rt.desc.id, "queue-drain")
+        const answer = matchStructuredQuestionAnswer(liveRt, next.message)
+        if (answer) {
+          await answerStructuredQuestion(liveRt, answer)
+          return
+        }
         await runAgentTurn(
           liveRt,
           next.message,
@@ -5141,6 +5156,16 @@ export function createSessionsRegistry(opts?: {
         return
       }
       case "ask": {
+        // Suppress re-asking the same question at (or below) the pct the
+        // user already answered "keep-going" at — the `ask` action covers
+        // the whole `[compactAtPct, hardStopAtPct)` band, not just the
+        // instant a threshold is crossed, so without this the very next
+        // turn-boundary check (context hasn't moved) would immediately
+        // re-raise a question the user just dismissed. `hard-stop` is a
+        // separate `nextAction` entirely (checked ahead of `ask` in
+        // `contextContinuityStateForPct`), so it's never suppressed by this.
+        const ackedAtPct = rt.desc.contextContinuityAckedAtPct
+        if (ackedAtPct !== undefined && pct <= ackedAtPct) return
         rt.desc.awaitingInput = true
         rt.desc.awaitingQuestion = {
           source: "structured",
@@ -5719,6 +5744,94 @@ export function createSessionsRegistry(opts?: {
       // a logged error rather than throwing here).
       dispatchQueuedPrompt(rt)
     }
+  }
+
+  /**
+   * Structured-question answer handlers, keyed by the exact option string a
+   * question declared (case-insensitive). Only options with a registered
+   * handler here are intercepted as answers — anything else (including a
+   * driver-reported `agent-prompt`'s dynamic options, e.g. a tool
+   * permission's "allow"/"deny") falls through to a normal turn unchanged,
+   * so this dispatch can't regress conversational replies to prompts it
+   * doesn't know about.
+   */
+  const STRUCTURED_QUESTION_HANDLERS: Record<
+    string,
+    (rt: SessionRuntime, pct: number | null) => Promise<void>
+  > = {
+    "continue-fresh": async rt => {
+      await performContextContinueFresh(rt)
+    },
+    "keep-going": async (rt, pct) => {
+      rt.desc.awaitingInput = false
+      rt.desc.awaitingQuestion = undefined
+      // Remember the pct this was acknowledged at so `evaluateContextContinuity`
+      // doesn't immediately re-ask on the very next turn-boundary check — see
+      // `SessionDescriptor.contextContinuityAckedAtPct`'s doc.
+      if (pct !== null) rt.desc.contextContinuityAckedAtPct = pct
+      appendLine(rt, `[context] user chose keep-going at ${pct ?? "?"}%`, "stdout")
+      schedulePersist()
+    },
+  }
+
+  interface StructuredQuestionAnswerMatch {
+    question: SessionAwaitingQuestion
+    matched: string
+    handler: (rt: SessionRuntime, pct: number | null) => Promise<void>
+  }
+
+  /**
+   * Synchronous match check, deliberately split out from
+   * `answerStructuredQuestion` below: every prompt-turn seam (`sendPrompt`,
+   * `enqueuePrompt`, `dispatchQueuedPrompt`) calls this on EVERY prompt, not
+   * just answers, and `runAgentTurn` stamps `busy = true` synchronously as
+   * its very first statement. An `async` matcher — even one that returns
+   * `false` without ever hitting an internal `await` — still costs the
+   * caller one microtask tick to `await`, since calling any `async`
+   * function always returns a not-yet-settled promise. Tests that assert
+   * `busy` flips true after exactly one `await Promise.resolve()` (see
+   * `prompt-queue.test.ts`) would silently see it one tick later than
+   * before. Keeping the common "no question to answer" path fully
+   * synchronous preserves that timing.
+   */
+  const matchStructuredQuestionAnswer = (
+    rt: SessionRuntime,
+    message: unknown,
+  ): StructuredQuestionAnswerMatch | undefined => {
+    if (!rt.desc.awaitingInput) return undefined
+    const question = rt.desc.awaitingQuestion
+    if (!question || question.source !== "structured" || !question.options?.length) return undefined
+    if (typeof message !== "string") return undefined
+    const trimmed = message.trim().toLowerCase()
+    const matched = question.options.find(o => o.toLowerCase() === trimmed)
+    if (!matched) return undefined
+    const handler = STRUCTURED_QUESTION_HANDLERS[matched.toLowerCase()]
+    if (!handler) return undefined
+    return { question, matched, handler }
+  }
+
+  /**
+   * Runs the matched handler for a structured-question answer and emits the
+   * `session:awaiting-question-answered` event. Split from the sync matcher
+   * above so callers only pay for the `await` once a real answer is found.
+   * Shared by every prompt seam (`sendPrompt`, `enqueuePrompt`,
+   * `dispatchQueuedPrompt`) so `agent_prompt`, the HTTP prompt route, and
+   * the CLI all get this for free without a new tool.
+   */
+  const answerStructuredQuestion = async (
+    rt: SessionRuntime,
+    { question, matched, handler }: StructuredQuestionAnswerMatch,
+  ): Promise<void> => {
+    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    sessionEvents?.emit({
+      type: "session:awaiting-question-answered",
+      sessionId: rt.desc.id,
+      answer: matched,
+      question,
+      ...(rt.desc.label ? { label: rt.desc.label } : {}),
+      ts: new Date().toISOString(),
+    })
+    await handler(rt, pct)
   }
 
   const wireOutputStreams = (rt: SessionRuntime): void => {
@@ -6523,6 +6636,11 @@ export function createSessionsRegistry(opts?: {
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
+      const structuredAnswer = matchStructuredQuestionAnswer(rt, message)
+      if (structuredAnswer) {
+        await answerStructuredQuestion(rt, structuredAnswer)
+        return
+      }
       await runAgentTurn(rt, message, {
         ...(opts?.source ? { promptSource: opts.source } : {}),
         ...(opts?.system ? { system: opts.system } : {}),
@@ -6573,6 +6691,15 @@ export function createSessionsRegistry(opts?: {
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
+      // A structured-question answer is resolved synchronously (it never
+      // starts a turn — it's a flag flip, or a hand-off to a fresh session)
+      // so it's awaited here even though the rest of this method is
+      // fire-and-forget below.
+      const structuredAnswer = matchStructuredQuestionAnswer(rt, message)
+      if (structuredAnswer) {
+        await answerStructuredQuestion(rt, structuredAnswer)
+        return
+      }
       // Execution phase — fire-and-forget from here on. Errors during
       // the turn itself (network drop, child died mid-turn) land in
       // the ring buffer as `[error]` lines so the SSE consumer sees

@@ -357,6 +357,15 @@
   border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
+.tag.question {
+  color: var(--st-input);
+  border-color: color-mix(in srgb, var(--st-input) 40%, var(--color-border));
+  background: color-mix(in srgb, var(--st-input) 10%, transparent);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .diffstat {
   font-family: var(--font-mono-family);
   font-size: 10.5px;
@@ -611,6 +620,34 @@
   margin-bottom: 10px;
 }
 .perm-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+/* structured awaiting-question banner, pinned above the composer */
+.question-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--st-input) 8%, var(--color-surface));
+}
+.question-card {
+  border: 1px solid color-mix(in srgb, var(--st-input) 35%, var(--color-border));
+  border-radius: var(--rounded-lg);
+  padding: 10px 12px;
+  background: var(--color-surface-raised);
+}
+.question-text {
+  color: var(--color-ink);
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  margin-bottom: 10px;
+}
+.question-options {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
