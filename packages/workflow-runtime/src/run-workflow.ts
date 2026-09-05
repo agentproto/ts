@@ -11,9 +11,9 @@ import { runTool } from "@agentproto/driver"
 import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
-import { isAbsolute, join } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import type { ZodError } from "zod"
-import { resolveRef } from "./compile-workflow.js"
+import { resolveRefString } from "./ref-string.js"
 import type {
   AgentStep,
   ApprovalDecision,
@@ -377,36 +377,27 @@ async function resolveGateReport(
 }
 
 /**
- * Resolve one gate `args` element against the run bindings. A selector
- * function resolves per-run (`resolveSel`); a plain string passes through
- * unless it is a `$…` reference (`$$…` → literal `$`), which expands against
- * the bindings — a ref that resolves to nothing (or is malformed) throws a
- * clear error naming the step and the arg, never a literal `"$input.x"`
- * handed to the subprocess verbatim. A resolved non-string is String()-ed.
+ * Resolve a gate step's `cwd` against the run bindings. The same string-ref
+ * rule as {@link resolveRefString} (leading `$input|$item|$steps.<id>|$index`
+ * token + trailing literal text; `$$` escapes a literal `$`; an unresolvable
+ * or malformed ref throws naming the step and the field). The RESOLVED cwd is
+ * then made absolute: an absolute value stays as-is, a RELATIVE one (incl.
+ * `.`) resolves against the run's own `ctx.cwd` — never the daemon process
+ * cwd. No `cwd` (or a selector resolving to one) falls back to the run cwd.
  */
-function resolveGateArg(step: GateStep, arg: string, b: Bindings, index: number): string {
-  if (arg.startsWith("$$")) return arg.slice(1) // $$ → literal $
-  if (!arg.startsWith("$")) return arg
-  let resolved: unknown
-  try {
-    resolved = resolveRef(arg, b)
-  } catch (err) {
-    throw new Error(
-      `step '${step.id}': args[${index}] '${arg}' is not a valid reference — ${err instanceof Error ? err.message : String(err)}`,
-    )
-  }
-  if (resolved === undefined) {
-    throw new Error(
-      `step '${step.id}': args[${index}] '${arg}' resolves to nothing — the referenced field does not exist`,
-    )
-  }
-  return String(resolved)
+function resolveGateCwd(step: GateStep, ctx: RunCtx, b: Bindings): string {
+  const fallback = ctx.cwd ?? process.cwd()
+  if (!step.cwd) return fallback
+  const resolved = resolveRefString(step.id, "cwd", resolveSel(step.cwd, b), b, "error")
+  return isAbsolute(resolved) ? resolved : resolve(fallback, resolved)
 }
 
 /** Execute the full GateStep body — run, parse report, retry-with-reprompt. */
 async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<unknown> {
-  const cwd = (step.cwd ? resolveSel(step.cwd, b) : ctx.cwd) ?? process.cwd()
-  const args = (step.args ?? []).map((arg, index) => resolveGateArg(step, resolveSel(arg, b), b, index))
+  const cwd = resolveGateCwd(step, ctx, b)
+  const args = (step.args ?? []).map((arg, index) =>
+    resolveRefString(step.id, `args[${index}]`, resolveSel(arg, b), b, "error"),
+  )
   const maxAttempts = Math.max(1, step.retry?.maxAttempts ?? 1)
 
   let last: { ok: boolean; exitCode: number; report: unknown } | undefined

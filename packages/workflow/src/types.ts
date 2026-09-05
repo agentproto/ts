@@ -381,8 +381,22 @@ export interface StepGate {
   /** The command to execute. No shell interpolation — invoked as an argv
    *  vector (`command` + `args`), never through a shell. */
   command: string
+  /** Argv vector (no shell). Each string may carry a LEADING `$…` run-time
+   *  reference (AIP-16): a leading `$input|$item|$steps.<id>|$index` token
+   *  is resolved per run against the run bindings and any trailing text is
+   *  appended verbatim — `"$input.bookDir/knowledge"` →
+   *  `"<resolved bookDir>/knowledge"`; a string that is exactly a ref
+   *  resolves to that value's string form; `$$` escapes a literal `$`; an
+   *  unresolvable ref throws naming the step and the arg index. */
   args?: string[]
-  /** Working directory. Defaults to the workflow run's own cwd. */
+  /** Working directory. Defaults to the workflow run's own cwd. May carry
+   *  the same leading-`$…` ref rule as `args`: a LEADING
+   *  `$input|$item|$steps.<id>|$index` token (AIP-16) resolves per run
+   *  against the run bindings and any trailing text is appended verbatim
+   *  (`$$` escapes a literal `$`; an unresolvable ref throws naming the
+   *  step). The resolved cwd is made absolute — absolute stays absolute; a
+   *  relative resolved cwd (incl. `.`) resolves against the run's cwd,
+   *  never the daemon process cwd. */
   cwd?: string
   /** Path (relative to `cwd`) of a JSON report file, consulted when stdout
    *  doesn't itself parse as JSON. */

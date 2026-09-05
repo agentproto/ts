@@ -16,7 +16,7 @@ import {
   type RefinedKind,
 } from "@agentproto/corpus"
 
-import { resolveRefPrefixed } from "./compile-workflow.js"
+import { resolveRefString } from "./ref-string.js"
 import type { Bindings } from "./types.js"
 import type {
   HarnessKnowledgeSelector,
@@ -26,46 +26,6 @@ import { NodeFsPort } from "./node-fs-port.js"
 
 const DEFAULT_MAX_ENTRIES = 50
 
-/**
- * Resolve one selector string against the run bindings (AIP-16 ref grammar).
- *
- * Rule: refs are only recognized at the START of the string. The leading
- * reference token — the shared AIP-16 prefix grammar in
- * {@link resolveRefPrefixed} (it stops at the first `/`, e.g.
- * `$input.bookDir` in `$input.bookDir/knowledge`) — is resolved against the
- * bindings and `String()`-ed; the remainder of the string is appended
- * verbatim. A string that is exactly a ref resolves to that value's string
- * form. `$$` escapes to a literal `$`. A string without a leading ref
- * (including one with `$` elsewhere) passes through untouched. An
- * unresolvable or malformed ref throws naming the step, the selector index,
- * and the field.
- */
-function resolveSelectorString(
-  stepId: string,
-  index: number,
-  field: string,
-  value: string,
-  b: Bindings,
-): string {
-  if (value.startsWith("$$")) return value.slice(1)
-  let hit: ReturnType<typeof resolveRefPrefixed>
-  try {
-    hit = resolveRefPrefixed(value, b)
-  } catch (err) {
-    throw new Error(
-      `step '${stepId}': harness.knowledge[${index}].${field} '${value}' is not a valid reference — ${err instanceof Error ? err.message : String(err)}`,
-    )
-  }
-  if (!hit) return value
-  const token = value.slice(0, value.length - hit.rest.length)
-  if (hit.resolved === undefined) {
-    throw new Error(
-      `step '${stepId}': harness.knowledge[${index}].${field} '${token}' resolves to nothing — the referenced field does not exist`,
-    )
-  }
-  return String(hit.resolved) + hit.rest
-}
-
 function resolveStringArray(
   stepId: string,
   index: number,
@@ -74,7 +34,9 @@ function resolveStringArray(
   b: Bindings,
 ): string[] | undefined {
   if (values === undefined) return undefined
-  return values.map((v) => resolveSelectorString(stepId, index, field, v, b))
+  return values.map((v) =>
+    resolveRefString(stepId, `harness.knowledge[${index}].${field}`, v, b),
+  )
 }
 
 /**
@@ -82,7 +44,7 @@ function resolveStringArray(
  * (`workspace`, `anyOf[]`, `allOf[]`, `kinds[]`) against the run bindings,
  * producing selectors whose strings are run-resolved and stripped of the
  * loader's internal `deferred` flag. Selectors without refs pass through
- * unchanged (a copy). See {@link resolveSelectorString} for the ref rule.
+ * unchanged (a copy). See {@link resolveRefString} for the ref rule.
  */
 export function resolveKnowledgeSelectors(
   stepId: string,
@@ -92,7 +54,7 @@ export function resolveKnowledgeSelectors(
   return selectors.map((sel, index) => {
     const deferred = sel.deferred === true
     const workspace = deferred
-      ? resolveSelectorString(stepId, index, "workspace", sel.workspace, b)
+      ? resolveRefString(stepId, `harness.knowledge[${index}].workspace`, sel.workspace, b)
       : sel.workspace
     return {
       ...sel,

@@ -235,7 +235,10 @@ check, mirroring the book-factory app layout:
 The workflow ships ONE `kind: agent` step (harness-pinned: `model`,
 `effort`, `role`, `promptFile` — the file wins over the inline prompt)
 followed by ONE `kind: gate` step running `node gates/example.mjs` from the
-app root.
+app root. A gate's `cwd` and `args[]` accept a LEADING `$…` run-time ref
+(`$input|$item|$steps.<id>|$index`) with trailing text — e.g.
+`cwd: $input.bookDir` or `args: ["$input.bookDir/knowledge"]`; a relative
+resolved `cwd` (incl. `.`) resolves against the run's own cwd.
 
 ### `validate [dir] [--json]`
 
