@@ -5,7 +5,7 @@
   "description": "Single source of truth for the versions baked into the agentproto-workstation e2b template and surfaced via scripts/sync-templates.mjs. Hand-edit this file, then run `node scripts/sync-templates.mjs` to regenerate the derived files.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["baseImage", "cli", "adapters", "runtime", "templates"],
+  "required": ["baseImage", "cli", "adapters", "runtime", "resources", "templates"],
   "properties": {
     "$schema": { "type": "string" },
     "baseImage": {
@@ -31,6 +31,25 @@
       "additionalProperties": {
         "type": "string",
         "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpuCount", "memoryMb"],
+      "description": "Sandbox runtime resources the template is created with. The e2b CLI IGNORES e2b.template.toml for `template create -d Dockerfile`, so these are passed as `--cpu-count` / `--memory-mb` build flags (see README); versions.json stays the single source of truth.",
+      "properties": {
+        "cpuCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "vCPUs for sandboxes created from this template (e2b `--cpu-count`)."
+        },
+        "memoryMb": {
+          "type": "integer",
+          "minimum": 512,
+          "multipleOf": 2,
+          "description": "Memory in MB for sandboxes created from this template (e2b `--memory-mb`, must be even)."
+        }
       }
     },
     "templates": {

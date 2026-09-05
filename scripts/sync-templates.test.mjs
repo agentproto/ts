@@ -103,10 +103,16 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     assert.match(first["packages/sandbox-e2b/package.json"], /"description": ".*baked @agentproto\/cli 0\.17\.0.*"/)
 
     // toml records the pins per-package (no space-separated adapter list)
-    assert.match(first["templates/workstation/e2b.template.toml"], /AGENTPROTO_CLI_VERSION = "0\.17\.0"/)
-    assert.doesNotMatch(first["templates/workstation/e2b.template.toml"], /AGENTPROTO_ADAPTERS =/)
+    const toml = first["templates/workstation/e2b.template.toml"]
+    assert.match(toml, /AGENTPROTO_CLI_VERSION = "0\.17\.0"/)
+    assert.doesNotMatch(toml, /AGENTPROTO_ADAPTERS =/)
     // the opaque template id must NOT leak into the toml (alias only)
-    assert.doesNotMatch(first["templates/workstation/e2b.template.toml"], STABLE_ID_RE)
+    assert.doesNotMatch(toml, STABLE_ID_RE)
+    // resources recorded from versions.json, and threaded into the documented
+    // build command as CLI FLAGS (the toml itself is not read by `template create`).
+    assert.match(toml, /cpu_count = 2/)
+    assert.match(toml, /memory_mb = 2048/)
+    assert.match(toml, /--cpu-count 2 --memory-mb 2048 -d Dockerfile/)
 
     // Dockerfile: one ARG per adapter (never a space-separated list), pins
     // baked as ARG defaults, and a SINGLE `npm i -g` for the baked toolchain
@@ -114,6 +120,10 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     const df = first["templates/workstation/Dockerfile"]
     assert.match(df, /ARG AGENTPROTO_ADAPTER_HERMES=@agentproto\/adapter-hermes@0\.4\.10/)
     assert.match(df, /ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto\/adapter-opencode@1\.1\.10/)
+    // mastra-agent adapter: its own ARG + npm ls -g smoke line (derived from
+    // versions.json, so the arg name is the sanitized upper-cased package name).
+    assert.match(df, /ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto\/adapter-mastra-agent@0\.6\.0/)
+    assert.match(df, /npm ls -g --depth=0 @agentproto\/adapter-mastra-agent/)
     assert.match(df, /ARG AGENTPROTO_CLI_VERSION=0\.17\.0/)
     // no space-separated adapter ARG declaration (anchored to a real ARG line,
     // not the explanatory comment that names the anti-pattern)

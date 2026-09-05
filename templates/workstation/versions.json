@@ -4,10 +4,15 @@
   "cli": "0.17.0",
   "adapters": {
     "@agentproto/adapter-opencode": "1.1.10",
-    "@agentproto/adapter-hermes": "0.4.10"
+    "@agentproto/adapter-hermes": "0.4.10",
+    "@agentproto/adapter-mastra-agent": "0.6.0"
   },
   "runtime": {
     "opencode-ai": "1.18.28"
+  },
+  "resources": {
+    "cpuCount": 2,
+    "memoryMb": 2048
   },
   "templates": {
     "stable": {
@@ -29,9 +34,10 @@
         "cli": "0.17.0",
         "adapters": {
           "@agentproto/adapter-hermes": "0.4.10",
+          "@agentproto/adapter-mastra-agent": "0.6.0",
           "@agentproto/adapter-opencode": "1.1.10"
         },
-        "builtAt": "2026-09-05T01:05:44Z"
+        "builtAt": "2026-09-05T16:08:13Z"
       }
     }
   }

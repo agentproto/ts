@@ -14,6 +14,14 @@ template_id = "agentproto-workstation"
 
 description = "agentproto workstation — Node, git, pinned @agentproto/cli, baked agentproto adapters, and the OpenCode runtime"
 
+# Sandbox runtime resources (versions.json → resources). The e2b default is
+# 512MB, which OOMs a heavy adapter install (e.g. mastra) — so bump both. NOTE:
+# `e2b template create -d Dockerfile` does NOT read this file; these MUST be
+# passed as CLI flags (`--cpu-count` / `--memory-mb`) at create time — see the
+# build commands below and README.md. The keys here are a human-readable RECORD.
+cpu_count = 2
+memory_mb = 2048
+
 [build]
 dockerfile = "Dockerfile"
 
@@ -24,10 +32,12 @@ dockerfile = "Dockerfile"
 BASE_IMAGE = "e2bdev/code-interpreter:latest"
 AGENTPROTO_CLI_VERSION = "0.17.0"
 AGENTPROTO_ADAPTER_HERMES = "@agentproto/adapter-hermes@0.4.10"
+AGENTPROTO_ADAPTER_MASTRA_AGENT = "@agentproto/adapter-mastra-agent@0.6.0"
 AGENTPROTO_ADAPTER_OPENCODE = "@agentproto/adapter-opencode@1.1.10"
 OPENCODE_RUNTIME_VERSION = "1.18.28"
 
-# Build (from templates/workstation/ — see README.md):
-#   e2b template create agentproto-workstation -d Dockerfile
+# Build (from templates/workstation/ — see README.md). The resource flags are
+# REQUIRED — the toml keys above are ignored by `template create`:
+#   e2b template create agentproto-workstation --cpu-count 2 --memory-mb 2048 -d Dockerfile
 # Dev variant (same Dockerfile, different alias):
-#   e2b template create agentproto-workstation-dev -d Dockerfile
+#   e2b template create agentproto-workstation-dev --cpu-count 2 --memory-mb 2048 -d Dockerfile
