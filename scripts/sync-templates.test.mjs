@@ -70,6 +70,7 @@ function snapshot(root) {
   const files = [
     "packages/sandbox-e2b/src/template-versions.generated.ts",
     "templates/workstation/e2b.template.toml",
+    "templates/workstation/Dockerfile",
     "packages/sandbox-e2b/README.md",
     "docs/cli/guides/sandbox-rendezvous.md",
     "packages/runtime/src/sandbox-providers/registry.ts",
@@ -101,10 +102,25 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     // package.json description rewritten in place
     assert.match(first["packages/sandbox-e2b/package.json"], /"description": ".*baked @agentproto\/cli 0\.17\.0.*"/)
 
-    // toml carries the build args
+    // toml records the pins per-package (no space-separated adapter list)
     assert.match(first["templates/workstation/e2b.template.toml"], /AGENTPROTO_CLI_VERSION = "0\.17\.0"/)
+    assert.doesNotMatch(first["templates/workstation/e2b.template.toml"], /AGENTPROTO_ADAPTERS =/)
     // the opaque template id must NOT leak into the toml (alias only)
     assert.doesNotMatch(first["templates/workstation/e2b.template.toml"], STABLE_ID_RE)
+
+    // Dockerfile: one ARG per adapter (never a space-separated list), pins
+    // baked as ARG defaults, and a SINGLE `npm i -g` for the baked toolchain
+    // (so nothing installed later can drop the adapters).
+    const df = first["templates/workstation/Dockerfile"]
+    assert.match(df, /ARG AGENTPROTO_ADAPTER_HERMES=@agentproto\/adapter-hermes@0\.4\.10/)
+    assert.match(df, /ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto\/adapter-opencode@1\.1\.10/)
+    assert.match(df, /ARG AGENTPROTO_CLI_VERSION=0\.17\.0/)
+    // no space-separated adapter ARG declaration (anchored to a real ARG line,
+    // not the explanatory comment that names the anti-pattern)
+    assert.doesNotMatch(df, /^ARG [A-Z_]*ADAPTERS=/m)
+    assert.equal((df.match(/^RUN npm i -g/gm) || []).length, 1)
+    // no bare post-FROM ARG re-declaration would shadow the pre-FROM defaults
+    assert.doesNotMatch(df, /\nARG AGENTPROTO_CLI_VERSION\n/)
 
     // SECOND run: byte-identical tree — no diff
     runSync(root)
