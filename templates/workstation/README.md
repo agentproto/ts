@@ -107,12 +107,34 @@ Preview the registry resolution without publishing or changing files:
 pnpm templates:refresh --channel dev --latest --dry-run
 ```
 
-Verify generated drift and that the recorded dev bake exactly proves the
+Verify generated drift and that the recorded channel proofs exactly match the
 declared pins; this needs no E2B or npm credentials:
 
 ```sh
 pnpm templates:refresh --channel dev --check
 ```
+
+### Refresh the stable channel from its pins
+
+Stable never resolves npm's `latest`. `--channel stable --pin` bakes **exactly**
+the versions already declared in `versions.json` (the same `cli`, `adapters`,
+and `runtime` pins the generated Dockerfile builds from), then runs the **same
+proof gate as the dev flow**: it boots the published image and proves Node,
+Git, the CLI, every baked adapter and runtime package, and daemon `/health`
+before writing anything. It refuses `--latest` outright — a stable refresh can
+only re-bake the recorded pins (typically after bumping them by editing
+`versions.json` and re-running the sync script), never drift to whatever the
+registry currently serves:
+
+```sh
+pnpm templates:refresh --channel stable --pin [--dry-run]
+```
+
+It records the new stable template ID and proved `baked` metadata in
+`versions.json`, re-runs canonical sync, and leaves `templates.dev` untouched
+(the dev flow symmetrically never touches stable). Bump a stable pin by
+editing `versions.json` first; the `--pin` flow then bakes and proves the new
+pins in one pass.
 
 The command never injects host credentials into the Docker build or sandbox;
 E2B authentication is used only by the host CLI. Agent/provider credentials

@@ -252,6 +252,12 @@ jobs:
       - name: Run sync-templates tests
         run: node --test scripts/sync-templates.test.mjs
 
+      # Guards refresh-template.mjs's publish/proof flow — the dev --latest
+      # and stable --pin channels (pins, guards, recorded proofs) ship
+      # untested otherwise. Zero-credential: fake git/npm/e2b binaries.
+      - name: Run refresh-template tests
+        run: node --test scripts/refresh-template.test.mjs
+
       # Guards docs-check.mjs's PreToolUse path-confinement guard — an
       # unattended `bypassPermissions` SDK run that reads/edits doc files is
       # otherwise not sandboxed to the repo root (verified live: a run read
