@@ -69,7 +69,7 @@ e2b template create agentproto-workstation-dev --cpu-count 2 --memory-mb 2048 -d
 
 `e2b template create <alias>` publishes a new template **version** under the
 same template id — existing sandboxes are untouched, new boots get the new
-version. After every real build, record the result back into
+version. For the pinned stable channel, record the result back into
 `versions.json` and re-run the sync script:
 
 1. Set `templates.<channel>.id` to the built template id (if it changed).
@@ -82,9 +82,41 @@ version. After every real build, record the result back into
    silently boots the wrong CLI or loses adapters.
 3. Run `node scripts/sync-templates.mjs` and commit.
 
-TODO (not implemented): a `pnpm templates:refresh --channel dev` helper
-that builds the dev channel against unreleased pins and writes the
-resulting `baked` block automatically.
+### Refresh development latest explicitly
+
+Development can deliberately follow npm's `latest` dist-tag. It is never
+implicit: this command accepts only `--channel dev --latest`, rejects dirty
+trees, verifies E2B credentials, builds a temporary generated Dockerfile,
+boots the resulting image, and proves Node, Git, the CLI, every baked package,
+and daemon `/health` before it writes any repository file:
+
+```sh
+pnpm templates:refresh --channel dev --latest
+```
+
+It records the new dev template ID and proved `baked` metadata in
+`versions.json`, then runs canonical sync. It cannot publish or mutate
+`templates.stable`; stable remains the explicitly pinned, reproducible release
+path. The image publish itself cannot be undone if proof fails, but local
+metadata is left untouched (and metadata/sync writes are rolled back on a
+local partial failure), so the orphan can be inspected or removed safely.
+
+Preview the registry resolution without publishing or changing files:
+
+```sh
+pnpm templates:refresh --channel dev --latest --dry-run
+```
+
+Verify generated drift and that the recorded dev bake exactly proves the
+declared pins; this needs no E2B or npm credentials:
+
+```sh
+pnpm templates:refresh --channel dev --check
+```
+
+The command never injects host credentials into the Docker build or sandbox;
+E2B authentication is used only by the host CLI. Agent/provider credentials
+remain per-boot environment variables.
 
 ## Rollback
 
