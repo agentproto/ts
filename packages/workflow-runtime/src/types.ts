@@ -342,12 +342,21 @@ export interface GateStep {
   kind: "gate"
   id: string
   command: string
-  /** Command arguments. A `$…` reference string (or a selector function)
-   *  resolves per-run against the bindings before the command runs —
-   *  `$$…` stays a literal `$`; a ref that resolves to nothing throws. */
+  /** Command arguments. Each element (selector or string) resolves per-run
+   *  against the bindings: a LEADING `$input|$item|$steps.<id>|$index` token
+   *  (AIP-16 prefix grammar) resolves and any trailing text is appended
+   *  verbatim (`"$input.bookDir/knowledge"` → `"<resolved>/knowledge"`); a
+   *  string that is exactly a ref resolves to that value's string form;
+   *  `$$…` stays a literal `$`; a ref that resolves to nothing (or a `$…`
+   *  string that opens no known ref token) throws naming the step and the
+   *  arg index. */
   args?: readonly (Selector<string> | string)[]
-  /** Working directory. Selector form resolves per-run; omit for the run's
-   *  own `ctx.cwd`. */
+  /** Working directory. Selector form resolves per-run. A string may carry
+   *  the same leading-`$…` ref rule as `args` (leading token + trailing
+   *  text, `$$` escape, unresolvable ref throws). The RESOLVED cwd is made
+   *  absolute: absolute stays absolute; relative (incl. `.`) resolves
+   *  against the run's own `ctx.cwd` — never the daemon process cwd.
+   *  Omit for the run's `ctx.cwd`. */
   cwd?: Selector<string> | string
   /** Path (relative to `cwd`), of a JSON report file, consulted when stdout
    *  doesn't itself parse as JSON. */

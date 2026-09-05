@@ -489,8 +489,8 @@
       "properties": {
         "kind": { "const": "gate" },
         "command": { "type": "string" },
-        "args": { "type": "array", "items": { "type": "string" } },
-        "cwd": { "type": "string", "description": "Working directory. Defaults to the workflow run's own cwd." },
+        "args": { "type": "array", "items": { "type": "string", "description": "May carry a LEADING `$…` run-time reference (AIP-16): a leading `$input|$item|$steps.<id>|$index` token is resolved per run against the run bindings and any trailing text is appended verbatim (`$input.bookDir/knowledge` → `<resolved>/knowledge`; a string that is exactly a ref resolves to that value's string form); `$$` escapes a literal `$`; an unresolvable ref throws naming the step and the arg index." } },
+        "cwd": { "type": "string", "description": "Working directory. Defaults to the workflow run's own cwd. May carry the same leading-`$…` ref rule as `args` (leading token + trailing text, `$$` escape, unresolvable ref throws). The resolved cwd is made absolute: absolute stays absolute; a relative resolved cwd (incl. `.`) resolves against the run's cwd, never the daemon process cwd." },
         "report": { "type": "string", "description": "Path (relative to `cwd`) of a JSON report file, consulted when stdout doesn't itself parse as JSON." },
         "on_fail": {
           "type": "object",

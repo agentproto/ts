@@ -910,6 +910,93 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
     )
     expect(runGateCommand).not.toHaveBeenCalled()
   })
+
+  it("expands a leading ref plus trailing text in an arg ($input.book/knowledge)", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "gate-ref-arg-trailing",
+      steps: [
+        {
+          kind: "gate",
+          id: "g",
+          command: "node",
+          args: [
+            "-e",
+            "process.exit(process.argv[1] === 'book3/knowledge' ? 0 : 1)",
+            "$input.book/knowledge",
+          ],
+        },
+      ],
+    }
+    // The ref expands to "book3" and "/knowledge" is appended verbatim (exit
+    // 0); a bare-ref-only grammar would reject the arg outright.
+    const { output } = await runWorkflow({ workflow: wf, input: { book: "book3" } })
+    expect(output).toMatchObject({ ok: true, exitCode: 0 })
+  })
+
+  it("resolves a cwd ref: absolute stays absolute, relative (incl. .) resolves against the run cwd", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-cwd-"))
+    try {
+      const cwds: string[] = []
+      const runGateCommand = vi.fn(async (spec: { cwd: string }) => {
+        cwds.push(spec.cwd)
+        return { exitCode: 0, stdout: "{}", stderr: "" }
+      })
+      const gate = (cwd?: string) => ({ kind: "gate" as const, id: "g", command: "pnpm", ...(cwd !== undefined ? { cwd } : {}) })
+      const wf: RuntimeWorkflow = { id: "gate-cwd-ref", steps: [] }
+
+      await runWorkflow({ workflow: { ...wf, steps: [gate(dir)] }, runGateCommand })
+      await runWorkflow({
+        workflow: { ...wf, steps: [gate("$input.dir")] },
+        input: { dir },
+        runGateCommand,
+      })
+      await runWorkflow({ workflow: { ...wf, steps: [gate("sub/dir")] }, cwd: dir, runGateCommand })
+      await runWorkflow({ workflow: { ...wf, steps: [gate(".")] }, cwd: dir, runGateCommand })
+      await runWorkflow({ workflow: { ...wf, steps: [gate()] }, cwd: dir, runGateCommand })
+
+      // Absolute ref → as-is; relative/`.` and absent → the run's own cwd,
+      // never the daemon process cwd (vitest's cwd is the package dir).
+      expect(cwds).toEqual([dir, dir, join(dir, "sub/dir"), dir, dir])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("throws a clear error naming the step and 'cwd' when a cwd ref resolves to nothing", async () => {
+    const runGateCommand = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }))
+    const wf: RuntimeWorkflow = {
+      id: "gate-bad-cwd",
+      steps: [{ kind: "gate", id: "g", command: "pnpm", cwd: "$input.nonexistent" }],
+    }
+    await expect(runWorkflow({ workflow: wf, input: {}, runGateCommand })).rejects.toThrow(
+      /step 'g': cwd '\$input\.nonexistent' resolves to nothing/,
+    )
+    expect(runGateCommand).not.toHaveBeenCalled()
+  })
+
+  it("run-level: a gate with cwd: $input.dir executes in that directory (its marker file lands there)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-cwd-run-"))
+    try {
+      const wf: RuntimeWorkflow = {
+        id: "gate-cwd-run",
+        steps: [
+          {
+            kind: "gate",
+            id: "g",
+            command: "node",
+            args: ["-e", "require('fs').writeFileSync('marker-from-gate.txt', 'ok')"],
+            cwd: "$input.dir",
+          },
+        ],
+      }
+      // No runGateCommand override — the real execFile path runs, in dir.
+      const { output } = await runWorkflow({ workflow: wf, input: { dir } })
+      expect(output).toMatchObject({ ok: true, exitCode: 0 })
+      expect(readFileSync(join(dir, "marker-from-gate.txt"), "utf8")).toBe("ok")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ── AgentStep outputSchema tests ─────────────────────────────────────
