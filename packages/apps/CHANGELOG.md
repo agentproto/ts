@@ -1,5 +1,13 @@
 # @agentproto/apps
 
+## 0.9.2
+
+### Patch Changes
+
+- Updated dependencies [66f73d9]
+  - @agentproto/app-kit@1.1.0
+  - @agentproto/workflow@0.5.0
+
 ## 0.9.1
 
 ### Patch Changes

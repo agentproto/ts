@@ -1,5 +1,12 @@
 # @agentproto/sandbox
 
+## 0.3.1
+
+### Patch Changes
+
+- @agentproto/workflow-runtime@0.10.1
+- @agentproto/worktree@0.6.1
+
 ## 0.3.0
 
 ### Minor Changes

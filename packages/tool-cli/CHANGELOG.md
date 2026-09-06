@@ -1,5 +1,13 @@
 # @agentproto/tool-cli
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [20ef731]
+  - @agentproto/tool@0.3.0
+  - @agentproto/driver@0.2.2
+
 ## 0.2.2
 
 ### Patch Changes
