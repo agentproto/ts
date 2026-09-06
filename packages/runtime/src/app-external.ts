@@ -35,6 +35,7 @@ import { extname, isAbsolute, join, resolve, sep } from "node:path"
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 /** Thrown when a relative external path resolves outside the granted root. */
 export class ExternalPathTraversalError extends Error {
@@ -161,6 +162,7 @@ export function registerAppExternalTools(
       appId: z.string(),
       root: z.string().describe("Must exactly match one of the app's granted externalReadRoots entries."),
       path: z.string().optional().describe("Path relative to `root`. Defaults to the root itself."),
+      ...pageParamsShape,
     },
     async input => {
       const installed = appRegistry.getApp(input.appId)
@@ -204,6 +206,13 @@ export function registerAppExternalTools(
         entries.push({ name: d.name, isDirectory, size })
       }
       entries.sort((a, b) => a.name.localeCompare(b.name))
+      // Pagination LAST — after the traversal guards + sort. Without
+      // limit/cursor the output is byte-identical to the pre-pagination
+      // handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(entries, input, { maxLimit: 200, keyOf: e => e.name })
+        return { content: [{ type: "text", text: toolText(page) }] }
+      }
       return textResult({ appId: input.appId, root: input.root, path: relPath, entries })
     },
   )

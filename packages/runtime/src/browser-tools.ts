@@ -23,6 +23,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { AdapterLister } from "@agentproto/provider-kit"
 import type { SessionsRegistry } from "./sessions.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -153,13 +154,19 @@ export function registerBrowserTools(
     "browser_adapter_list",
     "List available browser adapter ids and their metadata (name, description, default port). " +
       "Use the `id` field to reference an adapter in `start_browser`.",
-    {},
-    async () => {
+    { ...pageParamsShape },
+    async input => {
       // Kit path: async lister supplied — extract info fields to preserve the
       // existing { id, name, description, defaultPort }[] response shape.
       if (lister) {
         const entries = await lister()
         const adapters = entries.flatMap(e => (e.info ? [e.info] : []))
+        // Pagination LAST — without limit/cursor the output is
+        // byte-identical to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(adapters, input, { maxLimit: 200, keyOf: a => a.id })
+          return { content: [{ type: "text" as const, text: toolText(page) }] }
+        }
         return {
           content: [{ type: "text" as const, text: JSON.stringify(adapters, null, 2) }],
         }
@@ -179,6 +186,10 @@ export function registerBrowserTools(
         }
       }
       const adapters = listBrowserAdapters()
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(adapters, input, { maxLimit: 200, keyOf: a => a.id })
+        return { content: [{ type: "text" as const, text: toolText(page) }] }
+      }
       return {
         content: [{ type: "text" as const, text: JSON.stringify(adapters, null, 2) }],
       }
@@ -393,6 +404,7 @@ export function registerBrowserTools(
         .describe(
           "When true, return only sessions with status='running'. Default false (all including killed/exited)."
         ),
+      ...pageParamsShape,
     },
     async input => {
       const all = registry
@@ -401,6 +413,13 @@ export function registerBrowserTools(
       const result = input.onlyAlive
         ? all.filter(d => d.status === "running")
         : all
+      // Pagination LAST — after the kind/onlyAlive filters. Without
+      // limit/cursor the output is byte-identical to the pre-pagination
+      // handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(result, input, { maxLimit: 200, keyOf: d => d.id })
+        return { content: [{ type: "text" as const, text: toolText(page) }] }
+      }
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       }

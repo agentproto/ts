@@ -231,4 +231,36 @@ describe("worktree_status — MCP tool", () => {
       await h.close()
     }
   })
+
+  it("page-walk with limit=1 covers exactly the unpaginated list; default call unchanged (PR-8)", async () => {
+    const h = await harness(async () => FAKE_VIEWS)
+    try {
+      // Default call unchanged: the { worktrees } envelope, no page fields.
+      const result = await h.client.callTool({
+        name: "worktree_status",
+        arguments: { repoRoot: "/repo" },
+      })
+      expect(payload(result)).toEqual({ worktrees: FAKE_VIEWS })
+
+      // Page-walk: the union of pages equals the unpaginated list exactly.
+      const union: WorktreeStatusView[] = []
+      let cursor: string | undefined
+      do {
+        const page = JSON.parse(
+          (
+            (await h.client.callTool({
+              name: "worktree_status",
+              arguments: { repoRoot: "/repo", limit: 1, ...(cursor ? { cursor } : {}) },
+            })) as { content: Array<{ text: string }> }
+          ).content[0]!.text,
+        ) as { items: WorktreeStatusView[]; total: number; nextCursor?: string }
+        expect(page.total).toBe(2)
+        union.push(...page.items)
+        cursor = page.nextCursor
+      } while (cursor)
+      expect(union.map(w => w.path)).toEqual(FAKE_VIEWS.map(w => w.path))
+    } finally {
+      await h.close()
+    }
+  })
 })

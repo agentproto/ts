@@ -153,4 +153,35 @@ describe("llm_endpoint_list_links", () => {
     const keys = new Set(anthropic.eligible.flatMap(e => Object.keys(e)))
     expect(keys.has("credentialRef")).toBe(false)
   })
+
+  it("page-walk with limit=3 covers exactly the unpaginated upstreams; default call unchanged (PR-8)", async () => {
+    const { server, tools } = fakeServer()
+    registerLlmEndpointTools(server, { registry: fakeRegistry(false) })
+    const list = tools.get("llm_endpoint_list_links")!
+
+    // Default call unchanged: the { links, upstreams } envelope, no page fields.
+    const unpaginated = parse(await list({})) as {
+      links: Record<string, string>
+      upstreams: { provider: string }[]
+      items?: unknown
+      total?: number
+    }
+    expect(Object.keys(unpaginated.links)).toEqual([])
+    const allProviders = unpaginated.upstreams.map(u => u.provider)
+    expect(unpaginated.items).toBeUndefined()
+    expect(unpaginated.total).toBeUndefined()
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = parse(
+        await list({ limit: 3, ...(cursor ? { cursor } : {}) }),
+      ) as { items: { provider: string }[]; total: number; nextCursor?: string }
+      expect(page.total).toBe(allProviders.length)
+      union.push(...page.items.map(u => u.provider))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(allProviders)
+  })
 })

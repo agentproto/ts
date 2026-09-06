@@ -2020,3 +2020,96 @@ describe("app_* verbs — UI-only (zero-agent) apps", () => {
     }
   })
 })
+
+describe("app_list / app_list_applied pagination (PR-8)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-page-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function installApps(count: number) {
+    const ids: string[] = []
+    for (let i = 0; i < count; i++) {
+      const appId = `@test/page-app-${i}`
+      ids.push(appId)
+      const app = defineApp({
+        id: appId,
+        name: appId,
+        agents: [],
+        ui: { html: "<html><body>page fixture</body></html>", title: appId, tools: ["known_tool"] },
+      })
+      await app.emit(join(dir, `app-${i}`))
+    }
+    const { client } = await setup()
+    for (let i = 0; i < count; i++) {
+      const res = await client.callTool({
+        name: "app_install",
+        arguments: { dir: join(dir, `app-${i}`) },
+      })
+      if (isError(res)) throw new Error("fixture app_install failed")
+    }
+    return { client, ids }
+  }
+
+  it("app_list: page-walk with limit=2 covers exactly the unpaginated list; default call unchanged", async () => {
+    const { client, ids } = await installApps(3)
+
+    // Default call unchanged: a bare array, no page envelope.
+    const unpaginated = parseToolJson(await client.callTool({ name: "app_list", arguments: {} }))
+    expect(Array.isArray(unpaginated)).toBe(true)
+    expect(unpaginated.map((a: any) => a.appId)).toEqual(ids)
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = parseToolJson(
+        await client.callTool({
+          name: "app_list",
+          arguments: { limit: 2, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      expect(page.total).toBe(3)
+      union.push(...page.items.map((a: any) => a.appId))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(ids)
+  })
+
+  it("app_list_applied: page-walk with limit=1 covers exactly the unpaginated mounts; default call unchanged", async () => {
+    const { client } = await installApps(1)
+    const scopes = ["s-1", "s-2", "s-3"]
+    for (const scopeId of scopes) {
+      await client.callTool({
+        name: "app_apply",
+        arguments: { appId: "@test/page-app-0", scopeId },
+      })
+    }
+
+    // Default call unchanged: a bare array, no page envelope.
+    const unpaginated = parseToolJson(
+      await client.callTool({ name: "app_list_applied", arguments: {} }),
+    )
+    expect(Array.isArray(unpaginated)).toBe(true)
+    expect(unpaginated.map((m: any) => m.scopeId)).toEqual(scopes)
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = parseToolJson(
+        await client.callTool({
+          name: "app_list_applied",
+          arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      expect(page.total).toBe(3)
+      union.push(...page.items.map((m: any) => m.scopeId))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(scopes)
+  })
+})

@@ -15,6 +15,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 export interface RegisterTunnelToolsOptions {
   registry: TunnelRegistry
@@ -169,6 +170,7 @@ export function registerTunnelTools(
           "When true, return only tunnels with status `starting` or `active`. " +
             "Default false (return all).",
         ),
+      ...pageParamsShape,
     },
     async input => {
       let tunnels = registry.list()
@@ -176,6 +178,12 @@ export function registerTunnelTools(
         tunnels = tunnels.filter(
           t => t.status === "starting" || t.status === "active",
         )
+      }
+      // Pagination LAST — after the onlyActive filter. Without limit/cursor
+      // the output is byte-identical to the pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(tunnels, input, { maxLimit: 200, keyOf: t => t.id })
+        return { content: [{ type: "text", text: toolText(page) }] }
       }
       return text({ tunnels })
     },

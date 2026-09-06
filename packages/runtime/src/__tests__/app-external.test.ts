@@ -250,3 +250,43 @@ describe("app_external_read", () => {
     expect(isError(r)).toBe(true)
   })
 })
+
+describe("app_external_list pagination (PR-8)", () => {
+  it("page-walk with limit=2 covers exactly the unpaginated entries; default call unchanged", async () => {
+    await mkdir(join(externalDir, "sub"), { recursive: true })
+    await writeFile(join(externalDir, "a.json"), "{}", "utf8")
+    await writeFile(join(externalDir, "top.txt"), "x", "utf8")
+    const { client } = await setup(sandboxDir, [externalDir])
+
+    // Default call unchanged: the { appId, root, path, entries } envelope,
+    // no page fields.
+    const unpaginated = parseToolJson(
+      await client.callTool({
+        name: "app_external_list",
+        arguments: { appId: APP_ID, root: externalDir },
+      }),
+    )
+    expect(unpaginated.appId).toBe(APP_ID)
+    expect(unpaginated.root).toBe(externalDir)
+    expect(unpaginated.path).toBe("")
+    expect(unpaginated.entries.map((e: any) => e.name)).toEqual(["a.json", "sub", "top.txt"])
+    expect(unpaginated.items).toBeUndefined()
+    expect(unpaginated.total).toBeUndefined()
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = parseToolJson(
+        await client.callTool({
+          name: "app_external_list",
+          arguments: { appId: APP_ID, root: externalDir, limit: 2, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      expect(page.total).toBe(3)
+      union.push(...page.items.map((e: any) => e.name))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(["a.json", "sub", "top.txt"])
+  })
+})

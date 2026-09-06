@@ -1686,7 +1686,8 @@ export function registerAgentTools(
       "what's available. Pass `summary: true` for a lightweight projection " +
       "(`slug`, `name`, `version`, `protocol`, `models`) — the full payload " +
       "carries every adapter's commands/modes/model details and can run to " +
-      "hundreds of KB, far heavier than a UI picker needs.",
+      "hundreds of KB, far heavier than a UI picker needs. `full: true` is an " +
+      "alias for `summary: false`.",
     {
       summary: z
         .boolean()
@@ -1695,8 +1696,9 @@ export function registerAgentTools(
           "Return only { slug, name, version, protocol, models } per adapter " +
             "instead of the full manifest projection. Default false.",
         ),
+      ...pageParamsShape,
     },
-    async ({ summary }) => {
+    async input => {
       if (!listAgentAdapters) {
         return {
           content: [
@@ -1713,7 +1715,10 @@ export function registerAgentTools(
       }
       try {
         const adapters = await listAgentAdapters()
-        const projected = summary
+        // `full:true` aliases `summary:false` — the explicit opt-out from the
+        // summary projection. Default (neither flag) is unchanged: full.
+        const wantSummary = input.full === true ? false : (input.summary ?? false)
+        const projected = wantSummary
           ? adapters.map(a => ({
               slug: a.slug,
               name: a.name,
@@ -1722,6 +1727,17 @@ export function registerAgentTools(
               models: a.models ?? [],
             }))
           : adapters
+        // Pagination LAST — after the summary projection. Without limit/
+        // cursor the output is byte-identical to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          // Both projection arms share `slug` — page over that structural
+          // shape so either arm paginates identically.
+          const page = paginate<{ slug: string }>(projected, input, {
+            maxLimit: 200,
+            keyOf: a => a.slug,
+          })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return {
           content: [{ type: "text", text: JSON.stringify({ adapters: projected }, null, 2) }],
         }
@@ -1984,8 +2000,8 @@ export function registerAgentTools(
       "this tool never itself grants or denies a spawn. Use before " +
       "`agent_start` with `orchestrator` to discover which roles this " +
       "session may in turn spawn.",
-    {},
-    async () => {
+    { ...pageParamsShape },
+    async input => {
       try {
         const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
         const roles = listRoles(registry).map(role => ({
@@ -1994,6 +2010,12 @@ export function registerAgentTools(
           delegation: role.toolPolicy.delegation,
           spawnable: spawnableRolesFor(role, registry).map(child => child.name),
         }))
+        // Pagination LAST — without limit/cursor the output is
+        // byte-identical to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(roles, input, { maxLimit: 200, keyOf: r => r.name })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return {
           content: [{ type: "text", text: JSON.stringify({ roles }, null, 2) }],
         }

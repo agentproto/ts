@@ -564,3 +564,106 @@ describe("browser_screenshot — abort timer cleanup", () => {
     await cleanup()
   })
 })
+
+// ── (PR-8) additive limit/cursor pagination ──────────────────────────────────
+
+describe("list tools pagination (PR-8)", () => {
+  it("browser_adapter_list: page-walk with limit=1 covers exactly the unpaginated list; default unchanged", async () => {
+    const mockLister: BrowserAdapterLister = () => [
+      { id: "camofox", name: "Camofox", description: "Headless Chrome adapter", defaultPort: 9377 },
+      { id: "bureau", name: "Bureau", description: "Cloud browser service", defaultPort: 9178 },
+    ]
+    const { client, cleanup } = await makeSetup({ listBrowserAdapters: mockLister })
+
+    // Default call unchanged: a bare array, no page envelope.
+    const unpaginated = JSON.parse(
+      (
+        (await client.callTool({ name: "browser_adapter_list", arguments: {} })) as {
+          content: Array<{ type: string; text: string }>
+        }
+      ).content[0]!.text,
+    ) as Array<{ id: string }>
+    expect(unpaginated.map(a => a.id)).toEqual(["camofox", "bureau"])
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = JSON.parse(
+        (
+          (await client.callTool({
+            name: "browser_adapter_list",
+            arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
+          })) as { content: Array<{ type: string; text: string }> }
+        ).content[0]!.text,
+      ) as { items: Array<{ id: string }>; total: number; nextCursor?: string }
+      expect(page.total).toBe(2)
+      union.push(...page.items.map(a => a.id))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(["camofox", "bureau"])
+
+    await cleanup()
+  })
+
+  it("list_browsers: page-walk with limit=1 covers exactly the unpaginated list; default unchanged", async () => {
+    const registry = createSessionsRegistry({ persistPath: join(tmp, "sessions-page.json") })
+    const server = new McpServer({ name: "test-browser-page", version: "0.0.1" })
+    registerBrowserTools(server, { registry })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "test-client-page", version: "0.0.1" })
+    await client.connect(clientTransport)
+    const cleanup = async () => {
+      await client.close()
+      registry.shutdown()
+    }
+
+    registry.registerBrowser({
+      adapterId: "camofox",
+      port: 9377,
+      baseUrl: "http://127.0.0.1:9377",
+      wasAlreadyRunning: false,
+      status: "running",
+      stop: async () => {},
+    })
+    registry.registerBrowser({
+      adapterId: "bureau",
+      port: 9178,
+      baseUrl: "http://127.0.0.1:9178",
+      wasAlreadyRunning: false,
+      status: "running",
+      stop: async () => {},
+    })
+
+    // Default call unchanged: a bare array, no page envelope.
+    const unpaginated = JSON.parse(
+      (
+        (await client.callTool({ name: "list_browsers", arguments: {} })) as {
+          content: Array<{ type: string; text: string }>
+        }
+      ).content[0]!.text,
+    ) as Array<{ id: string }>
+    expect(unpaginated).toHaveLength(2)
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = JSON.parse(
+        (
+          (await client.callTool({
+            name: "list_browsers",
+            arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
+          })) as { content: Array<{ type: string; text: string }> }
+        ).content[0]!.text,
+      ) as { items: Array<{ id: string }>; total: number; nextCursor?: string }
+      expect(page.total).toBe(2)
+      union.push(...page.items.map(d => d.id))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(unpaginated.map(d => d.id))
+
+    await cleanup()
+  })
+})
