@@ -1,5 +1,15 @@
 # @agentproto/corpus-cli
 
+## 0.9.1
+
+### Patch Changes
+
+- Updated dependencies [f9e21fd]
+  - @agentproto/corpus@0.7.1
+  - @agentproto/corpus-presets@0.2.9
+  - @agentproto/batch@0.2.0
+  - @agentproto/cli-exec@0.1.0
+
 ## 0.9.0
 
 ### Minor Changes

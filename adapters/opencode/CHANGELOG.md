@@ -1,5 +1,18 @@
 # @agentproto/adapter-opencode
 
+## 1.2.0
+
+### Minor Changes
+
+- f75ef5d: Add token usage tracking for OpenCode adapter sessions via readOpenCodeUsage hook. OpenCode's live ACP usage_update event only carries cost (no token fields), so the new function reads token data from OpenCode's sqlite store and is wired into the registry's turn-end path to fill in missing tokensIn/tokensOut fields, mirroring the existing hermes adapter pattern.
+
+### Patch Changes
+
+- Updated dependencies [692d659]
+- Updated dependencies [6bfb633]
+  - @agentproto/model-catalog@0.9.2
+  - @agentproto/driver-agent-cli@2.4.1
+
 ## 1.1.10
 
 ### Patch Changes

@@ -1,5 +1,120 @@
 # @agentproto/runtime
 
+## 2.12.0
+
+### Minor Changes
+
+- a939171: Additive `limit`/`cursor` pagination for the `catalog_models` and `catalog_provider_models` MCP tools: passing either param returns the shared `{ items, nextCursor?, total }` envelope over the filtered route/model array (cursor offset = position in the filtered array); omitting both keeps the byte-identical whole-catalog response.
+- dc7729b: Additive MCP pagination/tree params (PR-6): `mcp_imported_tool_list` gains `compact`/`schema` projections and `limit`/`cursor` paging (max 200) over the tool array; `session_tree` gains `groupByOrigin:false` to suppress the `byOrigin` companion view; `session_events_poll` accepts a forward-compat `full` flag. All defaults unchanged — omitting the new params returns today's byte-identical output.
+- 69a25bd: Additive `limit`/`cursor` pagination (via `paginate` + `toolText`) to the orchestration list tools — `permissions_list`, `policy_list`, `workflow_list`, `activities_list`, `cron_list`, `routine_list`, `inbound_endpoint_list`, `inbound_watcher_list` — applied last, after all scoping and filters. Output is byte-identical to before when neither param is supplied.
+- 0012980: feat(permissions): thread plan \_meta through the hold path and add free-text feedback on the respond path
+
+  Adds `feedback?: string` to permission resolutions, enabling users to attach contextual information when approving or denying held tool-permission requests. The feature threads through all layers: types export `ACP_META_FEEDBACK` constant for the `_meta` key convention, ACP client carries `_meta` through to agent-prompt events, runtime forwards feedback on outcomes, and mastra-agent adapter folds feedback into suspension resumeData. CLI gains `--feedback` flag on approve/deny commands and renders plan text from suspension payloads. All changes are backward compatible.
+
+- d315c0a: Add app-scoped state ledger (app_state_append/get/list) with stage-board fold
+- a48dc03: Implement AIP-15 P2 (harness pinning) and P3 (declarative gate steps).
+
+  **P2 Changes:**
+  - Add `AgentHarness` interface for spawn-time control (model, effort, role, tools, skills, cwd, promptFile)
+  - Thread harness fields through agent session spawn paths (host and sandbox)
+  - Emit `session:harness-warning` events when unsupported harness fields (tools, role) are encountered
+  - Load `harness.promptFile` at workflow-load time and record sha256 for audit
+
+  **P3 Changes:**
+  - Add `GateStep` interface for shell-command checks (command, args, cwd, report, retry, on_fail)
+  - Implement gate step execution with exit-code semantics, report parsing (JSON from stdout or file), and retry logic
+  - Add exponential/fixed backoff retry strategy with reprompt-and-retry linking to prior agent steps
+  - Emit `workflow:gate-report` events on every command attempt (not just final outcome)
+
+  All changes maintain backward compatibility (optional fields, new types only, no removals).
+
+- db90fb3: Implement port exposure for sandboxes. Add `expose(port)` method and `ports` map to `BootedSandbox` to enable agents to expose HTTP server ports inside sandboxes as publicly accessible URLs. Support pre-declaring ports via `extraPorts` in the sandbox spec for eager resolution at boot time. E2B provider implements port exposure via `sandbox.getHost(port)`. Surface exposed ports in `SessionDescriptor` and `SessionSummary` via new `sandboxPorts` field.
+- f6593d4: Add structured-question support. Sessions awaiting a structured question (e.g., context-continuity's continue-fresh/keep-going prompt) now display question text and clickable option buttons in a dedicated banner. Answer dispatch is wired into all prompt-turn seams (sendPrompt, enqueuePrompt, dispatchQueuedPrompt), intercepting exact option matches (case-insensitive) and routing them to their registered handlers. Unmatched prompts fall through to normal turn execution, preserving fallback behavior for unsupported or conversational replies. Context-continuity ask mode now tracks the acknowledgment percentage to suppress re-asking until context grows further. Desktop shell renders the QuestionBanner above the composer and displays question hints in the session rail with full text in tooltip.
+- aff7794: Add `@agentproto/app-client/runner-select` — a shared harness+model selector for app UIs that discovers installed harnesses via `adapter_list` + `harness_preset_list`, eliminating per-app picker implementations. Automatically injected into every app UI alongside the McpApp bridge. Supporting changes: `adapter_list` summary mode for lightweight UI projections, harness preset profile status enrichment (disabled/missing flags), early validation of default preset profiles during spawn, and discovery tool allowlisting for all app UIs.
+- 3a928c1: feat(sandbox): forward config-default wallets to sandbox spawns
+
+  Sandboxed agent spawns can now use credentials configured in `defaults.adapters.<slug>.auth`. The host resolves the configured wallet and forwards it to the sandbox, ensuring the box bills on the same credential the host would use. Unconfigured sandboxes remain credential-free, and error handling clearly distinguishes between access profile and config-default wallet resolution failures.
+
+  Adds `explicitConfig` boolean to `ResolvedSpawnAuthMaterial` to track whether auth came from config vs per-spawn request, enabling proper boundary enforcement and credential forwarding logic.
+
+- 9a489e7: Additive output-shaping params for `tool_calls_list` (`fields` projection, `full` legacy escape hatch, `result`-preview helper disabled by default) and a `truncated` companion flag on `terminal_output` when a `lastBytes` window is applied. No default behaviour changes.
+- ce273d2: Additive read pagination: `file_read` gains offset/limit (lines for utf8, bytes for base64) plus a truncated flag, `directory_list` gains limit/cursor paging, and `conversation_read` gains lastN/cursor transcript windowing — all defaults unchanged.
+- c71753a: Add `agent_start.appServe`: with `sandbox`, the daemon installs the app on the box (the box daemon's `app_install`), launches `agentproto app serve --host 0.0.0.0 --port <port>` detached through the box's `command_execute` (seeding the box command allowlist), and stamps the public URL on the descriptor/result; `SandboxAgentSessionHost` now carries `mcpUrl` so callers can drive the box's other daemon tools.
+- 3a928c1: Propagate the config-default wallet into sandbox spawns: when `defaults.adapters.<slug>.auth` names a wallet, the host now resolves its credential and forwards it to the box daemon so the sandboxed child session bills the same wallet, and the host descriptor echoes the forwarded wallet for UIs.
+- f295874: Additive pagination for the session list tools: `session_list`, `agent_sessions_list`, `terminal_sessions_list` and `command_list` accept `limit`/`cursor` (plus `full`, currently a no-op) and return a `{ items, nextCursor?, total }` envelope when either is supplied. Without `limit`/`cursor` the output is unchanged.
+- a04bd29: Workflow `kind: "approval"` steps are now resolved by a human instead of silently auto-approving. A declarative approval step parks the run as `awaiting-approval` with an `awaitingApproval` inbox record (visible in `workflow_status`), emits `workflow:approval-requested`/`workflow:approval-resolved` session events, and waits for a decision through `workflow_escalation_resolve`'s new approval form (`approvalId` + `approved` + `who` + optional `note`) — also exposed as `WorkflowRunner.resolveApproval`. The decision is appended to the app state ledger (`kind: "approval"`, `by: "human"`); a step `timeout_ms` resolves as rejected with `who: "timeout"`; a run parked awaiting approval survives a daemon restart (the pending item is re-registered, exactly one ledger event). `app_status` surfaces `awaitingApprovals[]` across the app's runs.
+- fe9a374: Bridge workflow runs to the app state ledger: a run started on behalf of an installed app (workflow id owned by exactly one installed app, or explicit `appId`/`appRunId`) now appends `stage-started` / `gate-report` / `stage-done` / `blocked` events with `by: "runner"` to that app's `<dataDir>/state/events.jsonl`, so an app's stage board (`app_state_get`) is written by the runner instead of staying empty. Appends are serialized, best-effort, and never fail the run. An optional `item` on the run stamps every ledger event to one sub-key inside each stage.
+
+  Also: `kind: "gate"` step args now resolve per-run — `$…` reference strings expand against the run bindings (`$$…` stays a literal `$`; a ref that resolves to nothing throws naming the step and the arg), so a manifest gate no longer receives literal `"$input.x"` strings as arguments.
+
+### Patch Changes
+
+- a581e76: Deflake the `session-blocked-on` transcript assertions: wait for the
+  `turn-end` record to land in `events.jsonl` instead of sleeping a fixed
+  50 ms, which raced the write-stream open on slower CI runners (ENOENT).
+- f9e21fd: AIP-15 P2: `harness.knowledge[]` on `kind: "agent"` steps. A selector pins an AIP-10 corpus workspace (relative paths resolve against the WORKFLOW.md dir at load time; a missing workspace fails the load), `anyOf`/`allOf` tag filters, refined `kinds`, a `maxEntries` cap (default 50, slug-ascending deterministic order) and v1 `mode: "files"`. Before an agent step's spawn, the runtime resolves each selector with the corpus `resolveKnowledge`, writes the matched raw entries to `<stepCwd>/.knowledge/<workspaceBasename>/<slug>.md` plus a deterministic `INDEX.md`, prepends a prompt note pointing at the index, and records `knowledgeApplied: { workspace, matched, written }[]` on the step's run record. An empty match is not an error — it is recorded and emitted as a `session:harness-warning` (`knowledge-empty`). `resolveKnowledge`'s signature is unchanged; the new `filterEntriesByAllOf` helper beside it provides the AND-semantics post-filter.
+- 2498d05: Strip bare carriage returns in stripAnsi to fix terminal output garbling
+- ee15252: Fix session exit code classification to correctly handle node-pty's `{ exitCode: 0, signal: 0 }` clean-exit shape — `signal: 0` was being misclassified as "a signal fired" instead of "no signal."
+
+  Add row disclosure triangles to the VS Code webview sessions list, enabling collapse/expand of nested subagent hierarchies. Collapsed rows show the busiest descendant status in their dot indicator.
+
+- 672fc7c: Honor AGENT.md frontmatter model for the default mastra-agent app_run path
+- 5328e9b: Introduce template version management system for agentproto-workstation e2b template. Establishes `templates/workstation/versions.json` as the canonical pin declaration (CLI, adapters, runtime, base image) and introduces `scripts/sync-templates.mjs` to regenerate all derived artifacts. Enhances `@agentproto/sandbox-e2b` provider with `resolveUpdateCli()` function to intelligently skip the on-boot CLI install when a template's recorded baked image provably carries the requested CLI version—defaulting conservatively to install when the bake is unproven, maintaining backward compatibility.
+- f17e3a0: Fix cost refresh on empty turns. Some adapters (e.g., OpenRouter-routed opencode) settle their adapter-reported cost on trailing no-op turns carrying no assistant text or tool calls. On such turns, PR discovery lanes are correctly skipped (no new PR opened), but cost refresh must still run to re-render the footer once spend becomes known. Previously, cost refresh was entirely skipped on empty turns, leaving a session whose PR-creating turn stamped a footer with no cost amount to go unstamped forever if all later turns remained empty or if the session never exited.
+- 55c8154: Fix PR provenance recording for shim-stamped footers: recognize and upgrade own-session footers from the `gh` PATH shim, enabling cost-refresh to find and enrich PRs opened via every adapter's wrapped `gh` subprocess.
+- d190202: Fix regression: stamp sandboxPorts on session descriptors. The SpawnAgentInput interface was missing the sandboxPorts field, causing the port-to-URL map from booted sandboxes to be silently dropped when building session descriptors. Now properly threaded through both descriptor creation paths.
+- 49a89ba: Fix sandbox spec field forwarding in HTTP path and prevent VM leaks on boot/reconnect failures.
+
+  **@agentproto/runtime**: Fixed #1150 regression where `POST /sessions/agent` silently dropped `extraPorts`, `env`, `lifecycle`, and other fields from inline sandbox specs. Extracted shared schema `sandboxSpecWithReuseSchema` to ensure both HTTP and MCP paths validate against identical schema and forward all fields.
+
+  **@agentproto/sandbox-e2b**: Centralized sandbox cleanup on boot/reconnect failure to prevent VM leaks (observed live: six boxes left running without sessions). Added fast-fail mechanism that exits immediately when daemon crashes during boot, surfacing captured stderr for diagnostics, instead of blocking the full readiness timeout.
+
+- f75ef5d: Add token usage tracking for OpenCode adapter sessions via readOpenCodeUsage hook. OpenCode's live ACP usage_update event only carries cost (no token fields), so the new function reads token data from OpenCode's sqlite store and is wired into the registry's turn-end path to fill in missing tokensIn/tokensOut fields, mirroring the existing hermes adapter pattern.
+- bf87d9e: Add internal paginated tool envelope helper (tool-envelope.ts), not yet wired to any tool.
+- Updated dependencies [692d659]
+- Updated dependencies [c4bff00]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [4d01e5c]
+- Updated dependencies [d66ffe3]
+- Updated dependencies [0012980]
+- Updated dependencies [a48dc03]
+- Updated dependencies [db90fb3]
+- Updated dependencies [aff7794]
+- Updated dependencies [1cd0220]
+- Updated dependencies [6bfb633]
+- Updated dependencies [ece3cae]
+- Updated dependencies [c71753a]
+- Updated dependencies [e7e9261]
+- Updated dependencies [a04bd29]
+- Updated dependencies [fe9a374]
+  - @agentproto/model-catalog@0.9.2
+  - @agentproto/workflow-runtime@0.10.0
+  - @agentproto/workflow@0.4.0
+  - @agentproto/workflow-loader@0.2.0
+  - @agentproto/app-kit@1.0.0
+  - @agentproto/acp@0.8.0
+  - @agentproto/sandbox@0.3.0
+  - @agentproto/app-client@0.3.0
+  - @agentproto/providers-store@0.3.11
+  - @agentproto/apps@0.9.1
+  - @agentproto/workspace-brain@0.4.3
+  - @agentproto/driver-agent-cli@2.4.1
+  - @agentproto/mcp-server@0.2.7
+  - @agentproto/agent@0.2.2
+  - @agentproto/auth@1.0.1
+  - @agentproto/command-sandbox@0.2.0
+  - @agentproto/driver@0.2.1
+  - @agentproto/eval-reporters@0.2.10
+  - @agentproto/manifest@0.2.1
+  - @agentproto/provider-kit@0.4.2
+  - @agentproto/provider-presets@0.6.1
+  - @agentproto/redaction@0.2.1
+  - @agentproto/routine@0.2.1
+  - @agentproto/secrets@0.2.4
+  - @agentproto/telemetry-langfuse@0.2.8
+  - @agentproto/tool@0.2.2
+
 ## 2.11.0
 
 ### Minor Changes

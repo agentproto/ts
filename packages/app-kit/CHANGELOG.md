@@ -1,5 +1,31 @@
 # @agentproto/app-kit
 
+## 1.0.0
+
+### Major Changes
+
+- d66ffe3: app-kit: Remove typed support for the book/library contract (AppLibraryDefinition, AppLibraryBook). The library.books convention now lives as untyped APP.md frontmatter — apps that need the book contract hand-write it directly without type validation.
+
+  cli: Update comments to reflect that app-kit has no typed support for the library.books convention; CLI continues to read it directly from frontmatter.
+
+### Minor Changes
+
+- 4d01e5c: Add the "book contract" — optional `category` + `library.books` fields to app definitions, allowing apps to self-identify as book bundles for catalog/library substrates. Includes validation, round-trip support, and a new `--template book` option in create-agentproto-app, bundled with an `install-agentproto-app` skill for tier-1 installs.
+
+### Patch Changes
+
+- Updated dependencies [c4bff00]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [a48dc03]
+- Updated dependencies [ece3cae]
+- Updated dependencies [e7e9261]
+  - @agentproto/workflow@0.4.0
+  - @agentproto/workflow-loader@0.2.0
+  - @agentproto/mastra@0.2.11
+  - @agentproto/agent@0.2.2
+  - @agentproto/workspace@0.1.1
+
 ## 0.8.0
 
 ### Minor Changes

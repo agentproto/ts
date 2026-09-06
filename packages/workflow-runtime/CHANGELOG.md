@@ -1,5 +1,49 @@
 # @agentproto/workflow-runtime
 
+## 0.10.0
+
+### Minor Changes
+
+- f9e21fd: AIP-15 P2: `harness.knowledge[]` on `kind: "agent"` steps. A selector pins an AIP-10 corpus workspace (relative paths resolve against the WORKFLOW.md dir at load time; a missing workspace fails the load), `anyOf`/`allOf` tag filters, refined `kinds`, a `maxEntries` cap (default 50, slug-ascending deterministic order) and v1 `mode: "files"`. Before an agent step's spawn, the runtime resolves each selector with the corpus `resolveKnowledge`, writes the matched raw entries to `<stepCwd>/.knowledge/<workspaceBasename>/<slug>.md` plus a deterministic `INDEX.md`, prepends a prompt note pointing at the index, and records `knowledgeApplied: { workspace, matched, written }[]` on the step's run record. An empty match is not an error — it is recorded and emitted as a `session:harness-warning` (`knowledge-empty`). `resolveKnowledge`'s signature is unchanged; the new `filterEntriesByAllOf` helper beside it provides the AND-semantics post-filter.
+- a48dc03: Implement AIP-15 P2 (harness pinning) and P3 (declarative gate steps).
+
+  **P2 Changes:**
+  - Add `AgentHarness` interface for spawn-time control (model, effort, role, tools, skills, cwd, promptFile)
+  - Thread harness fields through agent session spawn paths (host and sandbox)
+  - Emit `session:harness-warning` events when unsupported harness fields (tools, role) are encountered
+  - Load `harness.promptFile` at workflow-load time and record sha256 for audit
+
+  **P3 Changes:**
+  - Add `GateStep` interface for shell-command checks (command, args, cwd, report, retry, on_fail)
+  - Implement gate step execution with exit-code semantics, report parsing (JSON from stdout or file), and retry logic
+  - Add exponential/fixed backoff retry strategy with reprompt-and-retry linking to prior agent steps
+  - Emit `workflow:gate-report` events on every command attempt (not just final outcome)
+
+  All changes maintain backward compatibility (optional fields, new types only, no removals).
+
+- 1cd0220: Extract shared AIP-16 ref-prefix resolution logic into a new `resolveRefPrefixed` function that resolves the leading ref token of a string and returns the resolved value plus the literal remainder. Refactor `knowledge.ts` to use this new function, reducing duplication and enabling broader reuse of prefix-style ref parsing.
+
+### Patch Changes
+
+- c4bff00: Gate steps: resolve run-time refs in `cwd` and inside `args` strings. A gate's `cwd` and each `args[]` element now accept a LEADING `$input|$item|$steps.<id>|$index` ref token (AIP-16 prefix grammar) plus trailing literal text — e.g. `cwd: $input.bookDir`, `args: ["$input.bookDir/knowledge"]` — instead of only a bare whole-string ref for args (`$$` still escapes a literal `$`; an unresolvable ref throws naming the step and field). The resolved `cwd` is made absolute: an absolute value stays as-is, a relative one (incl. `.`) resolves against the workflow run's own cwd instead of the daemon process cwd. The string-ref resolver is factored into one shared implementation (`ref-string.ts`) shared with `harness.knowledge[]` selector strings.
+- c4ebbd3: Run-time refs in `harness.knowledge[]` (AIP-15): a selector's `workspace` or tag/kind strings may now carry AIP-16 `$…` references. The loader leaves such strings verbatim (no relative resolution, no existence check) and flags the selector `deferred` internally (authoring `deferred` is rejected); the runtime resolves every string field against the run bindings before materialization — only the leading ref token (up to the next `/`) is replaced, so `$input.bookDir/knowledge` becomes `<resolved bookDir>/knowledge` — a relative resolved workspace joins to the run cwd, an unresolvable ref throws naming the step and field, and a workspace still missing after resolution warns `knowledge-workspace-missing` instead of throwing. `knowledgeApplied` records carry the resolved workspace.
+- ece3cae: Extract shared `$steps.<id>` reference validation logic into a reusable utility in @agentproto/workflow, eliminating duplication across workflow-loader and workflow-runtime.
+- e7e9261: AIP-15 `subworkflow` steps: the loader now compiles a declarative `with:` block into the step's `inputs` projection (AIP-16 ref grammar — literals, `$input.*`, `$steps.<id>.*`, resolved against the parent's bindings), so the child receives the mapped object instead of the parent's raw input verbatim; steps without `with:` are unchanged. `with` and `inputs` on the same step is a load error, and a `with:` ref to an unknown step id is rejected at load time naming the step and key. The runtime compiler's subworkflow projection is now strict: a referenced field that does not exist throws at run time naming the subworkflow step and key instead of silently passing `undefined`. Spec: `with` semantics added to `stepSubworkflow` in `specs/resources/aip-15/draft/WORKFLOW.schema.json`.
+- a04bd29: `runWorkflow`'s `approve` hook may now return a full decision `{approved, who, note?}` (a bare boolean still works), `ApprovalStep` gains `artifacts` and `timeoutMs` (timeout resolves as rejected with `who: "timeout"`), and the step output records who decided.
+- fe9a374: Bridge workflow runs to the app state ledger: a run started on behalf of an installed app (workflow id owned by exactly one installed app, or explicit `appId`/`appRunId`) now appends `stage-started` / `gate-report` / `stage-done` / `blocked` events with `by: "runner"` to that app's `<dataDir>/state/events.jsonl`, so an app's stage board (`app_state_get`) is written by the runner instead of staying empty. Appends are serialized, best-effort, and never fail the run. An optional `item` on the run stamps every ledger event to one sub-key inside each stage.
+
+  Also: `kind: "gate"` step args now resolve per-run — `$…` reference strings expand against the run bindings (`$$…` stays a literal `$`; a ref that resolves to nothing throws naming the step and the arg), so a manifest gate no longer receives literal `"$input.x"` strings as arguments.
+
+- Updated dependencies [c4bff00]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [a48dc03]
+- Updated dependencies [ece3cae]
+  - @agentproto/workflow@0.4.0
+  - @agentproto/corpus@0.7.1
+  - @agentproto/driver@0.2.1
+  - @agentproto/tool@0.2.2
+
 ## 0.9.0
 
 ### Minor Changes

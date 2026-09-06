@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-knowledge-corpus",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Composable knowledge adapter: implements @agentproto/knowledge-engine's IKnowledgeProvider over an AIP-10 @agentproto/corpus workspace, wrapping any backing IKnowledgeProvider and hydrating every hit with canonical AIP-10 provenance + access policy. Public ingest/delete are rejected — corpus writes go through the privileged CorpusInternalWriter. Registers as a provider-kit family and ships a node:fs FsPort so it runs standalone.",
   "keywords": [
     "agentproto",

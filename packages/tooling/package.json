@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/tooling",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "Shared development tooling for the agentproto workspace — TypeScript configs (base, bundler) and tsup config factory.",
   "keywords": [
     "agentproto",

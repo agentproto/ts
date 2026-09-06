@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/mcp-server",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "@agentproto/mcp-server — exposes every AIP doctype as MCP tools. Pass DoctypeSpec instances + an optional workspace dir for EXTENSION.md auto-loading; the server registers create_X / load_X / list_X / update_X / resolve_X / delete_X for each registered doctype, including AIP-40 extensions. Compose to build agent runtimes that author and edit AIP manifests over MCP.",
   "keywords": [
     "agentproto",

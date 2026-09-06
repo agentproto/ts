@@ -1,5 +1,14 @@
 # @agentproto/adapter-knowledge-files
 
+## 0.2.6
+
+### Patch Changes
+
+- Updated dependencies [f9e21fd]
+  - @agentproto/corpus@0.7.1
+  - @agentproto/knowledge-engine@0.2.1
+  - @agentproto/provider-kit@0.4.2
+
 ## 0.2.5
 
 ### Patch Changes

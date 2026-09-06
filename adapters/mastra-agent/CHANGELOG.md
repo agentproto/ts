@@ -1,5 +1,50 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.0
+
+### Minor Changes
+
+- 0012980: feat(permissions): thread plan \_meta through the hold path and add free-text feedback on the respond path
+
+  Adds `feedback?: string` to permission resolutions, enabling users to attach contextual information when approving or denying held tool-permission requests. The feature threads through all layers: types export `ACP_META_FEEDBACK` constant for the `_meta` key convention, ACP client carries `_meta` through to agent-prompt events, runtime forwards feedback on outcomes, and mastra-agent adapter folds feedback into suspension resumeData. CLI gains `--feedback` flag on approve/deny commands and renders plan text from suspension payloads. All changes are backward compatible.
+
+### Patch Changes
+
+- 5b30a74: Fix deadlock when a tool suspension (e.g. `submit_plan`) lacks an approval responder. Previously, follow-up prompts would be silently queued and never executed while the session appeared healthy. The fix rejects new prompts when a suspension is pending, provides visibility via notification messages, and properly cleans up suspension state after cancellation.
+- Updated dependencies [a581e76]
+- Updated dependencies [a939171]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [dc7729b]
+- Updated dependencies [2498d05]
+- Updated dependencies [69a25bd]
+- Updated dependencies [ee15252]
+- Updated dependencies [672fc7c]
+- Updated dependencies [0012980]
+- Updated dependencies [5328e9b]
+- Updated dependencies [f17e3a0]
+- Updated dependencies [d315c0a]
+- Updated dependencies [55c8154]
+- Updated dependencies [a48dc03]
+- Updated dependencies [db90fb3]
+- Updated dependencies [d190202]
+- Updated dependencies [f6593d4]
+- Updated dependencies [49a89ba]
+- Updated dependencies [aff7794]
+- Updated dependencies [f75ef5d]
+- Updated dependencies [3a928c1]
+- Updated dependencies [9a489e7]
+- Updated dependencies [ce273d2]
+- Updated dependencies [c71753a]
+- Updated dependencies [3a928c1]
+- Updated dependencies [f295874]
+- Updated dependencies [bf87d9e]
+- Updated dependencies [a04bd29]
+- Updated dependencies [fe9a374]
+  - @agentproto/runtime@2.12.0
+  - @agentproto/mastra@0.2.11
+  - @agentproto/driver-agent-cli@2.4.1
+  - @agentproto/agent@0.2.2
+
 ## 0.6.0
 
 ### Minor Changes

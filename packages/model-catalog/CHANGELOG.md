@@ -1,5 +1,12 @@
 # @agentproto/model-catalog
 
+## 0.9.2
+
+### Patch Changes
+
+- 692d659: Sync generated catalog data from the pinned provider sources.
+- 6bfb633: Fix HuggingFace provider environment variable from `HUGGINGFACE_API_KEY` to `HF_TOKEN` to align with ecosystem conventions and resolve credential resolution failures in model-derived routing through opencode.
+
 ## 0.9.1
 
 ### Patch Changes

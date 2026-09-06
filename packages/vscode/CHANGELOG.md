@@ -1,5 +1,47 @@
 # agentproto-vscode
 
+## 0.14.0
+
+### Minor Changes
+
+- ee15252: Fix session exit code classification to correctly handle node-pty's `{ exitCode: 0, signal: 0 }` clean-exit shape — `signal: 0` was being misclassified as "a signal fired" instead of "no signal."
+
+  Add row disclosure triangles to the VS Code webview sessions list, enabling collapse/expand of nested subagent hierarchies. Collapsed rows show the busiest descendant status in their dot indicator.
+
+### Patch Changes
+
+- Updated dependencies [a581e76]
+- Updated dependencies [a939171]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [dc7729b]
+- Updated dependencies [2498d05]
+- Updated dependencies [69a25bd]
+- Updated dependencies [ee15252]
+- Updated dependencies [672fc7c]
+- Updated dependencies [0012980]
+- Updated dependencies [5328e9b]
+- Updated dependencies [f17e3a0]
+- Updated dependencies [d315c0a]
+- Updated dependencies [55c8154]
+- Updated dependencies [a48dc03]
+- Updated dependencies [db90fb3]
+- Updated dependencies [d190202]
+- Updated dependencies [f6593d4]
+- Updated dependencies [49a89ba]
+- Updated dependencies [aff7794]
+- Updated dependencies [f75ef5d]
+- Updated dependencies [3a928c1]
+- Updated dependencies [9a489e7]
+- Updated dependencies [ce273d2]
+- Updated dependencies [c71753a]
+- Updated dependencies [3a928c1]
+- Updated dependencies [f295874]
+- Updated dependencies [bf87d9e]
+- Updated dependencies [a04bd29]
+- Updated dependencies [fe9a374]
+  - @agentproto/runtime@2.12.0
+  - @agentproto/apps@0.9.1
+
 ## 0.13.0
 
 ### Minor Changes

@@ -1,5 +1,14 @@
 # @agentproto/driver-agent-cli
 
+## 2.4.1
+
+### Patch Changes
+
+- Updated dependencies [0012980]
+  - @agentproto/acp@0.8.0
+  - @agentproto/command-sandbox@0.2.0
+  - @agentproto/define-doctype@0.1.1
+
 ## 2.4.0
 
 ### Minor Changes

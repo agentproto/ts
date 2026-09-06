@@ -1,5 +1,17 @@
 # @agentproto/acp
 
+## 0.8.0
+
+### Minor Changes
+
+- 0012980: feat(permissions): thread plan \_meta through the hold path and add free-text feedback on the respond path
+
+  Adds `feedback?: string` to permission resolutions, enabling users to attach contextual information when approving or denying held tool-permission requests. The feature threads through all layers: types export `ACP_META_FEEDBACK` constant for the `_meta` key convention, ACP client carries `_meta` through to agent-prompt events, runtime forwards feedback on outcomes, and mastra-agent adapter folds feedback into suspension resumeData. CLI gains `--feedback` flag on approve/deny commands and renders plan text from suspension payloads. All changes are backward compatible.
+
+### Patch Changes
+
+- @agentproto/define-doctype@0.1.1
+
 ## 0.7.3
 
 ### Patch Changes

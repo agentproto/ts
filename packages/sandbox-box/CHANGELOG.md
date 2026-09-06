@@ -1,5 +1,13 @@
 # @agentproto/sandbox-box
 
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [db90fb3]
+- Updated dependencies [c71753a]
+  - @agentproto/sandbox@0.3.0
+
 ## 0.2.6
 
 ### Patch Changes
