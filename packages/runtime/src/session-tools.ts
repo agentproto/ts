@@ -1597,7 +1597,21 @@ export function registerSessionTools(
       "carries `id`, `label`, `status`, `depth`, `adapterSlug`, `parentSessionId`, " +
       "and `isOrchestrator` (true when the session itself spawned sub-agents). " +
       "Via a scoped orchestrator token only the caller's subtree is returned; " +
-      "from the root `/mcp` endpoint the full daemon tree is visible.",
+      "from the root `/mcp` endpoint the full daemon tree is visible. " +
+      "NAVIGATION (additive): pass `nodeId` + `direction` together to fetch a " +
+      "single slice of the tree instead of the whole dump. Shapes per direction: " +
+      "`children` → `{ children: SessionTreeNode[] }` (direct children, one level); " +
+      "`parent` → `{ parent: SessionTreeNode | null }` (null when the node is a root); " +
+      "`siblings` → `{ siblings: SessionTreeNode[] }` (other nodes sharing the node's " +
+      "parent, excluding the node itself); `ancestors` → " +
+      "`{ ancestors: SessionTreeNode[] }` (chain starting at the node's immediate " +
+      "parent and ending at its root, nearest-first); `descendants` → " +
+      "`{ tree: SessionTreeNode[] }` (a single-element array holding the subtree " +
+      "rooted at the node — same node shape as the full dump, no `byOrigin`). " +
+      "`depth` (int ≥ 1) caps how many levels `children`/`ancestors`/`descendants` " +
+      "walk, relative to the node; omit it for unlimited walk. `groupByOrigin` is " +
+      "ignored in navigation mode. Both `nodeId` and `direction` are required " +
+      "together — passing only one is a validation error.",
     {
       onlyAlive: z
         .boolean()
@@ -1611,7 +1625,32 @@ export function registerSessionTools(
         .optional()
         .describe(
           "Set false to suppress the companion `byOrigin` view and trim the " +
-            "payload. Default true — `byOrigin` is emitted alongside `tree`.",
+            "payload. Default true — `byOrigin` is emitted alongside `tree`. " +
+            "Ignored in navigation mode (`nodeId` + `direction`).",
+        ),
+      nodeId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Scope navigation to the session with this id. Must be paired with " +
+            "`direction`; the id must exist in the (scope-filtered) visible " +
+            "session list.",
+        ),
+      direction: z
+        .enum(["children", "parent", "siblings", "ancestors", "descendants"])
+        .optional()
+        .describe(
+          "Which slice of `nodeId`'s relationships to return. Must be paired " +
+            "with `nodeId`.",
+        ),
+      depth: z
+        .number().int().min(1)
+        .optional()
+        .describe(
+          "Level cap for `children`/`ancestors`/`descendants` navigation, " +
+            "relative to the node (1 = the node's direct relations only). " +
+            "Omit for unlimited walk. Ignored for `parent`/`siblings`.",
         ),
     },
     async input => {
@@ -1629,6 +1668,155 @@ export function registerSessionTools(
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
         )
+      }
+      // ── Navigation mode (nodeId + direction) ──────────────────────
+      // Additive slice of the tree: when both params arrive, walk the flat
+      // (already scope/onlyAlive/archived-filtered) list instead of building
+      // the whole dump. Exactly one of the two params is a validation error,
+      // not a silent fallback to the full dump (PR #1194 bug class).
+      if (input.nodeId !== undefined || input.direction !== undefined) {
+        if (input.nodeId === undefined || input.direction === undefined) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error:
+                    "session_tree: `nodeId` and `direction` must be passed " +
+                    "together — got " +
+                    (input.nodeId === undefined ? "only `direction`" : "only `nodeId`") +
+                    ". Omit both for the full tree dump.",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        const nodeDesc = rows.find(s => s.id === input.nodeId)
+        if (!nodeDesc) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error:
+                    `session_tree: node "${input.nodeId}" not found in the ` +
+                    "(scope-filtered) session list — it may be archived, dead " +
+                    "under onlyAlive, or outside the caller's subtree.",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        // Same parent→children index buildSessionTree uses, so `isOrchestrator`
+        // and depth ordering stay consistent with the full-dump view.
+        const idSet = new Set(rows.map(s => s.id))
+        const childrenOf = new Map<string, SessionDescriptor[]>()
+        for (const s of rows) {
+          if (s.parentSessionId && idSet.has(s.parentSessionId)) {
+            const arr = childrenOf.get(s.parentSessionId)
+            if (arr) arr.push(s)
+            else childrenOf.set(s.parentSessionId, [s])
+          }
+        }
+        const orchestratorIds = new Set(childrenOf.keys())
+        const toNode = (s: SessionDescriptor): SessionTreeNode => ({
+          id: s.id,
+          ...(s.label ? { label: s.label } : {}),
+          status: s.status,
+          currentPhase: s.currentPhase,
+          secondsSinceLastActivity: s.secondsSinceLastActivity,
+          toolCallsThisTurn: s.toolCallsThisTurn,
+          depth: s.depth ?? 0,
+          ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
+          ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
+          ...(s.origin ? { origin: s.origin } : {}),
+          isOrchestrator: orchestratorIds.has(s.id),
+          children: [],
+        })
+        const sortSiblings = (list: SessionDescriptor[]) =>
+          [...list].sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
+
+        let body: Record<string, unknown>
+        switch (input.direction) {
+          case "children": {
+            const kids =
+              input.depth !== undefined && input.depth < 1
+                ? []
+                : sortSiblings(childrenOf.get(nodeDesc.id) ?? []).map(toNode)
+            body = { children: kids }
+            break
+          }
+          case "parent": {
+            const parent =
+              nodeDesc.parentSessionId && idSet.has(nodeDesc.parentSessionId)
+                ? toNode(rows.find(s => s.id === nodeDesc.parentSessionId)!)
+                : null
+            body = { parent }
+            break
+          }
+          case "siblings": {
+            const sibs = nodeDesc.parentSessionId
+              ? sortSiblings(childrenOf.get(nodeDesc.parentSessionId) ?? [])
+                  .filter(s => s.id !== nodeDesc.id)
+                  .map(toNode)
+              : []
+            body = { siblings: sibs }
+            break
+          }
+          case "ancestors": {
+            const chain: SessionDescriptor[] = []
+            let cur = nodeDesc.parentSessionId
+            while (cur && idSet.has(cur)) {
+              const desc = rows.find(s => s.id === cur)
+              if (!desc) break
+              chain.push(desc)
+              if (input.depth !== undefined && chain.length >= input.depth) break
+              cur = desc.parentSessionId
+            }
+            body = { ancestors: chain.map(toNode) }
+            break
+          }
+          case "descendants": {
+            // BFS from the node, at most `depth` levels deep (undefined =
+            // unlimited). Only nodes inside the included set are attached, so
+            // the nesting stops exactly at the cap.
+            const included = new Set<string>([nodeDesc.id])
+            let frontier: SessionDescriptor[] = [nodeDesc]
+            let level = 0
+            while (frontier.length > 0 && (input.depth === undefined || level < input.depth)) {
+              const next: SessionDescriptor[] = []
+              for (const f of frontier) {
+                for (const c of sortSiblings(childrenOf.get(f.id) ?? [])) {
+                  if (!included.has(c.id)) {
+                    included.add(c.id)
+                    next.push(c)
+                  }
+                }
+              }
+              frontier = next
+              level++
+            }
+            const subtreeRoot = toNode(nodeDesc)
+            const attach = (n: SessionTreeNode): SessionTreeNode => ({
+              ...n,
+              children: sortSiblings(childrenOf.get(n.id) ?? [])
+                .filter(c => included.has(c.id))
+                .map(toNode)
+                .map(attach),
+            })
+            body = { tree: [attach(subtreeRoot)] }
+            break
+          }
+          default: {
+            body = {}
+            break
+          }
+        }
+        return {
+          content: [{ type: "text", text: JSON.stringify(body) }],
+        }
       }
       const tree = buildSessionTree(rows)
       // Additive companion view: the same roots bucketed by `origin` so a
