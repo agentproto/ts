@@ -85,6 +85,7 @@ import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
 import { basename, join } from "node:path"
 import {
   ALLOWLIST_REL,
+  TERMINAL_GATE_ENV,
   isCommandAllowed,
   loadAllowlistEntries,
   loadTerminalGateMode,
@@ -3290,7 +3291,7 @@ export function registerSessionTools(
                   `"commands": [...]. Currently allowed: ${allowedBasenames}. ` +
                   `To run any command from terminals in this workspace, set ` +
                   `"terminalGate": "all" in that file, or globally set the ` +
-                  `${"AGENTPROTO_TERMINAL_GATE"}=all environment variable.`,
+                  `${TERMINAL_GATE_ENV}=all environment variable.`,
               },
             ],
             isError: true,
