@@ -21,6 +21,7 @@ import type { WorkflowRunner } from "./workflow-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 import { collectSubtree } from "./session-tools.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
@@ -695,12 +696,22 @@ export function registerOrchestrationTools(
         .string()
         .optional()
         .describe("Filter to one session's pending permissions. Omit → all sessions."),
+      ...pageParamsShape,
     },
     async input => {
       const pending = registry
         .listPendingPermissions(input.sessionId ? { sessionId: input.sessionId } : undefined)
         .filter(p => isSessionInScope(p.sessionId))
         .map(enrichPermission)
+      // Pagination LAST — after the scope filter above. Without limit/cursor
+      // the output is byte-identical to the pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(pending, input, {
+          maxLimit: 200,
+          keyOf: p => (typeof p.id === "string" ? p.id : null),
+        })
+        return { content: [{ type: "text", text: toolText(page) }] }
+      }
       return {
         content: [{ type: "text", text: JSON.stringify({ permissions: pending }, null, 2) }],
       }
@@ -1038,9 +1049,15 @@ export function registerOrchestrationTools(
     server.tool(
       "workflow_list",
       "List all workflow runs (running, done, failed, cancelled).",
-      {},
-      async () => {
+      { ...pageParamsShape },
+      async input => {
         const runs = workflowRunner.list()
+        // Pagination LAST — without limit/cursor the output is byte-identical
+        // to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(runs, input, { maxLimit: 200, keyOf: r => r.runId })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
       },
     )
@@ -1410,6 +1427,7 @@ export function registerOrchestrationTools(
               "`sessionId` or any member of its fan-in `sessionIds` group. " +
               "Omit to list everything in scope.",
           ),
+        ...pageParamsShape,
       },
       async input => {
         if (!supervisor) {
@@ -1432,6 +1450,13 @@ export function registerOrchestrationTools(
         if (input.sessionId !== undefined) {
           const wanted = input.sessionId
           policies = policies.filter(p => policyWatchesSession(p, wanted))
+        }
+        // Pagination LAST — after subtree scoping and the sessionId filter.
+        // Without limit/cursor the output is byte-identical to the
+        // pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(policies, input, { maxLimit: 200, keyOf: p => p.policyId })
+          return { content: [{ type: "text", text: toolText(page) }] }
         }
         return { content: [{ type: "text", text: JSON.stringify(policies, null, 2) }] }
       },
@@ -1491,6 +1516,7 @@ export function registerOrchestrationTools(
           .boolean()
           .optional()
           .describe("Include done/failed/cancelled records. Default false."),
+        ...pageParamsShape,
       },
       async input => {
         const filter: ActivityListFilter = {
@@ -1503,6 +1529,13 @@ export function registerOrchestrationTools(
             : {}),
         }
         const activities = activityProjector.list(filter)
+        // Pagination LAST — after the projector's filters. Without
+        // limit/cursor the output is byte-identical to the pre-pagination
+        // handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(activities, input, { maxLimit: 200, keyOf: a => a.id })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return {
           content: [
             {
@@ -1809,9 +1842,15 @@ export function registerOrchestrationTools(
       "inbound_watcher_list",
       "List all inbound watchers (running and stopped) with their cursor position, " +
         "last poll time, last fire time, and total spawned session count.",
-      {},
-      async () => {
+      { ...pageParamsShape },
+      async input => {
         const watchers = inboundWatcher.list()
+        // Pagination LAST — without limit/cursor the output is byte-identical
+        // to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(watchers, input, { maxLimit: 200, keyOf: w => w.watcherId })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return { content: [{ type: "text", text: JSON.stringify(watchers, null, 2) }] }
       },
     )
@@ -2002,8 +2041,8 @@ export function registerOrchestrationTools(
     server.tool(
       "inbound_endpoint_list",
       "List all provider-agnostic inbound push endpoints. Secrets are never emitted.",
-      {},
-      async () => {
+      { ...pageParamsShape },
+      async input => {
         const list = endpointStore.list().map(e => ({
           slug: e.slug,
           provider: e.provider,
@@ -2015,6 +2054,12 @@ export function registerOrchestrationTools(
           lastSeenTs: e.lastSeenTs,
           has_secret: !!e.secret,
         }))
+        // Pagination LAST — without limit/cursor the output is byte-identical
+        // to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(list, input, { maxLimit: 200, keyOf: e => e.slug })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] }
       },
     )
@@ -2128,9 +2173,15 @@ export function registerOrchestrationTools(
     server.tool(
       "cron_list",
       "List all cron jobs (active and inactive) with their schedule, last result, and next fire time.",
-      {},
-      async () => {
+      { ...pageParamsShape },
+      async input => {
         const jobs = cronScheduler.list()
+        // Pagination LAST — without limit/cursor the output is byte-identical
+        // to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(jobs, input, { maxLimit: 200, keyOf: j => j.id })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return { content: [{ type: "text", text: JSON.stringify(jobs, null, 2) }] }
       },
     )
@@ -2196,9 +2247,15 @@ export function registerOrchestrationTools(
       "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
         "schedule, target, enabled). See `workflow_list` / `activities_list` " +
         "for run history.",
-      {},
-      async () => {
+      { ...pageParamsShape },
+      async input => {
         const routines = routineRegistrar.list()
+        // Pagination LAST — without limit/cursor the output is byte-identical
+        // to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(routines, input, { maxLimit: 200, keyOf: r => r.id })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return { content: [{ type: "text", text: JSON.stringify(routines, null, 2) }] }
       },
     )

@@ -529,6 +529,97 @@ describe("pending-permissions inbox — MCP tools", () => {
     registry.shutdown()
   })
 
+  it("permissions_list: page-walk with limit=2 covers exactly the unpaginated scoped list", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const requestIds = ["perm-walk-1", "perm-walk-2", "perm-walk-3"]
+    for (const requestId of requestIds) {
+      await spawnAndPark(registry, holdSession(`acp-${requestId}`, requestId, { command: "git push --force" }))
+    }
+
+    const server = new McpServer({ name: "perms-mcp-page", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp-page-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    // Default call unchanged: the pre-pagination envelope, no page fields.
+    const unpaginated = parse(await client.callTool({ name: "permissions_list", arguments: {} }))
+    expect(unpaginated.permissions).toHaveLength(3)
+    expect(unpaginated.total).toBeUndefined()
+    expect(unpaginated.items).toBeUndefined()
+
+    // Page-walk: the union of pages equals the unpaginated scoped list exactly.
+    const union: Array<{ id: string }> = []
+    let cursor: string | undefined
+    do {
+      const page = parse(
+        await client.callTool({
+          name: "permissions_list",
+          arguments: { limit: 2, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      expect(page.total).toBe(3)
+      union.push(...page.items)
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union.map(p => p.id)).toEqual(unpaginated.permissions.map((p: { id: string }) => p.id))
+
+    registry.shutdown()
+  })
+
+  it("permissions_list: a scoped caller's page total reflects subtree scoping — paginate runs AFTER scoping", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    // Three parked sessions; the scope owner is the first. collectSubtree
+    // over root sessions yields only the owner itself, so the scoped view
+    // holds exactly ONE permission even though three are parked.
+    const requestIds = ["perm-scope-1", "perm-scope-2", "perm-scope-3"]
+    const ids: string[] = []
+    for (const requestId of requestIds) {
+      ids.push(
+        await spawnAndPark(registry, holdSession(`acp-${requestId}`, requestId, { command: "git push --force" })),
+      )
+    }
+
+    const server = new McpServer({ name: "perms-mcp-scope", version: "0.0.0" })
+    registerOrchestrationTools(server, {
+      registry,
+      sessionEvents: bus,
+      eventRing,
+      callerScope: { ownerSessionId: ids[0] },
+    })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp-scope-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    const unpaginated = parse(await client.callTool({ name: "permissions_list", arguments: {} }))
+    expect(unpaginated.permissions).toHaveLength(1)
+
+    const union: Array<{ id: string }> = []
+    let cursor: string | undefined
+    do {
+      const page = parse(
+        await client.callTool({
+          name: "permissions_list",
+          arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      // total=1 (the scoped set), NOT 3 — pagination never sees the rows
+      // scoping already removed.
+      expect(page.total).toBe(1)
+      union.push(...page.items)
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union.map(p => p.id)).toEqual(unpaginated.permissions.map((p: { id: string }) => p.id))
+
+    registry.shutdown()
+  })
+
   it("permissions_respond errors on an unknown id", async () => {
     const bus = createSessionEventBus()
     const eventRing = createEventRing()

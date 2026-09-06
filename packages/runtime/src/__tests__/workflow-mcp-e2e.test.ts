@@ -167,6 +167,41 @@ describe("workflow orchestration — MCP transport e2e", () => {
     expect(runs.some((r: { runId: string }) => r.runId === started.runId)).toBe(true)
   })
 
+  it("workflow_list: default call stays a bare array; page-walk with limit=2 covers exactly the unpaginated list", async () => {
+    const { client } = await setup()
+    const started: string[] = []
+    for (const workflowId of ["e2e-pg-1", "e2e-pg-2", "e2e-pg-3"]) {
+      const res = parseToolJson(
+        await client.callTool({
+          name: "workflow_start",
+          arguments: { workflowId, stages: [{ steps: [{ label: "only", adapter: "mock", prompt: "go" }] }] },
+        }),
+      )
+      started.push(res.runId)
+    }
+
+    const unpaginated = parseToolJson(await client.callTool({ name: "workflow_list", arguments: {} }))
+    expect(Array.isArray(unpaginated)).toBe(true)
+    const runIds = (rows: Array<{ runId: string }>): string[] => rows.map(r => r.runId)
+    expect(runIds(unpaginated).sort()).toEqual([...started].sort())
+
+    // Page-walk: envelope { items, nextCursor?, total }; union == unpaginated.
+    const union: Array<{ runId: string }> = []
+    let cursor: string | undefined
+    do {
+      const page = parseToolJson(
+        await client.callTool({
+          name: "workflow_list",
+          arguments: { limit: 2, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      expect(page.total).toBe(3)
+      union.push(...page.items)
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(runIds(union).sort()).toEqual([...started].sort())
+  })
+
   it("workflow_status on an unknown runId returns a clean error over MCP", async () => {
     const { client } = await setup()
     const res = parseToolJson(
