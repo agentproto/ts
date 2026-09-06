@@ -46,6 +46,8 @@ export type SessionEventType =
   | "activity:changed"
   | "task:changed"
   | "workflow:gate-report"
+  | "workflow:suspended"
+  | "workflow:suspend-resumed"
   | "session:harness-warning"
 
 /**
@@ -745,6 +747,33 @@ export interface WorkflowApprovalResolvedEvent {
 }
 
 /**
+ * Emitted by the workflow runner (`workflow-runner.ts`) when a `kind:
+ * "suspend"` step parks its run awaiting an external event — the run's
+ * status flips to `awaiting-input` with a durable `awaitingSuspend` record
+ * (AIP-15 conformance rule 7), and `workflow_escalation_resolve`'s suspend
+ * form resumes it. Same bus distribution as every other lifecycle event.
+ */
+export interface WorkflowSuspendedEvent {
+  type: "workflow:suspended"
+  runId: string
+  stepId: string
+  on: readonly string[]
+  ts: string
+}
+
+/**
+ * Emitted by the workflow runner when a parked `kind: "suspend"` step is
+ * resumed — live (the run continues) or after a daemon restart (the run's
+ * execution could not resume and it is marked failed with a clear reason).
+ */
+export interface WorkflowSuspendResumedEvent {
+  type: "workflow:suspend-resumed"
+  runId: string
+  stepId: string
+  ts: string
+}
+
+/**
  * Emitted when a `kind: "agent"` step's `harness` block declared a field the
  * spawn couldn't honor (today: `harness.tools` — no adapter exposes a
  * generic per-spawn tool allowlist this runtime can drive; see
@@ -793,6 +822,8 @@ export type SessionEvent =
   | WorkflowGateReportEvent
   | WorkflowApprovalRequestedEvent
   | WorkflowApprovalResolvedEvent
+  | WorkflowSuspendedEvent
+  | WorkflowSuspendResumedEvent
   | SessionHarnessWarningEvent
 
 export interface SessionEventBus {

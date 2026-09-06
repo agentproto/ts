@@ -458,6 +458,76 @@ describe("WorkflowRunner persistence", () => {
     expect(s2?.error).toBe("interrupted by daemon restart")
   })
 
+  it("keeps a run parked at a kind:\"suspend\" step suspended on restart (AIP-15 rule 7)", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    const suspendedRun = {
+      runId: "wfrun_suspended1",
+      workflowId: "suspend-run",
+      status: "awaiting-input",
+      startedAt: new Date().toISOString(),
+      stages: [{ index: 0, status: "done", steps: [{ index: 0, label: "setup", status: "done" }] }],
+      result: { sessionIds: [] },
+      awaitingSuspend: { stepId: "wait", on: ["human:ack"], since: new Date().toISOString() },
+    }
+    writeFileSync(persistPath, JSON.stringify([suspendedRun], null, 2), "utf8")
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+
+    // ts#1195: a run parked at a `kind: "suspend"` step stays suspended on
+    // reload — NOT failed with "interrupted by daemon restart".
+    const s = runner.status("wfrun_suspended1")
+    expect(s?.status).toBe("awaiting-input")
+    expect(s?.error).toBeUndefined()
+    expect(s?.awaitingSuspend?.stepId).toBe("wait")
+
+    // A matching resume lands after the restart. The run's execution can't
+    // resume, so — mirroring the approval path — the decision is recorded
+    // (event emitted exactly once) and the run is marked failed with a
+    // clear reason, never the silent pre-restart failure.
+    const resumedRunIds: string[] = []
+    bus.on("workflow:suspend-resumed", (ev) => resumedRunIds.push(ev.runId))
+    const result = runner.resumeSuspend("wfrun_suspended1", { payload: "go" })
+    expect(result.ok).toBe(true)
+    const after = runner.status("wfrun_suspended1")
+    expect(after?.status).toBe("failed")
+    expect(after?.error).toBe("suspend resolved after daemon restart — the run's execution could not resume")
+    expect(after?.awaitingSuspend).toBeUndefined()
+    expect(resumedRunIds).toEqual(["wfrun_suspended1"])
+  })
+
+  it("still fails a plain awaiting-input run (no suspend record) on restart", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    const escalatedRun = {
+      runId: "wfrun_escalated1",
+      workflowId: "escalate-run",
+      status: "awaiting-input",
+      startedAt: new Date().toISOString(),
+      stages: [],
+      result: { sessionIds: [] },
+    }
+    writeFileSync(persistPath, JSON.stringify([escalatedRun], null, 2), "utf8")
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+
+    const s = runner.status("wfrun_escalated1")
+    expect(s?.status).toBe("failed")
+    expect(s?.error).toBe("interrupted by daemon restart")
+  })
+
   it("handles missing or malformed persist file gracefully", async () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
@@ -599,6 +669,67 @@ steps:
     expect(final?.status).toBe("done")
     expect(final?.stages[0]?.status).toBe("done")
     expect(final?.stages[0]?.steps[0]?.status).toBe("done")
+  })
+
+  it("parks a run at a kind:\"suspend\" step and resumes it to done (AIP-15 rule 7)", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+    const { tools, candidates } = makeStubTools()
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools, candidates }),
+      persistPath: join(tmpDir, "workflow-runs.json"),
+    })
+
+    const path = writeWorkflowMd(`---
+name: Double then suspend
+id: double-suspend
+description: Double the input, then suspend until an external event.
+version: 0.1.0
+inputs: {}
+outputs: {}
+steps:
+  - id: d
+    kind: tool
+    tool: demo.double
+    inputs:
+      n: $input.n
+  - id: wait
+    kind: suspend
+    resume:
+      on: ["human:ack"]
+---
+
+# Double then suspend
+`)
+
+    const run = await runner.startFromFile({ path, input: { n: 5 } })
+
+    // The run parks at the suspend step — awaiting-input, not failed.
+    const suspended = new Set(["awaiting-input", "failed"])
+    let parked = runner.status(run.runId)
+    for (let i = 0; i < 100 && parked && !suspended.has(parked.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      parked = runner.status(run.runId)
+    }
+    expect(parked?.status).toBe("awaiting-input")
+    expect(parked?.error).toBeUndefined()
+    expect(parked?.awaitingSuspend?.stepId).toBe("wait")
+
+    // Resume through the normal resume path → the run completes.
+    const result = runner.resumeSuspend(run.runId, { stepId: "wait", payload: { ack: true } })
+    expect(result.ok).toBe(true)
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+    expect(final?.status).toBe("done")
+    expect(final?.awaitingSuspend).toBeUndefined()
   })
 
   it("exposes compiled agent step ids in run.stages and resolves sessionIds", async () => {

@@ -123,6 +123,7 @@ const compactWorkflowRun = (r: WorkflowRun) => ({
   ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
   ...(r.error !== undefined ? { error: r.error } : {}),
   ...(r.awaitingApproval !== undefined ? { awaitingApproval: r.awaitingApproval } : {}),
+  ...(r.awaitingSuspend !== undefined ? { awaitingSuspend: r.awaitingSuspend } : {}),
 })
 
 /** COMPACT `policy_list` row — the run summary; gate stdout/verdict/commitPlan stay behind `full: true`. */
@@ -1090,12 +1091,14 @@ export function registerOrchestrationTools(
 
     server.tool(
       "workflow_escalation_resolve",
-      "Provide an external answer to a workflow step that escalated because a " +
+        "Provide an external answer to a workflow step that escalated because a " +
         "session asked for human input (policy=escalate), OR resolve a " +
         "workflow run's parked human APPROVAL (`kind: \"approval\"` step): " +
         "pass `approvalId` (from `workflow_status`'s `awaitingApproval`) plus " +
         "`approved` + `who` (+ optional `note`) — the run resumes on the " +
-        "approve/reject branch and the decision is ledgered.",
+        "approve/reject branch and the decision is ledgered. OR resume a run " +
+        "parked at a `kind: \"suspend\"` step: pass `payload` (from " +
+        "`workflow_status`'s `awaitingSuspend`).",
       {
         runId: z.string().describe("Run id."),
         stageIndex: z
@@ -1127,12 +1130,33 @@ export function registerOrchestrationTools(
           .optional()
           .describe("Approval form: who decided (recorded on the run + app ledger). Defaults to \"human\"."),
         note: z.string().optional().describe("Approval form: optional free-text note recorded with the decision."),
+        payload: z
+          .any()
+          .describe("Suspend form: resume payload supplied to the parked `kind: \"suspend\"` step. Presence (not undefined) selects the suspend form."),
       },
       async input => {
         const approvalForm =
           input.approvalId !== undefined ||
           input.approved !== undefined ||
           input.note !== undefined
+        const suspendForm = input.payload !== undefined
+        if (suspendForm && !approvalForm) {
+          const result = workflowRunner.resumeSuspend(input.runId, {
+            payload: input.payload,
+          })
+          if (!result.ok) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: result.error, message: result.message }) }],
+              isError: true,
+            }
+          }
+          const run = workflowRunner.status(input.runId)
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ ok: true, runId: input.runId, status: run?.status }) },
+            ],
+          }
+        }
         if (approvalForm) {
           if (input.approved === undefined) {
             return {
