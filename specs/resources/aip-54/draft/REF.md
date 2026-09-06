@@ -2,7 +2,7 @@
 
 > **Status:** Draft
 > **Schema:** `REF.schema.json`
-> **Reference runtime:** `@agentproto/ref-catalog`
+> **Reference runtime:** `@agentproto/ref`
 
 ## What is a Ref?
 
@@ -25,7 +25,7 @@ registries.
 ## Reference runtime
 
 ```ts
-import { RefCatalog, refFor, refToUri, refFromUri } from "@agentproto/ref-catalog"
+import { RefCatalog, refFor, refToUri, refFromUri } from "@agentproto/ref"
 
 const cat = new RefCatalog()
 cat.registerFamily(42, { family: "app", keyBy: h => h.id! }, appRegistry)

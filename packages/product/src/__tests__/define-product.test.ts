@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { defineProduct, attachPricing, collectPriced } from "../index.js"
 import { createRegistry } from "@agentproto/registry"
-import { refFor, RefCatalog, type ArtifactRef } from "@agentproto/ref-catalog"
+import { refFor, RefCatalog, type ArtifactRef } from "@agentproto/ref"
 import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { definePack, type PackHandle } from "@agentproto/pack"
 import { defineTool } from "@agentproto/tool"
@@ -238,7 +238,7 @@ describe("collectPriced — the 'collection of priced things' join", () => {
         meter: "tool-call",
       }),
     ]
-    const joined = collectPriced(priced, ref => cat.resolve(ref))
+    const joined = collectPriced(priced, ref => cat.resolve(ref)).resolved
     expect(joined).toHaveLength(4)
     expect(joined[0]!.handle).toBe(app)
     expect(joined[1]!.handle).toBe(pack)
@@ -246,5 +246,67 @@ describe("collectPriced — the 'collection of priced things' join", () => {
     expect(joined[3]!.handle).toBe(tool)
     // a dangling ref: skipped by the join, but discoverable via the catalog
     expect(cat.resolve({ aip: 61, id: "ghost" })).toBeUndefined()
+  })
+})
+
+describe("defineProduct — `on` accepts the aip:// URI form (AIP-54)", () => {
+  const price = { model: "one-time", amountMinor: 1, currency: "usd" } as const
+
+  it("parses the URI form into the same normalized ref as the object form", () => {
+    const viaUri = defineProduct({ id: "p", kind: "pricing", on: "aip://42/book-companion", price })
+    const viaObj = defineProduct({ id: "p", kind: "pricing", on: { aip: 42, id: "book-companion" }, price })
+    expect(viaUri.on).toEqual(viaObj.on)
+    expect(viaUri.on).toEqual({ aip: 42, id: "book-companion" })
+  })
+
+  it("parses the pinned URI form aip://<aip>/<id>@<version>", () => {
+    const p = defineProduct({
+      id: "p",
+      kind: "pricing",
+      on: "aip://14/seo-private@1.2.0",
+      price,
+    })
+    expect(p.on).toEqual({ aip: 14, id: "seo-private", version: "1.2.0" })
+  })
+
+  it("attachPricing works with the URI form, including its derived default id", () => {
+    const p = attachPricing("aip://42/book-companion", price)
+    expect(p.on).toEqual({ aip: 42, id: "book-companion" })
+    expect(p.id).toBe("pricing-one-time-42-book-companion")
+  })
+
+  it("rejects a malformed aip:// URI loudly and specifically", () => {
+    expect(() => defineProduct({ id: "p", kind: "pricing", on: "not-a-uri", price })).toThrow(
+      /not a valid aip:\/\/ URI.*not-a-uri/,
+    )
+    expect(() => defineProduct({ id: "p", kind: "pricing", on: "aip://abc/x", price })).toThrow(
+      /not a valid aip:\/\/ URI/,
+    )
+  })
+
+  it("still rejects an invalid object ref (empty id) at runtime", () => {
+    expect(() =>
+      defineProduct({ id: "p", kind: "pricing", on: { aip: 42, id: "" }, price }),
+    ).toThrow(/ArtifactRef/)
+  })
+
+  it("collectPriced reports dangling refs instead of dropping them", () => {
+    const { cat, app } = buildWorld()
+    const ok = attachPricing(refFor({ aip: 42, keyBy: (h: AppHandle) => h.id! }, app), {
+      model: "one-time",
+      amountMinor: 1,
+      currency: "usd",
+    })
+    const ghost = attachPricing({ aip: 61, id: "ghost" }, {
+      model: "one-time",
+      amountMinor: 1,
+      currency: "usd",
+    })
+    const { resolved, dangling } = collectPriced([ok, ghost], ref => cat.resolve(ref))
+    expect(resolved).toHaveLength(1)
+    expect(resolved[0]!.handle).toBe(app)
+    expect(dangling).toHaveLength(1)
+    expect(dangling[0]!.product).toBe(ghost)
+    expect(dangling[0]!.ref).toEqual({ aip: 61, id: "ghost" })
   })
 })

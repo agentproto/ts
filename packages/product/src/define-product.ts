@@ -9,6 +9,7 @@
 
 import type { BillingRail, ProductDefinition, ProductHandle, ProductPrice } from "./types.js"
 import { ProductRefError } from "./types.js"
+import { refFromUri, type ArtifactRef } from "@agentproto/ref"
 
 const ID_RE = /^[a-z][a-z0-9-]*$/
 const CURRENCY_RE = /^[a-z]{3}$/
@@ -47,22 +48,44 @@ function validateRail(price: ProductPrice, rail: BillingRail): void {
 }
 
 /**
+ * Normalize the `on` target to an `ArtifactRef`: the object form is
+ * validated as-is; a string must be a well-formed `aip://` URI and is
+ * parsed with `refFromUri` (AIP-54).
+ */
+function normalizeOn(on: ProductDefinition["on"]): ArtifactRef {
+  if (typeof on === "string") {
+    try {
+      return refFromUri(on)
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e)
+      throw new ProductRefError(
+        `'on' is not a valid aip:// URI — expected aip://<aip>/<id>[@version], got '${on}' (${detail})`,
+      )
+    }
+  }
+  if (!on || typeof on.aip !== "number" || typeof on.id !== "string" || !on.id) {
+    throw new ProductRefError(`'on' must be a valid AIP-54 ArtifactRef ({aip, id}) or an aip:// URI`)
+  }
+  return on
+}
+
+/**
  * Define a pricing capability on any referenced artifact.
  *
  * Cross-field rules:
  *  - `id` kebab-case.
  *  - price amounts are minor-unit integers; currency is ISO-4217 lowercase.
  *  - `pay-per-call` + `rail: "stripe"` requires `billingRail.meterId`.
+ *  - `on` is either an AIP-54 `ArtifactRef` or an `aip://` URI, and is
+ *    normalized to the object form on the returned handle.
  */
 export function defineProduct(def: ProductDefinition): ProductHandle {
   if (!ID_RE.test(def.id)) throw new ProductRefError(`bad product id '${def.id}'`)
   if (def.kind !== "pricing") throw new ProductRefError(`kind must be 'pricing'`)
-  if (!def.on || typeof def.on.aip !== "number" || typeof def.on.id !== "string" || !def.on.id) {
-    throw new ProductRefError(`'on' must be a valid AIP-54 ArtifactRef ({aip, id})`)
-  }
+  const on = normalizeOn(def.on)
   validatePrice(def.price)
   if (def.billingRail) validateRail(def.price, def.billingRail)
-  return Object.freeze({ ...def, schema: "product/v1" })
+  return Object.freeze({ ...def, on, schema: "product/v1" })
 }
 
 /**
@@ -74,8 +97,9 @@ export function attachPricing(
   price: ProductPrice,
   opts?: { id?: string; billingRail?: BillingRail; title?: string; description?: string },
 ): ProductHandle {
+  const ref = normalizeOn(on)
   return defineProduct({
-    id: opts?.id ?? `pricing-${price.model}-${on.aip}-${on.id}`,
+    id: opts?.id ?? `pricing-${price.model}-${ref.aip}-${ref.id}`,
     kind: "pricing",
     on,
     price,
@@ -87,18 +111,24 @@ export function attachPricing(
 
 /**
  * Join priced capabilities with resolvable refs — "a collection of
- * priced things". Returns the products whose `on` ref resolves in the
- * catalog, paired with the resolved handle; dangling refs are reported,
+ * priced things". Returns BOTH outcomes: `resolved` pairs each product
+ * whose `on` ref resolves in the catalog with its resolved handle, and
+ * `dangling` reports every product whose ref did not resolve — reported,
  * never silently dropped.
  */
 export function collectPriced(
   products: readonly ProductHandle[],
-  resolve: (ref: ProductDefinition["on"]) => { handle: unknown } | undefined,
-): { product: ProductHandle; handle: unknown }[] {
-  const out: { product: ProductHandle; handle: unknown }[] = []
+  resolve: (ref: ArtifactRef) => { handle: unknown } | undefined,
+): {
+  resolved: { product: ProductHandle; handle: unknown }[]
+  dangling: { product: ProductHandle; ref: ArtifactRef }[]
+} {
+  const resolved: { product: ProductHandle; handle: unknown }[] = []
+  const dangling: { product: ProductHandle; ref: ArtifactRef }[] = []
   for (const p of products) {
     const hit = resolve(p.on)
-    if (hit) out.push({ product: p, handle: hit.handle })
+    if (hit) resolved.push({ product: p, handle: hit.handle })
+    else dangling.push({ product: p, ref: p.on })
   }
-  return out
+  return { resolved, dangling }
 }

@@ -2820,9 +2820,9 @@ importers:
 
   packages/product:
     dependencies:
-      '@agentproto/ref-catalog':
+      '@agentproto/ref':
         specifier: workspace:*
-        version: link:../ref-catalog
+        version: link:../ref
     devDependencies:
       '@agentproto/app-kit':
         specifier: workspace:*
@@ -2939,24 +2939,6 @@ importers:
       zod:
         specifier: ^4.5.4
         version: 4.5.4
-    devDependencies:
-      '@agentproto/tooling':
-        specifier: workspace:*
-        version: link:../tooling
-      '@types/node':
-        specifier: ^25.6.2
-        version: 25.6.2
-      tsup:
-        specifier: ^8.5.1
-        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.23.13)(typescript@5.9.3)(yaml@2.9.0)
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(happy-dom@15.11.7)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.13)(yaml@2.9.0)
-
-  packages/ref-catalog:
     devDependencies:
       '@agentproto/registry':
         specifier: workspace:*

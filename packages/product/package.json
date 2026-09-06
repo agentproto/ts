@@ -50,7 +50,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/ref-catalog": "workspace:*"
+    "@agentproto/ref": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/app-kit": "workspace:*",
