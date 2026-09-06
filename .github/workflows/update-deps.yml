@@ -286,8 +286,10 @@ jobs:
       - name: Run pnpm audit (prod + full)
         id: audit
         run: |
+          set +e
           pnpm audit --prod --json > /tmp/audit-prod.json 2>/tmp/audit-prod.err; PROD_EXIT=$?
           pnpm audit --json > /tmp/audit-full.json 2>/tmp/audit-full.err; FULL_EXIT=$?
+          set -e
           echo "prod_exit=$PROD_EXIT"
           echo "full_exit=$FULL_EXIT"
           echo "prod_exit=$PROD_EXIT" >> "$GITHUB_OUTPUT"
