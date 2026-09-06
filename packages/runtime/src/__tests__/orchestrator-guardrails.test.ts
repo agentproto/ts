@@ -615,7 +615,7 @@ describe("PR-6 — mcp_imported_tool_list compact/schema/limit/cursor", () => {
       })
       const text = (result as { content: Array<{ text: string }> }).content[0]!.text
       expect(text).toBe(
-        JSON.stringify({ alias: "chrome-devtools", tools: PROXY_TOOLS }, null, 2),
+        JSON.stringify({ alias: "chrome-devtools", tools: PROXY_TOOLS }),
       )
     } finally {
       await h.close()

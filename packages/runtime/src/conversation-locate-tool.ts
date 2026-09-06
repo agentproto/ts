@@ -98,7 +98,7 @@ export function registerConversationLocateTool(server: McpServer): void {
     },
     async input => {
       const result = await locateConversation({ target: input.target })
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] }
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] }
     },
   )
 }

@@ -247,9 +247,9 @@ describe("session list pagination (PR-2, additive)", () => {
       expect(parsed.sessions).toBeDefined()
       expect(parsed.items).toBeUndefined()
 
-      // Byte-identical: pretty-printed legacy shape, no pagination fields.
+      // Byte-identical: compact legacy shape, no pagination fields.
       const text = textOf(result)
-      expect(text).toContain("\n  ")
+      expect(text).not.toContain("\n")
       expect(text).not.toContain('"nextCursor"')
       expect(text).not.toContain('"total"')
     } finally {

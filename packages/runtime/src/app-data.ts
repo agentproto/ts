@@ -259,7 +259,7 @@ export async function locateAppDataPath(roots: AppDataRoots, relPath: string): P
 }
 
 function textResult(body: unknown): { content: { type: "text"; text: string }[] } {
-  return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] }
+  return { content: [{ type: "text", text: JSON.stringify(body) }] }
 }
 
 function errorResult(text: string): {

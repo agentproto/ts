@@ -446,7 +446,7 @@ export function registerSessionTools(
       }
       return {
         content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
+          { type: "text", text: JSON.stringify({ sessions: rows }) },
         ],
       }
     },
@@ -513,7 +513,7 @@ export function registerSessionTools(
       const usage = projectSessionUsage(desc)
       return {
         content: [
-          { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }, null, 2) },
+          { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }) },
         ],
       }
     },
@@ -591,7 +591,7 @@ export function registerSessionTools(
         desc.contextUsed,
       )
       return {
-        content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(status) }],
       }
     },
   )
@@ -957,7 +957,7 @@ export function registerSessionTools(
         }
       }
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(result) }],
       }
     },
   )
@@ -1016,7 +1016,7 @@ export function registerSessionTools(
       }
       return {
         content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
+          { type: "text", text: JSON.stringify({ sessions: rows }) },
         ],
       }
     },
@@ -1076,7 +1076,7 @@ export function registerSessionTools(
       }
       return {
         content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
+          { type: "text", text: JSON.stringify({ sessions: rows }) },
         ],
       }
     },
@@ -1101,7 +1101,7 @@ export function registerSessionTools(
           return { content: [{ type: "text", text: toolText(page) }] }
         }
         return {
-          content: [{ type: "text", text: JSON.stringify({ mcps }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ mcps }) }],
         }
       } catch (err) {
         return {
@@ -1136,7 +1136,7 @@ export function registerSessionTools(
         }
         return {
           content: [
-            { type: "text", text: JSON.stringify(config, null, 2) },
+            { type: "text", text: JSON.stringify(config) },
           ],
         }
       } catch (err) {
@@ -1199,7 +1199,7 @@ export function registerSessionTools(
         await saveImportedMcps(next)
         const entry = next.imports.find(e => e.id === snapshot.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(entry, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(entry) }],
         }
       } catch (err) {
         return {
@@ -1245,7 +1245,7 @@ export function registerSessionTools(
         await saveImportedMcps(removeImport(cfg, input.id))
         return {
           content: [
-            { type: "text", text: JSON.stringify({ ok: true, id: input.id }, null, 2) },
+            { type: "text", text: JSON.stringify({ ok: true, id: input.id }) },
           ],
         }
       } catch (err) {
@@ -1293,7 +1293,7 @@ export function registerSessionTools(
         const aliases = await mcpProxy.listAliases()
         return {
           content: [
-            { type: "text", text: JSON.stringify({ imports: aliases }, null, 2) },
+            { type: "text", text: JSON.stringify({ imports: aliases }) },
           ],
         }
       } catch (err) {
@@ -1398,14 +1398,14 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ alias: input.alias, tools: out.tools.map(project) }, null, 2),
+              text: JSON.stringify({ alias: input.alias, tools: out.tools.map(project) }),
             },
           ],
         }
       }
       return {
         content: [
-          { type: "text", text: JSON.stringify({ alias: input.alias, tools: out.tools }, null, 2) },
+          { type: "text", text: JSON.stringify({ alias: input.alias, tools: out.tools }) },
         ],
       }
     }
@@ -1529,7 +1529,7 @@ export function registerSessionTools(
           : { tree, byOrigin }
       return {
         content: [
-          { type: "text", text: JSON.stringify(body, null, 2) },
+          { type: "text", text: JSON.stringify(body) },
         ],
       }
     },
@@ -1594,7 +1594,7 @@ export function registerSessionTools(
         return { content: [{ type: "text", text: toolText(page) }] }
       }
       return {
-        content: [{ type: "text", text: JSON.stringify({ sessionId: desc.id, queue }, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify({ sessionId: desc.id, queue }) }],
       }
     },
   )
@@ -1647,7 +1647,7 @@ export function registerSessionTools(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok: true, sessionId: desc.id, queueId: input.queueId, position: result.position }, null, 2),
+            text: JSON.stringify({ ok: true, sessionId: desc.id, queueId: input.queueId, position: result.position }),
           },
         ],
       }
@@ -1828,7 +1828,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: resolved.error }, null, 2),
+              text: JSON.stringify({ error: resolved.error }),
             },
           ],
           isError: true,
@@ -1850,7 +1850,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ worktrees }, null, 2),
+              text: JSON.stringify({ worktrees }),
             },
           ],
         }
@@ -1952,7 +1952,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: resolved.error }, null, 2),
+              text: JSON.stringify({ error: resolved.error }),
             },
           ],
           isError: true,
@@ -1973,7 +1973,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify(result, null, 2),
+              text: JSON.stringify(result),
             },
           ],
         }
@@ -2420,7 +2420,7 @@ export function registerSessionTools(
             content: [
               {
                 type: "text",
-                text: JSON.stringify(desc, null, 2),
+                text: JSON.stringify(desc),
               },
             ],
           }
@@ -2553,7 +2553,7 @@ export function registerSessionTools(
       try {
         const desc = registry.archiveSession(prev.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2606,7 +2606,7 @@ export function registerSessionTools(
         ...(input.forget ? { forget: true } : {}),
         ...(onlyIds ? { onlyIds } : {}),
       })
-      return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+      return { content: [{ type: "text", text: JSON.stringify(res) }] }
     }
   )
 
@@ -2666,7 +2666,7 @@ export function registerSessionTools(
       try {
         const desc = registry.unarchiveSession(prev.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2801,7 +2801,7 @@ export function registerSessionTools(
           reason: input.reason,
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2914,7 +2914,7 @@ export function registerSessionTools(
           ...(input.label !== undefined ? { label: input.label } : {}),
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2997,7 +2997,7 @@ export function registerSessionTools(
       try {
         const desc = registry.setKeepAlive(prev.id, input.keepAlive)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -3081,7 +3081,7 @@ export function registerSessionTools(
       try {
         const desc = registry.setPinned(prev.id, input.pinned)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -3204,7 +3204,7 @@ export function registerSessionTools(
             : {}),
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -3312,7 +3312,7 @@ export function registerSessionTools(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok, sessionId: desc.id }, null, 2),
+            text: JSON.stringify({ ok, sessionId: desc.id }),
           },
         ],
         ...(ok ? {} : { isError: true as const }),
@@ -3439,7 +3439,7 @@ export function registerSessionTools(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok, sessionId: desc.id }, null, 2),
+            text: JSON.stringify({ ok, sessionId: desc.id }),
           },
         ],
       }

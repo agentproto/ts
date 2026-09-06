@@ -114,7 +114,7 @@ export interface BrowserAdapterInfo {
 // ── Shared result helpers ─────────────────────────────────────────────────────
 
 const okResult = (r: Record<string, unknown>) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
+  content: [{ type: "text" as const, text: JSON.stringify(r) }],
   structuredContent: r,
 })
 
@@ -168,7 +168,7 @@ export function registerBrowserTools(
           return { content: [{ type: "text" as const, text: toolText(page) }] }
         }
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(adapters, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(adapters) }],
         }
       }
       // Legacy path: synchronous injected lister.
@@ -191,7 +191,7 @@ export function registerBrowserTools(
         return { content: [{ type: "text" as const, text: toolText(page) }] }
       }
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(adapters, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(adapters) }],
       }
     }
   )
@@ -386,7 +386,7 @@ export function registerBrowserTools(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ok, sessionId: input.sessionId }, null, 2),
+            text: JSON.stringify({ ok, sessionId: input.sessionId }),
           },
         ],
       }
@@ -421,7 +421,7 @@ export function registerBrowserTools(
         return { content: [{ type: "text" as const, text: toolText(page) }] }
       }
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       }
     }
   )
@@ -485,7 +485,7 @@ export function registerBrowserTools(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ descriptor: desc, healthy, healthBody }, null, 2),
+            text: JSON.stringify({ descriptor: desc, healthy, healthBody }),
           },
         ],
       }
