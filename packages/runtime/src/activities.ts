@@ -168,6 +168,12 @@ export function createActivityProjector(opts: {
   // until the next settlement pass, never to wrong data.
   const prStates = new Map<string, PrResolvedState>()
 
+  // Per-record-source containment INSIDE each owner: one malformed row (a
+  // legacy persisted policy, a poisoned session, a bad run) is warned about
+  // — naming the offending row, so the warning is actionable — and skipped;
+  // its siblings still project. `list()`'s per-owner wrap stays as the outer
+  // net for failures OUTSIDE these loops (`registry.list()` itself,
+  // `linkTasks`, …).
   const projectOwnerRaw = (owner: ActivityOwner): ActivityRecord[] => {
     switch (owner) {
       case "session": {
@@ -177,19 +183,48 @@ export function createActivityProjector(opts: {
         const now = new Date().toISOString()
         const out: ActivityRecord[] = []
         for (const session of opts.registry.list()) {
-          out.push(
-            ...turnToActivities(session, { now }),
-            ...prToActivities(session, { resolvedPrState: url => prStates.get(url) }),
-          )
+          try {
+            out.push(
+              ...turnToActivities(session, { now }),
+              ...prToActivities(session, { resolvedPrState: url => prStates.get(url) }),
+            )
+          } catch (err) {
+            console.warn(
+              `[activities] session "${session.id}" projection failed; skipping its records`,
+              err,
+            )
+          }
         }
         return out
       }
-      case "supervisor":
-        return opts.supervisor.list().flatMap(policy => policyToActivities(policy))
-      case "workflow":
-        return opts.workflowRunner
-          ? opts.workflowRunner.list().flatMap(run => workflowToActivities(run))
-          : []
+      case "supervisor": {
+        const out: ActivityRecord[] = []
+        for (const policy of opts.supervisor.list()) {
+          try {
+            out.push(...policyToActivities(policy))
+          } catch (err) {
+            console.warn(
+              `[activities] policy "${policy.policyId}" projection failed; skipping its records`,
+              err,
+            )
+          }
+        }
+        return out
+      }
+      case "workflow": {
+        const out: ActivityRecord[] = []
+        for (const run of opts.workflowRunner ? opts.workflowRunner.list() : []) {
+          try {
+            out.push(...workflowToActivities(run))
+          } catch (err) {
+            console.warn(
+              `[activities] workflow run "${run.runId}" projection failed; skipping its records`,
+              err,
+            )
+          }
+        }
+        return out
+      }
     }
   }
 
