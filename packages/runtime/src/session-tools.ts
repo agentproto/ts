@@ -61,6 +61,9 @@ import {
 } from "./usage-rollup-service.js"
 import { withToolSubset } from "./tool-subset.js"
 import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
+import { defineTool, paginated } from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type {
@@ -434,9 +437,53 @@ export function registerSessionTools(
   registerAgentTools(server, opts)
 
   // ── session_list (canonical lister) ──────────────────────────
-  server.tool(
-    "session_list",
-    "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) as the proof-of-concept for the ToolTransformer mechanism:
+  // the pagination/compact/fields concerns are now applied by the
+  // `paginated()` transformer at registration instead of hand-rolled in
+  // the handler. Observable behavior is unchanged.
+  const sessionListSchema = z.object({
+    kind: z
+      .enum(["terminal", "agent-cli", "command", "all"])
+      .optional()
+      .describe(
+        "Filter by session kind. `all` (default) returns every " +
+          "live-able kind (terminal + agent-cli) but excludes `command` " +
+          "unless `includeCommands` is set. Use `terminal` to list only " +
+          "PTY sessions, `agent-cli` for structured ACP agents, or " +
+          "`command` to list only raw shell-command runs.",
+      ),
+    includeCommands: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true and `kind` is unset/`all`, also include `kind:'command'` " +
+          "rows in the result (they're excluded by default — see `kind`). " +
+          "No effect when `kind` is set explicitly. Default false.",
+      ),
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe("When true, only running/starting sessions. Default false."),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status (overrides onlyAlive)."),
+    includeArchived: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, also include archived sessions (hidden from every " +
+          "other view by `session_archive`). Default false.",
+      ),
+    ...pageParamsShape,
+  })
+  type SessionListInput = z.infer<typeof sessionListSchema>
+
+  const sessionListTool = defineTool<SessionListInput, SessionDescriptor[]>({
+    id: "session_list",
+    description:
+      "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
       "hermes, …) and terminal/PTY sessions (claude TUI, bash, …). Each " +
       "entry includes `kind`, `pty` (true for real PTYs), `name` (when set " +
       "at spawn), `status`, `command`, age + exit code. Use this when you " +
@@ -449,112 +496,74 @@ export function registerSessionTools(
       "(`kind:'command'`) are a log, not a resumable session, so they're " +
       "excluded from the default view — pass `kind:'command'` or " +
       "`includeCommands:true` to see them, or use `command_list`.",
-    {
-      kind: z
-        .enum(["terminal", "agent-cli", "command", "all"])
-        .optional()
-        .describe(
-          "Filter by session kind. `all` (default) returns every " +
-            "live-able kind (terminal + agent-cli) but excludes `command` " +
-            "unless `includeCommands` is set. Use `terminal` to list only " +
-            "PTY sessions, `agent-cli` for structured ACP agents, or " +
-            "`command` to list only raw shell-command runs.",
-        ),
-      includeCommands: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true and `kind` is unset/`all`, also include `kind:'command'` " +
-            "rows in the result (they're excluded by default — see `kind`). " +
-            "No effect when `kind` is set explicitly. Default false.",
-        ),
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("When true, only running/starting sessions. Default false."),
-      status: z
-        .enum(["starting", "running", "exited", "killed", "error"])
-        .optional()
-        .describe("Filter by exact status (overrides onlyAlive)."),
-      includeArchived: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true, also include archived sessions (hidden from every " +
-            "other view by `session_archive`). Default false.",
-        ),
-      ...pageParamsShape,
-    },
-    async input => {
-      // Always pull the FULL list (archived included) — subtree scoping
-      // below needs every row to keep the parent→child graph connected
-      // (an archived ancestor excluded from the base list would silently
-      // orphan its non-archived descendants from `collectSubtree`'s BFS).
-      // The archived-hide is applied afterwards, per `input.includeArchived`.
-      let rows = registry.list({ includeArchived: true })
-      // Subtree scoping (WP4): on the scoped sub-gateway a child
-      // orchestrator only sees the sessions in its own subtree, never
-      // the whole daemon.
-      if (callerScope) {
-        const subtree = collectSubtree(callerScope.ownerSessionId, rows)
-        rows = rows.filter(s => subtree.has(s.id))
-      }
-      if (!input.includeArchived) {
-        rows = rows.filter(s => !s.archived)
-      }
-      if (input.kind && input.kind !== "all") {
-        rows = rows.filter(s => s.kind === input.kind)
-      } else if (!input.includeCommands) {
-        // Default view = live-able sessions only. `kind:"command"` rows are
-        // a shell-execution LOG (already reachable via `command_list` / an
-        // explicit `kind:"command"` filter), not resumable sessions — left
-        // in, hundreds of finished-command rows bury the real agent/PTY
-        // sessions this tool exists to surface.
-        rows = rows.filter(s => s.kind !== "command")
-      }
-      if (input.status) {
-        rows = rows.filter(s => s.status === input.status)
-      } else if (input.onlyAlive) {
-        rows = rows.filter(
-          s => s.status === "running" || s.status === "starting",
-        )
-      }
-      // Pagination (PR-2): ALWAYS last — after subtree scoping and the
-      // archived/kind/status filters. Without limit/cursor the output is
-      // Compact-by-default (PR-10): unless the caller explicitly opts out
-      // (`compact: false` or the `full: true` escape hatch), each row is
-      // projected to `SessionListCompactItem`. `full: true` (or an explicit
-      // `compact: false`) returns the full SessionDescriptor rows exactly
-      // as the pre-PR-10 handler did — byte-identical.
-      const full = input.full === true
-      const compact = full ? false : input.compact !== false
-      const project = (list: SessionDescriptor[]) =>
-        compact ? list.map(compactSessionItem) : list
-      // Pagination (PR-2): ALWAYS last — after subtree scoping and the
-      // archived/kind/status filters. Without limit/cursor the output is
-      // byte-identical to the pre-pagination handler (modulo the PR-10
-      // compact projection, which `full: true` disables).
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
-        return {
-          content: [
-            {
-              type: "text",
-              text: toolText(
-                compact ? { ...page, items: page.items.map(compactSessionItem) } : page,
-                input,
-              ),
-            },
-          ],
-        }
-      }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ sessions: project(rows) }) },
-        ],
-      }
-    },
-  )
+    inputSchema: sessionListSchema,
+  })
+
+  // Body: filters ONLY. Pagination + compact projection are the
+  // `paginated()` transformer's job (applied at registration below).
+  const sessionListImpl = implementTool(sessionListTool, async ({ input }) => {
+    // Always pull the FULL list (archived included) — subtree scoping
+    // below needs every row to keep the parent→child graph connected
+    // (an archived ancestor excluded from the base list would silently
+    // orphan its non-archived descendants from `collectSubtree`'s BFS).
+    // The archived-hide is applied afterwards, per `input.includeArchived`.
+    let rows = registry.list({ includeArchived: true })
+    // Subtree scoping (WP4): on the scoped sub-gateway a child
+    // orchestrator only sees the sessions in its own subtree, never
+    // the whole daemon.
+    if (callerScope) {
+      const subtree = collectSubtree(callerScope.ownerSessionId, rows)
+      rows = rows.filter(s => subtree.has(s.id))
+    }
+    if (!input.includeArchived) {
+      rows = rows.filter(s => !s.archived)
+    }
+    if (input.kind && input.kind !== "all") {
+      rows = rows.filter(s => s.kind === input.kind)
+    } else if (!input.includeCommands) {
+      // Default view = live-able sessions only. `kind:"command"` rows are
+      // a shell-execution LOG (already reachable via `command_list` / an
+      // explicit `kind:"command"` filter), not resumable sessions — left
+      // in, hundreds of finished-command rows bury the real agent/PTY
+      // sessions this tool exists to surface.
+      rows = rows.filter(s => s.kind !== "command")
+    }
+    if (input.status) {
+      rows = rows.filter(s => s.status === input.status)
+    } else if (input.onlyAlive) {
+      rows = rows.filter(
+        s => s.status === "running" || s.status === "starting",
+      )
+    }
+    return rows
+  })
+
+  // Single-implementation adapter: daemon tools have exactly one fixed
+  // body, so wrap it as a trivial one-candidate builtin driver to satisfy
+  // runTool's AIP-30 multi-driver resolution.
+  const sessionListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: sessionListTool.id, version: "*" }],
+    implementations: [sessionListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: sessionListTool,
+    candidates: [sessionListDriver],
+    transformers: [
+      paginated({
+        project: compactSessionItem,
+        keyOf: s => s.id,
+        maxLimit: 200,
+        itemKey: "sessions",
+      }),
+    ],
+  })
 
   // ── session_usage ────────────────────────────────────────────────
   server.tool(

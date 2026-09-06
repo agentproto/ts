@@ -42,9 +42,27 @@ export {
   type ToolErrorCode,
   type ToolErrorPayload,
 } from "./errors.js"
+export {
+  paginated,
+  catchErrors,
+  type McpTextResult,
+  type PaginatedOptions,
+} from "./transformers.js"
+export {
+  paginate,
+  toolText,
+  encodeCursor,
+  decodeCursor,
+  pageParamsShape,
+  type Page,
+  type PageParams,
+  type PaginateOpts,
+  type CursorPayload,
+} from "./envelope.js"
 export type {
   ToolDefinition,
   ToolHandle,
+  ToolTransformer,
   ToolContext,
   ToolCapabilities,
   ApprovalClass,

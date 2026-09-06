@@ -13,7 +13,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { ZodRawShape, ZodType } from "zod"
 import { runTool, type DriverHandle, type ResolverContext } from "@agentproto/driver"
-import type { ToolContext, ToolHandle } from "@agentproto/tool"
+import type {
+  ToolContext,
+  ToolHandle,
+  ToolTransformer,
+} from "@agentproto/tool"
 
 export interface ToMcpToolOptions<
   TInput,
@@ -24,6 +28,12 @@ export interface ToMcpToolOptions<
   tool: ToolHandle<TInput, TOutput, TContext>
   /** Candidate DRIVERs the resolver dispatches over. */
   candidates: readonly DriverHandle[]
+  /**
+   * Cross-cutting concerns applied at registration, composed left-to-right
+   * in declared order (first declared = outermost wrapper). Overrides the
+   * contract's own `tool.transformers` when provided.
+   */
+  transformers?: readonly ToolTransformer[]
   /**
    * Per-call injected context (live capabilities). A value, or a factory run
    * once per invocation (e.g. to lease a fresh session). Omit for context-free
@@ -48,6 +58,7 @@ export interface McpToolRegistration {
   inputShape: ZodRawShape
   handler: (args: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>
+    isError?: boolean
   }>
 }
 
@@ -87,13 +98,47 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
   // MCP params (`{}`).
   const objectShape =
     tool.inputSchema != null ? asObjectShape(tool.inputSchema) : undefined
-  const inputShape: ZodRawShape =
+  let inputShape: ZodRawShape =
     objectShape ?? (tool.inputSchema != null ? { input: tool.inputSchema } : {})
+
+  // Transformers (this option overrides the contract's own list), composed
+  // LEFT-TO-RIGHT in declared order: the first transformer listed ends up
+  // the OUTERMOST wrapper around the handler pipeline (see
+  // ToolTransformer's JSDoc). wrapShape applies in the same declared order.
+  const transformers = opts.transformers ?? tool.transformers
+  for (const t of transformers ?? []) {
+    if (t.wrapShape) inputShape = t.wrapShape(inputShape)
+  }
 
   const resolveContext = async (): Promise<unknown> =>
     typeof opts.context === "function"
       ? await (opts.context as () => TContext | Promise<TContext>)()
       : opts.context
+
+  // Base pipeline: resolve → validate → execute → validate → raw output.
+  // Serialization happens at the boundary below, so transformers see the
+  // unserialized value and may terminate the pipeline with a pre-serialized
+  // MCP text result instead.
+  let handler: (input: unknown) => Promise<unknown> = async (input) => {
+    const context = await resolveContext()
+    return runTool({
+      tool,
+      candidates,
+      input,
+      context,
+      resolverContext: opts.resolverContext,
+      secrets: opts.secrets,
+    })
+  }
+  if (transformers) {
+    for (let i = transformers.length - 1; i >= 0; i--) {
+      const t = transformers[i]!
+      const next = t.wrapHandler(handler as never) as (
+        input: unknown,
+      ) => Promise<unknown>
+      handler = next
+    }
+  }
 
   return {
     name: opts.name ? mcpName(opts.name) : mcpName(tool.id),
@@ -101,18 +146,26 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
     inputShape,
     handler: async (args) => {
       const input = objectShape ? args : (args.input as unknown)
-      const context = await resolveContext()
-      const output = await runTool({
-        tool,
-        candidates,
-        input,
-        context,
-        resolverContext: opts.resolverContext,
-        secrets: opts.secrets,
-      })
-      return contentText(output)
+      const output = await handler(input)
+      // A transformer that terminates the pipeline returns a pre-serialized
+      // MCP text result — pass it through verbatim. Anything else (the
+      // untransformed tool output) gets the default JSON serialization.
+      return isMcpTextResult(output)
+        ? output
+        : contentText(output)
     },
   }
+}
+
+function isMcpTextResult(value: unknown): value is {
+  content: Array<{ type: "text"; text: string }>
+  isError?: boolean
+} {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as { content?: unknown }).content)
+  )
 }
 
 /**
