@@ -15,11 +15,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { listAuthProfiles, type AuthProfile } from "@agentproto/auth"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 import {
   catchErrors,
-  defineTool,
   paginated,
   type McpTextResult,
   type ToolTransformer,
@@ -313,10 +311,9 @@ export function registerLlmEndpointTools(
   const llmEndpointListLinksSchema = z.object({})
   type LlmEndpointListLinksInput = z.infer<typeof llmEndpointListLinksSchema>
 
-  const llmEndpointListLinksTool = defineTool<LlmEndpointListLinksInput, UpstreamLinkRow[]>({
+  registerBuiltinTool<LlmEndpointListLinksInput, UpstreamLinkRow[]>(server, {
     id: "llm_endpoint_list_links",
-    description:
-      "List the persisted upstream→auth-profile links plus, per upstream, the " +
+    description: "List the persisted upstream→auth-profile links plus, per upstream, the " +
       "auth-profiles ELIGIBLE to be linked. A profile is eligible for upstream " +
       "P iff its billing endpoint equals P, its method is compatible (api-key " +
       "for any upstream; oauth-bearer only for anthropic), and it is not " +
@@ -329,36 +326,17 @@ export function registerLlmEndpointTools(
       "`full: true` (or `compact: false`) to also surface each eligible " +
       "profile's remaining non-secret metadata (curation, provenance, …).",
     inputSchema: llmEndpointListLinksSchema,
-  })
-
-  // Body: reads ONLY. Pagination, compact projection, the `links` map, and
-  // error normalization are the transformers' job (applied below).
-  const llmEndpointListLinksImpl = implementTool(llmEndpointListLinksTool, async () => {
-    const [links, profiles] = await Promise.all([
-      listLlmEndpointLinks(),
-      listAuthProfiles(),
-    ])
-    return CANONICAL_UPSTREAMS.map(provider => ({
-      provider,
-      linkedProfile: links[provider] ?? null,
-      eligible: eligibleProfilesForUpstream(profiles, provider),
-    }))
-  })
-
-  const llmEndpointListLinksDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: llmEndpointListLinksTool.id, version: "*" }],
-    implementations: [llmEndpointListLinksImpl],
-  })
-
-  toMcpTool(server, {
-    tool: llmEndpointListLinksTool,
-    candidates: [llmEndpointListLinksDriver],
+    handler: async () => {
+      const [links, profiles] = await Promise.all([
+        listLlmEndpointLinks(),
+        listAuthProfiles(),
+      ])
+      return CANONICAL_UPSTREAMS.map(provider => ({
+        provider,
+        linkedProfile: links[provider] ?? null,
+        eligible: eligibleProfilesForUpstream(profiles, provider),
+      }))
+    },
     transformers: [
       catchErrors(),
       withLinksMap(),

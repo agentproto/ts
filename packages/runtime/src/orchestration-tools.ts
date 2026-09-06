@@ -24,14 +24,12 @@ import { jsonTolerant } from "./json-tolerant.js"
 import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 import {
   catchErrors,
-  defineTool,
   paginated,
   type McpTextResult,
   type PageParams,
   type ToolTransformer,
 } from "@agentproto/tool"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { collectSubtree } from "./session-tools.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
@@ -809,10 +807,9 @@ export function registerOrchestrationTools(
   })
   type PermissionsListInput = z.infer<typeof permissionsListSchema>
 
-  const permissionsListTool = defineTool<PermissionsListInput, Record<string, unknown>[]>({
+  registerBuiltinTool<PermissionsListInput, Record<string, unknown>[]>(server, {
     id: "permissions_list",
-    description:
-      "List permission requests currently HELD across all permission-hold " +
+    description: "List permission requests currently HELD across all permission-hold " +
       "sessions (spawned with `permissionHold`). Each entry: id, sessionId, " +
       "session adapter/title, the tool being requested, its raw input when " +
       "the driver supplied one (e.g. a Bash tool's command string, " +
@@ -824,31 +821,10 @@ export function registerOrchestrationTools(
       "`text` line, `_meta` payload, and `toolCallId` echo are behind " +
       "`full: true` / `compact: false`.",
     inputSchema: permissionsListSchema,
-  })
-
-  // Body: scope filter + enrichment ONLY. Pagination + compact projection
-  // are the `paginated()` transformer's job (applied at registration below).
-  const permissionsListImpl = implementTool(permissionsListTool, async ({ input }) =>
-    registry
-      .listPendingPermissions(input.sessionId ? { sessionId: input.sessionId } : undefined)
-      .filter(p => isSessionInScope(p.sessionId))
-      .map(enrichPermission),
-  )
-
-  const permissionsListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: permissionsListTool.id, version: "*" }],
-    implementations: [permissionsListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: permissionsListTool,
-    candidates: [permissionsListDriver],
+    handler: async (input) => registry
+        .listPendingPermissions(input.sessionId ? { sessionId: input.sessionId } : undefined)
+        .filter(p => isSessionInScope(p.sessionId))
+        .map(enrichPermission),
     transformers: [
       catchErrors(),
       paginated({
@@ -1214,36 +1190,14 @@ export function registerOrchestrationTools(
     const workflowListSchema = z.object({ ...pageParamsShape })
     type WorkflowListInput = z.infer<typeof workflowListSchema>
 
-    const workflowListTool = defineTool<WorkflowListInput, WorkflowRun[]>({
+    registerBuiltinTool<WorkflowListInput, WorkflowRun[]>(server, {
       id: "workflow_list",
-      description:
-        "List all workflow runs (running, done, failed, cancelled). " +
+      description: "List all workflow runs (running, done, failed, cancelled). " +
         "COMPACT BY DEFAULT: each entry is a slim projection (runId/" +
         "workflowId/status/startedAt/endedAt/error/awaitingApproval) — the " +
         "full per-stage step detail is behind `full: true` / `compact: false`.",
       inputSchema: workflowListSchema,
-    })
-
-    const workflowListImpl = implementTool(workflowListTool, async () =>
-      workflowRunner.list(),
-    )
-
-    const workflowListDriver = defineDriver({
-      id: "agentproto-runtime-builtin",
-      name: "agentproto runtime builtin",
-      description:
-        "Single-implementation builtin driver for daemon tools migrated " +
-        "onto the AIP contract layer.",
-      kind: "builtin",
-      implements: [{ tool: workflowListTool.id, version: "*" }],
-      implementations: [workflowListImpl],
-    })
-
-    toMcpTool(server, {
-      tool: workflowListTool,
-      candidates: [workflowListDriver],
-      // legacyListEnvelope restores the legacy bare-array default output;
-      // `limit`/`cursor` calls get the standard page envelope.
+      handler: async () => workflowRunner.list(),
       transformers: [
         catchErrors(),
         legacyListEnvelope(rows => rows),
@@ -1615,10 +1569,9 @@ export function registerOrchestrationTools(
     })
     type PolicyListInput = z.infer<typeof policyListSchema>
 
-    const policyListTool = defineTool<PolicyListInput, PolicyRunState[]>({
+    registerBuiltinTool<PolicyListInput, PolicyRunState[]>(server, {
       id: "policy_list",
-      description:
-        "List completion policies (watching, gating, done, blocked, cancelled). " +
+      description: "List completion policies (watching, gating, done, blocked, cancelled). " +
         "Pass `sessionId` to answer the reverse question — which policies are " +
         "attached to this session — instead of scanning the whole list. " +
         "COMPACT BY DEFAULT: each entry is a slim projection (policyId/" +
@@ -1626,52 +1579,33 @@ export function registerOrchestrationTools(
         "commitSha/nextPolicyId/error) — gate stdout/stderr, judge verdicts, " +
         "and the full commitPlan are behind `full: true` / `compact: false`.",
       inputSchema: policyListSchema,
-    })
-
-    const policyListImpl = implementTool(policyListTool, async ({ input }) => {
-      if (!supervisor) {
-        // With no supervisor wired the tool answers a structured error
-        // instead of a live result (see the registration note above);
-        // `catchErrors()` renders the throw as the canonical error result.
-        throw new Error("supervisor not available")
-      }
-      let policies = supervisor.list()
-      // WP6 scoping: a child orchestrator only sees policies whose watched
-      // sessions are all within its own subtree. An unbound scope (no
-      // ownerSessionId yet) sees nothing — safe default.
-      if (callerScope) {
-        if (!callerScope.ownerSessionId) {
-          policies = []
-        } else {
-          const ownerId = callerScope.ownerSessionId
-          policies = policies.filter(p => isPolicyInSubtree(p, ownerId))
+      handler: async (input) => {
+        if (!supervisor) {
+          // With no supervisor wired the tool answers a structured error
+          // instead of a live result (see the registration note above);
+          // `catchErrors()` renders the throw as the canonical error result.
+          throw new Error("supervisor not available")
         }
-      }
-      // Narrowing only, and applied AFTER the subtree scoping above — the
-      // filter never widens what a scoped caller can see.
-      if (input.sessionId !== undefined) {
-        const wanted = input.sessionId
-        policies = policies.filter(p => policyWatchesSession(p, wanted))
-      }
-      return policies
-    })
-
-    const policyListDriver = defineDriver({
-      id: "agentproto-runtime-builtin",
-      name: "agentproto runtime builtin",
-      description:
-        "Single-implementation builtin driver for daemon tools migrated " +
-        "onto the AIP contract layer.",
-      kind: "builtin",
-      implements: [{ tool: policyListTool.id, version: "*" }],
-      implementations: [policyListImpl],
-    })
-
-    toMcpTool(server, {
-      tool: policyListTool,
-      candidates: [policyListDriver],
-      // legacyListEnvelope restores the legacy bare-array default output;
-      // `limit`/`cursor` calls get the standard page envelope.
+        let policies = supervisor.list()
+        // WP6 scoping: a child orchestrator only sees policies whose watched
+        // sessions are all within its own subtree. An unbound scope (no
+        // ownerSessionId yet) sees nothing — safe default.
+        if (callerScope) {
+          if (!callerScope.ownerSessionId) {
+            policies = []
+          } else {
+            const ownerId = callerScope.ownerSessionId
+            policies = policies.filter(p => isPolicyInSubtree(p, ownerId))
+          }
+        }
+        // Narrowing only, and applied AFTER the subtree scoping above — the
+        // filter never widens what a scoped caller can see.
+        if (input.sessionId !== undefined) {
+          const wanted = input.sessionId
+          policies = policies.filter(p => policyWatchesSession(p, wanted))
+        }
+        return policies
+      },
       transformers: [
         catchErrors(),
         legacyListEnvelope(rows => rows),
@@ -1727,10 +1661,9 @@ export function registerOrchestrationTools(
     })
     type ActivitiesListInput = z.infer<typeof activitiesListSchema>
 
-    const activitiesListTool = defineTool<ActivitiesListInput, ActivityRecord[]>({
+    registerBuiltinTool<ActivitiesListInput, ActivityRecord[]>(server, {
       id: "activities_list",
-      description:
-        "List activities — the unified read-model of what is ACTIVE (the daemon " +
+      description: "List activities — the unified read-model of what is ACTIVE (the daemon " +
         "is consuming compute now) vs PENDING (blocked on an external signal: " +
         "another session's turn, a human ack, a forge, a cap slot) across " +
         "completion policies, session turns, routine/workflow steps, and " +
@@ -1743,38 +1676,18 @@ export function registerOrchestrationTools(
         "staleSince/taskId) — the `error` detail is behind `full: true` / " +
         "`compact: false`.",
       inputSchema: activitiesListSchema,
-    })
-
-    const activitiesListImpl = implementTool(activitiesListTool, async ({ input }) => {
-      const filter: ActivityListFilter = {
-        ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
-        ...(input.state !== undefined ? { state: input.state } : {}),
-        ...(input.kind !== undefined ? { kind: input.kind } : {}),
-        ...(input.source !== undefined ? { source: input.source } : {}),
-        ...(input.includeTerminal !== undefined
-          ? { includeTerminal: input.includeTerminal }
-          : {}),
-      }
-      return activityProjector.list(filter)
-    })
-
-    const activitiesListDriver = defineDriver({
-      id: "agentproto-runtime-builtin",
-      name: "agentproto runtime builtin",
-      description:
-        "Single-implementation builtin driver for daemon tools migrated " +
-        "onto the AIP contract layer.",
-      kind: "builtin",
-      implements: [{ tool: activitiesListTool.id, version: "*" }],
-      implementations: [activitiesListImpl],
-    })
-
-    toMcpTool(server, {
-      tool: activitiesListTool,
-      candidates: [activitiesListDriver],
-      // legacyListEnvelope restores the legacy `{ activities, counts }`
-      // default output (counts computed over the full list); `limit`/`cursor`
-      // calls get the standard page envelope.
+      handler: async (input) => {
+        const filter: ActivityListFilter = {
+          ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+          ...(input.state !== undefined ? { state: input.state } : {}),
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.source !== undefined ? { source: input.source } : {}),
+          ...(input.includeTerminal !== undefined
+            ? { includeTerminal: input.includeTerminal }
+            : {}),
+        }
+        return activityProjector.list(filter)
+      },
       transformers: [
         catchErrors(),
         legacyListEnvelope<ActivityRecord>(
@@ -2077,27 +1990,6 @@ export function registerOrchestrationTools(
     // `paginated()` transformer instead of hand-rolled in the handler.
     const watcherListSchema = z.object({})
     type WatcherListInput = z.infer<typeof watcherListSchema>
-    const watcherListTool = defineTool<WatcherListInput, WatcherDescriptor[]>({
-      id: "inbound_watcher_list",
-      description:
-        "List all inbound watchers (running and stopped) with their cursor position, " +
-          "last poll time, last fire time, and total spawned session count. " +
-          "COMPACT BY DEFAULT: each entry is a slim projection (watcherId/alias/" +
-          "source/adapter/status/spawned); pass `full: true` (or `compact: false`) " +
-          "for the complete watcher descriptor including cursor/lastPollAt/lastFireAt.",
-      inputSchema: watcherListSchema,
-    })
-    const watcherListImpl = implementTool(watcherListTool, async () => inboundWatcher.list())
-    const watcherListDriver = defineDriver({
-      id: "agentproto-runtime-builtin",
-      name: "agentproto runtime builtin",
-      description:
-        "Single-implementation builtin driver for daemon tools migrated " +
-        "onto the AIP contract layer.",
-      kind: "builtin",
-      implements: [{ tool: watcherListTool.id, version: "*" }],
-      implementations: [watcherListImpl],
-    })
     const projectWatcherCompact = (w: WatcherDescriptor) => ({
       watcherId: w.watcherId,
       alias: w.alias,
@@ -2106,9 +1998,15 @@ export function registerOrchestrationTools(
       status: w.status,
       spawned: w.spawned,
     })
-    toMcpTool(server, {
-      tool: watcherListTool,
-      candidates: [watcherListDriver],
+    registerBuiltinTool<WatcherListInput, WatcherDescriptor[]>(server, {
+      id: "inbound_watcher_list",
+      description: "List all inbound watchers (running and stopped) with their cursor position, " +
+          "last poll time, last fire time, and total spawned session count. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (watcherId/alias/" +
+          "source/adapter/status/spawned); pass `full: true` (or `compact: false`) " +
+          "for the complete watcher descriptor including cursor/lastPollAt/lastFireAt.",
+      inputSchema: watcherListSchema,
+      handler: async () => inboundWatcher.list(),
       transformers: [
         catchErrors(),
         paginated({
@@ -2322,28 +2220,6 @@ export function registerOrchestrationTools(
     type EndpointFull = ReturnType<typeof projectEndpointFull>
     const endpointListSchema = z.object({})
     type EndpointListInput = z.infer<typeof endpointListSchema>
-    const endpointListTool = defineTool<EndpointListInput, EndpointFull[]>({
-      id: "inbound_endpoint_list",
-      description:
-        "List all provider-agnostic inbound push endpoints. Secrets are never emitted. " +
-          "COMPACT BY DEFAULT: each entry is a slim projection (slug/provider/alias/" +
-          "mode/enabled); pass `full: true` (or `compact: false`) for the sanitized " +
-          "record including source/createdTs/lastSeenTs/has_secret.",
-      inputSchema: endpointListSchema,
-    })
-    const endpointListImpl = implementTool(endpointListTool, async () =>
-      endpointStore.list().map(projectEndpointFull),
-    )
-    const endpointListDriver = defineDriver({
-      id: "agentproto-runtime-builtin",
-      name: "agentproto runtime builtin",
-      description:
-        "Single-implementation builtin driver for daemon tools migrated " +
-        "onto the AIP contract layer.",
-      kind: "builtin",
-      implements: [{ tool: endpointListTool.id, version: "*" }],
-      implementations: [endpointListImpl],
-    })
     const projectEndpointCompact = (e: EndpointFull) => ({
       slug: e.slug,
       provider: e.provider,
@@ -2351,9 +2227,14 @@ export function registerOrchestrationTools(
       mode: e.mode,
       enabled: e.enabled,
     })
-    toMcpTool(server, {
-      tool: endpointListTool,
-      candidates: [endpointListDriver],
+    registerBuiltinTool<EndpointListInput, EndpointFull[]>(server, {
+      id: "inbound_endpoint_list",
+      description: "List all provider-agnostic inbound push endpoints. Secrets are never emitted. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (slug/provider/alias/" +
+          "mode/enabled); pass `full: true` (or `compact: false`) for the sanitized " +
+          "record including source/createdTs/lastSeenTs/has_secret.",
+      inputSchema: endpointListSchema,
+      handler: async () => endpointStore.list().map(projectEndpointFull),
       transformers: [
         catchErrors(),
         paginated({
@@ -2476,26 +2357,6 @@ export function registerOrchestrationTools(
     // `paginated()` transformer instead of hand-rolled in the handler.
     const cronListSchema = z.object({})
     type CronListInput = z.infer<typeof cronListSchema>
-    const cronListTool = defineTool<CronListInput, CronJob[]>({
-      id: "cron_list",
-      description:
-        "List all cron jobs (active and inactive) with their schedule, last result, and next fire time. " +
-          "COMPACT BY DEFAULT: each entry is a slim projection (id/label/schedule/" +
-          "recurring/active/nextRunAt/lastRunAt); pass `full: true` (or `compact: false`) " +
-          "for the complete job record including action/createdAt/lastResult.",
-      inputSchema: cronListSchema,
-    })
-    const cronListImpl = implementTool(cronListTool, async () => cronScheduler.list())
-    const cronListDriver = defineDriver({
-      id: "agentproto-runtime-builtin",
-      name: "agentproto runtime builtin",
-      description:
-        "Single-implementation builtin driver for daemon tools migrated " +
-        "onto the AIP contract layer.",
-      kind: "builtin",
-      implements: [{ tool: cronListTool.id, version: "*" }],
-      implementations: [cronListImpl],
-    })
     const projectCronJobCompact = (j: CronJob) => ({
       id: j.id,
       label: j.label,
@@ -2505,9 +2366,14 @@ export function registerOrchestrationTools(
       nextRunAt: j.nextRunAt,
       lastRunAt: j.lastRunAt,
     })
-    toMcpTool(server, {
-      tool: cronListTool,
-      candidates: [cronListDriver],
+    registerBuiltinTool<CronListInput, CronJob[]>(server, {
+      id: "cron_list",
+      description: "List all cron jobs (active and inactive) with their schedule, last result, and next fire time. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (id/label/schedule/" +
+          "recurring/active/nextRunAt/lastRunAt); pass `full: true` (or `compact: false`) " +
+          "for the complete job record including action/createdAt/lastResult.",
+      inputSchema: cronListSchema,
+      handler: async () => cronScheduler.list(),
       transformers: [
         catchErrors(),
         paginated({
@@ -2580,28 +2446,6 @@ export function registerOrchestrationTools(
     // `paginated()` transformer instead of hand-rolled in the handler.
     const routineListSchema = z.object({})
     type RoutineListInput = z.infer<typeof routineListSchema>
-    const routineListTool = defineTool<RoutineListInput, RoutineFrontmatter[]>({
-      id: "routine_list",
-      description:
-        "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
-          "schedule, target, enabled). See `workflow_list` / `activities_list` " +
-          "for run history. COMPACT BY DEFAULT: each entry is a slim projection " +
-          "(id/description/version/schedule/enabled/tags); pass `full: true` " +
-          "(or `compact: false`) for the complete frontmatter including " +
-          "target/retry/on_failure/metadata.",
-      inputSchema: routineListSchema,
-    })
-    const routineListImpl = implementTool(routineListTool, async () => routineRegistrar.list())
-    const routineListDriver = defineDriver({
-      id: "agentproto-runtime-builtin",
-      name: "agentproto runtime builtin",
-      description:
-        "Single-implementation builtin driver for daemon tools migrated " +
-        "onto the AIP contract layer.",
-      kind: "builtin",
-      implements: [{ tool: routineListTool.id, version: "*" }],
-      implementations: [routineListImpl],
-    })
     const projectRoutineCompact = (r: RoutineFrontmatter) => ({
       id: r.id,
       description: r.description,
@@ -2610,9 +2454,16 @@ export function registerOrchestrationTools(
       enabled: r.enabled,
       tags: r.tags,
     })
-    toMcpTool(server, {
-      tool: routineListTool,
-      candidates: [routineListDriver],
+    registerBuiltinTool<RoutineListInput, RoutineFrontmatter[]>(server, {
+      id: "routine_list",
+      description: "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
+          "schedule, target, enabled). See `workflow_list` / `activities_list` " +
+          "for run history. COMPACT BY DEFAULT: each entry is a slim projection " +
+          "(id/description/version/schedule/enabled/tags); pass `full: true` " +
+          "(or `compact: false`) for the complete frontmatter including " +
+          "target/retry/on_failure/metadata.",
+      inputSchema: routineListSchema,
+      handler: async () => routineRegistrar.list(),
       transformers: [
         catchErrors(),
         paginated({

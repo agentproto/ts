@@ -41,9 +41,8 @@ import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
 import { loadAppCatalogFile } from "./app-catalog.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
-import { catchErrors, defineTool, type ToolTransformer } from "@agentproto/tool"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
+import { catchErrors, type ToolTransformer } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
@@ -672,10 +671,9 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   const appListSchema = z.object({})
   type AppListInput = z.infer<typeof appListSchema>
 
-  const appListTool = defineTool<AppListInput, (InstalledApp & { dataDir: string })[]>({
+  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string })[]>(server, {
     id: "app_list",
-    description:
-      "List installed apps, each with a summary of its app_run history. " +
+    description: "List installed apps, each with a summary of its app_run history. " +
       "COMPACT BY DEFAULT: each entry keeps appId/name/version/description/" +
       "dir/dataDir plus slim agent/workflow id lists and the per-run " +
       "summary (appRunId/status/timing/adapter/harness/model/session " +
@@ -683,42 +681,25 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "installed record including ui/artifact/skill/dev details and the " +
       "full agent/workflow refs.",
     inputSchema: appListSchema,
-  })
-
-  const appListImpl = implementTool(appListTool, async () => {
-    const runs = appRegistry.listRuns()
-    return appRegistry.listApps().map(app => ({
-      ...app,
-      dataDir: appDataDir(app),
-      runs: runs
-        .filter(r => r.appId === app.appId)
-        .map(r => ({
-          appRunId: r.appRunId,
-          status: r.status,
-          startedAt: r.startedAt,
-          ...(r.endedAt ? { endedAt: r.endedAt } : {}),
-          ...(r.adapter !== undefined ? { adapter: r.adapter } : {}),
-          ...(r.harness !== undefined ? { harness: r.harness } : {}),
-          ...(r.model !== undefined ? { model: r.model } : {}),
-          sessions: r.sessions.length,
-        })),
-    }))
-  })
-
-  const appListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: appListTool.id, version: "*" }],
-    implementations: [appListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: appListTool,
-    candidates: [appListDriver],
+    handler: async () => {
+      const runs = appRegistry.listRuns()
+      return appRegistry.listApps().map(app => ({
+        ...app,
+        dataDir: appDataDir(app),
+        runs: runs
+          .filter(r => r.appId === app.appId)
+          .map(r => ({
+            appRunId: r.appRunId,
+            status: r.status,
+            startedAt: r.startedAt,
+            ...(r.endedAt ? { endedAt: r.endedAt } : {}),
+            ...(r.adapter !== undefined ? { adapter: r.adapter } : {}),
+            ...(r.harness !== undefined ? { harness: r.harness } : {}),
+            ...(r.model !== undefined ? { model: r.model } : {}),
+            sessions: r.sessions.length,
+          })),
+      }))
+    },
     transformers: [
       catchErrors(),
       paginatedLegacyList({
@@ -1275,50 +1256,32 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     unvalidatedAgentTools?: readonly string[]
   }
 
-  const appListAppliedTool = defineTool<AppListAppliedInput, AppliedMountItem[]>({
+  registerBuiltinTool<AppListAppliedInput, AppliedMountItem[]>(server, {
     id: "app_list_applied",
-    description:
-      "List applied mounts, optionally filtered by scope. Each mount is " +
+    description: "List applied mounts, optionally filtered by scope. Each mount is " +
       "joined with its installed app summary. COMPACT BY DEFAULT: each " +
       "entry keeps scopeId/appId/appliedAt plus slim agent/workflow id " +
       "lists; pass `full: true` (or `compact: false`) for the complete " +
       "join including `unvalidatedAgentTools` as full refs.",
     inputSchema: appListAppliedSchema,
-  })
-
-  const appListAppliedImpl = implementTool(appListAppliedTool, async ({ input }) => {
-    const mounts = appRegistry.listApplied(input.scopeId)
-    return mounts.map(mount => {
-      const app = appRegistry.getApp(mount.appId)
-      return {
-        scopeId: mount.scopeId,
-        appId: mount.appId,
-        appliedAt: mount.appliedAt,
-        ...(app
-          ? {
-              agents: app.agents,
-              workflows: app.workflows,
-              unvalidatedAgentTools: app.unvalidatedAgentTools,
-            }
-          : {}),
-      }
-    })
-  })
-
-  const appListAppliedDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: appListAppliedTool.id, version: "*" }],
-    implementations: [appListAppliedImpl],
-  })
-
-  toMcpTool(server, {
-    tool: appListAppliedTool,
-    candidates: [appListAppliedDriver],
+    handler: async (input) => {
+      const mounts = appRegistry.listApplied(input.scopeId)
+      return mounts.map(mount => {
+        const app = appRegistry.getApp(mount.appId)
+        return {
+          scopeId: mount.scopeId,
+          appId: mount.appId,
+          appliedAt: mount.appliedAt,
+          ...(app
+            ? {
+                agents: app.agents,
+                workflows: app.workflows,
+                unvalidatedAgentTools: app.unvalidatedAgentTools,
+              }
+            : {}),
+        }
+      })
+    },
     transformers: [
       catchErrors(),
       paginatedLegacyList({

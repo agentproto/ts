@@ -22,9 +22,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { AdapterLister } from "@agentproto/provider-kit"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
-import { catchErrors, defineTool, paginated } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
+import { catchErrors, paginated } from "@agentproto/tool"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
@@ -210,50 +209,30 @@ export function registerBrowserTools(
   const browserAdapterListSchema = z.object({})
   type BrowserAdapterListInput = z.infer<typeof browserAdapterListSchema>
 
-  const browserAdapterListTool = defineTool<BrowserAdapterListInput, BrowserAdapterListRow[]>({
+  registerBuiltinTool<BrowserAdapterListInput, BrowserAdapterListRow[]>(server, {
     id: "browser_adapter_list",
-    description:
-      "List available browser adapter ids and their metadata (name, default port). " +
+    description: "List available browser adapter ids and their metadata (name, default port). " +
       "Use the `id` field to reference an adapter in `start_browser`. " +
       "COMPACT BY DEFAULT: rows are {id, name, defaultPort, location?}; pass " +
       "`full: true` (or `compact: false`) to also carry the prose " +
       "`description` and the informational `install`/`config` manifest arrays.",
     inputSchema: browserAdapterListSchema,
-  })
-
-  // Body: listing ONLY. Pagination, compact projection, and error
-  // normalization are the transformers' job (applied below).
-  const browserAdapterListImpl = implementTool(browserAdapterListTool, async () => {
-    // Kit path: async lister supplied — extract info fields to preserve the
-    // existing { id, name, description, defaultPort }[] response shape.
-    if (lister) {
-      const entries = await lister()
-      return entries.flatMap(e => (e.info ? [e.info] : []))
-    }
-    // Legacy path: synchronous injected lister.
-    if (!listBrowserAdapters) {
-      throw new Error(
-        "browser_adapter_list is not enabled — the daemon was started without " +
-          "a browser adapter lister. Re-run with `listBrowserAdapters` wired.",
-      )
-    }
-    return listBrowserAdapters()
-  })
-
-  const browserAdapterListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: browserAdapterListTool.id, version: "*" }],
-    implementations: [browserAdapterListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: browserAdapterListTool,
-    candidates: [browserAdapterListDriver],
+    handler: async () => {
+      // Kit path: async lister supplied — extract info fields to preserve the
+      // existing { id, name, description, defaultPort }[] response shape.
+      if (lister) {
+        const entries = await lister()
+        return entries.flatMap(e => (e.info ? [e.info] : []))
+      }
+      // Legacy path: synchronous injected lister.
+      if (!listBrowserAdapters) {
+        throw new Error(
+          "browser_adapter_list is not enabled — the daemon was started without " +
+            "a browser adapter lister. Re-run with `listBrowserAdapters` wired.",
+        )
+      }
+      return listBrowserAdapters()
+    },
     transformers: [
       catchErrors(),
       paginated({
@@ -476,42 +455,22 @@ export function registerBrowserTools(
   })
   type ListBrowsersInput = z.infer<typeof listBrowsersSchema>
 
-  const listBrowsersTool = defineTool<ListBrowsersInput, SessionDescriptor[]>({
+  registerBuiltinTool<ListBrowsersInput, SessionDescriptor[]>(server, {
     id: "list_browsers",
-    description:
-      "List browser sessions tracked by the daemon (all or alive-only). " +
+    description: "List browser sessions tracked by the daemon (all or alive-only). " +
       "COMPACT BY DEFAULT: each row is a slim projection (id/name/label/" +
       "status/browserAdapterId/browserPort/browserBaseUrl/browserLocation/" +
       "pid/startedAt/lastActivityAt); pass `full: true` (or `compact: false`) " +
       "for the complete, unprojected session descriptors.",
     inputSchema: listBrowsersSchema,
-  })
-
-  // Body: filters ONLY. Pagination + compact projection are the
-  // `paginated()` transformer's job (applied below).
-  const listBrowsersImpl = implementTool(listBrowsersTool, async ({ input }) => {
-    const all = registry
-      .list()
-      .filter(d => d.kind === "browser")
-    return input.onlyAlive
-      ? all.filter(d => d.status === "running")
-      : all
-  })
-
-  const listBrowsersDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: listBrowsersTool.id, version: "*" }],
-    implementations: [listBrowsersImpl],
-  })
-
-  toMcpTool(server, {
-    tool: listBrowsersTool,
-    candidates: [listBrowsersDriver],
+    handler: async (input) => {
+      const all = registry
+        .list()
+        .filter(d => d.kind === "browser")
+      return input.onlyAlive
+        ? all.filter(d => d.status === "running")
+        : all
+    },
     transformers: [
       catchErrors(),
       paginated({

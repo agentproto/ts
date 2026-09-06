@@ -65,9 +65,8 @@ import {
 } from "./app-state.js"
 import type { AppStateEvent } from "./app-state.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
-import { catchErrors, defineTool, type ToolTransformer } from "@agentproto/tool"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
+import { catchErrors, type ToolTransformer } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
@@ -473,10 +472,9 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
 
   type AppDataListEntry = { name: string; type: "file" | "directory"; size: number }
 
-  const appDataListTool = defineTool<AppDataListInput, AppDataListEntry[] | McpTextResult>({
+  registerBuiltinTool<AppDataListInput, AppDataListEntry[] | McpTextResult>(server, {
     id: "app_data_list",
-    description:
-      "List entries (name + type + size) under an app-relative directory " +
+    description: "List entries (name + type + size) under an app-relative directory " +
       "(default `.`, the app's data dir). A missing directory returns empty " +
       "entries, not an error. When the same directory also exists under the " +
       "app's source dir (a pre-dataDir install) both views are merged, data " +
@@ -484,61 +482,44 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       "(or the source dir while no data dir exists yet). Path traversal " +
       "outside either root is rejected.",
     inputSchema: appDataListSchema,
-  })
-
-  const appDataListImpl = implementTool(appDataListTool, async ({ input }) => {
-    const installed = appRegistry.getApp(input.appId)
-    if (!installed) return errorResult(`app_data_list: no installed app "${input.appId}".`)
-    const relDir = input.dir ?? "."
-    const dirs: string[] = []
-    try {
-      const roots = await resolveAppDataRoots(installed)
-      const located = await locateAppDataPath(roots, relDir)
-      const isRoot = located.target === roots.dataRoot || located.target === roots.legacyRoot
-      dirs.push(located.target)
-      if (!isRoot && located.sibling !== undefined) dirs.push(located.sibling)
-    } catch (err) {
-      return errorResult(`app_data_list: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    const seen = new Map<string, { name: string; type: "file" | "directory"; size: number }>()
-    for (const target of dirs) {
-      let dirents: { name: string; isDirectory(): boolean }[]
+    handler: async (input) => {
+      const installed = appRegistry.getApp(input.appId)
+      if (!installed) return errorResult(`app_data_list: no installed app "${input.appId}".`)
+      const relDir = input.dir ?? "."
+      const dirs: string[] = []
       try {
-        dirents = await readdir(target, { withFileTypes: true })
-      } catch {
-        continue
+        const roots = await resolveAppDataRoots(installed)
+        const located = await locateAppDataPath(roots, relDir)
+        const isRoot = located.target === roots.dataRoot || located.target === roots.legacyRoot
+        dirs.push(located.target)
+        if (!isRoot && located.sibling !== undefined) dirs.push(located.sibling)
+      } catch (err) {
+        return errorResult(`app_data_list: ${err instanceof Error ? err.message : String(err)}`)
       }
-      for (const d of dirents) {
-        if (seen.has(d.name)) continue
-        const isDirectory = d.isDirectory()
-        let size = 0
-        if (!isDirectory) {
-          try {
-            size = (await stat(join(target, d.name))).size
-          } catch {
-            size = 0
-          }
+      const seen = new Map<string, { name: string; type: "file" | "directory"; size: number }>()
+      for (const target of dirs) {
+        let dirents: { name: string; isDirectory(): boolean }[]
+        try {
+          dirents = await readdir(target, { withFileTypes: true })
+        } catch {
+          continue
         }
-        seen.set(d.name, { name: d.name, type: isDirectory ? "directory" : "file", size })
+        for (const d of dirents) {
+          if (seen.has(d.name)) continue
+          const isDirectory = d.isDirectory()
+          let size = 0
+          if (!isDirectory) {
+            try {
+              size = (await stat(join(target, d.name))).size
+            } catch {
+              size = 0
+            }
+          }
+          seen.set(d.name, { name: d.name, type: isDirectory ? "directory" : "file", size })
+        }
       }
-    }
-    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
-  })
-
-  const appDataListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: appDataListTool.id, version: "*" }],
-    implementations: [appDataListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: appDataListTool,
-    candidates: [appDataListDriver],
+      return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
+    },
     transformers: [
       catchErrors(),
       paginatedLegacyList({

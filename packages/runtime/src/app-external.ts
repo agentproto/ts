@@ -36,9 +36,8 @@ import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
-import { catchErrors, defineTool, type ToolTransformer } from "@agentproto/tool"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
+import { catchErrors, type ToolTransformer } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
@@ -198,10 +197,9 @@ export function registerAppExternalTools(
 
   type AppExternalListEntry = { name: string; isDirectory: boolean; size?: number }
 
-  const appExternalListTool = defineTool<AppExternalListInput, AppExternalListEntry[] | McpTextResult>({
+  registerBuiltinTool<AppExternalListInput, AppExternalListEntry[] | McpTextResult>(server, {
     id: "app_external_list",
-    description:
-      "List directory entries (name, isDirectory, size for files) under one of " +
+    description: "List directory entries (name, isDirectory, size for files) under one of " +
       "an installed app's granted `externalReadRoots`. `root` must exactly " +
       "match one of the app's granted roots; `path` (optional, default the " +
       "root itself) is resolved relative to it with the same traversal + " +
@@ -212,66 +210,49 @@ export function registerAppExternalTools(
       root: z.string().describe("Must exactly match one of the app's granted externalReadRoots entries."),
       path: z.string().optional().describe("Path relative to `root`. Defaults to the root itself."),
     }),
-  })
-
-  const appExternalListImpl = implementTool(appExternalListTool, async ({ input }) => {
-    const installed = appRegistry.getApp(input.appId)
-    if (!installed) return errorResult(`app_external_list: no installed app "${input.appId}".`)
-    try {
-      assertRootGranted(installed, input.root)
-    } catch (err) {
-      return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    const root = await realpathExternalRoot(input.root)
-    if (!root) return errorResult(`app_external_list: root "${input.root}" is not accessible.`)
-    const relPath = input.path ?? ""
-    let target: string
-    try {
-      target = resolveExternalPath(root, relPath)
-      await assertExternalPathRealInside(root, target)
-    } catch (err) {
-      return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    let dirents: { name: string; isDirectory(): boolean }[]
-    try {
-      dirents = await readdir(target, { withFileTypes: true })
-    } catch (err) {
-      return errorResult(
-        `app_external_list: cannot list "${relPath || "."}": ${err instanceof Error ? err.message : String(err)}`,
-      )
-    }
-    const entries: { name: string; isDirectory: boolean; size?: number }[] = []
-    for (const d of dirents) {
-      const isDirectory = d.isDirectory()
-      if (isDirectory) {
-        entries.push({ name: d.name, isDirectory })
-        continue
-      }
-      let size = 0
+    handler: async (input) => {
+      const installed = appRegistry.getApp(input.appId)
+      if (!installed) return errorResult(`app_external_list: no installed app "${input.appId}".`)
       try {
-        size = (await stat(join(target, d.name))).size
-      } catch {
-        size = 0
+        assertRootGranted(installed, input.root)
+      } catch (err) {
+        return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
       }
-      entries.push({ name: d.name, isDirectory, size })
-    }
-    return entries.sort((a, b) => a.name.localeCompare(b.name))
-  })
-
-  const appExternalListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: appExternalListTool.id, version: "*" }],
-    implementations: [appExternalListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: appExternalListTool,
-    candidates: [appExternalListDriver],
+      const root = await realpathExternalRoot(input.root)
+      if (!root) return errorResult(`app_external_list: root "${input.root}" is not accessible.`)
+      const relPath = input.path ?? ""
+      let target: string
+      try {
+        target = resolveExternalPath(root, relPath)
+        await assertExternalPathRealInside(root, target)
+      } catch (err) {
+        return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      let dirents: { name: string; isDirectory(): boolean }[]
+      try {
+        dirents = await readdir(target, { withFileTypes: true })
+      } catch (err) {
+        return errorResult(
+          `app_external_list: cannot list "${relPath || "."}": ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      const entries: { name: string; isDirectory: boolean; size?: number }[] = []
+      for (const d of dirents) {
+        const isDirectory = d.isDirectory()
+        if (isDirectory) {
+          entries.push({ name: d.name, isDirectory })
+          continue
+        }
+        let size = 0
+        try {
+          size = (await stat(join(target, d.name))).size
+        } catch {
+          size = 0
+        }
+        entries.push({ name: d.name, isDirectory, size })
+      }
+      return entries.sort((a, b) => a.name.localeCompare(b.name))
+    },
     transformers: [
       catchErrors(),
       paginatedLegacyList({

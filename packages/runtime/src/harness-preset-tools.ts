@@ -17,9 +17,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { getAuthProfile } from "@agentproto/auth"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
-import { catchErrors, defineTool, paginated } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
+import { catchErrors, paginated } from "@agentproto/tool"
 import {
   addHarnessPreset,
   listHarnessPresets,
@@ -103,10 +102,9 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
   })
   type HarnessPresetListInput = z.infer<typeof harnessPresetListSchema>
 
-  const harnessPresetListTool = defineTool<HarnessPresetListInput, HarnessPresetListRow[]>({
+  registerBuiltinTool<HarnessPresetListInput, HarnessPresetListRow[]>(server, {
     id: "harness_preset_list",
-    description:
-      "List the harness→profile presets configured on this host (from " +
+    description: "List the harness→profile presets configured on this host (from " +
       "`~/.agentproto/harness-presets.json`). Each preset pins, for one adapter " +
       "harness, which auth profile (`profileRef`) and default model " +
       "(`defaultModel`) a fresh spawn bills through when the caller names " +
@@ -119,35 +117,16 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
       "documented preset shape; `full: true` (or `compact: false`) returns " +
       "the untrimmed enriched row.",
     inputSchema: harnessPresetListSchema,
-  })
-
-  // Body: filter + enrichment ONLY. Pagination, compact projection, and
-  // error normalization are the transformers' job (applied below).
-  const harnessPresetListImpl = implementTool(harnessPresetListTool, async ({ input }) => {
-    const presets = await listHarnessPresets(input.harnessSlug)
-    return Promise.all(
-      presets.map(async preset => {
-        const profile = await getProfile(preset.profileRef)
-        if (!profile) return { ...preset, profileDisabled: true, profileMissing: true as const }
-        return { ...preset, profileDisabled: profile.disabled === true }
-      }),
-    )
-  })
-
-  const harnessPresetListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: harnessPresetListTool.id, version: "*" }],
-    implementations: [harnessPresetListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: harnessPresetListTool,
-    candidates: [harnessPresetListDriver],
+    handler: async (input) => {
+      const presets = await listHarnessPresets(input.harnessSlug)
+      return Promise.all(
+        presets.map(async preset => {
+          const profile = await getProfile(preset.profileRef)
+          if (!profile) return { ...preset, profileDisabled: true, profileMissing: true as const }
+          return { ...preset, profileDisabled: profile.disabled === true }
+        }),
+      )
+    },
     transformers: [
       catchErrors(),
       paginated({
