@@ -791,6 +791,151 @@ describe("daemon-events exporter", () => {
     })
   })
 
+  it("exports a command session's kind-less CommandLogEntry as a tool call + result, ignoring the trailing tool-call-record", async () => {
+    const FIXTURE_TS = Date.parse("2026-06-01T00:00:00.000Z")
+    // Exactly what recordCommand writes: a bare CommandLogEntry (NO kind)
+    // followed by a kind:"tool-call-record" line.
+    writeEvents([
+      {
+        command: "gh",
+        args: ["pr", "list"],
+        cwd: "/repo",
+        exitCode: 0,
+        signal: null,
+        durationMs: 812,
+        stdout: "pr #1\npr #2",
+        stderr: "",
+      },
+      { kind: "tool-call-record", toolName: "command_execute", isError: false },
+    ])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      source: "daemon",
+      format: "json",
+    })
+
+    const parsed = JSON.parse(result.content) as ExportedSession
+    expect(parsed.meta.messageCount).toBe(2)
+    // The tool-call-record line must NOT add a second count.
+    expect(parsed.meta.toolCallCount).toBe(1)
+    expect(parsed.messages).toEqual([
+      {
+        role: "assistant",
+        toolCalls: [
+          {
+            name: "command_execute",
+            args: JSON.stringify({ command: "gh", args: ["pr", "list"], cwd: "/repo" }),
+          },
+        ],
+        ts: FIXTURE_TS,
+      },
+      {
+        role: "tool",
+        text: "exit code 0, 812ms\nstdout:\npr #1\npr #2",
+        toolName: "command_execute",
+        ts: FIXTURE_TS,
+      },
+    ])
+  })
+
+  it("marks a command session's tool message as an error when exitCode is non-zero", async () => {
+    writeEvents([
+      {
+        command: "false",
+        args: [],
+        cwd: "/repo",
+        exitCode: 1,
+        signal: null,
+        durationMs: 5,
+        stdout: "",
+        stderr: "nope",
+      },
+    ])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      source: "daemon",
+      format: "json",
+    })
+
+    const parsed = JSON.parse(result.content) as ExportedSession
+    expect(parsed.meta.toolCallCount).toBe(1)
+    expect(parsed.messages[1]).toMatchObject({
+      role: "tool",
+      text: "[error] exit code 1, 5ms\nstderr:\nnope",
+      toolName: "command_execute",
+    })
+  })
+
+  it("falls back to desc.command for the title when desc.label is absent, and label still wins when present", async () => {
+    writeEvents([{ kind: "user-prompt", sessionId: SESSION_ID, text: "hi" }])
+
+    const noLabel = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry({ command: 'bash -lc "echo hi"' }),
+      source: "daemon",
+      format: "json",
+    })
+    expect((JSON.parse(noLabel.content) as ExportedSession).meta.title).toBe('bash -lc "echo hi"')
+
+    const withLabel = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry({ command: 'bash -lc "echo hi"', label: "my-label" }),
+      source: "daemon",
+      format: "json",
+    })
+    expect((JSON.parse(withLabel.content) as ExportedSession).meta.title).toBe("my-label")
+
+    // A giant argv is truncated so it doesn't become an enormous H1.
+    const giant = "x".repeat(300)
+    const truncated = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry({ command: giant }),
+      source: "daemon",
+      format: "json",
+    })
+    const title = (JSON.parse(truncated.content) as ExportedSession).meta.title ?? ""
+    expect(title.length).toBe(121)
+    expect(title.endsWith("…")).toBe(true)
+  })
+
+  it("REGRESSION: an agent-cli events.jsonl with tool-call/tool-result AND a trailing tool-call-record counts each tool call once", async () => {
+    writeEvents([
+      { kind: "user-prompt", sessionId: SESSION_ID, text: "run it" },
+      {
+        kind: "tool-call",
+        sessionId: SESSION_ID,
+        toolCallId: "t1",
+        toolName: "command_execute",
+        arguments: { command: "ls" },
+      },
+      {
+        kind: "tool-result",
+        sessionId: SESSION_ID,
+        toolCallId: "t1",
+        result: "file1.txt",
+        isError: false,
+      },
+      // transcript-writer.ts appends this normalized record for the SAME
+      // call — it must not be rendered or counted again.
+      { kind: "tool-call-record", toolName: "command_execute", isError: false },
+    ])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      source: "daemon",
+      format: "json",
+    })
+
+    const parsed = JSON.parse(result.content) as ExportedSession
+    expect(parsed.meta.toolCallCount).toBe(1)
+    expect(parsed.messages.filter(m => m.role === "tool")).toHaveLength(1)
+  })
+
   it("returns an actionable error when events.jsonl is missing (source='daemon')", async () => {
     const result = await exportAgentSession({
       sessionId: SESSION_ID,

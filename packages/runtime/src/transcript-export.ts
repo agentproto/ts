@@ -818,6 +818,19 @@ interface TranscriptRecord {
   size?: number
   used?: number
   cost?: { amount: number; currency: string }
+  // Kind-less CommandLogEntry fields (written by recordCommand — the line
+  // has NO `kind` of its own). All optional so every other record shape
+  // keeps parsing cleanly; unknown fields are ignored, never throw.
+  command?: string
+  args?: string[]
+  cwd?: string
+  exitCode?: number
+  signal?: string | null
+  durationMs?: number
+  stdout?: string
+  stderr?: string
+  truncated?: boolean
+  timedOut?: boolean
 }
 
 export async function exportDaemonEventsSession(
@@ -884,6 +897,45 @@ export async function exportDaemonEventsSession(
     }
     const ts = Date.parse(rec.ts)
     const tsOrUndefined = Number.isNaN(ts) ? undefined : ts
+
+    // A command session (`command_execute` → recordCommand) writes a
+    // kind-less CommandLogEntry line as its FIRST line: no `kind` field,
+    // just {command, args, cwd, exitCode, signal, durationMs, stdout,
+    // stderr, ...}. Detect it structurally and render it as one
+    // assistant tool-call + one tool-result pair, so a command session's
+    // transcript isn't empty.
+    if (rec.kind === undefined && typeof rec.command === "string" && typeof rec.exitCode === "number") {
+      flushAssistant()
+      const toolName = "command_execute"
+      const argsJson = JSON.stringify({
+        command: rec.command,
+        args: Array.isArray(rec.args) ? rec.args : [],
+        ...(rec.cwd !== undefined ? { cwd: rec.cwd } : {}),
+      })
+      messages.push({
+        role: "assistant",
+        toolCalls: [{ name: toolName, args: argsJson }],
+        ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
+      })
+      const header =
+        `exit code ${rec.exitCode}` +
+        (rec.signal ? `, signal ${rec.signal}` : "") +
+        (typeof rec.durationMs === "number" ? `, ${rec.durationMs}ms` : "")
+      const sections: string[] = [header]
+      if (rec.stdout) sections.push(`stdout:\n${rec.stdout}`)
+      if (rec.stderr) sections.push(`stderr:\n${rec.stderr}`)
+      if (rec.truncated) sections.push("(output truncated)")
+      if (rec.timedOut) sections.push("(timed out)")
+      const text = sections.join("\n")
+      messages.push({
+        role: "tool",
+        text: rec.exitCode !== 0 ? `[error] ${text}` : text,
+        toolName,
+        ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
+      })
+      toolCallCount += 1
+      continue
+    }
 
     switch (rec.kind) {
       case "user-prompt":
@@ -961,13 +1013,28 @@ export async function exportDaemonEventsSession(
         messages.push({ role: "system", text: rec.text ?? "" })
         break
       default:
+        // Deliberately NOT handling `kind: "tool-call-record"` here: an
+        // agent-cli session's events.jsonl contains BOTH the real
+        // `tool-call`/`tool-result` events AND a trailing normalized
+        // `tool-call-record` line for the SAME call (see
+        // tool-call-log.ts) — rendering or counting it would double-count
+        // every agent session's tool calls. A command session's
+        // `tool-call-record` line is intentionally dropped too; its
+        // CommandLogEntry line above already rendered the call.
         break
     }
   }
   flushAssistant()
 
   const meta: ExportedSessionMeta = { source: "daemon-events" }
+  // Title chain: spawner label, else the command itself (a command session
+  // never gets a label from command_execute, but its descriptor carries the
+  // quoted argv) — truncated so a giant argv doesn't become an H1.
+  // renderMarkdown's `(untitled)` remains the final fallback.
   if (desc?.label) meta.title = desc.label
+  else if (desc?.command) {
+    meta.title = desc.command.length > 120 ? `${desc.command.slice(0, 120)}…` : desc.command
+  }
   if (desc?.model) meta.model = desc.model
   if (desc?.startedAt) meta.startedAt = desc.startedAt
   if (desc?.endedAt) meta.endedAt = desc.endedAt
