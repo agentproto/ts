@@ -3337,6 +3337,15 @@ export interface RecordCommandInput {
   /** Id of the session that invoked this one, when the caller genuinely
    *  knows it — see `SessionDescriptor.callerSessionId`. */
   callerSessionId?: string
+  /** Parent attribution + depth — same semantics as `SpawnPtyInput` /
+   *  `SpawnAgentInput` (orchestrator WP4): set when the command ran
+   *  through a scoped sub-gateway so `session_tree` shows the command
+   *  session under its invoker. */
+  parentSessionId?: string
+  /** Recursion depth in the session tree — always recorded (`?? 0` when
+   *  absent) so subtree/depth logic never has to special-case a missing
+   *  value. Same semantics as `SpawnAgentInput.depth`. */
+  depth?: number
 }
 
 /** A pull request that a session successfully opened through a code-host
@@ -6491,6 +6500,8 @@ export function createSessionsRegistry(opts?: {
         ...(input.label ? { label: input.label } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         ...(input.callerSessionId ? { callerSessionId: input.callerSessionId } : {}),
+        ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+        depth: input.depth ?? 0,
       }
       const rt: SessionRuntime = {
         desc,

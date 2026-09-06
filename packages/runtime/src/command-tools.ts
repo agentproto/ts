@@ -346,6 +346,15 @@ export function registerCommandTools(
       // so the id is available immediately. The JSONL body write is
       // fire-and-forget internally (recordCommand never delays or fails
       // the caller's actual result).
+      // Lineage attribution: the trusted parent signal here is the
+      // per-request `callerSessionId` (see `RegisterCommandToolsOptions`).
+      // When it resolves to a registered session, nest this command
+      // session under it at the parent's depth + 1; when the parent can't
+      // be resolved, pass no depth and let `recordCommand`'s `?? 0`
+      // default apply — never fabricate one.
+      const parentDesc = opts.callerSessionId
+        ? opts.registry.findByIdOrName(opts.callerSessionId)
+        : undefined
       const desc = opts.registry.recordCommand({
         id: commandSessionId,
         workspaceSlug: commandWorkspaceSlug,
@@ -367,6 +376,8 @@ export function registerCommandTools(
         // was an agent session spawned with the daemon's own self-ref
         // `mcpServers` entry, same as before this field existed.
         ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
+        ...(opts.callerSessionId ? { parentSessionId: opts.callerSessionId } : {}),
+        ...(parentDesc ? { depth: (parentDesc.depth ?? 0) + 1 } : {}),
       })
       // Daemon-lane PR provenance: when this run was a successful `gh pr
       // create` issued by an executor session, stamp the `@agentproto-bot`
