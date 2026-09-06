@@ -75,7 +75,7 @@ async function buildHarness(opts?: { callerScope?: OrchestratorScope }): Promise
   })
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
   registerSessionTools(server, {
-      workspace: process.cwd(),
+    workspace: process.cwd(),
     registry,
     ptyEnabled: true,
     ...(opts?.callerScope ? { callerScope: opts.callerScope } : {}),

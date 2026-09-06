@@ -116,7 +116,7 @@ async function harness(opts?: {
     version: "0",
   })
   registerSessionTools(server, {
-      workspace: process.cwd(),
+    workspace: process.cwd(),
     registry,
     resolveAgentAdapter: makeResolver(capture),
     buildOrchestratorMcp: injector,
