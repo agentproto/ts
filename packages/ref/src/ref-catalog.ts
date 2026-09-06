@@ -30,10 +30,10 @@ function defaultKeyBy(handle: RefKeyableHandle): string | undefined {
 
 function validateRef(ref: ArtifactRef): void {
   if (!Number.isInteger(ref.aip) || ref.aip < 1) {
-    throw new TypeError(`ref-catalog (AIP-54): ref.aip must be a positive integer, got ${ref.aip}`)
+    throw new TypeError(`@agentproto/ref (AIP-54): ref.aip must be a positive integer, got ${ref.aip}`)
   }
   if (typeof ref.id !== "string" || ref.id.length === 0) {
-    throw new TypeError(`ref-catalog (AIP-54): ref.id must be a non-empty string`)
+    throw new TypeError(`@agentproto/ref (AIP-54): ref.id must be a non-empty string`)
   }
 }
 
@@ -123,7 +123,7 @@ export function refFor<A extends number, H extends RefKeyableHandle>(
     : defaultKeyBy(handle)
   if (!key) {
     throw new Error(
-      `ref-catalog (AIP-54): handle has no registry key (id/provider/slug/name all empty) — it cannot be referenced. Anonymous handles are unreferenceable.`,
+      `@agentproto/ref (AIP-54): handle has no registry key (id/provider/slug/name all empty) — it cannot be referenced. Anonymous handles are unreferenceable.`,
     )
   }
   return Object.freeze({ aip: spec.aip, id: key, ...(version ? { version } : {}) })
@@ -137,7 +137,7 @@ export function refToUri(ref: ArtifactRef): string {
 /** Parse an `aip://` URI back into a ref. Throws on malformed input. */
 export function refFromUri(uri: string): ArtifactRef {
   const m = /^aip:\/\/(\d+)\/([^@\s]+)(?:@(.+))?$/.exec(uri)
-  if (!m || m[2] === undefined) throw new Error(`ref-catalog (AIP-54): malformed aip:// URI: ${uri}`)
+  if (!m || m[2] === undefined) throw new Error(`@agentproto/ref (AIP-54): malformed aip:// URI: ${uri}`)
   const ref: ArtifactRef = { aip: Number(m[1]!), id: m[2] }
   if (m[3] !== undefined) return { ...ref, version: m[3] }
   return ref

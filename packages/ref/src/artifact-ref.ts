@@ -66,7 +66,7 @@ export class RefFamilyError extends Error {
   constructor(
     readonly aip: number,
   ) {
-    super(`ref-catalog (AIP-54): no registry registered for aip ${aip} — call registerFamily() first`)
+    super(`@agentproto/ref (AIP-54): no registry registered for aip ${aip} — call registerFamily() first`)
     this.name = "RefFamilyError"
   }
 }
@@ -78,7 +78,7 @@ export class RefUnresolvableError extends Error {
     family: string,
   ) {
     super(
-      `ref-catalog (AIP-54): ref aip://${ref.aip}/${ref.id} does not resolve in family '${family}'`,
+      `@agentproto/ref (AIP-54): ref aip://${ref.aip}/${ref.id} does not resolve in family '${family}'`,
     )
     this.name = "RefUnresolvableError"
   }
