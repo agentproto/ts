@@ -22,6 +22,9 @@ import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
+import { catchErrors, defineTool, paginated } from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
 import { collectSubtree } from "./session-tools.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
@@ -29,6 +32,10 @@ import type { InboundWatcher } from "./inbound-watcher.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { TransmitterBindingStore } from "./transmitter-bindings.js"
 import type { InboundEndpointStore } from "./inbound-endpoints.js"
+import type { InboundEndpoint } from "./inbound-endpoints.js"
+import type { WatcherDescriptor } from "./inbound-watcher.js"
+import type { CronJob } from "./cron-scheduler.js"
+import type { RoutineFrontmatter } from "@agentproto/routine"
 import { type InboundProvider, INBOUND_PROVIDERS } from "./inbound-adapters.js"
 import {
   type OutboundProvider,
@@ -1848,22 +1855,53 @@ export function registerOrchestrationTools(
       },
     )
 
-    server.tool(
-      "inbound_watcher_list",
-      "List all inbound watchers (running and stopped) with their cursor position, " +
-        "last poll time, last fire time, and total spawned session count.",
-      { ...pageParamsShape },
-      async input => {
-        const watchers = inboundWatcher.list()
-        // Pagination LAST — without limit/cursor the output is byte-identical
-        // to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(watchers, input, { maxLimit: 200, keyOf: w => w.watcherId })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return { content: [{ type: "text", text: JSON.stringify(watchers) }] }
-      },
-    )
+    // Migrated onto the AIP contract layer (defineTool + implementTool +
+    // toMcpTool) so pagination/compact/fields are applied by the
+    // `paginated()` transformer instead of hand-rolled in the handler.
+    const watcherListSchema = z.object({})
+    type WatcherListInput = z.infer<typeof watcherListSchema>
+    const watcherListTool = defineTool<WatcherListInput, WatcherDescriptor[]>({
+      id: "inbound_watcher_list",
+      description:
+        "List all inbound watchers (running and stopped) with their cursor position, " +
+          "last poll time, last fire time, and total spawned session count. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (watcherId/alias/" +
+          "source/adapter/status/spawned); pass `full: true` (or `compact: false`) " +
+          "for the complete watcher descriptor including cursor/lastPollAt/lastFireAt.",
+      inputSchema: watcherListSchema,
+    })
+    const watcherListImpl = implementTool(watcherListTool, async () => inboundWatcher.list())
+    const watcherListDriver = defineDriver({
+      id: "agentproto-runtime-builtin",
+      name: "agentproto runtime builtin",
+      description:
+        "Single-implementation builtin driver for daemon tools migrated " +
+        "onto the AIP contract layer.",
+      kind: "builtin",
+      implements: [{ tool: watcherListTool.id, version: "*" }],
+      implementations: [watcherListImpl],
+    })
+    const projectWatcherCompact = (w: WatcherDescriptor) => ({
+      watcherId: w.watcherId,
+      alias: w.alias,
+      source: w.source,
+      adapter: w.adapter,
+      status: w.status,
+      spawned: w.spawned,
+    })
+    toMcpTool(server, {
+      tool: watcherListTool,
+      candidates: [watcherListDriver],
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: projectWatcherCompact,
+          keyOf: w => w.watcherId,
+          maxLimit: 200,
+          itemKey: "watchers",
+        }),
+      ],
+    })
   }
 
   // ── transmit_message ────────────────────────────────────────────
@@ -2048,31 +2086,67 @@ export function registerOrchestrationTools(
       },
     )
 
-    server.tool(
-      "inbound_endpoint_list",
-      "List all provider-agnostic inbound push endpoints. Secrets are never emitted.",
-      { ...pageParamsShape },
-      async input => {
-        const list = endpointStore.list().map(e => ({
-          slug: e.slug,
-          provider: e.provider,
-          alias: e.alias,
-          source: e.source,
-          mode: e.mode,
-          enabled: e.enabled,
-          createdTs: e.createdTs,
-          lastSeenTs: e.lastSeenTs,
-          has_secret: !!e.secret,
-        }))
-        // Pagination LAST — without limit/cursor the output is byte-identical
-        // to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(list, input, { maxLimit: 200, keyOf: e => e.slug })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return { content: [{ type: "text", text: JSON.stringify(list) }] }
-      },
+    // Migrated onto the AIP contract layer (defineTool + implementTool +
+    // toMcpTool) so pagination/compact/fields are applied by the
+    // `paginated()` transformer instead of hand-rolled in the handler.
+    // The handler still strips `secret` (never emitted — only `has_secret`),
+    // so `full: true` returns the sanitized record, not the raw endpoint.
+    const projectEndpointFull = (e: InboundEndpoint) => ({
+      slug: e.slug,
+      provider: e.provider,
+      alias: e.alias,
+      source: e.source,
+      mode: e.mode,
+      enabled: e.enabled,
+      createdTs: e.createdTs,
+      lastSeenTs: e.lastSeenTs,
+      has_secret: !!e.secret,
+    })
+    type EndpointFull = ReturnType<typeof projectEndpointFull>
+    const endpointListSchema = z.object({})
+    type EndpointListInput = z.infer<typeof endpointListSchema>
+    const endpointListTool = defineTool<EndpointListInput, EndpointFull[]>({
+      id: "inbound_endpoint_list",
+      description:
+        "List all provider-agnostic inbound push endpoints. Secrets are never emitted. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (slug/provider/alias/" +
+          "mode/enabled); pass `full: true` (or `compact: false`) for the sanitized " +
+          "record including source/createdTs/lastSeenTs/has_secret.",
+      inputSchema: endpointListSchema,
+    })
+    const endpointListImpl = implementTool(endpointListTool, async () =>
+      endpointStore.list().map(projectEndpointFull),
     )
+    const endpointListDriver = defineDriver({
+      id: "agentproto-runtime-builtin",
+      name: "agentproto runtime builtin",
+      description:
+        "Single-implementation builtin driver for daemon tools migrated " +
+        "onto the AIP contract layer.",
+      kind: "builtin",
+      implements: [{ tool: endpointListTool.id, version: "*" }],
+      implementations: [endpointListImpl],
+    })
+    const projectEndpointCompact = (e: EndpointFull) => ({
+      slug: e.slug,
+      provider: e.provider,
+      alias: e.alias,
+      mode: e.mode,
+      enabled: e.enabled,
+    })
+    toMcpTool(server, {
+      tool: endpointListTool,
+      candidates: [endpointListDriver],
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: projectEndpointCompact,
+          keyOf: e => e.slug,
+          maxLimit: 200,
+          itemKey: "endpoints",
+        }),
+      ],
+    })
 
     server.tool(
       "inbound_endpoint_delete",
@@ -2180,21 +2254,53 @@ export function registerOrchestrationTools(
       },
     )
 
-    server.tool(
-      "cron_list",
-      "List all cron jobs (active and inactive) with their schedule, last result, and next fire time.",
-      { ...pageParamsShape },
-      async input => {
-        const jobs = cronScheduler.list()
-        // Pagination LAST — without limit/cursor the output is byte-identical
-        // to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(jobs, input, { maxLimit: 200, keyOf: j => j.id })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return { content: [{ type: "text", text: JSON.stringify(jobs) }] }
-      },
-    )
+    // Migrated onto the AIP contract layer (defineTool + implementTool +
+    // toMcpTool) so pagination/compact/fields are applied by the
+    // `paginated()` transformer instead of hand-rolled in the handler.
+    const cronListSchema = z.object({})
+    type CronListInput = z.infer<typeof cronListSchema>
+    const cronListTool = defineTool<CronListInput, CronJob[]>({
+      id: "cron_list",
+      description:
+        "List all cron jobs (active and inactive) with their schedule, last result, and next fire time. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (id/label/schedule/" +
+          "recurring/active/nextRunAt/lastRunAt); pass `full: true` (or `compact: false`) " +
+          "for the complete job record including action/createdAt/lastResult.",
+      inputSchema: cronListSchema,
+    })
+    const cronListImpl = implementTool(cronListTool, async () => cronScheduler.list())
+    const cronListDriver = defineDriver({
+      id: "agentproto-runtime-builtin",
+      name: "agentproto runtime builtin",
+      description:
+        "Single-implementation builtin driver for daemon tools migrated " +
+        "onto the AIP contract layer.",
+      kind: "builtin",
+      implements: [{ tool: cronListTool.id, version: "*" }],
+      implementations: [cronListImpl],
+    })
+    const projectCronJobCompact = (j: CronJob) => ({
+      id: j.id,
+      label: j.label,
+      schedule: j.schedule,
+      recurring: j.recurring,
+      active: j.active,
+      nextRunAt: j.nextRunAt,
+      lastRunAt: j.lastRunAt,
+    })
+    toMcpTool(server, {
+      tool: cronListTool,
+      candidates: [cronListDriver],
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: projectCronJobCompact,
+          keyOf: j => j.id,
+          maxLimit: 200,
+          itemKey: "jobs",
+        }),
+      ],
+    })
 
     server.tool(
       "cron_delete",
@@ -2252,23 +2358,54 @@ export function registerOrchestrationTools(
   // requiring `reconcile()` to have registered a cron job for it first.
   const { routineRegistrar } = opts
   if (routineRegistrar) {
-    server.tool(
-      "routine_list",
-      "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
-        "schedule, target, enabled). See `workflow_list` / `activities_list` " +
-        "for run history.",
-      { ...pageParamsShape },
-      async input => {
-        const routines = routineRegistrar.list()
-        // Pagination LAST — without limit/cursor the output is byte-identical
-        // to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(routines, input, { maxLimit: 200, keyOf: r => r.id })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return { content: [{ type: "text", text: JSON.stringify(routines) }] }
-      },
-    )
+    // Migrated onto the AIP contract layer (defineTool + implementTool +
+    // toMcpTool) so pagination/compact/fields are applied by the
+    // `paginated()` transformer instead of hand-rolled in the handler.
+    const routineListSchema = z.object({})
+    type RoutineListInput = z.infer<typeof routineListSchema>
+    const routineListTool = defineTool<RoutineListInput, RoutineFrontmatter[]>({
+      id: "routine_list",
+      description:
+        "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
+          "schedule, target, enabled). See `workflow_list` / `activities_list` " +
+          "for run history. COMPACT BY DEFAULT: each entry is a slim projection " +
+          "(id/description/version/schedule/enabled/tags); pass `full: true` " +
+          "(or `compact: false`) for the complete frontmatter including " +
+          "target/retry/on_failure/metadata.",
+      inputSchema: routineListSchema,
+    })
+    const routineListImpl = implementTool(routineListTool, async () => routineRegistrar.list())
+    const routineListDriver = defineDriver({
+      id: "agentproto-runtime-builtin",
+      name: "agentproto runtime builtin",
+      description:
+        "Single-implementation builtin driver for daemon tools migrated " +
+        "onto the AIP contract layer.",
+      kind: "builtin",
+      implements: [{ tool: routineListTool.id, version: "*" }],
+      implementations: [routineListImpl],
+    })
+    const projectRoutineCompact = (r: RoutineFrontmatter) => ({
+      id: r.id,
+      description: r.description,
+      version: r.version,
+      schedule: r.schedule,
+      enabled: r.enabled,
+      tags: r.tags,
+    })
+    toMcpTool(server, {
+      tool: routineListTool,
+      candidates: [routineListDriver],
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: projectRoutineCompact,
+          keyOf: r => r.id,
+          maxLimit: 200,
+          itemKey: "routines",
+        }),
+      ],
+    })
 
     server.tool(
       "routine_trigger",
