@@ -103,13 +103,17 @@ import {
 
 export {
   ALLOWLIST_REL,
+  DEFAULT_TERMINAL_GATE,
   INTERPRETER_BASENAMES,
+  TERMINAL_GATE_ENV,
   interpreterExecWarning,
   isCommandAllowed,
   isInterpreterBasename,
   loadAllowlist,
   loadAllowlistEntries,
+  loadTerminalGateMode,
   type AllowlistEntry,
+  type TerminalGateMode,
 } from "./command-allowlist.js"
 
 const DEFAULT_TIMEOUT_MS = 60_000

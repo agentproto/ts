@@ -53,6 +53,7 @@ async function buildHarness(): Promise<{
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
 
   registerSessionTools(server, {
+      workspace: process.cwd(),
     registry,
     ptyEnabled: true,
   })

@@ -299,6 +299,7 @@ export function createOrchestratorMcpServerFactory(
     })
     registerSessionTools(server, {
       registry: deps.registry,
+      workspace: deps.workspace,
       toolSubset: scope.tools,
       // The verified scope IS the calling orchestrator's identity:
       // spawns through this server are attributed to `scope.ownerSessionId`

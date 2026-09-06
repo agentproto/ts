@@ -15,7 +15,7 @@
  *    walls. Default stays base64 (back-compat).
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -24,6 +24,15 @@ import { registerSessionTools } from "../session-tools.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { PtyFactory, PtyProcess, SessionsRegistry } from "../sessions.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
+
+// These tests exercise parent attribution, not the terminal gate — opt the
+// harness workspace out explicitly rather than weakening the default.
+beforeAll(() => {
+  process.env.AGENTPROTO_TERMINAL_GATE = "all"
+})
+afterAll(() => {
+  delete process.env.AGENTPROTO_TERMINAL_GATE
+})
 
 /** Fake PTY that exposes the registry's onData callback so tests can
  *  feed bytes into the ring buffer as if the child process wrote them. */
@@ -66,6 +75,7 @@ async function buildHarness(opts?: { callerScope?: OrchestratorScope }): Promise
   })
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
   registerSessionTools(server, {
+      workspace: process.cwd(),
     registry,
     ptyEnabled: true,
     ...(opts?.callerScope ? { callerScope: opts.callerScope } : {}),

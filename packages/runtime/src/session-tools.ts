@@ -82,6 +82,13 @@ import {
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
+import { basename, join } from "node:path"
+import {
+  ALLOWLIST_REL,
+  isCommandAllowed,
+  loadAllowlistEntries,
+  loadTerminalGateMode,
+} from "./command-allowlist.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -207,6 +214,13 @@ export function buildSessionTree(
 
 export interface RegisterSessionToolsOptions {
   registry: SessionsRegistry
+  /** Absolute path to the workspace root the daemon is bound to — the
+   *  SAME workspace `command_execute` gates against. Required (not
+   *  optional) on purpose: `terminal_start` resolves its terminal-gate
+   *  mode from this workspace's allowlist file, and an unconfigured
+   *  host silently running ungated terminals is exactly the defect
+   *  class the gate exists to close. */
+  workspace: string
   /** Optional adapter resolver — required for `agent_start`
    *  (the others work with raw spawn sessions too). When unset the
    *  start tool returns a clear error pointing at the host wiring. */
@@ -404,6 +418,7 @@ export function registerSessionTools(
     : rawServer
   const {
     registry,
+    workspace,
     mcpProxy,
     callerScope,
     resolveAgentAdapter,
@@ -3229,6 +3244,59 @@ export function registerSessionTools(
     },
     async input => {
       if (!ptyEnabled) return ptyNotConfigured("terminal_start")
+      // ── terminal gate (same allowlist as command_execute) ─────────
+      // `command_execute` refuses anything outside the workspace
+      // allowlist; without this check `terminal_start` spawns arbitrary
+      // argv under a PTY and the gate is decorative — anyone refused by
+      // one tool just uses the other. Resolve the mode per workspace:
+      //   "allowlist" (shipped default) — argv[0] must pass the SAME
+      //     allowlist check `command_execute` applies;
+      //   "all" — no check (a deliberate operator decision);
+      //   "off" — refused outright. NOTE: off means the door is CLOSED,
+      //     not that the gate is disabled.
+      const gateMode = await loadTerminalGateMode(workspace)
+      if (gateMode === "off") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "terminal_start is disabled for this workspace by its " +
+                'terminal gate ("terminalGate": "off"). To re-enable ' +
+                'terminals, set "terminalGate": "allowlist" or "all" in ' +
+                `${join(workspace, ALLOWLIST_REL)}.`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (gateMode === "allowlist") {
+        const allowlistEntries = await loadAllowlistEntries(workspace)
+        // noUncheckedIndexedAccess: argv is min(1)-validated, but fall back
+        // to "" (which matches no entry) rather than failing open.
+        const baseName = basename(input.argv[0] ?? "")
+        if (!isCommandAllowed(allowlistEntries, baseName, input.argv.slice(1))) {
+          const allowedBasenames =
+            [...new Set(allowlistEntries.map(e => e.command))].sort().join(", ") ||
+            "(empty)"
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `terminal_start: command '${baseName}' is not in the ` +
+                  `allowlist (the same one command_execute is gated by). ` +
+                  `Add it to ${join(workspace, ALLOWLIST_REL)} under ` +
+                  `"commands": [...]. Currently allowed: ${allowedBasenames}. ` +
+                  `To run any command from terminals in this workspace, set ` +
+                  `"terminalGate": "all" in that file, or globally set the ` +
+                  `${"AGENTPROTO_TERMINAL_GATE"}=all environment variable.`,
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
       let cwd = input.cwd
       let resolvedSlug = input.workspaceSlug ?? "default"
       if (!cwd) {
