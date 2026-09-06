@@ -118,7 +118,7 @@ billingRail: { rail: tbd }
 
 ```ts
 import { attachPricing } from "@agentproto/product"
-import { refFor } from "@agentproto/ref-catalog"
+import { refFor } from "@agentproto/ref"
 
 const cap = attachPricing(refFor(appSpec, appHandle, "1.2.0"), {
   model: "one-time", amountMinor: 4900, currency: "usd",
