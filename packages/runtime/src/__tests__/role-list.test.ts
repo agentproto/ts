@@ -100,6 +100,27 @@ describe("role_list", () => {
     }
   })
 
+  it("rows are already the compact view: full:true is a no-op and fields filters on the page branch", async () => {
+    const h = await harness()
+    try {
+      const full = parseRoles(await h.client.callTool({ name: "role_list", arguments: { full: true } }))
+      expect(full.map(r => r.name).sort()).toEqual(["executor", "supervisor"])
+
+      const page: { items: RoleListRow[]; total: number } = JSON.parse(
+        (
+          (await h.client.callTool({
+            name: "role_list",
+            arguments: { limit: 1, fields: ["name", "level"] },
+          })) as { content: Array<{ text: string }> }
+        ).content[0]!.text,
+      ) as { items: RoleListRow[]; total: number }
+      expect(page.total).toBe(2)
+      expect(Object.keys(page.items[0]!).sort()).toEqual(["level", "name"])
+    } finally {
+      await h.close()
+    }
+  })
+
   it("page-walk with limit=1 covers exactly the unpaginated list; default call unchanged (PR-8)", async () => {
     const h = await harness()
     try {
