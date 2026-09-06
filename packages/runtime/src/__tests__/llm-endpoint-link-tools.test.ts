@@ -185,3 +185,58 @@ describe("llm_endpoint_list_links", () => {
     expect(union).toEqual(allProviders)
   })
 })
+
+describe("llm_endpoint_list_links compact projection (tool-transformer migration)", () => {
+  it("default eligible rows are the picker shape; full:true restores profile metadata; envelope drops the links map", async () => {
+    // An eligible profile carrying bulky non-secret metadata the compact
+    // projection drops from the picker shape.
+    await addAuthProfile({
+      id: "an-rich",
+      endpoint: "anthropic",
+      method: "api-key",
+      label: "Rich",
+      models: { mode: "allow", ids: ["anthropic/claude-sonnet-5"] },
+      costBudget: { maxCostUsd: 5, window: "5h", scope: "profile" },
+    })
+
+    const { server, tools } = fakeServer()
+    registerLlmEndpointTools(server, { registry: fakeRegistry(false) })
+    const list = tools.get("llm_endpoint_list_links")!
+
+    // Default: picker shape — {id, label, method, endpoint} only, and the
+    // legacy { links, upstreams } envelope (withLinksMap re-attaches it).
+    const out = parse(await list({})) as {
+      links: Record<string, string>
+      upstreams: {
+        provider: string
+        linkedProfile: string | null
+        eligible: Array<Record<string, unknown>>
+      }[]
+    }
+    const rich = out.upstreams.find(u => u.provider === "anthropic")!.eligible.find(e => e.id === "an-rich")!
+    expect(Object.keys(rich).sort()).toEqual(["endpoint", "id", "label", "method"])
+    expect(rich).toMatchObject({ label: "Rich", method: "api-key", endpoint: "anthropic" })
+
+    // full:true restores the unprojected profile metadata on eligible rows.
+    const full = parse(await list({ full: true })) as {
+      upstreams: { eligible: Array<Record<string, unknown>> }[]
+    }
+    const fullRich = full.upstreams.find(u => (u.eligible as Array<{ id: string }>).some(e => e.id === "an-rich"))!
+      .eligible.find(e => e.id === "an-rich")!
+    expect(fullRich.models).toEqual({ mode: "allow", ids: ["anthropic/claude-sonnet-5"] })
+    expect(fullRich.costBudget).toEqual({ maxCostUsd: 5, window: "5h", scope: "profile" })
+
+    // Paginated envelope branch never carried the top-level links map.
+    const page = parse(await list({ limit: 2 })) as { items: unknown[]; total: number; links?: unknown }
+    expect(page.links).toBeUndefined()
+    expect(page.total).toBe(8)
+
+    // fields is a per-item allowlist on the envelope branch.
+    const fieldsPage = parse(await list({ limit: 2, fields: ["provider"] })) as {
+      items: Array<Record<string, unknown>>
+    }
+    for (const row of fieldsPage.items) {
+      expect(Object.keys(row)).toEqual(["provider"])
+    }
+  })
+})
