@@ -1,5 +1,29 @@
 # @agentproto/sandbox
 
+## 0.3.0
+
+### Minor Changes
+
+- db90fb3: Implement port exposure for sandboxes. Add `expose(port)` method and `ports` map to `BootedSandbox` to enable agents to expose HTTP server ports inside sandboxes as publicly accessible URLs. Support pre-declaring ports via `extraPorts` in the sandbox spec for eager resolution at boot time. E2B provider implements port exposure via `sandbox.getHost(port)`. Surface exposed ports in `SessionDescriptor` and `SessionSummary` via new `sandboxPorts` field.
+- c71753a: Add `agent_start.appServe`: with `sandbox`, the daemon installs the app on the box (the box daemon's `app_install`), launches `agentproto app serve --host 0.0.0.0 --port <port>` detached through the box's `command_execute` (seeding the box command allowlist), and stamps the public URL on the descriptor/result; `SandboxAgentSessionHost` now carries `mcpUrl` so callers can drive the box's other daemon tools.
+
+### Patch Changes
+
+- Updated dependencies [c4bff00]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [80c837e]
+- Updated dependencies [a48dc03]
+- Updated dependencies [1cd0220]
+- Updated dependencies [ece3cae]
+- Updated dependencies [e7e9261]
+- Updated dependencies [a04bd29]
+- Updated dependencies [fe9a374]
+  - @agentproto/workflow-runtime@0.10.0
+  - @agentproto/worktree@0.6.0
+  - @agentproto/define-doctype@0.1.1
+  - @agentproto/secrets@0.2.4
+
 ## 0.2.6
 
 ### Patch Changes

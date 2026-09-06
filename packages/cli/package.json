@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/cli",
-  "version": "0.17.0",
-  "description": "@agentproto/cli \u2014 the `agentproto` binary. Install AIP-45 agent CLI adapters, run them locally, or expose them over a tunnel as a long-running daemon. Reference host for hermes / claude-code / opencode / gemini-cli / goose, all driven through @agentproto/driver-agent-cli.",
+  "version": "0.18.0",
+  "description": "@agentproto/cli — the `agentproto` binary. Install AIP-45 agent CLI adapters, run them locally, or expose them over a tunnel as a long-running daemon. Reference host for hermes / claude-code / opencode / gemini-cli / goose, all driven through @agentproto/driver-agent-cli.",
   "keywords": [
     "agentproto",
     "aip-45",

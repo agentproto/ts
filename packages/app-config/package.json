@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/app-config",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/app-config — layered YAML config kit for agentproto apps. defineAppConfig({ app, item, itemsKey, defaultsKey }) returns a typed kit: load() merges app-level defaults → app items[] entry → item file (deep for objects, replace for arrays), emits input-io JSON Schemas, generates per-item contract files with sha256 drift check, runs declarative config gates, and composes them into one verify report.",
   "keywords": [
     "agentproto",

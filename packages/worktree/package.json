@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/worktree",
-  "version": "0.5.5",
+  "version": "0.6.0",
   "description": "AIP-14 TOOL contracts + builtin AIP-30 PROVIDER for provisioning, gating, and cleaning up a git worktree — the primitive an AgentStep binds its `cwd` to for a launch-agent-in-a-worktree workflow.",
   "keywords": [
     "agentproto",

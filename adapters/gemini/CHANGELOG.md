@@ -1,5 +1,12 @@
 # @agentproto/adapter-gemini
 
+## 0.2.8
+
+### Patch Changes
+
+- @agentproto/driver-agent-cli@2.4.1
+- @agentproto/provider-kit@0.4.2
+
 ## 0.2.7
 
 ### Patch Changes

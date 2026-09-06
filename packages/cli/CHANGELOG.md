@@ -1,5 +1,80 @@
 # @agentproto/cli
 
+## 0.18.0
+
+### Minor Changes
+
+- 3e30df8: `agentproto app init <template> [dir]` — scaffold an app from a template
+  (react-ts | vanilla | book | trame) by wrapping `create-agentproto-app`'s
+  `scaffoldApp`; the new `trame` template emits the minimal AIP app trame
+  (one agent, one workflow with a harness-pinned agent step + gate, a
+  single-file UI stage board, an example gate, the verify umbrella, the
+  data-plane key dictionary, and a node:test suite).
+
+  `agentproto app validate [dir] [--json]` — check an app against the
+  loaders: `loadAppHandle`, every declared workflow via `loadWorkflow`,
+  `ui.tools` entries against the known daemon tool surface (plus `app_*`),
+  `data/DATA.md` presence when `data.dir` is declared, and the APP.md
+  `verify.command` run argv-split (no shell) from the app dir with its exit
+  code propagated.
+
+- 4d01e5c: Add the "book contract" — optional `category` + `library.books` fields to app definitions, allowing apps to self-identify as book bundles for catalog/library substrates. Includes validation, round-trip support, and a new `--template book` option in create-agentproto-app, bundled with an `install-agentproto-app` skill for tier-1 installs.
+- 0012980: feat(permissions): thread plan \_meta through the hold path and add free-text feedback on the respond path
+
+  Adds `feedback?: string` to permission resolutions, enabling users to attach contextual information when approving or denying held tool-permission requests. The feature threads through all layers: types export `ACP_META_FEEDBACK` constant for the `_meta` key convention, ACP client carries `_meta` through to agent-prompt events, runtime forwards feedback on outcomes, and mastra-agent adapter folds feedback into suspension resumeData. CLI gains `--feedback` flag on approve/deny commands and renders plan text from suspension payloads. All changes are backward compatible.
+
+- 2f51af5: Add support for PORT environment variable in app port resolution. New exported `resolveRequestedPort()` function enables launchers (like Claude Code's autoPort) to assign ports dynamically. Port resolution priority: explicit `--port` > `PORT` env > declared `ui.port` > auto-assign.
+- 7331731: Add remote MCP server support to `app serve`: new `--remote-mcp-url`, `--remote-mcp-auth`, and `--remote-app-id` flags (with env-var fallbacks) allow serving MCP-Apps dashboards from a remote MCP server instead of a local directory. Export new public APIs: `resolveRemoteMcpTarget`, `resolveRemoteAppResourceUri`, `readRemoteAppHtml`. Extend `createDaemonMcpClientGetter` with an optional `authToken` parameter for bearer-token authentication (backward compatible).
+- 0e2b30e: Add stage board feature: a dependency-free ES module served at `GET /agentproto/stageboard.js` from `app serve` and `app dev` that renders an app's state ledger as an interactive UI component. Exports `toRows(snapshot, events)` for pure fold logic (snapshot + ledger events → board rows), `unwrapToolResult(result)` for unwrapping nested MCP response shells, and `mountStageBoard(el, opts)` for mounting a live board into an element with auto-refresh, approval flow, and CSS variable theming.
+- aff7794: Add `@agentproto/app-client/runner-select` — a shared harness+model selector for app UIs that discovers installed harnesses via `adapter_list` + `harness_preset_list`, eliminating per-app picker implementations. Automatically injected into every app UI alongside the McpApp bridge. Supporting changes: `adapter_list` summary mode for lightweight UI projections, harness preset profile status enrichment (disabled/missing flags), early validation of default preset profiles during spawn, and discovery tool allowlisting for all app UIs.
+
+### Patch Changes
+
+- d66ffe3: app-kit: Remove typed support for the book/library contract (AppLibraryDefinition, AppLibraryBook). The library.books convention now lives as untyped APP.md frontmatter — apps that need the book contract hand-write it directly without type validation.
+
+  cli: Update comments to reflect that app-kit has no typed support for the library.books convention; CLI continues to read it directly from frontmatter.
+
+- a16541b: Fix allowlist validation for app_tool_call meta-calls: unwrap the inner tool name before checking against ui.tools allowlist, matching the daemon's behavior.
+- 7c12c00: Add workflow approval tools (workflow_escalation_resolve, workflow_status) to ui.tools allowlist for stage board support.
+- f75ef5d: Add token usage tracking for OpenCode adapter sessions via readOpenCodeUsage hook. OpenCode's live ACP usage_update event only carries cost (no token fields), so the new function reads token data from OpenCode's sqlite store and is wired into the registry's turn-end path to fill in missing tokensIn/tokensOut fields, mirroring the existing hermes adapter pattern.
+- Updated dependencies [3e30df8]
+- Updated dependencies [692d659]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [4d01e5c]
+- Updated dependencies [d66ffe3]
+- Updated dependencies [0012980]
+- Updated dependencies [5328e9b]
+- Updated dependencies [80c837e]
+- Updated dependencies [1817079]
+- Updated dependencies [a48dc03]
+- Updated dependencies [3c6ca11]
+- Updated dependencies [db90fb3]
+- Updated dependencies [b1b569c]
+- Updated dependencies [49a89ba]
+- Updated dependencies [aff7794]
+- Updated dependencies [0deea71]
+- Updated dependencies [6bfb633]
+- Updated dependencies [ece3cae]
+- Updated dependencies [e7e9261]
+  - create-agentproto-app@0.3.0
+  - @agentproto/model-catalog@0.9.2
+  - @agentproto/workflow-loader@0.2.0
+  - @agentproto/app-kit@1.0.0
+  - @agentproto/acp@0.8.0
+  - @agentproto/sandbox-e2b@0.4.0
+  - @agentproto/worktree@0.6.0
+  - @agentproto/app-client@0.3.0
+  - @agentproto/driver-agent-cli@2.4.1
+  - @agentproto/sandbox-box@0.2.7
+  - @agentproto/adapter-browser@0.1.1
+  - @agentproto/auth@1.0.1
+  - @agentproto/driver@0.2.1
+  - @agentproto/provider-kit@0.4.2
+  - @agentproto/rendezvous@0.2.2
+  - @agentproto/runtime-profile-standard@0.1.2
+  - @agentproto/secrets@0.2.4
+
 ## 0.17.0
 
 ### Minor Changes

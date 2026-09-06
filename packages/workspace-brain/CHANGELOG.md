@@ -1,5 +1,16 @@
 # @agentproto/workspace-brain
 
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [f9e21fd]
+  - @agentproto/corpus@0.7.1
+  - @agentproto/adapter-knowledge-files@0.2.6
+  - @agentproto/adapter-knowledge-gbrain-doc@0.2.2
+  - @agentproto/adapter-knowledge-qdrant@0.2.2
+  - @agentproto/knowledge-engine@0.2.1
+
 ## 0.4.2
 
 ### Patch Changes

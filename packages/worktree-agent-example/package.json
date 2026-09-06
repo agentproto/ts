@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/worktree-agent-example",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "Example: a code-defined AIP-15 workflow that provisions a git worktree, runs a coding agent in it (AgentStep.cwd bound to the provisioned worktree), gates the result, waits for human approval, then cleans up.",
   "private": true,
   "license": "Apache-2.0",

@@ -1,5 +1,0 @@
----
-"@agentproto/app-config": minor
----
-
-Fit the kit to its first real consumer (a book-shaped data model): zod is now a peerDependency so a consumer's own zod copy type-checks against the kit generics (fixture contract test under `test-fixtures/consumer/`); `matchKey` matches entries by a field pair (`{ entry: "n", item: "n" }`) or predicate instead of requiring `id`; `defaultsKey` accepts a nested dot path (`"presets.default"`, with an array leaf mounting under its parent segment); `mergeArraysBy` does keyed-array merge (same-key entries replace in place, others append) beside the replace default; a `project(merged, ctx)` hook enables per-field projections (e.g. `accent ?? accents[vertical]`); `itemsGlob` accepts a fixed basename inside per-item dirs (`manuscripts/*/book.yaml`) and wildcard directory segments, and every resolved item exposes its `dir`; `VerifyFinding`/gate findings gain `attrs`; `GateRule<R>` / `ScopeFn<R>` / `VerifyInput<R>` are generic over the app's resolved type, and `gates`/`verify` are now async with a `GateContext` carrying `readArtifact(relPath)` for per-item artifact rules.

@@ -1,5 +1,27 @@
 # @agentproto/worktree
 
+## 0.6.0
+
+### Minor Changes
+
+- 80c837e: Add `writeFiles` parameter to `worktree.provision` for generating worktree-specific configuration before `depsCmd` runs. Supports `create` mode (never-clobber) and `append` mode (with automatic `skip-worktree` marking to prevent accidental commits).
+
+### Patch Changes
+
+- Updated dependencies [c4bff00]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [a48dc03]
+- Updated dependencies [1cd0220]
+- Updated dependencies [ece3cae]
+- Updated dependencies [e7e9261]
+- Updated dependencies [a04bd29]
+- Updated dependencies [fe9a374]
+  - @agentproto/workflow-runtime@0.10.0
+  - @agentproto/driver@0.2.1
+  - @agentproto/harness@0.4.4
+  - @agentproto/tool@0.2.2
+
 ## 0.5.5
 
 ### Patch Changes

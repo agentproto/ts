@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/sandbox-e2b",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "description": "@agentproto/sandbox-e2b — e2b `SandboxProvider` for @agentproto/sandbox. Boots the pinned `agentproto-workstation` e2b template (baked @agentproto/cli 0.17.0), starts the agentproto daemon inside it, and exposes its MCP endpoint as a URL so any AgentSessionHost consumer (worktreeAgentWorkflow, worktree-agent CLI) can run a coding-agent step inside the sandbox.",
   "keywords": [
     "agentproto",

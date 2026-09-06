@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/workflow-ai-sdk",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "@agentproto/workflow-ai-sdk — project an AIP-15 WORKFLOW.md's compiled RuntimeWorkflow onto a Vercel AI SDK `dynamicTool`. AI SDK has no first-class step-graph primitive, so the whole compiled workflow runs through `@agentproto/workflow-runtime`'s own `runWorkflow` behind one tool call (whole-workflow-as-one-tool) rather than a step-by-step mapping. Kinds with no clean single-call target (`suspend`, `approval`) fail loud at wrap time instead of silently dropping.",
   "keywords": [
     "agentproto",

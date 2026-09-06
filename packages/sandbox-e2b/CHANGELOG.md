@@ -1,5 +1,28 @@
 # @agentproto/sandbox-e2b
 
+## 0.4.0
+
+### Minor Changes
+
+- 5328e9b: Introduce template version management system for agentproto-workstation e2b template. Establishes `templates/workstation/versions.json` as the canonical pin declaration (CLI, adapters, runtime, base image) and introduces `scripts/sync-templates.mjs` to regenerate all derived artifacts. Enhances `@agentproto/sandbox-e2b` provider with `resolveUpdateCli()` function to intelligently skip the on-boot CLI install when a template's recorded baked image provably carries the requested CLI version—defaulting conservatively to install when the bake is unproven, maintaining backward compatibility.
+- db90fb3: Implement port exposure for sandboxes. Add `expose(port)` method and `ports` map to `BootedSandbox` to enable agents to expose HTTP server ports inside sandboxes as publicly accessible URLs. Support pre-declaring ports via `extraPorts` in the sandbox spec for eager resolution at boot time. E2B provider implements port exposure via `sandbox.getHost(port)`. Surface exposed ports in `SessionDescriptor` and `SessionSummary` via new `sandboxPorts` field.
+
+### Patch Changes
+
+- 1817079: Fix adapter installation in e2b template: use one ARG per package instead of space-separated list (E2B's builder mangles spaces in ENV values), consolidate toolchain into single `npm i -g` invocation, and generate Dockerfile from versions.json to prevent pin drift.
+- 3c6ca11: Record stable e2b workstation template as proven with real baked CLI and adapters (0.17.0 + hermes/opencode); skip on-boot npm install when template is proven and cliVersion matches, reducing boot time by ~90s on default paths.
+- b1b569c: Add mastra-agent adapter support and sandbox resource configuration. The mastra adapter's heavy runtime install requires 2048 MB memory (vs. e2b's 512 MB default), which would otherwise OOM. Resource flags are now validated in versions.json and threaded into build commands as required CLI arguments to `e2b template create`.
+- 49a89ba: Fix sandbox spec field forwarding in HTTP path and prevent VM leaks on boot/reconnect failures.
+
+  **@agentproto/runtime**: Fixed #1150 regression where `POST /sessions/agent` silently dropped `extraPorts`, `env`, `lifecycle`, and other fields from inline sandbox specs. Extracted shared schema `sandboxSpecWithReuseSchema` to ensure both HTTP and MCP paths validate against identical schema and forward all fields.
+
+  **@agentproto/sandbox-e2b**: Centralized sandbox cleanup on boot/reconnect failure to prevent VM leaks (observed live: six boxes left running without sessions). Added fast-fail mechanism that exits immediately when daemon crashes during boot, surfacing captured stderr for diagnostics, instead of blocking the full readiness timeout.
+
+- 0deea71: Update stable e2b template to include mastra-agent adapter 0.6.0 in baked image attestation.
+- Updated dependencies [db90fb3]
+- Updated dependencies [c71753a]
+  - @agentproto/sandbox@0.3.0
+
 ## 0.3.7
 
 ### Patch Changes
