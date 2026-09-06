@@ -47,7 +47,7 @@ export interface RegisterTaskToolsOptions {
 function jsonContent(payload: unknown): {
   content: Array<{ type: "text"; text: string }>
 } {
-  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] }
+  return { content: [{ type: "text", text: JSON.stringify(payload) }] }
 }
 
 /** Render a ledger write result onto the tool reply. A rev-CAS conflict is

@@ -1077,7 +1077,7 @@ export function registerAgentTools(
           ...(costBudgetPolicyId ? { costBudgetPolicyId } : {}),
         }
         return {
-          content: [{ type: "text", text: JSON.stringify(body, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(body) }],
         }
       }
       // The orchestrator guardrail errors + the role-spawn gate have
@@ -1249,7 +1249,7 @@ export function registerAgentTools(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ok: true, parentSessionId: parentId, delivery }, null, 2),
+            text: JSON.stringify({ ok: true, parentSessionId: parentId, delivery }),
           },
         ],
       })
@@ -1430,7 +1430,7 @@ export function registerAgentTools(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok, sessionId }, null, 2),
+            text: JSON.stringify({ ok, sessionId }),
           },
         ],
       }
@@ -1459,7 +1459,7 @@ export function registerAgentTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ ok: true, sessionId, wasBusy }, null, 2),
+              text: JSON.stringify({ ok: true, sessionId, wasBusy }),
             },
           ],
         }
@@ -1502,7 +1502,7 @@ export function registerAgentTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+              text: JSON.stringify({ ok: true, sessionId, ...result }),
             },
           ],
         }
@@ -1549,7 +1549,7 @@ export function registerAgentTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+              text: JSON.stringify({ ok: true, sessionId, ...result }),
             },
           ],
         }
@@ -1597,7 +1597,7 @@ export function registerAgentTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+              text: JSON.stringify({ ok: true, sessionId, ...result }),
             },
           ],
         }
@@ -1670,7 +1670,7 @@ export function registerAgentTools(
       }
       return {
         content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
+          { type: "text", text: JSON.stringify({ sessions: rows }) },
         ],
       }
     },
@@ -1739,7 +1739,7 @@ export function registerAgentTools(
           return { content: [{ type: "text", text: toolText(page) }] }
         }
         return {
-          content: [{ type: "text", text: JSON.stringify({ adapters: projected }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ adapters: projected }) }],
         }
       } catch (err) {
         return {
@@ -1791,7 +1791,7 @@ export function registerAgentTools(
       try {
         const capabilities = await listHarnessCapabilities(adapter ? { adapter } : undefined)
         return {
-          content: [{ type: "text", text: JSON.stringify({ capabilities }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ capabilities }) }],
         }
       } catch (err) {
         return {
@@ -1845,7 +1845,7 @@ export function registerAgentTools(
         // string, discarding the payload). isError is reserved for the
         // "not enabled" / thrown-exception faults, below.
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(result) }],
         }
       } catch (err) {
         return {
@@ -1918,7 +1918,7 @@ export function registerAgentTools(
           }
         }
         return {
-          content: [{ type: "text", text: JSON.stringify(catalog, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(catalog) }],
         }
       } catch (err) {
         return {
@@ -1977,13 +1977,13 @@ export function registerAgentTools(
           }
         }
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(result) }],
         }
       } catch {
         const provider = (route ?? endpoint ?? "").trim()
         return {
           content: [
-            { type: "text", text: JSON.stringify({ provider, models: [] }, null, 2) },
+            { type: "text", text: JSON.stringify({ provider, models: [] }) },
           ],
         }
       }
@@ -2017,7 +2017,7 @@ export function registerAgentTools(
           return { content: [{ type: "text", text: toolText(page) }] }
         }
         return {
-          content: [{ type: "text", text: JSON.stringify({ roles }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ roles }) }],
         }
       } catch (err) {
         return {

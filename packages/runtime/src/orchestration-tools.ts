@@ -643,7 +643,7 @@ export function registerOrchestrationTools(
       })
       return {
         content: [
-          { type: "text", text: JSON.stringify({ events, nextCursor }, null, 2) },
+          { type: "text", text: JSON.stringify({ events, nextCursor }) },
         ],
       }
     },
@@ -713,7 +713,7 @@ export function registerOrchestrationTools(
         return { content: [{ type: "text", text: toolText(page) }] }
       }
       return {
-        content: [{ type: "text", text: JSON.stringify({ permissions: pending }, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify({ permissions: pending }) }],
       }
     },
   )
@@ -877,7 +877,7 @@ export function registerOrchestrationTools(
       async input => {
         const run = await workflowRunner.start(input)
         return {
-          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
         }
       },
     )
@@ -898,7 +898,7 @@ export function registerOrchestrationTools(
         try {
           const run = await workflowRunner.startFromFile(input)
           return {
-            content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
           }
         } catch (err) {
           return {
@@ -929,7 +929,7 @@ export function registerOrchestrationTools(
             content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
           }
         }
-        return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(run) }] }
       },
     )
 
@@ -1058,7 +1058,7 @@ export function registerOrchestrationTools(
           const page = paginate(runs, input, { maxLimit: 200, keyOf: r => r.runId })
           return { content: [{ type: "text", text: toolText(page) }] }
         }
-        return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(runs) }] }
       },
     )
   }
@@ -1275,7 +1275,7 @@ export function registerOrchestrationTools(
             next: input.next as AttachPolicyInput["next"],
           })
           return {
-            content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }) }],
           }
         } catch (err) {
           return {
@@ -1458,7 +1458,7 @@ export function registerOrchestrationTools(
           const page = paginate(policies, input, { maxLimit: 200, keyOf: p => p.policyId })
           return { content: [{ type: "text", text: toolText(page) }] }
         }
-        return { content: [{ type: "text", text: JSON.stringify(policies, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(policies) }] }
       },
     )
   }
@@ -1800,7 +1800,7 @@ export function registerOrchestrationTools(
       },
       async input => {
         const desc = inboundWatcher.start(input)
-        return { content: [{ type: "text", text: JSON.stringify(desc, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(desc) }] }
       },
     )
 
@@ -1851,7 +1851,7 @@ export function registerOrchestrationTools(
           const page = paginate(watchers, input, { maxLimit: 200, keyOf: w => w.watcherId })
           return { content: [{ type: "text", text: toolText(page) }] }
         }
-        return { content: [{ type: "text", text: JSON.stringify(watchers, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(watchers) }] }
       },
     )
   }
@@ -2060,7 +2060,7 @@ export function registerOrchestrationTools(
           const page = paginate(list, input, { maxLimit: 200, keyOf: e => e.slug })
           return { content: [{ type: "text", text: toolText(page) }] }
         }
-        return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(list) }] }
       },
     )
 
@@ -2182,7 +2182,7 @@ export function registerOrchestrationTools(
           const page = paginate(jobs, input, { maxLimit: 200, keyOf: j => j.id })
           return { content: [{ type: "text", text: toolText(page) }] }
         }
-        return { content: [{ type: "text", text: JSON.stringify(jobs, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(jobs) }] }
       },
     )
 
@@ -2256,7 +2256,7 @@ export function registerOrchestrationTools(
           const page = paginate(routines, input, { maxLimit: 200, keyOf: r => r.id })
           return { content: [{ type: "text", text: toolText(page) }] }
         }
-        return { content: [{ type: "text", text: JSON.stringify(routines, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(routines) }] }
       },
     )
 

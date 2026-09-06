@@ -305,7 +305,7 @@ describe("catalog_models — pagination (PR-3, additive)", () => {
       const result = await h.client.callTool({ name: "catalog_models", arguments: {} })
       const text = textOf(result)
       expect(JSON.parse(text)).toEqual(CATALOG)
-      expect(text).toContain("\n  ")
+      expect(text).not.toContain("\n")
       expect(text).not.toContain('"nextCursor"')
       expect(text).not.toContain('"total"')
       expect(text).not.toContain('"items"')

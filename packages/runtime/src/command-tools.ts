@@ -450,7 +450,7 @@ export function registerCommandTools(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ entries }, null, 2),
+            text: JSON.stringify({ entries }),
           },
         ],
       }

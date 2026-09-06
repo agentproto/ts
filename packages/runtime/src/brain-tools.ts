@@ -93,7 +93,7 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ workspace, ...result }, null, 2),
+              text: JSON.stringify({ workspace, ...result }),
             },
           ],
         }
@@ -134,7 +134,7 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
       try {
         const status = await brains.getBrain(workspace).status()
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(status) }],
         }
       } catch (err) {
         return {
@@ -198,7 +198,7 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify({ workspace, result }, null, 2),
+                text: JSON.stringify({ workspace, result }),
               },
             ],
             ...(result.ok ? {} : { isError: true as const }),
@@ -206,7 +206,7 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
         }
         const report = await brain.ingestPending({ reindexStale: input.reindexStale === true })
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(report) }],
         }
       } catch (err) {
         return {

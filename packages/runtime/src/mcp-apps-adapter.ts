@@ -98,7 +98,7 @@ export function registerMcpApps(
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(initData, null, 2),
+              text: JSON.stringify(initData),
             },
           ],
         }

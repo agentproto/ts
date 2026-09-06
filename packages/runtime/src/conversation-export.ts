@@ -268,7 +268,7 @@ export function registerConversationExportTool(server: McpServer, ops: Conversat
       try {
         const result = await exportConversation(ops.registry, input, ops.exportFn)
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
         }
       } catch (err) {
         return {

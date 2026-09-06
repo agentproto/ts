@@ -94,7 +94,7 @@ export function registerSummarizeSessionTool(server: McpServer, ops: SummarizeOp
       const nowMs = (ops.now ?? Date.now)()
       return {
         content: [
-          { type: "text" as const, text: JSON.stringify(summarizeSession(desc, lines, nowMs), null, 2) },
+          { type: "text" as const, text: JSON.stringify(summarizeSession(desc, lines, nowMs)) },
         ],
       }
     },
