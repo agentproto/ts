@@ -3,7 +3,8 @@ name: Update deps
 # Weekly dependency refresh + security audit for the agentproto/ts monorepo.
 # The `update` job is deterministic — no LLM, standard GITHUB_TOKEN, never
 # pushes to main, never merges. The `security-audit` job runs independently in
-# parallel and reports/admits high-severity pnpm audit findings.
+# parallel and reports/admits high-severity pnpm audit findings; when blocked,
+# `security-audit-fix` drives an agentproto-native dependency-only fix flow.
 #
 # Two update modes (workflow_dispatch → inputs; weekly schedule → defaults):
 #   minor-patch   pnpm up -r — range-respecting update across the workspace
@@ -260,6 +261,8 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      blocked: ${{ steps.parse.outputs.blocked }}
     permissions:
       contents: read # checkout
       issues: write # open/update a single audit issue
@@ -368,6 +371,21 @@ jobs:
         run: |
           cat /tmp/audit-report.md >> "$GITHUB_STEP_SUMMARY"
 
+      # Jobs do not share /tmp. Persist the exact report plus both raw JSON
+      # inputs before the intentional fail step so the agent job can restore
+      # them to the same absolute paths on its own runner.
+      - name: Preserve audit inputs for security fixer
+        if: steps.parse.outputs.blocked == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-input-${{ github.run_id }}
+          path: |
+            /tmp/audit-report.md
+            /tmp/audit-prod.json
+            /tmp/audit-full.json
+          if-no-files-found: error
+          retention-days: 1
+
       # Dedup: open/update ONE issue for high/critical. Look it up by title first
       # and edit its body — never a fresh issue per run. Non-failing by itself;
       # the explicit fail step below turns the job red so the finding is visible.
@@ -413,3 +431,108 @@ jobs:
           else
             echo "No prior open security issue — nothing to resolve."
           fi
+
+  # ── Job 3 — security audit fix ───────────────────────────────────────────
+  # The audit job intentionally fails when blocked, so always() is required
+  # for this dependent job to evaluate its explicit blocked output. The agent
+  # runs host-side because it must share one filesystem with /tmp, the repo,
+  # pnpm, and gh; adapter/auth/CLI conventions still come from the review
+  # lane's existing .github/agentic-review.json keys.
+  security-audit-fix:
+    name: Fix security audit findings
+    needs: security-audit
+    if: ${{ always() && needs.security-audit.outputs.blocked == 'true' }}
+    runs-on: ubuntu-latest
+    # Leave headroom around the composite action's own 60-minute poll timeout
+    # for checkout, install, artifact restore, and a workspace CLI build.
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Restore audit inputs
+        uses: actions/download-artifact@v5
+        with:
+          name: security-audit-input-${{ github.run_id }}
+          path: /tmp
+
+      - name: Resolve agentproto lane config
+        id: lane
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          node - <<'NODE'
+          const fs = require("fs");
+          const cfg = JSON.parse(fs.readFileSync(".github/agentic-review.json", "utf8"));
+          const input = {
+            repo: process.env.REPO,
+            baseRef: "main",
+            auditReportPath: "/tmp/audit-report.md",
+            auditProdPath: "/tmp/audit-prod.json",
+            auditFullPath: "/tmp/audit-full.json",
+            reviewConfig: cfg,
+          };
+          const out = [
+            `adapter=${String(cfg.reviewerAdapter || "claude-code")}`,
+            `auth_mode=${String(cfg.reviewerAuthMode || "api-key")}`,
+            `cli_source=${String(cfg.cliSource || "npm")}`,
+            `cli_version=${String(cfg.cliVersion || "0.8.0")}`,
+            `model=${String(cfg.model || "")}`,
+            `workflow_input=${JSON.stringify(input)}`,
+            "",
+          ].join("\n");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, out);
+          NODE
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build local agentproto CLI
+        if: steps.lane.outputs.cli_source == 'workspace'
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+        run: pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${{ steps.lane.outputs.adapter }}..."
+
+      - name: Run security-fix agentflow
+        id: security-fix
+        uses: ./.github/actions/agentproto-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          adapter: ${{ steps.lane.outputs.adapter }}
+          auth-mode: ${{ steps.lane.outputs.auth_mode }}
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: ${{ steps.lane.outputs.model }}
+          langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
+          langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
+          workflow-path: .github/agentproto-workflows/security-fix/WORKFLOW.md
+          workflow-input: ${{ steps.lane.outputs.workflow_input }}
+          cli-source: ${{ steps.lane.outputs.cli_source }}
+          cli-version: ${{ steps.lane.outputs.cli_version }}
+          timeout-minutes: '60'
+
+      - name: Report result
+        run: |
+          echo "run-id: ${{ steps.security-fix.outputs.run-id }}"
+          echo "status: ${{ steps.security-fix.outputs.status }}"
