@@ -15,7 +15,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { SessionsRegistry } from "./sessions.js"
+import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
@@ -328,6 +328,71 @@ const mcpBool = z.preprocess(
   z.boolean(),
 )
 
+// ── session_list COMPACT projection (PR-10) ──────────────────────────────
+// The default per-item shape for `session_list`: the identity fields a
+// caller needs to list, filter, and route follow-ups to the right session —
+// nothing else. The bulky/rarely-needed descriptor echo (context-continuity
+// policy detail, available commands, watcher rosters, AGENTS.md/RULES.md
+// content, auth + access-profile echoes, adapter config paths, restart
+// bookkeeping, …) stays behind `full: true` / `compact: false`, which
+// return the unmodified SessionDescriptor exactly as before.
+export interface SessionListCompactItem {
+  id: string
+  kind: SessionDescriptor["kind"]
+  name?: string
+  label?: string
+  status: SessionDescriptor["status"]
+  pty?: boolean
+  /** What was actually run — quoted joined, same string the full record carries. */
+  command: string
+  cwd?: string
+  adapterSlug?: string
+  model?: string
+  busy?: boolean
+  awaitingInput?: boolean
+  blockedOn?: SessionDescriptor["blockedOn"]
+  lastActivityAt?: string
+  startedAt: string
+  exitCode?: number
+  depth?: number
+  parentSessionId?: string
+  // Usage scalars (small, and codified as session_list output by
+  // session-usage-mcp.test.ts): cheap badge signals for list views.
+  usageSource?: SessionDescriptor["usageSource"]
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  contextSize?: number
+  contextUsed?: number
+}
+
+export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem => ({
+  id: s.id,
+  kind: s.kind,
+  name: s.name,
+  label: s.label,
+  status: s.status,
+  pty: s.pty,
+  command: s.command,
+  cwd: s.cwd,
+  adapterSlug: s.adapterSlug,
+  model: s.model,
+  busy: s.busy,
+  awaitingInput: s.awaitingInput,
+  blockedOn: s.blockedOn,
+  lastActivityAt: s.lastActivityAt,
+  startedAt: s.startedAt,
+  exitCode: s.exitCode,
+  depth: s.depth,
+  parentSessionId: s.parentSessionId,
+  usageSource: s.usageSource,
+  costUsd: s.costUsd,
+  tokensIn: s.tokensIn,
+  tokensOut: s.tokensOut,
+  contextSize: s.contextSize,
+  contextUsed: s.contextUsed,
+})
+
 export function registerSessionTools(
   rawServer: McpServer,
   opts: RegisterSessionToolsOptions
@@ -360,7 +425,11 @@ export function registerSessionTools(
       "entry includes `kind`, `pty` (true for real PTYs), `name` (when set " +
       "at spawn), `status`, `command`, age + exit code. Use this when you " +
       "need to know what's already running before spawning anything new, " +
-      "or to discover a session id by name. Raw shell-command runs " +
+      "or to discover a session id by name. COMPACT BY DEFAULT: each entry " +
+      "is a slim projection (id/kind/name/label/status/command/cwd/model/" +
+      "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId); " +
+      "pass `full: true` (or `compact: false`) for the complete, unprojected " +
+      "per-session record. Raw shell-command runs " +
       "(`kind:'command'`) are a log, not a resumable session, so they're " +
       "excluded from the default view — pass `kind:'command'` or " +
       "`includeCommands:true` to see them, or use `command_list`.",
@@ -436,17 +505,36 @@ export function registerSessionTools(
       }
       // Pagination (PR-2): ALWAYS last — after subtree scoping and the
       // archived/kind/status filters. Without limit/cursor the output is
-      // byte-identical to the pre-pagination handler. `full` is accepted
-      // but a no-op until the projection flip (PR-10).
+      // Compact-by-default (PR-10): unless the caller explicitly opts out
+      // (`compact: false` or the `full: true` escape hatch), each row is
+      // projected to `SessionListCompactItem`. `full: true` (or an explicit
+      // `compact: false`) returns the full SessionDescriptor rows exactly
+      // as the pre-PR-10 handler did — byte-identical.
+      const full = input.full === true
+      const compact = full ? false : input.compact !== false
+      const project = (list: SessionDescriptor[]) =>
+        compact ? list.map(compactSessionItem) : list
+      // Pagination (PR-2): ALWAYS last — after subtree scoping and the
+      // archived/kind/status filters. Without limit/cursor the output is
+      // byte-identical to the pre-pagination handler (modulo the PR-10
+      // compact projection, which `full: true` disables).
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
         return {
-          content: [{ type: "text", text: toolText(page) }],
+          content: [
+            {
+              type: "text",
+              text: toolText(
+                compact ? { ...page, items: page.items.map(compactSessionItem) } : page,
+                input,
+              ),
+            },
+          ],
         }
       }
       return {
         content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }) },
+          { type: "text", text: JSON.stringify({ sessions: project(rows) }) },
         ],
       }
     },
@@ -1011,7 +1099,7 @@ export function registerSessionTools(
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
         return {
-          content: [{ type: "text", text: toolText(page) }],
+          content: [{ type: "text", text: toolText(page, input) }],
         }
       }
       return {
@@ -1071,7 +1159,7 @@ export function registerSessionTools(
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
         return {
-          content: [{ type: "text", text: toolText(page) }],
+          content: [{ type: "text", text: toolText(page, input) }],
         }
       }
       return {
@@ -1098,7 +1186,7 @@ export function registerSessionTools(
         // byte-identical to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(mcps, input, { maxLimit: 200, keyOf: m => m.id })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return {
           content: [{ type: "text", text: JSON.stringify({ mcps }) }],
@@ -1132,7 +1220,7 @@ export function registerSessionTools(
         // the output is byte-identical to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(config.imports, input, { maxLimit: 200, keyOf: e => e.id })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return {
           content: [
@@ -1591,7 +1679,7 @@ export function registerSessionTools(
       // output is byte-identical to the pre-pagination handler.
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(queue ?? [], input, { maxLimit: 200, keyOf: q => q.id })
-        return { content: [{ type: "text", text: toolText(page) }] }
+        return { content: [{ type: "text", text: toolText(page, input) }] }
       }
       return {
         content: [{ type: "text", text: JSON.stringify({ sessionId: desc.id, queue }) }],
@@ -1844,7 +1932,7 @@ export function registerSessionTools(
         // the output is byte-identical to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(worktrees, input, { maxLimit: 200, keyOf: w => w.path })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return {
           content: [
@@ -3324,11 +3412,11 @@ export function registerSessionTools(
     "terminal_output",
     "Snapshot the recent byte buffer of a PTY session. Returns base64-encoded " +
       "bytes (the buffer is RAW including ANSI escapes) by default; pass " +
-      "`clean: true` for ANSI-stripped plain text instead. `lastBytes` caps " +
-      "the read from the tail; when a `lastBytes` window is applied the " +
+      "`clean: true` for ANSI-stripped plain text instead. Capped at the " +
+      "last 4096 bytes of the ring by default — pass `lastBytes` explicitly " +
+      "(up to 64 KiB) to widen the window. When a window is applied the " +
       "result carries a `truncated` flag (true when the window was filled to " +
-      "capacity). Future default: the read will be capped at 4096 bytes — " +
-      "pass `lastBytes` explicitly for stable behaviour.",
+      "capacity).",
     {
       sessionId: z
         .string()
@@ -3340,9 +3428,8 @@ export function registerSessionTools(
         .max(64 * 1024)
         .optional()
         .describe(
-          "Max bytes from the tail. Default: full ring buffer (~64 KiB). " +
-            "Note: a future default caps this at 4096 bytes — pass " +
-            "`lastBytes` explicitly for stable behaviour."
+          "Max bytes from the tail. Default 4096; the full ~64 KiB ring " +
+            "remains reachable by passing `lastBytes: 65536` explicitly."
         ),
       clean: mcpBool
         .optional()
@@ -3365,9 +3452,13 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      // PR-10: the read window defaults to the last 4096 bytes when
+      // `lastBytes` is omitted; an explicit `lastBytes` (up to 64 KiB)
+      // keeps today's wider-window behaviour.
+      const windowBytes = input.lastBytes ?? 4096
       const buf = registry.readTerminalOutput(
         desc.id,
-        input.lastBytes,
+        windowBytes,
       )
       if (!buf) {
         return {
@@ -3394,9 +3485,7 @@ export function registerSessionTools(
                   ? { secondsSinceLastActivity: desc.secondsSinceLastActivity }
                   : {}),
                 bytes: buf.byteLength,
-                ...(input.lastBytes !== undefined
-                  ? { truncated: buf.byteLength >= input.lastBytes }
-                  : {}),
+                truncated: buf.byteLength >= windowBytes,
                 ...(input.clean
                   ? { text: stripAnsi(buf.toString("utf8")) }
                   : { b64: buf.toString("base64") }),

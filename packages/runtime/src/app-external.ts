@@ -211,7 +211,7 @@ export function registerAppExternalTools(
       // handler.
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(entries, input, { maxLimit: 200, keyOf: e => e.name })
-        return { content: [{ type: "text", text: toolText(page) }] }
+        return { content: [{ type: "text", text: toolText(page, input) }] }
       }
       return textResult({ appId: input.appId, root: input.root, path: relPath, entries })
     },

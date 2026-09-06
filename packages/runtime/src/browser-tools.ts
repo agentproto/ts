@@ -165,7 +165,7 @@ export function registerBrowserTools(
         // byte-identical to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(adapters, input, { maxLimit: 200, keyOf: a => a.id })
-          return { content: [{ type: "text" as const, text: toolText(page) }] }
+          return { content: [{ type: "text" as const, text: toolText(page, input) }] }
         }
         return {
           content: [{ type: "text" as const, text: JSON.stringify(adapters) }],
@@ -188,7 +188,7 @@ export function registerBrowserTools(
       const adapters = listBrowserAdapters()
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(adapters, input, { maxLimit: 200, keyOf: a => a.id })
-        return { content: [{ type: "text" as const, text: toolText(page) }] }
+        return { content: [{ type: "text" as const, text: toolText(page, input) }] }
       }
       return {
         content: [{ type: "text" as const, text: JSON.stringify(adapters) }],
@@ -418,7 +418,7 @@ export function registerBrowserTools(
       // handler.
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(result, input, { maxLimit: 200, keyOf: d => d.id })
-        return { content: [{ type: "text" as const, text: toolText(page) }] }
+        return { content: [{ type: "text" as const, text: toolText(page, input) }] }
       }
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],

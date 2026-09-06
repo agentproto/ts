@@ -197,7 +197,7 @@ export function registerTaskTools(
       // pre-pagination handler.
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(tasks, input, { maxLimit: 200, keyOf: t => t.taskId })
-        return { content: [{ type: "text", text: toolText(page) }] }
+        return { content: [{ type: "text", text: toolText(page, input) }] }
       }
       return jsonContent({
         boardId: ledger.resolveBoardId(caller, input.boardId),

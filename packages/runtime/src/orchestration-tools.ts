@@ -710,7 +710,7 @@ export function registerOrchestrationTools(
           maxLimit: 200,
           keyOf: p => (typeof p.id === "string" ? p.id : null),
         })
-        return { content: [{ type: "text", text: toolText(page) }] }
+        return { content: [{ type: "text", text: toolText(page, input) }] }
       }
       return {
         content: [{ type: "text", text: JSON.stringify({ permissions: pending }) }],
@@ -1056,7 +1056,7 @@ export function registerOrchestrationTools(
         // to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(runs, input, { maxLimit: 200, keyOf: r => r.runId })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return { content: [{ type: "text", text: JSON.stringify(runs) }] }
       },
@@ -1456,7 +1456,7 @@ export function registerOrchestrationTools(
         // pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(policies, input, { maxLimit: 200, keyOf: p => p.policyId })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return { content: [{ type: "text", text: JSON.stringify(policies) }] }
       },
@@ -1534,7 +1534,7 @@ export function registerOrchestrationTools(
         // handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(activities, input, { maxLimit: 200, keyOf: a => a.id })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return {
           content: [
@@ -1849,7 +1849,7 @@ export function registerOrchestrationTools(
         // to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(watchers, input, { maxLimit: 200, keyOf: w => w.watcherId })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return { content: [{ type: "text", text: JSON.stringify(watchers) }] }
       },
@@ -2058,7 +2058,7 @@ export function registerOrchestrationTools(
         // to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(list, input, { maxLimit: 200, keyOf: e => e.slug })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return { content: [{ type: "text", text: JSON.stringify(list) }] }
       },
@@ -2180,7 +2180,7 @@ export function registerOrchestrationTools(
         // to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(jobs, input, { maxLimit: 200, keyOf: j => j.id })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return { content: [{ type: "text", text: JSON.stringify(jobs) }] }
       },
@@ -2254,7 +2254,7 @@ export function registerOrchestrationTools(
         // to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(routines, input, { maxLimit: 200, keyOf: r => r.id })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return { content: [{ type: "text", text: JSON.stringify(routines) }] }
       },

@@ -627,7 +627,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // output is byte-identical to the pre-pagination handler.
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(apps, input, { maxLimit: 200, keyOf: a => a.appId })
-        return { content: [{ type: "text", text: toolText(page) }] }
+        return { content: [{ type: "text", text: toolText(page, input) }] }
       }
       return textResult(apps)
     },
@@ -1178,7 +1178,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // handler.
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(result, input, { maxLimit: 200, keyOf: m => `${m.scopeId}/${m.appId}` })
-        return { content: [{ type: "text", text: toolText(page) }] }
+        return { content: [{ type: "text", text: toolText(page, input) }] }
       }
       return textResult(result)
     },
