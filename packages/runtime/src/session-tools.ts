@@ -44,7 +44,7 @@ import {
   addImport,
   removeImport,
 } from "./mcp-imports.js"
-import type { McpProxyRegistry } from "./mcp-proxy.js"
+import type { McpProxyRegistry, ProxyToolDescriptor } from "./mcp-proxy.js"
 import { projectSessionUsage } from "./usage.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import {
@@ -1315,6 +1315,23 @@ export function registerSessionTools(
           "Alias from `mcp_imported_list` / `mcp_imported_status` " +
             "(typically the original MCP name, e.g. 'chrome-devtools')."
         ),
+      compact: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, return only `name` + `description` per tool " +
+            "(pass `schema: true` to keep the inputSchema). Default false."
+        ),
+      schema: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, include the upstream inputSchema alongside the " +
+            "compact projection. Ignored without `compact` (the default " +
+            "shape already carries inputSchema). Default false."
+        ),
+      limit: pageParamsShape.limit,
+      cursor: pageParamsShape.cursor,
     },
     async input => {
       if (!mcpProxy) {
@@ -1338,6 +1355,40 @@ export function registerSessionTools(
             },
           ],
           isError: true,
+        }
+      }
+      const paged = input.limit !== undefined || input.cursor !== undefined
+      if (paged || input.compact !== undefined || input.schema !== undefined) {
+        const project = (t: ProxyToolDescriptor) => {
+          if (input.compact !== true) return t
+          return {
+            name: t.name,
+            ...(t.description !== undefined ? { description: t.description } : {}),
+            ...(input.schema === true && t.inputSchema !== undefined
+              ? { inputSchema: t.inputSchema }
+              : {}),
+          }
+        }
+        if (paged) {
+          const page = paginate(out.tools, input, { maxLimit: 200, keyOf: t => t.name })
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  { alias: input.alias, items: page.items.map(project), total: page.total, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) },
+                ),
+              },
+            ],
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ alias: input.alias, tools: out.tools.map(project) }, null, 2),
+            },
+          ],
         }
       }
       return {
@@ -1430,6 +1481,13 @@ export function registerSessionTools(
           "When true, only include sessions with status running/starting. " +
             "Pruned nodes also hide their subtree. Default false.",
         ),
+      groupByOrigin: z
+        .boolean()
+        .optional()
+        .describe(
+          "Set false to suppress the companion `byOrigin` view and trim the " +
+            "payload. Default true — `byOrigin` is emitted alongside `tree`.",
+        ),
     },
     async input => {
       // Full list (includeArchived) for subtree correctness — see
@@ -1453,9 +1511,13 @@ export function registerSessionTools(
       // groups — the human-launched roots have no agent parent to nest under,
       // so origin is their only cluster key. `tree` is unchanged.
       const byOrigin = groupRootsByOrigin(tree)
+      const body =
+        input.groupByOrigin === false
+          ? { tree }
+          : { tree, byOrigin }
       return {
         content: [
-          { type: "text", text: JSON.stringify({ tree, byOrigin }, null, 2) },
+          { type: "text", text: JSON.stringify(body, null, 2) },
         ],
       }
     },

@@ -624,6 +624,14 @@ export function registerOrchestrationTools(
         .max(200)
         .optional()
         .describe("Max events to return. Default 50."),
+      full: z
+        .boolean()
+        .optional()
+        .describe(
+          "Request verbose per-event detail. Accepted for forward " +
+            "compatibility — this build always returns the same compact " +
+            "event shape regardless of the flag. Default false.",
+        ),
     },
     async input => {
       const cursor = input.since ?? eventRing.since(0).nextCursor

@@ -399,6 +399,79 @@ describe("session_tree tool — no scope (root /mcp)", () => {
   })
 })
 
+// ── (d) session_tree tool — groupByOrigin (PR-6) ─────────────────────────────
+
+describe("session_tree tool — groupByOrigin (PR-6)", () => {
+  it("default still includes the byOrigin companion view", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    try {
+      const desktop = spawnNode(registry, undefined, 0, "desktop-root", "claude-code")
+      spawnNode(registry, desktop.id, 1, "desktop-child")
+      spawnNode(registry, undefined, 0, "vscode-root", "vscode")
+
+      const result = await client.callTool({ name: "session_tree", arguments: {} })
+      const body = payload<{
+        tree: SessionTreeNode[]
+        byOrigin: ReturnType<typeof groupRootsByOrigin>
+      }>(result)
+
+      expect("byOrigin" in body).toBe(true)
+      expect(body.tree).toHaveLength(2)
+      const byKey = new Map(body.byOrigin.map(g => [g.origin, g]))
+      expect(byKey.get("claude-code")!.sessions).toHaveLength(1)
+      expect(byKey.get("vscode")!.sessions).toHaveLength(1)
+    } finally {
+      await close()
+    }
+  })
+
+  it("groupByOrigin:false suppresses byOrigin but leaves the tree intact", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    try {
+      const root = spawnNode(registry, undefined, 0, "root", "cron")
+      spawnNode(registry, root.id, 1, "child")
+
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { groupByOrigin: false },
+      })
+      const body = payload<{ tree: SessionTreeNode[]; byOrigin?: unknown }>(result)
+
+      expect("byOrigin" in body).toBe(false)
+      expect(body.tree).toHaveLength(1)
+      expect(body.tree[0]!.label).toBe("root")
+      expect(body.tree[0]!.children).toHaveLength(1)
+      expect(body.tree[0]!.children[0]!.label).toBe("child")
+    } finally {
+      await close()
+    }
+  })
+
+  it("groupByOrigin:true explicitly keeps byOrigin", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    try {
+      spawnNode(registry, undefined, 0, "root", "vscode")
+
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { groupByOrigin: true },
+      })
+      const body = payload<{
+        tree: SessionTreeNode[]
+        byOrigin?: ReturnType<typeof groupRootsByOrigin>
+      }>(result)
+      expect("byOrigin" in body).toBe(true)
+      expect(body.byOrigin).toHaveLength(1)
+      expect(body.byOrigin![0]!.origin).toBe("vscode")
+    } finally {
+      await close()
+    }
+  })
+})
+
 // ── utility ───────────────────────────────────────────────────────────────────
 
 /** Flatten a SessionTreeNode[] tree into a flat array for easier assertions. */
