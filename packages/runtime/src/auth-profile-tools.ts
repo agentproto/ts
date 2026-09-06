@@ -21,6 +21,9 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
+import { catchErrors, defineTool, paginated } from "@agentproto/tool"
 import {
   KeychainStore,
   addAuthProfile,
@@ -43,7 +46,6 @@ import {
   CredentialImportError,
 } from "./credential-discovery.js"
 import { buildCatalogProviderModels } from "./catalog-provider-models.js"
-import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 /** Wire `@agentproto/auth`'s provisioning helpers to the real keychain +
  *  on-disk profile store. Shared by the MCP tools here and the HTTP routes in
@@ -67,7 +69,7 @@ type ProfileKeyStatus = "stored" | "self-refreshing" | "unavailable"
 
 /** `auth_profile_list`'s per-profile row — the profile's non-secret metadata
  *  plus its key identity. NEVER carries the credential itself. */
-interface AuthProfileListRow extends AuthProfile {
+export interface AuthProfileListRow extends AuthProfile {
   keyStatus: ProfileKeyStatus
   /** One-way fingerprint of the stored secret — present only when
    *  `keyStatus === "stored"`. */
@@ -77,6 +79,30 @@ interface AuthProfileListRow extends AuthProfile {
    *  reveal a tail safely. */
   last4?: string
 }
+
+/**
+ * `auth_profile_list`'s COMPACT per-row projection: every field the VS Code
+ * auth panels and spawn-side consumers read — identity, method, credential
+ * shape, enable/curation state, provenance, and the WS5 key identity — minus
+ * the one bulky field nothing consumes over this surface: `costBudget` (the
+ * windowed spend cap is enforced daemon-side at turn-end; a listing caller
+ * never evaluates it). `full: true` / `compact: false` restores the complete
+ * row including `costBudget`.
+ */
+export const compactAuthProfileRow = (p: AuthProfileListRow) => ({
+  id: p.id,
+  endpoint: p.endpoint,
+  method: p.method,
+  ...(p.credentialRef !== undefined ? { credentialRef: p.credentialRef } : {}),
+  ...(p.source !== undefined ? { source: p.source } : {}),
+  ...(p.label !== undefined ? { label: p.label } : {}),
+  ...(p.disabled !== undefined ? { disabled: p.disabled } : {}),
+  ...(p.models !== undefined ? { models: p.models } : {}),
+  ...(p.origin !== undefined ? { origin: p.origin } : {}),
+  keyStatus: p.keyStatus,
+  ...(p.fingerprint !== undefined ? { fingerprint: p.fingerprint } : {}),
+  ...(p.last4 !== undefined ? { last4: p.last4 } : {}),
+})
 
 /**
  * Enrich one profile with its key identity (WS5), computed SERVER-SIDE from the
@@ -134,9 +160,22 @@ function errorText(message: string): {
 
 export function registerAuthProfileTools(server: McpServer): void {
   // ── auth_profile_list ─────────────────────────────────────────
-  server.tool(
-    "auth_profile_list",
-    "List the named auth profiles configured on this host (from " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool): pagination/compact/fields are applied by the `paginated()`
+  // transformer at registration and error normalization by `catchErrors()`,
+  // instead of hand-rolled in the handler.
+  const authProfileListSchema = z.object({
+    endpoint: z
+      .string()
+      .optional()
+      .describe("Keep only profiles for this billing endpoint (e.g. anthropic)."),
+  })
+  type AuthProfileListInput = z.infer<typeof authProfileListSchema>
+
+  const authProfileListTool = defineTool<AuthProfileListInput, AuthProfileListRow[]>({
+    id: "auth_profile_list",
+    description:
+      "List the named auth profiles configured on this host (from " +
       "`~/.agentproto/auth-profiles.json`). Returns only non-secret metadata " +
       "— id, endpoint, method, credentialRef, label, plus the enable/disable " +
       "state (`disabled`) and any per-model curation (`models`) — never the " +
@@ -144,34 +183,45 @@ export function registerAuthProfileTools(server: McpServer): void {
       "computed server-side from the keychain: `keyStatus` (`stored` / " +
       "`self-refreshing` / `unavailable`) and, for a stored secret, a one-way " +
       "`fingerprint` + `last4` (never the secret). Optionally filter to one " +
-      "billing endpoint.",
-    {
-      endpoint: z
-        .string()
-        .optional()
-        .describe("Keep only profiles for this billing endpoint (e.g. anthropic)."),
-      ...pageParamsShape,
-    },
-    async input => {
-      try {
-        const profiles = await listAuthProfiles(input.endpoint)
-        const store = new KeychainStore()
-        const enriched = await Promise.all(profiles.map(p => describeProfileKey(p, store)))
-        // Pagination LAST — after the endpoint filter + keychain enrichment.
-        // Without limit/cursor the output is byte-identical to the
-        // pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(enriched, input, { maxLimit: 200, keyOf: p => p.id })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return text({ profiles: enriched })
-      } catch (err) {
-        return errorText(
-          `auth_profile_list failed: ${err instanceof Error ? err.message : String(err)}`,
-        )
-      }
-    },
-  )
+      "billing endpoint. COMPACT BY DEFAULT: the per-row `costBudget` " +
+      "(windowed spend cap — enforced daemon-side, never evaluated by a " +
+      "listing caller) is dropped; pass `full: true` (or `compact: false`) " +
+      "for the complete row.",
+    inputSchema: authProfileListSchema,
+  })
+
+  // Body: filter + keychain enrichment ONLY. Pagination, compact projection,
+  // and error normalization are the transformers' job (applied below).
+  const authProfileListImpl = implementTool(authProfileListTool, async ({ input }) => {
+    const profiles = await listAuthProfiles(input.endpoint)
+    const store = new KeychainStore()
+    return Promise.all(profiles.map(p => describeProfileKey(p, store)))
+  })
+
+  const authProfileListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: authProfileListTool.id, version: "*" }],
+    implementations: [authProfileListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: authProfileListTool,
+    candidates: [authProfileListDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactAuthProfileRow,
+        keyOf: p => p.id,
+        maxLimit: 200,
+        itemKey: "profiles",
+      }),
+    ],
+  })
 
   // ── auth_profile_create ───────────────────────────────────────
   server.tool(

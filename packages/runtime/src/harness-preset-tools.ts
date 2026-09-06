@@ -17,6 +17,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { getAuthProfile } from "@agentproto/auth"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
+import { catchErrors, defineTool, paginated } from "@agentproto/tool"
 import {
   addHarnessPreset,
   listHarnessPresets,
@@ -24,8 +27,8 @@ import {
   setDefaultPreset,
   HarnessPresetValidationError,
   type HarnessPresetValidationDeps,
+  type HarnessPreset,
 } from "./harness-preset-store.js"
-import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 function text(value: string | object): {
   content: Array<{ type: "text"; text: string }>
@@ -47,6 +50,36 @@ function errorText(message: string): {
   return { content: [{ type: "text", text: message }], isError: true }
 }
 
+/** One `harness_preset_list` row before projection — the store's preset plus
+ *  the list-time profile-status enrichment. */
+export type HarnessPresetListRow = HarnessPreset & {
+  /** True when `profileRef` is a disabled or missing profile — a preset a
+   *  spawn cannot actually bill through. */
+  profileDisabled: boolean
+  /** True only when `profileRef` references no profile at all. */
+  profileMissing?: true
+}
+
+/**
+ * `harness_preset_list`'s COMPACT per-row projection. The store row is
+ * already the minimal useful shape — every field is consumed (runner-select
+ * reads `harnessSlug`/`isDefault`/`name`/`profileDisabled`/`defaultModel`;
+ * spawn-side consumers read `profileRef`; management verbs key on `id`) — so
+ * the projection is an explicit ALLOWLIST of exactly those fields: it pins
+ * the wire shape and drops any future store field by default, with
+ * `full: true` / `compact: false` as the escape hatch for the untrimmed row.
+ */
+export const compactHarnessPresetRow = (p: HarnessPresetListRow) => ({
+  id: p.id,
+  harnessSlug: p.harnessSlug,
+  name: p.name,
+  profileRef: p.profileRef,
+  defaultModel: p.defaultModel,
+  isDefault: p.isDefault,
+  profileDisabled: p.profileDisabled,
+  ...(p.profileMissing ? { profileMissing: p.profileMissing } : {}),
+})
+
 export interface HarnessPresetToolsDeps {
   /** Profile lookup backing each listed preset's `profileDisabled`/
    *  `profileMissing` status. Defaults to the real `@agentproto/auth`
@@ -59,9 +92,21 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
   const getProfile = deps.getProfile ?? getAuthProfile
 
   // ── harness_preset_list ───────────────────────────────────────
-  server.tool(
-    "harness_preset_list",
-    "List the harness→profile presets configured on this host (from " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool): pagination/compact/fields via `paginated()` and error
+  // normalization via `catchErrors()` at registration.
+  const harnessPresetListSchema = z.object({
+    harnessSlug: z
+      .string()
+      .optional()
+      .describe("Keep only presets for this adapter harness (e.g. hermes)."),
+  })
+  type HarnessPresetListInput = z.infer<typeof harnessPresetListSchema>
+
+  const harnessPresetListTool = defineTool<HarnessPresetListInput, HarnessPresetListRow[]>({
+    id: "harness_preset_list",
+    description:
+      "List the harness→profile presets configured on this host (from " +
       "`~/.agentproto/harness-presets.json`). Each preset pins, for one adapter " +
       "harness, which auth profile (`profileRef`) and default model " +
       "(`defaultModel`) a fresh spawn bills through when the caller names " +
@@ -70,39 +115,49 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
       "disabled or missing profile — a preset a spawn cannot actually bill " +
       "through) and `profileMissing` (true only when `profileRef` references " +
       "no profile at all). No secret is returned — only profile ids. " +
-      "Optionally filter to one harness slug.",
-    {
-      harnessSlug: z
-        .string()
-        .optional()
-        .describe("Keep only presets for this adapter harness (e.g. hermes)."),
-      ...pageParamsShape,
-    },
-    async input => {
-      try {
-        const presets = await listHarnessPresets(input.harnessSlug)
-        const withStatus = await Promise.all(
-          presets.map(async preset => {
-            const profile = await getProfile(preset.profileRef)
-            if (!profile) return { ...preset, profileDisabled: true, profileMissing: true }
-            return { ...preset, profileDisabled: profile.disabled === true }
-          }),
-        )
-        // Pagination LAST — after the harness filter + enrichment. Without
-        // limit/cursor the output is byte-identical to the pre-pagination
-        // handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(withStatus, input, { maxLimit: 200, keyOf: p => p.id })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return text({ presets: withStatus })
-      } catch (err) {
-        return errorText(
-          `harness_preset_list failed: ${err instanceof Error ? err.message : String(err)}`,
-        )
-      }
-    },
-  )
+      "Optionally filter to one harness slug. COMPACT BY DEFAULT: rows are the " +
+      "documented preset shape; `full: true` (or `compact: false`) returns " +
+      "the untrimmed enriched row.",
+    inputSchema: harnessPresetListSchema,
+  })
+
+  // Body: filter + enrichment ONLY. Pagination, compact projection, and
+  // error normalization are the transformers' job (applied below).
+  const harnessPresetListImpl = implementTool(harnessPresetListTool, async ({ input }) => {
+    const presets = await listHarnessPresets(input.harnessSlug)
+    return Promise.all(
+      presets.map(async preset => {
+        const profile = await getProfile(preset.profileRef)
+        if (!profile) return { ...preset, profileDisabled: true, profileMissing: true as const }
+        return { ...preset, profileDisabled: profile.disabled === true }
+      }),
+    )
+  })
+
+  const harnessPresetListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: harnessPresetListTool.id, version: "*" }],
+    implementations: [harnessPresetListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: harnessPresetListTool,
+    candidates: [harnessPresetListDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactHarnessPresetRow,
+        keyOf: p => p.id,
+        maxLimit: 200,
+        itemKey: "presets",
+      }),
+    ],
+  })
 
   // ── harness_preset_create ─────────────────────────────────────
   server.tool(

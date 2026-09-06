@@ -195,3 +195,58 @@ describe("harness_preset_list", () => {
     expect(union).toEqual(ids)
   })
 })
+
+describe("harness_preset_list compact projection (tool-transformer migration)", () => {
+  it("default rows are the pinned allowlist shape; fields filters per item; page-walk unchanged", async () => {
+    const ids = ["hm-c1", "hm-c2"]
+    for (const id of ids) {
+      await addHarnessPreset(
+        {
+          id,
+          harnessSlug: "hermes",
+          name: id,
+          profileRef: "p1",
+          defaultModel: "z-ai/glm-5.2",
+          isDefault: false,
+        },
+        { getProfile: async () => profile({ id: "p1" }) },
+      )
+    }
+    const { client } = await setup({ p1: profile({ id: "p1" }) })
+
+    // Default rows: exactly the documented preset shape (the allowlist
+    // projection pins it — every field is consumed, nothing extra).
+    const out = parseToolJson(await client.callTool({ name: "harness_preset_list", arguments: {} }))
+    expect(Object.keys(out.presets[0]).sort()).toEqual([
+      "defaultModel",
+      "harnessSlug",
+      "id",
+      "isDefault",
+      "name",
+      "profileDisabled",
+      "profileRef",
+    ])
+    expect(out.presets.map((p: { id: string }) => p.id)).toEqual(ids)
+
+    // full:true returns the untrimmed enriched row — same pinned shape here,
+    // because the store row is already the minimal useful shape.
+    const full = parseToolJson(
+      await client.callTool({ name: "harness_preset_list", arguments: { full: true } }),
+    )
+    expect(Object.keys(full.presets[0]).sort()).toEqual(
+      Object.keys(out.presets[0]).sort(),
+    )
+
+    // fields is a per-item allowlist on the paginated envelope branch.
+    const page = parseToolJson(
+      await client.callTool({
+        name: "harness_preset_list",
+        arguments: { limit: 10, fields: ["id", "profileDisabled"] },
+      }),
+    )
+    expect(page.total).toBe(2)
+    for (const row of page.items) {
+      expect(Object.keys(row).sort()).toEqual(["id", "profileDisabled"])
+    }
+  })
+})
