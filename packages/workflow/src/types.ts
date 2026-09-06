@@ -41,6 +41,29 @@ export type Trigger =
     }
 
 /**
+ * One entry of a workflow's `routines[]` (AIP-15 `Routines`) — follows the
+ * `inline | ref | file` pattern. Exactly one of `ref`, `file`, or `inline`.
+ */
+export type RoutineRef =
+  | {
+      /** Ref to a published or local ROUTINE.md (AIP-41). */
+      ref: string
+    }
+  | {
+      /** File path to a ROUTINE.md (AIP-41), relative to this WORKFLOW.md. */
+      file: string
+    }
+  | {
+      /** Equivalent to a one-shot ROUTINE.md (AIP-41) declared inline —
+       *  `schedule` (required), `target` (required, typically
+       *  `{ workflow: { ref: "./" } }`), optional `identity`, `retry`,
+       *  `on_failure`, `history`. */
+      inline: {
+        [k: string]: unknown
+      }
+    }
+
+/**
  * Validates the YAML frontmatter portion of an AIP-15 WORKFLOW.md manifest.
  */
 export interface WorkflowDefinition {
@@ -65,6 +88,12 @@ export interface WorkflowDefinition {
   start?: string
   suspendable?: boolean
   triggers?: Trigger[]
+  /**
+   * AIP-41 ROUTINE.md routines that fire this workflow (AIP-15 `Routines`
+   * section) — the preferred, decoupled form of a `kind: schedule` trigger.
+   * Legacy inline `triggers: [{ kind: schedule }]` remains valid.
+   */
+  routines?: RoutineRef[]
   requires?: {
     network?: string[]
     "fs.read"?: string[]

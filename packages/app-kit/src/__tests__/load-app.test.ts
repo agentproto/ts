@@ -454,3 +454,26 @@ describe("loadAppHandle — category", () => {
     }
   })
 })
+
+describe("loadAppHandle — frontmatter strictness posture (AIP-53)", () => {
+  const solo = () =>
+    defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+
+  it("still loads an APP.md carrying a future/unknown frontmatter key", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-future-key-"))
+    try {
+      await defineApp({ agents: [{ agent: solo(), body: "Solo." }] }).emit(d)
+      const appPath = join(d, ".agentproto", "APP.md")
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(
+        appPath,
+        matter.stringify(parsed.content, { ...parsed.data, futureKey: { tools: ["read"] } }),
+        "utf8",
+      )
+      const loaded = await loadAppHandle(d)
+      expect(loaded.agents.map((e) => e.agent.id)).toEqual(["solo"])
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+})
