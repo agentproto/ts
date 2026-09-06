@@ -11,6 +11,7 @@ import {
   type PtyProcess,
 } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { buildSessionTree } from "../session-tools.js"
 import { sessionTranscriptDir } from "../transcript-writer.js"
 import {
   CONTEXT_CONTINUITY_DEFAULTS,
@@ -1722,6 +1723,86 @@ describe("createSessionsRegistry", () => {
       expect(desc.origin).toBe("cron")
       expect(desc.callerSessionId).toBe("sess_abcd1234")
       expect(reg.get(desc.id)).toMatchObject({ origin: "cron", callerSessionId: "sess_abcd1234" })
+      reg.shutdown()
+    })
+
+    it("stamps parentSessionId and depth onto the descriptor when passed", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "echo",
+        args: ["hi"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "hi\n",
+        stderr: "",
+        parentSessionId: "sess_parent01",
+        depth: 3,
+      })
+      expect(desc.parentSessionId).toBe("sess_parent01")
+      expect(desc.depth).toBe(3)
+      expect(reg.get(desc.id)).toMatchObject({ parentSessionId: "sess_parent01", depth: 3 })
+      reg.shutdown()
+    })
+
+    it("records depth: 0 and no parentSessionId key when neither is passed", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "echo",
+        args: ["hi"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "hi\n",
+        stderr: "",
+      })
+      expect(desc.depth).toBe(0)
+      expect("parentSessionId" in desc).toBe(false)
+      reg.shutdown()
+    })
+
+    it("nests the command session under its parent in buildSessionTree", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const fakeAgent = (): AgentSessionLike => ({
+        sessionId: "acp-session-id",
+        async *send() {
+          yield { kind: "turn-end", reason: "completed" }
+        },
+        async cancel() {},
+        async close() {},
+      })
+      const parent = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: workspace,
+        agentSession: fakeAgent(),
+        adapterSlug: "fake",
+        depth: 2,
+        parentSessionId: "sess_root00",
+      })
+      const cmd = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "echo",
+        args: ["hi"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "hi\n",
+        stderr: "",
+        parentSessionId: parent.id,
+        depth: (parent.depth ?? 0) + 1,
+      })
+      const tree = buildSessionTree(reg.list())
+      // "sess_root00" isn't itself registered, so `parent` is a root here.
+      const roots = tree.filter(n => n.id === parent.id)
+      expect(roots).toHaveLength(1)
+      const parentChildren = roots[0]?.children ?? []
+      expect(parentChildren.map(n => n.id)).toContain(cmd.id)
+      expect(parentChildren.find(n => n.id === cmd.id)?.depth).toBe(3)
       reg.shutdown()
     })
   })
