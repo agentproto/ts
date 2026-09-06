@@ -22,9 +22,21 @@ import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
+import {
+  catchErrors,
+  defineTool,
+  paginated,
+  type McpTextResult,
+  type PageParams,
+  type ToolTransformer,
+} from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
 import { collectSubtree } from "./session-tools.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
+import type { WorkflowRun } from "./workflow-runner.js"
+import type { ActivityRecord } from "./activity-projection.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { TransmitterBindingStore } from "./transmitter-bindings.js"
@@ -49,6 +61,97 @@ import {
   ACTIVITY_STATES,
   type ActivityListFilter,
 } from "./activity-projection.js"
+
+// ── COMPACT projections + legacy-envelope helper (tool-transformer batch) ──
+//
+// The tools below are migrated onto the AIP contract layer (defineTool +
+// implementTool + toMcpTool) with the shared `paginated()` transformer
+// applying the pagination/compact/fields concerns at registration. Each
+// tool gets a REAL compact projection: rows are slim by default, and
+// `full: true` / `compact: false` return the unprojected records exactly
+// as before.
+
+/**
+ * File-local companion to `paginated()`: the stock transformer always wraps
+ * the NON-paginated branch in `{ [itemKey]: rows }`, but this file's legacy
+ * list tools have two other default shapes — a bare top-level array
+ * (`workflow_list`, `policy_list`) and rows wrapped alongside a sibling
+ * `counts` field (`activities_list`). Declared BEFORE `paginated()` in each
+ * tool's transformer list (first declared = outermost), it reshapes ONLY the
+ * non-paginated branch back to the exact legacy envelope; the paginated
+ * `{ items, nextCursor?, total }` envelope branch passes through untouched.
+ */
+function legacyListEnvelope<TItem extends object>(
+  unwrap: (rows: TItem[]) => unknown,
+  indent?: number,
+): ToolTransformer<unknown, unknown, McpTextResult> {
+  return {
+    name: "legacyListEnvelope",
+    wrapHandler: handler => async input => {
+      const params = (input ?? {}) as PageParams
+      const result = (await handler(input)) as McpTextResult
+      if (params.limit !== undefined || params.cursor !== undefined) return result
+      const { items } = JSON.parse(result.content[0]!.text) as { items: TItem[] }
+      return { content: [{ type: "text", text: JSON.stringify(unwrap(items), null, indent) }] }
+    },
+  }
+}
+
+/** COMPACT `permissions_list` row — identity + decision fields only. */
+const compactPermissionItem = (p: Record<string, unknown>) => ({
+  id: p.id,
+  sessionId: p.sessionId,
+  ...(p.adapter !== undefined ? { adapter: p.adapter } : {}),
+  ...(p.sessionLabel !== undefined ? { sessionLabel: p.sessionLabel } : {}),
+  ...(p.sessionTitle !== undefined ? { sessionTitle: p.sessionTitle } : {}),
+  ...(p.toolName !== undefined ? { toolName: p.toolName } : {}),
+  ...(p.rawInput !== undefined ? { rawInput: p.rawInput } : {}),
+  options: p.options,
+  ageMs: p.ageMs,
+})
+
+/** COMPACT `workflow_list` row — the run summary; per-stage detail stays behind `full: true`. */
+const compactWorkflowRun = (r: WorkflowRun) => ({
+  runId: r.runId,
+  workflowId: r.workflowId,
+  status: r.status,
+  startedAt: r.startedAt,
+  ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
+  ...(r.error !== undefined ? { error: r.error } : {}),
+  ...(r.awaitingApproval !== undefined ? { awaitingApproval: r.awaitingApproval } : {}),
+})
+
+/** COMPACT `policy_list` row — the run summary; gate stdout/verdict/commitPlan stay behind `full: true`. */
+const compactPolicyRunState = (p: PolicyRunState) => ({
+  policyId: p.policyId,
+  sessionId: p.sessionId,
+  sessionIds: p.sessionIds,
+  pending: p.pending,
+  status: p.status,
+  retries: p.retries,
+  startedAt: p.startedAt,
+  ...(p.endedAt !== undefined ? { endedAt: p.endedAt } : {}),
+  ...(p.commitSha !== undefined ? { commitSha: p.commitSha } : {}),
+  ...(p.nextPolicyId !== undefined ? { nextPolicyId: p.nextPolicyId } : {}),
+  ...(p.error !== undefined ? { error: p.error } : {}),
+})
+
+/** COMPACT `activities_list` row — the read-model summary; `error` detail stays behind `full: true`. */
+const compactActivityRecord = (a: ActivityRecord) => ({
+  id: a.id,
+  kind: a.kind,
+  ...(a.sessionId !== undefined ? { sessionId: a.sessionId } : {}),
+  ...(a.sessionIds !== undefined ? { sessionIds: a.sessionIds } : {}),
+  sourceRef: a.sourceRef,
+  source: a.source,
+  title: a.title,
+  state: a.state,
+  ...(a.waitingOn !== undefined ? { waitingOn: a.waitingOn } : {}),
+  startedAt: a.startedAt,
+  ...(a.endedAt !== undefined ? { endedAt: a.endedAt } : {}),
+  ...(a.staleSince !== undefined ? { staleSince: a.staleSince } : {}),
+  ...(a.taskId !== undefined ? { taskId: a.taskId } : {}),
+})
 
 /**
  * Zod schema for the `gate` field of `policy_attach`.
@@ -692,41 +795,65 @@ export function registerOrchestrationTools(
     }
   }
 
-  server.tool(
-    "permissions_list",
-    "List permission requests currently HELD across all permission-hold " +
+  const permissionsListSchema = z.object({
+    sessionId: z
+      .string()
+      .optional()
+      .describe("Filter to one session's pending permissions. Omit → all sessions."),
+    ...pageParamsShape,
+  })
+  type PermissionsListInput = z.infer<typeof permissionsListSchema>
+
+  const permissionsListTool = defineTool<PermissionsListInput, Record<string, unknown>[]>({
+    id: "permissions_list",
+    description:
+      "List permission requests currently HELD across all permission-hold " +
       "sessions (spawned with `permissionHold`). Each entry: id, sessionId, " +
       "session adapter/title, the tool being requested, its raw input when " +
       "the driver supplied one (e.g. a Bash tool's command string, " +
       "harness-shaped — don't assume a stable schema), the offered options, " +
       "and age. Resolve one with `permissions_respond`. Optionally filter by " +
-      "`sessionId`. Empty list = nothing is waiting on a decision.",
-    {
-      sessionId: z
-        .string()
-        .optional()
-        .describe("Filter to one session's pending permissions. Omit → all sessions."),
-      ...pageParamsShape,
-    },
-    async input => {
-      const pending = registry
-        .listPendingPermissions(input.sessionId ? { sessionId: input.sessionId } : undefined)
-        .filter(p => isSessionInScope(p.sessionId))
-        .map(enrichPermission)
-      // Pagination LAST — after the scope filter above. Without limit/cursor
-      // the output is byte-identical to the pre-pagination handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(pending, input, {
-          maxLimit: 200,
-          keyOf: p => (typeof p.id === "string" ? p.id : null),
-        })
-        return { content: [{ type: "text", text: toolText(page, input) }] }
-      }
-      return {
-        content: [{ type: "text", text: JSON.stringify({ permissions: pending }) }],
-      }
-    },
+      "`sessionId`. Empty list = nothing is waiting on a decision. COMPACT " +
+      "BY DEFAULT: each entry is a slim projection (id/sessionId/adapter/" +
+      "sessionLabel/sessionTitle/toolName/rawInput/options/ageMs) — the ACP " +
+      "`text` line, `_meta` payload, and `toolCallId` echo are behind " +
+      "`full: true` / `compact: false`.",
+    inputSchema: permissionsListSchema,
+  })
+
+  // Body: scope filter + enrichment ONLY. Pagination + compact projection
+  // are the `paginated()` transformer's job (applied at registration below).
+  const permissionsListImpl = implementTool(permissionsListTool, async ({ input }) =>
+    registry
+      .listPendingPermissions(input.sessionId ? { sessionId: input.sessionId } : undefined)
+      .filter(p => isSessionInScope(p.sessionId))
+      .map(enrichPermission),
   )
+
+  const permissionsListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: permissionsListTool.id, version: "*" }],
+    implementations: [permissionsListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: permissionsListTool,
+    candidates: [permissionsListDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactPermissionItem,
+        keyOf: p => (typeof p.id === "string" ? p.id : null),
+        maxLimit: 200,
+        itemKey: "permissions",
+      }),
+    ],
+  })
 
   server.tool(
     "permissions_respond",
@@ -1056,21 +1183,45 @@ export function registerOrchestrationTools(
       },
     )
 
-    server.tool(
-      "workflow_list",
-      "List all workflow runs (running, done, failed, cancelled).",
-      { ...pageParamsShape },
-      async input => {
-        const runs = workflowRunner.list()
-        // Pagination LAST — without limit/cursor the output is byte-identical
-        // to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(runs, input, { maxLimit: 200, keyOf: r => r.runId })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return { content: [{ type: "text", text: JSON.stringify(runs) }] }
-      },
+    const workflowListSchema = z.object({ ...pageParamsShape })
+    type WorkflowListInput = z.infer<typeof workflowListSchema>
+
+    const workflowListTool = defineTool<WorkflowListInput, WorkflowRun[]>({
+      id: "workflow_list",
+      description:
+        "List all workflow runs (running, done, failed, cancelled). " +
+        "COMPACT BY DEFAULT: each entry is a slim projection (runId/" +
+        "workflowId/status/startedAt/endedAt/error/awaitingApproval) — the " +
+        "full per-stage step detail is behind `full: true` / `compact: false`.",
+      inputSchema: workflowListSchema,
+    })
+
+    const workflowListImpl = implementTool(workflowListTool, async () =>
+      workflowRunner.list(),
     )
+
+    const workflowListDriver = defineDriver({
+      id: "agentproto-runtime-builtin",
+      name: "agentproto runtime builtin",
+      description:
+        "Single-implementation builtin driver for daemon tools migrated " +
+        "onto the AIP contract layer.",
+      kind: "builtin",
+      implements: [{ tool: workflowListTool.id, version: "*" }],
+      implementations: [workflowListImpl],
+    })
+
+    toMcpTool(server, {
+      tool: workflowListTool,
+      candidates: [workflowListDriver],
+      // legacyListEnvelope restores the legacy bare-array default output;
+      // `limit`/`cursor` calls get the standard page envelope.
+      transformers: [
+        catchErrors(),
+        legacyListEnvelope(rows => rows),
+        paginated({ project: compactWorkflowRun, keyOf: r => r.runId, maxLimit: 200 }),
+      ],
+    })
   }
 
   // ── Supervisor tools ─────────────────────────────────────────────────────────
@@ -1423,54 +1574,82 @@ export function registerOrchestrationTools(
     )
     } // end if (supervisor) for policy_ack
 
-    server.tool(
-      "policy_list",
-      "List completion policies (watching, gating, done, blocked, cancelled). " +
+    const policyListSchema = z.object({
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "Only list policies watching this session — matches its single " +
+            "`sessionId` or any member of its fan-in `sessionIds` group. " +
+            "Omit to list everything in scope.",
+        ),
+      ...pageParamsShape,
+    })
+    type PolicyListInput = z.infer<typeof policyListSchema>
+
+    const policyListTool = defineTool<PolicyListInput, PolicyRunState[]>({
+      id: "policy_list",
+      description:
+        "List completion policies (watching, gating, done, blocked, cancelled). " +
         "Pass `sessionId` to answer the reverse question — which policies are " +
-        "attached to this session — instead of scanning the whole list.",
-      {
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            "Only list policies watching this session — matches its single " +
-              "`sessionId` or any member of its fan-in `sessionIds` group. " +
-              "Omit to list everything in scope.",
-          ),
-        ...pageParamsShape,
-      },
-      async input => {
-        if (!supervisor) {
-          return { content: [{ type: "text", text: JSON.stringify({ error: "supervisor not available" }) }] }
+        "attached to this session — instead of scanning the whole list. " +
+        "COMPACT BY DEFAULT: each entry is a slim projection (policyId/" +
+        "sessionId/sessionIds/pending/status/retries/startedAt/endedAt/" +
+        "commitSha/nextPolicyId/error) — gate stdout/stderr, judge verdicts, " +
+        "and the full commitPlan are behind `full: true` / `compact: false`.",
+      inputSchema: policyListSchema,
+    })
+
+    const policyListImpl = implementTool(policyListTool, async ({ input }) => {
+      if (!supervisor) {
+        // With no supervisor wired the tool answers a structured error
+        // instead of a live result (see the registration note above);
+        // `catchErrors()` renders the throw as the canonical error result.
+        throw new Error("supervisor not available")
+      }
+      let policies = supervisor.list()
+      // WP6 scoping: a child orchestrator only sees policies whose watched
+      // sessions are all within its own subtree. An unbound scope (no
+      // ownerSessionId yet) sees nothing — safe default.
+      if (callerScope) {
+        if (!callerScope.ownerSessionId) {
+          policies = []
+        } else {
+          const ownerId = callerScope.ownerSessionId
+          policies = policies.filter(p => isPolicyInSubtree(p, ownerId))
         }
-        let policies = supervisor.list()
-        // WP6 scoping: a child orchestrator only sees policies whose watched
-        // sessions are all within its own subtree. An unbound scope (no
-        // ownerSessionId yet) sees nothing — safe default.
-        if (callerScope) {
-          if (!callerScope.ownerSessionId) {
-            policies = []
-          } else {
-            const ownerId = callerScope.ownerSessionId
-            policies = policies.filter(p => isPolicyInSubtree(p, ownerId))
-          }
-        }
-        // Narrowing only, and applied AFTER the subtree scoping above — the
-        // filter never widens what a scoped caller can see.
-        if (input.sessionId !== undefined) {
-          const wanted = input.sessionId
-          policies = policies.filter(p => policyWatchesSession(p, wanted))
-        }
-        // Pagination LAST — after subtree scoping and the sessionId filter.
-        // Without limit/cursor the output is byte-identical to the
-        // pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(policies, input, { maxLimit: 200, keyOf: p => p.policyId })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return { content: [{ type: "text", text: JSON.stringify(policies) }] }
-      },
-    )
+      }
+      // Narrowing only, and applied AFTER the subtree scoping above — the
+      // filter never widens what a scoped caller can see.
+      if (input.sessionId !== undefined) {
+        const wanted = input.sessionId
+        policies = policies.filter(p => policyWatchesSession(p, wanted))
+      }
+      return policies
+    })
+
+    const policyListDriver = defineDriver({
+      id: "agentproto-runtime-builtin",
+      name: "agentproto runtime builtin",
+      description:
+        "Single-implementation builtin driver for daemon tools migrated " +
+        "onto the AIP contract layer.",
+      kind: "builtin",
+      implements: [{ tool: policyListTool.id, version: "*" }],
+      implementations: [policyListImpl],
+    })
+
+    toMcpTool(server, {
+      tool: policyListTool,
+      candidates: [policyListDriver],
+      // legacyListEnvelope restores the legacy bare-array default output;
+      // `limit`/`cursor` calls get the standard page envelope.
+      transformers: [
+        catchErrors(),
+        legacyListEnvelope(rows => rows),
+        paginated({ project: compactPolicyRunState, keyOf: p => p.policyId, maxLimit: 200 }),
+      ],
+    })
   }
 
   // ── Task ledger tools (task_create / task_list / task_claim / task_update) ─
@@ -1495,71 +1674,88 @@ export function registerOrchestrationTools(
   // shape).
   const { activityProjector } = opts
   if (activityProjector) {
-    server.tool(
-      "activities_list",
-      "List activities — the unified read-model of what is ACTIVE (the daemon " +
+    const activitiesListSchema = z.object({
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "Only activities on this session — matches a record's `sessionId` " +
+            "or any member of its fan-in `sessionIds`. Omit for all sessions.",
+        ),
+      state: z
+        .enum(ACTIVITY_STATES)
+        .optional()
+        .describe("Filter to one state. A terminal state implies `includeTerminal`."),
+      kind: z.enum(ACTIVITY_KINDS).optional().describe("Filter to one activity kind."),
+      source: z
+        .enum(ACTIVITY_SOURCES)
+        .optional()
+        .describe("Filter to one owning subsystem."),
+      includeTerminal: z
+        .boolean()
+        .optional()
+        .describe("Include done/failed/cancelled records. Default false."),
+      ...pageParamsShape,
+    })
+    type ActivitiesListInput = z.infer<typeof activitiesListSchema>
+
+    const activitiesListTool = defineTool<ActivitiesListInput, ActivityRecord[]>({
+      id: "activities_list",
+      description:
+        "List activities — the unified read-model of what is ACTIVE (the daemon " +
         "is consuming compute now) vs PENDING (blocked on an external signal: " +
         "another session's turn, a human ack, a forge, a cap slot) across " +
         "completion policies, session turns, routine/workflow steps, and " +
         "opened PRs. Each pending record carries `waitingOn` naming the " +
         "blocker. Default non-terminal; pass `includeTerminal` (or a terminal " +
         "`state` filter) for done/failed/cancelled records. Subscribe to " +
-        "`activity:changed` via `session_events_poll` for live transitions.",
-      {
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            "Only activities on this session — matches a record's `sessionId` " +
-              "or any member of its fan-in `sessionIds`. Omit for all sessions.",
-          ),
-        state: z
-          .enum(ACTIVITY_STATES)
-          .optional()
-          .describe("Filter to one state. A terminal state implies `includeTerminal`."),
-        kind: z.enum(ACTIVITY_KINDS).optional().describe("Filter to one activity kind."),
-        source: z
-          .enum(ACTIVITY_SOURCES)
-          .optional()
-          .describe("Filter to one owning subsystem."),
-        includeTerminal: z
-          .boolean()
-          .optional()
-          .describe("Include done/failed/cancelled records. Default false."),
-        ...pageParamsShape,
-      },
-      async input => {
-        const filter: ActivityListFilter = {
-          ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
-          ...(input.state !== undefined ? { state: input.state } : {}),
-          ...(input.kind !== undefined ? { kind: input.kind } : {}),
-          ...(input.source !== undefined ? { source: input.source } : {}),
-          ...(input.includeTerminal !== undefined
-            ? { includeTerminal: input.includeTerminal }
-            : {}),
-        }
-        const activities = activityProjector.list(filter)
-        // Pagination LAST — after the projector's filters. Without
-        // limit/cursor the output is byte-identical to the pre-pagination
-        // handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(activities, input, { maxLimit: 200, keyOf: a => a.id })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                { activities, counts: activityCounts(activities) },
-                null,
-                2,
-              ),
-            },
-          ],
-        }
-      },
-    )
+        "`activity:changed` via `session_events_poll` for live transitions. " +
+        "COMPACT BY DEFAULT: each record is a slim projection (id/kind/" +
+        "sessionId/sourceRef/source/title/state/waitingOn/startedAt/endedAt/" +
+        "staleSince/taskId) — the `error` detail is behind `full: true` / " +
+        "`compact: false`.",
+      inputSchema: activitiesListSchema,
+    })
+
+    const activitiesListImpl = implementTool(activitiesListTool, async ({ input }) => {
+      const filter: ActivityListFilter = {
+        ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.source !== undefined ? { source: input.source } : {}),
+        ...(input.includeTerminal !== undefined
+          ? { includeTerminal: input.includeTerminal }
+          : {}),
+      }
+      return activityProjector.list(filter)
+    })
+
+    const activitiesListDriver = defineDriver({
+      id: "agentproto-runtime-builtin",
+      name: "agentproto runtime builtin",
+      description:
+        "Single-implementation builtin driver for daemon tools migrated " +
+        "onto the AIP contract layer.",
+      kind: "builtin",
+      implements: [{ tool: activitiesListTool.id, version: "*" }],
+      implementations: [activitiesListImpl],
+    })
+
+    toMcpTool(server, {
+      tool: activitiesListTool,
+      candidates: [activitiesListDriver],
+      // legacyListEnvelope restores the legacy `{ activities, counts }`
+      // default output (counts computed over the full list); `limit`/`cursor`
+      // calls get the standard page envelope.
+      transformers: [
+        catchErrors(),
+        legacyListEnvelope<ActivityRecord>(
+          rows => ({ activities: rows, counts: activityCounts(rows) }),
+          2,
+        ),
+        paginated({ project: compactActivityRecord, keyOf: a => a.id, maxLimit: 200 }),
+      ],
+    })
   }
 
   // ── session_monitor ──────────────────────────────────────────────
