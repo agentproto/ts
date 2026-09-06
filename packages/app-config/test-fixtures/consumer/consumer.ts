@@ -1,10 +1,10 @@
 /**
  * Consumer contract for @agentproto/app-config: a book-shaped data model with
  * NO `id` on items (order entries `{n, slug, tier}` matched by `n`), compiled
- * against THIS package's own zod copy (see tsconfig paths). If the kit's
- * shipped .d.ts binds a private nested zod instead of the peer, the explicit
- * `AppKit<...>` / `ScopeFn<...>` / `GateRule<...>` annotations below fail with
- * TS2741-style errors (e.g. missing `exactPartial`).
+ * against THIS package's own zod copy (see tsconfig paths). The kit's public
+ * generics are kit-owned structural types (SchemaLike), NOT zod types — so
+ * this compiles even when the consumer's zod minor differs from the kit's
+ * own devDependency (the TS2741 exactPartial regression test).
  */
 import { z } from "zod"
 import {
@@ -13,6 +13,7 @@ import {
   type GateRule,
   type Resolved,
   type ScopeFn,
+  type VerifyFinding,
 } from "@agentproto/app-config"
 
 const CollectionSchema = z.object({
@@ -31,7 +32,10 @@ const BookSchema = z.object({
   lang: z.string().default("en"),
 })
 
-export const kit: AppKit<typeof CollectionSchema, typeof BookSchema> = defineAppConfig({
+export const kit: AppKit<
+  z.output<typeof CollectionSchema>,
+  z.output<typeof BookSchema>
+> = defineAppConfig({
   app: CollectionSchema,
   item: BookSchema,
   itemsKey: "order",
@@ -52,6 +56,12 @@ export const kit: AppKit<typeof CollectionSchema, typeof BookSchema> = defineApp
 /** The kit's resolved type, generically parameterized by the consumer's schemas. */
 export type ResolvedBooks = Resolved<z.output<typeof CollectionSchema>, z.output<typeof BookSchema>>
 
+/** AppKit is parameterized by the OUTPUT types of the consumer's own schemas. */
+export const annotated: AppKit<
+  z.output<typeof CollectionSchema>,
+  z.output<typeof BookSchema>
+> = kit
+
 export const scopes: Record<string, ScopeFn<ResolvedBooks>> = {
   accents: (resolved) =>
     resolved.order.flatMap((id) => {
@@ -67,6 +77,24 @@ export const scopes: Record<string, ScopeFn<ResolvedBooks>> = {
         },
       ]
     }),
+}
+
+/** Async scope receiving the kit's ScopeContext (readArtifact) — v0.3 surface. */
+export const asyncScopes: Record<string, ScopeFn<ResolvedBooks>> = {
+  artifacts: async (resolved, ctx) => {
+    const text = await ctx.readArtifact(`output/${resolved.order[0]}/chapter.md`)
+    const lines = text
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => line.length > 100)
+    const findings: VerifyFinding[] = lines.map(({ n }) => ({
+      scope: "artifacts",
+      level: "warn",
+      message: `line ${n} too long`,
+      attrs: { book: String(resolved.order[0]) },
+    }))
+    return findings
+  },
 }
 
 export const rules: GateRule<ResolvedBooks>[] = [

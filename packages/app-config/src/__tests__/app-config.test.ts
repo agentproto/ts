@@ -12,6 +12,7 @@ import {
   resolveItemFileInfos,
   sha256Hex,
   type GateRule,
+  type VerifyFinding,
 } from "../index.js"
 
 /** Extract `required` from a JSON Schema object without a single `as`. */
@@ -625,6 +626,141 @@ describe("item discovery shapes", () => {
     } finally {
       rmSync(root2, { recursive: true, force: true })
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.3: async scopes with ScopeContext, per-finding gate levels, projected
+// ---------------------------------------------------------------------------
+
+describe("v0.3 scope context (async + readArtifact)", () => {
+  it("an async scope reads artifacts through ctx and reports per-finding levels", async () => {
+    const root2 = mkdtempSync(join(tmpdir(), "app-config-test-"))
+    try {
+      writeApp(root2, {
+        app: "id: doc-app\nitems:\n  - id: guide\n",
+        items: { "guide.yaml": "id: guide\ntitle: The Guide\n" },
+      })
+      mkdirSync(join(root2, "output"), { recursive: true })
+      writeFileSync(join(root2, "output/summary.md"), "ok line\nthis line is far too long for the scope to accept\n")
+      const resolved = kit.load(root2)
+
+      const report = await kit.verify(resolved, {
+        scopes: {
+          lines: async (r, ctx) => {
+            const text = await ctx.readArtifact("output/summary.md")
+            const tooLongLines = text
+              .split("\n")
+              .map((line, i) => ({ line, n: i + 1 }))
+              .filter(({ line }) => line.length > 40)
+            const tooLong: VerifyFinding[] = tooLongLines.map(({ n }) => ({
+              scope: "lines",
+              level: "warn",
+              message: `line ${n}: too long`,
+              item: "guide",
+            }))
+            const findings: VerifyFinding[] = [
+              ...tooLong,
+              { scope: "lines", level: "skipped", message: "word count unavailable" },
+            ]
+            return findings
+          },
+        },
+      })
+
+      expect(report.findings.filter((f) => f.scope === "lines").map((f) => f.level)).toEqual([
+        "warn",
+        "skipped",
+      ])
+      expect(report.summary).toMatchObject({ errors: 0, warnings: 1, skipped: 1 })
+      expect(report.ok).toBe(true)
+
+      // ctx.readArtifact rejects root escapes, same guard as gate rules
+      const escaped = await kit.verify(resolved, {
+        scopes: {
+          escape: async (_r, ctx) => {
+            try {
+              await ctx.readArtifact("../outside.yaml")
+              return [{ scope: "escape", level: "error", message: "should not get here" }]
+            } catch (err) {
+              return [{ scope: "escape", level: "error", message: String(err) }]
+            }
+          },
+        },
+      })
+      expect(escaped.findings[0]?.message).toContain("escapes rootDir")
+    } finally {
+      rmSync(root2, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("v0.3 per-finding gate level", () => {
+  it("a finding's own level overrides the rule's level", async () => {
+    const resolved = kit.load(root)
+    const result = await kit.gates(resolved, [
+      {
+        id: "degrade",
+        level: "error",
+        test: () => [
+          { message: "serious", item: "guide" },
+          { message: "minor", item: "faq", level: "warn" },
+        ],
+      },
+    ])
+    expect(result.findings).toEqual([
+      { rule: "degrade", level: "error", message: "serious", item: "guide" },
+      { rule: "degrade", level: "warn", message: "minor", item: "faq" },
+    ])
+    // ok flips only on the error-level finding
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe("v0.3 projected output", () => {
+  it("exposes the projected object (pre-parse) on ResolvedItem.projected", () => {
+    const resolved = kit.load(root)
+    // kit has no project hook → projected is absent
+    expect(resolved.items.get("guide")?.projected).toBeUndefined()
+
+    const derivedKit = defineAppConfig({
+      app: AppSchema,
+      item: ItemSchema,
+      itemsKey: "items",
+      defaultsKey: "defaults",
+      project: (merged, ctx) => ({
+        ...merged,
+        derivedLang: `${String(merged["lang"])}-${ctx.app.id}`,
+      }),
+    })
+    const r2 = derivedKit.load(root)
+    const guide = r2.items.get("guide")
+    // the item schema does not declare derivedLang → parse strips it from value
+    expect(guide?.value).not.toHaveProperty("derivedLang")
+    // but the projected object keeps it verbatim
+    expect(guide?.projected).toMatchObject({ derivedLang: "en-doc-app" })
+  })
+})
+
+describe("v0.3 non-zod SchemaLike", () => {
+  it("accepts a hand-rolled { parse } and throws a CLEAR kit error from jsonSchemas", async () => {
+    const handKit = defineAppConfig({
+      app: {
+        parse: (value: unknown) => {
+          if (!isPlainObject(value)) throw new Error("app must be an object")
+          const p = pick(value, "id")
+          if (typeof p.value !== "string") throw new Error("app must have a string id")
+          return { ...value, id: p.value }
+        },
+      },
+      item: ItemSchema,
+      itemsKey: "items",
+    })
+    // load works: only parse() is needed
+    const resolved = handKit.load(root)
+    expect(resolved.order).toEqual(["guide", "faq"])
+    // JSON Schema conversion cannot introspect a non-zod schema → clear error
+    expect(() => handKit.jsonSchemas()).toThrow(/not a zod schema/)
   })
 })
 
