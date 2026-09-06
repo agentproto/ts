@@ -593,6 +593,18 @@ export function registerOrchestrationTools(
     return ids.every(id => subtree.has(id))
   }
 
+  /** True when a session is inside the caller's subtree (WP6 scoping). Root/
+   *  operator callers (no scope) see every session. */
+  const isSessionInScope = (sessionId: string): boolean => {
+    if (!callerScope) return true
+    if (!callerScope.ownerSessionId) return false
+    // includeArchived: true — see isPolicyInSubtree's comment above.
+    return collectSubtree(
+      callerScope.ownerSessionId,
+      registry.list({ includeArchived: true }),
+    ).has(sessionId)
+  }
+
   // ── session_events_poll ───────────────────────────────────────────
   server.tool(
     "session_events_poll",
@@ -641,9 +653,19 @@ export function registerOrchestrationTools(
         types: input.types as SessionEventType[] | undefined,
         limit: input.limit,
       })
+      // WP6 scoping: a scoped child orchestrator only sees events for
+      // sessions within its own subtree (mirrors policy_list/policy_attach/
+      // policy_cancel). Events without a sessionId (cron/activity/task
+      // ledger churn) are not session-attributable and pass through.
+      const scoped = callerScope
+        ? events.filter(ev => {
+            const sid = (ev as { sessionId?: string }).sessionId
+            return typeof sid !== "string" || isSessionInScope(sid)
+          })
+        : events
       return {
         content: [
-          { type: "text", text: JSON.stringify({ events, nextCursor }) },
+          { type: "text", text: JSON.stringify({ events: scoped, nextCursor }) },
         ],
       }
     },
@@ -655,18 +677,6 @@ export function registerOrchestrationTools(
   // request is surfaced + parked (see the pending-permissions registry in
   // sessions.ts) rather than auto-answered, so a human/orchestrator can
   // approve/deny it from one place. Mirrors `policy_ack`'s approve/deny shape.
-
-  /** True when a session is inside the caller's subtree (WP6 scoping). Root/
-   *  operator callers (no scope) see every session. */
-  const isSessionInScope = (sessionId: string): boolean => {
-    if (!callerScope) return true
-    if (!callerScope.ownerSessionId) return false
-    // includeArchived: true — see isPolicyInSubtree's comment above.
-    return collectSubtree(
-      callerScope.ownerSessionId,
-      registry.list({ includeArchived: true }),
-    ).has(sessionId)
-  }
 
   const enrichPermission = (
     p: ReturnType<SessionsRegistry["listPendingPermissions"]>[number],
