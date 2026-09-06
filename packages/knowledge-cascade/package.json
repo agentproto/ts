@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/knowledge-cascade",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "@agentproto/knowledge-cascade — a global knowledge pack shadowed by per-scope override/extend/whiteout, over plain file trees. Pure: zero runtime assumptions beyond a `node:fs`-backed FsPort adapter; every host wires its own layers.",
   "keywords": [
     "agentproto",

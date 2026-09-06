@@ -1,5 +1,21 @@
 # @agentproto/cli
 
+## 0.19.0
+
+### Minor Changes
+
+- cfe6b83: Add --sandbox flag to sessions start for spawning inside a sandbox
+
+### Patch Changes
+
+- Updated dependencies [66f73d9]
+  - @agentproto/app-kit@1.1.0
+  - @agentproto/workflow-loader@0.2.1
+  - @agentproto/driver@0.2.2
+  - @agentproto/worktree@0.6.1
+  - @agentproto/sandbox-box@0.2.8
+  - @agentproto/sandbox-e2b@0.4.1
+
 ## 0.18.0
 
 ### Minor Changes

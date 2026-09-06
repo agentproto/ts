@@ -1,5 +1,103 @@
 # @agentproto/runtime
 
+## 3.0.0
+
+### Major Changes
+
+- 4829b7a: Add terminal gate security feature that restricts `terminal_start` command execution through the same allowlist that gates `command_execute`. Introduces three-valued gate mode per workspace ("allowlist"/default, "all", or "off"), resolved from workspace config file or global `AGENTPROTO_TERMINAL_GATE` environment variable. Also exports new symbols: `loadTerminalGateMode`, `TerminalGateMode`, `TERMINAL_GATE_ENV`, and `DEFAULT_TERMINAL_GATE`. The `workspace` parameter is now required on `registerSessionTools` (all call sites updated).
+
+### Minor Changes
+
+- 3baa9b8: Migrate the five `pageParamsShape` tools in `agent-tools.ts` onto the AIP contract layer (`defineTool` + `implementTool` + `toMcpTool`) with the shared `paginated()`/`catchErrors()` transformers (ToolTransformer mission, PR-2 batch): `agent_sessions_list`, `adapter_list`, `catalog_models`, `catalog_provider_models`, `role_list`. All five are now COMPACT BY DEFAULT with a real per-item compact projection; `full: true` (or `compact: false`) returns the old verbose shape. Behavior changes: `adapter_list`'s former `summary: true` projection is the new default (param removed — `full: true` is the opt-out); `catalog_models`' default view is now the flattened per-route rows the paginated branch always used (compact fields only), not the nested vendor/product tree; `catalog_provider_models` drops the redundant `provider` echo (it equals the queried `endpoint`) and its default rows are compact (id/kind/label/route). Errors return the single canonical `{content, isError}` shape via `catchErrors()`.
+- be91d9e: Additive limit/cursor pagination for the app/task/misc list tools: task_list, app_list, app_list_applied, app_data_list, app_external_list, role_list, adapter_list (plus a `full:true` alias for `summary:false`), auth_profile_list, harness_preset_list, browser_adapter_list, list_browsers, llm_endpoint_list_links, tunnel_list, worktree_status, session_queue_list, mcp_imported_list, mcp_discovered_list. Calls without limit/cursor are byte-identical to before.
+- 543c35f: Migrate the app/task/tunnel batch of list tools onto the `ToolTransformer` mechanism (`defineTool` + `implementTool` + `toMcpTool` with `paginated`/`catchErrors`), replacing hand-rolled `pageParamsShape` handlers whose `compact`/`fields` params were silently ignored:
+  - `tunnel_list`, `app_list`, `app_list_applied`, `task_list`, `app_data_list`, `app_external_list` now COMPACT by default via a real per-tool `project()` projection (`full: true` / `compact: false` returns the old verbose records), and `fields` is a per-item allowlist on the paginated branch. `app_data_list`/`app_external_list` entries are already minimal, so their projection is the identity — the win there is `fields` + the contract-layer registration. Error handling on all six is wrapped in `catchErrors()` (unexpected throws become the canonical MCP error result); tool-declared guard/error replies keep their exact legacy shapes.
+  - Legacy default envelopes are preserved byte-for-byte: `tunnel_list` → `{tunnels}`, `task_list` → `{boardId, tasks}`, `app_data_list` → `{appId, dir, entries}`, `app_external_list` → `{appId, root, path, entries}`, `app_list`/`app_list_applied` → bare arrays. Pagination (limit/cursor, cursor semantics, maxLimit 200) is unchanged. Tools whose legacy default body isn't `paginated`'s `{items}` wrapper carry a small local `paginatedLegacyList` companion transformer (per file, alongside the plan-noted copy-pasted `textResult`/`errorResult` helpers); hand-rolled scoping logic elsewhere is untouched.
+
+- de87f67: Compact JSON serialization for MCP tool responses (drop pretty-printing whitespace; payload shape unchanged).
+- 61415c2: Compact-by-default tool output (MCP-pagination PR-10): `session_list` now
+  returns a slim per-item projection by default (id/kind/name/label/status/
+  pty/command/cwd/adapterSlug/model/busy/awaitingInput/blockedOn/
+  lastActivityAt/startedAt/exitCode/depth/parentSessionId) — pass
+  `full: true` or `compact: false` for the complete descriptor.
+  `tool_calls_list` defaults to the result-preview posture (~500-char
+  `result` truncation); `full: true` restores unfiltered records.
+  `terminal_output` caps its read at the last 4096 bytes when `lastBytes`
+  is omitted (explicit `lastBytes`, up to 65536, is unchanged). Additionally,
+  the shared pagination envelope's `fields` param is now honored generically:
+  every `paginate`/`toolText` list tool applies an explicit `fields`
+  allowlist per item when supplied (previously accepted but ignored).
+- eb85117: Migrate the second half of `orchestration-tools.ts`'s `pageParamsShape` list tools onto the `ToolTransformer` mechanism (`inbound_watcher_list`, `inbound_endpoint_list`, `cron_list`, `routine_list`): `defineTool` + `implementTool` + `toMcpTool` with the shared `paginated()` transformer (real per-tool compact projections, `full: true` escape hatch, `fields` allowlist, unchanged `limit`/`cursor` page semantics) and `catchErrors()` error normalization. Note: the non-paginated output of these four tools changes from a bare JSON array to a wrapped object (`watchers`/`endpoints`/`jobs`/`routines`).
+- f500b2d: Migrate the first half of `orchestration-tools.ts`'s `pageParamsShape` list tools onto the `ToolTransformer` mechanism (`defineTool` + `implementTool` + `toMcpTool` + shared `paginated()`): `permissions_list`, `workflow_list`, `policy_list`, and `activities_list` now project COMPACT rows by default (real per-tool compact projections), return the full verbose records behind `full: true` / `compact: false`, honor `fields` on the page envelope, and keep the exact legacy default envelopes (`{permissions}`, bare arrays, `{activities, counts}`) and pagination cursor semantics. The same tools' handlers are wrapped in `catchErrors()` for one canonical error-result shape. Hand-rolled subtree-scoping logic is untouched.
+- f500b2d: Complete ToolTransformer migration of remaining list tools: 25+ tools across agent-tools (agent_sessions_list, adapter_list, catalog_models, catalog_provider_models, role_list), app-tools (tunnel_list, app_list, app_list_applied, task_list, app_data_list, app_external_list), session-tools (terminal_sessions_list, command_list, mcp_discovered_list, mcp_imported_list, mcp_imported_tool_list, session_queue_list, worktree_status), and orchestration tiers (inbound_watcher_list, inbound_endpoint_list, cron_list). All tools now COMPACT BY DEFAULT with real per-item projections; `full: true` / `compact: false` restores verbose records. Pagination, field filtering, and consistent error handling via the shared paginated()/catchErrors() transformers. Legacy envelope shapes preserved for backward compatibility.
+- bf5cef3: Implement AIP-15 rule 7: durable suspend points in workflows. A `kind: "suspend"` step now parks its run as "awaiting-input" with a persisted `awaitingSuspend` record, enabling resumption through external events via `workflow_escalation_resolve`'s suspend form. Runs survive daemon restarts; resumption after restart is explicit and marked failed with a clear reason.
+
+  New event types: `workflow:suspended` and `workflow:suspend-resumed`. New method: `WorkflowRunner.resumeSuspend()`. New optional field: `WorkflowRun.awaitingSuspend`.
+
+- f597d0b: Migrate the remaining `session-tools.ts` list tools onto the `ToolTransformer`
+  mechanism (`paginated()` + `catchErrors()`): `terminal_sessions_list`,
+  `command_list`, `mcp_discovered_list`, `mcp_imported_list`,
+  `mcp_imported_tool_list`, `session_queue_list`, and `worktree_status`.
+
+  Each tool now returns a COMPACT projection by default (identity/routing fields
+  - small scalars); `full: true` / `compact: false` restores the complete
+    per-item record and `fields` allowlists per-item keys. Tool-visible behavior
+    changes:
+  * `mcp_imported_tool_list`: the bespoke `compact`/`schema` params are replaced
+    by the shared `compact`/`full`/`fields` params (`full: true` keeps the
+    upstream `inputSchema`); the `alias` echo is no longer repeated in the
+    response body.
+  * `mcp_imported_list`: the top-level `version` field is no longer echoed in
+    the default (non-paginated) response.
+  * `session_queue_list`: the `sessionId` echo is no longer repeated in the
+    default response; `queuedAt` moves behind `full: true`.
+  * Error results across these tools collapse onto the canonical
+    `{content:[{type:"text"}], isError}` shape (previously a mix of JSON
+    `{error}` bodies and plain text).
+
+  Each tool's `project()` function is required by the `paginated()` transformer,
+  so there is no code path that accepts `compact` without implementing it.
+
+- 7801cfe: `session_tree`: add navigable `nodeId` + `direction` params (`children` / `parent` / `siblings` / `ancestors` / `descendants`) with an optional `depth` level cap, returning a single slice of the session tree instead of the full dump. Omitting both keeps today's full-tree/`byOrigin` behavior unchanged; passing only one of the two is a validation error, and an unknown `nodeId` returns a clear error.
+- e6b77a1: Migrate the remaining misc list tools onto the `ToolTransformer` mechanism (`paginated()` + `catchErrors()` at registration instead of hand-rolled per-handler logic): `auth_profile_list`, `llm_endpoint_list_links`, `harness_preset_list`, `browser_adapter_list`, and `list_browsers`.
+
+  Every migrated tool now has a real compact projection behind the previously dead `compact`/`full`/`fields` params:
+  - `auth_profile_list` — compact rows drop `costBudget` (enforced daemon-side, never read by listing callers); `full: true` restores it.
+  - `llm_endpoint_list_links` — default rows keep the documented picker shape (`{provider, linkedProfile, eligible: [{id, label, method, endpoint}]}`); `full: true` additionally surfaces each eligible profile's remaining non-secret metadata. The legacy top-level `{ links, upstreams }` envelope is preserved (a `withLinksMap` composition transformer derives the map from the rows, which already carry `linkedProfile`).
+  - `harness_preset_list` — rows are pinned to the documented preset shape by an explicit allowlist.
+  - `browser_adapter_list` — compact rows are `{id, name, defaultPort, location?}`; the prose `description` and `install`/`config` manifest arrays move behind `full: true`. Default output changed from a bare array to `{ adapters: [...] }`.
+  - `list_browsers` — compact rows are the browser identity/routing fields of the session descriptor; `full: true` returns the full descriptors. Default output changed from a bare array to `{ browsers: [...] }`.
+
+  Error handling on the migrated tools is normalized by `catchErrors()` (any thrown error becomes the canonical `{content, isError}` text result). Page-walk pagination (`limit`/`cursor` → `{items, nextCursor?, total}`) is unchanged.
+
+### Patch Changes
+
+- 54c7c76: Enable transcript export for command sessions. Command sessions now export as proper assistant tool-call + tool-result messages instead of empty transcripts. Adds kind-less CommandLogEntry detection and rendering logic, title fallback chain (label > command > default), and explicit tool-call-record skipping to prevent double-counting.
+- 2340e23: Fix backward compatibility for legacy persisted supervisor state that predates the fan-in (WP6) feature. Daemon reloads with old policies lacking `sessionIds` and `pending` fields now normalize gracefully instead of crashing. Additionally, per-owner projection errors are now caught and logged, preventing a single malformed owner from taking down the entire Activity read-model.
+- 7bb3079: Record parentSessionId and depth on command sessions so they nest correctly in session_tree alongside PTY and agent sessions.
+- e30094e: Add `registerBuiltinTool` to `@agentproto/mcp-server` and retrofit the daemon's migrated builtin MCP tools (agent/app/task/session/orchestration/browser/llm-endpoint/auth/tunnel lists) onto it, collapsing the repeated defineTool + implementTool + defineDriver + toMcpTool boilerplate. Pure refactor — registered tool ids, schemas, transformers, and behavior are unchanged.
+- cfb9790: `session_events_poll` now applies WP6 subtree scoping: a scoped child orchestrator polling events only sees lifecycle events for sessions within its own subtree (previously it could observe turn-end/awaiting-input/exited/permission events for sessions outside it). Root/operator callers (no scope) see unchanged output.
+- 20ef731: ToolTransformer composition mechanism on the AIP-14 contract layer, proven end-to-end on `session_list`:
+  - `@agentproto/tool`: new `ToolTransformer` type (optional `wrapShape`, required `wrapHandler`) + optional `transformers` field on `ToolDefinition`/`ToolHandle`; concrete `paginated({ project, keyOf?, maxLimit?, itemKey? })` and `catchErrors()` transformers; the shared pagination primitives (`paginate`, `pageParamsShape`, `toolText`, cursors) moved from `@agentproto/runtime`'s `tool-envelope.ts` to `@agentproto/tool` (runtime re-exports them verbatim) so the transformer reuses the exact cursor/limit semantics.
+  - `@agentproto/mcp-server`: `toMcpTool`/`buildMcpTool` apply `tool.transformers` (or a `transformers` option, which overrides) to the shape/handler at registration, composed left-to-right in declared order (first declared = outermost wrapper); transformers may terminate the pipeline with a pre-serialized MCP text result, which passes through verbatim.
+  - `@agentproto/runtime`: `session_list` migrated from raw `server.tool(...)` to `defineTool` + `implementTool` + `toMcpTool` with the `paginated()` transformer (reusing `compactSessionItem` as the required compact projection). Registration-mechanism change only — observable behavior (compact default, `full:true`/`compact:false` escape hatch, `fields` allowlist, pagination envelope, legacy `{sessions:[...]}` wrapper without limit/cursor) is unchanged; the existing PR-2/PR-10 parity tests pass untouched.
+
+- Updated dependencies [66f73d9]
+- Updated dependencies [e30094e]
+- Updated dependencies [20ef731]
+  - @agentproto/app-kit@1.1.0
+  - @agentproto/workflow@0.5.0
+  - @agentproto/mcp-server@0.3.0
+  - @agentproto/tool@0.3.0
+  - @agentproto/apps@0.9.2
+  - @agentproto/workflow-loader@0.2.1
+  - @agentproto/workflow-runtime@0.10.1
+  - @agentproto/driver@0.2.2
+  - @agentproto/workspace-brain@0.4.4
+  - @agentproto/sandbox@0.3.1
+  - @agentproto/eval-reporters@0.2.11
+  - @agentproto/telemetry-langfuse@0.2.9
+
 ## 2.12.0
 
 ### Minor Changes

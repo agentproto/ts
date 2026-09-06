@@ -1,5 +1,13 @@
 # @agentproto/driver-http
 
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [20ef731]
+  - @agentproto/tool@0.3.0
+  - @agentproto/driver@0.2.2
+
 ## 0.1.5
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @agentproto/corpus
 
+## 0.7.2
+
+### Patch Changes
+
+- Updated dependencies [66f73d9]
+  - @agentproto/workflow@0.5.0
+
 ## 0.7.1
 
 ### Patch Changes

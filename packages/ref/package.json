@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/ref",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "AIP-54 REF reference implementation — one package, two schemes. The canonical cross-AIP artifact reference: ArtifactRef ({aip, id, version}) + aip:// URI serialization, resolved through per-family AIP-43 registries joined by RefCatalog. Also ships the superseded AIP-27 world scheme (agentref/v1): a typed, registry-extensible discriminated union with a canonical compact string form (eleven base kinds), pointing at resources in the world — the scheme of the governance engine.",
   "keywords": [
     "agentproto",
