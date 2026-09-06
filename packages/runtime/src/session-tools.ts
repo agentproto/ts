@@ -1090,10 +1090,16 @@ export function registerSessionTools(
       "attribution so the operator can suggest 'I see you have a chrome-devtools " +
       "MCP set up in claude — want me to use it?' instead of asking the user " +
       "to re-configure. Read-only — does not modify any host's config.",
-    {},
-    async () => {
+    { ...pageParamsShape },
+    async input => {
       try {
         const mcps = await discoverMcps()
+        // Pagination LAST — without limit/cursor the output is
+        // byte-identical to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(mcps, input, { maxLimit: 200, keyOf: m => m.id })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return {
           content: [{ type: "text", text: JSON.stringify({ mcps }, null, 2) }],
         }
@@ -1118,10 +1124,16 @@ export function registerSessionTools(
       "imported from claude / cursor / workspace configs into the daemon. " +
       "Use to know which MCPs the operator may freely call vs. ones still " +
       "showing up in `mcp_discovered_list` waiting on the user's blessing.",
-    {},
-    async () => {
+    { ...pageParamsShape },
+    async input => {
       try {
         const config = await loadImportedMcps()
+        // Pagination LAST — pages the imports array. Without limit/cursor
+        // the output is byte-identical to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(config.imports, input, { maxLimit: 200, keyOf: e => e.id })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return {
           content: [
             { type: "text", text: JSON.stringify(config, null, 2) },
@@ -1546,6 +1558,7 @@ export function registerSessionTools(
         .string()
         .min(1)
         .describe("Session id or name — from `session_list`, alive or historical."),
+      ...pageParamsShape,
     },
     async input => {
       const desc = registry.findByIdOrName(input.sessionId)
@@ -1574,6 +1587,12 @@ export function registerSessionTools(
         }
       }
       const queue = registry.listQueuedPrompts(desc.id)
+      // Pagination LAST — after the subtree gate. Without limit/cursor the
+      // output is byte-identical to the pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(queue ?? [], input, { maxLimit: 200, keyOf: q => q.id })
+        return { content: [{ type: "text", text: toolText(page) }] }
+      }
       return {
         content: [{ type: "text", text: JSON.stringify({ sessionId: desc.id, queue }, null, 2) }],
       }
@@ -1782,6 +1801,7 @@ export function registerSessionTools(
           "When true, only return worktrees whose `pr.state` is `open`. " +
             "Default false."
         ),
+      ...pageParamsShape,
     },
     async input => {
       if (!listWorktreeStatuses) {
@@ -1819,6 +1839,12 @@ export function registerSessionTools(
         let worktrees = await listWorktreeStatuses(resolved.repoRoot)
         if (input.openOnly) {
           worktrees = worktrees.filter(w => w.pr?.state === "open")
+        }
+        // Pagination LAST — after the openOnly filter. Without limit/cursor
+        // the output is byte-identical to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(worktrees, input, { maxLimit: 200, keyOf: w => w.path })
+          return { content: [{ type: "text", text: toolText(page) }] }
         }
         return {
           content: [

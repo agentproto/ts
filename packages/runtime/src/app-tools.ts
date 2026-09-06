@@ -40,6 +40,7 @@ import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
 import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
 import { loadAppCatalogFile } from "./app-catalog.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 /** The only agent adapter this WP knows how to run an emitted AGENT.md
  *  under — see `adapters/mastra-agent`'s `agent` option (`--agent <path>`). */
@@ -603,8 +604,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   server.tool(
     "app_list",
     "List installed apps, each with a summary of its app_run history.",
-    {},
-    async () => {
+    { ...pageParamsShape },
+    async input => {
       const runs = appRegistry.listRuns()
       const apps = appRegistry.listApps().map(app => ({
         ...app,
@@ -622,6 +623,12 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             sessions: r.sessions.length,
           })),
       }))
+      // Pagination LAST — after the runs join. Without limit/cursor the
+      // output is byte-identical to the pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(apps, input, { maxLimit: 200, keyOf: a => a.appId })
+        return { content: [{ type: "text", text: toolText(page) }] }
+      }
       return textResult(apps)
     },
   )
@@ -1147,6 +1154,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     "List applied mounts, optionally filtered by scope. Each mount is joined with its installed app summary.",
     {
       scopeId: z.string().optional().describe("Filter by scope. Omit to list all scopes."),
+      ...pageParamsShape,
     },
     async input => {
       const mounts = appRegistry.listApplied(input.scopeId)
@@ -1165,6 +1173,13 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             : {}),
         }
       })
+      // Pagination LAST — after the scope filter + app join. Without
+      // limit/cursor the output is byte-identical to the pre-pagination
+      // handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(result, input, { maxLimit: 200, keyOf: m => `${m.scopeId}/${m.appId}` })
+        return { content: [{ type: "text", text: toolText(page) }] }
+      }
       return textResult(result)
     },
   )

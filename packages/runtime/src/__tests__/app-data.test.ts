@@ -169,6 +169,40 @@ describe("app_data_list", () => {
     )
     expect(r.entries).toEqual([])
   })
+
+  it("page-walk with limit=2 covers exactly the unpaginated entries; default call unchanged (PR-8)", async () => {
+    await mkdir(join(dir, "data"), { recursive: true })
+    for (const name of ["a.json", "b.json", "c.txt"]) {
+      await writeFile(join(dir, "data", name), "{}", "utf8")
+    }
+    const { client } = await setup(dir)
+
+    // Default call unchanged: the { appId, dir, entries } envelope, no page fields.
+    const unpaginated = parseToolJson(
+      await client.callTool({ name: "app_data_list", arguments: { appId: APP_ID, dir: "." } }),
+    )
+    expect(unpaginated.appId).toBe(APP_ID)
+    expect(unpaginated.dir).toBe(".")
+    expect(unpaginated.entries.map((e: any) => e.name)).toEqual(["a.json", "b.json", "c.txt"])
+    expect(unpaginated.items).toBeUndefined()
+    expect(unpaginated.total).toBeUndefined()
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = parseToolJson(
+        await client.callTool({
+          name: "app_data_list",
+          arguments: { appId: APP_ID, dir: ".", limit: 2, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      expect(page.total).toBe(3)
+      union.push(...page.items.map((e: any) => e.name))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(["a.json", "b.json", "c.txt"])
+  })
 })
 
 describe("app_data_* traversal rejection", () => {

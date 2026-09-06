@@ -99,4 +99,33 @@ describe("role_list", () => {
       await h.close()
     }
   })
+
+  it("page-walk with limit=1 covers exactly the unpaginated list; default call unchanged (PR-8)", async () => {
+    const h = await harness()
+    try {
+      // Default call unchanged: the { roles } envelope, no page fields.
+      const unpaginated = parseRoles(await h.client.callTool({ name: "role_list", arguments: {} }))
+      expect(unpaginated.map(r => r.name).sort()).toEqual(["executor", "supervisor"])
+
+      // Page-walk: the union of pages equals the unpaginated list exactly.
+      const union: RoleListRow[] = []
+      let cursor: string | undefined
+      do {
+        const raw = JSON.parse(
+          (
+            (await h.client.callTool({
+              name: "role_list",
+              arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
+            })) as { content: Array<{ text: string }> }
+          ).content[0]!.text,
+        ) as { items: RoleListRow[]; total: number; nextCursor?: string }
+        expect(raw.total).toBe(2)
+        union.push(...raw.items)
+        cursor = raw.nextCursor
+      } while (cursor)
+      expect(union.map(r => r.name).sort()).toEqual(["executor", "supervisor"])
+    } finally {
+      await h.close()
+    }
+  })
 })

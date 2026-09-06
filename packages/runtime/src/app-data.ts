@@ -64,6 +64,7 @@ import {
   readAppStateEvents,
 } from "./app-state.js"
 import type { AppStateEvent } from "./app-state.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 /** Thrown when a relative app path resolves outside the app's own directory. */
 export class AppPathTraversalError extends Error {
@@ -437,6 +438,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
     {
       appId: z.string(),
       dir: z.string().optional().describe("App-relative directory to list. Defaults to `.`."),
+      ...pageParamsShape,
     },
     async input => {
       const installed = appRegistry.getApp(input.appId)
@@ -475,6 +477,12 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
         }
       }
       const entries = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
+      // Pagination LAST — after the merge + sort. Without limit/cursor the
+      // output is byte-identical to the pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(entries, input, { maxLimit: 200, keyOf: e => e.name })
+        return { content: [{ type: "text", text: toolText(page) }] }
+      }
       return textResult({ appId: input.appId, dir: relDir, entries })
     },
   )

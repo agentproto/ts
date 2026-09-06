@@ -24,6 +24,7 @@ import {
   removeLlmEndpointLink,
   setLlmEndpointLink,
 } from "./llm-endpoint-links-store.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 export interface RegisterLlmEndpointToolsOptions {
   registry: LlmEndpointRegistry
@@ -224,9 +225,9 @@ export function registerLlmEndpointTools(
       "for any upstream; oauth-bearer only for anthropic), and it is not " +
       "disabled. Reports the desired (persisted) link — a running proxy may lag " +
       "until restarted (see `llm_endpoint_set_upstream_link`). Never returns a " +
-      "secret: eligible profiles carry only {id, label, method, endpoint}.",
-    {},
-    async () => {
+       "secret: eligible profiles carry only {id, label, method, endpoint}.",
+    { ...pageParamsShape },
+    async input => {
       try {
         const [links, profiles] = await Promise.all([
           listLlmEndpointLinks(),
@@ -242,6 +243,12 @@ export function registerLlmEndpointTools(
             endpoint: p.endpoint,
           })),
         }))
+        // Pagination LAST — pages the per-upstream list. Without limit/
+        // cursor the output is byte-identical to the pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(upstreams, input, { maxLimit: 200, keyOf: u => u.provider })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return text({ links, upstreams })
       } catch (err) {
         return errText("llm_endpoint_list_links", err)

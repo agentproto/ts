@@ -25,6 +25,7 @@ import {
   HarnessPresetValidationError,
   type HarnessPresetValidationDeps,
 } from "./harness-preset-store.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 function text(value: string | object): {
   content: Array<{ type: "text"; text: string }>
@@ -75,10 +76,11 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
         .string()
         .optional()
         .describe("Keep only presets for this adapter harness (e.g. hermes)."),
+      ...pageParamsShape,
     },
-    async ({ harnessSlug }) => {
+    async input => {
       try {
-        const presets = await listHarnessPresets(harnessSlug)
+        const presets = await listHarnessPresets(input.harnessSlug)
         const withStatus = await Promise.all(
           presets.map(async preset => {
             const profile = await getProfile(preset.profileRef)
@@ -86,6 +88,13 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
             return { ...preset, profileDisabled: profile.disabled === true }
           }),
         )
+        // Pagination LAST — after the harness filter + enrichment. Without
+        // limit/cursor the output is byte-identical to the pre-pagination
+        // handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(withStatus, input, { maxLimit: 200, keyOf: p => p.id })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return text({ presets: withStatus })
       } catch (err) {
         return errorText(

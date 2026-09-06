@@ -24,6 +24,7 @@ import { z } from "zod"
 import { gateInputSchema } from "./orchestration-tools.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { withToolSubset } from "./tool-subset.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 import { TASK_STATUSES } from "./task-ledger.js"
 import type {
   TaskCaller,
@@ -175,6 +176,7 @@ export function registerTaskTools(
         .boolean()
         .optional()
         .describe("Include done/failed/cancelled. Default false."),
+      ...pageParamsShape,
     },
     async input => {
       if (!ledger) return notAvailable
@@ -190,6 +192,13 @@ export function registerTaskTools(
         },
         caller,
       )
+      // Pagination LAST — after the ledger's board/status/ACL filters.
+      // Without limit/cursor the output is byte-identical to the
+      // pre-pagination handler.
+      if (input.limit !== undefined || input.cursor !== undefined) {
+        const page = paginate(tasks, input, { maxLimit: 200, keyOf: t => t.taskId })
+        return { content: [{ type: "text", text: toolText(page) }] }
+      }
       return jsonContent({
         boardId: ledger.resolveBoardId(caller, input.boardId),
         tasks,

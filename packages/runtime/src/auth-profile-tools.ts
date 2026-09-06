@@ -43,6 +43,7 @@ import {
   CredentialImportError,
 } from "./credential-discovery.js"
 import { buildCatalogProviderModels } from "./catalog-provider-models.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
 
 /** Wire `@agentproto/auth`'s provisioning helpers to the real keychain +
  *  on-disk profile store. Shared by the MCP tools here and the HTTP routes in
@@ -149,12 +150,20 @@ export function registerAuthProfileTools(server: McpServer): void {
         .string()
         .optional()
         .describe("Keep only profiles for this billing endpoint (e.g. anthropic)."),
+      ...pageParamsShape,
     },
-    async ({ endpoint }) => {
+    async input => {
       try {
-        const profiles = await listAuthProfiles(endpoint)
+        const profiles = await listAuthProfiles(input.endpoint)
         const store = new KeychainStore()
         const enriched = await Promise.all(profiles.map(p => describeProfileKey(p, store)))
+        // Pagination LAST — after the endpoint filter + keychain enrichment.
+        // Without limit/cursor the output is byte-identical to the
+        // pre-pagination handler.
+        if (input.limit !== undefined || input.cursor !== undefined) {
+          const page = paginate(enriched, input, { maxLimit: 200, keyOf: p => p.id })
+          return { content: [{ type: "text", text: toolText(page) }] }
+        }
         return text({ profiles: enriched })
       } catch (err) {
         return errorText(

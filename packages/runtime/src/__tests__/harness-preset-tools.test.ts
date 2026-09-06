@@ -154,4 +154,44 @@ describe("harness_preset_list", () => {
     expect(res.presets).toHaveLength(1)
     expect(res.presets[0]).toMatchObject({ id: "hm-a", profileDisabled: false })
   })
+
+  it("page-walk with limit=2 covers exactly the unpaginated list; default call unchanged (PR-8)", async () => {
+    const ids = ["hm-1", "hm-2", "hm-3"]
+    for (let i = 0; i < ids.length; i++) {
+      await addHarnessPreset(
+        {
+          id: ids[i]!,
+          harnessSlug: i === 2 ? "claude-code" : "hermes",
+          name: `P${i}`,
+          profileRef: "p1",
+          defaultModel: "z-ai/glm-5.2",
+          isDefault: false,
+        },
+        { getProfile: async () => profile({ id: "p1" }) },
+      )
+    }
+    const { client } = await setup({ p1: profile({ id: "p1" }) })
+
+    // Default call unchanged: the { presets } envelope, no page fields.
+    const unpaginated = parseToolJson(await client.callTool({ name: "harness_preset_list", arguments: {} }))
+    expect(unpaginated.presets.map((p: { id: string }) => p.id)).toEqual(ids)
+    expect(unpaginated.items).toBeUndefined()
+    expect(unpaginated.total).toBeUndefined()
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = parseToolJson(
+        await client.callTool({
+          name: "harness_preset_list",
+          arguments: { limit: 2, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      expect(page.total).toBe(3)
+      union.push(...page.items.map((p: { id: string }) => p.id))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(ids)
+  })
 })
