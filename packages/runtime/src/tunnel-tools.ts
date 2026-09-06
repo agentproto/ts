@@ -14,8 +14,10 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { TunnelRegistry } from "./tunnel-registry.js"
-import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
+import type { TunnelDescriptor, TunnelRegistry } from "./tunnel-registry.js"
+import { catchErrors, defineTool, paginated } from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
 
 export interface RegisterTunnelToolsOptions {
   registry: TunnelRegistry
@@ -54,6 +56,18 @@ export function registerTunnelTools(
   opts: RegisterTunnelToolsOptions,
 ): void {
   const { registry } = opts
+
+  const compactTunnelItem = (t: TunnelDescriptor) => ({
+    id: t.id,
+    name: t.name,
+    label: t.label,
+    provider: t.provider,
+    targetPort: t.targetPort,
+    publicUrl: t.publicUrl,
+    status: t.status,
+    hostname: t.hostname,
+    createdAt: t.createdAt,
+  })
 
   // ── tunnel_create ──────────────────────────────────────────────
   server.tool(
@@ -156,38 +170,65 @@ export function registerTunnelTools(
   )
 
   // ── tunnel_list ───────────────────────────────────────────────
-  server.tool(
-    "tunnel_list",
-    "List all tunnels tracked by the daemon — active, stopped, and errored. " +
+  const tunnelListSchema = z.object({
+    onlyActive: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, return only tunnels with status `starting` or `active`. " +
+          "Default false (return all).",
+      ),
+  })
+  type TunnelListInput = z.infer<typeof tunnelListSchema>
+
+  const tunnelListTool = defineTool<TunnelListInput, TunnelDescriptor[]>({
+    id: "tunnel_list",
+    description:
+      "List all tunnels tracked by the daemon — active, stopped, and errored. " +
       "Each entry includes provider, target port, public URL, status, pid, " +
       "and age. Use before `tunnel_create` to avoid spawning duplicates " +
-      "for the same port.",
-    {
-      onlyActive: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true, return only tunnels with status `starting` or `active`. " +
-            "Default false (return all).",
-        ),
-      ...pageParamsShape,
-    },
-    async input => {
-      let tunnels = registry.list()
-      if (input.onlyActive) {
-        tunnels = tunnels.filter(
-          t => t.status === "starting" || t.status === "active",
-        )
-      }
-      // Pagination LAST — after the onlyActive filter. Without limit/cursor
-      // the output is byte-identical to the pre-pagination handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(tunnels, input, { maxLimit: 200, keyOf: t => t.id })
-        return { content: [{ type: "text", text: toolText(page, input) }] }
-      }
-      return text({ tunnels })
-    },
-  )
+      "for the same port. COMPACT BY DEFAULT: each entry is a slim " +
+      "projection (id/name/label/provider/targetPort/publicUrl/status/" +
+      "hostname/createdAt); pass `full: true` (or `compact: false`) for " +
+      "the complete descriptor (pid, stoppedAt, lastError, targetHost, " +
+      "autostart, tunnelId, credentialsFile).",
+    inputSchema: tunnelListSchema,
+  })
+
+  const tunnelListImpl = implementTool(tunnelListTool, async ({ input }) => {
+    let tunnels = registry.list()
+    if (input.onlyActive) {
+      tunnels = tunnels.filter(
+        t => t.status === "starting" || t.status === "active",
+      )
+    }
+    return tunnels
+  })
+
+  const tunnelListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: tunnelListTool.id, version: "*" }],
+    implementations: [tunnelListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: tunnelListTool,
+    candidates: [tunnelListDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactTunnelItem,
+        keyOf: t => t.id,
+        maxLimit: 200,
+        itemKey: "tunnels",
+      }),
+    ],
+  })
 
   // ── tunnel_stop ────────────────────────────────────────────────
   server.tool(
