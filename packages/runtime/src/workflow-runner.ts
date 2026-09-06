@@ -14,7 +14,10 @@
  * (write-tmp + rename atomic swap) on every state mutation, same pattern
  * as routine-runner.ts. On load, any run with status "running" or
  * "awaiting-input" is immediately marked "failed" with reason
- * "interrupted by daemon restart".
+ * "interrupted by daemon restart" — EXCEPT a run parked at a
+ * `kind: "suspend"` step (status "awaiting-input" with a durable
+ * `awaitingSuspend` record), which stays suspended and is re-registered so
+ * a matching `resumeSuspend` still lands (AIP-15 conformance rule 7).
  *
  * Persistence opt-in: disabled by default (persist defaults to false when
  * no persistPath is supplied) so unit tests never touch ~/.agentproto/.
@@ -114,6 +117,15 @@ export interface WorkflowRun {
     prompt: string
     since: string
   }
+  /** Set while the run is parked at a `kind: "suspend"` step (status
+   *  "awaiting-input") — the external event the run awaits. Cleared on
+   *  resume; survives a daemon restart (see loadRuns + the reload
+   *  re-registration), per AIP-15 conformance rule 7. */
+  awaitingSuspend?: {
+    stepId: string
+    on: string[]
+    since: string
+  }
 }
 
 export interface WorkflowRunner {
@@ -160,6 +172,15 @@ export interface WorkflowRunner {
     input: { approvalId?: string; approved: boolean; who: string; note?: string },
   ): { ok: true } | { ok: false; error: "run_not_found" | "not_awaiting_approval" | "approval_id_mismatch"; message: string }
 
+  /** Resolve a parked `kind: "suspend"` step (AIP-15 rule 7). Works both
+   *  for a live run and for a run re-registered after a daemon restart (in
+   *  which case the recorded decision lands but the run's execution cannot
+   *  resume). `stepId`, when given, must match the parked step. */
+  resumeSuspend(
+    runId: string,
+    input: { stepId?: string; payload?: unknown },
+  ): { ok: true } | { ok: false; error: "run_not_found" | "not_awaiting_suspend" | "step_id_mismatch"; message: string }
+
   cancel(runId: string): void
 }
 
@@ -187,6 +208,13 @@ interface RunState {
    * to the run's `awaitingApproval` record across a daemon restart.
    */
   pendingApproval?: { approvalId: string; resolve: (decision: ApprovalDecision) => void }
+  /**
+   * Set while a `kind: "suspend"` step is parked (run.status ===
+   * "awaiting-input"), waiting for an external event through
+   * `WorkflowRunner.resumeSuspend()`. Survives a daemon restart via the
+   * run's durable `awaitingSuspend` record.
+   */
+  pendingSuspend?: { stepId: string; resolve: (payload: unknown) => void }
 }
 
 // ── Translation: WorkflowStage[] → RuntimeWorkflow ──────────────────
@@ -333,7 +361,13 @@ function loadRuns(persistPath: string): Map<string, RunState> {
   for (const item of parsed) {
     if (!item || typeof item !== "object" || typeof (item as WorkflowRun).runId !== "string") continue
     const run = item as WorkflowRun
-    if (run.status === "running" || run.status === "awaiting-input") {
+    // AIP-15 conformance rule 7: a run parked at a `kind: "suspend"` step
+    // carries a durable `awaitingSuspend` record — keep it suspended so a
+    // matching resume can still land (the pending entry is re-registered
+    // below). Any other in-flight run (running / awaiting-input without a
+    // suspend record) is dead with the old process.
+    const parkedAtSuspend = run.status === "awaiting-input" && run.awaitingSuspend !== undefined
+    if (!parkedAtSuspend && (run.status === "running" || run.status === "awaiting-input")) {
       run.status = "failed"
       run.error = "interrupted by daemon restart"
       run.endedAt = run.endedAt ?? new Date().toISOString()
@@ -683,6 +717,56 @@ async function executeRunWorkflow(
           signal.addEventListener("abort", onAbort, { once: true })
           state.pendingApproval = { approvalId, resolve: finish }
         }),
+
+      // AIP-15 rule 7 — durable suspend points: a `kind: "suspend"` step
+      // parks the run as "awaiting-input" with a durable `awaitingSuspend`
+      // record (persisted like `awaitingApproval`), instead of throwing
+      // `WorkflowSuspendedError` and failing the run. An external event
+      // resumes through `resumeSuspend` (workflow_escalation_resolve's
+      // suspend form); after a daemon restart the run stays suspended and
+      // the pending entry is re-registered below.
+      resume: (req) =>
+        new Promise<unknown>((resolve) => {
+          const since = new Date().toISOString()
+          state.run.status = "awaiting-input"
+          state.run.awaitingSuspend = {
+            stepId: req.stepId,
+            on: [...req.on],
+            since,
+          }
+          persist?.()
+          sessionEvents.emit({
+            type: "workflow:suspended",
+            runId: state.run.runId,
+            stepId: req.stepId,
+            on: [...req.on],
+            ts: since,
+          })
+
+          const onAbort = (): void => {
+            finish(undefined)
+          }
+          const finish = (payload: unknown): void => {
+            signal.removeEventListener("abort", onAbort)
+            state.pendingSuspend = undefined
+            if (state.run.awaitingSuspend?.stepId === req.stepId) {
+              state.run.awaitingSuspend = undefined
+            }
+            if (state.run.status === "awaiting-input") state.run.status = "running"
+            persist?.()
+            const ts = new Date().toISOString()
+            sessionEvents.emit({
+              type: "workflow:suspend-resumed",
+              runId: state.run.runId,
+              stepId: req.stepId,
+              ts,
+            })
+            resolve(payload)
+          }
+          signal.addEventListener("abort", onAbort, { once: true })
+          state.pendingSuspend = { stepId: req.stepId, resolve: finish }
+        }),
+
       onGateReport: (ev: GateReportEvent) => {
         sessionEvents.emit({
           type: "workflow:gate-report",
@@ -954,6 +1038,41 @@ export function createWorkflowRunner(opts: {
   }
   reRegisterReloadedApprovals()
 
+  // ── Reload re-registration (AIP-15 rule 7, suspend points) ───────────
+  //
+  // A run parked at a `kind: "suspend"` step survives the restart with its
+  // durable `awaitingSuspend` record intact (loadRuns keeps it suspended).
+  // The live resume hook died with the old process, so re-register the
+  // pending entry here: a matching resume still resolves (event emitted
+  // exactly once), but the run's execution can't resume and it is marked
+  // failed with a clear reason — never a silent loss, never a pre-restart
+  // failure.
+  const reRegisterReloadedSuspends = (): void => {
+    for (const state of runs.values()) {
+      const run = state.run
+      const as = run.awaitingSuspend
+      if (run.status !== "awaiting-input" || !as) continue
+      const resolveAfterRestart = (_payload: unknown): void => {
+        if (state.pendingSuspend?.stepId !== as.stepId) return
+        state.pendingSuspend = undefined
+        run.awaitingSuspend = undefined
+        run.status = "failed"
+        run.error =
+          "suspend resolved after daemon restart — the run's execution could not resume"
+        run.endedAt = run.endedAt ?? new Date().toISOString()
+        persist()
+        sessionEvents.emit({
+          type: "workflow:suspend-resumed",
+          runId: run.runId,
+          stepId: as.stepId,
+          ts: new Date().toISOString(),
+        })
+      }
+      state.pendingSuspend = { stepId: as.stepId, resolve: resolveAfterRestart }
+    }
+  }
+  reRegisterReloadedSuspends()
+
   // ── Public interface ───────────────────────────────────────────────
 
   return {
@@ -1144,6 +1263,37 @@ export function createWorkflowRunner(opts: {
         who: input.who,
         ...(input.note !== undefined ? { note: input.note } : {}),
       })
+      return { ok: true }
+    },
+
+    // Resolve a parked `kind: "suspend"` step (AIP-15 rule 7). Works both
+    // for a live run (the resume hook's resolver) and for a run
+    // re-registered after a daemon restart.
+    resumeSuspend: (runId, input) => {
+      const state = runs.get(runId)
+      if (!state) {
+        return {
+          ok: false,
+          error: "run_not_found",
+          message: `no workflow run "${runId}"`,
+        }
+      }
+      const ps = state.pendingSuspend
+      if (!ps) {
+        return {
+          ok: false,
+          error: "not_awaiting_suspend",
+          message: `run "${runId}" is not awaiting a suspend event (status: ${state.run.status})`,
+        }
+      }
+      if (input.stepId !== undefined && input.stepId !== ps.stepId) {
+        return {
+          ok: false,
+          error: "step_id_mismatch",
+          message: `run "${runId}" is suspended at step "${ps.stepId}", not "${input.stepId}"`,
+        }
+      }
+      ps.resolve(input.payload)
       return { ok: true }
     },
 
