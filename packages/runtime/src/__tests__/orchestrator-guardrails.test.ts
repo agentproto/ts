@@ -601,35 +601,19 @@ class FakeProxy extends McpProxyRegistry {
   }
 }
 
-describe("PR-6 — mcp_imported_tool_list compact/schema/limit/cursor", () => {
+describe("PR-6 → transformer migration — mcp_imported_tool_list compact/full/limit/cursor", () => {
   async function proxyHarness(): Promise<ProxyHarness> {
     const h = await harness({ mcpProxy: new FakeProxy(PROXY_TOOLS) })
     return { ...h, proxyTools: PROXY_TOOLS }
   }
 
-  it("default (no params) returns the full pre-PR-6 shape, byte-identical", async () => {
+  it("default (no params) returns the COMPACT projection — name+description per tool, no alias echo", async () => {
     const h = await proxyHarness()
     try {
-      const result = await h.client.callTool({
-        name: "mcp_imported_tool_list",
-        arguments: { alias: "chrome-devtools" },
-      })
-      const text = (result as { content: Array<{ text: string }> }).content[0]!.text
-      expect(text).toBe(
-        JSON.stringify({ alias: "chrome-devtools", tools: PROXY_TOOLS }),
-      )
-    } finally {
-      await h.close()
-    }
-  })
-
-  it("compact:true returns only name+description per tool", async () => {
-    const h = await proxyHarness()
-    try {
-      const body = payload<{ alias: string; tools: Array<{ name: string; description?: string }> }>(
+      const body = payload<{ tools: Array<Record<string, unknown>> }>(
         await h.client.callTool({
           name: "mcp_imported_tool_list",
-          arguments: { alias: "chrome-devtools", compact: true },
+          arguments: { alias: "chrome-devtools" },
         }),
       )
       expect(body.tools).toHaveLength(PROXY_TOOLS.length)
@@ -640,20 +624,22 @@ describe("PR-6 — mcp_imported_tool_list compact/schema/limit/cursor", () => {
         name: "navigate_page",
         description: "Navigate to a URL.",
       })
+      expect(JSON.stringify(body)).not.toContain("inputSchema")
+      expect(JSON.stringify(body)).not.toContain("x-client-resolve")
     } finally {
       await h.close()
     }
   })
 
-  it("compact:true + schema:true keeps the upstream inputSchema alongside the compact projection", async () => {
+  it("full:true restores the complete upstream descriptor (inputSchema, _meta) per tool", async () => {
     const h = await proxyHarness()
     try {
       const body = payload<{
-        tools: Array<{ name: string; inputSchema?: unknown; description?: string }>
+        tools: Array<{ name: string; inputSchema?: unknown; _meta?: unknown }>
       }>(
         await h.client.callTool({
           name: "mcp_imported_tool_list",
-          arguments: { alias: "chrome-devtools", compact: true, schema: true },
+          arguments: { alias: "chrome-devtools", full: true },
         }),
       )
       const click = body.tools.find(t => t.name === "click")
@@ -661,8 +647,7 @@ describe("PR-6 — mcp_imported_tool_list compact/schema/limit/cursor", () => {
       expect(click!.inputSchema).toEqual(
         { type: "object", properties: { uid: { type: "string" } } },
       )
-      // _meta stays dropped in the compact projection
-      expect(JSON.stringify(click)).not.toContain("x-client-resolve")
+      expect(JSON.stringify(click)).toContain("x-client-resolve")
     } finally {
       await h.close()
     }
@@ -683,7 +668,6 @@ describe("PR-6 — mcp_imported_tool_list compact/schema/limit/cursor", () => {
       let total: number | undefined
       do {
         const page = payload<{
-          alias: string
           items: Array<{ name: string }>
           nextCursor?: string
           total?: number
@@ -697,7 +681,6 @@ describe("PR-6 — mcp_imported_tool_list compact/schema/limit/cursor", () => {
             },
           }),
         )
-        expect(page.alias).toBe("chrome-devtools")
         expect(page.total).toBe(PROXY_TOOLS.length)
         total = page.total
         union.push(...page.items.map(t => t.name))
