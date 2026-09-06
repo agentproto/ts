@@ -393,6 +393,58 @@ describe("agentproto sessions start — --access-profile / --worktree flags", ()
     expect(body.worktree).toBeUndefined()
   })
 
+  it("sends body.sandbox as a bare string for a provider slug", async () => {
+    const code = await runSessions(["start", "claude-code", "--sandbox", "e2b"])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.sandbox).toBe("e2b")
+  })
+
+  it("sends body.sandbox as a parsed object for inline JSON", async () => {
+    const code = await runSessions([
+      "start",
+      "claude-code",
+      "--sandbox",
+      '{"provider":"e2b","reuse":"sbx_123"}',
+    ])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.sandbox).toEqual({ provider: "e2b", reuse: "sbx_123" })
+  })
+
+  it("reads --sandbox @<file> and parses its JSON contents", async () => {
+    readFileMock.mockResolvedValue(JSON.stringify({ provider: "box" }))
+    const code = await runSessions([
+      "start",
+      "claude-code",
+      "--sandbox",
+      "@/tmp/sandbox-spec.json",
+    ])
+    expect(code).toBe(0)
+    expect(readFileMock).toHaveBeenCalledWith("/tmp/sandbox-spec.json", "utf8")
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.sandbox).toEqual({ provider: "box" })
+  })
+
+  it("rejects invalid --sandbox JSON before any network call", async () => {
+    const code = await runSessions(["start", "claude-code", "--sandbox", "{not json"])
+    expect(code).toBe(2)
+    expect(httpPostJson).not.toHaveBeenCalled()
+    expect(stderrChunks.join("")).toContain("invalid --sandbox JSON")
+  })
+
+  it("omits body.sandbox when --sandbox is not passed", async () => {
+    await runSessions(["start", "claude-code"])
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.sandbox).toBeUndefined()
+  })
+
+  it("USAGE documents --sandbox", async () => {
+    const code = await runSessions(["--help"])
+    expect(code).toBe(0)
+    expect(stdoutChunks.join("")).toContain("--sandbox")
+  })
+
   it("combo: --orchestrator --access-profile wires both on the body (WP-R5 repro)", async () => {
     const code = await runSessions([
       "start",
