@@ -357,11 +357,18 @@ export function createActivityProjector(opts: {
   sweepTimer?.unref()
 
   const list = (filter: ActivityListFilter = {}): ActivityRecord[] => {
-    const all = [
-      ...projectOwner("session"),
-      ...projectOwner("supervisor"),
-      ...projectOwner("workflow"),
-    ]
+    // Best-effort per owner, mirroring the bus handler: one malformed owner
+    // (e.g. a persisted slice the mapper can't digest) is warned about and
+    // SKIPPED — it must never throw out of `list()` and take the whole
+    // read-model down with it.
+    const all: ActivityRecord[] = []
+    for (const owner of ["session", "supervisor", "workflow"] as const) {
+      try {
+        all.push(...projectOwner(owner))
+      } catch (err) {
+        console.warn(`[activities] owner "${owner}" projection failed; skipping its records`, err)
+      }
+    }
     return filterActivities(all, filter)
   }
 

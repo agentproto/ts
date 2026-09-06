@@ -6,7 +6,7 @@
  * observable immediately after `bus.emit(...)`.
  */
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   createSessionEventBus,
   type ActivityChangedEvent,
@@ -217,6 +217,44 @@ describe("createActivityProjector", () => {
     // the bus callback.
     expect(() => bus.emit(turnEnd("sess_a"))).not.toThrow()
     expect(seen.map(ev => ev.activity.id)).toEqual(["turn:sess_a:1"])
+  })
+
+  it("list() still returns the other owners' records when one owner's list() throws", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const { state, projector } = harness({
+        sessions: [agentSession({ busy: true })],
+        policies: [policy({ status: "gating" })],
+      })
+      // Only the supervisor owner is poisoned — the raw fan-out throws for it.
+      state.policies = [
+        policy({ status: "gating" }),
+        // A legacy row absent both fan-in fields would no longer throw, so
+        // poison the owner itself instead: one malformed owner must not take
+        // the whole read-model down.
+      ]
+      const poisoned = createActivityProjector({
+        registry: { list: () => state.sessions },
+        sessionEvents: createSessionEventBus(),
+        supervisor: {
+          list: () => {
+            throw new Error("supervisor exploded")
+          },
+        },
+      })
+      expect(poisoned.list().map(r => r.id)).toEqual(["turn:sess_a:1"])
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("supervisor")
+      poisoned.dispose()
+      // And the healthy projector is unaffected.
+      expect(projector.list({ includeTerminal: true }).map(r => r.id).sort()).toEqual([
+        "gate:plc_1",
+        "policy:plc_1",
+        "turn:sess_a:1",
+      ])
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it("drops a vanished owner row from the diff cache without announcing", () => {
