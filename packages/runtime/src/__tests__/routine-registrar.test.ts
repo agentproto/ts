@@ -496,8 +496,8 @@ describe("routine_trigger MCP tool", () => {
       const listResult = await client.callTool({ name: "routine_list", arguments: {} })
       const listContent = (listResult as { content?: Array<{ type: string; text?: string }> }).content
       const listText = listContent?.find(c => c.type === "text")?.text
-      const routines = JSON.parse(listText!)
-      expect(routines.map((r: { id: string }) => r.id)).toEqual(["mcp-demo"])
+      const routines = JSON.parse(listText!) as { routines: Array<{ id: string }> }
+      expect(routines.routines.map(r => r.id)).toEqual(["mcp-demo"])
     } finally {
       rmSync(workspace, { recursive: true })
     }
@@ -686,13 +686,14 @@ describe("orchestration list pagination — minimal page-walks (PR-7)", () => {
       const client = await listClient({ routineRegistrar: registrar })
 
       const unpaginatedText = contentText(await client.callTool({ name: "routine_list", arguments: {} }))
-      const unpaginated: Array<Record<string, string>> = JSON.parse(unpaginatedText)
-      expect(unpaginated).toHaveLength(3)
-      expect(unpaginatedText.trim().startsWith("[")).toBe(true)
+      // Migrated onto the paginated() transformer: the non-paginated branch
+      // is now the compact `{ routines: [...] }` wrapper, not a bare array.
+      const unpaginated: { routines: Array<Record<string, string>> } = JSON.parse(unpaginatedText)
+      expect(unpaginated.routines).toHaveLength(3)
 
       const { union, total } = await walk(client, "routine_list")
       expect(total).toBe(3)
-      expect(union.map(r => r.id)).toEqual(unpaginated.map(r => r.id))
+      expect(union.map(r => r.id)).toEqual(unpaginated.routines.map(r => r.id))
       await client.close()
     } finally {
       rmSync(workspace, { recursive: true })
@@ -707,14 +708,14 @@ describe("orchestration list pagination — minimal page-walks (PR-7)", () => {
     }
     const client = await listClient({ cronScheduler })
 
-    const unpaginated: Array<Record<string, string>> = JSON.parse(
+    const unpaginated: { jobs: Array<Record<string, string>> } = JSON.parse(
       contentText(await client.callTool({ name: "cron_list", arguments: {} })),
     )
-    expect(unpaginated).toHaveLength(3)
+    expect(unpaginated.jobs).toHaveLength(3)
 
     const { union, total } = await walk(client, "cron_list")
     expect(total).toBe(3)
-    expect(union.map(j => j.id)).toEqual(unpaginated.map(j => j.id))
+    expect(union.map(j => j.id)).toEqual(unpaginated.jobs.map(j => j.id))
     await client.close()
   })
 
@@ -754,14 +755,14 @@ describe("orchestration list pagination — minimal page-walks (PR-7)", () => {
     }
     const client = await listClient({ endpointStore })
 
-    const unpaginated: Array<Record<string, string>> = JSON.parse(
+    const unpaginated: { endpoints: Array<Record<string, string>> } = JSON.parse(
       contentText(await client.callTool({ name: "inbound_endpoint_list", arguments: {} })),
     )
-    expect(unpaginated).toHaveLength(3)
+    expect(unpaginated.endpoints).toHaveLength(3)
 
     const { union, total } = await walk(client, "inbound_endpoint_list")
     expect(total).toBe(3)
-    expect(union.map(e => e.slug)).toEqual(unpaginated.map(e => e.slug))
+    expect(union.map(e => e.slug)).toEqual(unpaginated.endpoints.map(e => e.slug))
     await client.close()
   })
 
@@ -785,14 +786,14 @@ describe("orchestration list pagination — minimal page-walks (PR-7)", () => {
     }
     const client = await listClient({ inboundWatcher })
 
-    const unpaginated: Array<Record<string, string>> = JSON.parse(
+    const unpaginated: { watchers: Array<Record<string, string>> } = JSON.parse(
       contentText(await client.callTool({ name: "inbound_watcher_list", arguments: {} })),
     )
-    expect(unpaginated).toHaveLength(3)
+    expect(unpaginated.watchers).toHaveLength(3)
 
     const { union, total } = await walk(client, "inbound_watcher_list")
     expect(total).toBe(3)
-    expect(union.map(w => w.watcherId)).toEqual(unpaginated.map(w => w.watcherId))
+    expect(union.map(w => w.watcherId)).toEqual(unpaginated.watchers.map(w => w.watcherId))
     await client.close()
   })
 })

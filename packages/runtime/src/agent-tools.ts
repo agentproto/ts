@@ -21,8 +21,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { AcpMcpServer } from "@agentproto/acp"
-import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
-import type { SessionsRegistry } from "./sessions.js"
+import { catchErrors, defineTool, pageParamsShape, paginated } from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
+import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import {
   exportAgentSession,
   type ExportAgentSessionInput,
@@ -34,6 +36,7 @@ import type {
   AgentAdapterInstaller,
   CatalogModelsLister,
   AdapterCapabilitiesLister,
+  AdapterListEntry,
 } from "./http-server.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -46,6 +49,8 @@ import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import { buildCatalogProviderModels } from "./catalog-provider-models.js"
+import type { CatalogProviderModel } from "./catalog-provider-models.js"
+import type { CatalogRoute } from "./catalog-models.js"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
@@ -1616,144 +1621,190 @@ export function registerAgentTools(
   )
 
   // ── agent_sessions_list ───────────────────────────────────────
-  server.tool(
-    "agent_sessions_list",
-    "List agent-CLI sessions tracked by the daemon. Equivalent to `session_list({kind: 'agent-cli'})`. " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer — the same
+  // pattern as session_list (#1201). COMPACT BY DEFAULT: each row is a
+  // slim projection mirroring session_list's compact view; `full: true`
+  // (or `compact: false`) returns the complete, unprojected descriptor.
+  const compactAgentSessionItem = (s: SessionDescriptor) => ({
+    id: s.id,
+    kind: s.kind,
+    name: s.name,
+    label: s.label,
+    status: s.status,
+    pty: s.pty,
+    command: s.command,
+    cwd: s.cwd,
+    adapterSlug: s.adapterSlug,
+    model: s.model,
+    busy: s.busy,
+    awaitingInput: s.awaitingInput,
+    blockedOn: s.blockedOn,
+    lastActivityAt: s.lastActivityAt,
+    startedAt: s.startedAt,
+    exitCode: s.exitCode,
+    depth: s.depth,
+    parentSessionId: s.parentSessionId,
+    usageSource: s.usageSource,
+    costUsd: s.costUsd,
+    tokensIn: s.tokensIn,
+    tokensOut: s.tokensOut,
+    contextSize: s.contextSize,
+    contextUsed: s.contextUsed,
+  })
+  const agentSessionsListSchema = z.object({
+    kind: z
+      .enum(["terminal", "agent-cli", "command", "all"])
+      .optional()
+      .describe(
+        "Optional override of the default `agent-cli` filter. `all` returns every kind."
+      ),
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe("When true, only running/starting sessions. Default false."),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status (overrides onlyAlive)."),
+    ...pageParamsShape,
+  })
+  type AgentSessionsListInput = z.infer<typeof agentSessionsListSchema>
+
+  const agentSessionsListTool = defineTool<AgentSessionsListInput, SessionDescriptor[]>({
+    id: "agent_sessions_list",
+    description:
+      "List agent-CLI sessions tracked by the daemon. Equivalent to `session_list({kind: 'agent-cli'})`. " +
       "Each entry includes `kind`, `status`, age, etc. Use this when you only want " +
-      "the agent-CLI subset.",
-    {
-      kind: z
-        .enum(["terminal", "agent-cli", "command", "all"])
-        .optional()
-        .describe(
-          "Optional override of the default `agent-cli` filter. `all` returns every kind."
-        ),
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("When true, only running/starting sessions. Default false."),
-      status: z
-        .enum(["starting", "running", "exited", "killed", "error"])
-        .optional()
-        .describe("Filter by exact status (overrides onlyAlive)."),
-      ...pageParamsShape,
-    },
-    async input => {
-      // Full list (includeArchived) for subtree correctness — see
-      // session_list's docblock; archived rows are hidden below,
-      // unconditionally (this tool has no includeArchived opt-in).
-      let rows = registry.list({ includeArchived: true })
-      if (callerScope) {
-        const subtree = collectSubtree(callerScope.ownerSessionId, rows)
-        rows = rows.filter(s => subtree.has(s.id))
-      }
-      rows = rows.filter(s => !s.archived)
-      const kind = input.kind ?? "agent-cli"
-      if (kind !== "all") {
-        rows = rows.filter(s => s.kind === kind)
-      }
-      if (input.status) {
-        rows = rows.filter(s => s.status === input.status)
-      } else if (input.onlyAlive) {
-        rows = rows.filter(
-          s => s.status === "running" || s.status === "starting",
-        )
-      }
-      // Pagination last — after subtree scoping and the archived/kind/
-      // status filters. Without limit/cursor the output is byte-identical
-      // to the pre-pagination handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
-        return {
-          content: [{ type: "text", text: toolText(page, input) }],
-        }
-      }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }) },
-        ],
-      }
-    },
-  )
+      "the agent-CLI subset. COMPACT BY DEFAULT: each entry is a slim projection " +
+      "(id/kind/name/label/status/command/cwd/model/busy/awaitingInput/blockedOn/" +
+      "lastActivityAt/startedAt/exitCode/depth/parentSessionId); pass `full: true` " +
+      "(or `compact: false`) for the complete, unprojected per-session record.",
+    inputSchema: agentSessionsListSchema,
+  })
+
+  // Body: filters ONLY. Pagination + compact projection are the
+  // `paginated()` transformer's job (applied at registration below).
+  const agentSessionsListImpl = implementTool(agentSessionsListTool, async ({ input }) => {
+    // Full list (includeArchived) for subtree correctness — see
+    // session_list's docblock; archived rows are hidden below,
+    // unconditionally (this tool has no includeArchived opt-in).
+    let rows = registry.list({ includeArchived: true })
+    if (callerScope) {
+      const subtree = collectSubtree(callerScope.ownerSessionId, rows)
+      rows = rows.filter(s => subtree.has(s.id))
+    }
+    rows = rows.filter(s => !s.archived)
+    const kind = input.kind ?? "agent-cli"
+    if (kind !== "all") {
+      rows = rows.filter(s => s.kind === kind)
+    }
+    if (input.status) {
+      rows = rows.filter(s => s.status === input.status)
+    } else if (input.onlyAlive) {
+      rows = rows.filter(
+        s => s.status === "running" || s.status === "starting",
+      )
+    }
+    return rows
+  })
+
+  // Single-implementation adapter: daemon tools have exactly one fixed
+  // body, so wrap it as a trivial one-candidate builtin driver to satisfy
+  // runTool's AIP-30 multi-driver resolution (see session_list).
+  const agentSessionsListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: agentSessionsListTool.id, version: "*" }],
+    implementations: [agentSessionsListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: agentSessionsListTool,
+    candidates: [agentSessionsListDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactAgentSessionItem,
+        keyOf: s => s.id,
+        maxLimit: 200,
+        itemKey: "sessions",
+      }),
+    ],
+  })
 
   // ── adapter_list ──────────────────────────────────────────────
-  server.tool(
-    "adapter_list",
-    "Enumerate every agent CLI adapter installed on the host (claude-code, " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer. COMPACT BY
+  // DEFAULT: the former `summary: true` projection (slug/name/version/
+  // protocol/models — all a UI picker needs) is now the default view;
+  // the full manifest echo (commands/modes/model details — can run to
+  // hundreds of KB) is the `full: true` / `compact: false` opt-out.
+  const compactAdapterItem = (a: AdapterListEntry) => ({
+    slug: a.slug,
+    name: a.name,
+    version: a.version,
+    protocol: a.protocol,
+    models: a.models ?? [],
+  })
+  const adapterListSchema = z.object({
+    ...pageParamsShape,
+  })
+  type AdapterListInput = z.infer<typeof adapterListSchema>
+
+  const adapterListTool = defineTool<AdapterListInput, AdapterListEntry[]>({
+    id: "adapter_list",
+    description:
+      "Enumerate every agent CLI adapter installed on the host (claude-code, " +
       "hermes, aider, …). Returns slug + display name + version + protocol so " +
       "callers can let users pick from the installed set instead of guessing. " +
       "Use before `agent_start` when the model doesn't already know " +
-      "what's available. Pass `summary: true` for a lightweight projection " +
-      "(`slug`, `name`, `version`, `protocol`, `models`) — the full payload " +
-      "carries every adapter's commands/modes/model details and can run to " +
-      "hundreds of KB, far heavier than a UI picker needs. `full: true` is an " +
-      "alias for `summary: false`.",
-    {
-      summary: z
-        .boolean()
-        .optional()
-        .describe(
-          "Return only { slug, name, version, protocol, models } per adapter " +
-            "instead of the full manifest projection. Default false.",
-        ),
-      ...pageParamsShape,
-    },
-    async input => {
-      if (!listAgentAdapters) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "adapter_list is not enabled — the daemon was started without " +
-                "an adapter lister. Wire `@agentproto/cli`'s " +
-                "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-            },
-          ],
-          isError: true,
-        }
-      }
-      try {
-        const adapters = await listAgentAdapters()
-        // `full:true` aliases `summary:false` — the explicit opt-out from the
-        // summary projection. Default (neither flag) is unchanged: full.
-        const wantSummary = input.full === true ? false : (input.summary ?? false)
-        const projected = wantSummary
-          ? adapters.map(a => ({
-              slug: a.slug,
-              name: a.name,
-              version: a.version,
-              protocol: a.protocol,
-              models: a.models ?? [],
-            }))
-          : adapters
-        // Pagination LAST — after the summary projection. Without limit/
-        // cursor the output is byte-identical to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          // Both projection arms share `slug` — page over that structural
-          // shape so either arm paginates identically.
-          const page = paginate<{ slug: string }>(projected, input, {
-            maxLimit: 200,
-            keyOf: a => a.slug,
-          })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return {
-          content: [{ type: "text", text: JSON.stringify({ adapters: projected }) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `adapter_list failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
+      "what's available. COMPACT BY DEFAULT: each entry carries only `slug`, " +
+      "`name`, `version`, `protocol`, `models` — pass `full: true` (or " +
+      "`compact: false`) for the full manifest projection (commands/modes/" +
+      "model details, hundreds of KB).",
+    inputSchema: adapterListSchema,
+  })
+
+  const adapterListImpl = implementTool(adapterListTool, async () => {
+    if (!listAgentAdapters) {
+      throw new Error(
+        "adapter_list is not enabled — the daemon was started without " +
+          "an adapter lister. Wire `@agentproto/cli`'s " +
+          "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+      )
     }
-  )
+    return listAgentAdapters()
+  })
+
+  const adapterListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: adapterListTool.id, version: "*" }],
+    implementations: [adapterListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: adapterListTool,
+    candidates: [adapterListDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactAdapterItem,
+        keyOf: a => a.slug,
+        maxLimit: 200,
+        itemKey: "adapters",
+      }),
+    ],
+  })
 
   // ── harness_capabilities ────────────────────────────────────────
   server.tool(
@@ -1862,176 +1913,241 @@ export function registerAgentTools(
   )
 
   // ── catalog_models ────────────────────────────────────────────
-  server.tool(
-    "catalog_models",
-    "Read-only vendor/product/route catalog (SPEC §5) — every model this " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer. Rows are the
+  // per-route FLATTENING the paginated branch always used (vendor +
+  // product carried on each, every CatalogRoute field intact), COMPACT
+  // BY DEFAULT: routing fields + small booleans only. `full: true` (or
+  // `compact: false`) returns the complete per-route record (baseUrl/
+  // pricing/contextWindow/maxOutput/eligibleProfiles/adapterModes/
+  // adapters).
+  const compactCatalogRouteItem = (
+    e: { vendor: string; product: string } & CatalogRoute,
+  ) => ({
+    vendor: e.vendor,
+    product: e.product,
+    route: e.route,
+    ref: e.ref,
+    runnable: e.runnable,
+    curated: e.curated,
+    multiModel: e.multiModel,
+  })
+  const catalogModelsSchema = z.object({
+    adapter: z.string().optional().describe("Keep only routes reachable via this adapter slug."),
+    vendor: z.string().optional().describe("Keep only this vendor's entry."),
+    route: z.string().optional().describe("Keep only routes with this route id."),
+    runnableOnly: mcpBool.optional().describe("Drop every route with runnable:false."),
+    ...pageParamsShape,
+  })
+  type CatalogModelsInput = z.infer<typeof catalogModelsSchema>
+
+  const catalogModelsTool = defineTool<CatalogModelsInput, Array<{ vendor: string; product: string } & CatalogRoute>>({
+    id: "catalog_models",
+    description:
+      "Read-only vendor/product/route catalog (SPEC §5) — every model this " +
       "host can reach, widened beyond any one adapter's model list via " +
       "OpenRouter/Requesty/HuggingFace routing, with a profile-aware " +
       "`runnable` flag per route. Use before `agent_start` to see what's " +
-      "actually spawnable given the auth profiles configured on this host.",
-    {
-      adapter: z.string().optional().describe("Keep only routes reachable via this adapter slug."),
-      vendor: z.string().optional().describe("Keep only this vendor's entry."),
-      route: z.string().optional().describe("Keep only routes with this route id."),
-      runnableOnly: mcpBool.optional().describe("Drop every route with runnable:false."),
-      limit: pageParamsShape.limit,
-      cursor: pageParamsShape.cursor,
-    },
-    async ({ adapter, vendor, route, runnableOnly, limit, cursor }) => {
-      if (!listCatalogModels) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "catalog_models is not enabled — the daemon was started without " +
-                "a catalog lister. Wire `buildCatalogModels` via " +
-                "`createGateway({ listCatalogModels })`.",
-            },
-          ],
-          isError: true,
-        }
-      }
-      try {
-        const catalog = await listCatalogModels({
-          ...(adapter ? { adapter } : {}),
-          ...(vendor ? { vendor } : {}),
-          ...(route ? { route } : {}),
-          ...(runnableOnly ? { runnableOnly: true } : {}),
-        })
-        // Additive pagination (PR-3): when limit/cursor is supplied the
-        // nested vendor/product tree is flattened to per-route entries
-        // (vendor + product carried on each, every CatalogRoute field
-        // intact) and paged over the FILTERED array — the cursor's decoded
-        // `i` is the offset (no stable keyset in the catalog). Without
-        // either param the output stays byte-identical to the
-        // pre-pagination handler.
-        if (limit !== undefined || cursor !== undefined) {
-          const flat = catalog.vendors.flatMap(v =>
-            v.products.flatMap(p =>
-              p.routes.map(r => ({ vendor: v.vendor, product: p.product, ...r })),
-            ),
-          )
-          const page = paginate(flat, { limit, cursor }, { maxLimit: 200 })
-          return {
-            content: [{ type: "text", text: toolText(page) }],
-          }
-        }
-        return {
-          content: [{ type: "text", text: JSON.stringify(catalog) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `catalog_models failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
+      "actually spawnable given the auth profiles configured on this host. " +
+      "Returns one FLATTENED row per route (vendor/product carried on each), " +
+      "COMPACT BY DEFAULT: vendor/product/route/ref/runnable/curated/" +
+      "multiModel only — pass `full: true` (or `compact: false`) for the " +
+      "complete per-route record (pricing, contextWindow, maxOutput, " +
+      "eligibleProfiles, adapterModes, adapters, baseUrl).",
+    inputSchema: catalogModelsSchema,
+  })
+
+  const catalogModelsImpl = implementTool(catalogModelsTool, async ({ input }) => {
+    if (!listCatalogModels) {
+      throw new Error(
+        "catalog_models is not enabled — the daemon was started without " +
+          "a catalog lister. Wire `buildCatalogModels` via " +
+          "`createGateway({ listCatalogModels })`.",
+      )
     }
-  )
+    const catalog = await listCatalogModels({
+      ...(input.adapter ? { adapter: input.adapter } : {}),
+      ...(input.vendor ? { vendor: input.vendor } : {}),
+      ...(input.route ? { route: input.route } : {}),
+      ...(input.runnableOnly ? { runnableOnly: true } : {}),
+    })
+    // Flatten the nested vendor/product tree to per-route entries — the
+    // cursor's decoded `i` is the offset over this filtered array (no
+    // stable keyset in the catalog; same semantics as PR-3).
+    return catalog.vendors.flatMap(v =>
+      v.products.flatMap(p =>
+        p.routes.map(r => ({ vendor: v.vendor, product: p.product, ...r })),
+      ),
+    )
+  })
+
+  const catalogModelsDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: catalogModelsTool.id, version: "*" }],
+    implementations: [catalogModelsImpl],
+  })
+
+  toMcpTool(server, {
+    tool: catalogModelsTool,
+    candidates: [catalogModelsDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactCatalogRouteItem,
+        maxLimit: 200,
+        itemKey: "routes",
+      }),
+    ],
+  })
 
   // ── catalog_provider_models ───────────────────────────────────
-  server.tool(
-    "catalog_provider_models",
-    "Read-only EXHAUSTIVE model list for ONE provider (AIP-45 launch-menu " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer. COMPACT BY
+  // DEFAULT: id/kind/label/route per row (all a picker renders);
+  // pricing/addedAt stay behind `full: true`.
+  const compactProviderModelItem = (m: CatalogProviderModel) => ({
+    id: m.id,
+    kind: m.kind,
+    label: m.label,
+    route: m.route,
+  })
+  const catalogProviderModelsSchema = z.object({
+    endpoint: z
+      .string()
+      .optional()
+      .describe("Provider / billing endpoint to enumerate (anthropic, openai, openrouter, replicate, …)."),
+    route: z
+      .string()
+      .optional()
+      .describe("Synonym for endpoint (takes precedence when both are given)."),
+    ...pageParamsShape,
+  })
+  type CatalogProviderModelsInput = z.infer<typeof catalogProviderModelsSchema>
+
+  const catalogProviderModelsTool = defineTool<CatalogProviderModelsInput, CatalogProviderModel[]>({
+    id: "catalog_provider_models",
+    description:
+      "Read-only EXHAUSTIVE model list for ONE provider (AIP-45 launch-menu " +
       '"+" picker) — every model `endpoint`/`route` can serve, straight from ' +
       "the static catalog. Deliberately separate from `catalog_models`: that " +
       "tool is the lean spawn catalog (curated pairs widened through routers, " +
       "profile-aware `runnable`); THIS is the full provider surface the picker " +
       "browses before any adapter/profile is chosen, so it takes no host " +
-      "state. An unknown/empty provider returns `models: []`, never an error. " +
-      "Large providers (openrouter is thousands) come back whole — paginate " +
-      "client-side. Additively: pass `limit`/`cursor` to page the models " +
-      "array instead (shared `{ items, nextCursor?, total }` envelope).",
-    {
-      endpoint: z
-        .string()
-        .optional()
-        .describe("Provider / billing endpoint to enumerate (anthropic, openai, openrouter, replicate, …)."),
-      route: z
-        .string()
-        .optional()
-        .describe("Synonym for endpoint (takes precedence when both are given)."),
-      limit: pageParamsShape.limit,
-      cursor: pageParamsShape.cursor,
-    },
-    async ({ endpoint, route, limit, cursor }) => {
-      // Never throws: an unknown provider is a valid empty answer, and the
-      // catch is defence-in-depth so a malformed overlay can't 500 the picker.
-      try {
-        const result = buildCatalogProviderModels({
-          ...(endpoint ? { endpoint } : {}),
-          ...(route ? { route } : {}),
-        })
-        // Additive pagination (PR-3): same convention as `catalog_models` —
-        // the cursor's decoded `i` is the offset over the models array.
-        // Without limit/cursor the output is byte-identical to before.
-        if (limit !== undefined || cursor !== undefined) {
-          const page = paginate(result.models, { limit, cursor }, { maxLimit: 200 })
-          return {
-            content: [{ type: "text", text: toolText(page) }],
-          }
-        }
-        return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-        }
-      } catch {
-        const provider = (route ?? endpoint ?? "").trim()
-        return {
-          content: [
-            { type: "text", text: JSON.stringify({ provider, models: [] }) },
-          ],
-        }
-      }
-    },
-  )
+      "state. An unknown/empty provider returns an empty list, never an error. " +
+      "Large providers (openrouter is thousands) — paginate with `limit`/" +
+      "`cursor`. COMPACT BY DEFAULT: id/kind/label/route per row; `full: true` " +
+      "(or `compact: false`) adds pricing/addedAt.",
+    inputSchema: catalogProviderModelsSchema,
+  })
+
+  const catalogProviderModelsImpl = implementTool(catalogProviderModelsTool, async ({ input }) => {
+    // Never throws: an unknown provider is a valid empty answer
+    // (buildCatalogProviderModels guarantees `{ models: [] }`); any
+    // residual throw is defence-in-depth handled by `catchErrors()`.
+    const result = buildCatalogProviderModels({
+      ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+      ...(input.route ? { route: input.route } : {}),
+    })
+    return result.models
+  })
+
+  const catalogProviderModelsDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: catalogProviderModelsTool.id, version: "*" }],
+    implementations: [catalogProviderModelsImpl],
+  })
+
+  toMcpTool(server, {
+    tool: catalogProviderModelsTool,
+    candidates: [catalogProviderModelsDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactProviderModelItem,
+        keyOf: m => m.id,
+        maxLimit: 200,
+        itemKey: "models",
+      }),
+    ],
+  })
 
   // ── role_list ─────────────────────────────────────────────────
-  server.tool(
-    "role_list",
-    "Enumerate every spawn-time role known to the daemon — the two " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer. The handler
+  // already projects each role to the compact row this tool exists to
+  // surface (name/level/delegation/spawnable — spawnable is the point
+  // of the tool), so the compact projection is that row verbatim and
+  // `full: true` is a no-op.
+  interface RoleListRow {
+    name: string
+    level: number
+    delegation: string
+    spawnable: string[]
+  }
+  const compactRoleItem = (r: RoleListRow): RoleListRow => r
+  const roleListSchema = z.object({
+    ...pageParamsShape,
+  })
+  type RoleListInput = z.infer<typeof roleListSchema>
+
+  const roleListTool = defineTool<RoleListInput, RoleListRow[]>({
+    id: "role_list",
+    description:
+      "Enumerate every spawn-time role known to the daemon — the two " +
       "built-ins (executor, supervisor) plus any custom role installed as " +
       "a role pack. Read-only: pure visibility into the same registry " +
       "`agent_start`'s `role` field and privilege-lattice spawn gate use — " +
       "this tool never itself grants or denies a spawn. Use before " +
       "`agent_start` with `orchestrator` to discover which roles this " +
-      "session may in turn spawn.",
-    { ...pageParamsShape },
-    async input => {
-      try {
-        const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
-        const roles = listRoles(registry).map(role => ({
-          name: role.name,
-          level: role.level,
-          delegation: role.toolPolicy.delegation,
-          spawnable: spawnableRolesFor(role, registry).map(child => child.name),
-        }))
-        // Pagination LAST — without limit/cursor the output is
-        // byte-identical to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(roles, input, { maxLimit: 200, keyOf: r => r.name })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return {
-          content: [{ type: "text", text: JSON.stringify({ roles }) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `role_list failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+      "session may in turn spawn. Each row is already the compact view " +
+      "(name/level/delegation/spawnable).",
+    inputSchema: roleListSchema,
+  })
+
+  const roleListImpl = implementTool(roleListTool, async () => {
+    const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
+    return listRoles(registry).map<RoleListRow>(role => ({
+      name: role.name,
+      level: role.level,
+      delegation: role.toolPolicy.delegation,
+      spawnable: spawnableRolesFor(role, registry).map(child => child.name),
+    }))
+  })
+
+  const roleListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: roleListTool.id, version: "*" }],
+    implementations: [roleListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: roleListTool,
+    candidates: [roleListDriver],
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactRoleItem,
+        keyOf: r => r.name,
+        maxLimit: 200,
+        itemKey: "roles",
+      }),
+    ],
+  })
 }
 
 export interface ExportSessionOps {

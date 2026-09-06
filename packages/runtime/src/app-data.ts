@@ -52,7 +52,7 @@
 
 import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path"
-import { z } from "zod"
+import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
 import {
@@ -64,7 +64,46 @@ import {
   readAppStateEvents,
 } from "./app-state.js"
 import type { AppStateEvent } from "./app-state.js"
-import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
+import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
+import { catchErrors, defineTool, type ToolTransformer } from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
+
+type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
+
+/**
+ * Local companion to the shared `paginated()` transformer for tools whose
+ * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
+ * wrapper — here `{appId, dir, entries}`. Same cursor/limit/compact/fields
+ * pipeline via the shared primitives, but the default branch emits
+ * `defaultBody(projectedRows)`, and any non-array handler output (this
+ * file's `errorResult(...)` replies) passes through untouched.
+ */
+function paginatedLegacyList<TItem extends object>(opts: {
+  project: (item: TItem) => object
+  keyOf: (item: TItem) => string | number | null
+  defaultBody: (rows: object[], input: unknown) => unknown
+}): ToolTransformer<unknown, unknown, McpTextResult> {
+  return {
+    name: "paginatedLegacyList",
+    wrapShape: (shape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
+    wrapHandler: inner => async input => {
+      const params = (input ?? {}) as PageParams
+      const out = (await inner(input)) as unknown
+      if (!Array.isArray(out)) return out as McpTextResult
+      const items = out as readonly TItem[]
+      const full = params.full === true
+      const compact = full ? false : params.compact !== false
+      if (params.limit !== undefined || params.cursor !== undefined) {
+        const page = paginate(items, params, { maxLimit: 200, keyOf: opts.keyOf })
+        const rows = compact ? page.items.map(opts.project) : page.items
+        return { content: [{ type: "text", text: toolText({ ...page, items: [...rows] }, params) }] }
+      }
+      const rows = compact ? items.map(opts.project) : [...items]
+      return { content: [{ type: "text", text: JSON.stringify(opts.defaultBody(rows as object[], input)) }] }
+    },
+  }
+}
 
 /** Thrown when a relative app path resolves outside the app's own directory. */
 export class AppPathTraversalError extends Error {
@@ -426,66 +465,92 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
     },
   )
 
-  server.tool(
-    "app_data_list",
-    "List entries (name + type + size) under an app-relative directory " +
+  const appDataListSchema = z.object({
+    appId: z.string(),
+    dir: z.string().optional().describe("App-relative directory to list. Defaults to `.`."),
+  })
+  type AppDataListInput = z.infer<typeof appDataListSchema>
+
+  type AppDataListEntry = { name: string; type: "file" | "directory"; size: number }
+
+  const appDataListTool = defineTool<AppDataListInput, AppDataListEntry[] | McpTextResult>({
+    id: "app_data_list",
+    description:
+      "List entries (name + type + size) under an app-relative directory " +
       "(default `.`, the app's data dir). A missing directory returns empty " +
       "entries, not an error. When the same directory also exists under the " +
       "app's source dir (a pre-dataDir install) both views are merged, data " +
       "dir entries winning on name clashes; `.` lists the data dir only " +
       "(or the source dir while no data dir exists yet). Path traversal " +
       "outside either root is rejected.",
-    {
-      appId: z.string(),
-      dir: z.string().optional().describe("App-relative directory to list. Defaults to `.`."),
-      ...pageParamsShape,
-    },
-    async input => {
-      const installed = appRegistry.getApp(input.appId)
-      if (!installed) return errorResult(`app_data_list: no installed app "${input.appId}".`)
-      const relDir = input.dir ?? "."
-      const dirs: string[] = []
+    inputSchema: appDataListSchema,
+  })
+
+  const appDataListImpl = implementTool(appDataListTool, async ({ input }) => {
+    const installed = appRegistry.getApp(input.appId)
+    if (!installed) return errorResult(`app_data_list: no installed app "${input.appId}".`)
+    const relDir = input.dir ?? "."
+    const dirs: string[] = []
+    try {
+      const roots = await resolveAppDataRoots(installed)
+      const located = await locateAppDataPath(roots, relDir)
+      const isRoot = located.target === roots.dataRoot || located.target === roots.legacyRoot
+      dirs.push(located.target)
+      if (!isRoot && located.sibling !== undefined) dirs.push(located.sibling)
+    } catch (err) {
+      return errorResult(`app_data_list: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    const seen = new Map<string, { name: string; type: "file" | "directory"; size: number }>()
+    for (const target of dirs) {
+      let dirents: { name: string; isDirectory(): boolean }[]
       try {
-        const roots = await resolveAppDataRoots(installed)
-        const located = await locateAppDataPath(roots, relDir)
-        const isRoot = located.target === roots.dataRoot || located.target === roots.legacyRoot
-        dirs.push(located.target)
-        if (!isRoot && located.sibling !== undefined) dirs.push(located.sibling)
-      } catch (err) {
-        return errorResult(`app_data_list: ${err instanceof Error ? err.message : String(err)}`)
+        dirents = await readdir(target, { withFileTypes: true })
+      } catch {
+        continue
       }
-      const seen = new Map<string, { name: string; type: "file" | "directory"; size: number }>()
-      for (const target of dirs) {
-        let dirents: { name: string; isDirectory(): boolean }[]
-        try {
-          dirents = await readdir(target, { withFileTypes: true })
-        } catch {
-          continue
-        }
-        for (const d of dirents) {
-          if (seen.has(d.name)) continue
-          const isDirectory = d.isDirectory()
-          let size = 0
-          if (!isDirectory) {
-            try {
-              size = (await stat(join(target, d.name))).size
-            } catch {
-              size = 0
-            }
+      for (const d of dirents) {
+        if (seen.has(d.name)) continue
+        const isDirectory = d.isDirectory()
+        let size = 0
+        if (!isDirectory) {
+          try {
+            size = (await stat(join(target, d.name))).size
+          } catch {
+            size = 0
           }
-          seen.set(d.name, { name: d.name, type: isDirectory ? "directory" : "file", size })
         }
+        seen.set(d.name, { name: d.name, type: isDirectory ? "directory" : "file", size })
       }
-      const entries = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
-      // Pagination LAST — after the merge + sort. Without limit/cursor the
-      // output is byte-identical to the pre-pagination handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(entries, input, { maxLimit: 200, keyOf: e => e.name })
-        return { content: [{ type: "text", text: toolText(page, input) }] }
-      }
-      return textResult({ appId: input.appId, dir: relDir, entries })
-    },
-  )
+    }
+    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
+  })
+
+  const appDataListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: appDataListTool.id, version: "*" }],
+    implementations: [appDataListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: appDataListTool,
+    candidates: [appDataListDriver],
+    transformers: [
+      catchErrors(),
+      paginatedLegacyList({
+        project: (entry: AppDataListEntry) => entry,
+        keyOf: e => e.name,
+        defaultBody: (rows, listInput) => {
+          const args = (listInput ?? {}) as { appId?: string; dir?: string }
+          return { appId: args.appId, dir: args.dir ?? ".", entries: rows }
+        },
+      }),
+    ],
+  })
 
   server.tool(
     "app_data_migrate",

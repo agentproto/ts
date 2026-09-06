@@ -107,14 +107,24 @@ describe("mcp_imported_list pagination (PR-8)", () => {
     })
     const { client, close } = await connect(server => registerSessionTools(server, { registry: createSessionsRegistry({ persist: false }), workspace: process.cwd() }))
 
-    // Default call unchanged: the persisted { version, imports } config, no page fields.
+    // Default call: the { imports } envelope with COMPACT per-item
+    // projections (id/alias/addedAt + snapshot identity trio), no page
+    // fields. The snapshot body (command/args/env) stays behind `full`.
     const unpaginated = parse(await client.callTool({ name: "mcp_imported_list", arguments: {} }))
-    expect(unpaginated.version).toBe(1)
     expect(unpaginated.imports.map((e: { id: string }) => e.id)).toEqual([
       "claude-code:global:chrome-devtools",
       "cursor:global:github",
       "goose:global:fetch",
     ])
+    expect(unpaginated.imports[0]).toEqual({
+      id: "claude-code:global:chrome-devtools",
+      alias: "chrome",
+      addedAt: "2026-07-22T10:00:00.000Z",
+      source: "claude-code",
+      name: "chrome-devtools",
+      type: "stdio",
+    })
+    expect(JSON.stringify(unpaginated)).not.toContain("snapshot")
     expect(unpaginated.items).toBeUndefined()
     expect(unpaginated.total).toBeUndefined()
 
@@ -164,10 +174,14 @@ describe("session_queue_list pagination (PR-8)", () => {
 
     const { client, close } = await connect(server => registerSessionTools(server, { registry, workspace: process.cwd() }))
 
-    // Default call unchanged: the { sessionId, queue } envelope, no page fields.
+    // Default call: the { queue } envelope with COMPACT per-item
+    // projections (id/origin/preview/position; queuedAt behind `full`),
+    // no page fields, no sessionId echo.
     const unpaginated = parse(await client.callTool({ name: "session_queue_list", arguments: { sessionId: desc.id } }))
-    expect(unpaginated.sessionId).toBe(desc.id)
     expect(unpaginated.queue.map((q: { preview: string }) => q.preview)).toEqual(["s1", "s2", "s3"])
+    expect(unpaginated.queue[0]).toMatchObject({ position: 0, origin: "user" })
+    expect(JSON.stringify(unpaginated)).not.toContain("queuedAt")
+    expect(JSON.stringify(unpaginated)).not.toContain(`"sessionId"`)
     expect(unpaginated.items).toBeUndefined()
     expect(unpaginated.total).toBeUndefined()
 

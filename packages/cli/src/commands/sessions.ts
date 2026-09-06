@@ -90,6 +90,7 @@ Usage:
                                       [--mcp-servers-json <json|@file>]
                                       [--access-profile <ref>]
                                       [--worktree | --no-worktree]
+                                      [--sandbox <provider-or-json>]
                                       [--hold-permissions] [--no-color]
   agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
                                             [--workspace <slug>] [--name <slug>]
@@ -197,6 +198,13 @@ sessions start flags:
   --effort <level>              reasoning effort ('low'|'medium'|'high'|'xhigh'|
                                  'max'|'ultracode'). Calibrated per model. Mirrors
                                  MCP agent_start.effort.
+  --sandbox <provider-or-json>  spawn INSIDE an isolated sandbox box instead of on
+                                 the host — a provider slug (e.g. 'e2b'/'box', set up
+                                 via the MCP \`setup_sandbox_provider\` tool) or an
+                                 inline AIP-36 SandboxDefinition JSON object
+                                 (optionally carrying \`{"reuse":"<sandboxId>"}\`).
+                                 Mirrors MCP agent_start.sandbox.
+  --sandbox @<file>              same, read the provider slug or JSON from a file
   --hold-permissions            park each tool-permission request in the inbox
                                  (approve/deny with \`agentproto permissions\`)
                                  instead of auto-answering it
@@ -338,6 +346,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       "no-worktree": { type: "boolean" },
       mode: { type: "string" },
       effort: { type: "string" },
+      sandbox: { type: "string" },
     },
   })
   const slug = positionals[0]
@@ -450,6 +459,47 @@ async function runStart(args: readonly string[]): Promise<number> {
     if (values["auth-token"]) options.auth_token = values["auth-token"]
   }
 
+  // Parse --sandbox client-side, before any network activity. A bare
+  // provider slug (e.g. "e2b") passes through as a string; anything that
+  // parses as JSON (inline AIP-36 SandboxDefinition, optionally with
+  // `reuse: "<sandboxId>"`) is sent as an object instead — same @file
+  // convention as --mcp-servers-json/--options-json above. The daemon
+  // validates the parsed value against `sandboxSpecWithReuseSchema`
+  // (http-server.ts's `parseSandboxField`), so malformed shapes still fail
+  // there with a clear error; this parse only decides string-vs-object.
+  let sandbox: string | Record<string, unknown> | undefined
+  if (values.sandbox !== undefined) {
+    const raw = values.sandbox
+    let text: string
+    if (raw.startsWith("@")) {
+      const filePath = resolve(raw.slice(1))
+      try {
+        const { readFile } = await import("node:fs/promises")
+        text = await readFile(filePath, "utf8")
+      } catch (err) {
+        process.stderr.write(
+          `agentproto sessions start: could not read --sandbox file "${filePath}": ${err instanceof Error ? err.message : String(err)}\n`
+        )
+        return 2
+      }
+    } else {
+      text = raw
+    }
+    const trimmed = text.trim()
+    if (trimmed.startsWith("{")) {
+      try {
+        sandbox = JSON.parse(trimmed) as Record<string, unknown>
+      } catch (err) {
+        process.stderr.write(
+          `agentproto sessions start: invalid --sandbox JSON: ${err instanceof Error ? err.message : String(err)}\n`
+        )
+        return 2
+      }
+    } else {
+      sandbox = trimmed
+    }
+  }
+
   // --worktree and --no-worktree are opposite overrides — both being set is a
   // usage error, rejected before any network activity like the other fast-fail
   // checks above.
@@ -509,6 +559,10 @@ async function runStart(args: readonly string[]): Promise<number> {
   // them against each adapter's declared modes / each model's effort calibration.
   if (values.mode) body.mode = values.mode
   if (values.effort) body.effort = values.effort
+  // Sandbox spawn — the CLI twin of the MCP `agent_start` tool's `sandbox`
+  // field. A provider slug (string) boots/reconnects via that provider; an
+  // inline object is the AIP-36 SandboxDefinition, forwarded verbatim.
+  if (sandbox !== undefined) body.sandbox = sandbox
   if (options !== undefined && Object.keys(options).length > 0) body.options = options
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
