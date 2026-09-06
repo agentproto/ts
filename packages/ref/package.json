@@ -1,18 +1,20 @@
 {
   "name": "@agentproto/ref",
   "version": "0.1.1",
-  "description": "agentref/v1 (AIP-27) — composable reference primitive. Typed, registry-extensible discriminated union with a canonical compact string form. Eleven base kinds (local, url, git, github, ipfs, email, operator, user, persona, eth_tx, ots) cover the pointer surfaces existing AIPs need; extension kinds register at the implementation boundary.",
+  "description": "AIP-54 REF reference implementation — one package, two schemes. The canonical cross-AIP artifact reference: ArtifactRef ({aip, id, version}) + aip:// URI serialization, resolved through per-family AIP-43 registries joined by RefCatalog. Also ships the superseded AIP-27 world scheme (agentref/v1): a typed, registry-extensible discriminated union with a canonical compact string form (eleven base kinds), pointing at resources in the world — the scheme of the governance engine.",
   "keywords": [
-    "agentref",
+    "agentproto",
+    "aip-54",
+    "aip-27",
     "ref",
     "reference",
+    "registry",
+    "agentref",
     "pointer",
-    "aip-27",
-    "agentproto",
     "open-standard",
     "agentic"
   ],
-  "homepage": "https://agentproto.sh/docs/aip-27",
+  "homepage": "https://agentproto.sh/docs/aip-54",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
@@ -59,6 +61,7 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@agentproto/registry": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
     "tsup": "^8.5.1",

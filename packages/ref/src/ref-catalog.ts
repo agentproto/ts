@@ -16,7 +16,7 @@ import {
   type RefKeyableHandle,
   type RefRegistryLike,
   type ResolvedArtifact,
-} from "./types.js"
+} from "./artifact-ref.js"
 
 /** Default key resolution, mirroring AIP-43 § Identity exactly. */
 function defaultKeyBy(handle: RefKeyableHandle): string | undefined {

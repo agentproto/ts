@@ -10,7 +10,7 @@
  * designed in the AIP-55 draft and preserved verbatim here.
  */
 
-import type { ArtifactRef } from "@agentproto/ref-catalog"
+import type { ArtifactRef } from "@agentproto/ref"
 
 /** What is charged. Minor units are normative — the ×100 bug class lives in floats. */
 export type ProductPrice =
@@ -46,8 +46,12 @@ export type BillingRail =
 export interface ProductDefinition {
   readonly id: string
   readonly kind: "pricing"
-  /** The referenced artifact this pricing attaches to (AIP-54). */
-  readonly on: ArtifactRef
+  /**
+   * The referenced artifact this pricing attaches to (AIP-54). Either
+   * the object ref form or the `aip://<aip>/<id>[@version]` URI the
+   * spec allows; `defineProduct` normalizes both to an `ArtifactRef`.
+   */
+  readonly on: ArtifactRef | string
   readonly price: ProductPrice
   readonly billingRail?: BillingRail
   readonly title?: string
@@ -57,6 +61,8 @@ export interface ProductDefinition {
 /** The frozen handle `defineProduct` returns. */
 export interface ProductHandle extends Readonly<ProductDefinition> {
   readonly schema: "product/v1"
+  /** Always the normalized object form — never the URI. */
+  readonly on: ArtifactRef
 }
 
 export class ProductRefError extends Error {
