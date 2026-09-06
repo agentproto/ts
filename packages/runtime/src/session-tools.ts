@@ -15,7 +15,11 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import type {
+  QueuedPromptView,
+  SessionDescriptor,
+  SessionsRegistry,
+} from "./sessions.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
@@ -25,6 +29,7 @@ import {
 } from "./agent-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
+import type { DiscoveredMcp } from "./mcp-discovery.js"
 import {
   decideRestartStrategy,
   augmentWithFsResume,
@@ -43,6 +48,7 @@ import {
   saveImportedMcps,
   addImport,
   removeImport,
+  type ImportedMcpEntry,
 } from "./mcp-imports.js"
 import type { McpProxyRegistry, ProxyToolDescriptor } from "./mcp-proxy.js"
 import { projectSessionUsage } from "./usage.js"
@@ -60,8 +66,8 @@ import {
   enrichRollupWithProviderQuota,
 } from "./usage-rollup-service.js"
 import { withToolSubset } from "./tool-subset.js"
-import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
-import { defineTool, paginated } from "@agentproto/tool"
+import { pageParamsShape } from "./tool-envelope.js"
+import { catchErrors, defineTool, paginated } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { toMcpTool } from "@agentproto/mcp-server"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -83,6 +89,7 @@ import {
 import {
   resolveWorktreeQueryRoot,
   type WorktreeStatusLister,
+  type WorktreeStatusView,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
 import { basename, join } from "node:path"
@@ -411,6 +418,125 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   contextUsed: s.contextUsed,
 })
 
+// ── batch compact projections (tool-transformer migration) ───────────────
+// One compact projection per migrated list tool, same shape philosophy as
+// `compactSessionItem`: identity/routing fields + small usage scalars by
+// default; bulky, sensitive, or rarely-needed fields stay behind `full: true`.
+
+/** Default per-item shape for `mcp_discovered_list`: enough to identify,
+ *  attribute, and route `mcp_import` — never the spawn details. */
+export interface DiscoveredMcpCompactItem {
+  id: string
+  source: DiscoveredMcp["source"]
+  scope: string
+  name: string
+  type: DiscoveredMcp["type"]
+}
+
+export const compactDiscoveredMcp = (m: DiscoveredMcp): DiscoveredMcpCompactItem => ({
+  id: m.id,
+  source: m.source,
+  scope: m.scope,
+  name: m.name,
+  type: m.type,
+})
+
+/** Default per-item shape for `mcp_imported_list`: the curated-set bookkeeping
+ *  (id/alias/addedAt) plus the snapshot's identity trio. The full snapshot —
+ *  command/args/env/headers, some of it secret-bearing — stays behind
+ *  `full: true`. */
+export interface ImportedMcpCompactEntry {
+  id: string
+  alias: string
+  addedAt: string
+  source: DiscoveredMcp["source"]
+  name: string
+  type: DiscoveredMcp["type"]
+}
+
+export const compactImportedMcpEntry = (
+  e: ImportedMcpEntry,
+): ImportedMcpCompactEntry => ({
+  id: e.id,
+  alias: e.alias,
+  addedAt: e.addedAt,
+  source: e.snapshot.source,
+  name: e.snapshot.name,
+  type: e.snapshot.type,
+})
+
+/** Default per-item shape for `mcp_imported_tool_list`: name + description.
+ *  The upstream `inputSchema` (the bulky part) and `_meta` stay behind
+ *  `full: true` / a `fields` allowlist naming them. */
+export interface ProxyToolCompactItem {
+  name: string
+  description?: string
+}
+
+export const compactProxyTool = (t: ProxyToolDescriptor): ProxyToolCompactItem => ({
+  name: t.name,
+  ...(t.description !== undefined ? { description: t.description } : {}),
+})
+
+/** Default per-item shape for `session_queue_list`: position/origin/preview
+ *  + the stable id needed to route `session_queue_promote`/`deliver`/`drop`.
+ *  `queuedAt` stays behind `full: true`. */
+export interface QueuedPromptCompactItem {
+  id: string
+  origin: string
+  preview: string
+  position: number
+}
+
+export const compactQueuedPromptView = (
+  q: QueuedPromptView,
+): QueuedPromptCompactItem => ({
+  id: q.id,
+  origin: q.origin,
+  preview: q.preview,
+  position: q.position,
+})
+
+/** Default per-item shape for `worktree_status`: the worktree identity +
+ *  PR/class scalars. The per-session roster (`sessions[]`) stays behind
+ *  `full: true`. */
+export interface WorktreeStatusCompactItem {
+  path: string
+  branch: string | null
+  class: WorktreeStatusView["class"]
+  reclaimable: boolean
+  pr: WorktreeStatusView["pr"]
+  liveness: WorktreeStatusView["liveness"]
+}
+
+export const compactWorktreeStatus = (
+  w: WorktreeStatusView,
+): WorktreeStatusCompactItem => ({
+  path: w.path,
+  branch: w.branch,
+  class: w.class,
+  reclaimable: w.reclaimable,
+  pr: w.pr,
+  liveness: w.liveness,
+})
+
+/** Projection for `terminal_sessions_list` / `command_list`: session_list's
+ *  compact shape plus the provenance scalars (`origin`, `callerSessionId`)
+ *  those tools' callers route on. */
+export interface SessionListCompactItemWithProvenance
+  extends SessionListCompactItem {
+  origin?: string
+  callerSessionId?: string
+}
+
+export const compactSessionItemWithProvenance = (
+  s: SessionDescriptor,
+): SessionListCompactItemWithProvenance => ({
+  ...compactSessionItem(s),
+  ...(s.origin !== undefined ? { origin: s.origin } : {}),
+  ...(s.callerSessionId !== undefined ? { callerSessionId: s.callerSessionId } : {}),
+})
+
 export function registerSessionTools(
   rawServer: McpServer,
   opts: RegisterSessionToolsOptions
@@ -432,6 +558,52 @@ export function registerSessionTools(
     loadDefaultsConfig,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
+
+  // Shared registration helper for the list tools migrated onto the AIP
+  // contract layer (session_list's pattern): defineTool + implementTool +
+  // a single-candidate builtin driver + toMcpTool with catchErrors() and
+  // paginated() transformers. `body` returns the FULL, unprojected rows —
+  // the compact projection is `project`'s job; errors thrown anywhere in
+  // the body surface as the canonical MCP error result.
+  const registerPaginatedListTool = <TInput, TItem extends object>(args: {
+    id: string
+    description: string
+    schema: z.ZodType<TInput>
+    body: (input: TInput) => Promise<TItem[]>
+    project: (item: TItem) => object
+    keyOf: (item: TItem) => string | number | null
+    itemKey: string
+  }): void => {
+    const tool = defineTool<TInput, TItem[]>({
+      id: args.id,
+      description: args.description,
+      inputSchema: args.schema,
+    })
+    const impl = implementTool(tool, async ({ input }) => args.body(input))
+    const driver = defineDriver({
+      id: "agentproto-runtime-builtin",
+      name: "agentproto runtime builtin",
+      description:
+        "Single-implementation builtin driver for daemon tools migrated " +
+        "onto the AIP contract layer.",
+      kind: "builtin",
+      implements: [{ tool: args.id, version: "*" }],
+      implementations: [impl],
+    })
+    toMcpTool(server, {
+      tool,
+      candidates: [driver],
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: args.project,
+          keyOf: args.keyOf,
+          maxLimit: 200,
+          itemKey: args.itemKey,
+        }),
+      ],
+    })
+  }
 
   // Delegate the agent-family tools to the dedicated module.
   registerAgentTools(server, opts)
@@ -1076,29 +1248,36 @@ export function registerSessionTools(
   )
 
   // ── terminal_sessions_list ──────────────────────────────────────
-  server.tool(
-    "terminal_sessions_list",
-    "List terminal/PTY sessions tracked by the daemon. Equivalent to `session_list({kind: 'terminal'})`. " +
+  // Migrated onto the AIP contract layer (session_list's pattern): the
+  // pagination/compact/fields concerns + error normalization are the
+  // catchErrors()/paginated() transformers' job; the handler keeps only
+  // the filters (subtree scoping left hand-rolled, see session_list).
+  const terminalSessionsListSchema = z.object({
+    kind: z
+      .enum(["terminal", "agent-cli", "command", "all"])
+      .optional()
+      .describe(
+        "Optional override of the default `terminal` filter. `all` returns every kind."
+      ),
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe("When true, only running/starting sessions. Default false."),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status (overrides onlyAlive)."),
+  })
+  registerPaginatedListTool<z.infer<typeof terminalSessionsListSchema>, SessionDescriptor>({
+    id: "terminal_sessions_list",
+    description:
+      "List terminal/PTY sessions tracked by the daemon. Equivalent to `session_list({kind: 'terminal'})`. " +
       "Each entry includes `kind`, `pty`, `status`, age, etc. Use this when you only want " +
-      "the terminal subset.",
-    {
-      kind: z
-        .enum(["terminal", "agent-cli", "command", "all"])
-        .optional()
-        .describe(
-          "Optional override of the default `terminal` filter. `all` returns every kind."
-        ),
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("When true, only running/starting sessions. Default false."),
-      status: z
-        .enum(["starting", "running", "exited", "killed", "error"])
-        .optional()
-        .describe("Filter by exact status (overrides onlyAlive)."),
-      ...pageParamsShape,
-    },
-    async input => {
+      "the terminal subset. COMPACT BY DEFAULT: each entry is session_list's slim " +
+      "projection; pass `full: true` (or `compact: false`) for the complete, " +
+      "unprojected per-session record.",
+    schema: terminalSessionsListSchema,
+    body: async input => {
       // Full list (includeArchived) for subtree correctness — see
       // session_list's docblock; archived rows are hidden below,
       // unconditionally (this tool has no includeArchived opt-in).
@@ -1119,46 +1298,42 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      // Pagination last — see session_list. Without limit/cursor the
-      // output is byte-identical to the pre-pagination handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
-        return {
-          content: [{ type: "text", text: toolText(page, input) }],
-        }
-      }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }) },
-        ],
-      }
+      return rows
     },
-  )
+    project: compactSessionItemWithProvenance,
+    keyOf: s => s.id,
+    itemKey: "sessions",
+  })
 
   // ── command_list ────────────────────────────────────────────────
-  server.tool(
-    "command_list",
-    "List command sessions tracked by the daemon. Equivalent to `session_list({kind: 'command'})`. " +
+  // Migrated onto the AIP contract layer (session_list's pattern) — see
+  // terminal_sessions_list above.
+  const commandListSchema = z.object({
+    kind: z
+      .enum(["terminal", "agent-cli", "command", "all"])
+      .optional()
+      .describe(
+        "Optional override of the default `command` filter. `all` returns every kind."
+      ),
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe("When true, only running/starting sessions. Default false."),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status (overrides onlyAlive)."),
+  })
+  registerPaginatedListTool<z.infer<typeof commandListSchema>, SessionDescriptor>({
+    id: "command_list",
+    description:
+      "List command sessions tracked by the daemon. Equivalent to `session_list({kind: 'command'})`. " +
       "Each entry includes `kind`, `status`, age, exit code, etc. Use this when you only want " +
-      "the command subset.",
-    {
-      kind: z
-        .enum(["terminal", "agent-cli", "command", "all"])
-        .optional()
-        .describe(
-          "Optional override of the default `command` filter. `all` returns every kind."
-        ),
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("When true, only running/starting sessions. Default false."),
-      status: z
-        .enum(["starting", "running", "exited", "killed", "error"])
-        .optional()
-        .describe("Filter by exact status (overrides onlyAlive)."),
-      ...pageParamsShape,
-    },
-    async input => {
+      "the command subset. COMPACT BY DEFAULT: each entry is session_list's slim " +
+      "projection (stdout/stderr and the rest of the bulky echo stay behind " +
+      "`full: true`).",
+    schema: commandListSchema,
+    body: async input => {
       // Full list (includeArchived) for subtree correctness — see
       // session_list's docblock; archived rows are hidden below,
       // unconditionally (this tool has no includeArchived opt-in).
@@ -1179,92 +1354,62 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      // Pagination last — see session_list. Without limit/cursor the
-      // output is byte-identical to the pre-pagination handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
-        return {
-          content: [{ type: "text", text: toolText(page, input) }],
-        }
-      }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }) },
-        ],
-      }
+      return rows
     },
-  )
+    project: compactSessionItemWithProvenance,
+    keyOf: s => s.id,
+    itemKey: "sessions",
+  })
 
-  // ── mcp_discovered_list ───────────────────────────────────────
-  server.tool(
-    "mcp_discovered_list",
-    "Discover MCP servers already configured in the user's other agent " +
+  // ── mcp_discovered_list ─────────────────────────────────────────
+  // Migrated onto the AIP contract layer (session_list's pattern). The
+  // discovered entries are COMPACT by default — env/headers (potentially
+  // secret-bearing) and spawn details stay behind `full: true`.
+  const mcpDiscoveredListSchema = z.object({})
+  registerPaginatedListTool<Record<string, never>, DiscoveredMcp>({
+    id: "mcp_discovered_list",
+    description:
+      "Discover MCP servers already configured in the user's other agent " +
       "tooling (claude-code, cursor, goose). Returns the union with source " +
       "attribution so the operator can suggest 'I see you have a chrome-devtools " +
       "MCP set up in claude — want me to use it?' instead of asking the user " +
-      "to re-configure. Read-only — does not modify any host's config.",
-    { ...pageParamsShape },
-    async input => {
-      try {
-        const mcps = await discoverMcps()
-        // Pagination LAST — without limit/cursor the output is
-        // byte-identical to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(mcps, input, { maxLimit: 200, keyOf: m => m.id })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return {
-          content: [{ type: "text", text: JSON.stringify({ mcps }) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `mcp_discovered_list failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+      "to re-configure. Read-only — does not modify any host's config. " +
+      "COMPACT BY DEFAULT: each entry carries id/source/scope/name/type; " +
+      "pass `full: true` for the complete entry (command/args/env/headers/url).",
+    schema: mcpDiscoveredListSchema,
+    body: async () => {
+      const mcps = await discoverMcps()
+      return mcps
+    },
+    project: compactDiscoveredMcp,
+    keyOf: m => m.id,
+    itemKey: "mcps",
+  })
 
-  // ── mcp_imported_list ─────────────────────────────────────────
-  server.tool(
-    "mcp_imported_list",
-    "Return the user's curated set of MCP servers — the ones they've " +
+  // ── mcp_imported_list ───────────────────────────────────────────
+  // Migrated onto the AIP contract layer (session_list's pattern). Each
+  // entry is the compact id/alias/addedAt + snapshot-identity projection;
+  // the full snapshot (command/args/env/headers) stays behind `full: true`.
+  const mcpImportedListSchema = z.object({})
+  registerPaginatedListTool<Record<string, never>, ImportedMcpEntry>({
+    id: "mcp_imported_list",
+    description:
+      "Return the user's curated set of MCP servers — the ones they've " +
       "imported from claude / cursor / workspace configs into the daemon. " +
       "Use to know which MCPs the operator may freely call vs. ones still " +
-      "showing up in `mcp_discovered_list` waiting on the user's blessing.",
-    { ...pageParamsShape },
-    async input => {
-      try {
-        const config = await loadImportedMcps()
-        // Pagination LAST — pages the imports array. Without limit/cursor
-        // the output is byte-identical to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(config.imports, input, { maxLimit: 200, keyOf: e => e.id })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return {
-          content: [
-            { type: "text", text: JSON.stringify(config) },
-          ],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `mcp_imported_list failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+      "showing up in `mcp_discovered_list` waiting on the user's blessing. " +
+      "COMPACT BY DEFAULT: each entry carries id/alias/addedAt plus the " +
+      "snapshot's source/name/type; pass `full: true` for the complete " +
+      "entry including the full snapshot.",
+    schema: mcpImportedListSchema,
+    body: async () => {
+      const config = await loadImportedMcps()
+      return config.imports
+    },
+    project: compactImportedMcpEntry,
+    keyOf: e => e.id,
+    itemKey: "imports",
+  })
 
   // ── mcp_import ─────────────────────────────────────────────────
   server.tool(
@@ -1424,105 +1569,50 @@ export function registerSessionTools(
   )
 
   // ── mcp_imported_tool_list ────────────────────────────────────
-  server.tool(
-    "mcp_imported_tool_list",
-    "List the tools exposed by one imported MCP server. The proxy " +
+  // Migrated onto the AIP contract layer (session_list's pattern). The
+  // bespoke `compact`/`schema` params are replaced by the transformer's
+  // shared pagination params: rows are COMPACT (name + description) by
+  // default, `full: true` returns the complete upstream descriptor
+  // (including `inputSchema`), and `fields` allowlists per-item keys.
+  const mcpImportedToolListSchema = z.object({
+    alias: z
+      .string()
+      .min(1)
+      .describe(
+        "Alias from `mcp_imported_list` / `mcp_imported_status` " +
+          "(typically the original MCP name, e.g. 'chrome-devtools')."
+      ),
+  })
+  registerPaginatedListTool<z.infer<typeof mcpImportedToolListSchema>, ProxyToolDescriptor>({
+    id: "mcp_imported_tool_list",
+    description:
+      "List the tools exposed by one imported MCP server. The proxy " +
       "lazily connects on first call — first-use latency includes the " +
       "transport handshake (stdio: ~1-2s for npx-spawned servers; " +
-      "http/sse: <100ms). Returns the upstream `inputSchema` (JSON " +
-      "Schema) verbatim so the operator can build a valid `arguments` " +
-      "object for the follow-up `mcp_imported_call` invocation.",
-    {
-      alias: z
-        .string()
-        .min(1)
-        .describe(
-          "Alias from `mcp_imported_list` / `mcp_imported_status` " +
-            "(typically the original MCP name, e.g. 'chrome-devtools')."
-        ),
-      compact: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true, return only `name` + `description` per tool " +
-            "(pass `schema: true` to keep the inputSchema). Default false."
-        ),
-      schema: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true, include the upstream inputSchema alongside the " +
-            "compact projection. Ignored without `compact` (the default " +
-            "shape already carries inputSchema). Default false."
-        ),
-      limit: pageParamsShape.limit,
-      cursor: pageParamsShape.cursor,
-    },
-    async input => {
+      "http/sse: <100ms). COMPACT BY DEFAULT: each entry carries name + " +
+      "description; pass `full: true` for the upstream descriptor verbatim " +
+      "including its `inputSchema` (JSON Schema), which you can use to " +
+      "build a valid `arguments` object for the follow-up " +
+      "`mcp_imported_call` invocation.",
+    schema: mcpImportedToolListSchema,
+    body: async input => {
       if (!mcpProxy) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "mcp_imported_tool_list is not enabled — see mcp_imported_status.",
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          "mcp_imported_tool_list is not enabled — see mcp_imported_status.",
+        )
       }
       const out = await mcpProxy.listTools(input.alias)
       if (!out.ok) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `mcp_imported_tool_list "${input.alias}": ${out.error}`,
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          `mcp_imported_tool_list "${input.alias}": ${out.error}`,
+        )
       }
-      const paged = input.limit !== undefined || input.cursor !== undefined
-      if (paged || input.compact !== undefined || input.schema !== undefined) {
-        const project = (t: ProxyToolDescriptor) => {
-          if (input.compact !== true) return t
-          return {
-            name: t.name,
-            ...(t.description !== undefined ? { description: t.description } : {}),
-            ...(input.schema === true && t.inputSchema !== undefined
-              ? { inputSchema: t.inputSchema }
-              : {}),
-          }
-        }
-        if (paged) {
-          const page = paginate(out.tools, input, { maxLimit: 200, keyOf: t => t.name })
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  { alias: input.alias, items: page.items.map(project), total: page.total, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) },
-                ),
-              },
-            ],
-          }
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ alias: input.alias, tools: out.tools.map(project) }),
-            },
-          ],
-        }
-      }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ alias: input.alias, tools: out.tools }) },
-        ],
-      }
-    }
-  )
+      return out.tools
+    },
+    project: compactProxyTool,
+    keyOf: t => t.name,
+    itemKey: "tools",
+  })
 
   // ── mcp_imported_call ──────────────────────────────────────────
   server.tool(
@@ -1842,63 +1932,50 @@ export function registerSessionTools(
   // enqueue-time acknowledgment `POST /sessions/:id/prompt` already echoes.
   // Position 0 is next to dispatch. Reads `registry.listQueuedPrompts`, the
   // same projection the HTTP route / GET /sessions/:id/queue serves, so the
-  // MCP and REST surfaces can't drift.
-  server.tool(
-    "session_queue_list",
-    "List the prompts currently queued on a live session (its prompt FIFO — " +
+  // MCP and REST surfaces can't drift. Migrated onto the AIP contract layer
+  // (session_list's pattern): entries are COMPACT by default (id/origin/
+  // preview/position; `queuedAt` stays behind `full: true`).
+  const sessionQueueListSchema = z.object({
+    sessionId: z
+      .string()
+      .min(1)
+      .describe("Session id or name — from `session_list`, alive or historical."),
+  })
+  registerPaginatedListTool<z.infer<typeof sessionQueueListSchema>, QueuedPromptView>({
+    id: "session_queue_list",
+    description:
+      "List the prompts currently queued on a live session (its prompt FIFO — " +
       "prompts that arrived mid-turn with queueing enabled and are waiting " +
       "to dispatch once the current turn ends). Each entry carries `position` " +
       "(0 = next to dispatch), `origin` (who queued it: \"user\", \"agent " +
-      "<sessionId>\", \"child <sessionId>\"), `preview` (short text of the " +
-      "message), and `queuedAt`. Pair with `session_queue_promote` (jump an " +
+      "<sessionId>\", \"child <sessionId>\"), and `preview` (short text of the " +
+      "message); pass `full: true` to also get `queuedAt`. " +
+      "Pair with `session_queue_promote` (jump an " +
       "item to the front without touching the in-flight turn), " +
       "`session_queue_deliver` (interrupt the current turn and dispatch this " +
       "item NOW), and `session_queue_drop` (remove without delivering).",
-    {
-      sessionId: z
-        .string()
-        .min(1)
-        .describe("Session id or name — from `session_list`, alive or historical."),
-      ...pageParamsShape,
-    },
-    async input => {
+    schema: sessionQueueListSchema,
+    body: async input => {
       const desc = registry.findByIdOrName(input.sessionId)
       if (!desc) {
-        return {
-          content: [
-            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
-          ],
-          isError: true,
-        }
+        throw new Error(`no session "${input.sessionId}" found`)
       }
       // Subtree scoping (WP4/WP5): same gate as session_list/session_tree —
       // a scoped orchestrator only sees its own subtree's queues.
       if (callerScope) {
         const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
         if (!subtree.has(desc.id)) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ error: `session "${input.sessionId}" is outside the caller's subtree` }),
-              },
-            ],
-            isError: true,
-          }
+          throw new Error(
+            `session "${input.sessionId}" is outside the caller's subtree`,
+          )
         }
       }
-      const queue = registry.listQueuedPrompts(desc.id)
-      // Pagination LAST — after the subtree gate. Without limit/cursor the
-      // output is byte-identical to the pre-pagination handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(queue ?? [], input, { maxLimit: 200, keyOf: q => q.id })
-        return { content: [{ type: "text", text: toolText(page, input) }] }
-      }
-      return {
-        content: [{ type: "text", text: JSON.stringify({ sessionId: desc.id, queue }) }],
-      }
+      return registry.listQueuedPrompts(desc.id) ?? []
     },
-  )
+    project: compactQueuedPromptView,
+    keyOf: q => q.id,
+    itemKey: "queue",
+  })
 
   // ── session_queue_promote ──────────────────────────────────────
   // Reorder-only force: jump an already-queued item to the front WITHOUT
@@ -2071,53 +2148,51 @@ export function registerSessionTools(
   // Read-only view of the repo's linked worktrees + their live PR
   // integration + the sessions that opened them. The heavy join is
   // delegated to an injected `listWorktreeStatuses` port so the runtime
-  // stays free of `@agentproto/worktree`.
+  // stays free of `@agentproto/worktree`. Migrated onto the AIP contract
+  // layer (session_list's pattern): entries are COMPACT by default (the
+  // per-session roster stays behind `full: true`).
 
-  server.tool(
-    "worktree_status",
-    "List the linked git worktrees for a repo and their live PR/session " +
+  const worktreeStatusSchema = z.object({
+    repoRoot: z
+      .string()
+      .optional()
+      .describe(
+        "Absolute path to the git repo root whose worktrees to list. " +
+          "Wins over `workspaceSlug` when both are set."
+      ),
+    workspaceSlug: z
+      .string()
+      .optional()
+      .describe(
+        "Workspace slug from `agentproto workspace list`. Resolves the " +
+          "repo root via the active workspace when omitted."
+      ),
+    openOnly: mcpBool
+      .optional()
+      .describe(
+        "When true, only return worktrees whose `pr.state` is `open`. " +
+          "Default false."
+      ),
+  })
+  registerPaginatedListTool<z.infer<typeof worktreeStatusSchema>, WorktreeStatusView>({
+    id: "worktree_status",
+    description:
+      "List the linked git worktrees for a repo and their live PR/session " +
       "linkage. Each entry includes path, branch, class, reclaimability, " +
       "PR state/number, the sessions whose cwd sits in the worktree, and " +
       "liveness. Use this to power a 'PRs in progress + linked sub-agents' " +
       "panel. Pass `openOnly: true` to surface only worktrees whose PR is " +
-      "still open.",
-    {
-      repoRoot: z
-        .string()
-        .optional()
-        .describe(
-          "Absolute path to the git repo root whose worktrees to list. " +
-            "Wins over `workspaceSlug` when both are set."
-        ),
-      workspaceSlug: z
-        .string()
-        .optional()
-        .describe(
-          "Workspace slug from `agentproto workspace list`. Resolves the " +
-            "repo root via the active workspace when omitted."
-        ),
-      openOnly: mcpBool
-        .optional()
-        .describe(
-          "When true, only return worktrees whose `pr.state` is `open`. " +
-            "Default false."
-        ),
-      ...pageParamsShape,
-    },
-    async input => {
+      "still open. COMPACT BY DEFAULT: each entry carries path/branch/" +
+      "class/reclaimable/pr/liveness; pass `full: true` to also get the " +
+      "per-session roster (`sessions[]`).",
+    schema: worktreeStatusSchema,
+    body: async input => {
       if (!listWorktreeStatuses) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "worktree_status is not enabled — the daemon was started without " +
-                "a worktree status lister. The host must wire `listWorktreeStatuses` " +
-                "in createGateway.",
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          "worktree_status is not enabled — the daemon was started without " +
+            "a worktree status lister. The host must wire `listWorktreeStatuses` " +
+            "in createGateway.",
+        )
       }
 
       const resolved = await resolveWorktreeQueryRoot({
@@ -2125,49 +2200,19 @@ export function registerSessionTools(
         workspaceSlug: input.workspaceSlug,
       })
       if (!resolved.ok) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ error: resolved.error }),
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(resolved.error)
       }
 
-      try {
-        let worktrees = await listWorktreeStatuses(resolved.repoRoot)
-        if (input.openOnly) {
-          worktrees = worktrees.filter(w => w.pr?.state === "open")
-        }
-        // Pagination LAST — after the openOnly filter. Without limit/cursor
-        // the output is byte-identical to the pre-pagination handler.
-        if (input.limit !== undefined || input.cursor !== undefined) {
-          const page = paginate(worktrees, input, { maxLimit: 200, keyOf: w => w.path })
-          return { content: [{ type: "text", text: toolText(page, input) }] }
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ worktrees }),
-            },
-          ],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `worktree_status failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
+      let worktrees = await listWorktreeStatuses(resolved.repoRoot)
+      if (input.openOnly) {
+        worktrees = worktrees.filter(w => w.pr?.state === "open")
       }
+      return worktrees
     },
-  )
+    project: compactWorktreeStatus,
+    keyOf: w => w.path,
+    itemKey: "worktrees",
+  })
 
   // ── worktree_gc ──────────────────────────────────────────────────
   // The transport surface over the `gc` engine (`planGc` / `applyGc` in
