@@ -15,9 +15,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { TunnelDescriptor, TunnelRegistry } from "./tunnel-registry.js"
-import { catchErrors, defineTool, paginated } from "@agentproto/tool"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
+import { catchErrors, paginated } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 
 export interface RegisterTunnelToolsOptions {
   registry: TunnelRegistry
@@ -181,10 +180,9 @@ export function registerTunnelTools(
   })
   type TunnelListInput = z.infer<typeof tunnelListSchema>
 
-  const tunnelListTool = defineTool<TunnelListInput, TunnelDescriptor[]>({
+  registerBuiltinTool<TunnelListInput, TunnelDescriptor[]>(server, {
     id: "tunnel_list",
-    description:
-      "List all tunnels tracked by the daemon — active, stopped, and errored. " +
+    description: "List all tunnels tracked by the daemon — active, stopped, and errored. " +
       "Each entry includes provider, target port, public URL, status, pid, " +
       "and age. Use before `tunnel_create` to avoid spawning duplicates " +
       "for the same port. COMPACT BY DEFAULT: each entry is a slim " +
@@ -193,32 +191,15 @@ export function registerTunnelTools(
       "the complete descriptor (pid, stoppedAt, lastError, targetHost, " +
       "autostart, tunnelId, credentialsFile).",
     inputSchema: tunnelListSchema,
-  })
-
-  const tunnelListImpl = implementTool(tunnelListTool, async ({ input }) => {
-    let tunnels = registry.list()
-    if (input.onlyActive) {
-      tunnels = tunnels.filter(
-        t => t.status === "starting" || t.status === "active",
-      )
-    }
-    return tunnels
-  })
-
-  const tunnelListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: tunnelListTool.id, version: "*" }],
-    implementations: [tunnelListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: tunnelListTool,
-    candidates: [tunnelListDriver],
+    handler: async (input) => {
+      let tunnels = registry.list()
+      if (input.onlyActive) {
+        tunnels = tunnels.filter(
+          t => t.status === "starting" || t.status === "active",
+        )
+      }
+      return tunnels
+    },
     transformers: [
       catchErrors(),
       paginated({

@@ -21,9 +21,8 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
-import { catchErrors, defineTool, paginated } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
+import { catchErrors, paginated } from "@agentproto/tool"
 import {
   KeychainStore,
   addAuthProfile,
@@ -172,7 +171,9 @@ export function registerAuthProfileTools(server: McpServer): void {
   })
   type AuthProfileListInput = z.infer<typeof authProfileListSchema>
 
-  const authProfileListTool = defineTool<AuthProfileListInput, AuthProfileListRow[]>({
+  // Body: filter + keychain enrichment ONLY. Pagination, compact projection,
+  // and error normalization are the transformers' job (applied below).
+  registerBuiltinTool<AuthProfileListInput, AuthProfileListRow[]>(server, {
     id: "auth_profile_list",
     description:
       "List the named auth profiles configured on this host (from " +
@@ -188,30 +189,11 @@ export function registerAuthProfileTools(server: McpServer): void {
       "listing caller) is dropped; pass `full: true` (or `compact: false`) " +
       "for the complete row.",
     inputSchema: authProfileListSchema,
-  })
-
-  // Body: filter + keychain enrichment ONLY. Pagination, compact projection,
-  // and error normalization are the transformers' job (applied below).
-  const authProfileListImpl = implementTool(authProfileListTool, async ({ input }) => {
-    const profiles = await listAuthProfiles(input.endpoint)
-    const store = new KeychainStore()
-    return Promise.all(profiles.map(p => describeProfileKey(p, store)))
-  })
-
-  const authProfileListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: authProfileListTool.id, version: "*" }],
-    implementations: [authProfileListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: authProfileListTool,
-    candidates: [authProfileListDriver],
+    handler: async (input) => {
+      const profiles = await listAuthProfiles(input.endpoint)
+      const store = new KeychainStore()
+      return Promise.all(profiles.map(p => describeProfileKey(p, store)))
+    },
     transformers: [
       catchErrors(),
       paginated({

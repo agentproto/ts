@@ -25,9 +25,8 @@ import { gateInputSchema } from "./orchestration-tools.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { withToolSubset } from "./tool-subset.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
-import { catchErrors, defineTool, type ToolTransformer } from "@agentproto/tool"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
+import { catchErrors, type ToolTransformer } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { TASK_STATUSES } from "./task-ledger.js"
 import type {
   TaskCaller,
@@ -226,10 +225,9 @@ export function registerTaskTools(
   })
   type TaskListInput = z.infer<typeof taskListSchema>
 
-  const taskListTool = defineTool<TaskListInput, TaskRecord[] | McpTextResult>({
+  registerBuiltinTool<TaskListInput, TaskRecord[] | McpTextResult>(server, {
     id: "task_list",
-    description:
-      "List tasks on a board. Defaults to the caller's own board (a session's " +
+    description: "List tasks on a board. Defaults to the caller's own board (a session's " +
       "lineage `tree:<root>`; the operator's `ws:<slug>`) and to OPEN tasks — " +
       "pass `includeClosed` (or a closed `status` filter) for " +
       "done/failed/cancelled. Every record carries its `rev` (needed by " +
@@ -240,38 +238,21 @@ export function registerTaskTools(
       "pass `full: true` (or `compact: false`) for the complete record " +
       "(description, verify spec, meta, sessions, verification, …).",
     inputSchema: taskListSchema,
-  })
-
-  const taskListImpl = implementTool(taskListTool, async ({ input }) => {
-    if (!ledger) return notAvailable
-    const caller = resolveCaller()
-    if ("error" in caller) return jsonContent({ error: caller.error })
-    return ledger.list(
-      {
-        ...(input.boardId !== undefined ? { boardId: input.boardId } : {}),
-        ...(input.status !== undefined ? { status: input.status } : {}),
-        ...(input.includeClosed !== undefined
-          ? { includeClosed: input.includeClosed }
-          : {}),
-      },
-      caller,
-    )
-  })
-
-  const taskListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: taskListTool.id, version: "*" }],
-    implementations: [taskListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: taskListTool,
-    candidates: [taskListDriver],
+    handler: async (input) => {
+      if (!ledger) return notAvailable
+      const caller = resolveCaller()
+      if ("error" in caller) return jsonContent({ error: caller.error })
+      return ledger.list(
+        {
+          ...(input.boardId !== undefined ? { boardId: input.boardId } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.includeClosed !== undefined
+            ? { includeClosed: input.includeClosed }
+            : {}),
+        },
+        caller,
+      )
+    },
     transformers: [
       catchErrors(),
       paginatedLegacyList({

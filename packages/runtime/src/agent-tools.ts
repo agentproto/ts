@@ -21,9 +21,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { AcpMcpServer } from "@agentproto/acp"
-import { catchErrors, defineTool, pageParamsShape, paginated } from "@agentproto/tool"
-import { defineDriver, implementTool } from "@agentproto/driver"
-import { toMcpTool } from "@agentproto/mcp-server"
+import { catchErrors, pageParamsShape, paginated } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import {
   exportAgentSession,
@@ -1671,61 +1670,38 @@ export function registerAgentTools(
   })
   type AgentSessionsListInput = z.infer<typeof agentSessionsListSchema>
 
-  const agentSessionsListTool = defineTool<AgentSessionsListInput, SessionDescriptor[]>({
+  registerBuiltinTool<AgentSessionsListInput, SessionDescriptor[]>(server, {
     id: "agent_sessions_list",
-    description:
-      "List agent-CLI sessions tracked by the daemon. Equivalent to `session_list({kind: 'agent-cli'})`. " +
+    description: "List agent-CLI sessions tracked by the daemon. Equivalent to `session_list({kind: 'agent-cli'})`. " +
       "Each entry includes `kind`, `status`, age, etc. Use this when you only want " +
       "the agent-CLI subset. COMPACT BY DEFAULT: each entry is a slim projection " +
       "(id/kind/name/label/status/command/cwd/model/busy/awaitingInput/blockedOn/" +
       "lastActivityAt/startedAt/exitCode/depth/parentSessionId); pass `full: true` " +
       "(or `compact: false`) for the complete, unprojected per-session record.",
     inputSchema: agentSessionsListSchema,
-  })
-
-  // Body: filters ONLY. Pagination + compact projection are the
-  // `paginated()` transformer's job (applied at registration below).
-  const agentSessionsListImpl = implementTool(agentSessionsListTool, async ({ input }) => {
-    // Full list (includeArchived) for subtree correctness — see
-    // session_list's docblock; archived rows are hidden below,
-    // unconditionally (this tool has no includeArchived opt-in).
-    let rows = registry.list({ includeArchived: true })
-    if (callerScope) {
-      const subtree = collectSubtree(callerScope.ownerSessionId, rows)
-      rows = rows.filter(s => subtree.has(s.id))
-    }
-    rows = rows.filter(s => !s.archived)
-    const kind = input.kind ?? "agent-cli"
-    if (kind !== "all") {
-      rows = rows.filter(s => s.kind === kind)
-    }
-    if (input.status) {
-      rows = rows.filter(s => s.status === input.status)
-    } else if (input.onlyAlive) {
-      rows = rows.filter(
-        s => s.status === "running" || s.status === "starting",
-      )
-    }
-    return rows
-  })
-
-  // Single-implementation adapter: daemon tools have exactly one fixed
-  // body, so wrap it as a trivial one-candidate builtin driver to satisfy
-  // runTool's AIP-30 multi-driver resolution (see session_list).
-  const agentSessionsListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: agentSessionsListTool.id, version: "*" }],
-    implementations: [agentSessionsListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: agentSessionsListTool,
-    candidates: [agentSessionsListDriver],
+    handler: async (input) => {
+      // Full list (includeArchived) for subtree correctness — see
+      // session_list's docblock; archived rows are hidden below,
+      // unconditionally (this tool has no includeArchived opt-in).
+      let rows = registry.list({ includeArchived: true })
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, rows)
+        rows = rows.filter(s => subtree.has(s.id))
+      }
+      rows = rows.filter(s => !s.archived)
+      const kind = input.kind ?? "agent-cli"
+      if (kind !== "all") {
+        rows = rows.filter(s => s.kind === kind)
+      }
+      if (input.status) {
+        rows = rows.filter(s => s.status === input.status)
+      } else if (input.onlyAlive) {
+        rows = rows.filter(
+          s => s.status === "running" || s.status === "starting",
+        )
+      }
+      return rows
+    },
     transformers: [
       catchErrors(),
       paginated({
@@ -1756,10 +1732,9 @@ export function registerAgentTools(
   })
   type AdapterListInput = z.infer<typeof adapterListSchema>
 
-  const adapterListTool = defineTool<AdapterListInput, AdapterListEntry[]>({
+  registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
     id: "adapter_list",
-    description:
-      "Enumerate every agent CLI adapter installed on the host (claude-code, " +
+    description: "Enumerate every agent CLI adapter installed on the host (claude-code, " +
       "hermes, aider, …). Returns slug + display name + version + protocol so " +
       "callers can let users pick from the installed set instead of guessing. " +
       "Use before `agent_start` when the model doesn't already know " +
@@ -1768,33 +1743,16 @@ export function registerAgentTools(
       "`compact: false`) for the full manifest projection (commands/modes/" +
       "model details, hundreds of KB).",
     inputSchema: adapterListSchema,
-  })
-
-  const adapterListImpl = implementTool(adapterListTool, async () => {
-    if (!listAgentAdapters) {
-      throw new Error(
-        "adapter_list is not enabled — the daemon was started without " +
-          "an adapter lister. Wire `@agentproto/cli`'s " +
-          "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-      )
-    }
-    return listAgentAdapters()
-  })
-
-  const adapterListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: adapterListTool.id, version: "*" }],
-    implementations: [adapterListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: adapterListTool,
-    candidates: [adapterListDriver],
+    handler: async () => {
+      if (!listAgentAdapters) {
+        throw new Error(
+          "adapter_list is not enabled — the daemon was started without " +
+            "an adapter lister. Wire `@agentproto/cli`'s " +
+            "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+        )
+      }
+      return listAgentAdapters()
+    },
     transformers: [
       catchErrors(),
       paginated({
@@ -1941,10 +1899,9 @@ export function registerAgentTools(
   })
   type CatalogModelsInput = z.infer<typeof catalogModelsSchema>
 
-  const catalogModelsTool = defineTool<CatalogModelsInput, Array<{ vendor: string; product: string } & CatalogRoute>>({
+  registerBuiltinTool<CatalogModelsInput, Array<{ vendor: string; product: string } & CatalogRoute>>(server, {
     id: "catalog_models",
-    description:
-      "Read-only vendor/product/route catalog (SPEC §5) — every model this " +
+    description: "Read-only vendor/product/route catalog (SPEC §5) — every model this " +
       "host can reach, widened beyond any one adapter's model list via " +
       "OpenRouter/Requesty/HuggingFace routing, with a profile-aware " +
       "`runnable` flag per route. Use before `agent_start` to see what's " +
@@ -1955,46 +1912,29 @@ export function registerAgentTools(
       "complete per-route record (pricing, contextWindow, maxOutput, " +
       "eligibleProfiles, adapterModes, adapters, baseUrl).",
     inputSchema: catalogModelsSchema,
-  })
-
-  const catalogModelsImpl = implementTool(catalogModelsTool, async ({ input }) => {
-    if (!listCatalogModels) {
-      throw new Error(
-        "catalog_models is not enabled — the daemon was started without " +
-          "a catalog lister. Wire `buildCatalogModels` via " +
-          "`createGateway({ listCatalogModels })`.",
+    handler: async (input) => {
+      if (!listCatalogModels) {
+        throw new Error(
+          "catalog_models is not enabled — the daemon was started without " +
+            "a catalog lister. Wire `buildCatalogModels` via " +
+            "`createGateway({ listCatalogModels })`.",
+        )
+      }
+      const catalog = await listCatalogModels({
+        ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...(input.vendor ? { vendor: input.vendor } : {}),
+        ...(input.route ? { route: input.route } : {}),
+        ...(input.runnableOnly ? { runnableOnly: true } : {}),
+      })
+      // Flatten the nested vendor/product tree to per-route entries — the
+      // cursor's decoded `i` is the offset over this filtered array (no
+      // stable keyset in the catalog; same semantics as PR-3).
+      return catalog.vendors.flatMap(v =>
+        v.products.flatMap(p =>
+          p.routes.map(r => ({ vendor: v.vendor, product: p.product, ...r })),
+        ),
       )
-    }
-    const catalog = await listCatalogModels({
-      ...(input.adapter ? { adapter: input.adapter } : {}),
-      ...(input.vendor ? { vendor: input.vendor } : {}),
-      ...(input.route ? { route: input.route } : {}),
-      ...(input.runnableOnly ? { runnableOnly: true } : {}),
-    })
-    // Flatten the nested vendor/product tree to per-route entries — the
-    // cursor's decoded `i` is the offset over this filtered array (no
-    // stable keyset in the catalog; same semantics as PR-3).
-    return catalog.vendors.flatMap(v =>
-      v.products.flatMap(p =>
-        p.routes.map(r => ({ vendor: v.vendor, product: p.product, ...r })),
-      ),
-    )
-  })
-
-  const catalogModelsDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: catalogModelsTool.id, version: "*" }],
-    implementations: [catalogModelsImpl],
-  })
-
-  toMcpTool(server, {
-    tool: catalogModelsTool,
-    candidates: [catalogModelsDriver],
+    },
     transformers: [
       catchErrors(),
       paginated({
@@ -2029,10 +1969,9 @@ export function registerAgentTools(
   })
   type CatalogProviderModelsInput = z.infer<typeof catalogProviderModelsSchema>
 
-  const catalogProviderModelsTool = defineTool<CatalogProviderModelsInput, CatalogProviderModel[]>({
+  registerBuiltinTool<CatalogProviderModelsInput, CatalogProviderModel[]>(server, {
     id: "catalog_provider_models",
-    description:
-      "Read-only EXHAUSTIVE model list for ONE provider (AIP-45 launch-menu " +
+    description: "Read-only EXHAUSTIVE model list for ONE provider (AIP-45 launch-menu " +
       '"+" picker) — every model `endpoint`/`route` can serve, straight from ' +
       "the static catalog. Deliberately separate from `catalog_models`: that " +
       "tool is the lean spawn catalog (curated pairs widened through routers, " +
@@ -2043,33 +1982,16 @@ export function registerAgentTools(
       "`cursor`. COMPACT BY DEFAULT: id/kind/label/route per row; `full: true` " +
       "(or `compact: false`) adds pricing/addedAt.",
     inputSchema: catalogProviderModelsSchema,
-  })
-
-  const catalogProviderModelsImpl = implementTool(catalogProviderModelsTool, async ({ input }) => {
-    // Never throws: an unknown provider is a valid empty answer
-    // (buildCatalogProviderModels guarantees `{ models: [] }`); any
-    // residual throw is defence-in-depth handled by `catchErrors()`.
-    const result = buildCatalogProviderModels({
-      ...(input.endpoint ? { endpoint: input.endpoint } : {}),
-      ...(input.route ? { route: input.route } : {}),
-    })
-    return result.models
-  })
-
-  const catalogProviderModelsDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: catalogProviderModelsTool.id, version: "*" }],
-    implementations: [catalogProviderModelsImpl],
-  })
-
-  toMcpTool(server, {
-    tool: catalogProviderModelsTool,
-    candidates: [catalogProviderModelsDriver],
+    handler: async (input) => {
+      // Never throws: an unknown provider is a valid empty answer
+      // (buildCatalogProviderModels guarantees `{ models: [] }`); any
+      // residual throw is defence-in-depth handled by `catchErrors()`.
+      const result = buildCatalogProviderModels({
+        ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+        ...(input.route ? { route: input.route } : {}),
+      })
+      return result.models
+    },
     transformers: [
       catchErrors(),
       paginated({
@@ -2100,10 +2022,9 @@ export function registerAgentTools(
   })
   type RoleListInput = z.infer<typeof roleListSchema>
 
-  const roleListTool = defineTool<RoleListInput, RoleListRow[]>({
+  registerBuiltinTool<RoleListInput, RoleListRow[]>(server, {
     id: "role_list",
-    description:
-      "Enumerate every spawn-time role known to the daemon — the two " +
+    description: "Enumerate every spawn-time role known to the daemon — the two " +
       "built-ins (executor, supervisor) plus any custom role installed as " +
       "a role pack. Read-only: pure visibility into the same registry " +
       "`agent_start`'s `role` field and privilege-lattice spawn gate use — " +
@@ -2112,32 +2033,15 @@ export function registerAgentTools(
       "session may in turn spawn. Each row is already the compact view " +
       "(name/level/delegation/spawnable).",
     inputSchema: roleListSchema,
-  })
-
-  const roleListImpl = implementTool(roleListTool, async () => {
-    const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
-    return listRoles(registry).map<RoleListRow>(role => ({
-      name: role.name,
-      level: role.level,
-      delegation: role.toolPolicy.delegation,
-      spawnable: spawnableRolesFor(role, registry).map(child => child.name),
-    }))
-  })
-
-  const roleListDriver = defineDriver({
-    id: "agentproto-runtime-builtin",
-    name: "agentproto runtime builtin",
-    description:
-      "Single-implementation builtin driver for daemon tools migrated " +
-      "onto the AIP contract layer.",
-    kind: "builtin",
-    implements: [{ tool: roleListTool.id, version: "*" }],
-    implementations: [roleListImpl],
-  })
-
-  toMcpTool(server, {
-    tool: roleListTool,
-    candidates: [roleListDriver],
+    handler: async () => {
+      const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
+      return listRoles(registry).map<RoleListRow>(role => ({
+        name: role.name,
+        level: role.level,
+        delegation: role.toolPolicy.delegation,
+        spawnable: spawnableRolesFor(role, registry).map(child => child.name),
+      }))
+    },
     transformers: [
       catchErrors(),
       paginated({
