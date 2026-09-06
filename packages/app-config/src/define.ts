@@ -43,6 +43,22 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
+ * The kit-owned minimal schema surface the public generics constrain on.
+ *
+ * A consumer passes ANY parser satisfying this shape — a zod schema from
+ * whichever zod copy/version it pins, or a hand-rolled `{ parse }`. The
+ * public surface deliberately mentions NO zod types: zod's internals
+ * (`$ZodType`, `exactPartial`, …) shift between minors, so a constraint
+ * like `A extends z.ZodObject<z.ZodRawShape>` would reject every consumer
+ * whose zod build differs from the kit's own tree (TS2741 at the call
+ * site). zod remains a peerDependency; only the *structural* contract is
+ * public.
+ */
+export interface SchemaLike<Out> {
+  parse(value: unknown): Out
+}
+
+/**
  * How an `items[]` entry matches an item file. Either a field pair —
  * `{ entry: "n", item: "n" }` compares `entry[entryField]` with
  * `item[itemField]` — or a predicate over the raw entry and item objects.
@@ -52,18 +68,24 @@ export type MatchKey =
   | { entry: string; item: string }
   | ((entry: Record<string, unknown>, item: Record<string, unknown>) => boolean)
 
+/**
+ * The kit definition. `AOut` / `IOut` are the OUTPUT types the app and item
+ * schemas parse into — inferred from the `parse` return of whatever
+ * `SchemaLike` you pass (a zod schema's zod output type, or anything else),
+ * never from zod's own types, so any zod minor works.
+ */
 export interface AppKitDefinition<
-  A extends z.ZodObject<z.ZodRawShape>,
-  I extends z.ZodObject<z.ZodRawShape>,
+  AOut extends Record<string, unknown>,
+  IOut extends Record<string, unknown>,
 > {
   /** Schema for the whole app file (app.yaml). */
-  app: A
+  app: SchemaLike<AOut>
   /**
    * Schema for one item. An item file without a non-empty string `id` is
    * keyed by its per-item directory name (`manuscripts/<dir>/book.yaml` → the
    * directory basename) or, for a flat glob, its file basename.
    */
-  item: I
+  item: SchemaLike<IOut>
   /** Key on the app value holding the ordered item entries (e.g. `items`). */
   itemsKey: string
   /**
@@ -83,9 +105,14 @@ export interface AppKitDefinition<
   /**
    * Per-field projection over the merged raw value, before the item schema
    * parses it (e.g. `accent: book.cover?.accent ?? collection.cover.accents[book.vertical]`).
-   * Return the object `item.parse` should validate.
+   * Return the object `item.parse` should validate. The projected object is
+   * exposed verbatim on `ResolvedItem.projected` — the item schema's output
+   * strips keys it does not declare, so derived fields survive there.
    */
-  project?: (merged: Record<string, unknown>, ctx: ProjectContext<z.output<A>>) => unknown
+  project?: (
+    merged: Record<string, unknown>,
+    ctx: ProjectContext<AOut>,
+  ) => Record<string, unknown>
   /** Layer order, lowest → highest. Default: defaults → entry → item. */
   precedence?: readonly Layer[]
 }
@@ -115,6 +142,13 @@ export interface ResolvedItem<I = Record<string, unknown>> {
   id: string
   /** The merged, schema-validated value (item schema output). */
   value: I
+  /**
+   * When the kit definition has a `project` hook: the projected object
+   * BEFORE the item schema parsed it. The item schema's output (`value`)
+   * strips keys it does not declare — derived fields projected by `project`
+   * survive verbatim here instead. Absent when there is no `project` hook.
+   */
+  projected?: Record<string, unknown>
   /** Item file path, absolute. */
   itemPath: string
   /** Directory containing the item file, absolute. */
@@ -144,6 +178,11 @@ export interface GateFinding {
   item?: string
   /** Free-form attributes an app attaches to a finding (e.g. `book`, `chapter`). */
   attrs?: Record<string, string>
+  /**
+   * Per-finding level override. Default: the rule's `level`. A rule that
+   * degrades some findings to warnings sets `"warn"` here.
+   */
+  level?: "error" | "warn"
 }
 
 /** Context handed to a `GateRule.test`. */
@@ -205,11 +244,28 @@ export interface VerifyReport {
 
 /**
  * A caller scope function over the app's own resolved type: its key in
- * `scopes` is the scope it reports under. `R` defaults to the kit's loose
- * `Resolved`; an app registers scopes over its own `Resolved<…, ResolvedBook[]>`
- * shape by passing the generic through.
+ * `scopes` is the scope it reports under. It receives a `ScopeContext`
+ * handle (the same `readArtifact` root-escape guard gate rules get), so an
+ * umbrella scope can read artifacts while emitting error/warn/skipped
+ * findings at its own per-finding levels. May be async — `verify` awaits
+ * it. Existing sync single-argument signatures keep working (the context
+ * argument is additive at the call site).
  */
-export type ScopeFn<R extends Resolved = Resolved> = (resolved: R) => VerifyFinding[]
+export type ScopeFn<R extends Resolved = Resolved> = (
+  resolved: R,
+  ctx: ScopeContext<R>,
+) => VerifyFinding[] | Promise<VerifyFinding[]>
+
+/** Context handed to a `ScopeFn` alongside the resolved app. */
+export interface ScopeContext<R extends Resolved = Resolved> {
+  /** The resolved app the scopes run over. */
+  resolved: R
+  /**
+   * Read an artifact file relative to `resolved.rootDir` (rejects with
+   * `AppConfigError` when it escapes the root or does not exist).
+   */
+  readArtifact(relPath: string): Promise<string>
+}
 
 export interface VerifyInput<R extends Resolved = Resolved> {
   rules?: readonly GateRule<R>[]
@@ -223,29 +279,53 @@ export const DEFAULT_ITEMS_GLOB = "config/items/*.yaml"
 export const DEFAULT_CONTRACTS_DIR = "contracts"
 
 // ---------------------------------------------------------------------------
+// JSON Schema conversion
+// ---------------------------------------------------------------------------
+
+/** Structural guard: does the schema expose zod's `_zod` internals, so `z.toJSONSchema` can walk it? */
+function isZodSchema(schema: SchemaLike<unknown>): schema is z.ZodType {
+  return "_zod" in schema
+}
+
+/**
+ * Convert a schema to JSON Schema. A `SchemaLike` that is not a zod schema
+ * cannot be introspected — that is a CLEAR kit error, not a type constraint:
+ * the public generic surface stays zod-free, and apps that pass a
+ * hand-rolled `{ parse }` emit their JSON Schemas themselves.
+ */
+function schemaToJsonSchema(schema: SchemaLike<unknown>, label: string): JsonSchemaPair["app"] {
+  if (!isZodSchema(schema)) {
+    throw new AppConfigError(
+      `jsonSchemas(): the ${label} schema is not a zod schema, so the kit cannot convert it to JSON Schema. Pass a zod schema (zod is this kit's peer dependency) or emit the JSON Schema yourself.`,
+    )
+  }
+  return z.toJSONSchema(schema, { io: "input" })
+}
+
+// ---------------------------------------------------------------------------
 // Kit
 // ---------------------------------------------------------------------------
 
 export type AppKit<
-  A extends z.ZodObject<z.ZodRawShape>,
-  I extends z.ZodObject<z.ZodRawShape>,
+  AOut extends Record<string, unknown>,
+  IOut extends Record<string, unknown>,
 > = {
-  readonly def: AppKitDefinition<A, I>
-  load(rootDir: string, opts?: LoadOptions): Resolved<z.output<A>, z.output<I>>
+  readonly def: AppKitDefinition<AOut, IOut>
+  load(rootDir: string, opts?: LoadOptions): Resolved<AOut, IOut>
   jsonSchemas(): JsonSchemaPair
   writeSchemas(dir: string): void
   contracts(input: {
-    resolved: Resolved<z.output<A>, z.output<I>>
-    template: (item: ResolvedItem<z.output<I>>) => object
+    resolved: Resolved<AOut, IOut>
+    template: (item: ResolvedItem<IOut>) => object
     dir: string
   }): { write(): void; check(): ContractDrift[] }
   gates(
-    resolved: Resolved<z.output<A>, z.output<I>>,
-    rules: readonly GateRule<Resolved<z.output<A>, z.output<I>>>[],
+    resolved: Resolved<AOut, IOut>,
+    rules: readonly GateRule<Resolved<AOut, IOut>>[],
   ): Promise<GateResult>
   verify(
-    resolved: Resolved<z.output<A>, z.output<I>>,
-    input?: VerifyInput<Resolved<z.output<A>, z.output<I>>>,
+    resolved: Resolved<AOut, IOut>,
+    input?: VerifyInput<Resolved<AOut, IOut>>,
   ): Promise<VerifyReport>
 }
 
@@ -268,12 +348,12 @@ export type AnyKit = {
 }
 
 export function defineAppConfig<
-  A extends z.ZodObject<z.ZodRawShape>,
-  I extends z.ZodObject<z.ZodRawShape>,
->(def: AppKitDefinition<A, I>): AppKit<A, I> {
+  AOut extends Record<string, unknown>,
+  IOut extends Record<string, unknown>,
+>(def: AppKitDefinition<AOut, IOut>): AppKit<AOut, IOut> {
   const precedence = normalizePrecedence(def.precedence)
 
-  function load(rootDir: string, opts: LoadOptions = {}): Resolved<z.output<A>, z.output<I>> {
+  function load(rootDir: string, opts: LoadOptions = {}): Resolved<AOut, IOut> {
     const appFile = join(rootDir, opts.appFile ?? DEFAULT_APP_FILE)
     const rawApp: unknown = parseYamlFile(appFile)
     const app = def.app.parse(rawApp)
@@ -321,7 +401,7 @@ export function defineAppConfig<
     }
 
     const fileInfos = resolveItemFileInfos(rootDir, opts.itemsGlob ?? DEFAULT_ITEMS_GLOB)
-    const items = new Map<string, ResolvedItem<z.output<I>>>()
+    const items = new Map<string, ResolvedItem<IOut>>()
     const mergeOpts: MergeOptions = def.mergeArraysBy !== undefined ? { arraysBy: def.mergeArraysBy } : {}
     for (const info of fileInfos) {
       const raw: unknown = parseYamlFile(info.path)
@@ -339,24 +419,27 @@ export function defineAppConfig<
       const entry = entryIndex >= 0 ? entries[entryIndex] : {}
       const byLayer: Record<Layer, unknown> = { defaults, entry, item: raw }
       let merged = mergeLayers(precedence.map((layer) => byLayer[layer]), mergeOpts)
+      let projected: Record<string, unknown> | undefined
       if (def.project !== undefined) {
         if (!isPlainObject(merged)) {
           throw new AppConfigError(
             `${relative(rootDir, info.path)}: merged item value must be an object for project()`,
           )
         }
-        merged = def.project(merged, {
+        projected = def.project(merged, {
           id,
           itemPath: info.path,
           dir: info.dir,
           app,
           entry: entryIndex >= 0 && entry !== undefined ? entry : null,
         })
+        merged = projected
       }
       const value = def.item.parse(merged)
       items.set(id, {
         id,
         value,
+        ...(projected !== undefined ? { projected } : {}),
         itemPath: info.path,
         dir: info.dir,
         entryIndex: entryIndex >= 0 ? entryIndex : null,
@@ -388,8 +471,8 @@ export function defineAppConfig<
 
   function jsonSchemas(): JsonSchemaPair {
     return {
-      app: z.toJSONSchema(def.app, { io: "input" }),
-      item: z.toJSONSchema(def.item, { io: "input" }),
+      app: schemaToJsonSchema(def.app, "app"),
+      item: schemaToJsonSchema(def.item, "item"),
     }
   }
 
@@ -401,8 +484,8 @@ export function defineAppConfig<
   }
 
   function contracts(input: {
-    resolved: Resolved<z.output<A>, z.output<I>>
-    template: (item: ResolvedItem<z.output<I>>) => object
+    resolved: Resolved<AOut, IOut>
+    template: (item: ResolvedItem<IOut>) => object
     dir: string
   }): { write(): void; check(): ContractDrift[] } {
     const { resolved, template, dir } = input
@@ -441,18 +524,18 @@ export function defineAppConfig<
   }
 
   async function gates(
-    resolved: Resolved<z.output<A>, z.output<I>>,
-    rules: readonly GateRule<Resolved<z.output<A>, z.output<I>>>[],
+    resolved: Resolved<AOut, IOut>,
+    rules: readonly GateRule<Resolved<AOut, IOut>>[],
   ): Promise<GateResult> {
     const findings: GateResultFinding[] = []
     const readArtifact = makeReadArtifact(resolved.rootDir)
     for (const rule of rules) {
-      const ctx: GateContext<Resolved<z.output<A>, z.output<I>>> = { resolved, readArtifact }
+      const ctx: GateContext<Resolved<AOut, IOut>> = { resolved, readArtifact }
       const out = await rule.test(ctx)
       for (const f of out) {
         findings.push({
           rule: rule.id,
-          level: rule.level,
+          level: f.level ?? rule.level,
           message: f.message,
           ...(f.item !== undefined ? { item: f.item } : {}),
           ...(f.attrs !== undefined ? { attrs: f.attrs } : {}),
@@ -463,8 +546,8 @@ export function defineAppConfig<
   }
 
   async function verify(
-    resolved: Resolved<z.output<A>, z.output<I>>,
-    input: VerifyInput<Resolved<z.output<A>, z.output<I>>> = {},
+    resolved: Resolved<AOut, IOut>,
+    input: VerifyInput<Resolved<AOut, IOut>> = {},
   ): Promise<VerifyReport> {
     const findings: VerifyFinding[] = []
 
@@ -494,8 +577,12 @@ export function defineAppConfig<
       }
     }
 
+    const scopeCtx: ScopeContext<Resolved<AOut, IOut>> = {
+      resolved,
+      readArtifact: makeReadArtifact(resolved.rootDir),
+    }
     for (const [scope, fn] of Object.entries(input.scopes ?? {})) {
-      for (const f of fn(resolved)) {
+      for (const f of await fn(resolved, scopeCtx)) {
         findings.push({
           scope,
           level: f.level,

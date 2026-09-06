@@ -106,6 +106,18 @@ string `id` is keyed by its per-item directory name (`manuscripts/<dir>/book.yam
   findings are `{ scope, level: "error" | "warn" | "skipped", message,
   item?, attrs? }` — `attrs` is free-form (`{ book, chapter }`), the shape
   an app's `verify.command` reports.
+- **`scopes`** may be async and receive a `ScopeContext` handle —
+  `(resolved, ctx) => VerifyFinding[] | Promise<VerifyFinding[]>` where
+  `ctx.readArtifact(relPath)` resolves relative to `resolved.rootDir`
+  (same root-escape guard as gate rules) — so one umbrella scope can read
+  artifacts while emitting error/warn/skipped findings at their own
+  per-finding levels. Sync single-argument scopes keep working.
+- **`gates`** findings may carry their own `level` (`"error" | "warn"`),
+  overriding the rule's level per finding.
+- **`project`** exposes its projected object on `ResolvedItem.projected`
+  (pre-parse, verbatim). The item schema's output (`ResolvedItem.value`)
+  strips keys it does not declare, so derived fields computed by `project`
+  survive on `projected` instead. Absent when there is no `project` hook.
 
 ## Consumer with a non-`id` data model
 
@@ -135,7 +147,10 @@ const BookSchema = z.object({
   knowledge: z.array(KnowledgeSelector).default([]),
 })
 
-export const kit: AppKit<typeof CollectionSchema, typeof BookSchema> = defineAppConfig({
+export const kit: AppKit<
+  z.output<typeof CollectionSchema>,
+  z.output<typeof BookSchema>
+> = defineAppConfig({
   app: CollectionSchema,
   item: BookSchema,          // no `id` — items are keyed by their directory
   itemsKey: "order",         // the ordered entries are `order[]`
@@ -163,7 +178,8 @@ default:
 type ResolvedBooks = Resolved<z.output<typeof CollectionSchema>, z.output<typeof BookSchema>>
 
 const scopes: Record<string, ScopeFn<ResolvedBooks>> = {
-  accents: (r) => /* r.items.get(id)?.value.accent is a string | undefined */,
+  // async scopes get ctx.readArtifact (rootDir-escape-guarded)
+  accents: async (r, ctx) => { /* r.items.get(id)?.value.accent; await ctx.readArtifact(...) */ },
 }
 const rules: GateRule<ResolvedBooks>[] = [
   {
@@ -195,13 +211,24 @@ The config module exports `kit` plus optional `rules`, `template`,
 ## CLI smoke test
 
 ```sh
-pnpm --filter @agentproto/app-config test   # 30 tests: precedence, schemas, contracts drift, gates (readArtifact/attrs), verify, CLI, consumer-zod fixture
+pnpm --filter @agentproto/app-config test   # 34 tests: precedence, schemas, contracts drift, gates (readArtifact/attrs), verify, CLI, consumer-zod fixture
 ```
 
 ## zod as a peer dependency
 
-zod is a **peerDependency** (`^4`) — the kit compiles its types against
-whatever zod copy the consumer installs, so a consumer's `ZodObject`
-instances type-check against `defineAppConfig`'s generics (the
-`test-fixtures/consumer/` fixture pins this with its own zod copy and a
-`tsc --noEmit` contract test).
+zod is a **peerDependency** (`^4`), and the kit's public generic surface
+mentions **no zod types at all**: `defineAppConfig` / `AppKitDefinition`
+constrain on the kit-owned structural `SchemaLike<Out>` —
+`{ parse(value: unknown): Out }` — and infer `AOut`/`IOut` from the
+`parse` return. A consumer whose zod **minor** differs from the kit's own
+tree (e.g. consumer pins `4.4.3`, kit tree resolves `4.5.4`) type-checks
+at the `defineAppConfig` call site with no cast and no pin bump; the
+`test-fixtures/consumer/` fixture proves exactly that (its own zod copy +
+a `tsc --noEmit` contract test). Two consequences:
+
+- `jsonSchemas()` needs zod's introspection: a `SchemaLike` that is not a
+  zod schema (a hand-rolled `{ parse }`) makes `jsonSchemas()` /
+  `writeSchemas()` throw a clear `AppConfigError` instead of being a type
+  error — emit your JSON Schema yourself in that case.
+- `AppKit<AOut, IOut>` is parameterized by the **output** types
+  (`z.output<typeof Schema>`), not the schema types.

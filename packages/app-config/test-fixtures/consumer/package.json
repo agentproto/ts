@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@agentproto/app-config": "file:../..",
-    "zod": "^4.5.4"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
