@@ -21,8 +21,7 @@
  * No `any`, no `as` casts: generic values cross `pick` (an Object.entries
  * walk) and runtime type guards.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { isAbsolute, basename, join, relative, resolve } from "node:path"
 import { parse } from "yaml"
 import { z } from "zod"
 import {
@@ -37,6 +36,7 @@ import {
   type Layer,
   type MergeOptions,
 } from "./merge.js"
+import { guardSource, nodeSource, type ConfigSource, type ScopedSource } from "./source.js"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,6 +115,11 @@ export interface AppKitDefinition<
   ) => Record<string, unknown>
   /** Layer order, lowest → highest. Default: defaults → entry → item. */
   precedence?: readonly Layer[]
+  /**
+   * Injectable I/O source (see `ConfigSource`). Default: the real filesystem.
+   * Per-call `load(root, { source })` overrides this.
+   */
+  source?: ConfigSource
 }
 
 /** Context handed to a `project` hook for one item. */
@@ -136,6 +141,8 @@ export interface LoadOptions {
   appFile?: string
   /** Item file glob, relative to rootDir. Default `config/items/*.yaml`. */
   itemsGlob?: string
+  /** Injectable I/O source (see `ConfigSource`). Overrides the kit-level source. */
+  source?: ConfigSource
 }
 
 export interface ResolvedItem<I = Record<string, unknown>> {
@@ -155,6 +162,12 @@ export interface ResolvedItem<I = Record<string, unknown>> {
   dir: string
   /** Position in the app's items[] entry list, or null when file-only. */
   entryIndex: number | null
+  /**
+   * The matched raw `items[]` entry (the same object `ProjectContext.entry`
+   * sees), or null when the item is file-only. Saves consumers the
+   * `app.order`-indexed lookup through `entryIndex`.
+   */
+  entry: Record<string, unknown> | null
 }
 
 /** The resolved app. Defaults erase values to `Record<string, unknown>` so gate/template authors get a loose, cast-free surface. */
@@ -221,6 +234,14 @@ export interface GateContext<R extends Resolved = Resolved> {
    * `AppConfigError` when it escapes the root or does not exist).
    */
   readArtifact(relPath: string): Promise<string>
+  /**
+   * The kit's root-escape-guarded I/O port (see `ScopedSource`): read a
+   * file, LIST a directory, and PROBE a path as `"file"` / `"dir"` / null
+   * (missing) — all relative to `resolved.rootDir`. A `..` traversal throws
+   * `AppConfigError`, exactly as `readArtifact` does. `probe` never throws
+   * for a missing path — "missing" is a first-class finding, not an error.
+   */
+  source: ScopedSource
   /** A parsed contract object for `ctx.item`, when the runner supplies one. */
   contract?: unknown
 }
@@ -287,6 +308,8 @@ export interface ScopeContext<R extends Resolved = Resolved> {
    * `AppConfigError` when it escapes the root or does not exist).
    */
   readArtifact(relPath: string): Promise<string>
+  /** The same root-escape-guarded port `GateContext.source` exposes (see `ScopedSource`). */
+  source: ScopedSource
 }
 
 export interface VerifyInput<R extends Resolved = Resolved> {
@@ -340,6 +363,7 @@ export type AppKit<
     resolved: Resolved<AOut, IOut>
     template: (item: ResolvedItem<IOut>) => object
     dir: string
+    source?: ConfigSource
   }): { write(): void; check(): ContractDrift[] }
   gates(
     resolved: Resolved<AOut, IOut>,
@@ -364,6 +388,7 @@ export type AnyKit = {
     resolved: Resolved
     template: (item: ResolvedItem) => object
     dir: string
+    source?: ConfigSource
   }): { write(): void; check(): ContractDrift[] }
   gates(resolved: Resolved, rules: readonly GateRule[]): Promise<GateResult>
   verify(resolved: Resolved, input?: VerifyInput): Promise<VerifyReport>
@@ -374,10 +399,15 @@ export function defineAppConfig<
   IOut extends Record<string, unknown>,
 >(def: AppKitDefinition<AOut, IOut>): AppKit<AOut, IOut> {
   const precedence = normalizePrecedence(def.precedence)
+  const defaultSource: ConfigSource = def.source ?? nodeSource()
+  // The source a `load` actually ran with, so gates/verify run over a
+  // memory-resolved app read from the same memory, not the filesystem.
+  const sourceByResolved = new WeakMap<object, ConfigSource>()
 
   function load(rootDir: string, opts: LoadOptions = {}): Resolved<AOut, IOut> {
+    const source = opts.source ?? defaultSource
     const appFile = join(rootDir, opts.appFile ?? DEFAULT_APP_FILE)
-    const rawApp: unknown = parseYamlFile(appFile)
+    const rawApp: unknown = parseYamlFile(source, appFile)
     const app = def.app.parse(rawApp)
     // Merge layers read from the RAW yaml: the app schema may strip keys it
     // doesn't declare (e.g. arbitrary per-entry overrides), and stripping
@@ -422,11 +452,11 @@ export function defineAppConfig<
       entries = pickedEntries.value
     }
 
-    const fileInfos = resolveItemFileInfos(rootDir, opts.itemsGlob ?? DEFAULT_ITEMS_GLOB)
+    const fileInfos = resolveItemFileInfos(rootDir, opts.itemsGlob ?? DEFAULT_ITEMS_GLOB, source)
     const items = new Map<string, ResolvedItem<IOut>>()
     const mergeOpts: MergeOptions = def.mergeArraysBy !== undefined ? { arraysBy: def.mergeArraysBy } : {}
     for (const info of fileInfos) {
-      const raw: unknown = parseYamlFile(info.path)
+      const raw: unknown = parseYamlFile(source, info.path)
       if (!isPlainObject(raw)) {
         throw new AppConfigError(
           `${relative(rootDir, info.path)}: item file must be an object`,
@@ -465,6 +495,7 @@ export function defineAppConfig<
         itemPath: info.path,
         dir: info.dir,
         entryIndex: entryIndex >= 0 ? entryIndex : null,
+        entry: entryIndex >= 0 && entry !== undefined ? entry : null,
       })
     }
 
@@ -482,13 +513,15 @@ export function defineAppConfig<
       .sort((a, b) => basename(a.itemPath).localeCompare(basename(b.itemPath)))
       .map((it) => it.id)
 
-    return {
+    const resolved: Resolved<AOut, IOut> = {
       rootDir,
       appFile,
       app,
       items,
       order: [...withEntries, ...fileOnly],
     }
+    sourceByResolved.set(resolved, source)
+    return resolved
   }
 
   function jsonSchemas(opts?: JsonSchemasOptions): JsonSchemaPair {
@@ -500,18 +533,20 @@ export function defineAppConfig<
   }
 
   function writeSchemas(dir: string): void {
-    mkdirSync(dir, { recursive: true })
+    defaultSource.mkdir(dir)
     const { app, item } = jsonSchemas()
-    writeFileSync(join(dir, "app.schema.json"), JSON.stringify(app, null, 2) + "\n")
-    writeFileSync(join(dir, "item.schema.json"), JSON.stringify(item, null, 2) + "\n")
+    defaultSource.writeFile(join(dir, "app.schema.json"), JSON.stringify(app, null, 2) + "\n")
+    defaultSource.writeFile(join(dir, "item.schema.json"), JSON.stringify(item, null, 2) + "\n")
   }
 
   function contracts(input: {
     resolved: Resolved<AOut, IOut>
     template: (item: ResolvedItem<IOut>) => object
     dir: string
+    source?: ConfigSource
   }): { write(): void; check(): ContractDrift[] } {
     const { resolved, template, dir } = input
+    const source = input.source ?? defaultSource
 
     function build(): { id: string; file: string; text: string; sha: string }[] {
       return resolved.order.map((id) => {
@@ -526,17 +561,17 @@ export function defineAppConfig<
 
     return {
       write(): void {
-        mkdirSync(dir, { recursive: true })
-        for (const c of build()) writeFileSync(c.file, c.text)
+        source.mkdir(dir)
+        for (const c of build()) source.writeFile(c.file, c.text)
       },
       check(): ContractDrift[] {
         const drift: ContractDrift[] = []
         for (const c of build()) {
-          if (!existsSync(c.file)) {
+          if (source.probe(c.file) === null) {
             drift.push({ id: c.id, file: c.file, reason: "missing" })
             continue
           }
-          const onDisk: unknown = JSON.parse(readFileSync(c.file, "utf8"))
+          const onDisk: unknown = JSON.parse(source.readFile(c.file))
           if (sha256Hex(canonicalJson(onDisk)) !== c.sha) {
             drift.push({ id: c.id, file: c.file, reason: "drifted" })
           }
@@ -551,9 +586,14 @@ export function defineAppConfig<
     rules: readonly GateRule<Resolved<AOut, IOut>>[],
   ): Promise<GateResult> {
     const findings: GateResultFinding[] = []
-    const readArtifact = makeReadArtifact(resolved.rootDir)
+    const source = sourceByResolved.get(resolved) ?? defaultSource
+    const readArtifact = makeReadArtifact(source, resolved.rootDir)
     for (const rule of rules) {
-      const ctx: GateContext<Resolved<AOut, IOut>> = { resolved, readArtifact }
+      const ctx: GateContext<Resolved<AOut, IOut>> = {
+        resolved,
+        readArtifact,
+        source: guardSource(source, resolved.rootDir),
+      }
       const out = await rule.test(ctx)
       for (const f of out) {
         findings.push({
@@ -573,6 +613,7 @@ export function defineAppConfig<
     input: VerifyInput<Resolved<AOut, IOut>> = {},
   ): Promise<VerifyReport> {
     const findings: VerifyFinding[] = []
+    const source = sourceByResolved.get(resolved) ?? defaultSource
 
     if (input.rules !== undefined) {
       const result = await gates(resolved, input.rules)
@@ -589,7 +630,7 @@ export function defineAppConfig<
 
     if (input.template !== undefined) {
       const dir = input.contractsDir ?? join(resolved.rootDir, DEFAULT_CONTRACTS_DIR)
-      const drift = contracts({ resolved, template: input.template, dir }).check()
+      const drift = contracts({ resolved, template: input.template, dir, source }).check()
       for (const d of drift) {
         findings.push({
           scope: "contracts",
@@ -602,7 +643,8 @@ export function defineAppConfig<
 
     const scopeCtx: ScopeContext<Resolved<AOut, IOut>> = {
       resolved,
-      readArtifact: makeReadArtifact(resolved.rootDir),
+      readArtifact: makeReadArtifact(source, resolved.rootDir),
+      source: guardSource(source, resolved.rootDir),
     }
     for (const [scope, fn] of Object.entries(input.scopes ?? {})) {
       for (const f of await fn(resolved, scopeCtx)) {
@@ -674,7 +716,7 @@ export function entryMatches(matchKey: MatchKey | undefined, entry: object, item
 }
 
 /** Read an artifact relative to the resolved root, without letting it escape. */
-function makeReadArtifact(rootDir: string): (relPath: string) => Promise<string> {
+function makeReadArtifact(source: ConfigSource, rootDir: string): (relPath: string) => Promise<string> {
   return (relPath: string): Promise<string> => {
     const abs = resolve(rootDir, relPath)
     const rel = relative(rootDir, abs)
@@ -682,20 +724,21 @@ function makeReadArtifact(rootDir: string): (relPath: string) => Promise<string>
       return Promise.reject(new AppConfigError(`artifact path escapes rootDir: ${relPath}`))
     }
     try {
-      return Promise.resolve(readFileSync(abs, "utf8"))
+      return Promise.resolve(source.readFile(abs))
     } catch {
       return Promise.reject(new AppConfigError(`artifact not found: ${relPath}`))
     }
   }
 }
 
-function parseYamlFile(path: string): unknown {
-  if (!existsSync(path)) {
+function parseYamlFile(source: ConfigSource, path: string): unknown {
+  if (source.probe(path) === null) {
     throw new AppConfigError(`config file not found: ${path}`)
   }
   try {
-    return parse(readFileSync(path, "utf8"))
+    return parse(source.readFile(path))
   } catch (err) {
+    if (err instanceof AppConfigError) throw err
     throw new AppConfigError(`${path} could not be parsed as YAML: ${String(err)}`)
   }
 }
@@ -722,11 +765,11 @@ export interface ItemFileInfo {
  *
  * Output is sorted by path for determinism.
  */
-export function resolveItemFileInfos(root: string, glob: string): ItemFileInfo[] {
+export function resolveItemFileInfos(root: string, glob: string, source: ConfigSource = nodeSource()): ItemFileInfo[] {
   const lastSlash = glob.lastIndexOf("/")
   const pattern = lastSlash >= 0 ? glob.slice(lastSlash + 1) : glob
   const dirPart = lastSlash >= 0 ? glob.slice(0, lastSlash) : ""
-  const dirs = resolveDirs(root, dirPart === "" ? [] : dirPart.split("/"), glob)
+  const dirs = resolveDirs(source, root, dirPart === "" ? [] : dirPart.split("/"), glob)
   const out: ItemFileInfo[] = []
   if (pattern.includes("*")) {
     if (!pattern.startsWith("*.")) {
@@ -734,46 +777,46 @@ export function resolveItemFileInfos(root: string, glob: string): ItemFileInfo[]
     }
     const ext = pattern.slice(1)
     for (const d of dirs) {
-      for (const p of listYaml(d, ext)) out.push({ path: p, dir: d, key: basename(p, ext) })
+      for (const p of listYaml(source, d, ext)) out.push({ path: p, dir: d, key: basename(p, ext) })
     }
   } else {
     for (const d of dirs) {
       const p = join(d, pattern)
-      if (existsSync(p) && statSync(p).isFile()) out.push({ path: p, dir: d, key: basename(d) })
+      if (source.probe(p) === "file") out.push({ path: p, dir: d, key: basename(d) })
     }
   }
   return out.sort((a, b) => a.path.localeCompare(b.path))
 }
 
 /** Resolve an items glob to file paths (see `resolveItemFileInfos`). */
-export function resolveItemFiles(root: string, glob: string): string[] {
-  return resolveItemFileInfos(root, glob).map((f) => f.path)
+export function resolveItemFiles(root: string, glob: string, source: ConfigSource = nodeSource()): string[] {
+  return resolveItemFileInfos(root, glob, source).map((f) => f.path)
 }
 
 /** Expand directory segments — `**` (any depth), wildcard segments, literals — under root. */
-function resolveDirs(root: string, segments: readonly string[], glob: string): string[] {
+function resolveDirs(source: ConfigSource, root: string, segments: readonly string[], glob: string): string[] {
   let dirs = [root]
   for (const seg of segments) {
     if (seg === "**") {
       const next: string[] = []
       for (const d of dirs) {
         next.push(d)
-        next.push(...descendantDirs(d))
+        next.push(...descendantDirs(source, d))
       }
       dirs = next
     } else if (seg.includes("*")) {
       const re = segmentRegex(seg)
       const next: string[] = []
       for (const d of dirs) {
-        for (const name of readdirSync(d).sort()) {
+        for (const name of source.listDir(d).sort()) {
           const p = join(d, name)
-          if (statSync(p).isDirectory() && re.test(name)) next.push(p)
+          if (source.probe(p) === "dir" && re.test(name)) next.push(p)
         }
       }
       dirs = next
     } else {
       dirs = dirs.map((d) => join(d, seg)).filter((p) => {
-        if (!existsSync(p) || !statSync(p).isDirectory()) {
+        if (source.probe(p) !== "dir") {
           throw new AppConfigError(`items directory not found: ${p} (glob "${glob}")`)
         }
         return true
@@ -789,21 +832,22 @@ function segmentRegex(segment: string): RegExp {
   return new RegExp(`^${escaped}$`)
 }
 
-function descendantDirs(dir: string): string[] {
+function descendantDirs(source: ConfigSource, dir: string): string[] {
   const out: string[] = []
-  for (const name of readdirSync(dir).sort()) {
+  for (const name of source.listDir(dir).sort()) {
     const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
+    if (source.probe(p) === "dir") {
       out.push(p)
-      out.push(...descendantDirs(p))
+      out.push(...descendantDirs(source, p))
     }
   }
   return out
 }
 
-function listYaml(dir: string, ext: string): string[] {
-  return readdirSync(dir)
+function listYaml(source: ConfigSource, dir: string, ext: string): string[] {
+  return source
+    .listDir(dir)
     .filter((name) => name.endsWith(ext))
     .map((name) => join(dir, name))
-    .filter((p) => statSync(p).isFile())
+    .filter((p) => source.probe(p) === "file")
 }

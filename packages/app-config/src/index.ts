@@ -32,6 +32,13 @@ export {
   type VerifyReport,
 } from "./define.js"
 export {
+  guardSource,
+  memorySource,
+  nodeSource,
+  type ConfigSource,
+  type ScopedSource,
+} from "./source.js"
+export {
   AppConfigError,
   canonicalJson,
   isPlainObject,
