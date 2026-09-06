@@ -273,6 +273,7 @@ describe("worktree_gc — MCP tool", () => {
     const registry = createSessionsRegistry({ persist: false })
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
     registerSessionTools(server, {
+      workspace: process.cwd(),
       registry,
       ...(runWorktreeGc ? { runWorktreeGc } : {}),
     })
@@ -370,7 +371,7 @@ describe("worktree_gc — MCP tool", () => {
     const registry = createSessionsRegistry({ persist: false })
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
     const { runner, seen } = recordingRunner()
-    registerSessionTools(server, { registry, runWorktreeGc: runner })
+    registerSessionTools(server, { registry, workspace: process.cwd(), runWorktreeGc: runner })
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)

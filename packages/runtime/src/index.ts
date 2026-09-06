@@ -1748,6 +1748,7 @@ export async function createGateway(
     // singletons on the gateway, same closure-rebind pattern.
     registerSessionTools(server, {
       registry: sessions,
+      workspace,
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
       // Phase 4: lets an `agent_start` carrying `costBudget` auto-attach a

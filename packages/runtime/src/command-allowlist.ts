@@ -46,6 +46,10 @@ export interface AllowlistEntry {
 interface AllowlistFile {
   version?: number
   commands?: Array<string | { command?: unknown; args?: unknown }>
+  /** Optional top-level terminal gate mode — governs `terminal_start`
+   *  (see `TerminalGateMode` / `loadTerminalGateMode`). Same file as the
+   *  `commands` allowlist on purpose: one place to reason about gating. */
+  terminalGate?: unknown
 }
 
 interface AllowlistCacheEntry {
@@ -148,6 +152,81 @@ export function isCommandAllowed(
   if (matching.length === 0) return false
   if (matching.some(e => e.args === undefined)) return true
   return matching.some(e => argsMatchPrefix(e.args!, args))
+}
+
+// ── terminal gate mode ─────────────────────────────────────────────
+// `command_execute` refuses any command outside the workspace allowlist,
+// but `terminal_start` spawns arbitrary argv under a PTY with no check —
+// the gate is decorative while that door is open. A three-valued mode
+// closes it: `terminal_start`'s argv[0] must pass the SAME allowlist
+// check `command_execute` applies, unless the operator deliberately
+// opens it (or closes it entirely).
+
+/**
+ * How `terminal_start` is gated for a workspace:
+ *   - `"allowlist"` — `argv[0]` must pass the same allowlist check
+ *     `command_execute` applies. The shipped default.
+ *   - `"all"` — no check. The legitimate setting for a trusted local
+ *     workspace: this task exists so `all` becomes a deliberate
+ *     DECISION, not an accident of which tool the caller happened to
+ *     use.
+ *   - `"off"` — `terminal_start` is refused outright, whatever the argv.
+ *     NOTE: `off` means the door is CLOSED, not that the gate is
+ *     disabled — the name reads both ways and the wrong reading is a
+ *     security hole.
+ */
+export type TerminalGateMode = "allowlist" | "all" | "off"
+
+/** Global-default env var: the fallback when a workspace's allowlist
+ *  file carries no `terminalGate` field. */
+export const TERMINAL_GATE_ENV = "AGENTPROTO_TERMINAL_GATE"
+
+/** Shipped default: gate `terminal_start` through the allowlist, same as
+ *  `command_execute`. */
+export const DEFAULT_TERMINAL_GATE: TerminalGateMode = "allowlist"
+
+function parseTerminalGateMode(raw: unknown): TerminalGateMode | undefined {
+  return raw === "allowlist" || raw === "all" || raw === "off" ? raw : undefined
+}
+
+/**
+ * Resolve the terminal gate mode for `workspace`, highest priority first:
+ * the workspace's own `terminalGate` field in
+ * `<workspace>/.agentproto/allowed-commands.json`, then the global
+ * default from `AGENTPROTO_TERMINAL_GATE`, then
+ * `DEFAULT_TERMINAL_GATE`.
+ *
+ * NOTE the precedence is the OPPOSITE of `loadSandboxConfig`'s
+ * env-as-escape-hatch: here the env var is the GLOBAL DEFAULT, so a
+ * workspace's explicit setting deliberately WINS over it. Don't "fix"
+ * that — a workspace must be able to pin its own posture.
+ *
+ * An unrecognised value in either place resolves to
+ * `DEFAULT_TERMINAL_GATE` and is never treated as `all` — fail toward
+ * the gate, not away from it.
+ */
+export async function loadTerminalGateMode(
+  workspace: string,
+): Promise<TerminalGateMode> {
+  const path = resolve(workspace, ALLOWLIST_REL)
+  let fromWorkspace: TerminalGateMode | undefined
+  if (existsSync(path)) {
+    try {
+      const raw = await readFile(path, "utf8")
+      fromWorkspace = parseTerminalGateMode(
+        (JSON.parse(raw) as AllowlistFile).terminalGate,
+      )
+    } catch (err) {
+      // Bad JSON / unreadable file — the allowlist loader denies all on
+      // the same condition; fail toward the gate here too.
+      console.error(
+        `[command-allowlist] failed to read terminalGate from ${ALLOWLIST_REL} (will use default):`,
+        err,
+      )
+    }
+  }
+  const fromEnv = parseTerminalGateMode(process.env[TERMINAL_GATE_ENV])
+  return fromWorkspace ?? fromEnv ?? DEFAULT_TERMINAL_GATE
 }
 
 /**

@@ -63,7 +63,7 @@ afterEach(async () => {
 
 describe("mcp_discovered_list pagination (PR-8)", () => {
   it("page-walk with limit=2 covers exactly the unpaginated list; default call unchanged", async () => {
-    const { client, close } = await connect(server => registerSessionTools(server, { registry: createSessionsRegistry({ persist: false }) }))
+    const { client, close } = await connect(server => registerSessionTools(server, { registry: createSessionsRegistry({ persist: false }), workspace: process.cwd() }))
 
     // Default call unchanged: the { mcps } envelope, no page fields.
     const unpaginated = parse(await client.callTool({ name: "mcp_discovered_list", arguments: {} }))
@@ -105,7 +105,7 @@ describe("mcp_imported_list pagination (PR-8)", () => {
         { id: "goose:global:fetch", alias: "fetch", addedAt: "2026-07-22T10:02:00.000Z", snapshot: { id: "goose:global:fetch", source: "goose", scope: "global", name: "fetch", type: "stdio" } },
       ],
     })
-    const { client, close } = await connect(server => registerSessionTools(server, { registry: createSessionsRegistry({ persist: false }) }))
+    const { client, close } = await connect(server => registerSessionTools(server, { registry: createSessionsRegistry({ persist: false }), workspace: process.cwd() }))
 
     // Default call unchanged: the persisted { version, imports } config, no page fields.
     const unpaginated = parse(await client.callTool({ name: "mcp_imported_list", arguments: {} }))
@@ -162,7 +162,7 @@ describe("session_queue_list pagination (PR-8)", () => {
     await registry.enqueuePrompt(desc.id, "s3", { queue: true })
     void firstPromise.catch(() => undefined)
 
-    const { client, close } = await connect(server => registerSessionTools(server, { registry }))
+    const { client, close } = await connect(server => registerSessionTools(server, { registry, workspace: process.cwd() }))
 
     // Default call unchanged: the { sessionId, queue } envelope, no page fields.
     const unpaginated = parse(await client.callTool({ name: "session_queue_list", arguments: { sessionId: desc.id } }))

@@ -171,6 +171,7 @@ describe("worktree_status — MCP tool", () => {
     const registry = createSessionsRegistry({ persist: false })
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
     registerSessionTools(server, {
+      workspace: process.cwd(),
       registry,
       ...(listWorktreeStatuses ? { listWorktreeStatuses } : {}),
     })
