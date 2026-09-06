@@ -30,7 +30,14 @@ import {
 import { getModel } from "../registry/index.js"
 import { shouldDebit } from "../byok/index.js"
 import type { ResolvedModel } from "../registry/index.js"
-import { resolvePricing, resolveModelRoute, resolveContextWindow } from "../llm/catalog.js"
+import {
+  resolvePricing,
+  resolveModelRoute,
+  resolveContextWindow,
+  listNativeModelIds,
+} from "../llm/catalog.js"
+import { PROVIDER_KEY_ENV } from "../schema/base.js"
+import { ANTHROPIC_GATEWAY_PRESETS } from "@agentproto/provider-presets"
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -41,6 +48,7 @@ function llmModel(id = "claude-sonnet-4-5"): ResolvedModel {
     id,
     canonicalId: id,
     pricing: { inputPer1M: 3.0, outputPer1M: 15.0, provider: "anthropic", vendor: "anthropic" },
+    provider: "anthropic",
   }
 }
 
@@ -596,7 +604,7 @@ describe("registerCatalogOverlay + getModel", () => {
     const resolved = getModel("my-finetune")
     expect(resolved?.kind).toBe("llm")
     if (resolved?.kind === "llm") {
-      expect(resolved.pricing.inputPer1M).toBe(1.0)
+      expect(resolved.pricing?.inputPer1M).toBe(1.0)
     }
   })
 })
@@ -635,13 +643,47 @@ describe("shouldDebit", () => {
   })
 })
 
+describe("PROVIDER_KEY_ENV", () => {
+  it("huggingface reads HF_TOKEN, not HUGGINGFACE_API_KEY (regression)", () => {
+    // opencode's bundled huggingface provider only reads HF_TOKEN; the old
+    // HUGGINGFACE_API_KEY value left the model-derived-api-key path injecting
+    // a credential no consumer reads. See schema/base.ts's PROVIDER_KEY_ENV
+    // comment for the full story.
+    expect(PROVIDER_KEY_ENV.huggingface).toBe("HF_TOKEN")
+  })
+
+  it("stays in sync with ANTHROPIC_GATEWAY_PRESETS.keyEnv for every provider present in both maps", () => {
+    // PROVIDER_KEY_ENV (model-catalog) and ANTHROPIC_GATEWAY_PRESETS
+    // (provider-presets) are two independent source-of-truth maps for the
+    // same fact — which env var carries a provider's key. They cover
+    // different provider sets (gateway presets include non-catalog gateways
+    // like moonshot/deepseek/groq; PROVIDER_KEY_ENV covers every catalog
+    // provider including non-gateway ones like anthropic/replicate), so this
+    // only cross-checks the overlap rather than requiring full parity.
+    const providers = Object.keys(PROVIDER_KEY_ENV) as (keyof typeof PROVIDER_KEY_ENV)[]
+    const checked: string[] = []
+    for (const provider of providers) {
+      const preset = (ANTHROPIC_GATEWAY_PRESETS as Record<string, { keyEnv?: string }>)[provider]
+      if (!preset?.keyEnv) continue
+      checked.push(provider)
+      expect(PROVIDER_KEY_ENV[provider]).toBe(preset.keyEnv)
+    }
+    // Sanity: the overlap check actually exercised at least one provider
+    // (huggingface), so a refactor that empties both maps can't pass silently.
+    expect(checked).toContain("huggingface")
+  })
+})
+
 describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
   // These ids are advertised by the claude-code / claude-sdk adapters; they
   // must resolve to a concrete anthropic-priced route so `agentproto models`
   // reports a price and marks them runnable.
   it.each([
     ["claude-opus-4-8", 5.0, 25.0],
-    ["claude-sonnet-5", 3.0, 15.0],
+    // claude-sonnet-5 is priced by ANTHROPIC_GENERATED_PRICING now (2/10,
+    // not the old hand-typed 3/15) — generated wins on divergence, see
+    // catalog.ts's LLM_PRICING_CATALOG comment and the PR body's table.
+    ["claude-sonnet-5", 2.0, 10.0],
     ["claude-fable-5", 10.0, 50.0],
   ])("%s resolves to anthropic pricing", (id, input, output) => {
     const pricing = resolvePricing(id)
@@ -659,7 +701,10 @@ describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
 describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
   it.each([
     ["kimi-k3", 3.0, 15.0],
-    ["kimi-k2.7-code", 0.95, 4.0],
+    // kimi-k2.7-code is priced by MOONSHOT_GENERATED_PRICING now (0.66/3.4,
+    // not the old hand-typed 0.95/4.0) — generated wins on divergence, see
+    // catalog.ts's LLM_PRICING_CATALOG comment and the PR body's table.
+    ["kimi-k2.7-code", 0.66, 3.4],
   ])("%s resolves to expected direct-Moonshot pricing", (id, input, output) => {
     const pricing = resolvePricing(id)
     expect(pricing).toBeDefined()
@@ -673,17 +718,26 @@ describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
   // entry (vendor as OpenRouter reports it) BEFORE the alias table is even
   // consulted — resolvePricing tries a direct match first. Different vendor
   // string than the direct-SDK entries above by design.
-  it.each([
-    ["moonshotai/kimi-k3", 3.0, 15.0],
-    ["moonshotai/kimi-k2.7-code", 0.78, 3.5],
-  ])("%s resolves to expected OpenRouter-routed pricing", (id, input, output) => {
-    const pricing = resolvePricing(id)
-    expect(pricing).toBeDefined()
-    expect(pricing?.vendor).toBe("moonshotai")
-    expect(pricing?.provider).toBe("openrouter")
-    expect(pricing?.inputPer1M).toBe(input)
-    expect(pricing?.outputPer1M).toBe(output)
-  })
+  //
+  // Prices are OpenRouter's LIVE numbers, re-synced weekly by catalog-sync,
+  // so they are snapshotted (not hardcoded) — drift shows as a reviewable
+  // `vitest -u` diff instead of a red CI pin. catalog-sync.yml runs `-u` as
+  // part of its own commit, so a legitimate price change never blocks the
+  // sync PR; only a real generator bug (wrong vendor/provider, or a
+  // pricing shape that vanished) still fails hard.
+  it.each(["moonshotai/kimi-k3", "moonshotai/kimi-k2.7-code"])(
+    "%s resolves to an OpenRouter-routed pricing snapshot",
+    id => {
+      const pricing = resolvePricing(id)
+      expect(pricing).toBeDefined()
+      expect(pricing?.vendor).toBe("moonshotai")
+      expect(pricing?.provider).toBe("openrouter")
+      expect({
+        inputPer1M: pricing?.inputPer1M,
+        outputPer1M: pricing?.outputPer1M,
+      }).toMatchSnapshot()
+    }
+  )
 })
 
 describe("resolveContextWindow", () => {
@@ -706,5 +760,45 @@ describe("resolveContextWindow", () => {
   it("returns undefined for a non-synced provider", () => {
     expect(resolveContextWindow("gpt-4o")).toBeUndefined()
     expect(resolveContextWindow("glm-4.6")).toBeUndefined()
+  })
+})
+
+describe("listNativeModelIds", () => {
+  it("includes the Anthropic id whose absence from a hand-typed list motivated this PR", () => {
+    expect(listNativeModelIds("anthropic")).toContain("claude-opus-4-6")
+  })
+
+  it("includes the equivalent live xAI id", () => {
+    expect(listNativeModelIds("xai")).toContain("grok-4.6")
+  })
+
+  it("includes the bare 'latest' id for every Anthropic generation aged out to a dated-only live id", () => {
+    // Same bug as claude-opus-4-6, one layer down: the pricing generator
+    // already derived these bare ids from their dated siblings, but the
+    // context-windows generator didn't — so they priced fine yet vanished
+    // from this list (and so from every adapter's native model menu). Locks
+    // in the fix so a future refactor of either generator can't reopen it.
+    const anthropicIds = listNativeModelIds("anthropic")
+    expect(anthropicIds).toContain("claude-haiku-4-5")
+    expect(anthropicIds).toContain("claude-opus-4-5")
+    expect(anthropicIds).toContain("claude-sonnet-4-5")
+  })
+
+  it("returns only ids native to the requested provider, never an OpenRouter-routed form", () => {
+    const anthropicIds = listNativeModelIds("anthropic")
+    expect(anthropicIds.length).toBeGreaterThan(0)
+    for (const id of anthropicIds) {
+      // OpenRouter/requesty routes are provider-prefixed ("anthropic/claude-opus-4-6"),
+      // never a bare native id — reject that shape outright.
+      expect(id).not.toContain("/")
+      expect(resolveContextWindow(id)?.provider).toBe("anthropic")
+    }
+
+    const xaiIds = listNativeModelIds("xai")
+    expect(xaiIds.length).toBeGreaterThan(0)
+    for (const id of xaiIds) {
+      expect(id).not.toContain("/")
+      expect(resolveContextWindow(id)?.provider).toBe("xai")
+    }
   })
 })

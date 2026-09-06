@@ -81,6 +81,9 @@ const constructTool = createDoctype<
       idempotent: def.idempotent ?? false,
       defaultImplementation: def.defaultImplementation,
       driverConstraints: freezeProviderConstraints(def.driverConstraints),
+      transformers: def.transformers
+        ? Object.freeze([...def.transformers])
+        : undefined,
     }
   },
 })

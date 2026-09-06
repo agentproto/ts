@@ -39,11 +39,10 @@ independent axes today:
   file edits, anything that never touches an MCP tool). This is the
   keystone that makes Plane 2 harness-agnostic: it binds the process
   boundary an in-process tool runs inside, which Plane 1 can never see.
-  Shipped as of #617 (`packages/driver/agent-cli/src/command-sandbox-wrap.ts`);
-  a first-class `adapterSpawn` key in `.agentproto/command-sandbox.json`
-  plus `agent_start.commandSandbox` schema exposure is in flight as PR 6b
-  (#629, open at the time of writing — see "Config surfaces" below for the
-  shape it proposes).
+  Shipped as of `@agentproto/driver-agent-cli@2.1.0`; controlled by the
+  `adapterSpawn` key in `.agentproto/command-sandbox.json` and the
+  `agent_start.commandSandbox` MCP field (`"off" | "workspace" | "strict"`).
+  See "Config surfaces" below.
 
 **Which plane a policy needs:**
 
@@ -68,7 +67,7 @@ is recorded for the record but has no enforcement effect at the Plane-1 seam
 
 ## Cross-harness coverage — the three tiers
 
-The catalog has 10 agent-CLI adapters
+The catalog has 12 agent-CLI adapters
 (`packages/cli/src/registry/catalog.ts`). `protocol:"acp"` is not, by
 itself, a reliable signal for Plane-1 reach: two adapters declare it but run
 tools in-process behind a local ACP host and never raise
@@ -76,14 +75,14 @@ tools in-process behind a local ACP host and never raise
 
 | Tier | Adapters | Raises `request_permission`? | Plane 1 reach | Plane 2 reach |
 |---|---|---|---|---|
-| **1 — Blockable** | claude-code, codex, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
+| **1 — Blockable** | claude-code, codex, gemini, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
 | **2 — Observable only** | claude-sdk, mastra-agent | No — in-process, `bypassPermissions`; ACP is transport only | Log only (after the fact) | Confined (both axes) |
-| **3 — Opaque** | pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
+| **3 — Opaque** | antigravity, pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
 
-**~5/10 harnesses are semantically gateable (tier 1). ~7/10 are loggable
-(tiers 1+2). ~3/10 are opaque to Plane 1 entirely (tier 3).** State this
+**~6/12 harnesses are semantically gateable (tier 1). ~8/12 are loggable
+(tiers 1+2). ~4/12 are opaque to Plane 1 entirely (tier 3).** State this
 loudly on every surface that talks about "a cross-harness hook engine" — a
-silent 50% cliff reads as 100% coverage, and that's the exact failure mode
+silent ~50% cliff reads as 100% coverage, and that's the exact failure mode
 this doc exists to prevent.
 
 **Plane 2 confines all three tiers uniformly, once the adapter-spawn axis is
@@ -130,10 +129,11 @@ other axis's setting):
 ```
 
 `mode` (top-level) governs `command_execute`; `adapterSpawn.mode` governs
-the adapter-spawn axis and is proposed by #629 (open). Both accept
-`"off" | "workspace" | "strict"`; both fail the confined operation outright
-if no backend is installed for the platform rather than silently running
-unconfined.
+the adapter-spawn axis. Both accept `"off" | "workspace" | "strict"`; both
+fail the confined operation outright if no backend is installed for the
+platform rather than silently running unconfined. `AGENTPROTO_ADAPTER_COMMAND_SANDBOX_MODE`
+is the env-var escape hatch for the adapter-spawn axis (mirroring
+`AGENTPROTO_COMMAND_SANDBOX_MODE` for `command_execute`).
 
 ## Open decision: promoting tier-2 to tier-1
 

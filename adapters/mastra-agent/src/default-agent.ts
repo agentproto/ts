@@ -1,16 +1,45 @@
 /**
- * Builds a runnable Mastra agent from an AIP-42 AGENT.md — either a caller's
- * file or a zero-config built-in default — wiring the model, the markdown body
- * as instructions, the SQLite memory, and the workspace toolset.
+ * Builds a runnable Mastra `AgentController` from an AIP-42 AGENT.md — either
+ * a caller's file or a zero-config built-in default — wiring the model, the
+ * markdown body as instructions, the SQLite memory/storage, and the workspace
+ * toolset, then wrapping the built `Agent` as the controller's shared backing
+ * agent. The ACP host drives controller sessions, not the raw agent stream.
  */
 
 import { readFile } from "node:fs/promises"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent"
 import { buildMastraAgent } from "@agentproto/mastra"
-import type { MastraLike } from "./acp-host.js"
-import { buildSqliteMemory } from "./memory.js"
+import type { MastraToolLike } from "@agentproto/mastra"
+import { ProviderHistoryCompat } from "@mastra/core/processors"
+import type { CompatRule } from "@mastra/core/processors"
+import { AgentController } from "@mastra/core/agent-controller"
+import type {
+  AgentControllerConfig,
+  AgentControllerSubagent,
+  BuiltinToolId,
+  PermissionRules,
+} from "@mastra/core/agent-controller"
+import { Workspace } from "@mastra/core/workspace"
+import type { Agent } from "@mastra/core/agent"
+import { createNotificationInboxTool } from "@mastra/core/notifications"
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { DaemonClient } from "./daemon-client.js"
+import { makeDaemonTools } from "./daemon-tools.js"
+import {
+  connectDaemonMcpClient,
+  listDaemonMcpTools,
+  makeDaemonMcpProxyTool,
+  type DaemonMcpToolDef,
+} from "./daemon-mcp-tools.js"
+import type { DiscoverDaemonOptions } from "./daemon-client.js"
+import { AgentprotoSignalProvider } from "./signal-provider.js"
+import { DaemonStateEmitter } from "./state-signals.js"
+import type { MastraMemoryLike } from "./memory.js"
+import { buildSqliteMemory, buildSqliteStore } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
-import { makeWorkspaceTools } from "./workspace-tools.js"
+import { DEFAULT_PERMISSION_RULES, toolCategoryResolver } from "./tool-categories.js"
+import { resolveModes } from "./modes.js"
+import { makeUnwiredToolStub, makeWorkspaceTools } from "./workspace-tools.js"
 
 /** Cheap OpenRouter coder by default — this is the budget first-party arm,
  *  same rationale as the hermes default. Override with --model / env. */
@@ -34,6 +63,75 @@ export interface AgentSourceOptions {
   cwd?: string
   /** When false, the `run_command` tool is withheld. Default true. */
   allowExec?: boolean
+  /**
+   * Extra tools merged over the built-in workspace toolset (extra wins on id
+   * collision) — programmatic-only, for a host embedding this agent that
+   * wants to grant tools the built-in toolset doesn't cover. No CLI flag.
+   */
+  extraTools?: Record<string, MastraToolLike>
+  /**
+   * `false` runs WP-1 parity: a single mode, no tool approvals, yolo
+   * execution — exactly the old raw-stream behavior. Anything else (or
+   * omitted) runs the plan/build/review modes with real tool approvals
+   * (WP-3 default). The `AGENTPROTO_MASTRA_NO_MODES` env var is the
+   * spawn-time equivalent of passing `false` here, for hosts that can't pass
+   * this option directly (e.g. the CLI, which owns no `--no-modes` flag yet
+   * — see this WP's report).
+   */
+  modes?: false | "default"
+  /** Auto-injected into `app_*` daemon tool calls that omit `appId` (see
+   *  `daemon-mcp-tools.ts`'s `injectAppId`). Defaults to
+   *  `AGENTPROTO_APP_ID` — an explicit value here is mainly a test hook. */
+  appId?: string
+  /**
+   * Exact absolute paths OUTSIDE `cwd` the read-only workspace tools may
+   * also read — the daemon's AGENTS.md pointer contract grant. Defaults to
+   * parsing `AGENTPROTO_ADDITIONAL_READ_PATHS` (a JSON array, set by the
+   * driver when the spawn carries the grant); malformed values are ignored
+   * (the grant is advisory — a bad payload must never break a spawn) and an
+   * explicit value here is mainly a test hook. See
+   * `WorkspaceToolsOptions.additionalReadPaths`.
+   */
+  additionalReadPaths?: string[]
+  /** Test hook: skip discovering + connecting to a real daemon MCP endpoint.
+   *  `client` injects an already-connected client outright (e.g. one wired
+   *  to an in-memory fake server); `discoverOptions` isolates
+   *  `discoverDaemonEndpoint` (homeDir/registryDir/env) from a real
+   *  developer machine's `~/.agentproto` without faking a whole client.
+   *  Neither set ⇒ production behaviour (real discovery + connect, lazily,
+   *  only if an AGENT.md ref needs it). */
+  daemonMcp?: {
+    client?: Client
+    discoverOptions?: DiscoverDaemonOptions
+  }
+}
+
+/** Truthy env-var check matching this adapter's existing `AGENTPROTO_MASTRA_NO_EXEC` convention. */
+function envFlag(value: string | undefined): boolean {
+  return Boolean(value)
+}
+
+/**
+ * Parse the daemon's exact-file read grant off the environment:
+ * `AGENTPROTO_ADDITIONAL_READ_PATHS` = JSON array of absolute paths (the
+ * AGENTS.md pointer contract — see `session-spawn.ts`'s
+ * `additionalReadPathsForAgentsMd`). Advisory: ANY parse/format problem
+ * (missing, non-JSON, non-array, non-string entries) yields `undefined` — a
+ * malformed payload must never break a spawn, it just means no grant.
+ */
+export function parseAdditionalReadPathsEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] | undefined {
+  const raw = env.AGENTPROTO_ADDITIONAL_READ_PATHS
+  if (!raw) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return undefined
+    const paths = parsed.filter((p): p is string => typeof p === "string" && p.length > 0)
+    return paths.length > 0 ? paths : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** The built-in AGENT.md used when no file is supplied. */
@@ -77,35 +175,318 @@ export async function resolveAgentSource(
   return defaultAgentManifest(opts.model ?? DEFAULT_MODEL)
 }
 
+/** Every AgentController built-in tool id — WP-1 parity mode disables them ALL
+ *  so the controller adds nothing the raw-stream agent didn't have. Modes-on
+ *  (the default, WP-3/WP-5) re-enables `submit_plan` and `subagent` — see
+ *  `makeAgentFactory`. */
+export const DISABLED_BUILTIN_TOOL_IDS: readonly BuiltinToolId[] = [
+  "ask_user",
+  "submit_plan",
+  "task_write",
+  "task_update",
+  "task_complete",
+  "task_check",
+  "subagent",
+] as const
+
+/** Built-in ids modes-on re-enables out of {@link DISABLED_BUILTIN_TOOL_IDS} —
+ *  `submit_plan` (WP-3's plan-approval gate) and `subagent` (WP-5's in-process
+ *  subagent spawner, backing {@link REVIEWER_SUBAGENT}). */
+const REENABLED_BUILTIN_TOOL_IDS: readonly BuiltinToolId[] = ["submit_plan", "subagent"]
+
+/** Read-only tool ids granted to the reviewer subagent — a reviewer that
+ *  can only read code/diffs/tests and run the suite, never edit. `read_diff`
+ *  and `run_tests` only exist in the controller's `tools` set when
+ *  `allowExec` is true (see `makeWorkspaceTools`); AgentController silently
+ *  has nothing to grant for an id absent from `tools` when exec is off, so
+ *  the reviewer's toolset shrinks to `list_dir`/`read_file` in that case. */
+const REVIEWER_ALLOWED_TOOL_IDS: readonly string[] = ["read_file", "read_diff", "run_tests", "list_dir"]
+
+/**
+ * In-process code-review subagent (WP-5), spawned via the `subagent` built-in
+ * tool. `forked: true` clones the parent thread onto the subagent run so the
+ * reviewer sees the same conversation context (what was asked, what changed,
+ * why) instead of reviewing a diff cold — the plan's own rationale for this
+ * subagent. Forked runs require the controller's `memory` to be configured;
+ * that's true for the built-in default agent (its manifest declares a
+ * `memory:` section — see `defaultAgentManifest`) but is only as true as
+ * whatever AGENT.md a caller supplies via `agentFile` — an AGENT.md with no
+ * `memory:` section leaves `config.memory` unset (see `makeAgentFactory`)
+ * and a forked reviewer run would then have nothing to fork.
+ */
+const REVIEWER_SUBAGENT: AgentControllerSubagent = {
+  id: "reviewer",
+  name: "Code reviewer",
+  description: "Reviews changes for correctness and reports findings.",
+  instructions:
+    "You are reviewing a change for correctness. Read the diff (`read_diff`) and the files it " +
+    "touches, run the test suite (`run_tests`) if one exists, and report concrete findings: bugs, " +
+    "missed edge cases, and test gaps. You cannot edit files — report findings back to the caller " +
+    "instead of trying to fix them yourself.",
+  allowedControllerTools: [...REVIEWER_ALLOWED_TOOL_IDS],
+  forked: true,
+}
+
+/**
+ * Anthropic rejects an assistant message whose FINAL content block is a
+ * thinking block ("final assistant content cannot end with a trailing
+ * whitespace / thinking block"), which happens when Mastra's persistence
+ * layer strips working-memory tags from text (leaving `text("")`), and the
+ * prompt builder then filters out the empty text part — unmasking a trailing
+ * reasoning block as the last (or only) content.
+ *
+ * When stripping leaves the message empty, the message is DROPPED from the
+ * outbound prompt — it must not be patched with `text("")`, because Anthropic
+ * also rejects empty text blocks ("text content blocks must be non-empty";
+ * nothing re-filters the prompt after this processor runs, so an injected
+ * empty block goes straight to the wire). Reasoning-only messages carry no
+ * tool calls, so dropping one cannot orphan a tool_result.
+ */
+export const stripTrailingReasoningRule: CompatRule = {
+  name: "strip-trailing-reasoning-from-assistant",
+  applyToPrompt({ prompt }) {
+    let mutated = false
+    const next = prompt.flatMap((message) => {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) return [message]
+      const content = message.content as Array<{ type: string }>
+      const last = content[content.length - 1]
+      if (!last || last.type !== "reasoning") return [message]
+      const filtered = content.filter((p) => p.type !== "reasoning")
+      mutated = true
+      return filtered.length > 0 ? [{ ...message, content: filtered } as typeof message] : []
+    })
+    return mutated ? next : undefined
+  },
+}
+
+/** Session state the controller carries for us (see `initialState` below). */
+interface AdapterControllerState {
+  /** WP-1 parity mode only: skips tool approvals entirely. Unset when modes are on. */
+  yolo?: boolean
+  /** Modes-on default: seeded from {@link DEFAULT_PERMISSION_RULES}, read by `session.permissions`. */
+  permissionRules?: PermissionRules
+}
+
 /**
  * A lazy factory: parses the AGENT.md, builds the Mastra agent with the model
  * resolver, SQLite memory, the markdown body as instructions, and the
- * workspace toolset (matched by tool id), then returns it as the structural
- * `MastraLike` the ACP host needs.
+ * workspace toolset (matched by tool id), then wraps it in an
+ * `AgentController` the ACP host creates sessions on.
  */
 export function makeAgentFactory(
   opts: AgentSourceOptions = {},
-): () => Promise<MastraLike> {
+): () => Promise<{ controller: AgentController<AdapterControllerState> }> {
   return async () => {
     const source = await resolveAgentSource(opts)
     const { frontmatter, body } = parseAgentManifest(source)
     const handle = agentFromManifest({ frontmatter, body })
 
     const cwd = opts.cwd ?? process.cwd()
-    const workspaceTools = makeWorkspaceTools({ cwd, allowExec: opts.allowExec })
+    const workspaceTools = makeWorkspaceTools({
+      cwd,
+      allowExec: opts.allowExec,
+      // The daemon's exact-file AGENTS.md read grant (pointer-mode contract)
+      // — explicit option wins, else the driver-set env var.
+      additionalReadPaths: opts.additionalReadPaths ?? parseAdditionalReadPathsEnv(),
+      extraTools: opts.extraTools,
+    })
+
+    // `false` (or the env var) selects WP-1 parity; anything else keeps the
+    // WP-3 default of real plan/build/review modes with tool approvals.
+    // Computed BEFORE `buildMastraAgent` (moved up from its original spot
+    // below) because `resolveTool` — invoked DURING that call — needs it to
+    // decide whether the daemon toolsets (curated sub-agent tools + the
+    // generic MCP proxy, both modes-on only) are even in play.
+    const modesEnabled = opts.modes !== false && !envFlag(process.env.AGENTPROTO_MASTRA_NO_MODES)
+
+    // Daemon sub-agent-spawning tools (WP-5) — cheap to build (no network
+    // call happens until a tool executes; discovery runs lazily), so moving
+    // this above `buildMastraAgent` (from its original post-build spot)
+    // costs nothing and lets `resolveTool` see it.
+    const daemonClient = new DaemonClient({ cwd })
+    const daemonSubAgentTools = modesEnabled ? makeDaemonTools({ client: daemonClient }) : {}
+
+    // P7 deliverable 1: generic daemon MCP tool proxy — lazily discovered
+    // and `tools/list`-fetched AT MOST ONCE, only if some AGENT.md ref isn't
+    // a workspace or curated daemon tool. Never attempted in parity mode.
+    // Populated as a side effect of `resolveTool` below so the SAME proxy
+    // instances (not rebuilt) land in `config.tools` further down.
+    let daemonMcpClient: Client | undefined
+    let daemonMcpToolDefsPromise: Promise<DaemonMcpToolDef[]> | undefined
+    const resolvedDaemonMcpTools: Record<string, ReturnType<typeof makeDaemonMcpProxyTool>> = {}
+    const appId = opts.appId ?? process.env.AGENTPROTO_APP_ID
+    async function getDaemonMcpToolDefs(): Promise<DaemonMcpToolDef[]> {
+      if (!daemonMcpToolDefsPromise) {
+        daemonMcpToolDefsPromise = (async () => {
+          try {
+            daemonMcpClient = opts.daemonMcp?.client ?? (await connectDaemonMcpClient({ cwd, ...opts.daemonMcp?.discoverOptions }))
+            return await listDaemonMcpTools(daemonMcpClient)
+          } catch {
+            // No daemon reachable (standalone `agentproto-mastra acp` run, or
+            // a test that isolated discovery on purpose) — every ref falls
+            // through to the "unwired" stub below, same as before this
+            // feature existed.
+            return []
+          }
+        })()
+      }
+      return daemonMcpToolDefsPromise
+    }
+
+    // One LibSQL store shared between the agent's Memory and the controller's
+    // storage — two stores on one SQLite file would contend on writes.
+    const store = buildSqliteStore()
+    let memory: MastraMemoryLike | undefined
+
+    const historyCompat = new ProviderHistoryCompat({
+      additionalRules: [stripTrailingReasoningRule],
+    })
 
     const { agent } = await buildMastraAgent(handle, {
+      inputProcessors: [historyCompat],
       resolveModel: (ref) => resolveMastraModel(ref),
-      // Match each declared tool ref against the workspace toolset by id.
-      resolveTool: (ref) => {
+      // Match each declared tool ref, in order: the workspace toolset, the
+      // curated daemon sub-agent tools, then (modes-on only) the generic
+      // daemon MCP proxy — ONLY for a ref an AGENT.md actually declares,
+      // which is what keeps the proxy an allowlist rather than a blanket
+      // grant of the daemon's whole toolset. A ref matching none of those
+      // still resolves — to a stub that fails fast and clearly on call —
+      // rather than being dropped: a dropped ref leaves the model unable to
+      // see it at all, and (if the model still tries the name from AGENT.md
+      // prose) surfaces as an opaque provider NoSuchToolError this adapter's
+      // ACP layer silently swallows (see tool-call-map.ts), which is how a
+      // declared-but-unwired tool used to hang a turn with zero recorded
+      // tool calls instead of failing fast.
+      resolveTool: async (ref) => {
         const id = toolRefId(ref)
-        const tool = id ? workspaceTools[id] : undefined
-        return tool ? { name: id as string, tool } : undefined
+        if (!id) return undefined
+        const workspaceTool = workspaceTools[id]
+        if (workspaceTool) return { name: id, tool: workspaceTool }
+        const daemonSubAgentTool = daemonSubAgentTools[id]
+        if (daemonSubAgentTool) return { name: id, tool: daemonSubAgentTool }
+        if (modesEnabled) {
+          const def = (await getDaemonMcpToolDefs()).find(d => d.name === id)
+          if (def) {
+            const tool = makeDaemonMcpProxyTool(def, {
+              getClient: async () => daemonMcpClient!,
+              ...(appId !== undefined ? { appId } : {}),
+            })
+            resolvedDaemonMcpTools[id] = tool
+            return { name: id, tool }
+          }
+        }
+        console.warn(
+          `[@agentproto/adapter-mastra-agent] agent '${handle.id}' declares tool '${id}' but no ` +
+            `executor is wired for it (not in the workspace toolset, the daemon sub-agent tools, or ` +
+            `the daemon's own MCP tool list) — calls to it will fail immediately instead of hanging. ` +
+            `Wire it in workspace-tools.ts, pass it via extraTools, or expose it from the daemon.`,
+        )
+        return { name: id, tool: makeUnwiredToolStub(id) }
       },
-      buildMemory: (config) => buildSqliteMemory(config),
+      buildMemory: (config) => (memory = buildSqliteMemory(config, process.env, store)),
       // The markdown body is the agent's primary system prompt (AIP-42).
       body,
     })
-    return agent as unknown as MastraLike
+
+    const { modes, defaultModeId } = modesEnabled
+      ? resolveModes(body)
+      : { modes: [{ id: "main", metadata: { default: true } }], defaultModeId: "main" }
+
+    let tools = workspaceTools
+    if (modesEnabled) {
+      tools = { ...workspaceTools, ...daemonSubAgentTools, ...resolvedDaemonMcpTools }
+
+      // WP-6: attach the AgentprotoSignalProvider MANUALLY. `buildMastraAgent`
+      // owns the `new Agent(...)` call and has no `signals` passthrough, so we
+      // replicate here exactly what `Agent`'s constructor does for
+      // `config.signals` (see @mastra/core dist, agent ctor):
+      //   1. `provider.connect(this)`      — done below.
+      //   2. `provider.startPolling()`     — done below (a no-op timer until a
+      //      subscription exists; the base class skips poll() with zero subs,
+      //      so an unwatched provider never even attempts daemon discovery —
+      //      no daemon just means the first real poll warns once and the
+      //      provider stays dormant).
+      //   3. `provider.start?.()`          — our provider defines none.
+      //   4. merge `getInputProcessors()`/`getOutputProcessors()` — our
+      //      provider exposes none, nothing to replicate.
+      //   5. merge `getTools()` into the agent's toolset — replicated by
+      //      merging into the CONTROLLER `tools` below instead, which is the
+      //      surface controller sessions actually execute against (agent-level
+      //      and controller-level tools overlap onto the same executors here,
+      //      same as the workspace toolset).
+      // One thing the constructor path would ALSO have done that we don't:
+      // `agent.__registerMastra` forwards the Mastra instance to providers in
+      // `config.signals`; a manually-connected provider never receives it.
+      // Ours never reads `this.mastra`, so nothing is lost.
+      //
+      // WP-7: the provider also carries the daemon state-signal emitter —
+      // each poll cycle pushes a session-tree + git-status snapshot/delta
+      // (cacheKey-deduped) to every thread watching at least one session.
+      const signalProvider = new AgentprotoSignalProvider({
+        client: daemonClient,
+        stateEmitter: new DaemonStateEmitter({ client: daemonClient, cwd }),
+      })
+      signalProvider.connect(agent as unknown as Agent)
+      signalProvider.startPolling()
+      tools = { ...tools, ...signalProvider.getTools() }
+
+      // WP-7: notification inbox — lets the agent list/read/dismiss the
+      // notifications the signal provider (and any future provider) files.
+      // Backed by the SAME LibSQL store as memory + controller storage: its
+      // `notifications` domain is what `agent.sendNotificationSignal` writes
+      // through once `controller.init()` registers the agent on the internal
+      // Mastra (`mastra.addAgent(agent)`), so the tool reads exactly what
+      // `notify` wrote. `getStore` is a plain domain lookup (safe pre-init;
+      // table creation happens in `controller.init()` → `storage.init()`).
+      const notificationsStorage = await store.getStore("notifications")
+      if (notificationsStorage) {
+        tools = {
+          ...tools,
+          "notification-inbox": createNotificationInboxTool({ storage: notificationsStorage }),
+        }
+      }
+    }
+
+    const config: AgentControllerConfig<AdapterControllerState> = {
+      id: "agentproto-native",
+      // The AGENT.md-built agent backs every mode; parity mode has exactly
+      // one mode and layers no mode instructions, so runs behave as the raw
+      // agent did.
+      agent: agent as AgentControllerConfig["agent"],
+      modes,
+      defaultModeId,
+      // Thread rows + per-thread settings persist to the same SQLite file the
+      // agent's Memory writes messages to.
+      storage: store,
+      // Our hardened workspace toolset (+ daemon tools, modes-on) stays the
+      // tool surface. The backing agent already carries the AGENT.md-declared
+      // subset; controller-level tools are an additive toolset, so ids
+      // overlap onto the same executors.
+      tools: tools as AgentControllerConfig["tools"],
+      // Parity mode disables every built-in controller tool and skips tool
+      // approvals entirely (`yolo: true` keeps `requireToolApproval` off so
+      // tools execute pass-through exactly as the raw stream did). Modes-on
+      // re-enables `submit_plan` (the plan mode's approval gate) and
+      // `subagent` (WP-5's in-process reviewer, see `REVIEWER_SUBAGENT`), and
+      // seeds real per-category tool-approval policy instead.
+      disableBuiltinTools: modesEnabled
+        ? DISABLED_BUILTIN_TOOL_IDS.filter((id) => !REENABLED_BUILTIN_TOOL_IDS.includes(id))
+        : [...DISABLED_BUILTIN_TOOL_IDS],
+      toolCategoryResolver,
+      initialState: modesEnabled ? { permissionRules: DEFAULT_PERMISSION_RULES } : { yolo: true },
+      // `Session` construction hard-requires a `Workspace` instance
+      // (`createSession` throws "A session requires a valid workspace
+      // instance" without one) — but a *filesystem/sandbox*-backed Workspace
+      // makes Mastra auto-inject its own `mastra_workspace_*` file/exec tools
+      // into every run, duplicating our own hardened workspace toolset. A
+      // skills-only Workspace (no filesystem, no sandbox) satisfies the
+      // former without triggering the latter: `createWorkspaceTools` only
+      // adds filesystem/sandbox tools, so this config contributes none.
+      workspace: new Workspace({ skills: () => [] }),
+    }
+    if (memory) config.memory = memory
+    if (modesEnabled) config.subagents = [REVIEWER_SUBAGENT]
+
+    return { controller: new AgentController<AdapterControllerState>(config) }
   }
 }

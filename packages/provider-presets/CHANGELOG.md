@@ -1,5 +1,26 @@
 # @agentproto/provider-presets
 
+## 0.6.1
+
+### Patch Changes
+
+- 132ffe5: Documentation updates for CLI enhancements, adapter protocol changes, and provider preset expansion.
+  - **@agentproto/adapter-jcode**: Updated protocol documentation to reflect NDJSON streaming support and added exit code semantics for setup requiring TTY (code 78).
+  - **@agentproto/cli**: Documented new session commands (`prompt`, `pin`, `unpin`), daemon capabilities (PATH self-healing, version reporting in `/health`), file upload endpoint for `app serve`, and added grok-cli adapter reference.
+  - **@agentproto/provider-presets**: Added documentation for new provider presets: OpenAI, Mistral, Groq, Nebius, Hugging Face, and DeepInfra.
+
+## 0.6.0
+
+### Minor Changes
+
+- 0bdd564: Five new billing-endpoint presets for the auth-profile picker — mistral (api.mistral.ai, default `mistral-large-latest`), groq (api.groq.com/openai), nebius (api.studio.nebius.com), huggingface (router.huggingface.co, `HF_TOKEN` convention), deepinfra (api.deepinfra.com/v1/openai). All OpenAI-flavored direct providers following the `openai-direct` pattern.
+
+## 0.5.1
+
+### Patch Changes
+
+- 832870d: Documentation sync: daemon restart command, sessions gc garbage collection, install --allow-unverified flag, Gemini adapter shipped, pi adapter support, xai-anthropic and llm-endpoint provider presets, and launchd crash-only KeepAlive behavior.
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,5 +1,121 @@
 # @agentproto/worktree
 
+## 0.6.0
+
+### Minor Changes
+
+- 80c837e: Add `writeFiles` parameter to `worktree.provision` for generating worktree-specific configuration before `depsCmd` runs. Supports `create` mode (never-clobber) and `append` mode (with automatic `skip-worktree` marking to prevent accidental commits).
+
+### Patch Changes
+
+- Updated dependencies [c4bff00]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [a48dc03]
+- Updated dependencies [1cd0220]
+- Updated dependencies [ece3cae]
+- Updated dependencies [e7e9261]
+- Updated dependencies [a04bd29]
+- Updated dependencies [fe9a374]
+  - @agentproto/workflow-runtime@0.10.0
+  - @agentproto/driver@0.2.1
+  - @agentproto/harness@0.4.4
+  - @agentproto/tool@0.2.2
+
+## 0.5.5
+
+### Patch Changes
+
+- 2fc4c69: Sandboxed sessions now report their spend, and PR footers pick it up.
+  - `HarnessClient.usage(sessionId)` (`session_usage`) and an optional `usage` on
+    `DaemonAgentSessionHost`. The runtime's sandbox spawn wires it as the session's
+    `readUsage` hook, so a box's cost/tokens/model reach the HOST descriptor at
+    every turn-end — the proxy's text stream never carried them, which is why the
+    CI review footer showed no amount and no model for e2b-sandboxed `claude-sdk`
+    reviews.
+  - `readUsage` may now return `model`; a descriptor spawned without one adopts it.
+  - PR-body footer cost refresh: a PR opened through the daemon is stamped the
+    instant `gh pr create` returns — mid-turn, before a claude-code/claude-sdk
+    session has reported any cost. The provenance reconciler now re-renders each
+    recorded PR's footer once the session knows its spend (`replaceProvenanceFooter`,
+    `stampFooterOnPr({ refresh: true })`), exactly once per PR.
+
+- Updated dependencies [11b5564]
+- Updated dependencies [2fc4c69]
+  - @agentproto/workflow-runtime@0.9.0
+  - @agentproto/harness@0.4.4
+
+## 0.5.4
+
+### Patch Changes
+
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/driver@0.2.1
+  - @agentproto/harness@0.4.3
+  - @agentproto/tool@0.2.2
+  - @agentproto/workflow-runtime@0.8.1
+
+## 0.5.3
+
+### Patch Changes
+
+- 6372c19: Implement exit-time auto-reclaim for policy-provisioned (implicit) worktrees. When a session spawned under the `"always"` isolation policy without an explicit `worktree` request exits cleanly (merged/fresh, no uncommitted work), its worktree is automatically reclaimed using the same safety-layered classify→re-verify→remove pipeline as `worktree gc`. Caller-explicit worktrees (today's manual-cleanup behavior) are never auto-reclaimed. The feature is fire-and-forget, best-effort only, and never interrupts session teardown.
+- 8a3d53d: Fix two critical bugs in `monitorSessionWait`:
+  1. **Stale fast-path**: The synchronous already-in-target-state check for `turn-end` now requires `opts.since !== undefined` to fire. Without a cursor anchor, there is no way to distinguish "the turn this wait is waiting for already finished" from "some turn finished hours ago". Fresh `agentproto sessions wait` CLI processes (which have no persisted cursor) now correctly fall through to the real bus-subscribe long-poll instead of instantly succeeding against stale history.
+  2. **Dropped empty/reason fields**: `SessionTurnEndEvent.empty` (zero assistant output, zero tool calls) and `.reason` (e.g. `"error"`) are now propagated through all three branches of the wait monitor (ring-replay, sync fast-path, bus long-poll) so callers can distinguish productive turns from silent no-ops (bad auth/model config) or adapter-reported errors. CLI exit code 4 is added for these cases.
+
+  Includes a new `currentEventsCursor()` method to capture race-free cursors for prompt+wait patterns that cannot otherwise subscribe before a turn completes.
+
+- c5016ed: Fix critical production incident (2026-08-22) where running daemon sessions' own working directories were incorrectly deleted by worktree GC. Root cause: `computeLiveness` was defaulting to the frozen legacy sessions file instead of reading per-workspace bucket files (AIP-46). Also adds `protectedPaths` mechanism as belt-and-suspenders protection, wiring the daemon's live in-memory session registry to prevent TOCTOU races between plan and apply.
+- Updated dependencies [8a3d53d]
+- Updated dependencies [b1a8b7e]
+  - @agentproto/harness@0.4.2
+  - @agentproto/workflow-runtime@0.8.0
+
+## 0.5.2
+
+### Patch Changes
+
+- 5f5b1bc: Use the active GitHub CLI credential when probing forge availability so a stale secondary account no longer makes worktree status and cleanup appear offline.
+
+## 0.5.1
+
+### Patch Changes
+
+- 4b6bbe6: Documentation sync: update version to 0.11.1-alpha and document new spawn policies (dedupe/attach), judge gate structured verdicts, implicit session deduplication, and worktree async provisioning.
+- Updated dependencies [087f0ea]
+- Updated dependencies [5e75a57]
+- Updated dependencies [2962637]
+  - @agentproto/workflow-runtime@0.7.0
+
+## 0.5.0
+
+### Minor Changes
+
+- 8228d88: Add dep-bump reclaim exemption for worktree GC: safely promote clean, unpushed worktrees from `hold` to `reclaim` when all commits are mechanical dependency bumps (subject and cumulative diff validation). Addresses storage bloat from recurring automated dependency-bump worktrees piling up as permanent holds. Includes comprehensive test coverage and applies re-validation at apply time (layer 2).
+- fd3e287: **WP-E (spawn-dedupe-default)**: Add implicit idempotency key derivation to prevent accidental spawn duplicates without requiring explicit opt-in. When a spawn carries a `label` and no `idempotencyKey`, the daemon derives an implicit key from the label plus a hash of the initial prompt. Same-adapter/cwd/key spawns within ~2 minutes are deduped (shorter window than explicit keys to reduce false collisions). Label-gated derivation preserves the fan-out safety pattern where unlabelled parallel spawns must remain distinct. New config field `spawn.dedupe` ("always" default / "on-request") controls policy; per-call `dedupe: false` escape hatch.
+
+  **WP-F (worktree async provisioning)**: Enable fast-return session registration with background worktree provisioning, and share a single turbo build cache across all provisioned worktrees. `worktree: { async: true }` opts in: returns immediately with status "starting", provisioning + driver spawn continue in background. New registry methods `spawnAgentPending` / `settlePendingAgent` manage placeholder lifecycle. New `resolveWorktreesTurboCacheDir()` export provides shared cache path to setup hooks, eliminating cold builds on every worktree provision.
+
+### Patch Changes
+
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+- Updated dependencies [c1399f3]
+  - @agentproto/harness@0.4.1
+
 ## 0.4.3
 
 ### Patch Changes

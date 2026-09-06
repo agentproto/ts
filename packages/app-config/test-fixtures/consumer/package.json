@@ -1,0 +1,17 @@
+{
+  "name": "app-config-consumer-fixture",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Consumer-like fixture: installs its OWN zod copy next to @agentproto/app-config and type-checks the kit's generics against it (the TS2741 exactPartial regression test for the zod peerDependency).",
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentproto/app-config": "file:../..",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

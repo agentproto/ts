@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
-import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "../sessions.js"
 
 // ── helpers ────────────────────────────────────────────────────────
 
@@ -353,9 +353,17 @@ describe("CronScheduler", () => {
       expect(startSession).toHaveBeenCalledOnce()
       expect(startSession).toHaveBeenCalledWith({
         cwd: workspace,
+        // Persistent isolated-config dir, keyed by the minted session id —
+        // what lets a reaped cron session natively resume (see
+        // adapterConfigDirFor in sessions.ts).
+        configDir: expect.stringContaining("adapter-config"),
         mode: "bypass-permissions",
         permissionHold: true,
         options: { skills: "fast", verbose: true },
+        env: {
+          [SESSION_ID_ENV]: expect.any(String),
+          [WORKSPACE_SLUG_ENV]: "default",
+        },
       })
       expect(spawnAgent).toHaveBeenCalledOnce()
       expect(spawnAgent).toHaveBeenCalledWith(
@@ -795,7 +803,17 @@ describe("CronScheduler", () => {
 
       expect(startSession).toHaveBeenCalledOnce()
       const startSessionArg = startSession.mock.calls[0]![0]
-      expect(startSessionArg).toEqual({ cwd: workspace })
+      expect(startSessionArg).toEqual({
+        cwd: workspace,
+        // Always present — the persistent isolated-config dir is not one of
+        // the leak-prone optional fields this test guards, it's part of the
+        // base spawn contract (see adapterConfigDirFor in sessions.ts).
+        configDir: expect.stringContaining("adapter-config"),
+        env: {
+          [SESSION_ID_ENV]: expect.any(String),
+          [WORKSPACE_SLUG_ENV]: "default",
+        },
+      })
       expect(startSessionArg).not.toHaveProperty("mode")
       expect(startSessionArg).not.toHaveProperty("permissionHold")
       expect(startSessionArg).not.toHaveProperty("options")

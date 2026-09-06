@@ -208,10 +208,18 @@ export interface ActivityPolicySlice {
   policyId: string
   /** Representative session id (fan-in group[0]). */
   sessionId: string
-  /** The full fan-in group being watched. */
-  sessionIds: readonly string[]
-  /** Group members that have NOT yet finished their turn. */
-  pending: readonly string[]
+  /**
+   * The full fan-in group being watched. OPTIONAL because supervisor state
+   * persisted before fan-in (WP6) predates this field — legacy rows on disk
+   * carry only `sessionId`, and the type must not lie about that.
+   */
+  sessionIds?: readonly string[]
+  /**
+   * Group members that have NOT yet finished their turn. OPTIONAL for the
+   * same reason as `sessionIds`: pre-fan-in persisted supervisor state omits
+   * it.
+   */
+  pending?: readonly string[]
   status:
     | "watching"
     | "queued"
@@ -240,18 +248,21 @@ export interface ActivityPolicySlice {
  * `policy_ack`. done → done, blocked → failed, cancelled → cancelled.
  */
 export function policyToActivities(policy: ActivityPolicySlice): ActivityRecord[] {
+  // Normalize the pre-fan-in (legacy) persisted shape ONCE: a legacy
+  // single-session policy IS a one-member group (not an empty one — it is
+  // still watching that session's turn), and nothing is outstanding yet.
+  const sessionIds = policy.sessionIds ?? [policy.sessionId]
+  const pending = policy.pending ?? []
   const parentId = `policy:${policy.policyId}`
   const base: ActivityRecordBase = {
     id: parentId,
     kind: "policy",
     sessionId: policy.sessionId,
-    ...(policy.sessionIds.length > 1 ? { sessionIds: [...policy.sessionIds] } : {}),
+    ...(sessionIds.length > 1 ? { sessionIds: [...sessionIds] } : {}),
     sourceRef: policy.policyId,
     source: "supervisor",
     title: `Completion policy ${policy.policyId} on ${
-      policy.sessionIds.length > 1
-        ? `${policy.sessionIds.length} sessions`
-        : policy.sessionId
+      sessionIds.length > 1 ? `${sessionIds.length} sessions` : policy.sessionId
     }`,
     startedAt: policy.startedAt,
     ...(policy.endedAt ? { endedAt: policy.endedAt } : {}),
@@ -271,7 +282,7 @@ export function policyToActivities(policy: ActivityPolicySlice): ActivityRecord[
           kind: "session-turn",
           // The still-awaited members when the fan-in has partially landed;
           // the whole group otherwise.
-          refs: policy.pending.length > 0 ? [...policy.pending] : [...policy.sessionIds],
+          refs: pending.length > 0 ? [...pending] : [...sessionIds],
           detail: "waiting for the watched session(s) to finish their turn",
         }),
       )

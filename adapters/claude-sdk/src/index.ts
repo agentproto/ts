@@ -24,7 +24,21 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { listNativeModelIds } from "@agentproto/model-catalog/llm"
 import { DEFAULT_MODEL } from "./options.js"
+
+// Native-Anthropic model menu, derived from the catalog's own synced
+// `/v1/models` listing (see `listNativeModelIds`) rather than a hand-typed
+// id array — a hand-typed list silently drops a newly-published id (e.g.
+// Anthropic shipping `claude-opus-4-9`) until someone notices and opens a
+// PR. Nothing is known to need hiding today, so the denylist starts empty
+// — it exists purely as the one sanctioned manual override (a specific id
+// we've vetted and want OFF this adapter), never as a stand-in for a
+// hand-typed allowlist.
+const NATIVE_ANTHROPIC_DENYLIST = new Set<string>([])
+const NATIVE_ANTHROPIC_MODELS = listNativeModelIds("anthropic")
+  .filter(id => !NATIVE_ANTHROPIC_DENYLIST.has(id))
+  .map(id => ({ id, provider: "anthropic" as const }))
 
 // Self-locating: the built handle spawns `node <this-dist>/cli.mjs acp`.
 // import.meta.url resolves into dist/ at runtime, where cli.mjs sits next to
@@ -122,15 +136,15 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
     // ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN. The `model` option remains
     // free-form, so any gateway id works even if it is not listed here.
     allowed: [
-      // Native Anthropic
-      { id: "claude-haiku-4-5-20251001", provider: "anthropic" },
-      { id: "claude-sonnet-5", provider: "anthropic" },
-      { id: "claude-opus-4-8", provider: "anthropic" },
-      { id: "claude-fable-5", provider: "anthropic" },
+      // Native Anthropic — every id the catalog's own `/v1/models` sync
+      // currently carries for this provider (see NATIVE_ANTHROPIC_MODELS
+      // above), not a hand-typed subset.
+      ...NATIVE_ANTHROPIC_MODELS,
       // Gateway providers — routing is resolved by the runtime. OpenRouter ids
       // carry the `@openrouter` route-identity suffix so the catalog join pins
       // the gateway route (a bare 2-segment id resolves to the dead direct
       // vendor route instead).
+      { id: "kimi-k3", provider: "moonshot" },
       { id: "kimi-k2.7-code", provider: "moonshot" },
       { id: "z-ai/glm-5.2@openrouter", provider: "openrouter" },
       { id: "deepseek/deepseek-v4-pro@openrouter", provider: "openrouter" },
@@ -151,12 +165,19 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
       // already-priced OpenRouter chat models, not invented specialist ids.
       { id: "openai/gpt-5.6-luna@openrouter", provider: "openrouter" },
       { id: "openai/gpt-5.6-sol@openrouter", provider: "openrouter" },
+      // Requesty — route resolved from the catalog `@route`. Verified
+      // runnable: a spawn on sference/thinkingcap-qwen3.6-27b@requesty is
+      // accepted and produces the same route/profile/key-fingerprint
+      // descriptor as the claude-code spawn on the same model.
+      { id: "sference/thinkingcap-qwen3.6-27b@requesty", provider: "requesty" },
+      { id: "sference/glm-5.2@requesty", provider: "requesty" },
       // Local llm-endpoint proxy — the `@llm-endpoint` suffix pins the catalog
       // join to the runtime-registered custom route (Anthropic surface at
       // localhost:18090). A SMALL curated set from the proxy's own `default`
       // pack (packages/llm-endpoint/src/packs.ts); the vendor prefix is the
       // proxy's transparent-provider name so the boundary-stripped
       // `vendor/product` upstream id transparently routes.
+      { id: "moonshot/kimi-k3@llm-endpoint", provider: "llm-endpoint" },
       { id: "moonshot/kimi-k2.7-code@llm-endpoint", provider: "llm-endpoint" },
       { id: "moonshot/kimi-k2.6@llm-endpoint", provider: "llm-endpoint" },
       { id: "zai/glm-5.2@llm-endpoint", provider: "llm-endpoint" },
@@ -267,6 +288,7 @@ export {
   buildQueryOptions,
   mapAcpMcpServers,
   DEFAULT_MODEL,
+  UnroutedGatewayModelError,
   type ClaudeSdkConfig,
 } from "./options.js"
 export {

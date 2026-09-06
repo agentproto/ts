@@ -6,6 +6,9 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
@@ -356,6 +359,7 @@ function fakeHost(
     resolveByLabel: AgentSessionHost["resolveByLabel"]
     readFinalMessage: AgentSessionHost["readFinalMessage"]
     readCostUsd: AgentSessionHost["readCostUsd"]
+    emitHarnessWarning: AgentSessionHost["emitHarnessWarning"]
   }> = {},
 ): AgentSessionHost {
   return {
@@ -366,6 +370,7 @@ function fakeHost(
       vi.fn((stepId: string) => `sess_${stepId}`),
     readFinalMessage: overrides.readFinalMessage,
     readCostUsd: overrides.readCostUsd,
+    ...(overrides.emitHarnessWarning ? { emitHarnessWarning: overrides.emitHarnessWarning } : {}),
   }
 }
 
@@ -586,6 +591,411 @@ describe("runWorkflow — agent step", () => {
     await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
       /no session/,
     )
+  })
+
+  it("returns { sessionId, text } when no outputSchema and readFinalMessage available", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => "Here is my analysis..."),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-text-output",
+      steps: [
+        {
+          kind: "agent",
+          id: "analyze",
+          adapter: "mock",
+          prompt: () => "analyze this",
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toEqual({ sessionId: "sess_fake", text: "Here is my analysis..." })
+    expect(host.readFinalMessage).toHaveBeenCalledWith("sess_fake")
+  })
+
+  it("returns { sessionId } when no outputSchema and readFinalMessage unavailable", async () => {
+    const host = fakeHost({
+      readFinalMessage: undefined,
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-no-text",
+      steps: [
+        {
+          kind: "agent",
+          id: "s6",
+          adapter: "mock",
+          prompt: () => "do something",
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toEqual({ sessionId: "sess_fake" })
+  })
+
+  it("threads agent step text output into next step's prompt via bindings.steps", async () => {
+    const prompts: string[] = []
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async (sid: string) => {
+        if (sid === "sess_step1") return "Step 1 found 3 issues."
+        return "Step 2 verification complete."
+      }),
+      spawn: vi.fn(async (_adapter, opts) => {
+        return opts!.stepId === "step1" ? "sess_step1" : "sess_step2"
+      }),
+      sendPromptAndWait: vi.fn(async (_sid, prompt) => {
+        prompts.push(prompt)
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-chaining",
+      steps: [
+        {
+          kind: "agent",
+          id: "step1",
+          adapter: "mock",
+          prompt: () => "Find bugs",
+        },
+        {
+          kind: "agent",
+          id: "step2",
+          adapter: "mock",
+          prompt: (b) => {
+            const step1Out = b.steps.step1 as { sessionId: string; text?: string }
+            return step1Out.text
+              ? `Verify these findings: ${step1Out.text}`
+              : "Verify findings"
+          },
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    expect((bindings.steps.step1 as { text: string }).text).toBe("Step 1 found 3 issues.")
+    expect((bindings.steps.step2 as { text: string }).text).toBe("Step 2 verification complete.")
+    // Second prompt should contain the first step's output
+    expect(prompts[1]).toContain("Step 1 found 3 issues.")
+  })
+})
+
+describe("runWorkflow — agent step harness (AIP-15 P2)", () => {
+  it("threads the harness block onto host.spawn's opts", async () => {
+    const host = fakeHost()
+    const harness = {
+      model: "opus",
+      effort: "high",
+      role: "executor",
+      tools: ["read"],
+      skills: ["review"],
+      cwd: "/work",
+    }
+    const wf: RuntimeWorkflow = {
+      id: "agent-harness",
+      steps: [{ kind: "agent", id: "s1", adapter: "mock-adapter", prompt: () => "hello", harness }],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledWith("mock-adapter", expect.objectContaining({ harness }))
+  })
+
+  it("harness.cwd overrides both the step's own cwd and the run's cwd", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-harness-cwd",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          prompt: () => "hi",
+          cwd: () => "/step-cwd",
+          harness: { cwd: "/harness-cwd" },
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, cwd: "/run-cwd" })
+    expect(host.spawn).toHaveBeenCalledWith(
+      "mock-adapter",
+      expect.objectContaining({ cwd: "/harness-cwd" }),
+    )
+  })
+
+  it("harness.tools with no generic per-spawn allowlist records toolsApplied:false on the step's own output — never silently ignored", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-harness-tools",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          prompt: () => "hi",
+          harness: { tools: ["read"] },
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toMatchObject({ harness: { tools: ["read"], toolsApplied: false } })
+  })
+})
+
+describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
+  it("passes on exit code 0, parses stdout as the report, and binds { ok, exitCode, report }", async () => {
+    const runGateCommand = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ checked: 3 }),
+      stderr: "",
+    }))
+    const onGateReport = vi.fn()
+    const wf: RuntimeWorkflow = {
+      id: "gate-pass",
+      steps: [{ kind: "gate", id: "g", command: "pnpm", args: ["test"] }],
+    }
+    const { output, bindings } = await runWorkflow({ workflow: wf, runGateCommand, onGateReport })
+    expect(output).toEqual({ ok: true, exitCode: 0, report: { checked: 3 } })
+    expect(bindings.steps.g).toEqual(output)
+    expect(onGateReport).toHaveBeenCalledWith({
+      stepId: "g",
+      ok: true,
+      exitCode: 0,
+      report: { checked: 3 },
+      attempt: 1,
+    })
+  })
+
+  it("reads the report from a file (relative to cwd) when stdout doesn't parse as JSON", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-report-"))
+    try {
+      writeFileSync(join(dir, "report.json"), JSON.stringify({ checked: 7 }), "utf8")
+      const runGateCommand = vi.fn(async () => ({ exitCode: 0, stdout: "not json", stderr: "" }))
+      const wf: RuntimeWorkflow = {
+        id: "gate-report-file",
+        steps: [{ kind: "gate", id: "g", command: "pnpm", cwd: dir, reportPath: "report.json" }],
+      }
+      const { output } = await runWorkflow({ workflow: wf, runGateCommand })
+      expect(output).toEqual({ ok: true, exitCode: 0, report: { checked: 7 } })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails after exhausting retry.maxAttempts, throwing with the last exit code + report attached", async () => {
+    const runGateCommand = vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "boom" }))
+    const wf: RuntimeWorkflow = {
+      id: "gate-fail",
+      steps: [
+        { kind: "gate", id: "g", command: "pnpm", retry: { maxAttempts: 2, backoff: "fixed" } },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, runGateCommand })).rejects.toThrow(
+      /gate failed after 2 attempt\(s\) — exit code 1/,
+    )
+    expect(runGateCommand).toHaveBeenCalledTimes(2)
+  })
+
+  it("retries on a failing attempt and succeeds once the command passes", async () => {
+    let calls = 0
+    const runGateCommand = vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? { exitCode: 1, stdout: "", stderr: "" }
+        : { exitCode: 0, stdout: "{}", stderr: "" }
+    })
+    const onGateReport = vi.fn()
+    const wf: RuntimeWorkflow = {
+      id: "gate-retry-ok",
+      steps: [
+        { kind: "gate", id: "g", command: "pnpm", retry: { maxAttempts: 2, backoff: "fixed" } },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, runGateCommand, onGateReport })
+    expect(output).toMatchObject({ ok: true, exitCode: 0 })
+    expect(runGateCommand).toHaveBeenCalledTimes(2)
+    expect(onGateReport.mock.calls.map((c) => c[0].attempt)).toEqual([1, 2])
+    expect(onGateReport.mock.calls.map((c) => c[0].ok)).toEqual([false, true])
+  })
+
+  it("on_fail.reprompt sends the named prior agent step's session the gate's report before retrying, then re-runs", async () => {
+    const sendPromptAndWait = vi.fn(async (_sessionId: string, _prompt: string) => {})
+    // Every step's session id is the same constant here — the test only
+    // cares that the reprompt targets the same session the 'implement'
+    // step's own prompt was sent to.
+    const host = fakeHost({ sendPromptAndWait, resolveByLabel: vi.fn(() => "sess_fake") })
+    let calls = 0
+    const runGateCommand = vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? { exitCode: 1, stdout: JSON.stringify({ err: "boom" }), stderr: "" }
+        : { exitCode: 0, stdout: "{}", stderr: "" }
+    })
+    const wf: RuntimeWorkflow = {
+      id: "gate-reprompt",
+      steps: [
+        { kind: "agent", id: "implement", adapter: "mock", prompt: () => "implement it" },
+        {
+          kind: "gate",
+          id: "g",
+          command: "pnpm",
+          retry: { maxAttempts: 2, backoff: "fixed" },
+          onFail: { reprompt: "implement" },
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, runGateCommand })
+    expect(runGateCommand).toHaveBeenCalledTimes(2)
+    expect(sendPromptAndWait).toHaveBeenCalledTimes(2)
+    const [reSessionId, reprompt] = sendPromptAndWait.mock.calls[1]!
+    expect(reSessionId).toBe("sess_fake")
+    expect(reprompt).toContain("Gate 'g' failed (exit code 1)")
+    expect(reprompt).toContain('"err": "boom"')
+  })
+
+  it("forwards timeoutMs to the command runner and fails on a timed-out attempt", async () => {
+    const runGateCommand = vi.fn(async (spec: { timeoutMs?: number }) => {
+      expect(spec.timeoutMs).toBe(50)
+      return { exitCode: 1, stdout: "", stderr: "", timedOut: true }
+    })
+    const wf: RuntimeWorkflow = {
+      id: "gate-timeout",
+      steps: [{ kind: "gate", id: "g", command: "sleep", args: ["5"], timeoutMs: 50 }],
+    }
+    await expect(runWorkflow({ workflow: wf, runGateCommand })).rejects.toThrow(
+      /gate failed after 1 attempt\(s\) — exit code 1/,
+    )
+    expect(runGateCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "sleep", args: ["5"], timeoutMs: 50 }),
+    )
+  })
+
+  it("expands $… reference args against the bindings before running the command", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "gate-ref-args",
+      steps: [
+        {
+          kind: "gate",
+          id: "g",
+          command: "node",
+          args: ["-e", "process.exit(process.argv[1] === 'book3' ? 0 : 1)", "$input.book"],
+        },
+      ],
+    }
+    // The ref expands to "book3" (exit 0); a literal "$input.book" would make
+    // node exit 1. $$ stays a literal $.
+    const { output } = await runWorkflow({ workflow: wf, input: { book: "book3" } })
+    expect(output).toMatchObject({ ok: true, exitCode: 0 })
+
+    const literal: RuntimeWorkflow = {
+      id: "gate-literal-arg",
+      steps: [
+        {
+          kind: "gate",
+          id: "g",
+          command: "node",
+          args: ["-e", "process.exit(process.argv[1] === '$input.book' ? 0 : 1)", "$$input.book"],
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: literal, input: { book: "book3" } })).resolves.toMatchObject({
+      output: { ok: true, exitCode: 0 },
+    })
+  })
+
+  it("throws a clear error naming the step and the arg when a ref resolves to nothing", async () => {
+    const runGateCommand = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }))
+    const wf: RuntimeWorkflow = {
+      id: "gate-bad-ref",
+      steps: [
+        { kind: "gate", id: "g", command: "node", args: ["--version", "$input.nonexistent"] },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, input: {}, runGateCommand })).rejects.toThrow(
+      /step 'g': args\[1\] '\$input\.nonexistent' resolves to nothing/,
+    )
+    expect(runGateCommand).not.toHaveBeenCalled()
+  })
+
+  it("expands a leading ref plus trailing text in an arg ($input.book/knowledge)", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "gate-ref-arg-trailing",
+      steps: [
+        {
+          kind: "gate",
+          id: "g",
+          command: "node",
+          args: [
+            "-e",
+            "process.exit(process.argv[1] === 'book3/knowledge' ? 0 : 1)",
+            "$input.book/knowledge",
+          ],
+        },
+      ],
+    }
+    // The ref expands to "book3" and "/knowledge" is appended verbatim (exit
+    // 0); a bare-ref-only grammar would reject the arg outright.
+    const { output } = await runWorkflow({ workflow: wf, input: { book: "book3" } })
+    expect(output).toMatchObject({ ok: true, exitCode: 0 })
+  })
+
+  it("resolves a cwd ref: absolute stays absolute, relative (incl. .) resolves against the run cwd", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-cwd-"))
+    try {
+      const cwds: string[] = []
+      const runGateCommand = vi.fn(async (spec: { cwd: string }) => {
+        cwds.push(spec.cwd)
+        return { exitCode: 0, stdout: "{}", stderr: "" }
+      })
+      const gate = (cwd?: string) => ({ kind: "gate" as const, id: "g", command: "pnpm", ...(cwd !== undefined ? { cwd } : {}) })
+      const wf: RuntimeWorkflow = { id: "gate-cwd-ref", steps: [] }
+
+      await runWorkflow({ workflow: { ...wf, steps: [gate(dir)] }, runGateCommand })
+      await runWorkflow({
+        workflow: { ...wf, steps: [gate("$input.dir")] },
+        input: { dir },
+        runGateCommand,
+      })
+      await runWorkflow({ workflow: { ...wf, steps: [gate("sub/dir")] }, cwd: dir, runGateCommand })
+      await runWorkflow({ workflow: { ...wf, steps: [gate(".")] }, cwd: dir, runGateCommand })
+      await runWorkflow({ workflow: { ...wf, steps: [gate()] }, cwd: dir, runGateCommand })
+
+      // Absolute ref → as-is; relative/`.` and absent → the run's own cwd,
+      // never the daemon process cwd (vitest's cwd is the package dir).
+      expect(cwds).toEqual([dir, dir, join(dir, "sub/dir"), dir, dir])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("throws a clear error naming the step and 'cwd' when a cwd ref resolves to nothing", async () => {
+    const runGateCommand = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }))
+    const wf: RuntimeWorkflow = {
+      id: "gate-bad-cwd",
+      steps: [{ kind: "gate", id: "g", command: "pnpm", cwd: "$input.nonexistent" }],
+    }
+    await expect(runWorkflow({ workflow: wf, input: {}, runGateCommand })).rejects.toThrow(
+      /step 'g': cwd '\$input\.nonexistent' resolves to nothing/,
+    )
+    expect(runGateCommand).not.toHaveBeenCalled()
+  })
+
+  it("run-level: a gate with cwd: $input.dir executes in that directory (its marker file lands there)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-cwd-run-"))
+    try {
+      const wf: RuntimeWorkflow = {
+        id: "gate-cwd-run",
+        steps: [
+          {
+            kind: "gate",
+            id: "g",
+            command: "node",
+            args: ["-e", "require('fs').writeFileSync('marker-from-gate.txt', 'ok')"],
+            cwd: "$input.dir",
+          },
+        ],
+      }
+      // No runGateCommand override — the real execFile path runs, in dir.
+      const { output } = await runWorkflow({ workflow: wf, input: { dir } })
+      expect(output).toMatchObject({ ok: true, exitCode: 0 })
+      expect(readFileSync(join(dir, "marker-from-gate.txt"), "utf8")).toBe("ok")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -1172,5 +1582,328 @@ describe("step cache", () => {
     const r2 = await runWorkflow({ workflow: wf, cache, cacheKey: "run-tool" })
     expect(toolRuns).toBe(1)
     expect(r2.output).toEqual(r1.output)
+  })
+})
+
+describe("runWorkflow — agent step harness.knowledge materialization (AIP-15 P2)", () => {
+  const entry = (slug: string, tags: string[], extra = ""): string =>
+    [
+      "---",
+      "schema: knowledge.entry/v1",
+      `slug: ${slug}`,
+      "kind: fact",
+      `title: ${slug[0]!.toUpperCase()}${slug.slice(1)}`,
+      `tags: [${tags.join(", ")}]`,
+      ...(extra ? [extra] : []),
+      "---",
+      "",
+      `Body of ${slug}.`,
+      "",
+    ].join("\n")
+
+  /** A minimal AIP-10 corpus workspace: three matching-tag entries, one
+   *  without the allOf tag, one archived tombstone. */
+  function makeCorpus(): string {
+    const ws = mkdtempSync(join(tmpdir(), "corpus-"))
+    mkdirSync(join(ws, "entries"), { recursive: true })
+    writeFileSync(join(ws, "entries", "alpha.md"), entry("alpha", ["book-factory", "style-guide"]))
+    writeFileSync(join(ws, "entries", "beta.md"), entry("beta", ["book-factory"]))
+    writeFileSync(
+      join(ws, "entries", "gamma.md"),
+      entry("gamma", ["book-factory"], "metadata:\n  corpus:\n    status: archived"),
+    )
+    writeFileSync(join(ws, "entries", "delta.md"), entry("delta", ["book-factory", "style-guide"]))
+    return ws
+  }
+
+  function stepHarness(workspace: string, extra: Record<string, unknown> = {}) {
+    return {
+      knowledge: [{ workspace, anyOf: ["book-factory"], ...extra }],
+    }
+  }
+
+  it("materializes matching entries into .knowledge/, prepends the prompt note, and records knowledgeApplied", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const prompts: string[] = []
+    const host = fakeHost({
+      sendPromptAndWait: async (_sid, prompt) => {
+        prompts.push(prompt)
+      },
+    })
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-materialize",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "write the chapter",
+          cwd: () => stepCwd,
+          harness: stepHarness(ws),
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    // gamma (archived tombstone) is skipped → 3 matched/written
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: ws, matched: 3, written: 3 },
+    ])
+    // Prompt note prepended, original prompt preserved after it
+    expect(prompts[0]).toContain(".knowledge/INDEX.md, 3 entries")
+    expect(prompts[0]).toContain("write the chapter")
+    // Raw entries (frontmatter + body) written under .knowledge/<basename>/
+    const kdir = join(stepCwd, ".knowledge", basename(ws))
+    const alpha = readFileSync(join(kdir, "alpha.md"), "utf8")
+    expect(alpha).toContain("schema: knowledge.entry/v1")
+    expect(alpha).toContain("Body of alpha.")
+    expect(readFileSync(join(kdir, "beta.md"), "utf8")).toContain("Body of beta.")
+    expect(readFileSync(join(kdir, "delta.md"), "utf8")).toContain("Body of delta.")
+    // Deterministic INDEX: slug-ascending, one line per entry
+    const index = readFileSync(join(stepCwd, ".knowledge", "INDEX.md"), "utf8")
+    expect(index).toContain(`## ${basename(ws)}`)
+    expect(index.indexOf("alpha.md")).toBeLessThan(index.indexOf("beta.md"))
+    expect(index.indexOf("beta.md")).toBeLessThan(index.indexOf("delta.md"))
+    expect(index).toContain(`- [Alpha](${basename(ws)}/alpha.md) — fact, book-factory, style-guide`)
+  })
+
+  it("applies allOf as a post-filter and caps at maxEntries", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-allof-cap",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: stepHarness(ws, { allOf: ["style-guide"], maxEntries: 1 }),
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    // beta lacks style-guide; gamma is archived → matched 2, capped to 1
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: ws, matched: 2, written: 1 },
+    ])
+    const kdir = join(stepCwd, ".knowledge", basename(ws))
+    expect(readFileSync(join(kdir, "alpha.md"), "utf8")).toContain("Body of alpha.")
+    expect(readFileSync(join(stepCwd, ".knowledge", "INDEX.md"), "utf8")).not.toContain("delta.md")
+  })
+
+  it("is idempotent — a second run rewrites the same deterministic file set", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-idempotent",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: stepHarness(ws),
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: fakeHost() })
+    const index1 = readFileSync(join(stepCwd, ".knowledge", "INDEX.md"), "utf8")
+    await runWorkflow({ workflow: wf, agents: fakeHost() })
+    expect(readFileSync(join(stepCwd, ".knowledge", "INDEX.md"), "utf8")).toBe(index1)
+    expect(readFileSync(join(stepCwd, ".knowledge", basename(ws), "alpha.md"), "utf8")).toContain(
+      "Body of alpha.",
+    )
+  })
+
+  it("records matched: 0 without failing and emits a knowledge-empty harness warning", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const warnings: unknown[] = []
+    const host = fakeHost({
+      emitHarnessWarning: (w) => {
+        warnings.push(w)
+      },
+    })
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-empty",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: stepHarness(ws, { anyOf: ["no-such-tag"] }),
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: ws, matched: 0, written: 0 },
+    ])
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatchObject({
+      sessionId: "sess_fake",
+      label: "s1",
+      warnings: [expect.stringContaining("knowledge-empty")],
+    })
+  })
+
+  it("resolves $-bearing workspace and anyOf refs against the run bindings before materializing", async () => {
+    // Corpus at `<base>/knowledge` so `$input.bookDir/knowledge` lands on it.
+    const base = mkdtempSync(join(tmpdir(), "book-"))
+    const ws = join(base, "knowledge")
+    mkdirSync(join(ws, "entries"), { recursive: true })
+    writeFileSync(join(ws, "entries", "alpha.md"), entry("alpha", ["book-factory"]))
+    writeFileSync(join(ws, "entries", "beta.md"), entry("beta", ["book-factory"]))
+    writeFileSync(
+      join(ws, "entries", "gamma.md"),
+      entry("gamma", ["book-factory"], "metadata:\n  corpus:\n    status: archived"),
+    )
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const prompts: string[] = []
+    const host = fakeHost({
+      sendPromptAndWait: async (_sid, prompt) => {
+        prompts.push(prompt)
+      },
+    })
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-refs",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "write the chapter",
+          cwd: () => stepCwd,
+          harness: {
+            knowledge: [
+              {
+                workspace: "$input.bookDir/knowledge",
+                anyOf: ["$input.topicTag"],
+                deferred: true,
+              },
+            ],
+          },
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({
+      workflow: wf,
+      agents: host,
+      input: { bookDir: base, topicTag: "book-factory" },
+    })
+    // The workspace carried the ref: `$input.bookDir/knowledge` resolved to
+    // the corpus dir itself; the tag ref resolved to `book-factory`.
+    // gamma (archived) is skipped → 2 matched/written
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: ws, matched: 2, written: 2 },
+    ])
+    const kdir = join(stepCwd, ".knowledge", basename(ws))
+    expect(readFileSync(join(kdir, "alpha.md"), "utf8")).toContain("Body of alpha.")
+    expect(prompts[0]).toContain(".knowledge/INDEX.md, 2 entries")
+  })
+
+  it("throws naming the step and field when a selector ref resolves to nothing", async () => {
+    const ws = makeCorpus()
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-ref-missing",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: {
+            knowledge: [{ workspace: "$input.noSuchDir/knowledge", deferred: true }],
+          },
+        },
+      ],
+    }
+    await expect(
+      runWorkflow({ workflow: wf, agents: fakeHost(), input: { bookDir: ws } }),
+    ).rejects.toThrow(
+      /step 's1': harness\.knowledge\[0\]\.workspace '\$input\.noSuchDir' resolves to nothing/,
+    )
+  })
+
+  it("warns knowledge-workspace-missing (not a throw) when the resolved workspace does not exist", async () => {
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    const warnings: unknown[] = []
+    const host = fakeHost({
+      emitHarnessWarning: (w) => {
+        warnings.push(w)
+      },
+    })
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-missing-after-resolve",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: {
+            knowledge: [{ workspace: "$input.bookDir/no-such-corpus", deferred: true }],
+          },
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({
+      workflow: wf,
+      agents: host,
+      input: { bookDir: stepCwd },
+    })
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: join(stepCwd, "no-such-corpus"), matched: 0, written: 0 },
+    ])
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatchObject({
+      sessionId: "sess_fake",
+      label: "s1",
+      warnings: [expect.stringContaining("knowledge-workspace-missing")],
+    })
+  })
+
+  it("joins a relative resolved workspace to the run cwd and materializes", async () => {
+    const stepCwd = mkdtempSync(join(tmpdir(), "stepcwd-"))
+    // Corpus INSIDE the step cwd, referenced by a ref that resolves to a
+    // RELATIVE workspace — it must join against the run cwd.
+    const relName = "corpus-rel"
+    mkdirSync(join(stepCwd, relName, "entries"), { recursive: true })
+    writeFileSync(join(stepCwd, relName, "entries", "alpha.md"), entry("alpha", ["book-factory"]))
+    const wf: RuntimeWorkflow = {
+      id: "knowledge-relative",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "go",
+          cwd: () => stepCwd,
+          harness: {
+            knowledge: [{ workspace: "$input.rel", deferred: true }],
+          },
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({
+      workflow: wf,
+      agents: fakeHost(),
+      input: { rel: relName },
+    })
+    expect((bindings.steps.s1 as { knowledgeApplied?: unknown }).knowledgeApplied).toEqual([
+      { workspace: join(stepCwd, relName), matched: 1, written: 1 },
+    ])
+    expect(
+      readFileSync(join(stepCwd, ".knowledge", relName, "alpha.md"), "utf8"),
+    ).toContain("Body of alpha.")
   })
 })

@@ -8,8 +8,8 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import { mintSessionId, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
-import type { AgentAdapterResolver } from "./http-server.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -26,6 +26,8 @@ import {
   AuthResolutionError,
   resolveSubscriptionCredential,
   SubscriptionSourceError,
+  modelIdPrefixProvider,
+  subscriptionSurfaceFor,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -44,7 +46,9 @@ import {
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
+  checkModelAdapterEligibility,
   checkModelWalletEligibility,
+  modelAdapterIncompatibleMessage,
   modelWalletIneligibleMessage,
   reconcileModelRoute,
   serviceableModelRoutes,
@@ -57,6 +61,7 @@ import {
   KeychainStore,
   type AuthMethod,
   type AdapterAuthManifest,
+  type AuthProfile,
   type CostBudget,
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
@@ -67,10 +72,58 @@ import {
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
 import type { UserPreset } from "./user-presets.js"
+import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
+import {
+  resolveAgentsMd as realResolveAgentsMd,
+  loadAgentsMdInlineMaxKb,
+  cdContractLine,
+  type AgentsMdResolution,
+} from "./agents-md.js"
+import {
+  resolveWorkspaceRules as realResolveWorkspaceRules,
+  type WorkspaceRulesResolution,
+} from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
+import { isAbsolute } from "node:path"
+
+/**
+ * True when `p` (already absolute) sits inside `cwd` (or IS cwd). The
+ * AGENTS.md read grant only ever covers paths OUTSIDE the session cwd —
+ * inside-cwd files are already readable through the normal workspace
+ * confinement, so granting them would be a no-op at best.
+ */
+function isPathInsideCwd(p: string, cwd: string): boolean {
+  return p === cwd || p.startsWith(cwd.endsWith("/") ? cwd : cwd + "/")
+}
+
+/**
+ * The exact-file read grant backing an inherited AGENTS.md pointer
+ * (session-spawn WP-R2): when the daemon's prompt tells the agent to read an
+ * AGENTS.md that lives OUTSIDE its session cwd (pointer mode, cwd below the
+ * git toplevel), the session's own workspace tools are confined to that cwd
+ * and the read fails with `path … escapes the workspace` — an agent can
+ * then never act on the very contract it was told to load first. The fix is
+ * the narrowest grant that closes the gap: READ access to that one exact
+ * file, threaded to the adapter through
+ * `startSession({ additionalReadPaths })` (env + commandSandbox + the
+ * mastra-agent toolset). No parent-dir exposure, no write access, no extra
+ * sibling — inline mode needs nothing (content already in the prompt) and
+ * absent mode has no file to grant.
+ */
+function additionalReadPathsForAgentsMd(
+  resolution: AgentsMdResolution,
+  cwd: string,
+): string[] | undefined {
+  if (resolution.mode !== "pointer" || !resolution.path) return undefined
+  const resolvedPath = resolution.path
+  if (!isAbsolute(resolvedPath)) return undefined
+  if (isPathInsideCwd(resolvedPath, cwd)) return undefined
+  return [resolvedPath]
+}
+
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
@@ -80,6 +133,12 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import {
+  DEFAULT_APP_SERVE_PORT,
+  startSandboxAppServe,
+  type SandboxAppServeSpec,
+  type SessionAppServeInfo,
+} from "./sandbox-app-serve.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import {
   decideWorktreeIsolation,
@@ -88,6 +147,7 @@ import {
   type WorktreeField,
   type WorktreeIsolationMode,
   type WorktreeProvisioner,
+  type WorktreeRequest,
 } from "./worktree-isolation.js"
 import {
   decideSpawnAttach,
@@ -95,6 +155,16 @@ import {
   type AttachField,
   type SpawnAttachMode,
 } from "./spawn-attach.js"
+import {
+  deriveImplicitIdempotencyKey,
+  loadSpawnDedupe,
+  type SpawnDedupeMode,
+} from "./spawn-dedupe.js"
+import {
+  loadProvenanceWrapGh,
+  ensureGhShimDir,
+  buildGhShimEnv,
+} from "./gh-provenance-shim.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -111,19 +181,34 @@ export type SandboxSpecInput = SandboxSpec & { reuse?: string }
  * with no way for the caller to detect it (the tool result only ever carries
  * the LAST spawn's id).
  *
- * This is deliberately CALLER-SUPPLIED (`idempotencyKey`), not derived from
- * request content (adapter+cwd+prompt+label hash). A content hash was tried
- * and rejected: this file's own test suite exercises a legitimate orchestrator
- * fan-out where two structurally-identical `agent_start` calls (same adapter,
- * cwd, no label/prompt) under one caller scope are expected to spawn as TWO
- * distinct sessions — the second is meant to be rejected by the maxChildren
- * quota check, not silently answered with the first session's descriptor.
- * Intentional identical-looking concurrent spawns are a real, exercised
- * pattern here (see also `Workflow`'s `isolation: "worktree"`, which exists
- * precisely because same-cwd concurrent agents are sometimes wanted and
- * sometimes dangerous) — content alone can't tell the two apart. Only the
- * caller's own declared intent can, so idempotency is opt-in: omitting
- * `idempotencyKey` is a byte-for-byte behavioural no-op.
+ * The primary mechanism is deliberately CALLER-SUPPLIED (`idempotencyKey`),
+ * not derived from request content (adapter+cwd+prompt+label hash). An
+ * unconditional content hash was tried and rejected: this file's own test
+ * suite exercises a legitimate orchestrator fan-out where two structurally-
+ * identical `agent_start` calls (same adapter, cwd, no label/prompt) under
+ * one caller scope are expected to spawn as TWO distinct sessions — the
+ * second is meant to be rejected by the maxChildren quota check, not
+ * silently answered with the first session's descriptor. Intentional
+ * identical-looking concurrent spawns are a real, exercised pattern here
+ * (see also `Workflow`'s `isolation: "worktree"`, which exists precisely
+ * because same-cwd concurrent agents are sometimes wanted and sometimes
+ * dangerous) — content alone, unconditionally, can't tell the two apart.
+ *
+ * WP-E (spawn-dedupe-default): omitting `idempotencyKey` is no longer a
+ * byte-for-byte no-op. A guard that only works when a caller remembers to
+ * ask for it is not a guard — the same argument `spawn.attach` already
+ * settled for parent lineage (`config.ts`'s `SpawnConfig.attach` docblock)
+ * — so by default (`spawn.dedupe: "always"`) the daemon now DERIVES an
+ * implicit key from `label` + a hash of `prompt` when the caller supplies
+ * none (`deriveImplicitIdempotencyKey`, `spawn-dedupe.ts`). This doesn't
+ * reopen the fan-out rejection above: derivation requires a `label` to
+ * produce anything at all, and the fan-out pattern this docblock protects
+ * is unlabelled by construction (same adapter/cwd, no label/prompt) — so it
+ * stays outside implicit dedup exactly as before. A `label`-bearing repeat
+ * is the incident's actual shape (PR #803's independently-derived label+cwd
+ * warning backstop below found the same boundary), not the fan-out pattern.
+ * The caller's own declared intent (an explicit key) still always wins over
+ * a derived guess, and a per-call `dedupe: false` opts back out entirely.
  *
  * Scope: guards only the actual fork + registry registration (the `try`
  * block below) — the one irreversible side effect. Pre-flight validation
@@ -140,15 +225,77 @@ export type SandboxSpecInput = SandboxSpec & { reuse?: string }
  * a FAILED claim is dropped immediately so a genuine post-error retry tries
  * fresh instead of replaying the same failure forever. Scoped per registry
  * instance (WeakMap) so independent daemons/tests never share a cache.
+ *
+ * Sizing `SPAWN_CLAIM_WINDOW_MS`: it must outlive the retry it exists to
+ * absorb, not just "feel generous". The retry is provoked by the CALLER's
+ * own idle/request timeout giving up on a slow-but-succeeding spawn and
+ * trying again — measured in the incident this guards against at 300s (the
+ * `agent-cli` driver's own default per-completion timeout,
+ * `packages/driver/agent-cli/src/model.ts`'s `timeoutMs ?? 5 * 60 * 1000`,
+ * is the same order of magnitude and the best first-party corroboration of
+ * that figure). A resolved claim that's GC'd before that timeout even
+ * fires is a guard that's already gone by the time the retry it was built
+ * for shows up — exactly the gap the incident exposed at the old 30s
+ * value. 10 minutes (2x the 300s timeout) covers the retry arriving the
+ * instant the client's timer fires, plus slack for the retry's own network
+ * transit and clock skew between caller and daemon, without being so long
+ * that a stale claim starts looking like a memory leak.
+ *
+ * That alone would make the map's worst case "unboundedly many resolved
+ * claims sitting for up to 10 minutes" under high spawn-rate idempotent
+ * traffic — the same class of problem the original 30s GC existed to cap,
+ * just with a longer fuse. `MAX_RESOLVED_CLAIMS` bounds it independently of
+ * time: once resolved entries exceed the cap, the OLDEST-resolved are
+ * evicted first (a size/LRU backstop), so a burst of distinct idempotency
+ * keys can't grow the map without limit even inside the window.
  */
-const SPAWN_CLAIM_WINDOW_MS = 30_000
+const SPAWN_CLAIM_WINDOW_MS = 600_000
 
-interface SpawnClaim {
+/**
+ * Window for a claim staked by a DERIVED (implicit) key — see
+ * `spawn-dedupe.ts` for how that key is built. Deliberately shorter than
+ * `SPAWN_CLAIM_WINDOW_MS`, not just "shorter to be safe": an explicit
+ * `idempotencyKey` is the caller's PROMISE that a same-key repeat within the
+ * window is the same logical spawn, so it's sized to the full retry horizon
+ * that promise needs to survive (see that constant's own docblock). An
+ * implicit key is only a GUESS built from `label` + a prompt hash — nobody
+ * told the daemon these two calls are the same spawn, it just noticed they
+ * look alike. The retry this guards against still arrives on the same
+ * client-timeout horizon as an explicit key's retry would (nothing about
+ * being implicit changes WHEN a dropped-response retry fires) — so this
+ * can't be cut down to "just cover an instant double-click" without missing
+ * the exact incident-shaped retry the feature exists to catch. What
+ * shrinking DOES buy: less time for a coincidence to happen. Every implicit
+ * key is reachable from ANY caller that supplies a label and skips
+ * `idempotencyKey` — a much wider, largely-unaudited surface than the
+ * targeted opt-in explicit-key path — so a false-collision candidate
+ * (automation that deliberately re-issues one label into one cwd with an
+ * unchanged prompt, e.g. a periodic health-check spawn) has less time to
+ * wander into the window before it's safely treated as a fresh spawn again.
+ * 120s (2 minutes) is chosen as comfortably inside typical retry timers
+ * (the 300s client default this repo has measured is still ~2.5x this
+ * window away) while being short enough that a deliberately-repeated
+ * automation run separated by anything more than a couple of minutes gets
+ * its own session rather than reattaching to a stale one.
+ */
+const IMPLICIT_SPAWN_CLAIM_WINDOW_MS = 120_000
+
+/** Backstop on map growth, independent of `SPAWN_CLAIM_WINDOW_MS` — see the
+ *  docblock above. Only resolved claims count against this; an in-flight
+ *  claim is bounded by real concurrent spawn load, not by this cap. */
+const MAX_RESOLVED_CLAIMS = 1_000
+
+export interface SpawnClaim {
   result: Promise<SpawnAgentSessionResult>
   /** Wall-clock time the claim settled successfully — undefined while
    *  still in-flight. Only set for `ok: true` results; see the docblock
    *  above for why a failure is dropped instead of cached. */
   resolvedAt?: number
+  /** Eviction window for THIS claim, in ms. Defaults to
+   *  `SPAWN_CLAIM_WINDOW_MS` (an explicit-key claim) when omitted; a claim
+   *  staked from a derived implicit key sets `IMPLICIT_SPAWN_CLAIM_WINDOW_MS`
+   *  instead — see that constant's docblock for why the two differ. */
+  windowMs?: number
 }
 
 const spawnClaimsByRegistry = new WeakMap<SessionsRegistry, Map<string, SpawnClaim>>()
@@ -162,15 +309,67 @@ function claimsFor(registry: SessionsRegistry): Map<string, SpawnClaim> {
   return claims
 }
 
+/** Two independent eviction passes — see the sizing docblock above the two
+ *  constants. Time first (a claim past its OWN `windowMs` — explicit and
+ *  implicit claims share one map but carry different windows, see
+ *  `SpawnClaim.windowMs` — is simply stale, regardless of map size), then a
+ *  size/LRU pass over whatever resolved claims survive it. In-flight claims
+ *  (`resolvedAt` undefined) are never touched by either pass — evicting one
+ *  would let a retry that's still genuinely in-flight fork a second
+ *  process, the exact bug this module exists to prevent. */
+// Exported (only) so the eviction policy can be unit-tested directly against
+// a synthetic map, instead of via a 1000+ real spawnAgentSession() calls.
+export function gcSpawnClaims(claims: Map<string, SpawnClaim>, now: number): void {
+  const resolved: [string, SpawnClaim][] = []
+  for (const [k, claim] of claims) {
+    if (claim.resolvedAt === undefined) continue
+    const window = claim.windowMs ?? SPAWN_CLAIM_WINDOW_MS
+    if (now - claim.resolvedAt > window) {
+      claims.delete(k)
+    } else {
+      resolved.push([k, claim])
+    }
+  }
+  const excess = resolved.length - MAX_RESOLVED_CLAIMS
+  if (excess <= 0) return
+  resolved.sort((a, b) => a[1].resolvedAt! - b[1].resolvedAt!)
+  for (const [k] of resolved.slice(0, excess)) claims.delete(k)
+}
+
 function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key" {
   return method === "oauth-bearer" ? "subscription" : "api-key"
 }
 
-function directAuthMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
+function directAuthMethods(
+  descriptor: AdapterAuthDescriptor | undefined,
+  endpoint?: string,
+): AuthMethod[] {
   const methods: AuthMethod[] = []
-  if (descriptor?.authSubscription) methods.push("oauth-bearer")
+  // oauth-bearer requires an explicit, provider-matching subscription
+  // surface — `modelDerivedApiKey` alone no longer implies it (that
+  // assumption injected subscription OATs into x-api-key vars; see
+  // `subscriptionSurfaceFor`'s doc in spawn-defaults.ts).
+  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
+    methods.push("oauth-bearer")
+  }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
+}
+
+/** The provision-recipe methodId to verify a FILE-BASED subscription login
+ *  under — convention `<provider>-oauth` (mastracode/opencode's
+ *  `anthropic-oauth`/`openai-oauth`). Only meaningful for a MULTI-SURFACE
+ *  adapter (`authSubscription` is an array): a single-surface adapter
+ *  (codex, gemini) keeps today's behavior — undefined, so
+ *  `verifyLocalLoginPresent` falls back to the recipe's default (first)
+ *  method — since its recipe's method id doesn't follow this convention
+ *  (codex: `"oauth-subscription"`, gemini: `"oauth-token"`). */
+function subscriptionOauthMethodId(
+  descriptor: AdapterAuthDescriptor | undefined,
+  provider: string | undefined,
+): string | undefined {
+  if (!Array.isArray(descriptor?.authSubscription) || !provider) return undefined
+  return `${provider}-oauth`
 }
 
 /** Build the one-route eligibility projection used for an initial spawn.
@@ -197,6 +396,9 @@ function spawnEligibilityManifest(
   const directEndpoint =
     descriptor?.provider ??
     (model ? descriptor?.modelProviders?.[model] : undefined) ??
+    (model && descriptor?.modelDerivedApiKey
+      ? modelIdPrefixProvider(model)
+      : undefined) ??
     (model ? getModelProvider(model) : undefined)
   const routeId = route?.gateway ?? directEndpoint
   if (!routeId) return undefined
@@ -205,9 +407,250 @@ function spawnEligibilityManifest(
     manifest: {
       id: adapter,
       endpointByRoute: { [routeId]: direct ? directEndpoint : routeId },
-      methodsByRoute: { [routeId]: direct ? directAuthMethods(descriptor) : ["api-key"] },
+      methodsByRoute: {
+        [routeId]: direct ? directAuthMethods(descriptor, directEndpoint) : ["api-key"],
+      },
     },
     routeId,
+  }
+}
+
+/** When the naive prefix-guessed route (`spawnEligibilityManifest`'s tier-3
+ *  `modelIdPrefixProvider` shortcut for a `modelDerivedApiKey` adapter)
+ *  doesn't make `profile` eligible, search this model's ACTUAL candidate
+ *  routes (`serviceableModelRoutes` — the same reverse lookup the non-profile
+ *  spawn path already trusts) for one that does. A candidate route is
+ *  checked with the same authority an explicit `route.gateway` would carry
+ *  (that's exactly what the prefix guess stands in for absent one), so a
+ *  profile that genuinely bills a different route than the guess still
+ *  spawns without the caller ever having to name `route.gateway` themselves.
+ *  Returns the resolved projection only when EXACTLY one candidate route
+ *  clears eligibility — zero (genuinely ineligible) or more than one
+ *  (ambiguous) both fall through to `undefined` so the caller still fails
+ *  loud. */
+function resolveProfileAwareRoute(
+  adapter: string,
+  authDescriptor: AdapterAuthDescriptor,
+  profile: AuthProfile,
+  model: string | undefined,
+): { manifest: AdapterAuthManifest; routeId: string } | undefined {
+  if (!model) return undefined
+  const eligibleCandidates = serviceableModelRoutes(model)
+    .map(gateway => spawnEligibilityManifest(adapter, authDescriptor, { gateway }, model))
+    .filter((candidate): candidate is { manifest: AdapterAuthManifest; routeId: string } => candidate !== undefined)
+    .filter(candidate => eligibleProfiles([profile], candidate.manifest, candidate.routeId).length > 0)
+  return eligibleCandidates.length === 1 ? eligibleCandidates[0] : undefined
+}
+
+/** A resolved access-profile pin — the mechanical `spec` a driver applies
+ *  plus the observable `echo` recorded on a session descriptor. */
+export interface AccessProfileAuthResult {
+  ok: true
+  authSpec?: ResolvedAuthSpec
+  authEcho?: AuthEcho
+  accessProfileEcho: { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
+}
+
+export interface AccessProfileAuthError {
+  ok: false
+  code:
+    | "access_profile_not_found"
+    | "access_profile_ineligible"
+    | "unsupported_auth_mode"
+    | "unsupported_auth_source"
+    | "auth_source_unresolved"
+  message: string
+  details?: Record<string, unknown>
+}
+
+/**
+ * Resolve a named `access.profileRef` into a `ResolvedAuthSpec` — profile
+ * lookup, route/model eligibility check, credential fetch (source-backed
+ * subscription resolved FRESH via Mode 3, or a static keychain read), then
+ * `resolveAuthSpec`. Extracted from `spawnAgentSession`'s inline branch so a
+ * SECOND spawn path — the completion-policy supervisor's judge gate
+ * (`supervisor.ts`'s `runJudge`, WP-D) — can pin an explicit billing profile
+ * for a judge agent without duplicating this ~130-line resolution chain.
+ * Deliberately narrow: a single named profile, no eligibility-ranked list, no
+ * automatic fail-over across profiles — that's a wallet LADDER, a bigger
+ * feature this function does not attempt (see `runJudge`'s doc).
+ *
+ * Messages are UNPREFIXED (no `"agent_start: "` etc.) so each caller can
+ * frame the error in its own vocabulary; `spawnAgentSession` re-adds its
+ * historical prefix at the call site, preserving its exact error strings.
+ */
+export async function resolveAccessProfileAuth(input: {
+  adapter: string
+  profileRef: string
+  authDescriptor: AdapterAuthDescriptor | undefined
+  route?: RouteSpec
+  /** Model used for eligibility (route/provider derivation) — falls back to
+   *  `defaultModel` when omitted. */
+  model?: string
+  /** Adapter's own default model (`resolved.defaultModel`) — used ONLY for
+   *  the eligibility check above, deliberately NOT as a fallback for the
+   *  `resolveAuthSpec({model})` call below (that call passes raw `model` as
+   *  a caller-explicit signal; a resolver-supplied default there would
+   *  misrepresent the request as having named a model it didn't). */
+  defaultModel?: string
+}): Promise<AccessProfileAuthResult | AccessProfileAuthError> {
+  const { adapter, profileRef, authDescriptor, route, model, defaultModel } = input
+  const profile = await getAuthProfile(profileRef)
+  if (!profile) {
+    return {
+      ok: false,
+      code: "access_profile_not_found",
+      message: `no auth profile "${profileRef}" found.`,
+    }
+  }
+  if (!authDescriptor) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message: `adapter "${adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
+    }
+  }
+  let projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
+  // The naive/prefix-guessed route above is only ever a GUESS when the
+  // caller didn't pin one explicitly (`route?.gateway` still wins outright,
+  // untouched, above); when the guess leaves the named profile ineligible,
+  // fall back to searching the model's real candidate routes before failing.
+  if (
+    route?.gateway === undefined &&
+    (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0)
+  ) {
+    const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
+    if (resolved) projected = resolved
+  }
+  if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
+    const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message:
+        `profile "${profile.id}" (${profile.endpoint}/${profile.method}) is not eligible ` +
+        `for adapter "${adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
+    }
+  }
+  const authMode = profileMethodToAuthMode(profile.method)
+  // Subscription-credential resolution: a source-backed profile
+  // (`profile.source`) resolves the credential FRESH via Mode 3 on every
+  // spawn instead of a one-shot static keychain read — reusing
+  // `resolveSubscriptionCredential` rather than duplicating it. A
+  // credential-backed profile keeps a static read.
+  let subscriptionCredential: string | undefined
+  let subscriptionCredentialSource: CredentialSource | undefined
+  let apiKeyCredential: string | undefined
+  let externalSubscriptionVerified = false
+  // File-based (external) subscription — codex/gemini/mastracode/opencode:
+  // the CLI reads its OWN login file, so a source-backed profile injects
+  // NOTHING. Verify the login is present (fail-loud) and let
+  // `resolveAuthSpec` produce a scrub-only external spec; never
+  // resolve/inject a bearer. `profile.endpoint` is the profile's resolved
+  // provider — the surface lookup for a MULTI-surface adapter (mastracode/
+  // opencode) needs it to pick the anthropic vs. openai surface.
+  const authSubSurface = subscriptionSurfaceFor(authDescriptor.authSubscription, profile.endpoint)
+  const externalSub = authSubSurface?.external === true
+  if (authMode === "subscription" && externalSub) {
+    try {
+      // The ADAPTER's recipe, never `profile.source`: an external surface
+      // verifies the adapter CLI's OWN login file — the profile's source
+      // names where the PROFILE's credential lives, which external mode
+      // never injects. `profile.source ?? adapter` was correct only by
+      // coincidence (codex-local on the codex adapter: source === slug);
+      // observed live: mastracode + the codex-local profile resolved the
+      // "codex" recipe and failed with "provider 'codex' has no method
+      // 'openai-oauth'" instead of checking mastracode's own auth.json.
+      await verifyLocalLoginPresent(
+        adapter,
+        adapter,
+        subscriptionOauthMethodId(authDescriptor, profile.endpoint),
+      )
+      externalSubscriptionVerified = true
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) {
+        return {
+          ok: false,
+          code: err.code,
+          message: err.message,
+          details: { adapter, profile: profile.id },
+        }
+      }
+      throw err
+    }
+  } else if (authMode === "subscription" && profile.source !== undefined) {
+    try {
+      const subResolution = await resolveSubscriptionCredential(
+        { source: profile.source },
+        resolveClaudeCodeOauthToken,
+      )
+      subscriptionCredential = subResolution.credential
+      subscriptionCredentialSource = subResolution.source
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) {
+        return {
+          ok: false,
+          code: err.code,
+          message: err.message,
+          details: { adapter, profile: profile.id },
+        }
+      }
+      throw err
+    }
+  } else if (profile.credentialRef === undefined) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message: `profile "${profile.id}" has neither a credential nor a source configured.`,
+      details: { adapter },
+    }
+  } else {
+    const stored = await new KeychainStore().read({ path: profile.credentialRef })
+    if (authMode === "subscription") subscriptionCredential = stored?.value
+    else apiKeyCredential = stored?.value
+  }
+  let authSpec: ResolvedAuthSpec | undefined
+  let authEcho: AuthEcho | undefined
+  try {
+    const result = resolveAuthSpec({
+      descriptor: authDescriptor,
+      ...(model ? { model } : {}),
+      ...(route?.gateway ? { routeGateway: route.gateway } : {}),
+      ...(!route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
+      requestedMode: authMode,
+      // A profile reference is an explicit billing choice. Never consult the
+      // ambient environment or a different provider-store key as fallback.
+      explicit: true,
+      ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
+      ...(subscriptionCredentialSource !== undefined ? { subscriptionCredentialSource } : {}),
+      ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
+      ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
+    })
+    if (result) {
+      authSpec = result.spec
+      authEcho = result.echo
+    }
+  } catch (err) {
+    if (err instanceof AuthResolutionError) {
+      return {
+        ok: false,
+        code: "unsupported_auth_mode",
+        message: err.message,
+        details: { adapter, provider: profile.endpoint },
+      }
+    }
+    throw err
+  }
+  return {
+    ok: true,
+    authSpec,
+    authEcho,
+    accessProfileEcho: {
+      profileRef: profile.id,
+      ...(profile.label !== undefined ? { label: profile.label } : {}),
+      endpoint: profile.endpoint,
+      method: profile.method,
+    },
   }
 }
 
@@ -224,6 +667,38 @@ export type BuildOrchestratorMcp = (opts: {
 }) => {
   entry: AcpMcpServer
   bindLifecycle: (sessionId: string) => () => void
+}
+
+/**
+ * Should this spawn get the daemon's own `/mcp` gateway mounted by default
+ * (caller supplied no `mcpServers`)? Pure — the per-adapter reasoning lives
+ * here so the injection site and its tests share one decision.
+ *
+ *  - `hermes`: always. It has zero built-in tools — without a mount it
+ *    silently spawns chat-only. Sandbox spawns keep the historical
+ *    behaviour (inject) — the box's own daemon re-resolves the spawn on
+ *    its side anyway.
+ *  - `claude-code`: on-host spawns only. The mount is about IDENTITY, not
+ *    capability: ambient MCP config (project `.mcp.json` / global claude
+ *    config) already points these sessions at the daemon but can never
+ *    carry a per-session `callerSessionId`, leaving every spawn they make
+ *    an anonymous depth-0 orphan (observed in production: 0 of 663
+ *    sessions ever carried a `parentSessionId`). The injected same-named
+ *    entry shadows the ambient one at the SDK layer and carries the stamp.
+ *    A sandbox spawn is excluded — the box cannot reach this daemon's
+ *    loopback gateway, and unlike hermes there is no historical behaviour
+ *    to preserve.
+ *  - everything else: never. Mounting the daemon into adapters that never
+ *    had it (codex, gemini, …) would be a capability grant, not a fix —
+ *    those callers opt in explicitly via `mcpServers`.
+ */
+export function shouldInjectDaemonSelfMount(
+  adapter: string,
+  sandbox: unknown,
+): boolean {
+  if (adapter === "hermes") return true
+  if (adapter === "claude-code") return sandbox === undefined
+  return false
 }
 
 /** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
@@ -296,6 +771,43 @@ export interface SpawnAgentSessionDeps {
    *  Defaults to `loadSpawnAttach` (reads the real config) when omitted;
    *  tests inject a stub to pin the mode without touching env or the file. */
   resolveSpawnAttach?: () => Promise<SpawnAttachMode>
+  /** Resolves the effective `spawn.dedupe` policy (env > config > `always`).
+   *  Defaults to `loadSpawnDedupe` (reads the real config) when omitted;
+   *  tests inject a stub to pin the mode without touching env or the file.
+   *  See `spawn-dedupe.ts`. */
+  resolveSpawnDedupe?: () => Promise<SpawnDedupeMode>
+  /** Resolves the effective `provenance.wrapGh` opt-in (env > config >
+   *  `false`). When it resolves true, a `gh` PATH shim is prepended to the
+   *  spawned session's env so any `gh pr create` it (or an adapter
+   *  subprocess) runs gets the daemon's provenance footer appended to the
+   *  created PR's body — see `gh-provenance-shim.ts`. Defaults to
+   *  `loadProvenanceWrapGh` (reads the real config) when omitted; tests
+   *  inject a stub to pin it without touching env or the file. */
+  resolveProvenanceWrapGh?: () => Promise<boolean>
+  /** Resolves + shapes the AGENTS.md for a spawn's `cwd` (see
+   *  `agents-md.ts`): inline / pointer / absent, plus the standing cd-contract
+   *  line. Defaults to the real resolver over `loadAgentsMdInlineMaxKb`'s
+   *  config-derived threshold when omitted; tests inject a stub to avoid
+   *  touching the filesystem, git, and the real config on every spawn. */
+  resolveAgentsMd?: (
+    cwd: string,
+    inlineMaxKb?: number,
+  ) => Promise<AgentsMdResolution>
+  /** Resolves + shapes the per-workspace RULES.md for a spawn (see
+   *  `workspace-rules.ts`): the path of the workspace's `RULES.md`, inlined
+   *  in full when present, absent otherwise. Injected into EVERY spawn in
+   *  the workspace (root and nested — no depth gate). Defaults to the real
+   *  resolver over the workspace state bucket when omitted; tests inject a
+   *  stub to avoid touching the real `~/.agentproto` directory. */
+  resolveWorkspaceRules?: (slug: string | undefined) => Promise<WorkspaceRulesResolution>
+  /** Feeds the adapter-capability spawn guard (`checkModelAdapterEligibility`)
+   *  — the SAME `listCatalogModels` the `catalog_models` MCP tool /
+   *  `GET /catalog/models` route already use (`RegisterAgentToolsOptions.
+   *  listCatalogModels`), reused here rather than re-derived. Omitted ⇒ the
+   *  guard is skipped — a spawn that would 404 upstream on an adapter's
+   *  manifest not covering the requested model still reaches the driver,
+   *  same as before this guard existed. */
+  listCatalogModels?: CatalogModelsLister
 }
 
 export interface SpawnAgentSessionInput {
@@ -346,6 +858,13 @@ export interface SpawnAgentSessionInput {
   boardId?: string
   /** Source label for this spawn (channel/harness). Descriptor-only. */
   origin?: string
+  /** Installed app id this spawn runs on behalf of (`app_run` sets this to
+   *  the app's own id). Forwarded to the child process as `APP_ID_ENV` — a
+   *  daemon-tool proxy the child builds (mastra-agent's `daemon-mcp-tools.ts`,
+   *  P7) auto-injects it into an `app_*` tool call that omits `appId`, since
+   *  the model driving the session has no way to know its own appId unless
+   *  told. Absent on a spawn made outside `app_run`. */
+  appId?: string
   /** Reattach to a pre-existing adapter-native session (claude-code's
    *  conversation id, hermes' chat handle, …) instead of starting
    *  blank. Not exposed on the MCP `agent_start` tool today — only the
@@ -443,6 +962,17 @@ export interface SpawnAgentSessionInput {
    *  `SandboxAgentSessionProxy` in place of the local `resolveAgentAdapter`
    *  path — see `sandbox-agent-session-proxy.ts`. */
   sandbox?: string | SandboxSpecInput
+  /** WP3 — serve an agentproto app's UI from INSIDE the sandbox box and
+   *  return its public URL on the descriptor + result. Requires `sandbox`
+   *  (a non-sandbox spawn carrying `appServe` is rejected): the app dir is
+   *  resolved INSIDE the box (e.g. `/home/user/apps/<slug>` on the
+   *  workstation image), installed via the box daemon's `app_install`, and
+   *  `agentproto app serve --host 0.0.0.0 --port <port>` is launched
+   *  detached through the box's `command_execute`. The port is appended to
+   *  the spec's `extraPorts` so the provider resolves its public URL (also
+   *  stamped into `sandboxPorts`), and the serve result lands on the
+   *  descriptor's `appServe` field. See `sandbox-app-serve.ts`. */
+  appServe?: SandboxAppServeSpec
   /** Isolate this session into its own git worktree instead of spawning in
    *  `cwd` directly. `true` provisions a worktree with an auto-minted branch/
    *  slug; `{ slug?, base? }` pins the slug and/or the base ref it's cut from.
@@ -483,14 +1013,28 @@ export interface SpawnAgentSessionInput {
    *  — unchanged reap-eligible behaviour. Toggleable later via the
    *  `session_set_keepalive` MCP verb. */
   keepAlive?: boolean
-  /** Caller-declared "this is the same logical spawn" token. A second
-   *  `agent_start` with the same `(adapter, cwd, idempotencyKey)` within
-   *  `SPAWN_CLAIM_WINDOW_MS` of a SUCCESSFUL spawn returns that spawn's
-   *  descriptor instead of forking a second process — the fix for a
-   *  retried call otherwise silently duplicating a live agent. Omit for
-   *  today's behaviour (every call spawns). See the docblock on
-   *  `SpawnClaim` for why this is opt-in rather than automatic. */
+  /** Caller-declared "this is the same logical spawn" token — a PROMISE, not
+   *  a guess. A second `agent_start` with the same `(adapter, cwd,
+   *  idempotencyKey)` within `SPAWN_CLAIM_WINDOW_MS` of a SUCCESSFUL spawn
+   *  returns that spawn's descriptor instead of forking a second process —
+   *  the fix for a retried call otherwise silently duplicating a live
+   *  agent. Always wins over the daemon's own derived (implicit) key when
+   *  both would apply — see `dedupe` and `spawn-dedupe.ts`. Omitting this
+   *  does NOT mean "spawn unconditionally" anymore: when the daemon's
+   *  `spawn.dedupe` policy is `"always"` (the default) and this spawn
+   *  carries a `label`, the daemon derives an implicit key in its place —
+   *  see `dedupe` below to opt out per-call. */
   idempotencyKey?: string
+  /** Per-call override for the daemon's `spawn.dedupe` policy (implicit
+   *  dedupe when no `idempotencyKey` was supplied — see `spawn-dedupe.ts`).
+   *  `false` is the escape hatch: never derive an implicit key for THIS
+   *  spawn, regardless of policy — mirrors `attach: false` / `worktree:
+   *  false`. `true` forces derivation even under an `"on-request"` policy,
+   *  mirroring `attach: true`. Omitted ⇒ the policy mode decides. Has no
+   *  effect when an explicit `idempotencyKey` is supplied (it already wins
+   *  outright) or when this spawn carries no `label` (nothing to derive
+   *  from either way). */
+  dedupe?: boolean
   /**
    * OS-level confinement for the adapter's OWN spawned process
    * (`@agentproto/command-sandbox` — macOS Seatbelt / Linux bubblewrap),
@@ -524,9 +1068,20 @@ export type SpawnAgentSessionResult =
        *  warn about. The spawn still succeeded; these are advisory. */
       warnings?: string[]
       /** Set when this result was returned to a duplicate call recognized
-       *  via `idempotencyKey` — no new process was spawned; `descriptor` is
-       *  the ORIGINAL spawn's. Absent on the original (non-duplicate) call. */
+       *  via `idempotencyKey` OR a derived implicit key — no new process was
+       *  spawned; `descriptor` is the ORIGINAL spawn's. Absent on the
+       *  original (non-duplicate) call. */
       deduped?: boolean
+      /** Set alongside `deduped` to say WHICH kind of dedup matched:
+       *  `"explicit"` for a caller-supplied `idempotencyKey`, `"implicit"`
+       *  for a daemon-derived key (see `spawn-dedupe.ts`). An implicit match
+       *  is a GUESS, not a promise the caller made — surfacing which one
+       *  fired lets a caller tell "you got back the session you thought you
+       *  started" from "the daemon merged this into an unrelated-looking
+       *  earlier spawn because it looked similar", instead of silently
+       *  returning a different session than the one someone thought they
+       *  started. Absent when `deduped` is absent. */
+      dedupeSource?: "explicit" | "implicit"
     }
   | {
       ok: false
@@ -543,20 +1098,50 @@ export type SpawnAgentSessionResult =
         | "auth_source_unresolved"
         | "access_profile_not_found"
         | "access_profile_ineligible"
+        | "harness_preset_profile_unavailable"
         | "model_wallet_ineligible"
+        | "model_adapter_incompatible"
         | "gateway_base_url_unsupported"
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
         | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
+        | "sandbox_app_serve_failed"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
         | "worktree_requires_explicit_repo"
+        | "worktree_async_wait_conflict"
       message: string
       details?: Record<string, unknown>
     }
+
+/**
+ * Recover the daemon-composed SYSTEM preamble from a spawned child's
+ * composed initial prompt. `composed` is the single string the adapter
+ * receives; the CALLER's own ask (`callerPrompt`) is the LAST block,
+ * joined from the preamble by "\n\n". The daemon knows the split because
+ * it composed the string — the adapter only ever sees the whole thing, so
+ * this is recorded on the daemon's OWN event stream (as a `system-prompt`
+ * record ahead of the `user-prompt`) so UIs can fold the disposition /
+ * AGENTS.md / lineage text instead of rendering it as a user bubble.
+ *
+ * Returns the preamble text WITHOUT the trailing "\n\n" separator, or
+ * undefined when there's no preamble (the whole prompt is the caller's
+ * ask) or the composition invariant doesn't hold (never split rather
+ * than risk mis-tagging user text as system).
+ */
+function composedPreamble(
+  composed: string | undefined,
+  callerPrompt: string | undefined,
+): string | undefined {
+  if (!callerPrompt || !composed) return undefined
+  const tail = `\n\n${callerPrompt}`
+  if (!composed.endsWith(tail)) return undefined
+  const pre = composed.slice(0, composed.length - tail.length)
+  return pre || undefined
+}
 
 export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
@@ -580,6 +1165,42 @@ export async function spawnAgentSession(
       // caller-named (and the worktree guard sees a real repo, not a fallback).
       cwd: explicit.cwd ?? preset.cwd,
       skills: explicit.skills ?? preset.skills,
+    }
+  }
+
+  // Harness default preset (`harness-presets.json`): when NEITHER an explicit
+  // request NOR a user preset pinned a billing profile, fall back to the
+  // harness's persisted default preset — its `profileRef` + `defaultModel`
+  // replace the legacy "first eligible profile" ambient resolution below. This
+  // is the lowest-precedence layer: it fills `access.profileRef` only when
+  // unset, and `model` only when the caller named none. A harness with no
+  // default preset (the common case, and every test that doesn't provision one)
+  // reads an empty store and leaves the spawn untouched.
+  if (!input.access?.profileRef) {
+    const preset = await getDefaultHarnessPreset(input.harness ?? input.adapter)
+    if (preset) {
+      // A default preset that bills through a since-disabled (or deleted)
+      // auth profile must fail HERE, with a message that names the preset
+      // and the profile — letting the spawn proceed would fail later anyway,
+      // deep inside credential resolution, with an opaque eligibility error
+      // that never mentions the preset that silently applied.
+      const presetProfile = await getAuthProfile(preset.profileRef)
+      if (!presetProfile || presetProfile.disabled) {
+        return {
+          ok: false,
+          code: "harness_preset_profile_unavailable",
+          message:
+            `harness preset "${preset.id}" (default for ${preset.harnessSlug}) bills through auth ` +
+            `profile "${preset.profileRef}" which is ${!presetProfile ? "missing" : "disabled"} — ` +
+            "re-enable it, or point the harness default elsewhere with harness_preset_create / " +
+            "harness_preset_set_default.",
+        }
+      }
+      input = {
+        ...input,
+        access: { profileRef: preset.profileRef },
+        model: input.model ?? preset.defaultModel,
+      }
     }
   }
 
@@ -608,6 +1229,11 @@ export async function spawnAgentSession(
     provisionWorktree,
     resolveWorktreeIsolation,
     resolveSpawnAttach,
+    resolveSpawnDedupe,
+    resolveProvenanceWrapGh,
+    resolveAgentsMd,
+    resolveWorkspaceRules,
+    listCatalogModels,
   } = deps
 
   // cwd resolution: explicit cwd wins, then workspaceSlug lookup, then —
@@ -736,50 +1362,24 @@ export async function spawnAgentSession(
         "or set an active workspace via `agentproto workspace use <slug>`.",
     }
   }
+  // WP3 — `appServe` only makes sense against a box: reject a non-sandbox
+  // spawn that carries it instead of silently ignoring the request.
+  if (input.appServe !== undefined && input.sandbox === undefined) {
+    return {
+      ok: false,
+      code: "sandbox_app_serve_failed",
+      message:
+        "agent_start: `appServe` requires `sandbox` — the app dir is installed and served " +
+        "INSIDE the box, so there is nothing to serve on a local spawn. Pass `sandbox` " +
+        "(a provider slug or inline spec) together with `appServe`.",
+    }
+  }
   // A sandboxed spawn runs `adapter` on the BOX's own `agent_start` — the
   // host's local adapter registry has no bearing on it (the box resolves
   // `adapter` itself), so the local resolution + not-found gate are
   // skipped entirely for `input.sandbox`. See the sandbox branch below,
   // which short-circuits BEFORE `resolved.startSession(...)` is ever
   // reached.
-  // Sandboxed spawns normally resolve the adapter inside the sandbox, not on
-  // the host. A named host auth profile is the one exception: resolve the
-  // host descriptor just long enough to select the requested billing rail and
-  // turn the keychain-backed profile into the explicit credential a fresh box
-  // needs. Keep the normal sandbox path free of this host dependency.
-  const resolveHostAuth = input.sandbox !== undefined && input.access?.profileRef !== undefined
-  const resolved =
-    input.sandbox === undefined || resolveHostAuth ? await resolveAgentAdapter(input.adapter) : null
-  if (input.sandbox === undefined && !resolved) {
-    // `resolveAgentAdapter` collapses every failure reason to `null` by
-    // contract (it's injected across a dozen call sites that all assume it
-    // never throws — see its doc comment), so this message can't name the
-    // exact cause the way `resolveAdapter`'s own thrown error can. It CAN
-    // stop asserting "not found" as settled fact: an adapter that resolved
-    // moments ago and now doesn't is most likely mid-rebuild, not
-    // uninstalled — a resolver with a warm last-known-good cache (the CLI's
-    // `resolveAdapter`) already returns successfully through that window,
-    // so reaching this branch at all means either the adapter has never
-    // resolved in this process, or it went unresolvable long enough to
-    // exhaust that grace period.
-    return {
-      ok: false,
-      code: "adapter_not_found",
-      message:
-        `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
-        `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
-        `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
-    }
-  }
-  if (resolveHostAuth && !resolved) {
-    return {
-      ok: false,
-      code: "access_profile_ineligible",
-      message:
-        `agent_start: adapter "${input.adapter}" must be available on the host to resolve ` +
-        `access profile "${input.access?.profileRef}" for a sandbox spawn.`,
-    }
-  }
   // ── Recursion guardrails (WP4) ──────────────────────────────
   // When this call arrives through the scoped sub-gateway,
   // `callerScope` is the spawning orchestrator's identity. Enforce
@@ -873,7 +1473,14 @@ export async function spawnAgentSession(
   // would be meaningless. Validation-class rejects (`never` + explicit
   // request, or a provision with no provisioner wired) fail LOUD here, before
   // any side effect — mirroring the role/depth gates above.
-  let worktreeRequest: { slug?: string; base?: string } | undefined
+  let worktreeRequest: WorktreeRequest | undefined
+  // `true` only when the worktree about to be provisioned is
+  // `decision.implicit` — the caller made no explicit `worktree` request and
+  // the `"always"` policy provisioned one anyway. Threaded onto the spawned
+  // session's descriptor (`worktreeAutoProvisioned`) so exit-time auto-
+  // reclaim (`sessions.ts`'s `emitExited`) only ever touches a worktree the
+  // daemon minted on its own — never one a caller explicitly asked to keep.
+  let worktreeAutoProvisioned = false
   // Non-fatal spawn-time notices, surfaced on the success result (`warnings`)
   // AND logged. Populated by the worktree decision below (shared-dirty-cwd).
   const spawnWarnings: string[] = []
@@ -944,6 +1551,23 @@ export async function spawnAgentSession(
         }
       }
       worktreeRequest = decision.request
+      worktreeAutoProvisioned = decision.implicit
+    }
+  }
+  // `worktree.async` returns before the tree — and therefore the driver
+  // session — exists, so there is no first-turn output for `wait` to block
+  // on and return. The two are a contradiction, not a priority order; fail
+  // loud here (no side effects yet) rather than silently picking one.
+  if (worktreeRequest?.async && input.wait) {
+    return {
+      ok: false,
+      code: "worktree_async_wait_conflict",
+      message:
+        "agent_start: `worktree.async` and `wait` cannot be combined — async " +
+        "provisioning returns before the worktree (and the driver session in " +
+        "it) exists, so there is no first-turn output for `wait` to block on. " +
+        "Drop `wait` and poll the session's `status` instead, or drop " +
+        "`worktree.async` to provision synchronously.",
     }
   }
   // ── Model-slug advisory (opaque late failure → early "did you mean") ──────
@@ -1081,12 +1705,27 @@ export async function spawnAgentSession(
   // `spawnAgent` via `SpawnAgentInput.id` so the descriptor ends up with
   // this exact id rather than a second, different one (PR 7 / Gap 7).
   const mintedSessionId = mintSessionId()
-  // hermes (unlike claude-code) has zero built-in tools — without an
-  // explicit `mcpServers`, it silently spawns as a chat-only session
-  // with no error. Default it to the daemon's own gateway so it's no
-  // longer possible to get this wrong by omission. An explicit `[]`
-  // is a deliberate opt-out and must be respected as such, so this
-  // only fires when the caller passed no `mcpServers` at all.
+  // Default the daemon's own gateway onto spawns that supplied no
+  // `mcpServers` — two distinct rationales, one mechanism (see
+  // `shouldInjectDaemonSelfMount` for the per-adapter reasoning):
+  //   - hermes: CAPABILITY — it has zero built-in tools; without an
+  //     explicit `mcpServers` it silently spawns as a chat-only session
+  //     with no error. The default makes that impossible by omission.
+  //   - claude-code: IDENTITY — its sessions typically reach this same
+  //     daemon anyway through ambient MCP config (a project `.mcp.json` /
+  //     the operator's global claude config), but those static mounts can
+  //     never carry a per-session `callerSessionId`, so every spawn such a
+  //     session made landed as an anonymous depth-0 orphan —
+  //     `spawn-attach.ts`'s auto-parent had nothing to derive from, and
+  //     origin grouping had no lineage to walk. The injected entry reuses
+  //     the same `agentproto` server name, and a session-level entry
+  //     SHADOWS an ambient same-named one at the SDK layer (verified live:
+  //     the child sees only the session-level server's tools), so the
+  //     child keeps the daemon toolset it already had — now with identity
+  //     baked in, its own spawns auto-attaching, and the ambient unstamped
+  //     mount neutralized in one move.
+  // An explicit `[]` is a deliberate opt-out and must be respected as
+  // such, so this only fires when the caller passed no `mcpServers` at all.
   //
   // HARD GATE: when the resolved role denies delegation, the injected
   // gateway URL carries `denyTools=<DELEGATION_TOOL_NAMES>` so the
@@ -1098,7 +1737,7 @@ export async function spawnAgentSession(
   // `command_execute` call this child makes back through that URL can be
   // attributed to it (PR 7 / Gap 7) — `handleMcp` (http-server.ts) reads
   // the query param and threads it into `registerCommandTools`.
-  if (!mcpServers && input.adapter === "hermes" && daemonMcpUrl) {
+  if (!mcpServers && shouldInjectDaemonSelfMount(input.adapter, input.sandbox) && daemonMcpUrl) {
     let ref = delegationDenied
       ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
       : daemonMcpUrl
@@ -1166,6 +1805,44 @@ export async function spawnAgentSession(
       }
     })
   }
+  // ── Report-back channel (child → parent) ──────────────────────────
+  // Every child with a recorded parent should be able to reach
+  // `message_parent` (report a result or blocker UP to the session that
+  // spawned it) without being handed the delegation surface. Two cases are
+  // already covered: an orchestrator scope carries `message_parent` in its
+  // default allowlist, and any daemon-targeting `/mcp` entry (the hermes
+  // default above, or caller-supplied) reaches the root gateway, where the
+  // tool is registered and never deny-gated. The remaining case is a child
+  // with a parent and NO gateway at all (an adapter outside the default
+  // self-mount set — a plain codex/gemini leaf — or a daemon running
+  // without `daemonMcpUrl`; claude-code leaves land here only in the
+  // latter case now that they get the full default mount):
+  // mint a scope narrowed to `message_parent` only, riding the same
+  // token/lifecycle machinery as a full orchestrator scope (revoked when
+  // the child exits). This grants NO delegation — the scope's tool set has
+  // no `agent_start`/`agent_prompt`, and its role is the child's own, so
+  // the `canSpawn` gate stays shut for an executor. An explicit
+  // `mcpServers` (including `[]`) or `orchestrator: false` is a deliberate
+  // caller choice and is respected as an opt-out; a sandbox spawn is
+  // skipped (a remote box can't reach the loopback gateway anyway).
+  if (
+    mcpServers === undefined &&
+    parentSessionId &&
+    buildOrchestratorMcp &&
+    input.orchestrator !== false &&
+    input.sandbox === undefined
+  ) {
+    // No `caller` ceiling on purpose: report-back is universal, not a
+    // re-grant — a parent whose own scope lacks `message_parent` must not
+    // strip its children of the ability to report up. The scope can spawn
+    // nothing (no delegation tools), so depth bookkeeping is moot.
+    const injection = buildOrchestratorMcp({
+      tools: ["message_parent"],
+      role: role.name,
+    })
+    mcpServers = [injection.entry]
+    bindOrchestratorLifecycle = injection.bindLifecycle
+  }
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
@@ -1179,6 +1856,54 @@ export async function spawnAgentSession(
       undefined,
       spawnDefaults.contextContinuity,
     )
+  // Sandboxed spawns normally resolve the adapter inside the sandbox, not on
+  // the host. Two host wallets are the exceptions: a named `access.profileRef`
+  // AND a wallet configured in `defaults.adapters.<slug>.auth` (an explicit
+  // CONFIG auth block; a per-spawn `auth` keeps its own raw-forward path and
+  // never forces host resolution). In both, resolve the host descriptor just
+  // long enough to select the requested billing rail and turn the
+  // keychain/config-backed credential into the explicit auth a fresh box
+  // needs — a sandboxed child bills the SAME wallet the host would have
+  // billed. Keep the normal sandbox path free of this host dependency.
+  const resolveHostAuth =
+    input.sandbox !== undefined &&
+    (input.access?.profileRef !== undefined ||
+      (spawnDefaults.auth.explicitConfig && input.auth === undefined))
+  const resolved =
+    input.sandbox === undefined || resolveHostAuth ? await resolveAgentAdapter(input.adapter) : null
+  if (input.sandbox === undefined && !resolved) {
+    // `resolveAgentAdapter` collapses every failure reason to `null` by
+    // contract (it's injected across a dozen call sites that all assume it
+    // never throws — see its doc comment), so this message can't name the
+    // exact cause the way `resolveAdapter`'s own thrown error can. It CAN
+    // stop asserting "not found" as settled fact: an adapter that resolved
+    // moments ago and now doesn't is most likely mid-rebuild, not
+    // uninstalled — a resolver with a warm last-known-good cache (the CLI's
+    // `resolveAdapter`) already returns successfully through that window,
+    // so reaching this branch at all means either the adapter has never
+    // resolved in this process, or it went unresolvable long enough to
+    // exhaust that grace period.
+    return {
+      ok: false,
+      code: "adapter_not_found",
+      message:
+        `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
+        `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
+        `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
+    }
+  }
+  if (resolveHostAuth && !resolved) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message:
+        `agent_start: adapter "${input.adapter}" must be available on the host to resolve ` +
+        (input.access?.profileRef !== undefined
+          ? `access profile "${input.access.profileRef}"`
+          : "the configured default wallet") +
+        " for a sandbox spawn.",
+    }
+  }
   // ── Billing-auth resolution (DECISIONS 4/9/10) ──────────────────
   // The runtime decides provider → ordered mode → setEnv/scrub → credential
   // source → fingerprint, and emits BOTH the mechanical `spec` the driver
@@ -1186,8 +1911,12 @@ export async function spawnAgentSession(
   // on a configured-but-missing credential is the DRIVER's job (it engages
   // then throws `missing_auth_credential`); a requested-but-unsupported mode
   // fails LOUD right here (`unsupported_auth_mode`). No provider resolves ⇒
-  // no spec ⇒ ambient (no injection). Skipped for a sandbox spawn — the box's
-  // own daemon resolves its own credential independently.
+  // no spec ⇒ ambient (no injection). A sandbox spawn SKIPS this resolution
+  // and the box's own daemon resolves its own credential independently —
+  // EXCEPT when a host wallet must cross the boundary (a named
+  // `access.profileRef` or an explicit config-default wallet): `resolveHostAuth`
+  // above resolved the host adapter for exactly that, so the credential is
+  // resolved here and forwarded to the box via `sandboxAuthFromResolved`.
   // A `base_url` option targets this spawn at a non-Anthropic gateway
   // explicitly — the driver-level fix (define-agent-cli.ts's `engageAuth`)
   // already guarantees no native-Anthropic credential is ever injected into
@@ -1217,150 +1946,62 @@ export async function spawnAgentSession(
   let accessProfileEcho:
     | { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
     | undefined
+  // Echo of the resolved billing route for a BY-MODEL ROUTER adapter (no
+  // fixed `authDescriptor.provider` — hermes, pi, opencode) when the caller
+  // named no explicit `route.gateway`. Without this, the descriptor's
+  // `route` field stays empty even though the spawn billed a real gateway
+  // (derived from the model id via `getModelProvider`), and a later
+  // `resolveEffectiveRoute(session.model, session.route?.gateway)` call
+  // (e.g. the VS Code change-model picker) falls back to treating the
+  // session as running the model's bare/direct route — a false "restart
+  // required" the moment the operator picks a row with an explicit
+  // `@route` suffix that happens to match the SAME gateway the session is
+  // already on. A fixed-provider adapter (claude-code) needs none of this:
+  // its `route` stays reserved for an operator-named gateway override.
+  let resolvedRouteGateway: string | undefined
   if (resolved && input.access?.profileRef) {
-    const profileRef = input.access.profileRef
-    const profile = await getAuthProfile(profileRef)
-    if (!profile) {
+    const result = await resolveAccessProfileAuth({
+      adapter: input.adapter,
+      profileRef: input.access.profileRef,
+      authDescriptor: resolved.authDescriptor,
+      route: input.route,
+      model: input.model,
+      defaultModel: resolved.defaultModel,
+    })
+    if (!result.ok) {
       return {
         ok: false,
-        code: "access_profile_not_found",
-        message: `agent_start: no auth profile "${profileRef}" found.`,
+        code: result.code,
+        message: `agent_start: ${result.message}`,
+        ...(result.details ? { details: result.details } : {}),
       }
     }
-    if (!resolved.authDescriptor) {
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message: `agent_start: adapter "${input.adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
-      }
-    }
-    const projected = spawnEligibilityManifest(
-      input.adapter,
-      resolved.authDescriptor,
-      input.route,
-      input.model ?? resolved.defaultModel,
-    )
-    if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
-      const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message:
-          `agent_start: profile "${profile.id}" (${profile.endpoint}/${profile.method}) is not eligible ` +
-          `for adapter "${input.adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
-      }
-    }
-    const authMode = profileMethodToAuthMode(profile.method)
-    // Subscription-credential resolution (SPEC §2, same as the non-profile
-    // branch below): a source-backed profile (`profile.source`) resolves the
-    // credential FRESH via Mode 3 on every spawn instead of a one-shot static
-    // keychain read — reusing `resolveSubscriptionCredential` rather than
-    // duplicating it. A credential-backed profile keeps today's static read.
-    let subscriptionCredential: string | undefined
-    let subscriptionCredentialSource: CredentialSource | undefined
-    let apiKeyCredential: string | undefined
-    let externalSubscriptionVerified = false
-    // File-based (external) subscription — codex/gemini: the CLI reads its OWN
-    // login file, so a source-backed profile injects NOTHING. Verify the login
-    // is present (fail-loud) and let `resolveAuthSpec` produce a scrub-only
-    // external spec; never resolve/inject a bearer.
-    const externalSub = resolved.authDescriptor.authSubscription?.external === true
-    if (authMode === "subscription" && externalSub) {
-      try {
-        await verifyLocalLoginPresent(profile.source ?? input.adapter, input.adapter)
-        externalSubscriptionVerified = true
-      } catch (err) {
-        if (err instanceof SubscriptionSourceError) {
-          return {
-            ok: false,
-            code: err.code,
-            message: `agent_start: ${err.message}`,
-            details: { adapter: input.adapter, profile: profile.id },
-          }
-        }
-        throw err
-      }
-    } else if (authMode === "subscription" && profile.source !== undefined) {
-      try {
-        const subResolution = await resolveSubscriptionCredential(
-          { source: profile.source },
-          resolveClaudeCodeOauthToken,
-        )
-        subscriptionCredential = subResolution.credential
-        subscriptionCredentialSource = subResolution.source
-      } catch (err) {
-        if (err instanceof SubscriptionSourceError) {
-          return {
-            ok: false,
-            code: err.code,
-            message: `agent_start: ${err.message}`,
-            details: { adapter: input.adapter, profile: profile.id },
-          }
-        }
-        throw err
-      }
-    } else if (profile.credentialRef === undefined) {
-      return {
-        ok: false,
-        code: "access_profile_ineligible",
-        message: `agent_start: profile "${profile.id}" has neither a credential nor a source configured.`,
-        details: { adapter: input.adapter },
-      }
-    } else {
-      const stored = await new KeychainStore().read({ path: profile.credentialRef })
-      if (authMode === "subscription") subscriptionCredential = stored?.value
-      else apiKeyCredential = stored?.value
-    }
-    try {
-      const result = resolveAuthSpec({
-        descriptor: resolved.authDescriptor,
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.route?.gateway ? { routeGateway: input.route.gateway } : {}),
-        ...(!input.route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
-        requestedMode: authMode,
-        // A profile reference is an explicit billing choice. Never consult the
-        // ambient environment or a different provider-store key as fallback.
-        explicit: true,
-        ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
-        ...(subscriptionCredentialSource !== undefined
-          ? { subscriptionCredentialSource }
-          : {}),
-        ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
-        ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
-      })
-      if (result) {
-        authSpec = result.spec
-        authEcho = result.echo
-      }
-    } catch (err) {
-      if (err instanceof AuthResolutionError) {
-        return {
-          ok: false,
-          code: "unsupported_auth_mode",
-          message: `agent_start: ${err.message}`,
-          details: { adapter: input.adapter, provider: profile.endpoint },
-        }
-      }
-      throw err
-    }
-    accessProfileEcho = {
-      profileRef: profile.id,
-      ...(profile.label !== undefined ? { label: profile.label } : {}),
-      endpoint: profile.endpoint,
-      method: profile.method,
-    }
+    authSpec = result.authSpec
+    authEcho = result.authEcho
+    accessProfileEcho = result.accessProfileEcho
   } else if (
     resolved &&
-    input.sandbox === undefined &&
     resolved.authDescriptor &&
-    !shouldSkipAuthResolution
+    !shouldSkipAuthResolution &&
+    // A sandbox spawn reaches this branch ONLY when `resolveHostAuth` forced
+    // host adapter resolution (profileRef handled above; here: the explicit
+    // config-default wallet). An unconfigured sandbox spawn keeps `resolved`
+    // null and skips resolution entirely — the box stays credential-free
+    // rather than inheriting ambient host auth.
+    (input.sandbox === undefined || resolveHostAuth)
   ) {
     const authModel = input.model ?? resolved.defaultModel
     const pinnedProvider = spawnDefaults.auth.provider
     const resolvedProvider =
       pinnedProvider ??
       resolved.authDescriptor.provider ??
+      (authModel && resolved.authDescriptor.modelDerivedApiKey
+        ? modelIdPrefixProvider(authModel)
+        : undefined) ??
       (authModel ? getModelProvider(authModel) : undefined)
+    if (resolved.authDescriptor.provider === undefined && resolvedProvider !== undefined) {
+      resolvedRouteGateway = resolvedProvider
+    }
     // When an explicit gateway route is set, the provider-store key is looked
     // up under the gateway id (e.g. "moonshot") rather than the model-derived
     // vendor, because the gateway preset/custom route defines the credential
@@ -1392,22 +2033,35 @@ export async function spawnAgentSession(
     let subscriptionCredential: string | undefined
     let subscriptionCredentialSource: CredentialSource | undefined
     let externalSubscriptionVerified = false
-    // File-based (external) subscription — codex/gemini: the CLI reads its OWN
-    // login file, so an explicit subscription opt-in (mode:"subscription" or a
-    // configured source) verifies the login is present (fail-loud) and injects
-    // NOTHING — never routed through resolveSubscriptionCredential (which
-    // resolves+injects a bearer, and would reject a non-Anthropic source). An
-    // unconfigured or api-key codex spawn skips this and stays untouched.
+    // File-based (external) subscription — codex/gemini/mastracode/opencode:
+    // the CLI reads its OWN login file, so an explicit subscription opt-in
+    // (mode:"subscription" or a configured source) verifies the login is
+    // present (fail-loud) and injects NOTHING — never routed through
+    // resolveSubscriptionCredential (which resolves+injects a bearer, and
+    // would reject a non-Anthropic source). An unconfigured or api-key codex
+    // spawn skips this and stays untouched. `resolvedProvider` (computed
+    // above) picks the matching surface for a MULTI-surface adapter
+    // (mastracode/opencode) — same lookup `resolveAuthSpec` itself uses.
+    const wantsExternalSurface = subscriptionSurfaceFor(
+      resolved.authDescriptor.authSubscription,
+      resolvedProvider,
+    )
     const wantsExternalLogin =
-      resolved.authDescriptor.authSubscription?.external === true &&
+      wantsExternalSurface?.external === true &&
       spawnDefaults.auth.explicit &&
       (spawnDefaults.auth.requestedMode === "subscription" ||
         spawnDefaults.auth.subscriptionSource !== undefined)
     try {
       if (wantsExternalLogin) {
+        // The ADAPTER's recipe, never the configured subscriptionSource —
+        // same reasoning as the access-profile path above: external mode
+        // verifies the adapter CLI's OWN login, and a config-defaults
+        // source (e.g. "claude-code-oauth") naming another CLI's login
+        // would resolve the wrong recipe entirely.
         await verifyLocalLoginPresent(
-          spawnDefaults.auth.subscriptionSource ?? input.adapter,
           input.adapter,
+          input.adapter,
+          subscriptionOauthMethodId(resolved.authDescriptor, resolvedProvider),
         )
         externalSubscriptionVerified = true
       } else {
@@ -1492,7 +2146,8 @@ export async function spawnAgentSession(
     if (
       input.route?.gateway === undefined &&
       authModel !== undefined &&
-      resolvedProvider !== undefined
+      resolvedProvider !== undefined &&
+      !resolved.authDescriptor?.modelDerivedApiKey
     ) {
       const verdict = checkModelWalletEligibility(authModel, resolvedProvider)
       if (!verdict.ok) {
@@ -1512,6 +2167,58 @@ export async function spawnAgentSession(
             model: authModel,
             walletRoute: resolvedProvider,
             suggestedRoutes: verdict.suggestedRoutes,
+          },
+        }
+      }
+    }
+    // Adapter-capability spawn guard: the money-safety guard above proves the
+    // resolved ROUTE can bill this model; it says nothing about whether THIS
+    // adapter's manifest can actually reach it there. The bug this exists for:
+    // claude-code is routeSelection:"free" (genuinely able to reach several
+    // gateways) but only hand-curates a SMALL vetted model list per gateway —
+    // its ACP wrapper validates every model id against its own live selector
+    // and rejects anything it doesn't recognize. A gateway model outside that
+    // list (e.g. a Mastra-style `openrouter/deepseek/deepseek-v4-flash-0731`
+    // id, never added to claude-code's `models.allowed`) resolves the route
+    // fine (openrouter genuinely bills it) and STILL 404s upstream. Same scope
+    // as the wallet guard immediately above and for the same reason: an
+    // explicit `route.gateway` is the operator deliberately naming a gateway
+    // to route an arbitrary model through via `base_url` + api-key (e.g.
+    // `claude-sonnet-5` via `moonshot`) — this guard must not second-guess
+    // that. Optional dep: a host that hasn't wired `listCatalogModels` (e.g.
+    // `catalog_models` itself is disabled) gets no adapter-capability
+    // protection, same as before this guard existed, rather than a hard
+    // failure.
+    if (
+      input.route?.gateway === undefined &&
+      authModel !== undefined &&
+      resolvedProvider !== undefined &&
+      !resolved.authDescriptor?.modelDerivedApiKey &&
+      listCatalogModels
+    ) {
+      const catalog = await listCatalogModels({})
+      const verdict = checkModelAdapterEligibility(
+        catalog,
+        input.adapter,
+        authModel,
+        resolvedProvider,
+      )
+      if (!verdict.ok) {
+        return {
+          ok: false,
+          code: "model_adapter_incompatible",
+          message: modelAdapterIncompatibleMessage({
+            prefix: "agent_start",
+            adapter: input.adapter,
+            model: authModel,
+            route: resolvedProvider,
+            compatibleAdapters: verdict.compatibleAdapters,
+          }),
+          details: {
+            adapter: input.adapter,
+            model: authModel,
+            route: resolvedProvider,
+            compatibleAdapters: verdict.compatibleAdapters,
           },
         }
       }
@@ -1536,6 +2243,11 @@ export async function spawnAgentSession(
       }
     }
   }
+  // The descriptor's `route` — the caller's explicit override, falling back
+  // to the by-model router echo above so a live gateway resolution is never
+  // silently dropped on the floor (see `resolvedRouteGateway`'s docblock).
+  const descriptorRoute: RouteSpec | undefined =
+    input.route ?? (resolvedRouteGateway ? { gateway: resolvedRouteGateway } : undefined)
   let launchConfig: RouteAwareLaunchConfig
   try {
     launchConfig = buildRouteAwareLaunchConfig({
@@ -1547,6 +2259,7 @@ export async function spawnAgentSession(
       declaredOptions: resolved?.declaredOptions,
       routeSelection: resolved?.routeSelection,
       adapterProvider: resolved?.authDescriptor?.provider,
+      modelDerivedApiKey: resolved?.authDescriptor?.modelDerivedApiKey,
       skills: spawnDefaults.skills,
       prefix: "agent_start",
     })
@@ -1566,9 +2279,90 @@ export async function spawnAgentSession(
   // separate system-prompt field on `startSession`). No `prompt` at all
   // ⇒ nothing to compose onto; the child still gets the tool gate above,
   // it just doesn't see the disposition until its first turn.
+  //
+  // A child with a recorded parent also gets one lineage line: without it
+  // the child has no way to KNOW it was spawned by another session (the
+  // env var alone is invisible to harnesses that don't surface env), and
+  // the report-back channel goes unused.
+  const parentContextLine = parentSessionId
+    ? `You were spawned by session ${parentSessionId} (also available in the ` +
+      `${PARENT_SESSION_ID_ENV} env var). When you finish — or hit a blocker ` +
+      `you cannot resolve — report back to it via the message_parent tool if ` +
+      `one is available (no session id needed; the daemon resolves your parent).`
+    : undefined
   let effectivePrompt = input.prompt
-    ? `${composeRoleContext(role, input.promptAppend, roleRegistry)}\n\n${input.prompt}`
-    : input.prompt
+  // Daemon-side AGENTS.md resolution + injection (WP-R2): resolve the nearest
+  // `AGENTS.md` for the resolved `cwd` (walking up, bounded by the repo's git
+  // toplevel — see `agents-md.ts`) and inject one block right after the role
+  // disposition, before the parent/lineage line and the caller's own prompt:
+  //   - inline  — full content delimited by AGENTS.md start/end fences;
+  //   - pointer — a short read-it-first instruction naming the resolved path;
+  //   - absent  — nothing extra.
+  // Plus a standing cd-contract sentence in EVERY mode (the daemon cannot
+  // follow the agent past a `cd`; re-resolving is the agent's job). The mode
+  // is stamped on the descriptor below so `sessions --json` / the summaries
+  // view can distinguish a genuine "no AGENTS.md" from a stale descriptor
+  // shape. Resolved from `cwd` here (at prompt-composition time) and stamped
+  // on whatever descriptor this spawn settles into — a first cut, no cache.
+  let agentsMdResolution: AgentsMdResolution
+  const resolveAgentsMdForSpawn =
+    resolveAgentsMd ??
+    (async (cwdArg: string) => realResolveAgentsMd(cwdArg, await loadAgentsMdInlineMaxKb()))
+  try {
+    agentsMdResolution = await resolveAgentsMdForSpawn(cwd)
+  } catch {
+    // AGENTS.md resolution is advisory-on-top-of-the-role: a read failure must
+    // never block a spawn the caller asked for. Fall through to absent — the
+    // prompt is composed without an AGENTS.md block and the descriptor carries
+    // "absent", exactly as if no file existed. The cd-contract sentence is
+    // still included: it's a static, always-true fact independent of whether
+    // resolution itself succeeded, so a read failure shouldn't silently drop
+    // the one guarantee that never depended on the file being readable.
+    agentsMdResolution = { mode: "absent", contractLine: cdContractLine }
+  }
+  const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
+    (p): p is string => !!p,
+  )
+  // Exact-file read grant backing an inherited AGENTS.md pointer — see
+  // additionalReadPathsForAgentsMd's doc. Threaded to the adapter below
+  // (startSession opts + env) so the pointer contract is actually readable
+  // through the session's own workspace tools.
+  const agentsMdReadPaths = additionalReadPathsForAgentsMd(agentsMdResolution, cwd)
+  // Per-workspace RULES.md injection (WP-R4): resolve the workspace's
+  // `RULES.md` (from its state bucket — see `workspace-rules.ts`) and, when
+  // present, inline it in full into the composed prompt. Unlike AGENTS.md
+  // (repo-scoped, bounded by the spawn cwd's git toplevel), this is
+  // WORKSPACE-scoped and rides into EVERY spawn in the workspace — root and
+  // nested, no depth gate: this composition array is reached for every
+  // spawn, so no depth special-casing is needed. Absent ⇒ nothing extra
+  // (a workspace opts in by a human creating the file). Always full inline
+  // when present — no pointer mode. RULES.md leads the composition (ahead
+  // of the role disposition): it is the standing, workspace-wide discipline
+  // that applies to every spawn regardless of role, the most fundamental
+  // layer — the role disposition is per-role boilerplate on top of it.
+  let workspaceRulesResolution: WorkspaceRulesResolution = {}
+  const resolveWorkspaceRulesForSpawn =
+    resolveWorkspaceRules ?? realResolveWorkspaceRules
+  try {
+    workspaceRulesResolution = await resolveWorkspaceRulesForSpawn(resolvedSlug)
+  } catch {
+    // RULES.md is advisory: a read failure must never block a spawn a caller
+    // asked for. Fall through to "as if absent" — same posture as AGENTS.md's
+    // own try/catch fallback above.
+    workspaceRulesResolution = {}
+  }
+  const rulesMdParts = workspaceRulesResolution.block ? [workspaceRulesResolution.block] : []
+  if (input.prompt) {
+    effectivePrompt = [
+      ...rulesMdParts,
+      composeRoleContext(role, input.promptAppend, roleRegistry),
+      ...agentsMdParts,
+      parentContextLine,
+      input.prompt,
+    ]
+      .filter((p): p is string => !!p)
+      .join("\n\n")
+  }
   // The session's title must name the CALLER's ask, not whatever text
   // happens to be first in the composed prompt above. `deriveSessionTitle`
   // just takes the first sentence of what it's given — and the composed
@@ -1595,24 +2389,58 @@ export async function spawnAgentSession(
     explicitTitle ?? spawnLabel ?? (input.prompt ? deriveSessionTitle(input.prompt) : undefined)
 
   // ── retry-safety claim (see SpawnClaim docblock above) ────────────
-  // Opt-in: no idempotencyKey ⇒ no map lookup, no behavioural change.
+  // Two independent doors into the SAME claim map. An EXPLICIT
+  // `idempotencyKey` is a caller PROMISE ("these are the same logical
+  // spawn") and always wins outright when present. A DERIVED implicit key
+  // — built by `deriveImplicitIdempotencyKey` from `label` + a hash of
+  // `prompt`, see `spawn-dedupe.ts` for the false-dedup analysis — is only
+  // a GUESS, and is attempted ONLY when the caller supplied no explicit
+  // key, didn't opt out (`dedupe: false`), and the resolved `spawn.dedupe`
+  // policy (or a per-call `dedupe: true` override) says to derive one. No
+  // `label` ⇒ nothing to derive ⇒ this spawn is untouched either way,
+  // identical to pre-dedupe-default behaviour — the fan-out safety net.
   let settleClaim: ((result: SpawnAgentSessionResult) => void) | undefined
-  if (input.idempotencyKey) {
-    const claims = claimsFor(registry)
-    const key = `${input.adapter}\x1f${cwd}\x1f${input.idempotencyKey}`
-    const now = Date.now()
-    for (const [k, claim] of claims) {
-      if (claim.resolvedAt !== undefined && now - claim.resolvedAt > SPAWN_CLAIM_WINDOW_MS) {
-        claims.delete(k)
+  let claimKey = input.idempotencyKey
+  let dedupeSource: "explicit" | "implicit" | undefined = claimKey ? "explicit" : undefined
+  if (!claimKey && input.dedupe !== false) {
+    const dedupeMode = resolveSpawnDedupe ? await resolveSpawnDedupe() : await loadSpawnDedupe()
+    if (dedupeMode === "always" || input.dedupe === true) {
+      const implicitKey = deriveImplicitIdempotencyKey({ label: input.label, prompt: input.prompt })
+      if (implicitKey) {
+        claimKey = implicitKey
+        dedupeSource = "implicit"
       }
     }
+  }
+  if (claimKey) {
+    const claims = claimsFor(registry)
+    const key = `${input.adapter}\x1f${cwd}\x1f${claimKey}`
+    gcSpawnClaims(claims, Date.now())
     const existing = claims.get(key)
     if (existing) {
       const result = await existing.result
-      return result.ok ? { ...result, deduped: true } : result
+      if (result.ok) {
+        // Observability: a dedupe hit otherwise leaves NO daemon-side trace —
+        // the caller gets the cached descriptor and nothing is logged or
+        // persisted, which makes "why did my second agent_start return an
+        // existing session?" (or its UI residue, e.g. two widget cards for
+        // one session) undiagnosable from logs after the fact.
+        console.warn(
+          `[agent_start] dedupe hit (${dedupeSource}): returning existing session ` +
+            `${result.descriptor.id}${input.label ? ` (label "${input.label}")` : ""} ` +
+            `for a repeated spawn (adapter ${input.adapter}, cwd ${cwd})`,
+        )
+        return { ...result, deduped: true, dedupeSource }
+      }
+      return result
     }
     let resolveClaim!: (result: SpawnAgentSessionResult) => void
-    claims.set(key, { result: new Promise(resolve => { resolveClaim = resolve }) })
+    claims.set(key, {
+      result: new Promise(resolve => { resolveClaim = resolve }),
+      // An implicit claim expires sooner than an explicit one — see
+      // `IMPLICIT_SPAWN_CLAIM_WINDOW_MS`'s docblock.
+      ...(dedupeSource === "implicit" ? { windowMs: IMPLICIT_SPAWN_CLAIM_WINDOW_MS } : {}),
+    })
     settleClaim = result => {
       if (result.ok) {
         const claim = claims.get(key)
@@ -1628,6 +2456,212 @@ export async function spawnAgentSession(
     return result
   }
   try {
+    // Independent of cwd/the worktree — safe to resolve before either the
+    // async or the synchronous provisioning branch below needs it.
+    const resolvedMcpServers = await resolveMcpCredentialHeaders(mcpServers)
+    // ── Async worktree provisioning ──────────────────────────────────
+    // WP-F: `git worktree add` + the repo's `agentproto.json` setup hooks
+    // can run minutes, and every prior guard (PR #803's claim window, #805's
+    // implicit dedup) only treats the RETRY that provokes — this treats the
+    // wait. Opt-in only (`worktree: { async: true }` — see
+    // `WorktreeRequest.async`'s doc for why default stays synchronous):
+    // register a real, stable session NOW (status "starting"), settle the
+    // retry-safety claim with THIS early result so a caller retry arriving
+    // mid-provision dedupes against this row instead of forking a second
+    // `git worktree add`, then finish provisioning + the driver spawn in the
+    // background. `registry.settlePendingAgent` is the only thing allowed to
+    // move status off "starting" — on success it flips to "running" and
+    // fires the deferred initial prompt (never dispatched into a tree that
+    // isn't built yet); on failure it flips to "error" with a readable
+    // `lastError` so a spawn that can never run ends VISIBLY instead of
+    // sitting in "starting" forever.
+    if (worktreeRequest?.async && provisionWorktree) {
+      const defaultModel = resolved?.defaultModel
+      const pendingDesc = registry.spawnAgentPending({
+        id: mintedSessionId,
+        workspaceSlug: resolvedSlug,
+        cwd,
+        adapterSlug: input.adapter,
+        adapterConfigDir: adapterConfigDirFor(mintedSessionId),
+        harness: input.harness ?? input.adapter,
+        ...(worktreeAutoProvisioned ? { worktreeAutoProvisioned: true } : {}),
+        ...(resolved?.routeSelection !== undefined
+          ? { routeSelection: resolved.routeSelection }
+          : {}),
+        ...(resolved?.authDescriptor?.provider !== undefined
+          ? { adapterProvider: resolved.authDescriptor.provider }
+          : {}),
+        ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
+          ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
+          : {}),
+        ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
+        ...(input.mode ? { mode: input.mode } : {}),
+        ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(descriptorRoute ? { route: descriptorRoute } : {}),
+        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+        ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+        ...(input.label ? { label: input.label } : {}),
+        ...(initialTitle ? { title: initialTitle } : {}),
+        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(parentSessionId ? { parentSessionId } : {}),
+        ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+        ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
+        depth: recordedDepth,
+        ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
+        ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
+        contextContinuity: resolvedContextContinuity,
+        ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.trace !== undefined ? { trace: input.trace } : {}),
+        ...(authEcho?.fingerprint
+          ? {
+              auth: {
+                mode: authEcho.authMode,
+                fingerprint: authEcho.fingerprint,
+                provider: authEcho.provider,
+                credentialSource: authEcho.credentialSource,
+                setEnv: authEcho.setEnv,
+              },
+            }
+          : {}),
+        ...(input.permissionHold ? { permissionHold: true } : {}),
+        ...(input.keepAlive ? { keepAlive: true } : {}),
+      })
+      // Stamp the AGENTS.md resolution (WP-R2) on the pending descriptor so
+      // the deferred prompt pickup + the settled row both reflect it — same
+      // fields as the sync path's `spawnAgent` stamp below.
+      pendingDesc.agentsMd = agentsMdResolution.path
+      pendingDesc.agentsMdMode = agentsMdResolution.mode
+      // Stamp the resolved per-workspace RULES.md path (WP-R4), when one was
+      // found — present-or-absent, so an undefined field already means absent.
+      if (workspaceRulesResolution.path) pendingDesc.rulesMd = workspaceRulesResolution.path
+      // Anything from here to the early return must never throw past this
+      // point without settling the row it just registered — otherwise the
+      // outer catch below would report `agent_spawn_failed` to the ORIGINAL
+      // caller while leaving an orphaned "starting" placeholder no one will
+      // ever resolve.
+      try {
+        bindOrchestratorLifecycle?.(pendingDesc.id)
+        if (input.notifyUrl && webhookNotifier) {
+          webhookNotifier.register(pendingDesc.id, input.notifyUrl)
+        }
+      } catch (err) {
+        registry.settlePendingAgent(pendingDesc.id, {
+          ok: false,
+          message: `agent_start: spawn failed — ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        })
+        throw err
+      }
+      const earlyResult = finish({
+        ok: true,
+        descriptor: pendingDesc,
+        ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
+      })
+      const baseCwd = cwd
+      void (async () => {
+        let outcome: Awaited<ReturnType<WorktreeProvisioner>>
+        try {
+          outcome = await provisionWorktree({
+            cwd: baseCwd,
+            ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
+            ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
+            ...(input.label ? { labelHint: input.label } : {}),
+          })
+        } catch (err) {
+          registry.settlePendingAgent(pendingDesc.id, {
+            ok: false,
+            message: `agent_start: worktree provisioning failed — ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          })
+          return
+        }
+        const finalCwd = outcome.isolated ? outcome.cwd : baseCwd
+        try {
+          const agentSession = await resolved!.startSession({
+            cwd: finalCwd,
+            ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+            // Persistent isolated-config dir, keyed by this session's id —
+            // recorded on the pending descriptor above so restart/lazy-resume
+            // can hand the respawned adapter the same dir (native-resume
+            // store). Adapters that don't isolate a config dir ignore it.
+            configDir: adapterConfigDirFor(mintedSessionId),
+            ...(input.mode ? { mode: input.mode } : {}),
+            ...(launchConfig.options ? { options: launchConfig.options } : {}),
+            ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
+            ...(input.effort ? { effort: input.effort } : {}),
+            ...(input.posture !== undefined ? { posture: input.posture } : {}),
+            ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+            ...(authSpec ? { auth: authSpec } : {}),
+            ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+            ...(input.permissionHold ? { permissionHold: true } : {}),
+            ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+            ...(agentsMdReadPaths ? { additionalReadPaths: agentsMdReadPaths } : {}),
+            onActivity: () => registry.pulseActivity(pendingDesc.id),
+          })
+          let asyncPrompt = effectivePrompt
+          if (input.posture !== undefined) {
+            const resolution = resolvePosture(input.posture, agentSession.availableModes ?? [])
+            if (resolution.kind === "native" && agentSession.setSessionMode) {
+              await agentSession.setSessionMode(resolution.mode.id)
+            } else if (resolution.kind === "prompt" && asyncPrompt) {
+              asyncPrompt = `${resolution.preamble}\n\n${asyncPrompt}`
+            }
+          }
+          const commandPreview = resolved!.commandPreview
+          const readUsage = resolved!.readUsage
+            ? () => resolved!.readUsage!(agentSession.sessionId)
+            : undefined
+          // Best-effort duplicate-live-session advisory — see the sync
+          // path's "no-key backstop" for the full rationale. Console-only:
+          // the caller already got its (early) response, so there is no
+          // `warnings` array left to attach this to.
+          if (pendingDesc.label) {
+            const dupe = registry
+              .list()
+              .find(
+                s =>
+                  s.id !== pendingDesc.id &&
+                  s.label === pendingDesc.label &&
+                  s.cwd === finalCwd &&
+                  (s.status === "running" || s.status === "starting"),
+              )
+            if (dupe) {
+              console.warn(
+                `[agent_start] another LIVE session ("${dupe.id}") already has the same ` +
+                  `label ("${pendingDesc.label}") and cwd ("${finalCwd}") as this one. If ` +
+                  "this is a retried spawn rather than a deliberate parallel run, both are " +
+                  "now editing the same working directory concurrently — check before proceeding.",
+              )
+            }
+          }
+          registry.settlePendingAgent(pendingDesc.id, {
+            ok: true,
+            agentSession,
+            cwd: finalCwd,
+            ...(commandPreview ? { commandPreview } : {}),
+            ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
+            ...(resolved?.nativeTerminalResume !== undefined
+              ? { nativeTerminalResume: resolved.nativeTerminalResume }
+              : {}),
+            ...(readUsage ? { readUsage } : {}),
+            ...(asyncPrompt ? { initialPrompt: asyncPrompt } : {}),
+            ...(asyncPrompt ? { initialPromptSystem: composedPreamble(asyncPrompt, input.prompt) } : {}),
+          })
+        } catch (err) {
+          registry.settlePendingAgent(pendingDesc.id, {
+            ok: false,
+            message: `agent_start: spawn failed — ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          })
+        }
+      })()
+      return earlyResult
+    }
     // ── Worktree provisioning (side-effecting half) ─────────────────
     // Runs AFTER the idempotency dedup above (a deduped retry returned
     // early, so it never reaches here — one logical spawn ⇒ at most one
@@ -1660,14 +2694,15 @@ export async function spawnAgentSession(
     // returns below, but `onActivity` can start firing as soon as
     // `startSession` connects — this box lets the closure defer
     // pulsing until the id is known, dropping any pre-spawn activity.
-    const resolvedMcpServers = await resolveMcpCredentialHeaders(mcpServers)
     let liveSessionId: string | undefined
 
     let agentSession: AgentSessionLike
     let commandPreview: string | undefined
-    let readUsage: (() => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
+    let readUsage: (() => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
     let sandboxId: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
+    let sandboxPorts: Record<number, string> | undefined
+    let appServe: SessionAppServeInfo | undefined
 
     if (input.sandbox !== undefined) {
       const booted = await bootSandboxAgentSession({
@@ -1691,20 +2726,54 @@ export async function spawnAgentSession(
         // Forward the already-resolved credential when the caller selected a
         // profile; raw explicit auth remains supported for existing callers.
         ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec) } : input.auth ? { auth: input.auth } : {}),
-        ...(input.route ? { route: input.route } : {}),
+        ...(descriptorRoute ? { route: descriptorRoute } : {}),
+        ...(input.appServe ? { appServe: input.appServe } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
       sandboxTeardown = booted.sandboxTeardown
+      sandboxPorts = booted.sandboxPorts
+      appServe = booted.appServe
     } else {
       // `resolved` is guaranteed non-null here — the `input.sandbox ===
       // undefined` branch above already returned `adapter_not_found`
       // otherwise.
+      //
+      // Opt-in `gh` provenance shim (provenance.wrapGh): when enabled, prepend
+      // a shim dir to this session's PATH so any `gh pr create` it — or an
+      // adapter subprocess shelling out — runs gets the daemon's provenance
+      // footer stamped onto the created PR's body (see `gh-provenance-shim.ts`).
+      // Off by default; only the local (non-sandbox) branch — a sandbox spawn
+      // runs on the box's own daemon, which owns its own provenance.
+      let ghProvenanceEnv: Record<string, string> = {}
+      try {
+        const wrapGh = await (resolveProvenanceWrapGh ?? loadProvenanceWrapGh)()
+        if (wrapGh) {
+          const shimDir = await ensureGhShimDir()
+          ghProvenanceEnv = buildGhShimEnv({
+            shimDir,
+            basePath: process.env.PATH ?? "",
+            adapter: input.harness ?? input.adapter,
+            ...(input.model ?? resolved?.defaultModel
+              ? { model: input.model ?? resolved?.defaultModel }
+              : {}),
+          })
+        }
+      } catch {
+        // Stamping is cosmetic — a shim-preparation failure must never block a
+        // spawn. Fall through with no PATH shim (unchanged behaviour).
+        ghProvenanceEnv = {}
+      }
       agentSession = await resolved!.startSession({
         cwd,
         ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+        // Persistent isolated-config dir, keyed by this session's id —
+        // recorded on the descriptor below so restart/lazy-resume can hand
+        // the respawned adapter the same dir (native-resume store).
+        // Adapters that don't isolate a config dir ignore it.
+        configDir: adapterConfigDirFor(mintedSessionId),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(launchConfig.options ? { options: launchConfig.options } : {}),
         ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
@@ -1715,6 +2784,33 @@ export async function spawnAgentSession(
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        // Session identity (SESSION_ID_ENV's doc, sessions.ts) — minted
+        // above as `mintedSessionId` (not left to `spawnAgent`'s own
+        // default) specifically so it's known here, before the child ever
+        // exec's. `agent_start` has no caller-facing `env` passthrough to
+        // collide with, so this is the entire env for this spawn.
+        env: {
+          // Provenance shim env FIRST (PATH + adapter/model) so the identity
+          // vars below always win — they must never be forgeable or shadowed,
+          // and `ghProvenanceEnv` never carries an identity var anyway.
+          ...ghProvenanceEnv,
+          [SESSION_ID_ENV]: mintedSessionId,
+          [WORKSPACE_SLUG_ENV]: resolvedSlug,
+          // Lineage (PARENT_SESSION_ID_ENV's doc, sessions.ts) — mirrors
+          // the descriptor's `parentSessionId` so the child can discover
+          // who spawned it without a registry round-trip. Absent on a
+          // parentless root spawn.
+          ...(parentSessionId ? { [PARENT_SESSION_ID_ENV]: parentSessionId } : {}),
+          // App identity (APP_ID_ENV's doc, sessions.ts) — set only for an
+          // `app_run` spawn, so a daemon-tool proxy the child builds can
+          // auto-fill `appId` into an `app_*` call that omits one.
+          ...(input.appId ? { [APP_ID_ENV]: input.appId } : {}),
+        },
+        // Exact-file AGENTS.md read grant — the driver derives the
+        // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
+        // extra read paths) from this option itself, so the option is the
+        // single authority. See additionalReadPathsForAgentsMd above.
+        ...(agentsMdReadPaths ? { additionalReadPaths: agentsMdReadPaths } : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
@@ -1741,25 +2837,45 @@ export async function spawnAgentSession(
       }
     }
 
+    const defaultModel = resolved?.defaultModel
+    // The daemon-composed part of the initial prompt (role disposition +
+    // lineage line + AGENTS.md + posture) sits AHEAD of the caller's own
+    // `prompt`. Recover it now that `effectivePrompt` is final so it can be
+    // recorded as a SYSTEM turn on the daemon's event stream (see
+    // `composedPreamble`) — the adapter still receives the single
+    // concatenated `effectivePrompt`, unchanged.
+    const initialSystemPrompt = composedPreamble(effectivePrompt, input.prompt)
     const desc = registry.spawnAgent({
       id: mintedSessionId,
       workspaceSlug: resolvedSlug,
       cwd,
       agentSession,
       adapterSlug: input.adapter,
+      adapterConfigDir: adapterConfigDirFor(mintedSessionId),
+      ...(worktreeAutoProvisioned ? { worktreeAutoProvisioned: true } : {}),
       ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       ...(resolved?.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
         : {}),
       harness: input.harness ?? input.adapter,
-      ...(input.model ? { model: input.model } : {}),
+      ...(resolved?.routeSelection !== undefined
+        ? { routeSelection: resolved.routeSelection }
+        : {}),
+      ...(resolved?.authDescriptor?.provider !== undefined
+        ? { adapterProvider: resolved.authDescriptor.provider }
+        : {}),
+      ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
+        ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
+        : {}),
+      ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
       ...(input.posture !== undefined ? { posture: input.posture } : {}),
-      ...(input.route ? { route: input.route } : {}),
+      ...(descriptorRoute ? { route: descriptorRoute } : {}),
       ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
+      ...(initialSystemPrompt ? { initialPromptSystem: initialSystemPrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
       // Hand the caller-derived title to `spawnAgent` so it lands on the
       // descriptor BEFORE the `initialPrompt` (the ROLE-PREFIXED composed
@@ -1797,9 +2913,11 @@ export async function spawnAgentSession(
       // fingerprint (never the credential). DECISION 9③/10②. Recorded only
       // when a credential actually resolved (fingerprint present); a
       // configured-but-missing-credential spawn fails fast in the driver
-      // before a descriptor exists. Absent for sandbox spawns (the box
-      // resolves its own credential, so a host-side echo would misrepresent
-      // it — `authEcho` is already left undefined for those above).
+      // before a descriptor exists. For a sandbox spawn the echo is present
+      // only when the HOST resolved the wallet (profileRef or config-default
+      // auth) and forwarded it — which is exactly what the box then bills;
+      // a credential-free box spawn (the box resolves its own or nothing)
+      // echoes nothing rather than misrepresenting it.
       ...(authEcho?.fingerprint
         ? {
             auth: {
@@ -1813,6 +2931,8 @@ export async function spawnAgentSession(
         : {}),
       ...(sandboxId ? { remote: true, sandboxId } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
+      ...(sandboxPorts ? { sandboxPorts } : {}),
+      ...(appServe ? { appServe } : {}),
       // Hold mode is a local-driver capability; a sandbox spawn proxies to the
       // box's own daemon, which handles permissions there.
       ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
@@ -1829,7 +2949,65 @@ export async function spawnAgentSession(
     // `sendPrompt` below) also covers the non-`wait` path, which never
     // calls `sendPrompt` at all.
     if (initialTitle) desc.title = initialTitle
+    // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
+    // `sessions --json` / the summaries view can report the resolved path +
+    // mode. `agentsMdMode` is non-optional once resolution ran — always set
+    // here, even for "absent" (a real, reported state, not a missing field).
+    desc.agentsMd = agentsMdResolution.path
+    desc.agentsMdMode = agentsMdResolution.mode
+    // Stamp the resolved per-workspace RULES.md path (WP-R4), when one was
+    // found — present-or-absent, so an undefined field already means absent.
+    if (workspaceRulesResolution.path) desc.rulesMd = workspaceRulesResolution.path
     liveSessionId = desc.id
+    // No-key backstop for the same incident `idempotencyKey` guards: every
+    // duplicate pair observed in production shared BOTH `label` AND `cwd`,
+    // and both members were still alive when found. This needs no caller
+    // opt-in (unlike the claim above) because it isn't trying to PREVENT the
+    // second spawn — deliberate parallel spawns into one cwd are a real,
+    // exercised pattern (see the `idempotencyKey` docblock) and refusing
+    // them would break that. It just tells the operator, at spawn time
+    // instead of twenty minutes later, that they now have two live sessions
+    // that look like the same intent in the same place.
+    //
+    // Requires a shared `label`, not `cwd` alone: an unlabelled fan-out
+    // (parallel workflow agents sharing one worktree, no label set) is
+    // routine here and would make a cwd-only warning fire on essentially
+    // every multi-agent worktree run, training operators to ignore it. A
+    // shared label is the actual signal — it means the SAME declared intent
+    // landed twice in the SAME place, which is what happened in the
+    // incident and what deliberate fan-out (distinct labels, or no label at
+    // all) doesn't look like.
+    //
+    // WP-E note: under the default `spawn.dedupe: "always"` policy this
+    // branch mostly goes quiet for its own original incident shape — a
+    // same-label/cwd/prompt repeat with no explicit `idempotencyKey` is now
+    // usually caught (and DEDUPED, not merely warned about) by the implicit-
+    // key claim above, which returns before a second `registry.spawnAgent`
+    // is ever reached. This check still fires for the cases dedup doesn't
+    // cover: a different `prompt` under the same label (implicit key
+    // legitimately differs, so both spawn — and a human may still want to
+    // know), `spawn.dedupe: "on-request"` with no per-call opt-in, or a
+    // caller that set `dedupe: false`.
+    if (desc.label && desc.cwd) {
+      const dupe = registry
+        .list()
+        .find(
+          s =>
+            s.id !== desc.id &&
+            s.label === desc.label &&
+            s.cwd === desc.cwd &&
+            (s.status === "running" || s.status === "starting"),
+        )
+      if (dupe) {
+        const warn =
+          `agent_start: another LIVE session ("${dupe.id}") already has the same ` +
+          `label ("${desc.label}") and cwd ("${desc.cwd}") as this one. If this is a ` +
+          `retried spawn rather than a deliberate parallel run, both are now editing ` +
+          `the same working directory concurrently — check before proceeding.`
+        spawnWarnings.push(warn)
+        console.warn(`[agent_start] ${warn}`)
+      }
+    }
     // Bind the scope-token's lifetime to the child session — once
     // it exits, the token is revoked so it can't outlive its child.
     bindOrchestratorLifecycle?.(desc.id)
@@ -1842,7 +3020,9 @@ export async function spawnAgentSession(
     // wait mode: block until the first turn completes, then return
     // the descriptor with cleaned output appended.
     if (input.wait && effectivePrompt) {
-      await registry.sendPrompt(desc.id, effectivePrompt)
+      await registry.sendPrompt(desc.id, effectivePrompt, {
+        ...(initialSystemPrompt ? { system: initialSystemPrompt } : {}),
+      })
       const waitLines: string[] = []
       const waitUnsub = registry.attach(desc.id, (line: string) => {
         waitLines.push(line)
@@ -1963,10 +3143,19 @@ type SandboxBootResult =
       commandPreview: string
       sandboxId: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
+      sandboxPorts?: Record<number, string>
+      /** WP3 — the in-box app-serve outcome (`input.appServe`), stamped onto
+       *  the descriptor by the caller. Absent when no appServe was requested. */
+      appServe?: SessionAppServeInfo
     }
   | {
       ok: false
-      code: "sandbox_provider_not_found" | "sandbox_boot_failed" | "sandbox_reconnect_failed" | "sandbox_proxy_failed"
+      code:
+        | "sandbox_provider_not_found"
+        | "sandbox_boot_failed"
+        | "sandbox_reconnect_failed"
+        | "sandbox_proxy_failed"
+        | "sandbox_app_serve_failed"
       message: string
     }
 
@@ -2019,6 +3208,9 @@ async function bootSandboxAgentSession(opts: {
    *  the call-site comment (fresh boxes have no config and claude-code never
    *  inherits shell-env subscription auth). */
   auth?: DefaultsAdapterAuthConfig
+  /** WP3 — serve an app UI from inside the box; see
+   *  `SpawnAgentSessionInput.appServe`. */
+  appServe?: SandboxAppServeSpec
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
   if (!opts.resolveSandboxProvider) {
@@ -2042,6 +3234,19 @@ async function bootSandboxAgentSession(opts: {
   }
   const spec: SandboxSpec =
     typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox
+  // WP3 — the serve port must be publicly reachable: append it to the spec's
+  // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
+  // hands back its URL in `BootedSandbox.ports` (which also stamps the
+  // descriptor's `sandboxPorts`). Providers without boot-time exposure fall
+  // back to the lazily-called `expose(port)` inside `startSandboxAppServe`.
+  const serveSpec: SandboxSpec = opts.appServe
+    ? {
+        ...spec,
+        extraPorts: Array.from(
+          new Set([...(spec.extraPorts ?? []), opts.appServe.port ?? DEFAULT_APP_SERVE_PORT]),
+        ),
+      }
+    : spec
   // Reuse target (PR3) — `agent_start.sandbox.reuse`. Undefined ⇒ boot a
   // fresh box, exactly as PR2. Also feeds `resolveLifecyclePolicy` below:
   // a reused box defaults to PAUSE (not kill) on close, since it would be
@@ -2061,7 +3266,7 @@ async function bootSandboxAgentSession(opts: {
   try {
     host = await createSandboxAgentSessionHost({
       provider: handle.provider,
-      spec,
+      spec: serveSpec,
       ...(reuseSandboxId !== undefined ? { sandboxId: reuseSandboxId } : {}),
       // AMENDMENT — do NOT default to `process.env`: always pass an
       // explicit resolver backed by the host's own secrets broker
@@ -2113,12 +3318,50 @@ async function bootSandboxAgentSession(opts: {
     }
   }
 
+  // WP3 — install + serve the requested app INSIDE the box, then hand the
+  // public URL back on the result (the caller stamps it onto the descriptor).
+  let appServe: SessionAppServeInfo | undefined
+  if (opts.appServe) {
+    const serve = await startSandboxAppServe(host, opts.appServe)
+    if (!serve.ok) {
+      await host.stop().catch(() => undefined)
+      return {
+        ok: false,
+        code: "sandbox_app_serve_failed",
+        message: `agent_start: ${serve.message}`,
+      }
+    }
+    appServe = serve.appServe
+  }
+
   return {
     ok: true,
     agentSession: createSandboxAgentSessionProxy({ host, remoteSessionId, lifecyclePolicy }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
     sandboxTeardown: lifecyclePolicy.teardown,
+    ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
+    ...(appServe ? { appServe } : {}),
+    // The proxy flattens the box's stream to text (documented limitation),
+    // so cost/tokens/model never ride the event stream out of the box. Read
+    // them back from the box daemon's own `session_usage` at each turn-end —
+    // the same `readUsage` hook hermes uses for its state.db — so the HOST
+    // descriptor (and every footer / session_usage built from it) carries
+    // the amount the sandboxed session actually spent.
+    ...(typeof host.usage === "function"
+      ? {
+          readUsage: async () => {
+            const snap = await host.usage!(remoteSessionId)
+            const usage = {
+              ...(typeof snap.model === "string" && snap.model.length > 0 ? { model: snap.model } : {}),
+              ...(typeof snap.costUsd === "number" ? { costUsd: snap.costUsd } : {}),
+              ...(typeof snap.tokensIn === "number" ? { tokensIn: snap.tokensIn } : {}),
+              ...(typeof snap.tokensOut === "number" ? { tokensOut: snap.tokensOut } : {}),
+            }
+            return Object.keys(usage).length > 0 ? usage : null
+          },
+        }
+      : {}),
   }
 }
 

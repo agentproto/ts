@@ -26,7 +26,11 @@ import { hostname } from "node:os"
 import {
   appendFooterOnce,
   buildSessionPrFooter,
-  MARKER,
+  hasProvenanceFooter,
+  footerHasCost,
+  footerSessionId,
+  footerIsRicherThan,
+  replaceProvenanceFooter,
   parseGhPrCreate,
   pickExecutorSession,
   type FooterSession,
@@ -54,6 +58,15 @@ export interface StampPrInput {
   exitCode: number
   stdout: string
   registry: StampRegistry
+  /** The session that actually issued this `command_execute` call, when the
+   *  daemon genuinely knows it (`RegisterCommandToolsOptions.callerSessionId`
+   *  — PR 7 / Gap 7 provenance, threaded from the request's own
+   *  `?callerSessionId=`). When present this is the authoritative
+   *  attribution and wins over the {@link pickExecutorSession} guess below —
+   *  it names the exact session, not a same-cwd sibling. Absent for a call
+   *  arriving through the shared daemon-wide `/mcp` mount (no per-caller
+   *  binding), in which case the heuristic is the only option. */
+  callerSessionId?: string
   /** Injected `gh` runner; defaults to a real subprocess spawn. */
   run?: GhRunner
   /** Host label for the footer; defaults to `os.hostname()`. */
@@ -62,7 +75,16 @@ export interface StampPrInput {
 
 export type StampOutcome =
   | { stamped: false; reason: string }
-  | { stamped: true; url: string; number: number; sessionId: string; alreadyStamped: boolean }
+  | {
+      stamped: true
+      url: string
+      number: number
+      sessionId: string
+      alreadyStamped: boolean
+      /** True when an existing footer was re-rendered (refresh mode) — see
+       *  {@link replaceProvenanceFooter}. */
+      refreshed?: boolean
+    }
 
 /**
  * Inspect a completed `command_execute` run and, if it was a successful
@@ -76,7 +98,14 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
     const created = parseGhPrCreate(input.command, input.args, input.stdout)
     if (!created) return { stamped: false, reason: "not a gh pr create" }
 
-    const session = pickExecutorSession(input.registry.list(), input.cwd)
+    // Prefer the exact calling session over the cwd-guess: a `callerSessionId`
+    // names the session that issued THIS command_execute call, so it can't be
+    // fooled by an unrelated sibling session that merely happens to share (or
+    // contain) the same cwd — the failure mode that misattributed a PR to a
+    // live-but-unrelated benchmark session sharing the workspace root.
+    const session =
+      (input.callerSessionId ? input.registry.get(input.callerSessionId) : undefined) ??
+      pickExecutorSession(input.registry.list(), input.cwd)
     if (!session) return { stamped: false, reason: "no executor session to attribute" }
 
     const supervisor =
@@ -108,8 +137,25 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
  * branch). Reads the current body first so the footer is APPENDED, not
  * clobbered — `gh pr edit --body` replaces the whole body — and never edits
  * when the read fails, so a failed read can't overwrite a real body with just
- * the footer. Idempotent by the `MARKER` guard; never throws (every failure is
- * swallowed into the returned {@link StampOutcome}).
+ * the footer. Idempotent by the rendered-footer guard ({@link
+ * hasProvenanceFooter} — a body that merely MENTIONS the marker in prose
+ * still gets its footer); never throws (every failure is swallowed into the
+ * returned {@link StampOutcome}).
+ *
+ * A body that already carries a footer naming THIS session (own-footer,
+ * {@link footerSessionId}) is a distinct case from a body naming a DIFFERENT
+ * session: same-session attribution is always safe, whether the existing
+ * footer is a prior daemon stamp or the `gh` PATH shim's own thin one
+ * (gh-provenance-shim.ts — session id + adapter + model + host + cwd only,
+ * NEVER cost/tokens/auth-profile, since a bare `gh` subprocess can't know
+ * any of that). Before this, an own-footer body other than "not yet stamped"
+ * fell all the way through to the final no-op return with no
+ * `recordOpenedPr` call at all — so a PR opened via the shim (every PR a
+ * local session opens through its OWN shell when `provenance.wrapGh` is on,
+ * which is every adapter, not just claude-code) was NEVER recorded on
+ * `openedPrs`, and the reconciler's cost-refresh (which only ever iterates
+ * `openedPrs`) had nothing to find — cost/auth NEVER rendered for it, no
+ * matter how many later turns learned the session's spend.
  */
 export async function stampFooterOnPr(input: {
   registry: StampRegistry
@@ -120,6 +166,12 @@ export async function stampFooterOnPr(input: {
   cwd: string
   run?: GhRunner
   host?: string
+  /** Re-render an ALREADY-stamped footer when the session has learned its
+   *  spend since the first stamp (the first stamp lands mid-turn, before a
+   *  claude-code/claude-sdk session reports any cost). Only edits when the
+   *  existing footer has no amount and the fresh one does; otherwise a no-op
+   *  (`stamped: true, alreadyStamped: true, refreshed: false`). */
+  refresh?: boolean
 }): Promise<StampOutcome> {
   try {
     const footer = buildSessionPrFooter(input.session, {
@@ -133,21 +185,58 @@ export async function stampFooterOnPr(input: {
     if (view.exitCode !== 0) return { stamped: false, reason: `gh pr view exit ${view.exitCode}` }
     const body = view.stdout.replace(/\n+$/, "")
 
-    const alreadyStamped = body.includes(MARKER)
+    const alreadyStamped = hasProvenanceFooter(body)
+    const ownFooter = alreadyStamped && footerSessionId(body) === input.session.id
+
+    // Record an own-footer PR the FIRST time it's seen (not on a `refresh`
+    // pass — a refresh call only ever iterates PRs the reconciler already
+    // pulled from `openedPrs`, so it's already recorded and re-recording
+    // would just be a wasted registry call). Attribution is safe: the
+    // footer names this exact session.
+    if (ownFooter && input.refresh !== true) {
+      input.registry.recordOpenedPr(input.session.id, {
+        adapter: input.session.harness ?? input.session.adapterSlug ?? "gh",
+        number: input.prNumber,
+        url: input.prUrl,
+      })
+    }
+
+    if (ownFooter || (alreadyStamped && input.refresh === true)) {
+      // Own-footer: upgrade whenever the fresh render carries a genuinely
+      // new signal (cost/auth-profile/tokens) — covers both a first-seen
+      // shim stamp learning cost immediately, and any later refresh pass.
+      // A footer naming a DIFFERENT session only ever reaches here via an
+      // explicit `refresh: true` call (defensive — the reconciler's own
+      // `openedPrs` should never hold another session's PR); keep the
+      // narrower cost-only check for that case so it stays exactly as
+      // conservative as before.
+      const upgrade = ownFooter ? footerIsRicherThan(footer, body) : footerHasCost(footer) && !footerHasCost(body)
+      if (!upgrade) {
+        return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: false }
+      }
+      const refreshedBody = replaceProvenanceFooter(body, footer)
+      const edit = await run(["pr", "edit", input.prUrl, "--body", refreshedBody], input.cwd)
+      if (edit.exitCode !== 0) return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
+      return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: true }
+    }
+
     if (!alreadyStamped) {
       const newBody = appendFooterOnce(body, footer)
       const edit = await run(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)
       if (edit.exitCode !== 0) {
         return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
       }
+      // Record the opened PR against the executor session (idempotent per
+      // URL) — but ONLY on a real stamp. An already-marked body means the PR
+      // was already attributed to its rightful session; recording it here too
+      // would misattribute it onto whichever session happened to re-resolve
+      // the same PR (e.g. the reconciler polling a shared cwd).
+      input.registry.recordOpenedPr(input.session.id, {
+        adapter: input.session.harness ?? input.session.adapterSlug ?? "gh",
+        number: input.prNumber,
+        url: input.prUrl,
+      })
     }
-
-    // Record the opened PR against the executor session (idempotent per URL).
-    input.registry.recordOpenedPr(input.session.id, {
-      adapter: input.session.harness ?? input.session.adapterSlug ?? "gh",
-      number: input.prNumber,
-      url: input.prUrl,
-    })
 
     return {
       stamped: true,

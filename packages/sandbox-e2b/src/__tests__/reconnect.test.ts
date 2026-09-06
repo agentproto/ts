@@ -68,9 +68,12 @@ describe("e2bSandboxProvider.connect", () => {
     const reconnectSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
     await e2bSandboxProvider.connect!("sbx_abc", reconnectSpec, { env: { OPENROUTER_API_KEY: "k" } })
 
-    expect(sandbox.commands.run).toHaveBeenCalledWith(
-      "sudo npm i -g @agentproto/cli@latest",
-      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
+    // the stable template's recorded bake is PROVEN (cli 0.17.0) with no
+    // cliVersion requested — the on-boot npm install is SKIPPED on reconnect
+    // too; only the daemon (re)start runs
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("npm i -g"),
+      expect.anything(),
     )
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       expect.stringContaining("agentproto serve --port 18790 --bind 0.0.0.0"),
@@ -102,6 +105,27 @@ describe("e2bSandboxProvider.connect", () => {
     await booted.pause!()
     expect(sandbox.pause).toHaveBeenCalledWith({ keepMemory: true })
     expect(sandbox.kill).not.toHaveBeenCalled()
+  })
+
+  it("never leaks the box when a reconnect's daemon never becomes healthy (kills, then rethrows)", async () => {
+    const sandbox = fakeSandbox()
+    sandboxConnectMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValue(new Error("connect refused")) // never healthy
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const reconnectSpec: SandboxSpec = {
+      provider: "e2b",
+      config: {
+        healthProbeTimeoutMs: 0,
+        daemonReadyTimeoutMs: 5,
+        pollIntervalMs: 5,
+        updateCliOnBoot: false,
+      },
+    }
+    await expect(
+      e2bSandboxProvider.connect!("sbx_abc", reconnectSpec, { env: {} }),
+    ).rejects.toThrow(/did not become healthy/)
+    expect(sandbox.kill).toHaveBeenCalledTimes(1)
   })
 
   describe("expose: \"private\" (attachSandbox's token-gated path)", () => {

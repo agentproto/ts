@@ -16,18 +16,128 @@ on:
 # (including CI's own changeset commit). Workflow-level cancel-in-progress
 # kills the running review → review never posts → changeset commit was
 # pointless. Instead, each job declares its own policy:
-#   - fast deterministic jobs (build/test/hygiene/changeset) may cancel
+#   - fast deterministic jobs (hygiene/changeset) may cancel
+#   - build-and-test does NOT cancel (see its concurrency comment — the
+#     parallel reviewer's changeset push must not kill the running build)
 #   - pr-review NEVER cancels — wait for it to finish
 #   - pr-fix / auto-merge queue behind pr-review's group
 
 jobs:
+  # On `synchronize` pushes only: skip the ~15min Build+test job when the
+  # increment since the last push is 100% chore (a changeset and/or docs)
+  # AND the pre-push commit already has a green "Build + test" — e.g. PR #884's
+  # changeset-only push (0080b5b8) re-ran the full build for a diff that
+  # could not possibly break it. Conservative by construction: any
+  # uncertainty (non-`synchronize` action, unresolvable `before` sha, a
+  # single non-chore file, no green prior run) falls through to
+  # skip_build=false so Build+test runs as normal. Agentic review is NOT
+  # gated by this job — it always runs (see pr-review's `if`, below).
+  increment-guard:
+    name: Increment guard
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 5
+    outputs:
+      skip_build: ${{ steps.decide.outputs.skip_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # Need history back through `before` to diff the increment and to
+          # resolve `before` as a commit at all.
+          fetch-depth: 0
+
+      - name: Decide whether Build+test can be skipped
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_ACTION: ${{ github.event.action }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          skip=false
+
+          # is_chore FILE — conservative allowlist. `.github/**` is excluded
+          # outright (checked first) even though some of it is `*.md` —
+          # CI-adjacent docs still count as "could plausibly affect CI" for
+          # the purpose of this guard.
+          is_chore() {
+            case "$1" in
+              .github/*) return 1 ;;
+              .changeset/*) return 0 ;;
+              *.md) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          if [ "$EVENT_ACTION" != "synchronize" ]; then
+            echo "action=$EVENT_ACTION (not a synchronize push) — running Build+test."
+          elif [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "No usable 'before' sha — running Build+test."
+          elif ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            echo "'before' sha $BEFORE_SHA not resolvable in this checkout — running Build+test."
+          else
+            CHANGED=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")
+            if [ -z "$CHANGED" ]; then
+              echo "No file changes between $BEFORE_SHA..$AFTER_SHA — running Build+test (unexpected; be conservative)."
+            else
+              NON_CHORE=()
+              while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                is_chore "$f" || NON_CHORE+=("$f")
+              done <<< "$CHANGED"
+
+              if [ "${#NON_CHORE[@]}" -gt 0 ]; then
+                echo "Non-chore file(s) in the increment — running Build+test:"
+                printf '  %s\n' "${NON_CHORE[@]}"
+              else
+                echo "Increment is 100% chore (changesets/docs):"
+                while IFS= read -r f; do printf '  %s\n' "$f"; done <<< "$CHANGED"
+                echo "Checking whether $BEFORE_SHA already has a green 'Build + test' check-run…"
+                LAST_CONCLUSION=$(gh api --paginate "repos/${{ github.repository }}/commits/$BEFORE_SHA/check-runs" \
+                  | jq -r -s '[.[].check_runs[]] | map(select(.name == "Build + test")) | sort_by(.started_at) | last | .conclusion // "none"')
+                if [ "$LAST_CONCLUSION" = "success" ]; then
+                  echo "Prior commit $BEFORE_SHA already has a green Build + test — skipping the rebuild."
+                  skip=true
+                else
+                  echo "Prior commit $BEFORE_SHA has no green Build + test (conclusion=$LAST_CONCLUSION) — running Build+test."
+                fi
+              fi
+            fi
+          fi
+
+          echo "skip_build=$skip" >> "$GITHUB_OUTPUT"
+
   build-and-test:
     name: Build + test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [increment-guard]
+    # `always()` so a `push` event (increment-guard's `if` is false there,
+    # so it's `skipped`, not `success`) doesn't fall through GitHub's default
+    # needs-propagation and skip the build too. The real gate is the output
+    # check: only a literal skip_build=='true' (set on `pull_request` by
+    # increment-guard above) skips this job; anything else — push events,
+    # increment-guard itself failing — runs the build as before.
+    if: |
+      always() &&
+      needs.increment-guard.outputs.skip_build != 'true'
+    # pr-review now runs in parallel with build-and-test. The sandboxed
+    # reviewer pushes its changeset commit during analysis (Phase 2 of the
+    # review session — see .github/agentproto-workflows/lib/sandbox-agent.mjs
+    # and entry.mjs), which would otherwise re-trigger CI and CANCEL this
+    # build via the concurrency group. With cancel-in-progress: false, the
+    # re-triggered build queues behind this one; increment-guard skips it
+    # instantly (the push is 100% chore — only .changeset/*.md), so the
+    # queue drain is effectively zero-cost. The original cancel-on-push
+    # optimization (rapid dev-push cancels the previous build) is
+    # sacrificed: builds now queue rather than cancel, at ~15m per extra
+    # push. The tradeoff is deliberate — the parallelization benefit (review
+    # + build run simultaneously, saving 5-15m wall-clock per PR) outweighs
+    # the occasional wasted build on rapid pushes.
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -119,13 +229,34 @@ jobs:
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       # `pnpm test` only covers packages/** and adapters/**, so the release
       # tooling in scripts/ would otherwise ship untested. These guard the
       # @agentproto/cli@0.5.0 incident (a console trace published as a release
       # body) and the model-invented release date behind it.
       - name: Run release-tooling tests
-        run: node --test scripts/release-notes.test.mjs
+        run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs
+
+      # Guard the e2b workstation template's derived artifacts: the generated
+      # TS module, e2b.template.toml build args, marked doc blocks, and the
+      # sandbox-e2b package.json description must all match
+      # templates/workstation/versions.json. Zero-credential — no e2b access,
+      # just file comparison. (sync-specs --check has no CI home today; this
+      # is the same drift-check pattern, placed next to the other script
+      # gates in build-and-test.)
+      - name: Check template sync drift
+        run: node scripts/sync-templates.mjs --check
+
+      - name: Run sync-templates tests
+        run: node --test scripts/sync-templates.test.mjs
+
+      # Guards refresh-template.mjs's publish/proof flow — the dev --latest
+      # and stable --pin channels (pins, guards, recorded proofs) ship
+      # untested otherwise. Zero-credential: fake git/npm/e2b binaries.
+      - name: Run refresh-template tests
+        run: node --test scripts/refresh-template.test.mjs
 
       # Guards docs-check.mjs's PreToolUse path-confinement guard — an
       # unattended `bypassPermissions` SDK run that reads/edits doc files is
@@ -159,6 +290,20 @@ jobs:
       # file entirely (it lives outside packages/**/adapters/**).
       - name: Run pr-review entry tests
         run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs
+
+      # Guards the CI artifact ledger — the pure record/marker/select helpers
+      # the delivery helper, the agentproto-run driver, and both stamp scripts
+      # share. Lives outside packages/**/adapters/**, so `pnpm test` misses it.
+      - name: Run artifact-ledger tests
+        run: node --test scripts/lib/artifact-ledger.test.mjs .github/agentproto-workflows/lib/deliver-artifact.test.mjs
+
+      # Guards the shared local-daemon MCP contract (scripts/lib/daemon-mcp.mjs)
+      # the `review.mjs --engine daemon` gate drives (token read, connect,
+      # workflow_run_file → poll → terminal-status/error surfacing, session
+      # tail read) and the engine "daemon" config wiring. Lives outside
+      # packages/**/adapters/**, so `pnpm test` misses it.
+      - name: Run daemon-mcp and agentflow config tests
+        run: node --test scripts/lib/daemon-mcp.test.mjs scripts/agentflow/config.test.mjs
 
       # `changeset version` only runs on main, after the merge, and hard-errors
       # on a package name that isn't in the workspace — so one bad changeset
@@ -360,6 +505,12 @@ jobs:
       - name: Run merge-gate conformance tests
         run: node --test scripts/agentflow/merge-gate.test.mjs
 
+      # Guards the maintainer gatekeeper's pure helpers (glob guardrail, arg
+      # parsing, base-policy extraction, prompt build) — the standalone --pr /
+      # --all modes and the deterministic escalate path ship untested otherwise.
+      - name: Run maintainer tests
+        run: node --test scripts/maintainer.test.mjs
+
   # On PR open: fill an empty description from the diff (never clobbers a
   # human/agent-written body). Opt-in via describe.auto in agentic-review.json.
   describe:
@@ -393,14 +544,26 @@ jobs:
 
   # On PRs: agentic reviewer — reads the full diff, greps the codebase,
   # writes an accurate changeset, and posts a structured review.
-  # Runs after build-and-test so it never reviews a broken build.
-  # The reviewer writes the changeset; the changeset commit re-triggers CI
-  # so the "Agentic review" check lands on the new HEAD (Part A makes that
-  # re-run idempotent — no second changeset commit is produced).
+  # Starts in PARALLEL with build-and-test: the review analysis no longer
+  # waits for a green build (a review is an opinion about the diff, not a
+  # claim that it compiles). The two SIDE EFFECTS that could move the merge
+  # forward — pushing the changeset commit and posting the green "Agentic
+  # review" status on HEAD — are still held until THIS run's build-and-test
+  # is success or skipped (see the "Wait for Build + test" step), so a red
+  # build still can't green-light a merge. The reviewer writes the changeset;
+  # the changeset commit re-triggers CI so the "Agentic review" check lands
+  # on the new HEAD (Part A makes that re-run idempotent — no second
+  # changeset commit is produced).
   pr-review:
     name: Agentic review
     runs-on: ubuntu-latest
-    needs: [build-and-test]
+    # No `needs: [build-and-test]` here — that dependency was what serialized
+    # the review behind a ~15min build. The review now starts immediately.
+    # The `always()` workaround is also gone: with no upstream `needs`,
+    # there is nothing to `always()` against. `increment-guard` leaving
+    # build-and-test `skipped` (chore-only increment on an already-green
+    # build) is handled inside the wait step — `skipped` counts as success
+    # for the wait (see "Wait for Build + test"), so the changeset still lands.
     if: |
       github.event_name == 'pull_request' &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
@@ -417,6 +580,7 @@ jobs:
       contents: write       # push generated changeset back to the branch
       pull-requests: write  # post review + comments
       statuses: write       # post explicit commit-status on HEAD after push
+      actions: read         # "Wait for Build + test" polls this run's jobs
     steps:
       - uses: actions/checkout@v5 # bootstrap: load the local composite action
 
@@ -471,14 +635,22 @@ jobs:
         run: |
           # --paginate + `jq -s add` (per-page eval otherwise miscounts, matches
           # the postcheck step's recipe).
-          REVIEWS=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" | jq -s 'add')
+          REVIEWS=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" | jq -s 'add // []')
+          # commit_id drifts with the branch HEAD after force-pushes — extract
+          # the frozen SHA from the provenance footer instead (#1088).
+          HEAD_SHORT="${HEAD_SHA:0:7}"
+          REVIEWS=$(echo "$REVIEWS" | jq '
+            [.[] | . + { real_sha: (
+              (try (.body // "" | match("sha `([0-9a-f]{7,40})`").captures[0].string) catch null)
+              // .commit_id // ""
+            )}]')
           # Prefer the bot's own prior reviews (author login starts with the app
           # slug), against a DIFFERENT sha than HEAD; fall back to any review with
-          # a commit_id if the bot has none yet. Latest by submitted_at wins.
-          LAST=$(echo "$REVIEWS" | jq -r --arg head "$HEAD_SHA" --arg slug "$BOT_SLUG" '
-            def pick(f): [ .[] | select(.commit_id != null and .commit_id != "" and .commit_id != $head) | select(f) ] | sort_by(.submitted_at) | last;
-            (pick(.user.login | startswith($slug)) // pick(true)) // {} | .commit_id // ""')
-          BODY=$(echo "$REVIEWS" | jq -r --arg last "$LAST" '[ .[] | select(.commit_id == $last) ] | sort_by(.submitted_at) | last // {} | .body // ""')
+          # a real_sha if the bot has none yet. Latest by submitted_at wins.
+          LAST=$(echo "$REVIEWS" | jq -r --arg hs "$HEAD_SHORT" --arg slug "$BOT_SLUG" '
+            def pick(f): [ .[] | select(.real_sha != "" and (.real_sha[:7] != $hs)) | select(f) ] | sort_by(.submitted_at) | last;
+            (pick(.user.login | startswith($slug)) // pick(true)) // {} | .real_sha // ""')
+          BODY=$(echo "$REVIEWS" | jq -r --arg last "$LAST" '[ .[] | select(.real_sha == $last) ] | sort_by(.submitted_at) | last // {} | .body // ""')
           echo "sha=$LAST" >> "$GITHUB_OUTPUT"
           {
             echo "body<<__AGENTFLOW_EOF__"
@@ -500,7 +672,86 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           LAST_SHA: ${{ steps.lastreview.outputs.sha }}
+          HEAD_SHA: ${{ steps.headsha.outputs.sha }}
         run: |
+          # Every dedupe branch below treats "a review exists for this sha"
+          # as proof that this sha is fully handled — but "handled" is TWO
+          # facts, review-posted AND changeset-committed, and they aren't
+          # atomic: the changeset is committed by a LATER, separate host
+          # step ("Commit changeset", gated on this step's own skip output)
+          # that waits on Build+test and can fail to ever run (timeout,
+          # crashed job, red build) even after the review already posted.
+          # A guard that only checks the first fact then treats the pair as
+          # done forever creates an absorbing state: every later push gets a
+          # NEW head sha, so the exact-sha dedupe never matches again, but
+          # the patch-id-unchanged check below matches on CONTENT rather
+          # than sha and fires anyway — no push can ever re-earn the
+          # changeset commit. Real case: PR #1086's review posted at
+          # ba3a65a with no changeset commit behind it; see #1088. Compute
+          # whether a changeset is actually owed and already settled on this
+          # branch before trusting any dedupe below — mirrors the
+          # "changeset-check" job's own rule (private packages don't count).
+          CHANGESET_OWED=false
+          PKG_CHANGES=$(git diff --name-only origin/main...HEAD -- 'packages/**' 'adapters/**' || true)
+          if [ -n "$PKG_CHANGES" ]; then
+            PRIVATE_PREFIXES=$(
+              find packages adapters -maxdepth 2 -name package.json -not -path '*/node_modules/*' 2>/dev/null \
+                | while read -r pkgJson; do
+                    if jq -e '.private == true' "$pkgJson" >/dev/null 2>&1; then
+                      dirname "$pkgJson"
+                    fi
+                  done
+            )
+            PUBLISHABLE_CHANGES="$PKG_CHANGES"
+            for prefix in $PRIVATE_PREFIXES; do
+              PUBLISHABLE_CHANGES=$(echo "$PUBLISHABLE_CHANGES" | grep -v "^${prefix}/" || true)
+            done
+            if [ -n "$PUBLISHABLE_CHANGES" ]; then
+              CHANGESET_OWED=true
+            fi
+          fi
+          CHANGESET_SETTLED=true
+          if [ "$CHANGESET_OWED" = "true" ]; then
+            ADDED=$(git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md' \
+              | grep -v '^\.changeset/README\.md$' || true)
+            if [ -z "$ADDED" ]; then
+              CHANGESET_SETTLED=false
+            fi
+          fi
+
+          # Dedupe by EXACT head sha, first: if the bot already posted a
+          # review for THIS head, skip the whole reviewer ladder outright —
+          # distinct from the merge-forward/patch-id check below, which is
+          # for a DIFFERENT last-reviewed sha. "Find last reviewed commit"
+          # (above) deliberately excludes commit_id == HEAD_SHA (it's hunting
+          # a prior sha to diff against for that patch-id comparison), so an
+          # already-reviewed HEAD looks identical to "no prior review at
+          # all" to that step and would otherwise pay for a full fresh
+          # review. This is exactly what happened on PR #1047: this job's
+          # own concurrency group (`pr-review` has cancel-in-progress:false)
+          # serializes so a second, queued run for the SAME PR only starts
+          # once the first run's "Agentic review" job has fully finished —
+          # by then the first run had already posted review(s) for this
+          # exact HEAD_SHA, but nothing here checked for that, so the second
+          # run re-reviewed from scratch and posted a third, redundant
+          # APPROVE. Also catches a plain manual re-run of this job against
+          # an unchanged HEAD.
+          # commit_id drifts with the branch HEAD after force-pushes —
+          # match the frozen SHA from the provenance footer instead (#1088).
+          HEAD_SHORT="${HEAD_SHA:0:7}"
+          EXISTING=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            | jq -s --arg hs "$HEAD_SHORT" 'add // [] | [.[] | select(
+              ((try (.body // "" | match("sha `([0-9a-f]{7,40})`").captures[0].string) catch null) // "")[:7] == $hs
+            )] | length')
+          if [ "${EXISTING:-0}" -gt 0 ] 2>/dev/null && [ "$CHANGESET_SETTLED" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "HEAD $HEAD_SHA already has $EXISTING posted review(s) — skipping the re-review (dedupe by reviewed sha)."
+            exit 0
+          fi
+          if [ "${EXISTING:-0}" -gt 0 ] 2>/dev/null; then
+            echo "HEAD $HEAD_SHA already has $EXISTING posted review(s), but a changeset is owed and still missing from the branch — not trusting the dedupe (see #1088); re-reviewing so the changeset can actually land."
+          fi
+
           # origin/main is fetched by the agent-setup harness. Fail-safe: if the
           # range can't resolve, skip stays false and the cloud reviewer runs.
           #
@@ -529,10 +780,13 @@ jobs:
             if [ -n "$BASE_HEAD" ] && [ -n "$BASE_LAST" ]; then
               NOW="$(git diff "$BASE_HEAD" HEAD | git patch-id --stable | awk '{print $1}')"
               THEN="$(git diff "$BASE_LAST" "$LAST_SHA" | git patch-id --stable | awk '{print $1}')"
-              if [ -n "$NOW" ] && [ "$NOW" = "$THEN" ]; then
+              if [ -n "$NOW" ] && [ "$NOW" = "$THEN" ] && [ "$CHANGESET_SETTLED" = "true" ]; then
                 echo "skip=true" >> "$GITHUB_OUTPUT"
                 echo "PR contribution unchanged since last review ($LAST_SHA) — push only carried main forward; skipping the re-review."
                 exit 0
+              fi
+              if [ -n "$NOW" ] && [ "$NOW" = "$THEN" ]; then
+                echo "PR contribution unchanged since last review ($LAST_SHA), but a changeset is owed and still missing from the branch — not trusting the dedupe (see #1088); re-reviewing so the changeset can actually land."
               fi
             fi
           fi
@@ -587,6 +841,26 @@ jobs:
           else
             echo "mode=legacy" >> "$GITHUB_OUTPUT"
             echo "No reviewer credential — falling back to legacy API-key reviewer"
+          fi
+
+          # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
+          # fallback above. CLAUDE_CODE_OAUTH_TOKEN_FALLBACK is a second
+          # `claude setup-token`-minted OAuth token from a SEPARATE Anthropic
+          # subscription account, kept for the case where the PRIMARY
+          # account's token is dead/expired/rate-limited rather than simply
+          # absent (absent is already handled by mode=legacy above). Computed
+          # once here as a step output — rather than testing the secret's
+          # non-emptiness inline in each downstream step's `if:` — so every
+          # gate below reads a plain boolean and a still-unset secret degrades
+          # to a quiet skip of the retry step (see its own comment) instead of
+          # write-config.mjs hard-erroring on an empty credential with no
+          # adapter options set, which would turn "haven't added the secret
+          # yet" into a red job instead of a no-op.
+          if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}" ]; then
+            echo "has-fallback-account=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-fallback-account=false" >> "$GITHUB_OUTPUT"
+            echo "No CLAUDE_CODE_OAUTH_TOKEN_FALLBACK secret configured — the cross-account retry step will no-op if the primary account fails."
           fi
 
       - name: Resolve agentproto CLI source/version
@@ -706,16 +980,233 @@ jobs:
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.mode.outputs.mode == 'agentproto'
+        # A transient GitHub API failure here must not kill the job: this
+        # step runs BETWEEN the reviewer tier and the verify/stamp steps, so
+        # a single dropped connection used to fail the whole job AFTER the
+        # review had already posted — leaving it permanently unstamped
+        # (PR #1054: one graphql i/o timeout here → no provenance footer,
+        # and a re-run can't recover it because the dedupe-by-head-sha step
+        # then skips the entire ladder). The calls retry below; if GitHub
+        # still can't be reached, `posted=unknown` + continue-on-error keep
+        # the job alive: downstream tiers treat "unknown" as "do not arm"
+        # (no duplicate-review risk) and the verify step settles the truth
+        # with its own retries.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          SHA: ${{ steps.headsha.outputs.sha }}
+          # The reviewer's own artifact ledger — routed through env, not
+          # interpolated inline, same shell-injection reasoning as PR_TITLE
+          # elsewhere in this file (it's machine-written JSON, but the
+          # convention is uniform regardless of source).
+          REVIEWER_ARTIFACTS: ${{ steps.reviewer-agentproto.outputs.artifacts }}
         run: |
+          # Prefer the ledger over a live-head guess: on the sandbox lane,
+          # deliver-artifact.mjs records the review's id the INSTANT it posts
+          # — independent of wherever the PR head drifts to afterward. A live
+          # head recount below is vulnerable to exactly that drift: the
+          # reviewer's OWN changeset push (landing mid-turn, straight from the
+          # box — see entry.mjs's changesetDeliveryInstruction) moves the head
+          # AFTER the review posts but BEFORE this step runs, so counting
+          # reviews against the NEW head finds 0 and wrongly arms the
+          # fallback tier. Live on PR #1137: primary posted cleanly, its own
+          # changeset push moved the head, this recount read 0, the fallback
+          # account tier fired a genuine duplicate review against the new
+          # head. An empty ledger (host placement, no e2b box) falls straight
+          # through to the pre-existing live-head recount.
+          if node -e '
+            import("./scripts/lib/artifact-ledger.mjs").then(({ parseArtifacts, pickArtifact }) => {
+              const artifacts = parseArtifacts(process.env.REVIEWER_ARTIFACTS)
+              process.exit(pickArtifact(artifacts, "review") ? 0 : 1)
+            })
+          '; then
+            echo "Reviewer artifact ledger already records a posted review — trusting it over a live-head recount."
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Re-resolve the head LIVE — do not trust steps.headsha's
+          # checkout-time value here. GitHub stamps a posted review's
+          # commit_id against the PR's head at POST time, not against
+          # whatever sha this job happened to check out at start. If a
+          # second push lands on the branch while the primary reviewer tier
+          # above is still running (the box clones `pull/<N>/head` live),
+          # the review it just posted carries the NEW head's sha, and
+          # comparing against the stale checkout sha always reads 0 — arming
+          # every remaining fallback tier for nothing and posting duplicate
+          # APPROVEs. This is exactly what happened on PR #1047: one job run
+          # posted 2 of its 3 duplicate reviews this way.
+          resolve_sha() {
+            gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid
+          }
           # --paginate + `jq -s add` is load-bearing: a naive `--paginate
           # --jq` evaluates per PAGE and can miscount.
-          COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
-            | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
-          echo "Reviews already posted against reviewed SHA $SHA: $COUNT"
+          count_reviews() {
+            gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+              | jq -s "add | [.[] | select(.commit_id==\"$1\")] | length"
+          }
+          COUNT=""
+          for attempt in 1 2 3; do
+            if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then break; fi
+            COUNT=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          if [ -z "$COUNT" ]; then
+            echo "::warning::postcheck: GitHub API unreachable after 3 attempts — posted=unknown (fallback tiers stay disarmed; verify decides)."
+            echo "posted=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Reviews already posted against live head $SHA: $COUNT"
+          if [ "$COUNT" -gt 0 ] 2>/dev/null; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Cross-account retry: the exact same agentproto lane and workflow,
+      # under a SECOND Anthropic subscription account's OAuth token, so a
+      # dead/expired/rate-limited PRIMARY token doesn't fall all the way
+      # through to the legacy API-key reviewer (a different code path on the
+      # same org/credit pool, not a genuinely independent account) before a
+      # cheaper same-lane retry is even tried. Fires whenever no review has
+      # landed yet for this SHA (the postcheck above) AND a fallback token is
+      # actually configured — see "Determine review mode" for why
+      # has-fallback-account is a step output rather than an inline secret
+      # test. Gated to auth-mode=='subscription': the fallback secret is
+      # specifically a second OAuth token, so under api-key billing it would
+      # resolve to the exact same ANTHROPIC_API_KEY as the primary attempt
+      # (write-config.mjs only reads the credential matching auth-mode) and
+      # just re-run the identical failure for free.
+      #
+      # Deliberately NOT gated on `reviewer-agentproto.outcome`/`outputs.status`
+      # — a real 429 on the primary account (PR #951's own review run) proved
+      # those self-reported signals lie: the composite action step still
+      # exits `outcome: success` / `status: done` (the daemon's workflow run
+      # DID reach a terminal state) even though the embedded agent turn
+      # returned "API Error: Request rejected (429)" and posted nothing. The
+      # only signal actually worth trusting is `postcheck.outputs.posted` —
+      # a real row on the PR for this SHA — which is already required above.
+      - name: Run agentic PR reviewer (agentproto lane, fallback account)
+        id: reviewer-agentproto-fallback
+        # `posted != 'unknown'`: when the postcheck couldn't reach GitHub at
+        # all it can't prove the primary DIDN'T post — arming another posting
+        # tier on that blindness risks a duplicate review. Empty (step
+        # skipped) still passes both inequalities, preserving the
+        # mode=='legacy' free-pass documented on the legacy step.
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.postcheck.outputs.posted != 'true' &&
+          steps.postcheck.outputs.posted != 'unknown' &&
+          steps.mode.outputs.has-fallback-account == 'true' &&
+          steps.cliver.outputs.auth-mode == 'subscription'
+        continue-on-error: true
+        uses: ./.github/actions/agentproto-run
+        env:
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+        with:
+          adapter: ${{ steps.cliver.outputs.adapter }}
+          auth-mode: ${{ steps.cliver.outputs.auth-mode }}
+          # The only thing that changes vs the primary attempt above: a
+          # second subscription account's OAuth token. Everything else
+          # (adapter, sandbox, tracing, workflow) is identical, so a review
+          # that succeeds here is indistinguishable in substance from one the
+          # primary account would have posted.
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
+          langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
+          workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          cli-source: ${{ steps.cliver.outputs.cli-source }}
+          cli-version: ${{ steps.cliver.outputs.cli-version }}
+          workflow-input: |
+            {
+              "prNumber": ${{ github.event.pull_request.number }},
+              "baseRef": "${{ github.base_ref }}",
+              "repo": "${{ github.repository }}",
+              "lastReviewedSha": "${{ steps.lastreview.outputs.sha }}",
+              "priorReviewBody": ${{ toJSON(steps.lastreview.outputs.body) }},
+              "githubToken": "${{ steps.setup.outputs.token }}",
+              "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
+            }
+          timeout-minutes: 15
+
+      # Second tier of the same "review already posted?" guard as the
+      # postcheck step above — the fallback account's session can ALSO post
+      # successfully and then report a turn-level failure during wind-down
+      # (the exact race the first postcheck exists for; see PR #494 in that
+      # step's comment), so legacy must not be armed off a stale first-tier
+      # `posted=false` alone once a SECOND attempt has run. Mirrors the
+      # fallback step's own `if:` exactly (see that step's comment for why it
+      # no longer checks `reviewer-agentproto.outcome`/`outputs.status`) so
+      # this always runs exactly when the fallback step did, and skips
+      # (outputs stay empty, safely `!= 'true'` downstream) whenever the
+      # fallback step itself was skipped.
+      - name: Check whether a review was already posted (before legacy fallback)
+        id: postcheck-fallback
+        # `posted != 'unknown'` mirrors the fallback-account step (see its
+        # comment); continue-on-error + retries + posted=unknown mirror the
+        # first postcheck — a transient API failure between tiers must
+        # neither kill the job nor arm the legacy tier blind.
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.postcheck.outputs.posted != 'true' &&
+          steps.postcheck.outputs.posted != 'unknown' &&
+          steps.mode.outputs.has-fallback-account == 'true' &&
+          steps.cliver.outputs.auth-mode == 'subscription'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # The fallback-account tier's own artifact ledger — same
+          # ledger-first reasoning as the postcheck step above.
+          REVIEWER_ARTIFACTS: ${{ steps.reviewer-agentproto-fallback.outputs.artifacts }}
+        run: |
+          # Ledger-first, same reasoning as the postcheck step above: the
+          # fallback-account tier can ALSO push its own changeset mid-turn
+          # and move the head before this step's live recount runs.
+          if node -e '
+            import("./scripts/lib/artifact-ledger.mjs").then(({ parseArtifacts, pickArtifact }) => {
+              const artifacts = parseArtifacts(process.env.REVIEWER_ARTIFACTS)
+              process.exit(pickArtifact(artifacts, "review") ? 0 : 1)
+            })
+          '; then
+            echo "Fallback-account artifact ledger already records a posted review — trusting it over a live-head recount."
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Re-resolve the head LIVE, same reasoning as the postcheck step
+          # above (see its comment) — the checkout-time steps.headsha sha can
+          # be stale by the time a review actually posts and gets its
+          # commit_id stamped.
+          resolve_sha() {
+            gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid
+          }
+          # Same --paginate + `jq -s add` recipe as the postcheck step above —
+          # see its comment for why a naive `--paginate --jq` miscounts.
+          count_reviews() {
+            gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+              | jq -s "add | [.[] | select(.commit_id==\"$1\")] | length"
+          }
+          COUNT=""
+          for attempt in 1 2 3; do
+            if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then break; fi
+            COUNT=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          if [ -z "$COUNT" ]; then
+            echo "::warning::postcheck-fallback: GitHub API unreachable after 3 attempts — posted=unknown (legacy tier stays disarmed; verify decides)."
+            echo "posted=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Reviews already posted against live head $SHA (post-fallback-account check): $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
           else
@@ -724,11 +1215,30 @@ jobs:
 
       - name: Run agentic PR reviewer (legacy API-key fallback)
         id: reviewer-legacy
+        # Legacy is now the LAST resort in a three-tier ladder (primary
+        # account → fallback account → legacy API key). Both postcheck
+        # steps are the sole arming signal — no reliance on any tier's
+        # self-reported outcome/status (see the fallback-account step's
+        # comment for why that self-report can't be trusted: a real 429 on
+        # PR #951's own primary-account attempt still reported outcome:
+        # success / status: done). `postcheck.outputs.posted` covers
+        # mode=='legacy' for free — that step only runs under
+        # mode=='agentproto', so under mode=='legacy' its output is empty and
+        # `!= 'true'` holds trivially. `postcheck-fallback.outputs.posted`
+        # is equally empty (and so equally `!= 'true'`) whenever the fallback
+        # tier never ran — no fallback secret configured, auth-mode isn't
+        # subscription, or mode=='legacy' — so no extra disjunct is needed to
+        # cover those cases either. `!= 'unknown'` (both tiers): a postcheck
+        # that couldn't reach GitHub can't prove nothing was posted — never
+        # arm another POSTING tier blind (duplicate risk); an empty output
+        # still passes, keeping the mode=='legacy' free-pass above intact.
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.postcheck.outputs.posted != 'true' &&
-          (steps.mode.outputs.mode == 'legacy' || steps.reviewer-agentproto.outcome == 'failure' || steps.reviewer-agentproto.outputs.status == 'failed')
+          steps.postcheck.outputs.posted != 'unknown' &&
+          steps.postcheck-fallback.outputs.posted != 'true' &&
+          steps.postcheck-fallback.outputs.posted != 'unknown'
         # Don't abort the job on a non-posting reviewer — capture the outcome so
         # the gate can turn it into an honest red instead of a false green.
         continue-on-error: true
@@ -745,13 +1255,31 @@ jobs:
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
+        env:
+          # Provenance is JSON (session labels, model ids, …), not a
+          # controlled enum like `status`/`posted` below — route it through
+          # env instead of inline `${{ }}` interpolation into the script body,
+          # for the same shell-injection reason the "Check for changeset" step
+          # above documents for PR_TITLE.
+          PRIMARY_PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
+          FALLBACK_PROVENANCE: ${{ steps.reviewer-agentproto-fallback.outputs.provenance }}
+          # The artifact ledger (review id recorded at creation time) travels the
+          # same tier-selection path as provenance below, so the review-footer
+          # stamp keys off the id the winning account actually posted under.
+          PRIMARY_ARTIFACTS: ${{ steps.reviewer-agentproto.outputs.artifacts }}
+          FALLBACK_ARTIFACTS: ${{ steps.reviewer-agentproto-fallback.outputs.artifacts }}
         run: |
           # A posted review IS lane success, even when the native session
           # errored after posting (post-review wind-down — see the postcheck
-          # step). The verify step below independently re-proves the review
-          # row before the gate trusts this.
+          # step(s)). The verify step below independently re-proves the
+          # review row before the gate trusts this. Both accounts land in the
+          # same "agentproto" mode for the gate/stamp — a review posted under
+          # the fallback account is not a lesser outcome than one posted
+          # under the primary account.
           if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ] \
-            || [ "${{ steps.postcheck.outputs.posted }}" = "true" ]; then
+            || [ "${{ steps.postcheck.outputs.posted }}" = "true" ] \
+            || [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ] \
+            || [ "${{ steps.postcheck-fallback.outputs.posted }}" = "true" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
           elif [ "${{ steps.reviewer-legacy.outcome }}" = "success" ]; then
@@ -762,11 +1290,130 @@ jobs:
             echo "mode=none" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Commit changeset (if written by reviewer)
+          # Which tier's session actually produced the review — feeds the
+          # "Stamp review provenance footer" step below so it cites the
+          # account/session that posted, not the failed primary attempt's
+          # (possibly empty) provenance when the fallback account is the one
+          # that succeeded.
+          if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
+            PROVENANCE="$PRIMARY_PROVENANCE"
+            ARTIFACTS="$PRIMARY_ARTIFACTS"
+          elif [ "${{ steps.reviewer-agentproto-fallback.outputs.status }}" = "done" ]; then
+            PROVENANCE="$FALLBACK_PROVENANCE"
+            ARTIFACTS="$FALLBACK_ARTIFACTS"
+          else
+            PROVENANCE="$PRIMARY_PROVENANCE"
+            ARTIFACTS="$PRIMARY_ARTIFACTS"
+          fi
+          {
+            echo "provenance<<__PROVENANCE_EOF__"
+            echo "$PROVENANCE"
+            echo "__PROVENANCE_EOF__"
+            echo "artifacts<<__ARTIFACTS_EOF__"
+            echo "$ARTIFACTS"
+            echo "__ARTIFACTS_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      # Hold the side effects until THIS run's Build + test is success or
+      # skipped. The review analysis above already ran — that's the whole
+      # point of parallelizing. What must NOT happen is pushing a changeset
+      # or posting a green "Agentic review" status while the build is still
+      # running (or red): the changeset push re-triggers CI, and the status
+      # is what the merge gate trusts, so both wait on the build verdict.
+      #
+      # Poll the build-and-test JOB of this run (github.run_id) rather than
+      # `gh run watch` on the whole run: pr-review IS part of this run, so
+      # watching the run would deadlock on our own job. `skipped` counts as
+      # success — that's the increment-guard chore-increment case, where the
+      # build was legitimately skipped and the review must proceed exactly
+      # as if it had passed.
+      #
+      # A red / cancelled / timed-out build sets build_ok=false: the
+      # changeset is withheld and the "Agentic review" status is downgraded
+      # to neutral (see the gate step), but the review CONTENT is still
+      # posted — a broken build doesn't invalidate the review's opinion.
+      # build-and-test's own timeout is 15m, so 30m of polling is generous
+      # headroom for queue delay + a slow run without ever holding the
+      # merge hostage indefinitely.
+      - name: Wait for Build + test
+        id: buildwait
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
+        timeout-minutes: 35
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          build_ok=false
+          build_result="unknown"
+          errors=0
+          deadline=$((SECONDS + 1800))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if ! JOBS=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs" 2>/dev/null); then
+              errors=$((errors + 1))
+              if [ "$errors" -ge 5 ]; then
+                echo "::warning::gh api for this run's jobs failed 5x — giving up on the build wait (treating as not-ok)."
+                build_result="api-error"
+                break
+              fi
+              sleep 15
+              continue
+            fi
+            errors=0
+            # Same --paginate + `jq -s` recipe as the postcheck step — a
+            # naive `--paginate --jq` evaluates per page and can miscount.
+            JOB=$(printf '%s' "$JOBS" \
+              | jq -s '[.[].jobs[]?] | map(select(.name == "Build + test")) | sort_by(.id) | last // {}')
+            CONCLUSION=$(printf '%s' "$JOB" | jq -r '.conclusion // empty')
+            case "$CONCLUSION" in
+              success)
+                build_ok=true; build_result="success"; break ;;
+              skipped)
+                build_ok=true; build_result="skipped"; break ;;
+              failure|cancelled|timed_out)
+                build_result="$CONCLUSION"; break ;;
+            esac
+            sleep 30
+          done
+          if [ "$build_ok" = "true" ]; then
+            echo "Build + test $build_result — proceeding with changeset + status."
+          else
+            echo "Build + test is $build_result — withholding changeset and downgrading status to neutral."
+          fi
+          echo "build_ok=$build_ok" >> "$GITHUB_OUTPUT"
+          echo "build_result=$build_result" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Build + test gate"
+            echo "- result: $build_result"
+            echo "- changeset commit: $([ "$build_ok" = "true" ] && echo pushed || echo withheld)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit changeset (if written by reviewer)
+        # Only push the changeset once THIS run's build is success or
+        # skipped (buildwait.build_ok) — a red build must not get a
+        # changeset commit that re-triggers CI onto a broken tree.
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.buildwait.outputs.build_ok == 'true'
         id: changeset
+        # The sandboxed reviewer (reviewerSandbox) can ALSO push a changeset
+        # itself, mid-turn, straight from inside the box (see
+        # changesetDeliveryInstruction in pr-review/entry.mjs) — independent
+        # of this host-side step and often already landed by the time this
+        # runs. When that races this step's own stale local checkout, `git
+        # push` here rejects as non-fast-forward and this step fails. Without
+        # continue-on-error that failure cascaded (no `if: always()` below)
+        # into skipping "Verify review was posted" AND "Stamp review
+        # provenance footer" for the ENTIRE job — so a review that posted
+        # cleanly went out with no footer for a reason that has nothing to do
+        # with the review itself. This step's own outcome is cosmetic (the
+        # changeset either already landed via the box, or the
+        # changeset-check gate catches a genuinely missing one) — it must
+        # never gate the review's own verification/stamping.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
@@ -857,13 +1504,60 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          SHA: ${{ steps.headsha.outputs.sha }}
+          # The commit the reviewer actually reviewed (captured before this
+          # job's own "Commit changeset" step could move the branch head).
+          REVIEWED_SHA: ${{ steps.headsha.outputs.sha }}
+          CHANGESET_COMMITTED: ${{ steps.changeset.outputs.committed }}
         run: |
-          COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
-            | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
-          echo "Reviews posted against reviewed SHA $SHA: $COUNT"
-          if [ "$COUNT" -gt 0 ] 2>/dev/null; then
+          # Re-resolve the head LIVE, same reasoning as the postcheck steps
+          # above — a review's commit_id is stamped against the PR's head at
+          # POST time, which can have moved past steps.headsha's
+          # checkout-time value (e.g. the reviewer's own changeset push, or
+          # a concurrent human push). Checking the stale sha here produced a
+          # false "posted=false" that both wrongly reddened the gate AND
+          # skipped the provenance-footer step downstream (its `if:` keys
+          # off steps.verify.outputs.posted) — reviewer-pushed commits (like
+          # the changeset commit itself) were landing with no provenance
+          # footer for exactly this reason.
+          resolve_sha() {
+            gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid
+          }
+          count_reviews() {
+            gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+              | jq -s "add | [.[] | select(.commit_id==\"$1\")] | length"
+          }
+          # Retry the API calls — this is the step whose `posted` output the
+          # provenance stamp keys off, so a transient failure here silently
+          # drops the footer even when the review landed (the postcheck
+          # steps above retry for the same reason).
+          COUNT=""
+          for attempt in 1 2 3; do
+            if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then break; fi
+            COUNT=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          if [ -z "$COUNT" ]; then
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Could not verify the review row (GitHub API unreachable after 3 attempts) — treating as not posted."
+            exit 1
+          fi
+          echo "Reviews posted against live head $SHA: $COUNT"
+          REVIEWED="$SHA"
+          if ! [ "${COUNT:-0}" -gt 0 ] 2>/dev/null \
+            && [ "$CHANGESET_COMMITTED" = "true" ] \
+            && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$SHA" ]; then
+            # This job pushed the reviewer's changeset commit AFTER the review
+            # was posted (PR #1105: review at :12, changeset commit at :25), so
+            # the live head moved past the commit the reviewer saw. The review
+            # legitimately sits on that reviewed commit — count it there. The
+            # next run's bypass step applies the same parent-commit rule.
+            COUNT=$(count_reviews "$REVIEWED_SHA" || echo "")
+            echo "Head moved by this job's changeset commit — reviews posted against the reviewed commit $REVIEWED_SHA: ${COUNT:-?}"
+            REVIEWED="$REVIEWED_SHA"
+          fi
+          if [ "${COUNT:-0}" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "reviewed_sha=$REVIEWED" >> "$GITHUB_OUTPUT"
           else
             echo "posted=false" >> "$GITHUB_OUTPUT"
             echo "::error::No review found for the reviewed commit $SHA — the reviewer reported success but nothing landed on the PR."
@@ -886,12 +1580,46 @@ jobs:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          SHA: ${{ steps.headsha.outputs.sha }}
           AUTH_MODE: ${{ steps.cliver.outputs.auth-mode }}
           RUN_ID: ${{ github.run_id }}
           SERVER_URL: ${{ github.server_url }}
-          PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
-        run: node scripts/stamp-review-footer.mjs
+          # Resolved by "Propagate reviewer outcome for gate" to whichever
+          # tier's session actually posted (primary or fallback account) —
+          # see that step's comment.
+          PROVENANCE: ${{ steps.reviewer.outputs.provenance }}
+          # Artifact ledger (review id at creation time) — the stamp keys off
+          # this id; empty ⇒ it falls back to sha discovery with a ::warning::.
+          ARTIFACTS: ${{ steps.reviewer.outputs.artifacts }}
+          # The sha verify actually found the review on: the live head, or the
+          # reviewed commit when this job's own changeset commit moved the
+          # head past it (PR #1105 — the footer was silently skipped).
+          REVIEWED_SHA: ${{ steps.verify.outputs.reviewed_sha }}
+        run: |
+          # Same live-head re-resolution as the postcheck/verify steps above
+          # (see "Verify review was posted"'s comment) — SHA here feeds both
+          # the script's sha-discovery fallback (when the artifact ledger is
+          # empty, e.g. the legacy tier) AND the sha embedded IN the footer
+          # text itself. Stale steps.headsha silently dropped the footer on
+          # any review whose commit_id had moved past the job's checkout sha
+          # (the exact case that most reliably moves it: the reviewer's own
+          # changeset commit re-triggering CI) — the deterministic tracking
+          # comment must cover reviewer-pushed commits too, not just the
+          # original author's push.
+          # gh CLI picks up GITHUB_TOKEN (already set above for the script)
+          # as its auth token — no separate GH_TOKEN needed. Retried like the
+          # postcheck/verify steps: one flaky call here silently skips the
+          # stamp (continue-on-error) even though the review posted fine.
+          SHA="$REVIEWED_SHA"
+          if [ -z "$SHA" ]; then
+            for attempt in 1 2 3; do
+              if SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid); then break; fi
+              SHA=""
+              [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+            done
+          fi
+          [ -n "$SHA" ] || { echo "::warning::stamp: could not resolve a sha to stamp against after 3 attempts."; exit 1; }
+          export SHA
+          node scripts/stamp-review-footer.mjs
 
       # Gate: resolve decision + blocking config, post explicit statuses on
       # HEAD for both "Agentic review" and "Changeset present?" so the merge
@@ -929,12 +1657,27 @@ jobs:
           else
             echo "state=success" >> "$GITHUB_OUTPUT"
           fi
+
+          # A red build must not green-light a merge. The review's opinion
+          # stands (state=success above), but the "Agentic review" STATUS is
+          # downgraded to neutral so the merge gate sees "build failed" rather
+          # than "review passed". The changeset was already withheld by the
+          # same signal (see "Wait for Build + test"). Only `= "false"` —
+          # i.e. the wait step actually ran and reported a red build — never
+          # an empty BUILD_OK (the bypass / merged cases, where the wait step
+          # was skipped and success is the correct mirror). A review that
+          # itself failed stays failure: neutral is reserved for the
+          # build-broke-it case, never a CHANGES_REQUESTED review.
+          if [ "$BUILD_OK" = "false" ] && [ "$state" = "success" ]; then
+            echo "state=neutral" >> "$GITHUB_OUTPUT"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BYPASS: ${{ steps.bypass.outputs.skip }}
           REVIEWER_OUTCOME: ${{ steps.reviewer.outputs.outcome }}
           VERIFY_POSTED: ${{ steps.verify.outputs.posted }}
+          BUILD_OK: ${{ steps.buildwait.outputs.build_ok }}
 
       - name: Post explicit statuses on PR HEAD
         if: steps.prstate.outputs.skip != 'true'
@@ -1088,9 +1831,13 @@ jobs:
     # took the Release job down with it. Name the dependency here instead of
     # inferring it from pr-review's own needs — pr-review skips for reasons of
     # its own, and a skip must not read as a pass.
+    # `needs.build-and-test.result == 'success'` also covers the case where
+    # increment-guard left build-and-test `skipped` (chore-only increment on
+    # an already-green build) — a skip must arm exactly like a pass, not
+    # block auto-merge on a rebuild that was never going to happen.
     if: |
       always() &&
-      needs.build-and-test.result == 'success' &&
+      (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped') &&
       github.event_name == 'pull_request' &&
       !github.event.pull_request.draft &&
       !startsWith(github.event.pull_request.title, 'chore(release):')

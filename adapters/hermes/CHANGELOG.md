@@ -1,5 +1,122 @@
 # @agentproto/adapter-hermes
 
+## 0.4.11
+
+### Patch Changes
+
+- Updated dependencies [692d659]
+- Updated dependencies [6bfb633]
+  - @agentproto/model-catalog@0.9.2
+  - @agentproto/driver-agent-cli@2.4.1
+  - @agentproto/provider-kit@0.4.2
+
+## 0.4.10
+
+### Patch Changes
+
+- Updated dependencies [139c198]
+  - @agentproto/model-catalog@0.9.1
+
+## 0.4.9
+
+### Patch Changes
+
+- Updated dependencies [4b924c9]
+- Updated dependencies [008a483]
+- Updated dependencies [3496977]
+- Updated dependencies [008a483]
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+- Updated dependencies [001a2a0]
+- Updated dependencies [5dcc733]
+  - @agentproto/model-catalog@0.9.0
+  - @agentproto/driver-agent-cli@2.4.0
+  - @agentproto/provider-kit@0.4.2
+
+## 0.4.8
+
+### Patch Changes
+
+- Updated dependencies [95f7b5e]
+- Updated dependencies [e826a4a]
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+- Updated dependencies [1fd4a15]
+  - @agentproto/model-catalog@0.8.5
+  - @agentproto/driver-agent-cli@2.3.1
+
+## 0.4.7
+
+### Patch Changes
+
+- Updated dependencies [7b28edf]
+- Updated dependencies [e8d39e8]
+  - @agentproto/model-catalog@0.8.4
+
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
+## 0.4.5
+
+### Patch Changes
+
+- ec9efa3: **Hermes nativeTerminalResume gated on Node ≥22.5** — hermes TUI uses node:sqlite which is unavailable on older runtimes; the capability is now computed at import time so restart falls back to ACP agent-cli instead of crashing.
+
+  **augmentWithFsResume backfills adapterSessionId** — when never captured (session killed before ACP handshake), backfill it from filesystem probe so agent restart can attempt ACP-level resume in addition to PTY-native restart.
+
+  **restartAsTerminal opens transcript on fallback** — when restart falls back to agent-cli (no PTY available), open the conversation transcript view instead of the agent-mirror pseudo-terminal.
+
+- Updated dependencies [415044d]
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/model-catalog@0.8.3
+  - @agentproto/driver-agent-cli@2.2.2
+
+## 0.4.4
+
+### Patch Changes
+
+- 665019a: **adapters/hermes:** Replace hand-maintained model allowlist with dynamic catalog-based menu from the shared provider catalog, keeping it in sync with all available OpenRouter and OpenAI models.
+
+  **adapters/mastracode:** Replace static model allowlist with dynamic catalog-based menu; add `modelDerivedApiKey: true` for correct billing-auth eligibility.
+
+  **adapters/pi:** Replace static model allowlist with dynamic catalog-based menu; add `modelDerivedApiKey: true` fixing moonshot profile eligibility (profile was rejected because `methodsForDirect()` returned empty without this flag).
+
+- 6e1fcf3: Remove tilde-prefixed OpenRouter aliases and use non-throwing route resolution in widening
+- Updated dependencies [2b58616]
+- Updated dependencies [6e1fcf3]
+  - @agentproto/model-catalog@0.8.2
+
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/driver-agent-cli@2.2.0
+
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [c1399f3]
+  - @agentproto/provider-kit@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes

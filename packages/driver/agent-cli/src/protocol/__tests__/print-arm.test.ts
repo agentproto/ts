@@ -24,6 +24,10 @@ function makeFakeChild(): FakeChild {
   child.stdout = new PassThrough()
   child.stderr = new PassThrough()
   child.kill = vi.fn()
+  // print-arm.ts now races 'spawn' vs 'error' right after spawn() to catch
+  // a failed launch cleanly — emit 'spawn' on the next microtask, mirroring
+  // a real ChildProcess's async success signal, so that race resolves.
+  queueMicrotask(() => child.emit("spawn"))
   return child
 }
 
@@ -596,6 +600,281 @@ describe("createPrintSession — mastracode print config", () => {
         threadId: "thread-from-turn-1",
         exitCode: 0,
       },
+    ])
+    finish(lastChild!, 0)
+    await secondTurn
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────
+// Google Antigravity (`agy`) stream-json print config.
+// Wire shapes verified against antigravity.google/docs/cli/headless: events
+// are discriminated by an `event` field (init | step_update | result), the
+// session id is a nested `conversation_id`, text streams as incremental
+// `step_update.text_delta`, and a `tool` step's DONE carries the call + its
+// result together in `tool_info`.
+// ─────────────────────────────────────────────────────────────────────
+
+const ANTIGRAVITY_PRINT_CONFIG: AgentCliPrintConfig = {
+  prompt_flag: "-p",
+  output_format: ["--output-format", "stream-json"],
+  pre_prompt: [],
+  resume: { flag: "--conversation", kind: "value" },
+  event_schema: "antigravity-stream-json",
+}
+
+describe("createPrintSession — antigravity print config", () => {
+  it("spawns with agy's --output-format stream-json, not the Claude --no-interactive default", async () => {
+    const session = createPrintSession({
+      bin: "agy",
+      baseArgs: [],
+      cwd: "/tmp",
+      env: {},
+      printConfig: ANTIGRAVITY_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("hi"))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(spawnCalls).toHaveLength(1)
+    expect(spawnCalls[0]?.args).toEqual(
+      expect.arrayContaining(["--output-format", "stream-json", "-p", "hi"]),
+    )
+    expect(spawnCalls[0]?.args).not.toContain("--no-interactive")
+
+    feed(lastChild!, [
+      {
+        event: "init",
+        conversation_id: "conv-1",
+        init: { cwd: "/tmp", tools: ["run_command"], permission_mode: "request-review" },
+      },
+      {
+        event: "result",
+        result: { conversation_id: "conv-1", status: "SUCCESS", response: "ok" },
+      },
+    ])
+    finish(lastChild!, 0)
+    await pending
+  })
+
+  it("emits each step_update.text_delta fragment verbatim (fragments are incremental, not cumulative)", async () => {
+    const session = createPrintSession({
+      bin: "agy",
+      baseArgs: [],
+      cwd: "/tmp",
+      env: {},
+      printConfig: ANTIGRAVITY_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("hi"))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    feed(lastChild!, [
+      { event: "init", conversation_id: "c", init: {} },
+      { event: "step_update", step_update: { conversation_id: "c", step_index: 0, state: "DONE", step_type: "user_input" } },
+      { event: "step_update", step_update: { conversation_id: "c", step_index: 3, state: "ACTIVE", step_type: "agent_response", text_delta: "Git rebase " } },
+      { event: "step_update", step_update: { conversation_id: "c", step_index: 3, state: "DONE", step_type: "agent_response", text_delta: "rewrites history." } },
+      { event: "result", result: { conversation_id: "c", status: "SUCCESS", response: "Git rebase rewrites history." } },
+    ])
+    finish(lastChild!, 0)
+    const events = await pending
+
+    const reconstructed = events
+      .filter(e => e.kind === "text-delta")
+      .map(e => (e as { text: string }).text)
+      .join("")
+    expect(reconstructed).toBe("Git rebase rewrites history.")
+  })
+
+  it("fans a tool step's DONE out to a tool-call + tool-result pair correlated by step_index", async () => {
+    const session = createPrintSession({
+      bin: "agy",
+      baseArgs: [],
+      cwd: "/tmp",
+      env: {},
+      printConfig: ANTIGRAVITY_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("run echo"))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    feed(lastChild!, [
+      { event: "init", conversation_id: "c", init: {} },
+      {
+        event: "step_update",
+        step_update: {
+          conversation_id: "c",
+          step_index: 4,
+          state: "DONE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: {
+            name: "run_command",
+            parameters: { CommandLine: "echo hello_headless_demo" },
+            output: "hello_headless_demo\r\n",
+          },
+        },
+      },
+      { event: "result", result: { conversation_id: "c", status: "SUCCESS", response: "" } },
+    ])
+    finish(lastChild!, 0)
+    const events = await pending
+
+    const call = events.find(e => e.kind === "tool-call")
+    const result = events.find(e => e.kind === "tool-result")
+    expect(call).toMatchObject({
+      kind: "tool-call",
+      toolCallId: "step-4",
+      toolName: "run_command",
+      arguments: { CommandLine: "echo hello_headless_demo" },
+    })
+    expect(result).toMatchObject({
+      kind: "tool-result",
+      toolCallId: "step-4",
+      result: "hello_headless_demo\r\n",
+      isError: false,
+    })
+  })
+
+  it("marks a tool step with tool_info.error as an errored tool-result", async () => {
+    const session = createPrintSession({
+      bin: "agy",
+      baseArgs: [],
+      cwd: "/tmp",
+      env: {},
+      printConfig: ANTIGRAVITY_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("bad tool"))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    feed(lastChild!, [
+      { event: "init", conversation_id: "c", init: {} },
+      {
+        event: "step_update",
+        step_update: {
+          conversation_id: "c",
+          step_index: 2,
+          state: "DONE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: {
+            name: "run_command",
+            parameters: { CommandLine: "false" },
+            error: { type: "NonZeroExit", message: "command failed" },
+          },
+        },
+      },
+      { event: "result", result: { conversation_id: "c", status: "SUCCESS", response: "" } },
+    ])
+    finish(lastChild!, 0)
+    const events = await pending
+
+    const result = events.find(e => e.kind === "tool-result")
+    expect(result).toMatchObject({ kind: "tool-result", isError: true, result: "command failed" })
+  })
+
+  it("emits a usage_update and a completed turn-end from the terminal SUCCESS result", async () => {
+    const session = createPrintSession({
+      bin: "agy",
+      baseArgs: [],
+      cwd: "/tmp",
+      env: {},
+      printConfig: ANTIGRAVITY_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("hi"))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    feed(lastChild!, [
+      { event: "init", conversation_id: "c", init: {} },
+      {
+        event: "result",
+        result: {
+          conversation_id: "c",
+          status: "SUCCESS",
+          response: "done",
+          usage: { input_tokens: 10418, output_tokens: 589, total_tokens: 11007 },
+        },
+      },
+    ])
+    finish(lastChild!, 0)
+    const events = await pending
+
+    const usage = events.find(e => e.kind === "usage_update")
+    expect(usage).toMatchObject({ kind: "usage_update", tokensIn: 10418, tokensOut: 589 })
+    const turnEnd = events.find(e => e.kind === "turn-end")
+    expect(turnEnd).toMatchObject({ kind: "turn-end", reason: "completed" })
+  })
+
+  it("surfaces an ERROR-status result (e.g. unknown --model) as an error event, not a turn-end", async () => {
+    const session = createPrintSession({
+      bin: "agy",
+      baseArgs: [],
+      cwd: "/tmp",
+      env: {},
+      printConfig: ANTIGRAVITY_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("hi"))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    feed(lastChild!, [
+      {
+        event: "result",
+        result: {
+          conversation_id: "",
+          status: "ERROR",
+          response: "",
+          error: "invalid model selection",
+        },
+      },
+    ])
+    finish(lastChild!, 1)
+    const events = await pending
+
+    const err = events.find(e => e.kind === "error")
+    expect(err).toMatchObject({ kind: "error", error: { message: "invalid model selection" } })
+    expect(events.find(e => e.kind === "turn-end")).toBeUndefined()
+  })
+
+  it("captures conversation_id from init and resumes it via --conversation on turn 2", async () => {
+    const session = createPrintSession({
+      bin: "agy",
+      baseArgs: [],
+      cwd: "/tmp",
+      env: {},
+      printConfig: ANTIGRAVITY_PRINT_CONFIG,
+    })
+
+    const firstTurn = collect(session.send("first"))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(spawnCalls[0]?.args).not.toContain("--conversation")
+
+    feed(lastChild!, [
+      { event: "init", conversation_id: "conv-abc", init: {} },
+      { event: "result", result: { conversation_id: "conv-abc", status: "SUCCESS", response: "ok" } },
+    ])
+    finish(lastChild!, 0)
+    await firstTurn
+    expect(session.sessionId).toBe("conv-abc")
+
+    const secondTurn = collect(session.send("second"))
+    await Promise.resolve()
+    await Promise.resolve()
+    const idx = spawnCalls[1]?.args.indexOf("--conversation") ?? -1
+    expect(idx).toBeGreaterThanOrEqual(0)
+    expect(spawnCalls[1]?.args[idx + 1]).toBe("conv-abc")
+
+    feed(lastChild!, [
+      { event: "result", result: { conversation_id: "conv-abc", status: "SUCCESS", response: "ok" } },
     ])
     finish(lastChild!, 0)
     await secondTurn

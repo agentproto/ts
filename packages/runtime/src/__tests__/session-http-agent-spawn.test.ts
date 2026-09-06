@@ -13,7 +13,8 @@ import { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
 import type { AcpMcpServer } from "@agentproto/acp"
 
-import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
+import { startHttpServer, buildSpawnSessionHttpArgs, type AgentAdapterResolver } from "../http-server.js"
+import type { SpawnAgentSessionInput } from "../session-spawn.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike, AgentStreamEvent, SessionDescriptor } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
@@ -265,5 +266,107 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     } finally {
       await http.stop()
     }
+  })
+})
+
+describe("POST /sessions/agent — sandbox field forwarding", () => {
+  it("sandbox body field is parsed and forwarded; no resolver → sandbox_provider_not_found", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async () => ({
+      sessionId: "acp_sb_test",
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> { return },
+      async cancel() {},
+      async close() {},
+    }))
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      // No resolveSandboxProvider — sandbox_provider_not_found expected.
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      // A string slug — simplest form.
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapter: "mock", cwd: "/tmp", sandbox: "e2b" }),
+      })
+      // No resolver wired → spawnAgentSession returns sandbox_provider_not_found → HTTP 500.
+      expect(res.status).not.toBe(201)
+      const body = (await res.json()) as { error?: string }
+      expect(body.error).toBe("sandbox_provider_not_found")
+      // The local adapter resolver must NOT have been consulted — sandbox
+      // branch short-circuits before adapter resolution.
+      expect(startSession).not.toHaveBeenCalled()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("forwards the WHOLE inline sandbox spec — extraPorts + env survive the mapper (regression for #1150)", () => {
+    const args = buildSpawnSessionHttpArgs(
+      {
+        adapter: "opencode",
+        cwd: "/home/user",
+        sandbox: {
+          provider: "e2b",
+          config: { template: "tnqtmeims5q9ex7j9k06", timeoutMs: 3_600_000 },
+          extraPorts: [3210],
+          env: { passthrough: ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"] },
+          lifecycle: { destroy_on: "workspace-close" },
+        },
+      },
+      "opencode",
+    )
+
+    expect(typeof args.sandbox).toBe("object")
+    const spec = args.sandbox as Extract<typeof args.sandbox, { provider: string }>
+    // The fields the old hand-rolled mapper silently DROPPED must now survive.
+    expect(spec.provider).toBe("e2b")
+    expect(spec.config).toMatchObject({ template: "tnqtmeims5q9ex7j9k06", timeoutMs: 3_600_000 })
+    expect(spec.extraPorts).toEqual([3210])
+    expect(spec.env?.passthrough).toEqual(["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"])
+    expect(spec.lifecycle?.destroy_on).toBe("workspace-close")
+  })
+
+  it("tolerates a JSON-stringified sandbox spec and still forwards extraPorts/env", () => {
+    const args = buildSpawnSessionHttpArgs(
+      {
+        adapter: "opencode",
+        sandbox: JSON.stringify({
+          provider: "e2b",
+          config: {},
+          extraPorts: [8080, 5173],
+          env: { passthrough: ["FOO"] },
+        }),
+      },
+      "opencode",
+    )
+    const spec = args.sandbox as Extract<typeof args.sandbox, { provider: string }>
+    expect(spec.extraPorts).toEqual([8080, 5173])
+    expect(spec.env?.passthrough).toEqual(["FOO"])
+  })
+
+  it("still accepts a bare provider slug string and a minimal {provider} object", () => {
+    expect(buildSpawnSessionHttpArgs({ adapter: "opencode", sandbox: "e2b" }, "opencode").sandbox).toBe("e2b")
+    const minimal = buildSpawnSessionHttpArgs(
+      { adapter: "opencode", sandbox: { provider: "local" } },
+      "opencode",
+    ).sandbox as Extract<SpawnAgentSessionInput["sandbox"], { provider: string }>
+    expect(minimal.provider).toBe("local")
+    expect(minimal.config).toEqual({})
   })
 })

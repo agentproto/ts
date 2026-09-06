@@ -1,5 +1,665 @@
 # @agentproto/runtime
 
+## 2.12.0
+
+### Minor Changes
+
+- a939171: Additive `limit`/`cursor` pagination for the `catalog_models` and `catalog_provider_models` MCP tools: passing either param returns the shared `{ items, nextCursor?, total }` envelope over the filtered route/model array (cursor offset = position in the filtered array); omitting both keeps the byte-identical whole-catalog response.
+- dc7729b: Additive MCP pagination/tree params (PR-6): `mcp_imported_tool_list` gains `compact`/`schema` projections and `limit`/`cursor` paging (max 200) over the tool array; `session_tree` gains `groupByOrigin:false` to suppress the `byOrigin` companion view; `session_events_poll` accepts a forward-compat `full` flag. All defaults unchanged — omitting the new params returns today's byte-identical output.
+- 69a25bd: Additive `limit`/`cursor` pagination (via `paginate` + `toolText`) to the orchestration list tools — `permissions_list`, `policy_list`, `workflow_list`, `activities_list`, `cron_list`, `routine_list`, `inbound_endpoint_list`, `inbound_watcher_list` — applied last, after all scoping and filters. Output is byte-identical to before when neither param is supplied.
+- 0012980: feat(permissions): thread plan \_meta through the hold path and add free-text feedback on the respond path
+
+  Adds `feedback?: string` to permission resolutions, enabling users to attach contextual information when approving or denying held tool-permission requests. The feature threads through all layers: types export `ACP_META_FEEDBACK` constant for the `_meta` key convention, ACP client carries `_meta` through to agent-prompt events, runtime forwards feedback on outcomes, and mastra-agent adapter folds feedback into suspension resumeData. CLI gains `--feedback` flag on approve/deny commands and renders plan text from suspension payloads. All changes are backward compatible.
+
+- d315c0a: Add app-scoped state ledger (app_state_append/get/list) with stage-board fold
+- a48dc03: Implement AIP-15 P2 (harness pinning) and P3 (declarative gate steps).
+
+  **P2 Changes:**
+  - Add `AgentHarness` interface for spawn-time control (model, effort, role, tools, skills, cwd, promptFile)
+  - Thread harness fields through agent session spawn paths (host and sandbox)
+  - Emit `session:harness-warning` events when unsupported harness fields (tools, role) are encountered
+  - Load `harness.promptFile` at workflow-load time and record sha256 for audit
+
+  **P3 Changes:**
+  - Add `GateStep` interface for shell-command checks (command, args, cwd, report, retry, on_fail)
+  - Implement gate step execution with exit-code semantics, report parsing (JSON from stdout or file), and retry logic
+  - Add exponential/fixed backoff retry strategy with reprompt-and-retry linking to prior agent steps
+  - Emit `workflow:gate-report` events on every command attempt (not just final outcome)
+
+  All changes maintain backward compatibility (optional fields, new types only, no removals).
+
+- db90fb3: Implement port exposure for sandboxes. Add `expose(port)` method and `ports` map to `BootedSandbox` to enable agents to expose HTTP server ports inside sandboxes as publicly accessible URLs. Support pre-declaring ports via `extraPorts` in the sandbox spec for eager resolution at boot time. E2B provider implements port exposure via `sandbox.getHost(port)`. Surface exposed ports in `SessionDescriptor` and `SessionSummary` via new `sandboxPorts` field.
+- f6593d4: Add structured-question support. Sessions awaiting a structured question (e.g., context-continuity's continue-fresh/keep-going prompt) now display question text and clickable option buttons in a dedicated banner. Answer dispatch is wired into all prompt-turn seams (sendPrompt, enqueuePrompt, dispatchQueuedPrompt), intercepting exact option matches (case-insensitive) and routing them to their registered handlers. Unmatched prompts fall through to normal turn execution, preserving fallback behavior for unsupported or conversational replies. Context-continuity ask mode now tracks the acknowledgment percentage to suppress re-asking until context grows further. Desktop shell renders the QuestionBanner above the composer and displays question hints in the session rail with full text in tooltip.
+- aff7794: Add `@agentproto/app-client/runner-select` — a shared harness+model selector for app UIs that discovers installed harnesses via `adapter_list` + `harness_preset_list`, eliminating per-app picker implementations. Automatically injected into every app UI alongside the McpApp bridge. Supporting changes: `adapter_list` summary mode for lightweight UI projections, harness preset profile status enrichment (disabled/missing flags), early validation of default preset profiles during spawn, and discovery tool allowlisting for all app UIs.
+- 3a928c1: feat(sandbox): forward config-default wallets to sandbox spawns
+
+  Sandboxed agent spawns can now use credentials configured in `defaults.adapters.<slug>.auth`. The host resolves the configured wallet and forwards it to the sandbox, ensuring the box bills on the same credential the host would use. Unconfigured sandboxes remain credential-free, and error handling clearly distinguishes between access profile and config-default wallet resolution failures.
+
+  Adds `explicitConfig` boolean to `ResolvedSpawnAuthMaterial` to track whether auth came from config vs per-spawn request, enabling proper boundary enforcement and credential forwarding logic.
+
+- 9a489e7: Additive output-shaping params for `tool_calls_list` (`fields` projection, `full` legacy escape hatch, `result`-preview helper disabled by default) and a `truncated` companion flag on `terminal_output` when a `lastBytes` window is applied. No default behaviour changes.
+- ce273d2: Additive read pagination: `file_read` gains offset/limit (lines for utf8, bytes for base64) plus a truncated flag, `directory_list` gains limit/cursor paging, and `conversation_read` gains lastN/cursor transcript windowing — all defaults unchanged.
+- c71753a: Add `agent_start.appServe`: with `sandbox`, the daemon installs the app on the box (the box daemon's `app_install`), launches `agentproto app serve --host 0.0.0.0 --port <port>` detached through the box's `command_execute` (seeding the box command allowlist), and stamps the public URL on the descriptor/result; `SandboxAgentSessionHost` now carries `mcpUrl` so callers can drive the box's other daemon tools.
+- 3a928c1: Propagate the config-default wallet into sandbox spawns: when `defaults.adapters.<slug>.auth` names a wallet, the host now resolves its credential and forwards it to the box daemon so the sandboxed child session bills the same wallet, and the host descriptor echoes the forwarded wallet for UIs.
+- f295874: Additive pagination for the session list tools: `session_list`, `agent_sessions_list`, `terminal_sessions_list` and `command_list` accept `limit`/`cursor` (plus `full`, currently a no-op) and return a `{ items, nextCursor?, total }` envelope when either is supplied. Without `limit`/`cursor` the output is unchanged.
+- a04bd29: Workflow `kind: "approval"` steps are now resolved by a human instead of silently auto-approving. A declarative approval step parks the run as `awaiting-approval` with an `awaitingApproval` inbox record (visible in `workflow_status`), emits `workflow:approval-requested`/`workflow:approval-resolved` session events, and waits for a decision through `workflow_escalation_resolve`'s new approval form (`approvalId` + `approved` + `who` + optional `note`) — also exposed as `WorkflowRunner.resolveApproval`. The decision is appended to the app state ledger (`kind: "approval"`, `by: "human"`); a step `timeout_ms` resolves as rejected with `who: "timeout"`; a run parked awaiting approval survives a daemon restart (the pending item is re-registered, exactly one ledger event). `app_status` surfaces `awaitingApprovals[]` across the app's runs.
+- fe9a374: Bridge workflow runs to the app state ledger: a run started on behalf of an installed app (workflow id owned by exactly one installed app, or explicit `appId`/`appRunId`) now appends `stage-started` / `gate-report` / `stage-done` / `blocked` events with `by: "runner"` to that app's `<dataDir>/state/events.jsonl`, so an app's stage board (`app_state_get`) is written by the runner instead of staying empty. Appends are serialized, best-effort, and never fail the run. An optional `item` on the run stamps every ledger event to one sub-key inside each stage.
+
+  Also: `kind: "gate"` step args now resolve per-run — `$…` reference strings expand against the run bindings (`$$…` stays a literal `$`; a ref that resolves to nothing throws naming the step and the arg), so a manifest gate no longer receives literal `"$input.x"` strings as arguments.
+
+### Patch Changes
+
+- a581e76: Deflake the `session-blocked-on` transcript assertions: wait for the
+  `turn-end` record to land in `events.jsonl` instead of sleeping a fixed
+  50 ms, which raced the write-stream open on slower CI runners (ENOENT).
+- f9e21fd: AIP-15 P2: `harness.knowledge[]` on `kind: "agent"` steps. A selector pins an AIP-10 corpus workspace (relative paths resolve against the WORKFLOW.md dir at load time; a missing workspace fails the load), `anyOf`/`allOf` tag filters, refined `kinds`, a `maxEntries` cap (default 50, slug-ascending deterministic order) and v1 `mode: "files"`. Before an agent step's spawn, the runtime resolves each selector with the corpus `resolveKnowledge`, writes the matched raw entries to `<stepCwd>/.knowledge/<workspaceBasename>/<slug>.md` plus a deterministic `INDEX.md`, prepends a prompt note pointing at the index, and records `knowledgeApplied: { workspace, matched, written }[]` on the step's run record. An empty match is not an error — it is recorded and emitted as a `session:harness-warning` (`knowledge-empty`). `resolveKnowledge`'s signature is unchanged; the new `filterEntriesByAllOf` helper beside it provides the AND-semantics post-filter.
+- 2498d05: Strip bare carriage returns in stripAnsi to fix terminal output garbling
+- ee15252: Fix session exit code classification to correctly handle node-pty's `{ exitCode: 0, signal: 0 }` clean-exit shape — `signal: 0` was being misclassified as "a signal fired" instead of "no signal."
+
+  Add row disclosure triangles to the VS Code webview sessions list, enabling collapse/expand of nested subagent hierarchies. Collapsed rows show the busiest descendant status in their dot indicator.
+
+- 672fc7c: Honor AGENT.md frontmatter model for the default mastra-agent app_run path
+- 5328e9b: Introduce template version management system for agentproto-workstation e2b template. Establishes `templates/workstation/versions.json` as the canonical pin declaration (CLI, adapters, runtime, base image) and introduces `scripts/sync-templates.mjs` to regenerate all derived artifacts. Enhances `@agentproto/sandbox-e2b` provider with `resolveUpdateCli()` function to intelligently skip the on-boot CLI install when a template's recorded baked image provably carries the requested CLI version—defaulting conservatively to install when the bake is unproven, maintaining backward compatibility.
+- f17e3a0: Fix cost refresh on empty turns. Some adapters (e.g., OpenRouter-routed opencode) settle their adapter-reported cost on trailing no-op turns carrying no assistant text or tool calls. On such turns, PR discovery lanes are correctly skipped (no new PR opened), but cost refresh must still run to re-render the footer once spend becomes known. Previously, cost refresh was entirely skipped on empty turns, leaving a session whose PR-creating turn stamped a footer with no cost amount to go unstamped forever if all later turns remained empty or if the session never exited.
+- 55c8154: Fix PR provenance recording for shim-stamped footers: recognize and upgrade own-session footers from the `gh` PATH shim, enabling cost-refresh to find and enrich PRs opened via every adapter's wrapped `gh` subprocess.
+- d190202: Fix regression: stamp sandboxPorts on session descriptors. The SpawnAgentInput interface was missing the sandboxPorts field, causing the port-to-URL map from booted sandboxes to be silently dropped when building session descriptors. Now properly threaded through both descriptor creation paths.
+- 49a89ba: Fix sandbox spec field forwarding in HTTP path and prevent VM leaks on boot/reconnect failures.
+
+  **@agentproto/runtime**: Fixed #1150 regression where `POST /sessions/agent` silently dropped `extraPorts`, `env`, `lifecycle`, and other fields from inline sandbox specs. Extracted shared schema `sandboxSpecWithReuseSchema` to ensure both HTTP and MCP paths validate against identical schema and forward all fields.
+
+  **@agentproto/sandbox-e2b**: Centralized sandbox cleanup on boot/reconnect failure to prevent VM leaks (observed live: six boxes left running without sessions). Added fast-fail mechanism that exits immediately when daemon crashes during boot, surfacing captured stderr for diagnostics, instead of blocking the full readiness timeout.
+
+- f75ef5d: Add token usage tracking for OpenCode adapter sessions via readOpenCodeUsage hook. OpenCode's live ACP usage_update event only carries cost (no token fields), so the new function reads token data from OpenCode's sqlite store and is wired into the registry's turn-end path to fill in missing tokensIn/tokensOut fields, mirroring the existing hermes adapter pattern.
+- bf87d9e: Add internal paginated tool envelope helper (tool-envelope.ts), not yet wired to any tool.
+- Updated dependencies [692d659]
+- Updated dependencies [c4bff00]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [4d01e5c]
+- Updated dependencies [d66ffe3]
+- Updated dependencies [0012980]
+- Updated dependencies [a48dc03]
+- Updated dependencies [db90fb3]
+- Updated dependencies [aff7794]
+- Updated dependencies [1cd0220]
+- Updated dependencies [6bfb633]
+- Updated dependencies [ece3cae]
+- Updated dependencies [c71753a]
+- Updated dependencies [e7e9261]
+- Updated dependencies [a04bd29]
+- Updated dependencies [fe9a374]
+  - @agentproto/model-catalog@0.9.2
+  - @agentproto/workflow-runtime@0.10.0
+  - @agentproto/workflow@0.4.0
+  - @agentproto/workflow-loader@0.2.0
+  - @agentproto/app-kit@1.0.0
+  - @agentproto/acp@0.8.0
+  - @agentproto/sandbox@0.3.0
+  - @agentproto/app-client@0.3.0
+  - @agentproto/providers-store@0.3.11
+  - @agentproto/apps@0.9.1
+  - @agentproto/workspace-brain@0.4.3
+  - @agentproto/driver-agent-cli@2.4.1
+  - @agentproto/mcp-server@0.2.7
+  - @agentproto/agent@0.2.2
+  - @agentproto/auth@1.0.1
+  - @agentproto/command-sandbox@0.2.0
+  - @agentproto/driver@0.2.1
+  - @agentproto/eval-reporters@0.2.10
+  - @agentproto/manifest@0.2.1
+  - @agentproto/provider-kit@0.4.2
+  - @agentproto/provider-presets@0.6.1
+  - @agentproto/redaction@0.2.1
+  - @agentproto/routine@0.2.1
+  - @agentproto/secrets@0.2.4
+  - @agentproto/telemetry-langfuse@0.2.8
+  - @agentproto/tool@0.2.2
+
+## 2.11.0
+
+### Minor Changes
+
+- 1541277: Add `extractToolResultSessionId()` utility to extract and validate session identifiers from tool result payloads, supporting both `agent_start` descriptors (id field) and `live_session` results (sessionId field). This enables proper session pinning in the live-session widget to display the session spawned by a tool call rather than auto-discovering the newest session.
+- 8215419: Give installed apps a data directory distinct from their source directory. The `app_data_*` plane now anchors to `InstalledApp.dataDir` (default `<dir>/data`) rather than the app's `dir`. Custom data directories are set with `app_install {dataDir}` / `agentproto app install --data-dir`, or hinted by APP.md `data: { dir }`. Full backward compatibility: pre-dataDir files under `<appDir>` are still found via fallback; under the default layout the legacy `data/` spelling is collapsed so existing paths continue to work.
+- dcb0bc5: P7 deliverables 1 & 2: Generic daemon MCP tool proxy and multi-adapter app_run support.
+
+  Deliverable 1 closes the gap where app agents couldn't reach daemon tools outside a hand-curated set: a new daemon MCP tool proxy discovers and proxies any `tools/list`-exposed tool an AGENT.md declares, with automatic `appId` injection for `app_*` tools so models never need to know their own app id.
+
+  Deliverable 2 extends `app_run` to support adapters that declare no `agent` option (claude-code, hermes, codex, ...): the spawn is now built FROM the AGENT.md (frontmatter model + body-as-prompt) instead of pointed at a path, with backward compatibility for mastra-agent (which still gets the path-based behavior).
+
+### Patch Changes
+
+- 5171a24: Add logging to dedupe hits in `spawnAgentSession` to improve observability. When an idempotency key hit occurs, the runtime now logs a warning message that includes the returned session ID, spawn context (adapter, cwd), and label if provided. This helps diagnose cases where a repeated `agent_start` call returns an existing session.
+- e655351: Support UI-only apps in app-kit; move builtin daemon panels into @agentproto/apps
+- 2fc4c69: Sandboxed sessions now report their spend, and PR footers pick it up.
+  - `HarnessClient.usage(sessionId)` (`session_usage`) and an optional `usage` on
+    `DaemonAgentSessionHost`. The runtime's sandbox spawn wires it as the session's
+    `readUsage` hook, so a box's cost/tokens/model reach the HOST descriptor at
+    every turn-end — the proxy's text stream never carried them, which is why the
+    CI review footer showed no amount and no model for e2b-sandboxed `claude-sdk`
+    reviews.
+  - `readUsage` may now return `model`; a descriptor spawned without one adopts it.
+  - PR-body footer cost refresh: a PR opened through the daemon is stamped the
+    instant `gh pr create` returns — mid-turn, before a claude-code/claude-sdk
+    session has reported any cost. The provenance reconciler now re-renders each
+    recorded PR's footer once the session knows its spend (`replaceProvenanceFooter`,
+    `stampFooterOnPr({ refresh: true })`), exactly once per PR.
+
+- Updated dependencies [11b5564]
+- Updated dependencies [8215419]
+- Updated dependencies [e655351]
+  - @agentproto/workflow-runtime@0.9.0
+  - @agentproto/apps@0.9.0
+  - @agentproto/app-kit@0.8.0
+  - @agentproto/workspace-brain@0.4.2
+  - @agentproto/sandbox@0.2.6
+  - @agentproto/eval-reporters@0.2.9
+  - @agentproto/telemetry-langfuse@0.2.7
+
+## 2.10.1
+
+### Patch Changes
+
+- 47653e3: Fix: re-add router prefix for modelDerivedApiKey adapters billed through gateways. Resolves production bug where adapters like opencode receive models without the router prefix when using gateway routes, causing 404s at the ACP boundary. The fix ensures adapters that derive their API key from the wire model's leading segment (opencode, mastracode, jcode, pi, mastra-agent) receive the properly prefixed model ID.
+- Updated dependencies [139c198]
+  - @agentproto/model-catalog@0.9.1
+  - @agentproto/providers-store@0.3.10
+
+## 2.10.0
+
+### Minor Changes
+
+- 77ca7ff: Resolve media_upload_local file contents client-side before proxying
+- 4fa1a02: Surface `addedAt` ISO date field on `CatalogProviderModel` interface to expose model introduction timestamps in provider model enumeration, enabling "new" badges in catalog pickers.
+- d663b35: Refactor live-session widget timeline rendering: move usage updates from rows to state, add incremental DOM patching, and support compact display mode.
+
+  **WP1**: Usage snapshot (`usage_update` record) now stores in `TimelineState.usage` instead of appending a row. Last-write-wins semantics; usage is displayed in the header chip, not the timeline.
+
+  **WP2**: New `isNearBottom()` helper determines auto-scroll — captured BEFORE DOM mutation to preserve read position when user scrolls up, show "new messages" pill otherwise.
+
+  **WP3/WP4**: Compact display mode (inline or <640px viewport) collapses the tree into a `<select>` dropdown and groups consecutive tool calls (≥2) into collapsible `<details>` sections.
+
+  **WP5**: Header summary line surfaces status dot, tool count, usage chip (from state), and elapsed time, refreshed every 1s during active sessions.
+
+  Incremental DOM patching: text-delta patches the last row's text node in place; other records append via `insertAdjacentHTML`; full rebuilds only on session start/focus change/mode flip.
+
+- 12bb9e8: Add support for tracking model switches sent as ordinary prompts. Introduces an optional `activeModel` field to `SessionDescriptor` that captures the model believed to be running after a live switch, distinct from `model` (the requested/spawn-time value). The daemon learns switches from two paths: (1) a successful `setModel` call (verified, mirrors `model`), or (2) a `/model <id>` command sent as a plain conversational prompt followed by an adapter acknowledgement (unverified, advisory only — for UI display, never billing). Exports `isModelSwitchAcknowledgement()` and `parseModelSwitchCommand()` from agent-cli for reuse across both paths. VS Code's composer chip now renders "requested → active" when they diverge.
+
+### Patch Changes
+
+- 7a96351: Fix curation drift on `mode: "allow"` auth profiles: an allowlist generated once at create/import time was a frozen snapshot of the catalog that day — new models the catalog picked up later never became usable through the profile, and retired ones lingered forever, with nothing surfacing the mismatch. Adds an explicit, opt-in re-sync: `refreshAuthProfileModels` (`@agentproto/auth`) recomputes a profile's `ids` against a caller-supplied current-catalog snapshot, exposed as the `auth_profile_refresh_models` MCP tool and the `agentproto auth profile refresh-models <id>` CLI verb. Nothing calls this automatically — a profile is only touched when refreshed by name — and it rejects a `mode: "all"` profile outright, since that mode already tracks the live catalog on every read.
+- f5b462a: Add test coverage for `auth profile refresh-models` CLI command and `auth_profile_refresh_models` MCP tool. Both test suites verify the happy path (successful refresh against the current model catalog) and error handling (unknown profile id).
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- 728205b: Fix PR deduplication after force-pushes by extracting commit SHA from the provenance footer instead of relying on GitHub's API `commit_id` field, which drifts during branch mutations. Store full 40-character SHA in footer for unambiguous tracking.
+- Updated dependencies [7a96351]
+- Updated dependencies [4b924c9]
+- Updated dependencies [008a483]
+- Updated dependencies [3496977]
+- Updated dependencies [008a483]
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+- Updated dependencies [001a2a0]
+- Updated dependencies [5dcc733]
+  - @agentproto/auth@1.0.1
+  - @agentproto/model-catalog@0.9.0
+  - @agentproto/driver-agent-cli@2.4.0
+  - @agentproto/acp@0.7.3
+  - @agentproto/agent@0.2.2
+  - @agentproto/driver@0.2.1
+  - @agentproto/eval-reporters@0.2.8
+  - @agentproto/mcp-server@0.2.6
+  - @agentproto/provider-kit@0.4.2
+  - @agentproto/routine@0.2.1
+  - @agentproto/sandbox@0.2.5
+  - @agentproto/secrets@0.2.4
+  - @agentproto/tool@0.2.2
+  - @agentproto/workflow@0.3.1
+  - @agentproto/workflow-loader@0.1.5
+  - @agentproto/workflow-runtime@0.8.1
+  - @agentproto/workspace-brain@0.4.1
+  - @agentproto/providers-store@0.3.9
+  - @agentproto/app-kit@0.7.1
+  - @agentproto/telemetry-langfuse@0.2.6
+
+## 2.9.0
+
+### Minor Changes
+
+- 0097d36: Add a new opt-in, read-only external filesystem plane for installed apps: an app can declare `externalReadRoots` (a manifest field on `AppDefinition`/`AppHandle`/`AppFrontmatter`/`InstalledApp`) to be granted read access to a real host folder outside the daemon's sandbox — e.g. a user's actual `~/Downloads/applications` — without touching the existing app-data (app-owned dir) or fs-tools (workspace-root) planes.
+
+  Each root is `~`-expanded, resolved absolute, and validated to exist as a real directory at install time (`app_install`/`app_apply` fail fast otherwise). Two new MCP tools (`app_external_list`, `app_external_read`) and a new `GET /apps/:appId/external-blob?root=&path=` HTTP route read from a granted root only when the caller's `root` argument is an exact match — no prefix/fuzzy matching. `app_external_read` serves only an allowlist of text-ish extensions under a 2MB cap; binary content (PDFs, images, …) streams through the HTTP route instead. There is no write or delete tool for these roots anywhere in the daemon.
+
+- 88134e9: Signal sources ingested with a stale pipeline version. Introduces `PIPELINE_VERSION` constant and `isStaleRecord()` helper to detect when ingested data was produced by an older version of the chunking/processing logic. When `ingestPending()` completes, it now reports `staleSources` (count of records behind the current pipeline version) and `currentPipelineVersion`. The new optional `reindexStale` parameter to `ingestPending()` forces re-ingestion of stale sources. Updated `workspace_brain_status` and `workspace_brain_ingest` tool descriptions to explain the new `staleSources` signal.
+- 557c4d0: Add adapter-capability spawn guard to prevent spawning with models the adapter doesn't support on a resolved route.
+
+  The bug: a supervisor spawned `agent_start({adapter:"claude-code", model:"openrouter/deepseek/deepseek-v4-flash-0731"})` with no explicit `route.gateway`. The money-safety wallet guard (checkModelWalletEligibility) passed — openrouter genuinely bills that model. But claude-code's own manifest never curates that specific model on that route; its ACP wrapper validates against its own live selector and rejects anything it doesn't recognize. The upstream 404 reached the driver, leaving 0 tool calls.
+
+  The fix: before spawn and restart, check whether the adapter is among the resolved (vendor, product, route) row's adapters in the catalog. Reuses the exact same `buildCatalogModels` join `catalog_models` reports — never a parallel per-model table. Optional dependency: skipped when `listCatalogModels` isn't wired, preserving pre-guard behavior.
+
+  Adds:
+  - `checkModelAdapterEligibility` predicate function
+  - `modelAdapterIncompatibleMessage` message formatter
+  - `ModelAdapterEligibility` result interface
+  - New error code `model_adapter_incompatible` on spawn/restart failures
+
+- 007716f: Add two new chat streaming routes (`POST /sessions/:id/chat` and `POST /sessions/chat`) that map daemon transcript records into Vercel AI SDK v6 UIMessageChunk SSE format. Includes a pure record→chunk mapper with canonical fixture conformity tests, two-phase validation for existing sessions, and refactored shared spawn logic to prevent route surface drift.
+- 34bbf65: Extract release-check logic from VS Code into `@agentproto/runtime` for code sharing with the CLI. Add `daemon status` release indicator and VS Code update-prompt command with tarball/workspace-specific behaviors.
+- 7d39ce7: Add daemon-side AGENTS.md resolution and injection (WP-R2) + role disposition SYSTEM preamble tagging (WP-R3). The daemon now resolves the nearest AGENTS.md walking up from a session's cwd (bounded by git toplevel), injects it into the initial prompt (inline for small files, pointer for large ones), and stamps the resolution on the descriptor. Role disposition text has been clarified and is now recorded separately as a SYSTEM preamble in transcripts (along with lineage and AGENTS.md pointer), allowing UIs to fold synthesized text instead of rendering it as user bubbles. Includes configurable inline/pointer threshold via config, dependency-injected fs for testability, and comprehensive unit + integration test coverage.
+- f90a383: Add queue management commands and MCP tools for prompt FIFO inspection and control.
+
+  Introduces `agentproto sessions queue <id>` CLI command with flags `--force`, `--deliver`, `--drop` to inspect and manipulate queued prompts after enqueue. Adds four new MCP tools (`session_queue_list`, `session_queue_promote`, `session_queue_deliver`, `session_queue_drop`) with the same semantics. HTTP routes mirror the MCP surface.
+
+  New public exports: `previewPrompt()`, `promptOriginLabel()`, `QueuedPromptView` interface from @agentproto/runtime for after-the-fact queue UI. Origin tracking distinguishes user-initiated queuing from agent/child-sourced prompts. Queue badge ("N queued") shown in CLI and VS Code session listings.
+
+  All three operations are deliberately distinct: promote reorders without interrupting; deliver interrupts and dispatches immediately; drop removes without delivering.
+
+- 11982fd: Introduce shared dashboard presence classifier (`presenceFor`) to unify session-status rendering across CLI and VS Code. Previously, the CLI sessions table and VS Code tree/webview each derived their own inconsistent status readings. The new four-state model (running/tending/attention/quiet) is driven by a pure, config-aware classifier in @agentproto/runtime, consumed identically by both clients. Fixes status divergence and adds grace-window config (`sessions.attentionDelaySec`, default 60s).
+- 9191286: Implement WP-R4: per-workspace RULES.md injection. Enables workspace supervisors to define standing rules that automatically inject into every agent spawn in the workspace, carrying workspace-wide discipline like "main checkout untouchable", "PR-only never merge", "no AI attribution" without needing to hand-type them into every brief. Rules are read from the workspace's state bucket and injected ahead of the role disposition to establish the fundamental layer before role-specific behavior.
+- 9953527: Add ground-truth cross-check for judge gates: when a judge gate runs on a session that has already had a machine gate (shell or cost) execute, the judge's prompt now includes the machine gate's actual exit code and output. This prevents judges from rendering verdicts that contradict already-computed results. Includes `kind` discriminator on `PolicyRunState.lastGate` to distinguish shell/cost/judge gates.
+
+### Patch Changes
+
+- dfb41f6: Carry `::agentproto-artifact::` ledger markers through the session ring buffer. The tool-result summarizer collapses multi-line tool output to one lossy line ("N lines, XB"), which destroyed the artifact-ledger marker the CI delivery helper prints — `driver: artifacts=[]` on every agentflow run, so the review provenance stamp always degraded to sha discovery (and PR #1054's review lost its footer entirely when a network blip killed the job before the fallback could run). Marker lines are now re-emitted verbatim under a `[tool-artifact]` prefix: raw `agent_output` keeps them harvestable (and JSON-parseable — no ANSI wrapping), while clean mode still strips them from human-facing output.
+- 76f2c78: Multi-surface external subscriptions — one adapter can now declare BOTH a Claude and a ChatGPT native OAuth login, so mastracode/opencode's subscription eligibility no longer forces an anthropic-or-openai choice. `authSubscription` accepts a single surface (unchanged) OR an array of surfaces, one per billing provider; two entries claiming the same provider scope (or two unscoped entries) are rejected at manifest-validation time rather than resolved arbitrarily at spawn time. The runtime's old `subscriptionAppliesTo` boolean predicate is replaced by `subscriptionSurfaceFor`, which resolves the MATCHING surface for a spawn's resolved provider — used by `resolveAuthSpec` and the three mirrored direct-methods projections (`session-spawn.ts`, `session-restart-core.ts`, `catalog-models.ts`) so they stay in lockstep. `verifyLocalLoginPresent` now takes an optional provision-recipe `methodId` (convention `<provider>-oauth`) so a multi-surface spawn verifies the RIGHT login file instead of always checking the recipe's default method. mastracode declares both `{external: true, provider: "anthropic"}` and `{external: true, provider: "openai"}` — its ChatGPT login (`openaiCodexOAuthProvider`) is stored in its own auth.json under the key `openai-codex`, verified live. opencode declares the same pair: its ChatGPT OAuth login was reverse-engineered from the shipped binary (no OSS source available for this build) and is keyed under the SAME `openai` provider id its API-key flow already uses — there is no separate "chatgpt" key, confirmed by tracing the binary's generic `Cli.providers.login` → `Auth.set(provider.id, …)` write path. Both adapters' provision recipes gained an `openai-oauth` method alongside the existing `anthropic-oauth` one.
+- adebd5b: External subscription verification resolves the ADAPTER's recipe, never the profile's/config's source. An external surface verifies the adapter CLI's own login file, but `profile.source ?? adapter` let a source naming another CLI's login shadow the adapter recipe — observed live: spawning mastracode with the codex-local profile (`source: "codex"`) resolved the codex recipe and failed with "provider 'codex' has no method 'openai-oauth'" instead of checking mastracode's own auth.json. Both the access-profile path and the config-defaults path now pass the adapter slug; codex-local on the codex adapter is unchanged (source equalled the slug there, which is why the bug hid).
+- 1297e7f: Rate-limit `/mcp` transport error logs through the existing
+  `createReconnectLogGate` (first failure immediate, then ≤1 line per minute
+  with a suppressed-count suffix). Bare per-failure `console.error` on a
+  launchd-redirected regular-file stderr is a synchronous disk write per
+  malformed probe — a log flood and an event-loop stall risk under bursts of
+  retrying clients (the `Parse error: Invalid JSON` / ECONNRESET incident).
+  Wire behavior is unchanged: every probe still gets its JSON-RPC error
+  response.
+- e3ad769: Claude subscription on pi/opencode/mastracode — each through the door that actually exists — and honest subscription eligibility everywhere. The runtime assumed "Anthropic OATs work as API keys" for every model-derived adapter and silently injected the subscription OAuth token into `ANTHROPIC_API_KEY`, where Anthropic's edge rejects it as an invalid key after the session is live (observed on opencode: "Internal error: API key is invalid"). Subscription support now requires an explicit, provider-matching `authSubscription` surface, shared across all four eligibility/resolution sites via one `subscriptionAppliesTo` predicate. pi declares its documented bearer env (`ANTHROPIC_OAUTH_TOKEN`, scoped `provider: "anthropic"`) so a Claude subscription profile runs pi's anthropic models natively. opencode and mastracode declare `external` anthropic-scoped subscriptions — each CLI's OWN Claude Pro/Max OAuth login (`opencode auth login`; mastracode's `/login`), backed by new `opencode`/`mastracode` provision recipes pointing at each CLI's auth store: the runtime verifies the login is present (fail-loud), injects nothing, and scrubs the api-key vars so a leftover key can't override it. Adapters/models with no matching surface fail fast at spawn with an actionable message instead of failing opaquely upstream, and the catalog stops advertising subscription profiles as runnable on them.
+- 4ac9d37: Documentation sync: Update MCP tool naming conventions (resource_action pattern), version bumps (0.12.0 → 0.14.0), and add docs for new features (daemon status build identity, pack build subcommand, workspace-brain transcript chunking, ops-panel app).
+- f62f63a: Fix regression where pty-native session restarts lost the isolated config directory, causing provider resume to fail with "No conversation found". Add env-var threading support (CLAUDE_CONFIG_DIR) for session restarts with proper replay across pty-plain restart chains. Improve observability for abnormal PTY exits by capturing and surfacing diagnostic output.
+- 90411f9: Document `agent_start(wait: true)` serialization behavior. Batching multiple `wait: true` calls in a single turn serializes them (caller-side harness limitation, not daemon bug). Includes clear workaround patterns for parallel fan-out using `wait: false` + `agentproto sessions wait` or `policy_attach`.
+- c48c10d: Document `worktrees.isolation` configuration policy with detailed explanation of the three modes (on-request, always, never), depth-0-only behavior for nested spawns, and important config-key gotcha that can lead to silent misconfiguration.
+- c6b5e41: Fix HTTP streaming finalization bug: prevent writing POST-terminal records (like usage_snapshot) after stream is finalized. Add integration test for `/sessions/:id/chat` SSE streaming route validating the complete UI message stream chunk sequence.
+- d5eb115: Separate daemon-composed system prompts from user prompts in transcripts. The role disposition (and other daemon-synthesized preambles like lineage, AGENTS.md) are now recorded as a distinct `system-prompt` event ahead of the `user-prompt`, allowing viewers to fold synthesized context instead of rendering it as a user bubble. The adapter still receives the single composed prompt unchanged; the split is recording-only on the daemon's event stream.
+- 8900417: Add support for `usage_update` and `usage_snapshot` transcript record kinds as known no-ops. These high-frequency cost/context bookkeeping records were previously falling through to the unknown-kind error path. Fixes spurious error chunks and console logging on every turn against a live daemon.
+- dcfaa65: Fix text fragment rejoining logic to use only the explicit `partial` flag instead of heuristic `endsWith("\n")` check. This prevents complete text blocks from being incorrectly concatenated when tool calls interleave, which was causing paragraphs to run together (e.g., "…the client.Trial logic…"). The writer's transcript contract emits end-of-message blocks as non-partial records without trailing newlines, making the explicit `partial: true` flag the only reliable glue signal.
+- baf8570: Surface ACP's `available_commands_update` notification instead of silently dropping it. `translateSessionUpdate` now maps it to a new `available-commands` StreamEvent, `transcript-writer` persists it to `events.jsonl`, and the daemon mirrors the latest command list onto `SessionDescriptor.availableCommands`, exposed read-only via `GET /sessions` / `GET /sessions/:id`.
+- 7220068: Fix "restart starts a terminal but it doesn't work" bug: add origin-gate that prevents agent-cli/ACP-origin sessions from defaulting to provider-native terminal restart. ACP-origin sessions now default to agent-level resume, with explicit opt-in via `preferNativeTerminal` flag. Implement billing-auth re-resolution for pty-native path to prevent ambient credential leaks, closing #824/#490 for this codepath.
+- bdc7d6f: Fix profile-aware route fallback for model-derived API key adapters: when a model's naive prefix-guessed route doesn't make a named profile eligible, search the model's actual serviceable routes for one that does, allowing models like "deepseek/deepseek-v4-flash" (billed via "openrouter") to work with appropriate profiles without requiring explicit `route.gateway`.
+- 6372c19: Implement exit-time auto-reclaim for policy-provisioned (implicit) worktrees. When a session spawned under the `"always"` isolation policy without an explicit `worktree` request exits cleanly (merged/fresh, no uncommitted work), its worktree is automatically reclaimed using the same safety-layered classify→re-verify→remove pipeline as `worktree gc`. Caller-explicit worktrees (today's manual-cleanup behavior) are never auto-reclaimed. The feature is fire-and-forget, best-effort only, and never interrupts session teardown.
+- 8a3d53d: Fix two critical bugs in `monitorSessionWait`:
+  1. **Stale fast-path**: The synchronous already-in-target-state check for `turn-end` now requires `opts.since !== undefined` to fire. Without a cursor anchor, there is no way to distinguish "the turn this wait is waiting for already finished" from "some turn finished hours ago". Fresh `agentproto sessions wait` CLI processes (which have no persisted cursor) now correctly fall through to the real bus-subscribe long-poll instead of instantly succeeding against stale history.
+  2. **Dropped empty/reason fields**: `SessionTurnEndEvent.empty` (zero assistant output, zero tool calls) and `.reason` (e.g. `"error"`) are now propagated through all three branches of the wait monitor (ring-replay, sync fast-path, bus long-poll) so callers can distinguish productive turns from silent no-ops (bad auth/model config) or adapter-reported errors. CLI exit code 4 is added for these cases.
+
+  Includes a new `currentEventsCursor()` method to capture race-free cursors for prompt+wait patterns that cannot otherwise subscribe before a turn completes.
+
+- c5016ed: Fix critical production incident (2026-08-22) where running daemon sessions' own working directories were incorrectly deleted by worktree GC. Root cause: `computeLiveness` was defaulting to the frozen legacy sessions file instead of reading per-workspace bucket files (AIP-46). Also adds `protectedPaths` mechanism as belt-and-suspenders protection, wiring the daemon's live in-memory session registry to prevent TOCTOU races between plan and apply.
+- 1fd4a15: Make live OpenRouter pricing resilient to testing via snapshots instead of hardcoded assertions. Prices are re-synced weekly by catalog-sync, so snapshot diffs show legitimate changes as reviewable without breaking CI. Also fixes changeset naming collision in sync script that broke #1040/#1063.
+- Updated dependencies [0097d36]
+- Updated dependencies [95f7b5e]
+- Updated dependencies [e826a4a]
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+- Updated dependencies [4ac9d37]
+- Updated dependencies [88134e9]
+- Updated dependencies [e2314b3]
+- Updated dependencies [baf8570]
+- Updated dependencies [b95e23b]
+- Updated dependencies [b1a8b7e]
+- Updated dependencies [1fd4a15]
+  - @agentproto/app-kit@0.7.0
+  - @agentproto/model-catalog@0.8.5
+  - @agentproto/driver-agent-cli@2.3.1
+  - @agentproto/secrets@0.2.3
+  - @agentproto/acp@0.7.2
+  - @agentproto/workspace-brain@0.4.0
+  - @agentproto/workflow@0.3.0
+  - @agentproto/workflow-runtime@0.8.0
+  - @agentproto/providers-store@0.3.8
+  - @agentproto/sandbox@0.2.4
+  - @agentproto/workflow-loader@0.1.4
+  - @agentproto/eval-reporters@0.2.7
+  - @agentproto/telemetry-langfuse@0.2.5
+
+## 2.8.0
+
+### Minor Changes
+
+- da57681: Add build identity tracking to CLI and runtime. Captures git SHA and build timestamp at build time, and judges source (workspace vs published) at runtime. This enables operators to distinguish between workspace distributions and published tarballs of the same version via `daemon start`/`status` output and `/health` endpoint.
+
+  New exports:
+  - `renderBuild()` from `@agentproto/cli/commands/daemon`
+
+  New optional fields:
+  - `DaemonHealthInfo.build`
+  - `CreateGatewayOptions.build`
+  - `RuntimeHttpServerOptions.build`
+  - `DaemonHealth.build` (VS Code)
+
+### Patch Changes
+
+- afa1796: Enhance PR provenance with exact attribution from tool-call records. The reconciler now checks two lanes in order: lane A reads successful `gh pr create` calls from the session's transcript (immune to branch switches and shared checkouts), then falls back to lane B (branch→PR resolution) for adapters whose tool calls aren't recorded.
+- 3740171: Fix transcript debounce-split bug where mid-word fragments split by interleaved tool-call records would create artificial paragraph breaks. Adds `partial` flag to track explicitly unterminated flushes and updates reducers to rejoin text-delta records that haven't reached newline termination, keeping sentences coherent across tool interactions.
+- d63cd31: Add skip-tracking to workspace brain to prevent re-ingestion of permanently-unavailable sessions. Skips are recorded in brain-state.json and excluded from pendingSessions backlog, but are not tombstones — explicit re-ingests and later successful ingests clear them automatically.
+- bfd7daf: Fix transcript discovery for daemon-spawned claude-code sessions with isolated CLAUDE_CONFIG_DIR. Since the #824 MCP-isolation fix, daemon-spawned sessions write their transcripts under their own isolated config directory, not the global ~/.claude. Discovery and read operations now correctly resolve transcripts from the session's isolated directory when available, while maintaining backward compatibility with pre-#824 sessions and native PTY sessions that use the global store.
+- 1bb03c4: Fix critical data loss bugs in sessions registry: add per-write unique tmp file names to prevent concurrent write truncation, serialize persist rounds to prevent interleaved snapshots, and quarantine malformed files instead of silently overwriting them.
+- 949c6c7: Export new identity-stamping functions for daemon MCP gateway: `shouldInjectDaemonSelfMount` (determines which adapters receive default daemon gateway injection) and `stripOwnCallerStamp` (removes stale identity stamps when continuing sessions). Enable on-host claude-code spawns to receive identity-stamped daemon gateway by default, fixing the production issue where spawned sessions lacked parentSessionId lineage attribution.
+- 463d345: Fix shutdown persistence race and failed spawn signal bug. Prevents child process exit handlers from re-arming persistence timers after shutdown (which would wipe session history to disk), and stops accidental SIGTERM signaling to the daemon's own process group when a spawn fails.
+- d1b4aa4: Fix phantom-PR regression where sessions at the repo root would incorrectly attribute open PRs that happen to be on the default branch. Add default-branch guard to `makeOpenPrResolver` and only record PRs when actually stamped for the first time, preventing misattribution on idempotent re-reads.
+- Updated dependencies [7b28edf]
+- Updated dependencies [d63cd31]
+- Updated dependencies [632b011]
+- Updated dependencies [132ffe5]
+- Updated dependencies [e8d39e8]
+  - @agentproto/model-catalog@0.8.4
+  - @agentproto/workspace-brain@0.3.0
+  - @agentproto/provider-presets@0.6.1
+  - @agentproto/providers-store@0.3.7
+
+## 2.7.0
+
+### Minor Changes
+
+- 2e24a7e: Enhance daemon lifecycle management with health reporting and shutdown statistics.
+
+  **@agentproto/cli changes:**
+  - New `runStop()` function exported for daemon stop command with pre-shutdown stats gathering
+  - `runStart()` and `runRestart()` now accept optional `health: HealthFetchFn` and `probeAttempts` parameters for testability
+  - New `DaemonHealthInfo` and `DaemonStopStats` interfaces enable rich metadata tracking
+  - Lifecycle info blocks report daemon version, uptime, workspace, binary path, and activity metrics (sessions, token counts, spend estimates)
+  - Enhanced `humaniseUptime()` to show nested units (e.g., `3h12m` instead of `3h`)
+  - Added `formatDuration()` helper for shutdown messages
+
+  **@agentproto/runtime changes:**
+  - `/health` endpoint now reports daemon version, process ID, node executable path, and entry point
+  - Added `startedAt` ISO timestamp to `/health` for debugging
+  - These metadata fields enable lifecycle tooling to accurately report "what is actually running"
+
+- 27a22ca: Persistent per-session isolated adapter config directories to enable native resume after adapter respawns.
+
+  Previously, the isolated `CLAUDE_CONFIG_DIR` was a throwaway mkdtemp recreated on every spawn. This meant the SDK's conversation store (projects/<cwd-slug>/<uuid>.jsonl) was lost on respawn, causing resumeSessionId to degrade to a digest fallback every time an adapter process was reaped and restarted.
+
+  The fix introduces `SessionDescriptor.adapterConfigDir` to persist the config location across respawns, keyed by the first session id in a lineage (`~/.agentproto/adapter-config/<sessionId>`). The runtime threads this through all spawn paths (agent_start, session_restart, lazy resume, cron, judges, webhooks, workflow steps), and the driver preserves the SDK's own state when reusing a persistent dir while always re-asserting `mcpServers: {}` to prevent ambient leaks from mid-session `claude mcp add` commands.
+
+  Backward compatible: legacy rows without the new field keep today's digest-fallback behavior.
+
+- 59d23d1: Enhance session visibility by tracking watcher metadata (who's watching and what they're waiting for) alongside the watchers count. New optional `SessionWatcherInfo` type captures waiter identity, event, timeout, and attach timestamp. Adds "awaiting-bg" section for sessions with pending background tasks. All changes maintain backward compatibility.
+- 0b4a84b: Daemon-side FIFO prompt queue with force semantics: `enqueuePrompt` gains `queue`/`force` options, new `removeQueuedPrompt` method and `QueuedPrompt` type, and an HTTP `DELETE /queue/:id` endpoint. Messages arriving mid-turn are held in an ordered queue and dispatched sequentially as turns complete.
+- 231f015: Add native terminal/TUI launching for harnesses and redesigned harness card UI. New `NATIVE_LAUNCH_ARGV` export in runtime maps harness slugs to their launch arguments. VS Code package now shows a wallet badge (replacing manifest facts) for quick navigation to billing providers, adds a Terminal button to spawn native sessions, and supports programmatic auth model focus targeting for direct provider navigation.
+- 5de8be3: Add `session_flag_status` MCP tool and `SessionsRegistry.flagAwaitingInput` method for manual correction of a session's `awaitingInput`/`awaitingQuestion` classification. This is the first external write path for these fields (otherwise set only by internal heuristics or driver-reported prompts). Includes new `session:awaiting-input-flagged` event type emitted on the session event bus for audit trail visibility via `session_events_poll`, webhook notifier, and session monitor.
+- cbe11c2: Fix jcode print arm: add `--ndjson` output format and move `run` subcommand to `bin_args` so composed flags land after it (not before). Add comprehensive jcode NDJSON event mapper with full test coverage. Implement fail-fast TTY handling for interactive setup steps: refuse pre-spawn when stdin is not a TTY, return distinct `EXIT_SETUP_NEEDS_TTY (78)` to surface the condition separately from real failures. Add `needsInteractiveSetup` flag to `AdapterInstallResult` and VS Code install action to offer "Open Setup Terminal" for TTY-blocked installs.
+- a0558d4: Add session pinning — a server-persisted, list-visibility-only favorite flag. Pinned sessions sort to the top of `agentproto sessions` table and the VS Code webview's dedicated "Pinned" group. Includes new CLI `pin`/`unpin` subcommands, the `session_set_pinned` MCP verb, HTTP route `POST /sessions/:id/pin`, and dedicated UI in VS Code. Deliberately orthogonal to `keepAlive`, reaper eligibility, and notifications — pin is a quiet, structural sort/display flag with zero operational side effects.
+- 140874a: Add optional `provider` field to ACP agent specifications. This allows generic ACP adapters (Mistral Vibe, Google Gemini CLI, Moonshot Kimi CLI) to declare their billing endpoints, enabling clients to link the harness to that provider's wallets even when no model list is declared. The provider is projected through AdapterInfo and integrated into VSCode wallet linking logic.
+
+### Patch Changes
+
+- e418ec7: Documentation updates for new jcode adapter, MCP tool families, configuration enhancements, and Mastra adapter API changes.
+- 2120494: Report the pi adapter's real context window instead of the running token total, so context-continuity hard-stops trigger at the actual limit.
+- 42ca610: Add in-band adapter turn-error tracking and refactor session status precedence. Introduces `lastTurnErroredAt` field to distinguish adapter-reported failures (status stays "running") from thrown/rejected streams (status→"error"). Reorders status dot precedence to awaiting > stalled > busy and separates healthy parked-bg sessions from genuinely stuck ones in the status bar.
+- 6b04734: Test isolation: the runtime test package now runs with an isolated `$HOME` (vitest config/setup), so tests no longer read the real `~/.agentproto/*`. No runtime behavior change.
+- 4474e5e: Expand terminal launch coverage to every harness with an interactive CLI arm by broadening NATIVE_LAUNCH_ARGV beyond attachArgv's resume-specific gates. Redesign harness card action buttons from platform-font glyphs to crisp SVG icons (conversation bubble + terminal glyph) with title and aria-label for accessibility.
+- f96dc2a: Add opt-in `gh` provenance PATH shim for local agent sessions. When `provenance.wrapGh` is enabled, spawned sessions get a shim directory prepended to PATH so `gh pr create` (or adapter subprocesses) automatically append the daemon's deterministic `@agentproto-bot` provenance footer to PR bodies, matching cloud runner behavior.
+- Updated dependencies [e418ec7]
+- Updated dependencies [27a22ca]
+- Updated dependencies [545752b]
+- Updated dependencies [0bdd564]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/app-kit@0.6.1
+  - @agentproto/driver-agent-cli@2.3.0
+  - @agentproto/workspace-brain@0.2.1
+  - @agentproto/provider-presets@0.6.0
+
+## 2.6.0
+
+### Minor Changes
+
+- c17620e: Add app-scoped durable data plane with migrate/read/write/list MCP tools
+- af936f8: Add a built-in live-session MCP App that attaches to `agent_start` and streams
+  nested session activity with an app-only bridge polling fallback.
+- b51b58e: **Support shell-based package managers (uv, pip, brew, cargo, go, pipx)** — expand adapter installation beyond npm to handle package managers commonly used in AI/ML workflows. New `parseShellHint` function parses and validates non-npm install commands; only recognized package managers are executed to prevent blind shell injection.
+
+  **ACP adapters can now use `uv tool install`, `pip install`, etc.** — planner detects hint type (npm → shell → unsupported) and adapter install routes handle shell commands with the same safety/timeout guards as npm-global installs.
+
+- 2375019: Extend the MCP app bridge wire (spec 2026-01-26) with three new methods and integrate them into the mail-triage UI:
+  - **`updateModelContext`** (`@agentproto/runtime`): lets an app push updated context back to the model over the bridge; marshaled through JSON-RPC on the postMessage bridge, rejected with a clear error on the standalone bridge.
+  - **`openLink`** (`@agentproto/runtime`): lets an app request the host open a URL; the postMessage bridge marshals the request through JSON-RPC, the standalone bridge falls back to `window.open`.
+  - **`onTeardown`** (`@agentproto/runtime`): registers a callback invoked when the host sends `ui/resource-teardown`; the bridge replies with `{result:{}}` after running registered callbacks synchronously.
+  - **Mail-triage UI** (`@agentproto/apps`): adds email selection via checkboxes, a "send selection" action that pushes selected emails to the model via `updateModelContext`, and "open in Gmail" links wired through `openLink`.
+
+- 6fba2b9: Feature-flag the LLM Endpoint proxy sidecar behind `features.llmEndpoint` (default false). When disabled, the route is not registered, the registry is not created, and MCP tools are not exposed.
+- ce6352b: Fix PR provenance attribution to prefer explicit caller session ID over heuristic guess, eliminating misattribution when unrelated sessions share the same working directory. Add `workspaceSlug` field to disambiguate workspace roots from per-branch worktrees in PR footer labels.
+- 57dec3b: Add harness→profile preset persistence (`~/.agentproto/harness-presets.json`). Eliminates re-picking auth profiles per spawn by storing which profile + default model each adapter harness should bill through. Includes full CRUD store with validation (profile existence, model curation), MCP tools for remote management, and clean spawn-path integration at the correct precedence level (lowest — only fills unpinned profile/model).
+- 1cb2093: Enhance session resumption transparency by distinguishing "no context available" from "partial context recovered from daemon transcript". The new `ResumeContextDigestResult` interface provides explicit context-availability tracking, enabling callers to display honest restart banners about what was actually recovered.
+- dde641e: Add conversation export tool — the write side of cross-adapter transcript pivot. Enables exporting daemon session transcripts into target adapter native stores (starting with claude-code JSONL) and returning resume handles. Complements the existing read-side (`exportClaudeCodeSession`). Includes round-trip tests verifying message fidelity.
+- 4b20f1e: **Per-workspace "brain"**: a queryable index of a workspace's agent sessions for agents to recall what work the workspace has done.
+
+  New package `@agentproto/workspace-brain` provides the pure indexing engine (BM25 via `FilesKnowledgeAdapter`, zero runtime deps). The runtime wires it up with three MCP tools (`workspace_brain_query`, `workspace_brain_status`, `workspace_brain_ingest`) and auto-ingests sessions on exit (fire-and-forget, never takes down the exit path). State is persisted atomically to `brain-state.json`; knowledge index lives in `knowledge/sources/` under a per-workspace brain dir.
+
+  Exports from runtime: `registerBrainTools`, `createWorkspaceBrains`, `readSessionForBrain`, `createWorkspaceBrainSubscriber`.
+
+- 435a6f2: Expose live session activity phase: new read-time fields `currentPhase`, `toolCallsThisTurn`, and `secondsSinceLastActivity` track what an agent session is currently doing (thinking, tool-call, awaiting input, etc.), the distinct tool count in the current turn, and elapsed time since last activity. All fields are ephemeral—computed on every read and never persisted—following the pattern of existing fields like `processAlive`.
+
+### Patch Changes
+
+- 996ec8e: Add regression coverage for `agent_start` user-preset adapter resolution,
+  including adapter and harness aliases, explicit-call precedence, and validation
+  errors.
+- 33e97d3: Add skill surface to defineApp/emit and app_skill_get validation
+- d22fec5: Add artifact surface to defineApp/emit for Cowork artifact registration
+- 59bc722: Three fixes around MCP app panels and session restart:
+  - **MCP bridge injection** (`@agentproto/runtime`, `@agentproto/apps`): fix the idempotency check that incorrectly skipped injection for documents consuming `window.McpApp.connect()` — regex narrowed from `/window\.McpApp\b/` (any mention) to `/window\.McpApp\s*=/` (assignments only). Defensive guard in mail-triage UI when the bridge is missing.
+  - **Credential re-resolution on restart** (`@agentproto/runtime`): pass `accessProfileRef` to `resolveResumeAuth` so restarting a session that used a named auth profile re-reads the current credential from the keychain instead of falling back to a stale mode-based path.
+  - **Restart loading state** (`agentproto-vscode`): show a loading state and disable the restart button while a session restart is in flight; new `restartFailed` webview message resets the state on error.
+
+- 337cbfd: Parked-background-task detection, watch/unwatch sessions, watcher visibility.
+
+  **Runtime** (`@agentproto/runtime`, patch):
+  - Detect sessions parked with pending background tasks (run_in_background tool calls that end a turn without triggering a wake-up). Emit session:bg-tasks-parked / session:bg-tasks-cleared events; stamp pendingBgTasks count on descriptor.
+  - Watcher attach/detach events: emit session:watcher-attached / session:watcher-detached when a blocking wait subscribes/unsubscribes, reporting the watcher count and supervising session id (when the wait came through the scoped orchestrator).
+
+  **VS Code** (`agentproto-vscode`, minor):
+  - Watch/unwatch commands: pin an eye on sessions so transitions into needs-you / stalled / parked-bg / failed / done raise toasts (debounced per state). Persisted per workspace; toggleable from tree and command palette.
+  - Parked-bg activity state (needs-you > stalled > parked-bg > working > idle) with clock/warning icon, bg-task count in tree description + tooltip, '⏳ N bg tasks' webview chip.
+  - Watcher visibility: info banner when a watcher attaches to the session you're watching, user-prompt badges when another session injected the message, and attributed history in the transcript.
+
+- ec9efa3: **Hermes nativeTerminalResume gated on Node ≥22.5** — hermes TUI uses node:sqlite which is unavailable on older runtimes; the capability is now computed at import time so restart falls back to ACP agent-cli instead of crashing.
+
+  **augmentWithFsResume backfills adapterSessionId** — when never captured (session killed before ACP handshake), backfill it from filesystem probe so agent restart can attempt ACP-level resume in addition to PTY-native restart.
+
+  **restartAsTerminal opens transcript on fallback** — when restart falls back to agent-cli (no PTY available), open the conversation transcript view instead of the agent-mirror pseudo-terminal.
+
+- 82ca9e6: Fix daemon crash from unhandled spawn errors and PATH-based node resolution issues:
+  - Add error event listeners to spawn processes to prevent unhandled exceptions from crashing the daemon
+  - Resolve `bin: "node"` in agent CLI definitions to `process.execPath` instead of relying on PATH lookup, preventing failures in launchd environments with minimal PATH
+  - Fix auth method availability detection for models with `modelDerivedApiKey` by checking both `authSubscription` and `modelDerivedApiKey` for oauth-bearer eligibility
+  - Improve test mocks to properly emit spawn events, enabling proper coverage of spawn failure scenarios
+
+- c1e1807: Fix tool resolution failures in mastra-agent adapter: introduce fail-fast stubs for declared-but-unwired tools (preventing hangs), wrap all tools with timeout guards (preventing unbounded blocking), add daemon-style tool ID aliases (fixing vocabulary mismatches in AGENT.md files), and properly handle tool-error chunks from Mastra (preventing tool calls from appearing stuck). Extract shared command-allowlist logic to runtime package for reuse.
+- 2c24d6f: Fix by-model-router adapters (hermes, pi, opencode) to stamp the resolved billing gateway onto the session descriptor's `route` field, preventing false "restart required" alerts in the VS Code change-model picker.
+- a6b06b2: Three adapter infrastructure fixes:
+  1. Codex model list expanded from 8 to ~40 models — covers GPT-5 family
+     (5/5.1/5.2/5.4/5.5), GPT-5.6 (luna/sol/terra), GPT-4.1/4o, and
+     o-series reasoning models (o1/o3/o4-mini).
+  2. CLI `agentproto install <slug>` now drives a generic ACP agent's
+     `install_hint` through the shared hint parser (new `install-hint.ts`
+     module, extracted from `install-driver.ts` to break a circular dep).
+     The `vendored` install step checks if the binary is already on PATH,
+     runs npm/uv/pip/brew/cargo/go hints when recognized, and fails loud
+     with an actionable message otherwise.
+  3. `binOnPath` in `acp-generic.ts` now checks well-known package-manager
+     install directories (`~/.local/bin`, `~/.cargo/bin`, `~/go/bin`,
+     `/opt/homebrew/bin`, `/usr/local/bin`) as a fallback when PATH hasn't
+     picked them up yet — fixes adapters installed via `uv tool install`
+     not showing as "available" until the daemon restarts.
+
+  Also: modelDerivedApiKey provider resolution for adapters like mastra-agent.
+
+- be06061: Populate session descriptor model from adapter default when no explicit model provided.
+
+  When a session is spawned with subscription auth and no explicit model parameter, the session descriptor's model field is now populated from the adapter's manifest default (if available), instead of remaining undefined. This fixes the VSCode panel displaying 'model?' as a fallback. The fix applies consistently to both the normal spawn and async worktree paths.
+
+- bd990d1: Fix bundling of node:sqlite dynamic imports by using a computed specifier to prevent esbuild from stripping the node: prefix. Most builtins work without it, but node:sqlite has no unprefixed name.
+- 66a6446: Add `conversation_locate` MCP tool for bidirectional session ↔ native-transcript lookup, enabling both forward (sessionId to native path) and reverse (native path to sessionId) queries. Also implement graceful fallback to daemon events when native transcripts are missing.
+- c3dbdc4: Multi-provider knowledge federation: introduce `FederatedKnowledgeProvider` for concurrent query/ingest across multiple knowledge backends (files, gbrain-doc, qdrant) with min-max score normalization, per-provider weighting, and graceful degradation. Add `provider-resolver.ts` for config-driven adapter instantiation with environment secret resolution and schema validation. Integrate per-workspace `knowledge.json` config loading in workspace-brains with resilient fallback to default single-provider (files) behavior.
+- b5ec52b: Add optional title field to plan events, displayed in VS Code conversation UI. Titles are safely threaded through ACP client translation, runtime event stream, and conversation presenter, supporting both immediate titles and late-binding (title added in subsequent plan updates).
+- 41e36f4: Settle orphaned tool calls at turn-end. Adapters like Hermes can end a turn while omitting tool-result events for nested/parallel calls, leaving them stuck in "pending" state in UI consumers. This change synthesizes tool-result events with null values before the turn-end is recorded, ensuring transcript replay sees completed tool cards.
+- 9d76f08: Normalize live model changes to each adapter's expected wire ID while preserving canonical model identity in session state.
+- 16e4304: Add test coverage for daemon-events fallback paths when conversation ID resolution fails or the store is not registered.
+- 16e4304: Fall back to daemon events.jsonl for unresolved/missing conversation IDs too
+- Updated dependencies [33e97d3]
+- Updated dependencies [415044d]
+- Updated dependencies [d22fec5]
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+- Updated dependencies [4b20f1e]
+- Updated dependencies [c3dbdc4]
+- Updated dependencies [3d54f15]
+- Updated dependencies [b5ec52b]
+  - @agentproto/app-kit@0.6.0
+  - @agentproto/model-catalog@0.8.3
+  - @agentproto/driver-agent-cli@2.2.2
+  - @agentproto/workspace-brain@0.2.0
+  - @agentproto/acp@0.7.1
+  - @agentproto/providers-store@0.3.6
+  - @agentproto/sandbox@0.2.3
+
+## 2.5.0
+
+### Minor Changes
+
+- 36e19c3: Add `injectMcpAppBridge()` function to inject MCP Apps wire protocol bridge into UI app HTML at serve time. The bridge enables all app panels to communicate with the host via postMessage JSON-RPC without requiring each app to ship its own shim. Cache integration ensures injection runs once per (path, version) rather than on every request.
+- f8b9c73: Add standalone HTTP routes for app UI hosting: `GET /apps/:appId/ui` serves installed apps' HTML with a REST bridge injected, and `POST /apps/:appId/tool-call` is the REST twin of the MCP `app_tool_call` gateway. Exports `performAppToolCall` and `injectStandaloneAppBridge` for shared use between MCP and HTTP surfaces.
+
+### Patch Changes
+
+- 6e1fcf3: Remove tilde-prefixed OpenRouter aliases and use non-throwing route resolution in widening
+- Updated dependencies [2b58616]
+- Updated dependencies [69e97d9]
+- Updated dependencies [6e1fcf3]
+  - @agentproto/model-catalog@0.8.2
+  - @agentproto/app-kit@0.5.1
+  - @agentproto/providers-store@0.3.5
+
+## 2.4.0
+
+### Minor Changes
+
+- 7f98884: Add session visibility tracking: ephemeral watcher counters surface how many supervisors are actively monitoring a session, and lineage carry-forward ensures sessions maintain their source channel through restarts.
+- c58b9fe: Implement turn-liveness watchdog: detect mid-turn agent-cli sessions with dead adapter streams.
+
+  The daemon periodically sweeps every BUSY agent-cli session and, for one that is mid-turn, NOT legitimately blockedOn a subagent/command, and has had no adapter activity for longer than the configured threshold (default: 5 minutes), stamps `stalledSinceMs` on the descriptor and emits `session:stalled` — surfacing a dead adapter stream (network drop, hung child) that would otherwise sit indistinguishable from healthy long work. Detection and observability only; never auto-kills or restarts. Threshold configurable via `daemon.turnStallAfterMs` config or `AGENTPROTO_TURN_STALL_AFTER_MS` env var (DEFAULT ON, opt-in-to-disable). VS Code displays the stall flag (⚠ badge) when the daemon confirms, with a tooltip showing the silent duration.
+
+- 4b73e28: Add UI, artifacts, and dev-launch configuration support to app-kit. Apps can now declare HTML surfaces, artifact types, and dev-launch configurations that are carried through emit/load and integrated into the runtime app registry.
+- b098b52: Add UI, artifacts, and dev-launch configuration support to app-kit. Apps can now declare HTML surfaces, artifact types, and dev-launch configurations that are carried through emit/load and integrated into the runtime app registry.
+
+### Patch Changes
+
+- 1d3cbc2: Add stable id/name/version identity to bundled apps; fix app-registry persistence
+- 2d9befc: Add session visibility features for parent-child session hierarchies: `childrenBusy` field counts descendant sessions mid-turn, enabling UI to show idle parents as "delegating" rather than truly idle; also adds "parked" state for idle sessions with watchers.
+- c48defd: Allow subscription profiles (oauth-bearer) on modelDerivedApiKey adapters (mastracode, opencode). These adapters now correctly expose oauth-bearer as an eligible auth method and support subscription mode by injecting the token via the model-derived provider env var.
+- Updated dependencies [4b73e28]
+- Updated dependencies [b098b52]
+  - @agentproto/app-kit@0.5.0
+
+## 2.3.0
+
+### Minor Changes
+
+- 29acda3: Add optional `encoding` parameter to `file_read` MCP tool to support base64 encoding for binary files, fixing corruption of binary content (PNGs, audio, video, etc.) that was caused by UTF-8 decoding. Default behavior unchanged — existing callers continue to receive UTF-8 text as before.
+- 5f2ebb8: Add prompt provenance tracking to transcript records and webview, enabling accurate attribution of supervisor-orchestrated turns. When one agent session prompts another (via `agent_prompt` or spawn with `initialPrompt`), the originating session ID is now recorded as the turn's source and displayed in the conversation UI as "SUPERVISOR ASKED" instead of "YOU ASKED". The feature is backward-compatible: existing transcripts and API call sites are unaffected, and source fields are optional everywhere.
+
+### Patch Changes
+
+- a26d527: Add child→parent report-back communication channel: new `message_parent` MCP tool for child sessions to send messages/status updates to their parent supervisors, plus `AGENTPROTO_PARENT_SESSION_ID` environment variable for lineage discovery. Includes automatic scope injection for gateway-less children and comprehensive test coverage.
+- 1bce78e: Persist permission resolution in the durable transcript so the conversation UI can display resolved permissions and clear the "Awaiting your decision" state. Permission-resolved events are keyed by toolCallId to correlate with their originating agent-prompt asks.
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 2.2.0
+
+### Minor Changes
+
+- 087f0ea: Declarative agent steps for AIP-15 workflows (WP-B4): author `kind:"agent"` steps with `agent.ref` (app-scoped agent ids) that resolve at compile time to concrete adapters + spawn options. Includes app installation/lifecycle tools (`app_install`, `app_run`, `app_list`, `app_status`, `app_stop`) for managing installed-app state and running agents as live sessions. Tool-id validation now shifts from STEP-DISPATCH time to INSTALL time, listing all missing ids upfront instead of failing one-at-a-time.
+- 5e75a57: Add progressive step status reporting to workflow execution via optional `onStepStart` and `onStepComplete` callbacks. Steps now transition through pending → running → done states during execution, rather than remaining pending until workflow completion. This enables real-time progress tracking for long-running workflows.
+- 2962637: **Feature: Agent step output text threading in workflows**
+
+  Agent steps can now automatically capture their text output and inject it into subsequent steps' prompts, enabling multi-step workflows to share context and analysis. The workflow runtime captures the final message from each agent step (when `readFinalMessage` is available) and threads it through the bindings, making it accessible to downstream steps via the AIP-16 Selector pattern. Previous step outputs are formatted as `[Output from step "id"]\ntext` and prepended to the base prompt, improving agent reasoning across sequential steps.
+
+- 2b379e9: Add app dependency management and scope mount tracking. Introduces `requires` field on apps to declare dependencies, new MCP tools (`app_apply`, `app_unapply`, `app_list_applied`) for managing app mounts to scopes, HTTP endpoints mirroring the tools, and AppRegistry enhancements for persistence of applied mounts with dependency validation.
+
+### Patch Changes
+
+- 48b4302: Add app\_\* daemon tools (app_install, app_list, app_run, app_status, app_stop) for @agentproto/app-kit lifecycle management. Tools enable installing bundled agent-workflow apps, running agents as live sessions, and monitoring app execution. Moves workflow tool-id validation from step-dispatch time to install time, reporting all missing tool ids at once instead of failing one step at a time.
+- Updated dependencies [4b6bbe6]
+- Updated dependencies [3e187e5]
+- Updated dependencies [47ca357]
+- Updated dependencies [087f0ea]
+- Updated dependencies [5e75a57]
+- Updated dependencies [2962637]
+- Updated dependencies [492240c]
+- Updated dependencies [2b379e9]
+  - @agentproto/model-catalog@0.8.1
+  - @agentproto/driver-agent-cli@2.2.0
+  - @agentproto/app-kit@0.4.0
+  - @agentproto/workflow@0.2.0
+  - @agentproto/workflow-runtime@0.7.0
+  - @agentproto/providers-store@0.3.4
+  - @agentproto/sandbox@0.2.2
+  - @agentproto/workflow-loader@0.1.3
+  - @agentproto/eval-reporters@0.2.6
+  - @agentproto/telemetry-langfuse@0.2.4
+
+## 2.1.0
+
+### Minor Changes
+
+- 678bc1a: Session identity environment variables: inject `AGENTPROTO_SESSION_ID` and `AGENTPROTO_WORKSPACE_SLUG` into every process spawned by the daemon on a session's behalf (agent adapters, terminals, commands, cron jobs). Each spawn gets its own freshly minted id; the variables are set last to prevent caller forgery. This enables spawned processes to report back session context, tag telemetry, and nest child sessions under parent sessions via `parentSessionId`.
+- 6280066: Add WP-D structured verdict parsing for judge gates, with optional JSON-based verdict format supporting findings/severity metadata. Judge gates can now pin a custom billing profile via `access.profileRef` to avoid wallet rate-limiting. New types: `JudgeVerdict`, `VerdictSeverity`, `VerdictFinding`. New gate spec fields: `judge.access`, `judge.route`, `judge.mode`. Verdict is persisted and echoed on `policy:passed`/`policy:failed` events. Backward compatible: existing plain-text verdicts work unchanged; JSON blocks are optional.
+- b99245b: Default `agent_start` dedupe to deriving an implicit idempotency key. A retry provoked by a lost or slow response previously forked a second session unless the caller remembered to pass `idempotencyKey` — a guard that only works when asked for is not a guard, the same argument `spawn.attach` already settled for parent lineage. New daemon-side `spawn.dedupe` policy on `SpawnConfig` (`AGENTPROTO_SPAWN_DEDUPE` env > config > default `"always"`), which derives a key from `label` + a hash of the initial prompt. No label means no implicit key at all, so deliberate unlabelled parallel fan-out into one cwd is structurally excluded. Implicit claims use a shorter window (120s) than explicit ones (600s) — a guess should not be trusted as long as a promise. Per-call `dedupe: false` opts out, mirroring `attach: false`; `dedupeSource: "explicit" | "implicit"` is surfaced on the result so a caller can tell the two apart.
+- fd3e287: **WP-E (spawn-dedupe-default)**: Add implicit idempotency key derivation to prevent accidental spawn duplicates without requiring explicit opt-in. When a spawn carries a `label` and no `idempotencyKey`, the daemon derives an implicit key from the label plus a hash of the initial prompt. Same-adapter/cwd/key spawns within ~2 minutes are deduped (shorter window than explicit keys to reduce false collisions). Label-gated derivation preserves the fan-out safety pattern where unlabelled parallel spawns must remain distinct. New config field `spawn.dedupe` ("always" default / "on-request") controls policy; per-call `dedupe: false` escape hatch.
+
+  **WP-F (worktree async provisioning)**: Enable fast-return session registration with background worktree provisioning, and share a single turbo build cache across all provisioned worktrees. `worktree: { async: true }` opts in: returns immediately with status "starting", provisioning + driver spawn continue in background. New registry methods `spawnAgentPending` / `settlePendingAgent` manage placeholder lifecycle. New `resolveWorktreesTurboCacheDir()` export provides shared cache path to setup hooks, eliminating cold builds on every worktree provision.
+
+### Patch Changes
+
+- c825a12: Sync generated catalog data from the pinned provider sources.
+
+  catalog-sync and runtime are named because their `src/__tests__` assertions
+  had to follow the refreshed data (context-window entry count, gpt-5.6 tier
+  repricing), and the coverage check counts anything under `src/` as
+  publish-affecting.
+
+- 832870d: Documentation sync: daemon restart command, sessions gc garbage collection, install --allow-unverified flag, Gemini adapter shipped, pi adapter support, xai-anthropic and llm-endpoint provider presets, and launchd crash-only KeepAlive behavior.
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+- 8228d88: Add dep-bump reclaim exemption for worktree GC: safely promote clean, unpushed worktrees from `hold` to `reclaim` when all commits are mechanical dependency bumps (subject and cumulative diff validation). Addresses storage bloat from recurring automated dependency-bump worktrees piling up as permanent holds. Includes comprehensive test coverage and applies re-validation at apply time (layer 2).
+- 980276e: Router-aware LLM model enumeration for Requesty and HuggingFace.
+
+  Introduces `listRouterLlmRoutes` to systematically enumerate all models a router serves, and enhances `getModelsByProvider` to fold these router tables into provider queries while deduplicating against OpenRouter's existing bare-id surface. Requesty and HuggingFace models now enumerate from their generated route tables as `vendor/product@router` ids. Claude SDK adapter adds Requesty model curation to its allowed list.
+
+- df10f28: Fix spawn-claim deduplication window to match real retry latencies: increased from 30s to 10 minutes to absorb the caller's timeout (300s) plus network/clock skew, with an LRU size backstop (1,000 resolved claims) to prevent unbounded growth. Add non-blocking warning when two live sessions share the same label+cwd, aiding incident detection without breaking legitimate fan-out patterns.
+- Updated dependencies [c825a12]
+- Updated dependencies [832870d]
+- Updated dependencies [c1399f3]
+- Updated dependencies [980276e]
+  - @agentproto/model-catalog@0.8.0
+  - @agentproto/provider-presets@0.5.1
+  - @agentproto/mcp-server@0.2.5
+  - @agentproto/provider-kit@0.4.1
+  - @agentproto/providers-store@0.3.3
+  - @agentproto/eval-reporters@0.2.5
+  - @agentproto/sandbox@0.2.1
+
 ## 2.0.0
 
 ### Major Changes

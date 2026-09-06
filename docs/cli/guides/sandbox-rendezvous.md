@@ -22,6 +22,12 @@ Providers are resolved from a small built-in catalog by slug:
 | `box` | An ascii.dev [Box](https://ascii.dev) cloud computer, behind an always-on systemd unit. | `@agentproto/sandbox-box` |
 | `e2b` | An e2b Firecracker microVM (`agentproto-workstation` template). | `@agentproto/sandbox-e2b` |
 
+<!-- sync-templates:start -->
+The `e2b` provider's default template is declared in
+`templates/workstation/versions.json`: `@agentproto/cli@0.17.0`, `@agentproto/adapter-hermes@0.4.10`, `@agentproto/adapter-mastra-agent@0.6.0`, `@agentproto/adapter-opencode@1.1.10`, `opencode-ai@1.18.28`. The on-boot CLI install is skipped only once the
+template's recorded `baked` block proves the image carries the requested pin.
+<!-- sync-templates:end -->
+
 (`modal` and `daytona` are catalog placeholders — AIP-36 day-1 provider ids
 with no published package yet.)
 
@@ -257,6 +263,37 @@ session, make sure the box is sticky (`box extend bx_abc123 --no-auto-stop`,
 or rely on agentproto's own no-auto-stop default from boot) and reach for
 `agentproto sandbox attach box bx_abc123 --keep-alive` once that flag ships
 in your CLI version, so the attachment itself doesn't go stale either.
+
+## 6. Exposing app ports (e2b)
+
+An agent running inside an e2b sandbox can start its own HTTP server (e.g.
+`agentproto app serve --port 3210`) and the host can reach it publicly via
+e2b's `getHost(port)` forwarding — no extra tunnel needed.
+
+**At boot time** — declare `extraPorts` in the spec and the provider resolves
+them immediately. The resulting URLs appear in the session descriptor's
+`sandboxPorts` field so an orchestrator can read them without an extra call:
+
+```json
+{ "provider": "e2b", "config": {}, "extraPorts": [3210] }
+```
+
+The spawned session's descriptor then carries:
+```json
+{ "sandboxPorts": { "3210": "https://3210-<sandboxId>.e2b.app" } }
+```
+
+**At runtime** — call `expose(port)` on the booted sandbox handle (or via
+`exposePort()` from `@agentproto/sandbox`):
+
+```ts
+import { exposePort } from "@agentproto/sandbox"
+const { url } = await exposePort(host, 3210)
+// url → "https://3210-<sandboxId>.e2b.app"
+```
+
+Providers that do not support port exposure (Box, local) do not implement
+`expose()`. Calling `exposePort()` on them throws `SandboxPortExposureUnsupportedError`.
 
 ## See also
 

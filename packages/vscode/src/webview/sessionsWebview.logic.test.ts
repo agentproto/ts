@@ -2,18 +2,30 @@ import { describe, expect, it } from "vitest"
 
 import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
 import {
+  autoGroupOf,
   buildSessionsWebviewModel,
+  collapseCronRuns,
+  cronJobIdOf,
   formatCost,
-  harnessGlyphFor,
-  HARNESS_GLYPHS,
-  HARNESS_GLYPH_FALLBACK,
+  gateApproved,
+  isSystemPreviewLine,
+  laneOf,
+  nestByLineage,
+  previewTextFor,
   relativeLuminance,
   rowActionFor,
+  sectionFor,
+  stallTooltipFor,
+  stripMarkdownToText,
+  subtreeRollup,
   summaryTextFor,
+  UNASSIGNED_COLOR_INDEX,
+  UNASSIGNED_SLUG,
   webviewRowStatus,
   WORKSPACE_PALETTE,
   workspaceColorFor,
   type WebviewRow,
+  type WebviewRowStatus,
 } from "./sessionsWebview.logic.js"
 
 function session(over: Partial<SessionSummary> = {}): SessionSummary {
@@ -44,21 +56,10 @@ const multiConfig: WorkspacesConfig = {
 
 const NOW = Date.parse("2026-01-02T00:00:00Z")
 
-describe("harnessGlyphFor", () => {
-  it("maps every locked harness to its glyph", () => {
-    expect(harnessGlyphFor("claude-code")).toBe("✳")
-    expect(harnessGlyphFor("hermes")).toBe("☿")
-    expect(harnessGlyphFor("codex")).toBe("◈")
-    expect(harnessGlyphFor("gemini-cli")).toBe("✦")
-  })
-  it("falls back to • for an unrecognized or absent slug", () => {
-    expect(harnessGlyphFor("some-future-harness")).toBe(HARNESS_GLYPH_FALLBACK)
-    expect(harnessGlyphFor(undefined)).toBe(HARNESS_GLYPH_FALLBACK)
-  })
-  it("HARNESS_GLYPHS carries exactly the four locked entries", () => {
-    expect(Object.keys(HARNESS_GLYPHS).sort()).toEqual(["claude-code", "codex", "gemini-cli", "hermes"])
-  })
-})
+/** Default opts: agents lane, all projects, no search. */
+function opts(over: Partial<Parameters<typeof buildSessionsWebviewModel>[2]> = {}) {
+  return { lane: "agents" as const, project: null, search: "", now: NOW, ...over }
+}
 
 describe("formatCost", () => {
   it("formats a positive cost to two decimals with a leading $", () => {
@@ -69,6 +70,125 @@ describe("formatCost", () => {
     expect(formatCost(0)).toBeUndefined()
     expect(formatCost(-1)).toBeUndefined()
     expect(formatCost(undefined)).toBeUndefined()
+  })
+})
+
+describe("previewTextFor (item 1: genuine, single-line, markdown-free preview)", () => {
+  it("skips the daemon's context-continuity / system bookkeeping line", () => {
+    expect(
+      previewTextFor({
+        activitySummary: {
+          text: "[context] context at 69% — waiting for user decision (continue fresh…)",
+          state: "en attente",
+          at: "",
+        },
+      }),
+    ).toBeUndefined()
+    // Un-tagged continuity phrasing is caught too.
+    expect(
+      previewTextFor({ activitySummary: { text: "context at 88% — waiting for user decision", state: "", at: "" } }),
+    ).toBeUndefined()
+  })
+
+  it("strips markdown to a single plain line", () => {
+    expect(
+      previewTextFor({
+        activitySummary: { text: "Edited **sessionsWebviewPanel.ts** and ran `pnpm test`", state: "", at: "" },
+      }),
+    ).toBe("Edited sessionsWebviewPanel.ts and ran pnpm test")
+    expect(
+      previewTextFor({ activitySummary: { text: "Opened [the PR](https://x/y)\n\nnext step", state: "", at: "" } }),
+    ).toBe("Opened the PR next step")
+  })
+
+  it("truncates a long preview to one clamped line", () => {
+    const long = "a".repeat(200)
+    const preview = previewTextFor({ activitySummary: { text: long, state: "", at: "" } })!
+    expect(preview.length).toBeLessThanOrEqual(72)
+    expect(preview.endsWith("…")).toBe(true)
+  })
+
+  it("returns undefined when there is no activity summary at all", () => {
+    expect(previewTextFor({})).toBeUndefined()
+    expect(previewTextFor({ activitySummary: { text: "   ", state: "", at: "" } })).toBeUndefined()
+  })
+
+  it("does not swallow a genuine message that merely mentions context", () => {
+    expect(
+      previewTextFor({ activitySummary: { text: "Refactored the context provider hook", state: "", at: "" } }),
+    ).toBe("Refactored the context provider hook")
+  })
+})
+
+describe("isSystemPreviewLine / stripMarkdownToText", () => {
+  it("flags tagged and continuity lines only", () => {
+    expect(isSystemPreviewLine("[system] booting adapter")).toBe(true)
+    expect(isSystemPreviewLine("[continuity] checkpoint saved")).toBe(true)
+    expect(isSystemPreviewLine("continue fresh in a new session")).toBe(true)
+    expect(isSystemPreviewLine("Wrote the report")).toBe(false)
+  })
+  it("flattens emphasis, code, headings and lists", () => {
+    expect(stripMarkdownToText("# Title\n- **one**\n- `two`")).toBe("Title one two")
+  })
+})
+
+describe("nestByLineage (item 6: subagents under their spawner)", () => {
+  const row = (id: string, parentSessionId?: string): WebviewRow =>
+    ({ id, depth: 0, session: session({ id, parentSessionId }) }) as unknown as WebviewRow
+
+  it("stacks children under their parent with increasing depth", () => {
+    const rows = [row("root"), row("child-a", "root"), row("grandchild", "child-a"), row("child-b", "root")]
+    const nested = nestByLineage(rows)
+    expect(nested.map(r => [r.id, r.depth])).toEqual([
+      ["root", 0],
+      ["child-a", 1],
+      ["grandchild", 2],
+      ["child-b", 1],
+    ])
+  })
+
+  it("treats a child whose parent is absent from the bucket as a root", () => {
+    const rows = [row("orphan", "missing-parent"), row("plain")]
+    const nested = nestByLineage(rows)
+    expect(nested.map(r => [r.id, r.depth])).toEqual([
+      ["orphan", 0],
+      ["plain", 0],
+    ])
+  })
+})
+
+describe("subtreeRollup (row disclosure triangle + collapsed-dot rollup)", () => {
+  const row = (id: string, depth: number, status: WebviewRowStatus): WebviewRow =>
+    ({ id, depth, status, session: session({ id }) }) as unknown as WebviewRow
+
+  it("reports no children and its own status for a leaf row", () => {
+    const rows = [row("root", 0, "idle"), row("sibling", 0, "working")]
+    expect(subtreeRollup(rows, 0)).toEqual({ hasChildren: false, status: "idle" })
+  })
+
+  it("rolls up the busier status from a direct child", () => {
+    const rows = [row("root", 0, "idle"), row("child", 1, "working")]
+    expect(subtreeRollup(rows, 0)).toEqual({ hasChildren: true, status: "working" })
+  })
+
+  it("stops the walk at the next row whose depth is back at or below the root's", () => {
+    const rows = [row("root", 0, "idle"), row("child", 1, "idle"), row("sibling", 0, "working")]
+    // "sibling" is a following root, not a descendant — it must not leak into the rollup.
+    expect(subtreeRollup(rows, 0)).toEqual({ hasChildren: true, status: "idle" })
+  })
+
+  it("walks a 2+-level grandchild subtree for the busiest state anywhere below", () => {
+    const rows = [
+      row("root", 0, "idle"),
+      row("child", 1, "idle"),
+      row("grandchild", 2, "awaiting"),
+      row("other-root", 0, "working"),
+    ]
+    expect(subtreeRollup(rows, 0)).toEqual({ hasChildren: true, status: "awaiting" })
+    // A non-root index rolls up its OWN subtree only — "child" sees the
+    // grandchild below it, "other-root" (a separate top-level row) sees nothing.
+    expect(subtreeRollup(rows, 1)).toEqual({ hasChildren: true, status: "awaiting" })
+    expect(subtreeRollup(rows, 3)).toEqual({ hasChildren: false, status: "working" })
   })
 })
 
@@ -84,12 +204,62 @@ describe("webviewRowStatus", () => {
   })
 
   it("marks a busy but silent session as stalled", () => {
-    // 1h of silence while busy => stalled
-    const stalled = session({
-      busy: true,
-      lastActivityAt: "2026-01-01T23:00:00Z",
-    })
+    const stalled = session({ busy: true, lastActivityAt: "2026-01-01T23:00:00Z" })
     expect(webviewRowStatus(stalled, NOW)).toBe("stalled")
+  })
+
+  it("keeps a just-finished session 'working' inside the grace window (running presence)", () => {
+    // lastActivityAt 10s before NOW → still inside the default 60s grace window,
+    // so the row stays in the Running section rather than sinking instantly to
+    // Quiet. Newer-than-NOW timestamps in the fixture avoid the stall branch.
+    const fresh = session({ busy: false, lastActivityAt: "2026-01-02T00:00:00Z" })
+    expect(webviewRowStatus(fresh, NOW)).toBe("working")
+  })
+
+  it("settles a just-finished session to idle once the grace window has elapsed", () => {
+    // Same shape, but the last event sits 5min back — past the default 60s.
+    const stale = session({ busy: false, lastActivityAt: "2026-01-01T23:55:00Z" })
+    expect(webviewRowStatus(stale, NOW)).toBe("idle")
+  })
+
+  it("honours a configured (non-default) grace window", () => {
+    // 5min back is past the default 60s but inside a configured 600s window.
+    const fiveMinAgo = session({ busy: false, lastActivityAt: "2026-01-01T23:55:00Z" })
+    expect(webviewRowStatus(fiveMinAgo, NOW, 600)).toBe("working")
+  })
+
+  it("refines an idle session with a busy subtree into 'delegating' (#session-visibility)", () => {
+    expect(webviewRowStatus(session({ busy: false, childrenBusy: 2 }))).toBe("delegating")
+    // Only refines idle — a working session stays working, awaiting stays awaiting.
+    expect(webviewRowStatus(session({ busy: true, childrenBusy: 2 }))).toBe("working")
+    expect(webviewRowStatus(session({ awaitingInput: true, childrenBusy: 2 }))).toBe("awaiting")
+  })
+
+  it("refines an idle, supervised session into 'parked'; delegating outranks parked", () => {
+    expect(webviewRowStatus(session({ busy: false, watchers: 1 }))).toBe("parked")
+    // A busy subtree wins over a mere waiter.
+    expect(webviewRowStatus(session({ busy: false, childrenBusy: 1, watchers: 1 }))).toBe("delegating")
+  })
+
+  it("renders a session parked with background tasks pending as its own 'awaiting-bg' status", () => {
+    // parked-bg gets its own dedicated row status (drives the dot color and
+    // the pulsing bg-tasks dot) even though it shares the Quiet section with
+    // plain idle/parked rows.
+    expect(webviewRowStatus(session({ busy: false, pendingBgTasks: 2 }))).toBe("awaiting-bg")
+    // A busy session with leftover bg tasks is still working.
+    expect(webviewRowStatus(session({ busy: true, pendingBgTasks: 2 }))).toBe("working")
+    // Absent/zero tolerate the older daemon.
+    expect(webviewRowStatus(session({ busy: false }))).toBe("idle")
+    expect(webviewRowStatus(session({ busy: false, pendingBgTasks: 0 }))).toBe("idle")
+  })
+
+  it("keeps 'parked' (watcher-idle) and 'awaiting-bg' (bg-task-idle) as distinct statuses", () => {
+    // A supervisor watching an idle session with NO bg tasks is still "parked".
+    expect(webviewRowStatus(session({ busy: false, watchers: 1, pendingBgTasks: 0 }))).toBe("parked")
+    // A session with pending bg tasks reads "awaiting-bg" even if also watched —
+    // the bg-task tell outranks the plain watcher tell (ACTIVITY_TO_ROW_STATUS
+    // resolves parked-bg before the idle-only watcher refinement ever runs).
+    expect(webviewRowStatus(session({ busy: false, watchers: 1, pendingBgTasks: 2 }))).toBe("awaiting-bg")
   })
 })
 
@@ -98,18 +268,13 @@ describe("rowActionFor", () => {
     expect(rowActionFor(session({ status: "running" }))).toBe("stop")
     expect(rowActionFor(session({ status: "starting" }))).toBe("stop")
   })
-
   it("offers archive for terminal non-archived sessions", () => {
     expect(rowActionFor(session({ status: "exited" }))).toBe("archive")
-    expect(rowActionFor(session({ status: "killed", killedMidTurn: false, turnsCompleted: 1 }))).toBe("archive")
     expect(rowActionFor(session({ status: "error" }))).toBe("archive")
   })
-
   it("offers unarchive for archived sessions regardless of status", () => {
     expect(rowActionFor(session({ status: "exited", archived: true }))).toBe("unarchive")
-    expect(rowActionFor(session({ status: "running", archived: true }))).toBe("unarchive")
   })
-
   it("offers no action for pending sessions", () => {
     expect(rowActionFor(session({ id: "pending:1", status: "starting" }))).toBeUndefined()
   })
@@ -117,22 +282,43 @@ describe("rowActionFor", () => {
 
 describe("workspaceColorFor", () => {
   it("returns a stable color for a given slug", () => {
-    const a = workspaceColorFor("studio")
-    const b = workspaceColorFor("studio")
-    expect(a.index).toBe(b.index)
-    expect(a.css).toBe(b.css)
+    expect(workspaceColorFor("studio")).toEqual(workspaceColorFor("studio"))
   })
-
-  it("does not shift existing colors when a new workspace is added", () => {
-    const studio = workspaceColorFor("studio")
-    const other = workspaceColorFor("other")
-    // re-check studio after other has been seen
-    expect(workspaceColorFor("studio").index).toBe(studio.index)
-    expect(workspaceColorFor("other").index).toBe(other.index)
-  })
-
   it("uses a neutral gray for the unassigned sentinel", () => {
-    expect(workspaceColorFor("__unassigned__").css).toBe("#808080")
+    expect(workspaceColorFor(UNASSIGNED_SLUG).css).toBe("#808080")
+  })
+
+  it("an override takes precedence over the hash default", () => {
+    const hashDefault = workspaceColorFor("studio")
+    const overrideIndex = (hashDefault.index + 1) % WORKSPACE_PALETTE.length
+    const overridden = workspaceColorFor("studio", { studio: overrideIndex })
+    expect(overridden.index).toBe(overrideIndex)
+    expect(overridden.css).toBe(WORKSPACE_PALETTE[overrideIndex])
+    expect(overridden.css).not.toBe(hashDefault.css)
+  })
+
+  it("an override for the neutral unassigned index resolves to the neutral gray", () => {
+    expect(workspaceColorFor("studio", { studio: UNASSIGNED_COLOR_INDEX })).toEqual({
+      index: UNASSIGNED_COLOR_INDEX,
+      css: "#808080",
+    })
+  })
+
+  it("an override only applies to its own slug — other slugs keep their hash default", () => {
+    const studioDefault = workspaceColorFor("studio")
+    expect(workspaceColorFor("studio", { other: 3 })).toEqual(studioDefault)
+  })
+
+  it("no override present (or reset — key absent) falls back to the hash default, unchanged", () => {
+    expect(workspaceColorFor("studio", {})).toEqual(workspaceColorFor("studio"))
+    expect(workspaceColorFor("studio", undefined)).toEqual(workspaceColorFor("studio"))
+  })
+
+  it("ignores an out-of-range or non-integer override and falls back to the hash default", () => {
+    const hashDefault = workspaceColorFor("studio")
+    expect(workspaceColorFor("studio", { studio: -1 })).toEqual(hashDefault)
+    expect(workspaceColorFor("studio", { studio: UNASSIGNED_COLOR_INDEX + 1 })).toEqual(hashDefault)
+    expect(workspaceColorFor("studio", { studio: 1.5 })).toEqual(hashDefault)
   })
 })
 
@@ -140,39 +326,104 @@ describe("WORKSPACE_PALETTE accessibility", () => {
   it("every accent color has a readable relative luminance", () => {
     for (const color of WORKSPACE_PALETTE) {
       const lum = relativeLuminance(color)
-      // Mid-luminance accent colors read on both light and dark sidebars.
       expect(lum, color).toBeGreaterThanOrEqual(0.18)
       expect(lum, color).toBeLessThanOrEqual(0.75)
     }
   })
 })
 
-describe("buildSessionsWebviewModel", () => {
-  it("produces one continuous list split into recent/older", () => {
-    const sessions = [
-      session({ id: "a", cwd: "/Code/studio", startedAt: "2026-01-01T23:00:00Z" }), // recent (1h before NOW)
-      session({ id: "b", cwd: "/Code/studio", startedAt: "2025-12-01T00:00:00Z" }), // older
-    ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
-    expect(model.section.recent.map(r => r.id)).toEqual(["a"])
-    expect(model.section.older.map(r => r.id)).toEqual(["b"])
-    expect(model.shownCount).toBe(2)
-    expect(model.loadedCount).toBe(2)
-    expect(model.serverTotal).toBe(2)
+// ─── Design B: lane classification ──────────────────────────────────────────
+describe("laneOf / autoGroupOf", () => {
+  it("routes human-origin sessions to the agents lane", () => {
+    expect(laneOf(session())).toBe("agents")
+    expect(laneOf(session({ origin: "vscode" }))).toBe("agents")
+    expect(autoGroupOf(session())).toBeUndefined()
+  })
+  it("routes gate/cron/command/child sessions to the auto lane, sub-grouped", () => {
+    expect(autoGroupOf(session({ origin: "gate" }))).toBe("gate")
+    expect(autoGroupOf(session({ origin: "cron" }))).toBe("cron")
+    expect(autoGroupOf(session({ kind: "command" }))).toBe("command")
+    expect(autoGroupOf(session({ parentSessionId: "parent" }))).toBe("task")
+    expect(laneOf(session({ origin: "gate" }))).toBe("auto")
+    expect(laneOf(session({ kind: "command" }))).toBe("auto")
+    expect(laneOf(session({ parentSessionId: "parent" }))).toBe("auto")
+  })
+  it("prefers gate over cron over command over task when tells overlap", () => {
+    expect(autoGroupOf(session({ origin: "gate", kind: "command" }))).toBe("gate")
+    expect(autoGroupOf(session({ origin: "cron", kind: "command" }))).toBe("cron")
+    expect(autoGroupOf(session({ origin: "gate", parentSessionId: "p" }))).toBe("gate")
+  })
+  it("follows the lineage root when the pool is given (#996 attached children)", () => {
+    const pool = (...sessions: SessionSummary[]) => new Map(sessions.map(s => [s.id, s]))
+    const human = session({ id: "human" })
+    const cron = session({ id: "cron", origin: "cron" })
+    const child = session({ id: "child", parentSessionId: "human" })
+    const grandchild = session({ id: "grandchild", parentSessionId: "child" })
+    const cronChild = session({ id: "cron-child", parentSessionId: "cron" })
+    // Children of a human chat root stay in the agents lane, any depth down.
+    expect(autoGroupOf(child, pool(human, child))).toBeUndefined()
+    expect(laneOf(child, pool(human, child))).toBe("agents")
+    expect(laneOf(grandchild, pool(human, child, grandchild))).toBe("agents")
+    // Children of a machine root, or orphans whose parent isn't loaded, are Tasks.
+    expect(autoGroupOf(cronChild, pool(cron, cronChild))).toBe("task")
+    expect(autoGroupOf(child, pool(child))).toBe("task")
+    // A parentSessionId cycle can't loop — it reads as no human root.
+    const a = session({ id: "a", parentSessionId: "b" })
+    const b = session({ id: "b", parentSessionId: "a" })
+    expect(autoGroupOf(a, pool(a, b))).toBe("task")
+  })
+})
+
+// ─── Design B: attention sections ───────────────────────────────────────────
+describe("sectionFor", () => {
+  it("folds each activity into its fixed-priority section", () => {
+    expect(sectionFor(session({ awaitingInput: true }))).toBe("needs-you")
+    expect(sectionFor(session({ busy: true }))).toBe("running")
+    expect(sectionFor(session({ busy: true, lastActivityAt: "2026-01-01T23:00:00Z" }), NOW)).toBe("attention")
+    expect(sectionFor(session({ status: "error" }))).toBe("attention")
+    expect(sectionFor(session({ busy: false }))).toBe("quiet")
+    expect(sectionFor(session({ status: "exited" }))).toBe("earlier")
+    expect(sectionFor(session({ status: "killed", killedMidTurn: true }))).toBe("earlier")
   })
 
-  it("flattens parentSessionId children under their root as isSub rows, in the root's own section", () => {
+  it("folds a session parked with background tasks into the same 'quiet' section as other idle sessions", () => {
+    expect(sectionFor(session({ busy: false, pendingBgTasks: 2 }))).toBe("quiet")
+  })
+})
+
+describe("buildSessionsWebviewModel — attention sections", () => {
+  it("organizes the agents lane into the five sections in fixed order", () => {
     const sessions = [
-      session({ id: "root", cwd: "/Code/studio", startedAt: "2026-01-01T23:00:00Z" }),
-      session({ id: "child", cwd: "/Code/studio", parentSessionId: "root", startedAt: "2025-01-01T00:00:00Z" }),
+      session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
+      session({ id: "bg", cwd: "/Code/studio", busy: false, pendingBgTasks: 1 }),
+      session({ id: "run", cwd: "/Code/studio", busy: true }),
+      session({ id: "fail", cwd: "/Code/studio", status: "error" }),
+      session({ id: "idle", cwd: "/Code/studio", busy: false }),
+      session({ id: "done", cwd: "/Code/studio", status: "exited" }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
-    const rows = model.section.recent
-    expect(rows.map(r => r.id)).toEqual(["root", "child"])
-    expect(rows.find(r => r.id === "root")?.isSub).toBe(false)
-    expect(rows.find(r => r.id === "child")?.isSub).toBe(true)
-    // A child never migrates to "older" on its own startedAt — it rides with its root.
-    expect(model.section.older).toHaveLength(0)
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups.map(g => g.key)).toEqual(["needs-you", "running", "attention", "quiet", "earlier"])
+    expect(model.groups.map(g => g.label)).toEqual(["Needs you", "Running", "Attention", "Quiet", "Earlier"])
+    // The awaiting-bg session lands in the same Quiet list as the plain idle
+    // session — no dedicated section of its own.
+    expect(model.groups.find(g => g.key === "quiet")?.rows.map(r => r.id).sort()).toEqual(["bg", "idle"])
+    expect(model.groups.find(g => g.key === "earlier")?.hint).toBe("last 24 h")
+    expect(model.shownCount).toBe(6)
+  })
+
+  it("omits empty sections", () => {
+    const model = buildSessionsWebviewModel([session({ cwd: "/Code/studio", awaitingInput: true })], studioConfig, opts())
+    expect(model.groups.map(g => g.key)).toEqual(["needs-you"])
+  })
+
+  it("groups stalled and failed together under Attention", () => {
+    const sessions = [
+      session({ id: "stalled", cwd: "/Code/studio", busy: true, lastActivityAt: "2026-01-01T23:00:00Z" }),
+      session({ id: "failed", cwd: "/Code/studio", status: "error" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const attention = model.groups.find(g => g.key === "attention")
+    expect(attention?.rows.map(r => r.id).sort()).toEqual(["failed", "stalled"])
   })
 
   it("maps a row's fields from the reused pure helpers", () => {
@@ -186,147 +437,437 @@ describe("buildSessionsWebviewModel", () => {
         contextUsed: 33,
         contextSize: 100,
         label: "exec · canvakit-extract",
+        busy: true,
       }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
-    const row = model.section.recent[0]! as WebviewRow
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const row = model.groups[0]!.rows[0]! as WebviewRow
     expect(row.name).toBe("exec · canvakit-extract")
-    expect(row.harnessGlyph).toBe("☿")
+    expect(row.logo).toEqual({ kind: "icon", file: "hermes.svg" })
     expect(row.model).toBe("glm-5.2")
     expect(row.cost).toBe("$0.42")
     expect(row.ctxPercent).toBe(33)
-    expect(row.tag).toBe("in-place")
-    expect(row.workspace?.label).toBe("Agentik Studio")
+    // In-place is the unremarkable default — the tag shows WHERE it runs
+    // (the workspace label), with the posture + path relegated to the hover.
+    expect(row.tag).toBe("Agentik Studio")
+    expect(row.tagTitle).toBe("/Code/studio · runs in-place")
     expect(row.workspace?.slug).toBe("studio")
   })
 
-  it("filters by activity-based tabs, keeping terminal/stalled sessions out of Working/Idle/Done", () => {
-    const sessions = [
-      session({ id: "working", cwd: "/Code/studio", busy: true }),
-      session({ id: "idle", cwd: "/Code/studio", busy: false }),
-      session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
-      session({ id: "done", cwd: "/Code/studio", status: "exited" }),
-      session({ id: "stopped", cwd: "/Code/studio", status: "killed", killedMidTurn: true }),
-      session({ id: "failed", cwd: "/Code/studio", status: "error" }),
-      session({
-        id: "stalled",
-        cwd: "/Code/studio",
-        busy: true,
-        lastActivityAt: "2026-01-01T23:00:00Z",
-      }),
-    ]
-
-    expect(
-      buildSessionsWebviewModel(sessions, studioConfig, { tab: "working", search: "", now: NOW }).shownCount,
-    ).toBe(1)
-    expect(
-      buildSessionsWebviewModel(sessions, studioConfig, { tab: "idle", search: "", now: NOW }).shownCount,
-    ).toBe(1)
-    expect(
-      buildSessionsWebviewModel(sessions, studioConfig, { tab: "awaiting", search: "", now: NOW }).shownCount,
-    ).toBe(1)
-    expect(
-      buildSessionsWebviewModel(sessions, studioConfig, { tab: "done", search: "", now: NOW }).shownCount,
-    ).toBe(1)
-    const stalledModel = buildSessionsWebviewModel(sessions, studioConfig, {
-      tab: "stalled",
-      search: "",
-      now: NOW,
-    })
-    expect(stalledModel.shownCount).toBe(3)
-    expect(stalledModel.section.recent.map(r => r.id).sort()).toEqual(["failed", "stalled", "stopped"])
+  it("renders no location tag for an in-place session with no resolvable workspace", () => {
+    const sessions = [session({ id: "a", cwd: "/somewhere/else", workspaceSlug: "default" })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const row = model.groups[0]!.rows[0]! as WebviewRow
+    expect(row.tag).toBe("")
+    expect(row.tagTitle).toBe("/somewhere/else · runs in-place")
   })
 
-  it("retains an idle parent when its child matches the Working tab", () => {
+  it("keeps the worktree glyph tag for an isolated session, path in the hover", () => {
     const sessions = [
-      session({ id: "parent", cwd: "/Code/studio", busy: false }),
-      session({ id: "child", cwd: "/Code/studio", parentSessionId: "parent", busy: true }),
+      session({ id: "a", cwd: "/Code/studio", worktreePath: "/Code/studio/.worktrees/fix-auth" }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "working", search: "", now: NOW })
-    expect(model.shownCount).toBe(2)
-    const rows = model.section.recent
-    expect(rows.map(r => ({ id: r.id, isSub: r.isSub, status: r.status }))).toEqual([
-      { id: "parent", isSub: false, status: "idle" },
-      { id: "child", isSub: true, status: "working" },
-    ])
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const row = model.groups[0]!.rows[0]! as WebviewRow
+    expect(row.tag).toContain("fix-auth")
+    expect(row.tagTitle).toBe("/Code/studio · isolated worktree")
+  })
+
+  it("falls back to session.kind for the logo when adapterSlug is absent", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", kind: "browser" })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const row = model.groups[0]!.rows[0]! as WebviewRow
+    expect(row.logo).toEqual({ kind: "icon", file: "browser.svg" })
+  })
+
+  it("carries pendingBgTasks onto the row for the pulsing bg-tasks dot", () => {
+    const sessions = [
+      session({ id: "a", cwd: "/Code/studio", busy: false, pendingBgTasks: 3 }),
+      session({ id: "b", cwd: "/Code/studio", busy: false }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const rows = model.groups.flatMap(g => g.rows)
+    const a = rows.find(r => r.id === "a")!
+    const b = rows.find(r => r.id === "b")!
+    expect(a.pendingBgTasks).toBe(3)
+    // The row status still reflects awaiting-bg (dot color) even though both
+    // rows now share the same Quiet section.
+    expect(a.status).toBe("awaiting-bg")
+    // Absent field → 0 (older daemon tolerated), so no dot renders.
+    expect(b.pendingBgTasks).toBe(0)
+  })
+
+  it("marks a locally-watched row for the plain-👁 chip (same glyph as the tree)", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio" }), session({ id: "b", cwd: "/Code/studio" })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ watchedIds: new Set(["a"]) }))
+    const rows = model.groups.flatMap(g => g.rows)
+    expect(rows.find(r => r.id === "a")!.locallyWatched).toBe(true)
+    expect(rows.find(r => r.id === "b")!.locallyWatched).toBe(false)
+    // No watchedIds (service unwired) → nobody is locally watched.
+    const bare = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(bare.groups.flatMap(g => g.rows).every(r => !r.locallyWatched)).toBe(true)
+  })
+})
+
+describe("buildSessionsWebviewModel — pinned group", () => {
+  it("lifts a pinned session into its own group at the very top, ahead of Needs you", () => {
+    const sessions = [
+      session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
+      session({ id: "pinned-idle", cwd: "/Code/studio", busy: false, pinned: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups.map(g => g.key)).toEqual(["pinned", "needs-you"])
+    expect(model.groups[0]!.label).toBe("Pinned")
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["pinned-idle"])
+  })
+
+  it("removes a pinned row from its normal attention section — never rendered twice", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", awaitingInput: true, pinned: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups.map(g => g.key)).toEqual(["pinned"])
+    expect(model.groups.find(g => g.key === "needs-you")).toBeUndefined()
+    expect(model.shownCount).toBe(1)
+  })
+
+  it("marks the row itself pinned:true", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", pinned: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups[0]!.rows[0]!.pinned).toBe(true)
+  })
+
+  it("omits the Pinned group entirely when nothing is pinned", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", busy: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups.some(g => g.key === "pinned")).toBe(false)
+  })
+
+  it("also lifts a pinned session in the auto lane, ahead of its subgroup", () => {
+    const sessions = [
+      session({ id: "gate", cwd: "/Code/studio", origin: "gate", status: "exited" }),
+      session({ id: "cron-pinned", cwd: "/Code/studio", origin: "cron", label: "cron:cron_abc", status: "exited", pinned: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ lane: "auto" }))
+    expect(model.groups.map(g => g.key)).toEqual(["pinned", "gate"])
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["cron-pinned"])
+  })
+
+  it("keeps pinned rows' incoming recency order among themselves", () => {
+    const sessions = [
+      session({ id: "newer", cwd: "/Code/studio", pinned: true, lastActivityAt: "2026-01-02T00:00:00Z" }),
+      session({ id: "older", cwd: "/Code/studio", pinned: true, lastActivityAt: "2026-01-01T00:00:00Z" }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups[0]!.rows.map(r => r.id)).toEqual(["newer", "older"])
+  })
+})
+
+// ─── Design B: Agents | Auto split ──────────────────────────────────────────
+describe("buildSessionsWebviewModel — lane split", () => {
+  const mixed = [
+    session({ id: "human", cwd: "/Code/studio", busy: true }),
+    session({ id: "gate", cwd: "/Code/studio", origin: "gate", status: "exited" }),
+    session({ id: "cron", cwd: "/Code/studio", origin: "cron", label: "cron:cron_abc12345", status: "exited" }),
+    session({ id: "cmd", cwd: "/Code/studio", kind: "command", status: "exited" }),
+    session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "human" }),
+    session({ id: "orphan", cwd: "/Code/studio", busy: true, parentSessionId: "not-loaded" }),
+  ]
+
+  it("counts both lanes regardless of the selected lane", () => {
+    const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "agents" }))
+    expect(model.laneCounts).toEqual({ agents: 2, auto: 4 })
+  })
+
+  it("keeps a chat session's attached child in the agents lane, nested under it", () => {
+    const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "agents" }))
+    const ids = model.groups.flatMap(g => g.rows.map(r => r.id))
+    expect(ids).toEqual(["human", "child"])
+    const child = model.groups.flatMap(g => g.rows).find(r => r.id === "child")!
+    expect(child.depth).toBe(1)
+  })
+
+  it("groups the auto lane into Gate reviews / Crons / Commands / Tasks, in order", () => {
+    const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "auto" }))
+    expect(model.groups.map(g => g.key)).toEqual(["gate", "cron", "command", "task"])
+    expect(model.groups.map(g => g.label)).toEqual(["Gate reviews", "Crons", "Commands", "Tasks"])
+    expect(model.groups.find(g => g.key === "task")!.rows.map(r => r.id)).toEqual(["orphan"])
+  })
+
+  it("cleans up the machine-session name (cron · shortId, command · shortId, gate-review)", () => {
+    const model = buildSessionsWebviewModel(mixed, studioConfig, opts({ lane: "auto" }))
+    const cron = model.groups.find(g => g.key === "cron")!.rows[0]!
+    expect(cron.name).toBe("cron")
+    expect(cron.idMono).toBe("abc12345")
+    const gate = model.groups.find(g => g.key === "gate")!.rows[0]!
+    expect(gate.name).toBe("gate-review")
+    const cmd = model.groups.find(g => g.key === "command")!.rows[0]!
+    expect(cmd.name).toBe("command")
+  })
+})
+
+// ─── Design B: cron collapsing ──────────────────────────────────────────────
+describe("cronJobIdOf / collapseCronRuns", () => {
+  it("extracts a cron job id from the cron:<jobId> label", () => {
+    expect(cronJobIdOf({ label: "cron:cron_d8ee2e36-abcd" })).toBe("cron_d8ee2e36-abcd")
+    expect(cronJobIdOf({ label: "exec · foo" })).toBeUndefined()
+    expect(cronJobIdOf({ label: undefined })).toBeUndefined()
+  })
+
+  it("collapses consecutive same-job cron runs into one row with a run count", () => {
+    const cronRow = (id: string, jobId: string): WebviewRow =>
+      ({ id, session: session({ id, label: `cron:${jobId}` }), runs: undefined }) as unknown as WebviewRow
+    const rows = [
+      cronRow("r3", "cron_a"),
+      cronRow("r2", "cron_a"),
+      cronRow("r1", "cron_a"),
+      cronRow("q1", "cron_b"),
+    ]
+    const collapsed = collapseCronRuns(rows)
+    expect(collapsed.map(r => r.id)).toEqual(["r3", "q1"])
+    expect(collapsed[0]!.runs).toBe(3)
+    expect(collapsed[1]!.runs).toBeUndefined()
+  })
+
+  it("collapses cron runs end-to-end in the auto lane", () => {
+    const cronRun = (id: string, at: string) =>
+      session({ id, cwd: "/Code/studio", origin: "cron", label: "cron:cron_d8ee2e36", status: "exited", lastActivityAt: at })
+    const sessions = [
+      cronRun("run-3", "2026-01-01T23:30:00Z"),
+      cronRun("run-2", "2026-01-01T23:20:00Z"),
+      cronRun("run-1", "2026-01-01T23:10:00Z"),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ lane: "auto" }))
+    const crons = model.groups.find(g => g.key === "cron")!
+    expect(crons.rows).toHaveLength(1)
+    expect(crons.rows[0]!.runs).toBe(3)
+    expect(crons.rows[0]!.idMono).toBe("d8ee2e36")
+    expect(model.shownCount).toBe(1)
+  })
+})
+
+describe("buildSessionsWebviewModel — colorOverrides", () => {
+  it("an override reflects in both the rail chip and the row's workspace colorIndex", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", busy: true })]
+    const hashDefault = workspaceColorFor("studio")
+    const overrideIndex = (hashDefault.index + 1) % WORKSPACE_PALETTE.length
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ colorOverrides: { studio: overrideIndex } }))
+    const railEntry = model.rail.find(r => r.slug === "studio")
+    expect(railEntry?.colorIndex).toBe(overrideIndex)
+    expect(railEntry?.css).toBe(WORKSPACE_PALETTE[overrideIndex])
+    const row = model.groups.flatMap(g => g.rows).find(r => r.id === "a")
+    expect(row?.workspace?.colorIndex).toBe(overrideIndex)
+  })
+
+  it("with no colorOverrides, rail/row colors are unchanged from the hash default", () => {
+    const sessions = [session({ id: "a", cwd: "/Code/studio", busy: true })]
+    const withOverrides = buildSessionsWebviewModel(sessions, studioConfig, opts({ colorOverrides: {} }))
+    const withoutOverrides = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(withOverrides.rail.find(r => r.slug === "studio")?.colorIndex).toBe(
+      withoutOverrides.rail.find(r => r.slug === "studio")?.colorIndex,
+    )
+  })
+})
+
+describe("gateApproved", () => {
+  it("flags an approving gate session and nothing else", () => {
+    expect(gateApproved(session({ origin: "gate", activitySummary: { text: "Verdict: approved", state: "done", at: "" } }))).toBe(true)
+    expect(gateApproved(session({ origin: "gate", activitySummary: { text: "Verdict: changes requested", state: "done", at: "" } }))).toBe(false)
+    expect(gateApproved(session({ activitySummary: { text: "approved" } as never }))).toBe(false)
+  })
+})
+
+describe("stallTooltipFor", () => {
+  it("is undefined when the session isn't flagged by the daemon's turn-liveness watchdog", () => {
+    expect(stallTooltipFor(session(), NOW)).toBeUndefined()
+  })
+
+  it("reports the silent duration since the daemon-stamped stalledSinceMs, not any client-side guess", () => {
+    const stalledSinceMs = NOW - 6 * 60_000
+    expect(stallTooltipFor(session({ stalledSinceMs }), NOW)).toBe(
+      "no adapter activity for 6min mid-turn — stream may be dead",
+    )
+  })
+
+  it("clamps to non-negative when stalledSinceMs is somehow after now", () => {
+    expect(stallTooltipFor(session({ stalledSinceMs: NOW + 60_000 }), NOW)).toBe(
+      "no adapter activity for 0s mid-turn — stream may be dead",
+    )
+  })
+})
+
+describe("toRow (via buildSessionsWebviewModel) — stall badge", () => {
+  it("carries stallTooltip through onto the rendered row only when stalledSinceMs is set", () => {
+    const flagged = session({ id: "flagged", busy: true, stalledSinceMs: NOW - 6 * 60_000 })
+    const healthy = session({ id: "healthy", busy: true })
+    const model = buildSessionsWebviewModel(
+      [flagged, healthy],
+      { version: 1, workspaces: [] },
+      opts(),
+    )
+    const rows = model.groups.flatMap(g => g.rows)
+    const flaggedRow = rows.find(r => r.id === "flagged")
+    const healthyRow = rows.find(r => r.id === "healthy")
+    expect(flaggedRow?.stallTooltip).toBe("no adapter activity for 6min mid-turn — stream may be dead")
+    expect(healthyRow?.stallTooltip).toBeUndefined()
+  })
+})
+
+// ─── Design B: project rail ─────────────────────────────────────────────────
+describe("buildSessionsWebviewModel — project rail", () => {
+  it("builds an All chip plus one chip per workspace with counts", () => {
+    const sessions = [
+      session({ id: "a", cwd: "/Code/studio", busy: true }),
+      session({ id: "b", cwd: "/Code/other", busy: true }),
+      session({ id: "c", cwd: "/Code/other", busy: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, multiConfig, opts())
+    expect(model.rail[0]).toMatchObject({ slug: null, label: "All", count: 3 })
+    const studio = model.rail.find(r => r.slug === "studio")
+    const other = model.rail.find(r => r.slug === "other")
+    expect(studio?.count).toBe(1)
+    expect(other?.count).toBe(2)
+  })
+
+  it("lights the ochre awaiting dot only on projects holding an awaiting session", () => {
+    const sessions = [
+      session({ id: "a", cwd: "/Code/studio", awaitingInput: true }),
+      session({ id: "b", cwd: "/Code/other", busy: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, multiConfig, opts())
+    expect(model.rail.find(r => r.slug === null)?.awaiting).toBe(true)
+    expect(model.rail.find(r => r.slug === "studio")?.awaiting).toBe(true)
+    expect(model.rail.find(r => r.slug === "other")?.awaiting).toBe(false)
+  })
+
+  it("scopes the rail to the current lane", () => {
+    const sessions = [
+      session({ id: "human", cwd: "/Code/studio", busy: true }),
+      session({ id: "gate", cwd: "/Code/other", origin: "gate", status: "exited" }),
+    ]
+    const agents = buildSessionsWebviewModel(sessions, multiConfig, opts({ lane: "agents" }))
+    expect(agents.rail.map(r => r.slug)).toEqual([null, "studio"])
+    const auto = buildSessionsWebviewModel(sessions, multiConfig, opts({ lane: "auto" }))
+    expect(auto.rail.map(r => r.slug)).toEqual([null, "other"])
+  })
+
+  it("filters the list to the selected project", () => {
+    const sessions = [
+      session({ id: "a", cwd: "/Code/studio", busy: true }),
+      session({ id: "b", cwd: "/Code/other", busy: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, multiConfig, opts({ project: "studio" }))
+    expect(model.groups.flatMap(g => g.rows.map(r => r.id))).toEqual(["a"])
+  })
+})
+
+describe("buildSessionsWebviewModel — filtering + totals", () => {
+  it("hides archived sessions entirely by default", () => {
+    const sessions = [
+      session({ id: "live", cwd: "/Code/studio", busy: true }),
+      session({ id: "arch", cwd: "/Code/studio", status: "exited", archived: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    expect(model.groups.flatMap(g => g.rows.map(r => r.id))).toEqual(["live"])
+  })
+
+  it("toggle ON shows ONLY archived rows — active sessions are excluded, not merged in", () => {
+    const sessions = [
+      session({ id: "live", cwd: "/Code/studio", busy: true }),
+      session({ id: "arch", cwd: "/Code/studio", status: "exited", archived: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: true }))
+    const rows = model.groups.flatMap(g => g.rows)
+    expect(rows.map(r => r.id)).toEqual(["arch"])
+    expect(rows[0]?.archived).toBe(true)
+  })
+
+  it("toggle OFF shows ONLY active rows — archived sessions are excluded", () => {
+    const sessions = [
+      session({ id: "live", cwd: "/Code/studio", busy: true }),
+      session({ id: "arch", cwd: "/Code/studio", status: "exited", archived: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: false }))
+    const rows = model.groups.flatMap(g => g.rows)
+    expect(rows.map(r => r.id)).toEqual(["live"])
+  })
+
+  it("an empty archived set renders no rows in the archived-only view", () => {
+    const sessions = [session({ id: "live", cwd: "/Code/studio", busy: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: true }))
+    expect(model.groups.flatMap(g => g.rows)).toEqual([])
+    expect(model.shownCount).toBe(0)
+  })
+
+  it("a live continuation of an archived predecessor doesn't leak into the wrong view", () => {
+    const sessions = [
+      session({ id: "old", cwd: "/Code/studio", status: "exited", archived: true }),
+      session({ id: "new", cwd: "/Code/studio", busy: true, continuedFrom: "old" }),
+    ]
+    const archivedOnly = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: true }))
+    expect(archivedOnly.groups.flatMap(g => g.rows.map(r => r.id))).toEqual(["old"])
+
+    const activeOnly = buildSessionsWebviewModel(sessions, studioConfig, opts({ includeArchived: false }))
+    expect(activeOnly.groups.flatMap(g => g.rows.map(r => r.id))).toEqual(["new"])
+  })
+
+  it("honors an explicit loadedCount for the footer (item 2 pinned extras)", () => {
+    const sessions = [session({ id: "a", busy: true }), session({ id: "b", busy: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ loadedCount: 1, serverTotal: 50 }))
+    expect(model.loadedCount).toBe(1)
+  })
+
+  it("marks a kept-alive session as watched (item 5)", () => {
+    const model = buildSessionsWebviewModel(
+      [session({ id: "w", cwd: "/Code/studio", busy: true, keepAlive: true })],
+      studioConfig,
+      opts(),
+    )
+    expect(model.groups[0]!.rows[0]!.watched).toBe(true)
+  })
+
+  it("nests a subagent under its loaded human spawner in the agents lane (#996)", () => {
+    const sessions = [
+      session({ id: "parent", cwd: "/Code/studio", busy: true }),
+      session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "parent" }),
+    ]
+    const agentsModel = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const running = agentsModel.groups.find(g => g.key === "running")!
+    expect(running.rows.map(r => r.id)).toEqual(["parent", "child"])
+    expect(running.rows.map(r => r.depth)).toEqual([0, 1])
+
+    const autoModel = buildSessionsWebviewModel(sessions, studioConfig, opts({ lane: "auto" }))
+    expect(autoModel.groups.find(g => g.key === "task")).toBeUndefined()
+  })
+
+  it("routes a subagent whose parent isn't loaded to the auto lane's Tasks group", () => {
+    const sessions = [session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "gone" })]
+    const autoModel = buildSessionsWebviewModel(sessions, studioConfig, opts({ lane: "auto" }))
+    const tasks = autoModel.groups.find(g => g.key === "task")!
+    expect(tasks.rows[0]!.id).toBe("child")
   })
 
   it("filters by the pinned search input via the reused predicate", () => {
     const sessions = [
-      session({ id: "a", cwd: "/Code/studio", label: "sales-analysis" }),
-      session({ id: "b", cwd: "/Code/studio", label: "unrelated" }),
+      session({ id: "a", cwd: "/Code/studio", label: "sales-analysis", busy: true }),
+      session({ id: "b", cwd: "/Code/studio", label: "unrelated", busy: true }),
     ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "sales", now: NOW })
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ search: "sales" }))
     expect(model.shownCount).toBe(1)
-    expect(model.section.recent[0]!.id).toBe("a")
-  })
-
-  it("keeps workspace tags on rows as a single global list", () => {
-    const sessions = [
-      session({ id: "a", cwd: "/Code/studio", startedAt: "2026-01-01T23:00:00Z" }),
-      session({ id: "b", cwd: "/Code/other", startedAt: "2026-01-01T22:00:00Z" }),
-    ]
-    const model = buildSessionsWebviewModel(sessions, multiConfig, { tab: "all", search: "", now: NOW })
-    expect(model.section.recent.map(r => r.id)).toEqual(["a", "b"])
-    expect(model.section.recent.find(r => r.id === "a")?.workspace?.slug).toBe("studio")
-    expect(model.section.recent.find(r => r.id === "b")?.workspace?.slug).toBe("other")
-  })
-
-  it("shows only archived rows in the Archived tab", () => {
-    const sessions = [
-      session({ id: "live", cwd: "/Code/studio" }),
-      session({ id: "archived", cwd: "/Code/studio", status: "exited", archived: true }),
-    ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "archived", search: "", now: NOW })
-    expect(model.section.recent.map(r => r.id)).toEqual(["archived"])
-    expect(model.shownCount).toBe(1)
-  })
-
-  it("sorts the global list by most recent activity, falling back to startedAt", () => {
-    const sessions = [
-      session({
-        id: "older-running",
-        cwd: "/Code/studio",
-        startedAt: "2026-01-01T22:00:00Z",
-        lastActivityAt: "2026-01-01T22:05:00Z",
-      }),
-      session({
-        id: "recent-done",
-        cwd: "/Code/studio",
-        status: "exited",
-        startedAt: "2026-01-01T23:00:00Z",
-        lastActivityAt: "2026-01-01T22:30:00Z",
-      }),
-    ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
-    // Running sorts before done; within the same running-ness, lastActivityAt wins.
-    expect(model.section.recent.map(r => r.id)).toEqual(["older-running", "recent-done"])
+    expect(model.groups[0]!.rows[0]!.id).toBe("a")
   })
 
   it("tracks loaded and server totals independently of shown rows", () => {
-    const sessions = [
-      session({ id: "a", label: "apple" }),
-      session({ id: "b", label: "banana" }),
-      session({ id: "c", label: "cherry" }),
-    ]
-    const model = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "", now: NOW })
-    expect(model.loadedCount).toBe(3)
-    expect(model.serverTotal).toBe(3)
-    const filtered = buildSessionsWebviewModel(sessions, studioConfig, { tab: "all", search: "apple", now: NOW })
-    expect(filtered.shownCount).toBe(1)
-    expect(filtered.loadedCount).toBe(3)
-    expect(filtered.serverTotal).toBe(3)
+    const sessions = [session({ id: "a", label: "apple", busy: true }), session({ id: "b", label: "banana", busy: true })]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ serverTotal: 283 }))
+    expect(model.loadedCount).toBe(2)
+    expect(model.serverTotal).toBe(283)
   })
 })
 
 describe("summaryTextFor", () => {
+  const base = { lane: "agents" as const, rail: [], laneCounts: { agents: 0, auto: 0 }, groups: [] }
   it("reports loaded-of-server-total when unfiltered", () => {
-    const model = { section: { recent: [], older: [] }, shownCount: 0, loadedCount: 50, serverTotal: 283 }
-    expect(summaryTextFor(model, false)).toBe("50 of 283 loaded")
+    expect(summaryTextFor({ ...base, shownCount: 0, loadedCount: 50, serverTotal: 283 }, false)).toBe("50 of 283 loaded")
   })
-
   it("reports shown-of-loaded when a filter is active", () => {
-    const model = { section: { recent: [], older: [] }, shownCount: 3, loadedCount: 50, serverTotal: 283 }
-    expect(summaryTextFor(model, true)).toBe("3 of 50 shown")
+    expect(summaryTextFor({ ...base, shownCount: 3, loadedCount: 50, serverTotal: 283 }, true)).toBe("3 of 50 shown")
   })
 })

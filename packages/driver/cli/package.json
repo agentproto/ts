@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/driver-cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "agentproto/cli-runtime — AIP-29 CLI provider specialisation. Sugar over @agentproto/driver for command-line binaries: argv templating, subprocess invocation, exit-code mapping, output parsing. v0.1 ships subprocess invocation; OS-level sandbox enforcement (network egress, fs ACLs, exec deny) is host policy and integrates with platform primitives in v0.2.",
   "keywords": [
     "agentproto",
@@ -49,7 +49,7 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "repository": {
     "type": "git",

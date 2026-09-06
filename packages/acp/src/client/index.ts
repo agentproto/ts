@@ -21,6 +21,7 @@ import type {
   AcpPermissionResolution,
   StreamEvent,
 } from "../types.js"
+import { ACP_META_FEEDBACK } from "../types.js"
 
 export type { SessionConfigOption, SessionMode }
 
@@ -35,7 +36,7 @@ const PROTOCOL_VERSION_DEFAULT = 1
  * rationale on why the `outcome` field is nested.
  */
 type RequestPermissionResponse =
-  | { outcome: { outcome: "selected"; optionId: string } }
+  | { outcome: { outcome: "selected"; optionId: string; _meta?: Record<string, unknown> } }
   | { outcome: { outcome: "cancelled" } }
 
 /** A `session/request_permission` RPC parked by permission-hold mode. */
@@ -249,6 +250,21 @@ export interface SetConfigOptionResult {
 export interface AcpClientSession {
   readonly sessionId: string
   /**
+   * Set when `newSession`'s connect-time `model` apply was REJECTED by the
+   * server — the session is live but running on the agent's own default
+   * model, not the requested one. The apply itself stays non-fatal here
+   * (agentproto#186: a rejected model must never crash the spawn with an
+   * opaque error), but silently-on-the-wrong-model is exactly the failure
+   * a caller may need to escalate: for a derived-from-model adapter
+   * (opencode & co.) the model IS the route, so "kept the default" means
+   * a different provider and a different bill. This field is the
+   * structural signal that lets the host decide — warn for free-routing
+   * adapters, fail loudly for derived-from-model ones. `undefined` when no
+   * model was requested, the apply succeeded, or the session was resumed
+   * (`loadSession` applies no model).
+   */
+  readonly modelApplyRejection?: { requested: string; reason: string }
+  /**
    * The wrapper's advertised session configuration options (SDK
    * `SessionConfigOption[]`), captured verbatim from `newSession`'s /
    * `loadSession`'s response at connect time — the per-model value lists
@@ -348,7 +364,15 @@ export async function createAcpClient(
     held.resolve(
       "cancelled" in resolution
         ? { outcome: { outcome: "cancelled" } }
-        : { outcome: { outcome: "selected", optionId: resolution.optionId } },
+        : {
+            outcome: {
+              outcome: "selected",
+              optionId: resolution.optionId,
+              ...(resolution.feedback
+                ? { _meta: { [ACP_META_FEEDBACK]: resolution.feedback } }
+                : {}),
+            },
+          },
     )
     return true
   }
@@ -421,6 +445,7 @@ export async function createAcpClient(
       // omitted the agent keeps its own defaults (which vary by model).
       // We call these sequentially so a model switch (which rebuilds the
       // effort options) always precedes the effort set.
+      let modelApplyRejection: { requested: string; reason: string } | undefined
       if (params.model) {
         try {
           await connection.setSessionConfigOption({
@@ -443,11 +468,16 @@ export async function createAcpClient(
           // by wrapper version and account entitlements), so there is no
           // version-stable way to know it before the call — a rejected model
           // must therefore never be fatal. This is NOT a silent drop: the
-          // requested id AND the server's own reason are logged, and the
+          // requested id AND the server's own reason are logged, recorded on
+          // the returned session as `modelApplyRejection` (so a host that
+          // CAN'T tolerate running on the default model — derived-from-model
+          // adapters, where model = route = bill — can escalate), and the
           // session continues on the agent's default model.
+          const reason = configOptionErrorDetail(err)
+          modelApplyRejection = { requested: params.model, reason }
           console.warn(
             `[acp] set_config_option model="${params.model}" rejected by server ` +
-              `— keeping the agent's default model. Reason: ${configOptionErrorDetail(err)}`,
+              `— keeping the agent's default model. Reason: ${reason}`,
           )
         }
       }
@@ -497,6 +527,7 @@ export async function createAcpClient(
         options.onActivity,
         options.turnIdleTimeoutMs,
         cancelPermissionsForSession,
+        modelApplyRejection,
       )
     },
     async loadSession(params) {
@@ -564,9 +595,11 @@ function buildSession(
   onActivity: (() => void) | undefined,
   turnIdleTimeoutMs: number | undefined,
   cancelPermissionsForSession: (sessionId: string) => void,
+  modelApplyRejection?: { requested: string; reason: string },
 ): AcpClientSession {
   return {
     sessionId,
+    ...(modelApplyRejection ? { modelApplyRejection } : {}),
     availableConfigOptions: state.configOptions,
     availableModes: state.modes,
     currentModeId: state.currentModeId,
@@ -808,6 +841,10 @@ interface RequestPermissionParams {
      *  Bash command string). Carried through as-is; see the `agent-prompt`
      *  event's `rawInput` field. */
     rawInput?: unknown
+    /** ACP `ToolCallUpdate._meta` — vendor-extension bag (e.g. mastra-agent's
+     *  `mastra-agent/suspendPayload`). Carried through as-is; see the
+     *  `agent-prompt` event's `_meta` field. */
+    _meta?: unknown
   }
   options?: Array<{ optionId?: string; name?: string; kind?: string }>
 }
@@ -844,6 +881,7 @@ function holdPermissionRequest(
     ? `Allow "${toolName}"?`
     : "The agent is requesting permission to run a tool."
   const rawInput = params.toolCall?.rawInput
+  const meta = params.toolCall?._meta
 
   const state = sessions.get(sessionId)
   if (state) {
@@ -855,6 +893,7 @@ function holdPermissionRequest(
       text,
       ...(toolName ? { toolName } : {}),
       ...(rawInput !== undefined ? { rawInput } : {}),
+      ...(meta !== undefined ? { _meta: meta } : {}),
     })
   } else {
     // No session slot for this id — the agent-prompt event can't be surfaced,
@@ -1072,9 +1111,11 @@ function translateSessionUpdate(
     }
     case "plan": {
       const entries = (update.entries as Array<Record<string, unknown>>) ?? []
+      const title = typeof update.title === "string" ? update.title : undefined
       return {
         kind: "plan",
         sessionId,
+        ...(title ? { title } : {}),
         entries: entries.map((entry) => ({
           content: (entry.content as string) ?? "",
           priority: (entry.priority as "high" | "medium" | "low") ?? "medium",
@@ -1105,6 +1146,30 @@ function translateSessionUpdate(
         ...(cost ? { cost } : {}),
         ...(tokensIn !== undefined ? { tokensIn } : {}),
         ...(tokensOut !== undefined ? { tokensOut } : {}),
+      }
+    }
+    case "available_commands_update": {
+      const commands = (update.availableCommands as Array<Record<string, unknown>>) ?? []
+      return {
+        kind: "available-commands",
+        sessionId,
+        commands: commands.map((cmd) => ({
+          name: (cmd.name as string) ?? "",
+          ...(typeof cmd.description === "string" ? { description: cmd.description } : {}),
+          ...(cmd.input !== undefined
+            ? { input: cmd.input as { hint?: string } | null }
+            : {}),
+          ...(cmd._meta !== undefined
+            ? {
+                _meta: cmd._meta as {
+                  scope?: string
+                  path?: string
+                  bareName?: string
+                  qualifiedName?: string
+                },
+              }
+            : {}),
+        })),
       }
     }
     case "user_message_chunk":

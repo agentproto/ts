@@ -1,5 +1,47 @@
 # @agentproto/acp
 
+## 0.8.0
+
+### Minor Changes
+
+- 0012980: feat(permissions): thread plan \_meta through the hold path and add free-text feedback on the respond path
+
+  Adds `feedback?: string` to permission resolutions, enabling users to attach contextual information when approving or denying held tool-permission requests. The feature threads through all layers: types export `ACP_META_FEEDBACK` constant for the `_meta` key convention, ACP client carries `_meta` through to agent-prompt events, runtime forwards feedback on outcomes, and mastra-agent adapter folds feedback into suspension resumeData. CLI gains `--feedback` flag on approve/deny commands and renders plan text from suspension payloads. All changes are backward compatible.
+
+### Patch Changes
+
+- @agentproto/define-doctype@0.1.1
+
+## 0.7.3
+
+### Patch Changes
+
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+## 0.7.2
+
+### Patch Changes
+
+- 64088e0: Refuse to run a derived-from-model adapter on its default model when the requested model was not applied. Launching opencode with an id its server can't resolve (e.g. a claude-code-style `…@openrouter` suffix) used to warn on the daemon's stderr and silently run — and bill — the server's default `anthropic/claude-sonnet-4-5` instead; hermes had the same hole one strategy over (its spawn-time `/model <id>` control turn's result was ignored), and jcode a protocol over (its CLI silently falls back to its own default on an unknown `--model` id — observed live: `--model totally-bogus-xyz` → started on `gpt-5.6-sol`/OpenAI). Three guards now share one contract for `routeSelection:"derived-from-model"` adapters: the ACP client records a connect-time model rejection structurally (`AcpClientSession.modelApplyRejection`) and the driver refuses the spawn on a rejected `set_config_option` (opencode-style `apply:"config"`) or an unacknowledged/failed `/model` control turn (hermes-style `apply:"command"`); the print arm aborts a turn whose jcode-ndjson `start` line reports a model contradicting the requested one (basename compare, `@route`-suffix/`provider/`-prefix tolerant). Every refusal names the requested id and the concrete reason. Free/fixed-routing adapters keep the agentproto#186 warn-and-continue behavior unchanged; pi errors properly on its own (`Model not found`) and needs no guard.
+- baf8570: Surface ACP's `available_commands_update` notification instead of silently dropping it. `translateSessionUpdate` now maps it to a new `available-commands` StreamEvent, `transcript-writer` persists it to `events.jsonl`, and the daemon mirrors the latest command list onto `SessionDescriptor.availableCommands`, exposed read-only via `GET /sessions` / `GET /sessions/:id`.
+
+## 0.7.1
+
+### Patch Changes
+
+- b5ec52b: Add optional title field to plan events, displayed in VS Code conversation UI. Titles are safely threaded through ACP client translation, runtime event stream, and conversation presenter, supporting both immediate titles and late-binding (title added in subsequent plan updates).
+
 ## 0.7.0
 
 ### Minor Changes

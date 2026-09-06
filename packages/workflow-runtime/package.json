@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/workflow-runtime",
-  "version": "0.6.0",
+  "version": "0.10.0",
   "description": "Reference step-walker for AIP-15 WORKFLOW composition: executes a typed step graph (tool / map / branch / loop / transform) over @agentproto/driver runTool, threading each step's output into a run-scoped binding bag (the AIP-16 IO seam, expressed as typed selectors). The missing executor that makes 'composition = config' runnable.",
   "keywords": [
     "agentproto",
@@ -47,6 +47,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/corpus": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "@agentproto/workflow": "workspace:*"
@@ -57,6 +58,6 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   }
 }

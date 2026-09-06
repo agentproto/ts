@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/extension",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "@agentproto/extension — AIP-40 EXTENSION.md reference implementation. A meta-doctype that lets a workspace declare its own custom doctype as an extension of an existing AIP — adding fields, tightening constraints, overriding defaults, and choosing a path convention — without going through the public AIP process. The runtime (@agentproto/manifest verbs, MCP server, scaffolder) treats local extensions identically to public AIPs.",
   "keywords": [
     "agentproto",
@@ -57,7 +57,7 @@
     "@agentproto/define-doctype": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

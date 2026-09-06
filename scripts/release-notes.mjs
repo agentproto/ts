@@ -8,8 +8,11 @@
  * the body of the highest-bumped package's GitHub Release.
  *
  * Usage:
- *   node scripts/release-notes.mjs               # auto-detect published packages
+ *   node scripts/release-notes.mjs               # generate + post for the current batch
  *   node scripts/release-notes.mjs --dry-run     # render the body, post nothing
+ *   node scripts/release-notes.mjs --check       # exit 0 iff a consolidated release
+ *                                                #   already carries this batch's marker
+ *                                                #   (3 otherwise) — the CI ladder's gate
  *
  * Streams:
  *   stdout — the rendered release body, and nothing else (only under --dry-run).
@@ -21,19 +24,37 @@
  *   body — see @agentproto/cli@0.5.0. Keep progress on stderr, and keep stdout
  *   to the body alone.
  *
+ * Billing: the model runs through the Claude Agent SDK on ONE lane per
+ * invocation, selected by `AGENT_LANE` (see scripts/lib/agent-lane.mjs):
+ * subscription | subscription-fallback | openrouter | moonshot | api-key. The
+ * release workflow walks those lanes in order until `--check` passes, so a
+ * single dead credential (2026-09-01: two Anthropic orgs and a Moonshot
+ * account, all "balance too low" within the hour) no longer leaves a batch
+ * without notes. Unset ⇒ the first lane whose credential is present.
+ *
  * Env:
- *   ANTHROPIC_API_KEY  — required
- *   GITHUB_TOKEN       — required for posting (not needed with --dry-run)
+ *   AGENT_LANE         — lane to run (optional, see above)
+ *   <lane credential>  — CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN_FALLBACK /
+ *                        OPENROUTER_API_KEY / MOONSHOT_API_KEY / ANTHROPIC_API_KEY
+ *   AGENT_MODEL        — override the lane's default model (optional)
+ *   GITHUB_TOKEN       — required for posting / --check (not needed with --dry-run)
+ *
+ * The runner, not the model, owns everything that must be exact: the batch
+ * identity (marker), the tag, the title/date, and the publishable-body gate.
+ * The model only writes prose and reads the repo with Read/Grep/Glob.
  *
  * Exit codes:
- *   0 — notes posted (or dry-run complete)
- *   1 — error
+ *   0 — notes posted (or dry-run complete, or --check found the release)
+ *   1 — error (no lane, generation failed, body not publishable)
+ *   3 — --check: no consolidated release carries this batch's marker
  */
 
 import { execSync, execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { describeLane, pickLane, resolveLane } from './lib/agent-lane.mjs'
+import { makeConfineToRepoRoot } from './lib/path-confine.mjs'
 
 // ── root ──────────────────────────────────────────────────────────────────────
 
@@ -53,6 +74,7 @@ const ROOT =
 
 const args = process.argv.slice(2)
 const DRY_RUN = args.includes('--dry-run')
+const CHECK = args.includes('--check')
 
 // ── the date ──────────────────────────────────────────────────────────────────
 //
@@ -161,9 +183,40 @@ function appendBatchMarker(body, sha) {
   return `${body.replace(/\s+$/, '')}\n\n${batchMarker(sha)}\n`
 }
 
+/**
+ * Where to look for the batch's version-bump commit. NOT the checkout's HEAD:
+ * in a version-mode run (pending changesets → "Version Packages" PR),
+ * changesets/action leaves the working tree on ITS OWN fresh
+ * `chore(release): version packages` commit — the head of
+ * `changeset-release/main`, not on main at all. A `force_post_release_steps`
+ * backfill on such a run used to grep that commit first and publish notes for
+ * the *unmerged* batch (2026-09-01: `release/2026-09-01` announced cli@0.16.1
+ * and runtime@2.10.1 while npm carried 0.16.0 / 2.10.0). `GITHUB_SHA` is the
+ * commit the workflow was triggered for — always on the branch that was
+ * pushed — so the walk starts there. Outside Actions, HEAD is the only truth.
+ */
+function batchLookupRef(env = process.env) {
+  return env.GITHUB_SHA || 'HEAD'
+}
+
+/** File contents at a commit (`git show sha:path`), or null when absent. */
+function readAtCommit(sha, relPath) {
+  if (!sha || !relPath) return null
+  try {
+    return execFileSync('git', ['show', `${sha}:${relPath}`], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 16 * 1024 * 1024,
+    })
+  } catch {
+    return null
+  }
+}
+
 /** The sha of the version-bump commit this run is publishing notes for. */
 function currentBatchSha() {
-  return run('git log --grep="chore(release): version packages" -1 --format=%H') || null
+  return run(`git log ${batchLookupRef()} --grep="chore(release): version packages" -1 --format=%H`) || null
 }
 
 /**
@@ -207,136 +260,96 @@ function suffixTitle(title, attempt) {
   return attempt <= 1 ? base : `${base} (${attempt})`
 }
 
-// ── tool implementations ──────────────────────────────────────────────────────
+// ── batch context ─────────────────────────────────────────────────────────────
+//
+// Everything the model needs to know about the batch is computed HERE, from
+// the version-bump commit, and handed over verbatim. It used to discover the
+// batch itself through custom tools that read package.json from the working
+// tree — which, on a version-mode run, already carries the NEXT bump.
+
+function releaseCommitHash() {
+  const line = run(`git log ${batchLookupRef()} --oneline --grep="chore(release): version packages" -1`)
+  return line ? line.split(' ')[0] : null
+}
+
+/** The body of the `## <version>` section of a CHANGELOG, or '' when absent. */
+function changelogSection(text, version) {
+  const lines = String(text ?? '').split('\n')
+  let start = -1
+  let end = lines.length
+  for (let i = 0; i < lines.length; i++) {
+    if (start === -1 && lines[i].trim() === `## ${version}`) {
+      start = i + 1
+      continue
+    }
+    if (start !== -1 && /^## /.test(lines[i])) {
+      end = i
+      break
+    }
+  }
+  return start === -1 ? '' : lines.slice(start, end).join('\n').trim()
+}
 
 /**
- * Discover packages published in the latest release commit.
- * `changesets/action` commits with "chore(release): version packages",
- * so we look at what changed in the most recent such commit.
+ * @agentproto packages bumped in the batch commit, each with its CHANGELOG
+ * entry for the shipped version — read AT the commit, never from the tree.
  */
-function tool_list_published_packages() {
-  // Find the latest version-bump commit from changesets/action
-  const releaseCommit = run(`git log --oneline --grep="chore(release): version packages" -1`)
-  if (!releaseCommit) {
-    // Fallback: find all @agentproto packages that have a CHANGELOG with a recent entry
-    const pkgJsonPaths = run(
-      'find packages adapters -maxdepth 3 -name "package.json" -not -path "*/node_modules/*"'
-    ).split('\n').filter(Boolean)
-
-    const published = []
-    for (const p of pkgJsonPaths) {
-      try {
-        const { name, version, private: priv } = JSON.parse(readFileSync(resolve(ROOT, p), 'utf8'))
-        if (!name?.startsWith('@agentproto/') || priv) continue
-        const changelogPath = p.replace('package.json', 'CHANGELOG.md')
-        if (existsSync(resolve(ROOT, changelogPath))) {
-          published.push({ name, version, changelogPath })
-        }
-      } catch {}
-    }
-    return JSON.stringify(published, null, 2)
-  }
-
-  // Parse the commit hash and inspect changed CHANGELOG files
-  const commitHash = releaseCommit.split(' ')[0]
-  const changedFiles = run(`git diff-tree --no-commit-id -r --name-only ${commitHash}`).split('\n').filter(Boolean)
-  const changelogs = changedFiles.filter((f) => f.endsWith('CHANGELOG.md'))
-
+function listPublishedPackages(commitHash) {
+  if (!commitHash) return []
+  const changed = run(`git diff-tree --no-commit-id -r --name-only ${commitHash}`).split('\n').filter(Boolean)
   const published = []
-  for (const changelogPath of changelogs) {
+  for (const changelogPath of changed.filter((f) => f.endsWith('CHANGELOG.md'))) {
     const pkgJsonPath = changelogPath.replace('CHANGELOG.md', 'package.json')
     try {
-      const { name, version, private: priv } = JSON.parse(readFileSync(resolve(ROOT, pkgJsonPath), 'utf8'))
+      const raw = readAtCommit(commitHash, pkgJsonPath) ?? readFileSync(resolve(ROOT, pkgJsonPath), 'utf8')
+      const { name, version, private: priv } = JSON.parse(raw)
       if (!name?.startsWith('@agentproto/') || priv) continue
-      published.push({ name, version, changelogPath })
+      const abs = resolve(ROOT, changelogPath)
+      const changelog =
+        readAtCommit(commitHash, changelogPath) ?? (existsSync(abs) ? readFileSync(abs, 'utf8') : '')
+      published.push({ name, version, changelogPath, entry: changelogSection(changelog, version) })
     } catch {}
   }
-  return published.length > 0
-    ? JSON.stringify(published, null, 2)
-    : '(no packages published in latest release commit — try after `changeset version` is merged)'
+  return published.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-function tool_read_changelog({ name, maxChars = 6_000 }) {
-  if (!name) return '(no package name provided)'
-  // Find the package dir
-  const pkgJsonPaths = run(
-    'find packages adapters -maxdepth 3 -name "package.json" -not -path "*/node_modules/*"'
-  ).split('\n').filter(Boolean)
-
-  for (const p of pkgJsonPaths) {
-    try {
-      const { name: pkgName } = JSON.parse(readFileSync(resolve(ROOT, p), 'utf8'))
-      if (pkgName !== name) continue
-      const changelogPath = resolve(ROOT, p.replace('package.json', 'CHANGELOG.md'))
-      if (!existsSync(changelogPath)) return `(no CHANGELOG.md found for ${name})`
-      const content = readFileSync(changelogPath, 'utf8')
-      // Return only the latest version block (up to maxChars)
-      const trimmed = content.length > maxChars ? content.slice(0, maxChars) + '\n... (truncated)' : content
-      return trimmed
-    } catch {}
-  }
-  return `(package not found: ${name})`
-}
-
-function tool_read_file({ path }) {
-  if (!path) return '(no path)'
-  const abs = resolve(ROOT, path)
-  if (!existsSync(abs)) return `(file not found: ${path})`
-  try {
-    const content = readFileSync(abs, 'utf8')
-    return content.length > 8_000 ? content.slice(0, 8_000) + '\n... (truncated)' : content
-  } catch {
-    return `(could not read: ${path})`
-  }
-}
-
-function tool_grep_repo({ pattern, glob = '' }) {
-  if (!pattern) return '(no pattern)'
-  try {
-    const result = execSync(
-      `grep -rn --include="*.ts" --include="*.mjs" --include="*.md" -m 5 ${JSON.stringify(pattern)} packages/ adapters/ 2>/dev/null | head -40`,
-      { cwd: ROOT, encoding: 'utf8' }
-    ).trim()
-    return result || '(no matches)'
-  } catch {
-    return '(no matches)'
-  }
-}
-
-function tool_list_git_tags() {
+function listGitTags() {
   return run('git tag --sort=-version:refname | grep "^@agentproto" | head -20') || '(no tags)'
 }
 
-function tool_post_release_notes({ tag, body }) {
-  if (!tag || !body) return '(tag and body are required)'
-  try {
-    assertPublishable(body, `release notes for ${tag}`)
-  } catch (e) {
-    return `(${e.message})`
-  }
-  if (DRY_RUN) {
-    log(`\n[dry-run] would update GitHub Release ${tag} — body on stdout`)
-    process.stdout.write(body)
-    return `dry-run: release notes not posted for ${tag}`
-  }
-  try {
-    // Update the existing GitHub Release created by changesets/action
-    execFileSync('gh', ['release', 'edit', tag, '--notes', body], {
-      cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
-    })
-    return `✓ Updated GitHub Release ${tag}`
-  } catch {
-    // Release might not exist yet — create it
-    try {
-      execFileSync('gh', ['release', 'create', tag, '--notes', body, '--title', tag], {
-        cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
-      })
-      return `✓ Created GitHub Release ${tag}`
-    } catch (e) {
-      return `Error posting release notes: ${e.message}`
-    }
-  }
+const clip = (text, max) => (text.length > max ? `${text.slice(0, max)}\n… (truncated)` : text)
+
+function buildContext() {
+  const commitHash = releaseCommitHash()
+  return { commitHash, packages: listPublishedPackages(commitHash), tags: listGitTags() }
 }
+
+/** The user message: the batch, verbatim, so the model never has to guess. */
+function renderContext({ commitHash, packages, tags }) {
+  const blocks = packages.map(
+    (p) =>
+      `### ${p.name}@${p.version}\n\n` +
+      `CHANGELOG: \`${p.changelogPath}\`\n\n` +
+      clip(p.entry || '_(no entry — bumped by dependency only)_', 6_000),
+  )
+  return [
+    '## Batch',
+    '',
+    `Version-bump commit: \`${commitHash ?? 'unknown'}\``,
+    '',
+    `## Packages published (${packages.length})`,
+    '',
+    blocks.join('\n\n'),
+    '',
+    '## Recent @agentproto tags',
+    '',
+    '```',
+    tags,
+    '```',
+  ].join('\n')
+}
+
+// ── publishing (runner-owned) ─────────────────────────────────────────────────
 
 /** Existing release body for a tag, or null when no release exists there. */
 function fetchReleaseBody(tag) {
@@ -345,166 +358,59 @@ function fetchReleaseBody(tag) {
       cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
     })
   } catch {
-    // Non-zero exit = no release at this tag. (A bare git tag with no release
-    // also lands here, which is correct: `gh release create` handles that.)
     return null
   }
 }
 
-function tool_post_consolidated_release({ title, body }) {
-  // The tag is computed, never supplied. The model used to be able to pass one
-  // and it picked from its own sense of the date — `release/2025-07` for a batch
-  // published in July 2026. There is no reason the author of the prose should
-  // also get to name the tag.
+/** A final message may arrive wrapped in one outer code fence; unwrap it. */
+function unwrapFence(text) {
+  const t = String(text ?? '').trim()
+  const m = /^```(?:markdown|md)?\r?\n([\s\S]*?)\r?\n```$/.exec(t)
+  return m ? m[1].trim() : t
+}
+
+/**
+ * Create (or update in place, same batch) the consolidated release. The tag,
+ * title, date, and batch marker are all computed here — the model's body is
+ * the only thing it contributed, and it passes the publishable gate first.
+ */
+function publishConsolidated(body) {
   const batchSha = currentBatchSha()
-  try {
-    assertPublishable(body, `consolidated release ${CONSOLIDATED_TAG}`)
-  } catch (e) {
-    return `(${e.message})`
-  }
-  // Stamp the batch identity onto the body *after* the gate, so what gets
-  // published is exactly what was inspected plus a marker this code controls.
+  assertPublishable(body, `consolidated release ${CONSOLIDATED_TAG}`)
   const markedBody = appendBatchMarker(body, batchSha)
-  // Same reasoning as the tag for the title: the model writes it, so it can still
-  // smuggle a hallucinated year into the prose. Correct it rather than reject —
-  // the year is knowable, and a retry loop over a fact we already hold is waste.
-  let safeTitle = title
-  const wrongYear = /\b(20\d{2})\b/.exec(safeTitle ?? '')
-  if (wrongYear && wrongYear[1] !== THIS_YEAR) {
-    log(`   ⚠️  title said ${wrongYear[1]}, correcting to ${THIS_YEAR}`)
-    safeTitle = safeTitle.replace(wrongYear[1], THIS_YEAR)
-  }
-  if (!safeTitle) safeTitle = `agentproto — ${RELEASE_DATE_LONG} release`
-
+  const title = `agentproto — ${RELEASE_DATE_LONG} release`
   if (DRY_RUN) {
-    log(`\n[dry-run] would post consolidated release "${safeTitle}" (${CONSOLIDATED_TAG}) — body on stdout`)
+    log(`\n[dry-run] would post consolidated release "${title}" (${CONSOLIDATED_TAG}) — body on stdout`)
     process.stdout.write(markedBody)
-    return `dry-run: consolidated release not posted (tag: ${CONSOLIDATED_TAG})`
+    return { tag: CONSOLIDATED_TAG, attempt: 1, mode: 'dry-run' }
   }
-
-  // Which tag, and create or edit? Not "create, and overwrite whatever's there
-  // on failure" — that conflated an idempotent re-run of *this* batch with a
-  // second, different batch publishing the same day, and the second one silently
-  // replaced the first one's title and body. See selectReleaseTarget.
-  let target
-  try {
-    target = selectReleaseTarget({ baseTag: CONSOLIDATED_TAG, batchSha, fetchBody: fetchReleaseBody })
-  } catch (e) {
-    return `Error: ${e.message}`
-  }
-  const finalTitle = suffixTitle(safeTitle, target.attempt)
-  if (target.attempt > 1) {
-    log(`   ⚠️  ${CONSOLIDATED_TAG} holds another batch's release — publishing to ${target.tag}`)
-  }
-
-  // `--latest=true` on whichever release this batch writes: this is the one a
-  // human should land on. changesets publishes ~37 per-package releases per batch,
-  // and GitHub was picking whichever sorted last as "Latest" — it settled on
-  // `runtime-profile-standard@0.1.1`, a package nobody installs, while the real
-  // notes sat on an unlinked tag. The consolidated release exists on every run
-  // regardless of which packages shipped, so it is the only stable thing to point
-  // at; the newest batch of the day should win it.
+  const target = selectReleaseTarget({ baseTag: CONSOLIDATED_TAG, batchSha, fetchBody: fetchReleaseBody })
+  const finalTitle = suffixTitle(title, target.attempt)
+  if (target.attempt > 1) log(`   ⚠️  ${CONSOLIDATED_TAG} holds another batch's release — publishing to ${target.tag}`)
   const verb = target.mode === 'create' ? 'create' : 'edit'
+  execFileSync('gh', ['release', verb, target.tag, '--title', finalTitle, '--notes', markedBody, '--latest=true'], {
+    cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
+  })
+  return target
+}
+
+// ── --check: does a consolidated release already carry this batch? ───────────
+
+/** The release whose body carries `sha`'s batch marker, or null. Pure. */
+function findBatchRelease(releases, sha) {
+  if (!sha || !Array.isArray(releases)) return null
+  return releases.find((r) => bodyBatchSha(r?.body) === sha) ?? null
+}
+
+function listRecentReleases() {
+  const repo = process.env.GITHUB_REPOSITORY || run('gh repo view --json nameWithOwner --jq .nameWithOwner')
+  if (!repo) return []
   try {
-    execFileSync('gh', ['release', verb, target.tag, '--title', finalTitle, '--notes', markedBody, '--latest=true'], {
-      cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
-    })
-  } catch (e) {
-    // Deliberately no create→edit fallback. A create that fails here means the
-    // state moved under us (a concurrent run took the tag) — the safe answer is
-    // to fail and let a human look, not to overwrite a release we never read.
-    return `Error posting consolidated release ${target.tag}: ${e.message}`
+    return JSON.parse(run(`gh api "repos/${repo}/releases?per_page=60"`) || '[]')
+  } catch {
+    return []
   }
-  return target.mode === 'create'
-    ? `✓ Created consolidated GitHub Release: ${target.tag}`
-    : `✓ Updated consolidated GitHub Release: ${target.tag} (same batch, in place)`
 }
-
-// ── tool dispatch ─────────────────────────────────────────────────────────────
-
-const TOOLS = {
-  list_published_packages: tool_list_published_packages,
-  read_changelog: tool_read_changelog,
-  read_file: tool_read_file,
-  grep_repo: tool_grep_repo,
-  list_git_tags: tool_list_git_tags,
-  post_release_notes: tool_post_release_notes,
-  post_consolidated_release: tool_post_consolidated_release,
-}
-
-const TOOL_DEFS = [
-  {
-    name: 'list_published_packages',
-    description: 'List @agentproto/* packages that were just published in the latest release, with their versions and CHANGELOG paths.',
-    input_schema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'read_changelog',
-    description: 'Read the CHANGELOG.md for a specific @agentproto package (latest version block first).',
-    input_schema: {
-      type: 'object',
-      required: ['name'],
-      properties: {
-        name: { type: 'string', description: '@agentproto/package-name' },
-        maxChars: { type: 'number', description: 'Truncate at this many chars (default: 6000)' },
-      },
-    },
-  },
-  {
-    name: 'read_file',
-    description: 'Read any file in the repo relative to the repo root.',
-    input_schema: {
-      type: 'object',
-      required: ['path'],
-      properties: {
-        path: { type: 'string' },
-      },
-    },
-  },
-  {
-    name: 'grep_repo',
-    description: 'Search the codebase for a pattern across .ts, .mjs, .md files.',
-    input_schema: {
-      type: 'object',
-      required: ['pattern'],
-      properties: {
-        pattern: { type: 'string' },
-        glob: { type: 'string' },
-      },
-    },
-  },
-  {
-    name: 'list_git_tags',
-    description: 'List recent @agentproto git tags (for version context).',
-    input_schema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'post_release_notes',
-    description: 'Update the body of an existing per-package GitHub Release (created by changesets/action).',
-    input_schema: {
-      type: 'object',
-      required: ['tag', 'body'],
-      properties: {
-        tag: { type: 'string', description: 'GitHub Release tag, e.g. "@agentproto/agent@0.2.0"' },
-        body: { type: 'string', description: 'Markdown release notes body' },
-      },
-    },
-  },
-  {
-    name: 'post_consolidated_release',
-    description: 'Create (or update) a single consolidated GitHub Release that summarises the whole batch of package publishes.',
-    input_schema: {
-      type: 'object',
-      required: ['title', 'body'],
-      properties: {
-        title: { type: 'string', description: `Release title. Must be "agentproto — ${RELEASE_DATE_LONG} release".` },
-        body: { type: 'string', description: 'Full markdown announcement' },
-        // No `tag` property, on purpose: the tag is computed from the system
-        // clock. See tool_post_consolidated_release.
-      },
-    },
-  },
-]
 
 // ── system prompt ─────────────────────────────────────────────────────────────
 
@@ -528,11 +434,18 @@ several. The title must read exactly:
 
 ## Workflow
 
-1. Call \`list_published_packages\` to see what was released and at which version.
-2. Call \`read_changelog\` for each published package to read the per-package CHANGELOG entries.
-3. Use \`read_file\` and \`grep_repo\` **freely** to understand the actual code behind each change — don't just paraphrase the CHANGELOG, dig into what was built and why it matters.
-4. Call \`list_git_tags\` for version context.
-5. Write the announcement (see format below), then call \`post_consolidated_release\` to publish it.
+1. The batch — every published package, its version, and its CHANGELOG entry
+   for exactly that version — is given to you verbatim in the user message.
+   Trust it. Do NOT re-derive versions from package.json on disk: the working
+   tree may already carry the *next* bump.
+2. Use Read / Grep / Glob **freely** to understand the actual code behind each
+   change — don't just paraphrase the CHANGELOG, dig into what was built and
+   why it matters.
+3. Write the announcement in the format below.
+4. Your FINAL message must be the complete markdown announcement and NOTHING
+   else — no preamble, no "here is the release note", no closing remark, no
+   code fence around the whole thing. It is published verbatim. It must start
+   with the H1 title line.
 
 ## Release announcement format
 
@@ -574,117 +487,112 @@ npm install @agentproto/agent@latest @agentproto/mcp-server@latest ...
 - Use the imperative for feature names: "Add extends-chain validation", not "Extends-chain validation was added".
 `
 
-// ── agentic loop ──────────────────────────────────────────────────────────────
+// ── generation (Claude Agent SDK, one lane) ───────────────────────────────────
 
-// Checked when the loop actually runs, not at import. A top-level process.exit
-// here means importing this module for a test kills the test runner — which it
-// did, the first time CI ran the tests below.
-function requireApiKey() {
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    log('Error: ANTHROPIC_API_KEY is not set.')
-    process.exit(1)
-  }
-  return apiKey
-}
-
-async function callClaude(messages) {
-  const apiKey = requireApiKey()
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
+async function generateBody(resolved, context) {
+  // Lazy: --check and the unit tests must not need the SDK installed.
+  const { query } = await import('@anthropic-ai/claude-agent-sdk')
+  const confineToRepoRoot = makeConfineToRepoRoot(ROOT)
+  const abortController = new AbortController()
+  const prompt =
+    'Please generate the consolidated release notes for this batch of @agentproto package publishes. ' +
+    'Read the code behind the changes with Read/Grep/Glob, then reply with the announcement only.\n\n' +
+    renderContext(context)
+  const result = query({
+    prompt,
+    options: {
+      model: resolved.model,
+      env: resolved.env,
+      cwd: ROOT,
+      systemPrompt: SYSTEM_PROMPT,
+      abortController,
+      // Unattended CI run: nobody can answer a permission prompt. The
+      // PreToolUse hook confines every read to the repo root.
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      hooks: { PreToolUse: [{ hooks: [confineToRepoRoot] }] },
+      settingSources: [],
+      tools: ['Read', 'Grep', 'Glob'],
+      maxTurns: 40,
+      ...(resolved.thinking ? { thinking: { type: 'enabled' } } : {}),
     },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      system: SYSTEM_PROMPT,
-      tools: TOOL_DEFS,
-      messages,
-    }),
   })
-  if (!response.ok) {
-    const body = await response.text()
-    throw new Error(`Anthropic API ${response.status}: ${body}`)
-  }
-  return response.json()
-}
-
-async function runAgenticLoop() {
-  log(`\n📦 Release notes generator starting${DRY_RUN ? ' (dry-run)' : ''}…`)
-
-  const messages = [
-    {
-      role: 'user',
-      content: `Please generate release notes for the latest @agentproto package publishes.
-
-Start by calling list_published_packages to see what was released, then read the CHANGELOGs and dig into the actual code to understand each change. Then compose a consolidated announcement and post it with post_consolidated_release.`,
-    },
-  ]
-
-  let iterations = 0
-  const MAX_ITER = 25
-
-  while (iterations < MAX_ITER) {
-    iterations++
-    log(`\n⟳  Turn ${iterations}`)
-
-    const resp = await callClaude(messages)
-    messages.push({ role: 'assistant', content: resp.content })
-
-    const toolUses = resp.content.filter((b) => b.type === 'tool_use')
-
-    if (toolUses.length === 0) {
-      const text = resp.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n')
-      if (text) log('\n' + text)
-      break
-    }
-
-    const toolResults = []
-    for (const use of toolUses) {
-      const fn = TOOLS[use.name]
-      let result
-      if (!fn) {
-        result = `(unknown tool: ${use.name})`
-      } else {
-        log(`   🔧 ${use.name}(${Object.keys(use.input ?? {}).join(', ')})`)
-        try {
-          result = fn(use.input ?? {})
-        } catch (e) {
-          result = `(tool error: ${e.message})`
-        }
-        if (typeof result === 'string' && result.length > 12_000) {
-          result = result.slice(0, 12_000) + '\n\n... (truncated)'
-        }
+  let final = null
+  for await (const message of result) {
+    if (message.type === 'assistant') {
+      for (const block of message.message?.content ?? []) {
+        if (block.type === 'tool_use') log(`   🔧 ${block.name}(${Object.keys(block.input ?? {}).join(', ')})`)
       }
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: use.id,
-        content: String(result),
-      })
+    } else if (message.type === 'result') {
+      final = message
     }
-
-    messages.push({ role: 'user', content: toolResults })
-
-    if (resp.stop_reason === 'end_turn') break
   }
-
-  if (iterations >= MAX_ITER) {
-    log(`\n⚠️  Reached max iterations (${MAX_ITER}) — stopping.`)
+  if (!final) throw new Error('the agent produced no result message (stream ended without one)')
+  if (final.is_error || final.subtype !== 'success') {
+    throw new Error(`agent ended with ${final.subtype}: ${String(final.result ?? '').slice(0, 300)}`)
   }
-
-  log('\n✅ Release notes complete.')
+  const cost = typeof final.total_cost_usd === 'number' ? ` · $${final.total_cost_usd.toFixed(4)}` : ''
+  log(`   ${final.num_turns} turn(s)${cost}`)
+  return unwrapFence(final.result)
 }
 
-// Only drive the agent when run as a script. Importing this file (tests) must
-// not fire a real release.
+// ── main ──────────────────────────────────────────────────────────────────────
+
+async function main() {
+  if (CHECK) {
+    const sha = currentBatchSha()
+    const hit = findBatchRelease(listRecentReleases(), sha)
+    if (hit) {
+      log(`✓ consolidated release for batch ${sha.slice(0, 7)} exists: ${hit.tag_name}`)
+      return 0
+    }
+    log(`✗ no consolidated release carries batch marker ${sha ? sha.slice(0, 7) : '(no batch commit found)'}`)
+    return 3
+  }
+
+  const laneName = pickLane()
+  if (!laneName) {
+    log(
+      'Error: no agent lane credential set — need one of CLAUDE_CODE_OAUTH_TOKEN, ' +
+        'CLAUDE_CODE_OAUTH_TOKEN_FALLBACK, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, MOONSHOT_API_KEY.',
+    )
+    return 1
+  }
+  const resolved = resolveLane(laneName)
+  if (resolved.missing) {
+    log(`Error: lane ${describeLane(resolved)}`)
+    return 1
+  }
+
+  const context = buildContext()
+  log(
+    `\n📦 Release notes generator starting${DRY_RUN ? ' (dry-run)' : ''} — lane ${describeLane(resolved)} · ` +
+      `batch ${context.commitHash ?? '(none)'} · ${context.packages.length} package(s)…`,
+  )
+  if (context.packages.length === 0) {
+    log('Error: no published packages found in the batch commit — nothing to announce.')
+    return 1
+  }
+
+  const body = await generateBody(resolved, context)
+  const target = publishConsolidated(body)
+  if (target.mode === 'dry-run') log(`\n✅ Release notes rendered (dry-run, tag would be ${target.tag}).`)
+  else log(`\n✅ ${target.mode === 'create' ? 'Created' : 'Updated'} consolidated GitHub Release: ${target.tag}`)
+  return 0
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await runAgenticLoop()
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      log(`Error: ${err instanceof Error ? err.message : String(err)}`)
+      process.exit(1)
+    })
 }
 
 export {
+  batchLookupRef,
+  readAtCommit,
   assertPublishable,
   TRACE_MARKERS,
   CONSOLIDATED_TAG,
@@ -696,4 +604,8 @@ export {
   bodyBatchSha,
   selectReleaseTarget,
   suffixTitle,
+  changelogSection,
+  findBatchRelease,
+  renderContext,
+  unwrapFence,
 }

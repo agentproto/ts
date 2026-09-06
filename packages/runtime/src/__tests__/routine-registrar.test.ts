@@ -19,11 +19,19 @@ import { join } from "node:path"
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { z } from "zod"
 import { createCronScheduler, type CronScheduler, type CronJob } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createRoutineRegistrar, routineTargetToToolCall } from "../routine-registrar.js"
+import { createEventRing } from "../event-ring.js"
+import { registerOrchestrationTools } from "../orchestration-tools.js"
+import { createInboundEndpointStore } from "../inbound-endpoints.js"
+import type { InboundWatcher } from "../inbound-watcher.js"
+import type { ActivityProjector } from "../activities.js"
+import type { ActivityRecord } from "../activity-projection.js"
 
 function makeTmpWorkspace(): string {
   return mkdtempSync(join(tmpdir(), "routine-registrar-test-"))
@@ -488,8 +496,8 @@ describe("routine_trigger MCP tool", () => {
       const listResult = await client.callTool({ name: "routine_list", arguments: {} })
       const listContent = (listResult as { content?: Array<{ type: string; text?: string }> }).content
       const listText = listContent?.find(c => c.type === "text")?.text
-      const routines = JSON.parse(listText!)
-      expect(routines.map((r: { id: string }) => r.id)).toEqual(["mcp-demo"])
+      const routines = JSON.parse(listText!) as { routines: Array<{ id: string }> }
+      expect(routines.routines.map(r => r.id)).toEqual(["mcp-demo"])
     } finally {
       rmSync(workspace, { recursive: true })
     }
@@ -589,5 +597,203 @@ describe("routine_reconcile MCP tool", () => {
     const fourth = await callReconcile()
     expect(fourth.removed).toEqual([jobsAfterEdit[0]!.id])
     expect(cronScheduler.list()).toHaveLength(0)
+  })
+})
+
+// ── PR-7: additive limit/cursor pagination for the orchestration list
+// tools. Minimal page-walks for the lists without a dedicated test file —
+// routine_list lives next to its own MCP tests above; cron_list,
+// activities_list, inbound_endpoint_list, and inbound_watcher_list only
+// need "paginated union == unpaginated, default unchanged". ──
+
+interface ListPage {
+  items: Array<Record<string, string>>
+  nextCursor?: string
+  total?: number
+}
+
+function contentText(result: Awaited<ReturnType<Client["callTool"]>>): string {
+  const content = "content" in result ? result.content : undefined
+  if (!Array.isArray(content)) throw new Error("tool returned no text content")
+  for (const block of content) {
+    if (
+      typeof block === "object" &&
+      block !== null &&
+      "type" in block &&
+      block.type === "text" &&
+      "text" in block &&
+      typeof block.text === "string"
+    ) {
+      return block.text
+    }
+  }
+  throw new Error("tool returned no text content")
+}
+
+describe("orchestration list pagination — minimal page-walks (PR-7)", () => {
+  async function listClient(
+    opts: Partial<Parameters<typeof registerOrchestrationTools>[1]>,
+  ): Promise<Client> {
+    const registry = createSessionsRegistry({ persist: false })
+    const server = new McpServer({ name: "orch-list-page-test", version: "0.0.0" })
+    registerOrchestrationTools(server, {
+      registry,
+      sessionEvents: createSessionEventBus(),
+      eventRing: createEventRing(),
+      ...opts,
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "orch-list-page-client", version: "0.0.0" })
+    await client.connect(clientTransport)
+    return client
+  }
+
+  async function walk(
+    client: Client,
+    tool: string,
+    limit = 2,
+  ): Promise<{ union: Array<Record<string, string>>; total: number }> {
+    const union: Array<Record<string, string>> = []
+    let cursor: string | undefined
+    let total = 0
+    do {
+      const page: ListPage = JSON.parse(
+        contentText(await client.callTool({ name: tool, arguments: { limit, ...(cursor ? { cursor } : {}) } })),
+      )
+      total = page.total ?? 0
+      union.push(...page.items)
+      cursor = page.nextCursor
+    } while (cursor)
+    return { union, total }
+  }
+
+  it("routine_list: default stays a bare array; page-walk covers exactly the unpaginated list", async () => {
+    const workspace = makeTmpWorkspace()
+    try {
+      const dispatchTool = async (name: string, inputs: Record<string, unknown>) => ({
+        content: [{ type: "text", text: `dispatched ${name}` }],
+      })
+      const registrar = createRoutineRegistrar({ workspace, cronScheduler: makeFakeCronScheduler(), dispatchTool })
+      for (const id of ["pg-a", "pg-b", "pg-c"]) {
+        writeRoutine(
+          workspace,
+          id,
+          `schema: routine/v1\nid: ${id}\ndescription: test\nschedule:\n  kind: cron\n  cron: "0 4 * * *"\ntarget:\n  tool: worktree_gc`,
+        )
+      }
+      registrar.reconcile()
+      const client = await listClient({ routineRegistrar: registrar })
+
+      const unpaginatedText = contentText(await client.callTool({ name: "routine_list", arguments: {} }))
+      // Migrated onto the paginated() transformer: the non-paginated branch
+      // is now the compact `{ routines: [...] }` wrapper, not a bare array.
+      const unpaginated: { routines: Array<Record<string, string>> } = JSON.parse(unpaginatedText)
+      expect(unpaginated.routines).toHaveLength(3)
+
+      const { union, total } = await walk(client, "routine_list")
+      expect(total).toBe(3)
+      expect(union.map(r => r.id)).toEqual(unpaginated.routines.map(r => r.id))
+      await client.close()
+    } finally {
+      rmSync(workspace, { recursive: true })
+    }
+  })
+
+  it("cron_list: page-walk covers exactly the unpaginated list", async () => {
+    const cronScheduler = makeFakeCronScheduler()
+    const action = { kind: "command", command: "true" } as const
+    for (const label of ["pg-a", "pg-b", "pg-c"]) {
+      cronScheduler.create({ label, schedule: "0 4 * * *", action })
+    }
+    const client = await listClient({ cronScheduler })
+
+    const unpaginated: { jobs: Array<Record<string, string>> } = JSON.parse(
+      contentText(await client.callTool({ name: "cron_list", arguments: {} })),
+    )
+    expect(unpaginated.jobs).toHaveLength(3)
+
+    const { union, total } = await walk(client, "cron_list")
+    expect(total).toBe(3)
+    expect(union.map(j => j.id)).toEqual(unpaginated.jobs.map(j => j.id))
+    await client.close()
+  })
+
+  it("activities_list: page-walk covers exactly the unpaginated list", async () => {
+    const record = (i: number): ActivityRecord => ({
+      id: `turn:sess_pg_${i}:1`,
+      kind: "turn",
+      sourceRef: `sess_pg_${i}`,
+      source: "session",
+      title: `turn ${i}`,
+      startedAt: "2026-07-22T10:00:00.000Z",
+      state: "active",
+    })
+    const records = [record(1), record(2), record(3)]
+    const activityProjector: ActivityProjector = {
+      list: () => records,
+      wait: async () => null,
+      dispose() {},
+    }
+    const client = await listClient({ activityProjector })
+
+    const unpaginated: { activities: Array<Record<string, string>> } = JSON.parse(
+      contentText(await client.callTool({ name: "activities_list", arguments: {} })),
+    )
+    expect(unpaginated.activities).toHaveLength(3)
+
+    const { union, total } = await walk(client, "activities_list")
+    expect(total).toBe(3)
+    expect(union.map(a => a.id)).toEqual(unpaginated.activities.map(a => a.id))
+    await client.close()
+  })
+
+  it("inbound_endpoint_list: page-walk covers exactly the unpaginated list", async () => {
+    const endpointStore = createInboundEndpointStore({ persist: false })
+    for (const slug of ["pg-a", "pg-b", "pg-c"]) {
+      endpointStore.upsert({ slug, provider: "agentpush", alias: "agentpush" })
+    }
+    const client = await listClient({ endpointStore })
+
+    const unpaginated: { endpoints: Array<Record<string, string>> } = JSON.parse(
+      contentText(await client.callTool({ name: "inbound_endpoint_list", arguments: {} })),
+    )
+    expect(unpaginated.endpoints).toHaveLength(3)
+
+    const { union, total } = await walk(client, "inbound_endpoint_list")
+    expect(total).toBe(3)
+    expect(union.map(e => e.slug)).toEqual(unpaginated.endpoints.map(e => e.slug))
+    await client.close()
+  })
+
+  it("inbound_watcher_list: page-walk covers exactly the unpaginated list", async () => {
+    const watcher = (i: number) => ({
+      watcherId: `watch_pg_${i}`,
+      alias: "agentpush",
+      source: `src-${i}`,
+      adapter: "claude-code",
+      pollIntervalMs: 5000,
+      status: "running" as const,
+      cursor: i,
+      spawned: 0,
+    })
+    const watchers = [watcher(1), watcher(2), watcher(3)]
+    const inboundWatcher: InboundWatcher = {
+      start: () => watchers[0]!,
+      stop: () => false,
+      list: () => watchers,
+      shutdown() {},
+    }
+    const client = await listClient({ inboundWatcher })
+
+    const unpaginated: { watchers: Array<Record<string, string>> } = JSON.parse(
+      contentText(await client.callTool({ name: "inbound_watcher_list", arguments: {} })),
+    )
+    expect(unpaginated.watchers).toHaveLength(3)
+
+    const { union, total } = await walk(client, "inbound_watcher_list")
+    expect(total).toBe(3)
+    expect(union.map(w => w.watcherId)).toEqual(unpaginated.watchers.map(w => w.watcherId))
+    await client.close()
   })
 })

@@ -47,7 +47,10 @@ export interface SandboxAgentSessionProxyOpts {
    *  box down (closes the daemon connection, then stops/pauses the
    *  sandbox) — `pause` is only present when the booted sandbox supports
    *  it (see `BootedSandbox.pause`). */
-  host: Pick<SandboxAgentSessionHost, "prompt" | "output" | "kill" | "waitForAny" | "stop" | "pause">
+  host: Pick<
+    SandboxAgentSessionHost,
+    "prompt" | "output" | "kill" | "waitForAny" | "currentEventsCursor" | "stop" | "pause"
+  >
   /** Session id on the BOX's own daemon (from `host.start(...)`) — NOT this
    *  proxy's local session id (the registry mints its own on `spawnAgent`). */
   remoteSessionId: string
@@ -95,6 +98,20 @@ export function createSandboxAgentSessionProxy(
       // harvest below can yield only the unseen suffix.
       let seenLength = 0
       try {
+        // Capture a race-free cursor BEFORE sending: an extremely fast turn
+        // (a synchronous/near-instant adapter echo is plausible for a
+        // trivial prompt) can settle and fire its `session:turn-end` before
+        // `waitForAny`'s own long-poll request even reaches the box daemon
+        // over the network — client-side call ORDERING alone can't close
+        // this (two outbound HTTP requests racing to the same daemon have
+        // no guaranteed arrival order). The awaited cursor fetch completes
+        // strictly before `prompt` is sent, so the box daemon's ring-replay
+        // branch (`orchestration-tools.ts`'s `monitorSessionWait`) always
+        // finds the matching turn-end regardless of how late the long-poll's
+        // bus subscription lands — see `HarnessClient.currentEventsCursor`'s
+        // doc. Mirrors `@agentproto/worktree`'s `sendPromptAndWait`, which
+        // uses the same cursor-first pattern for its own prompt+wait path.
+        const since = await host.currentEventsCursor()
         await host.prompt(remoteSessionId, prompt)
 
       // The offset is a character offset into the raw joined string — NOT a
@@ -123,9 +140,14 @@ export function createSandboxAgentSessionProxy(
       for (;;) {
         let result: Awaited<ReturnType<typeof host.waitForAny>>
         try {
+          // `since` (reused unchanged across retries — a timeout means
+          // nothing has matched since that cursor yet, so there's nothing
+          // to advance) is what makes this race-free; the subscription
+          // timing itself no longer matters.
           result = await host.waitForAny([remoteSessionId], {
             event: "any",
             timeoutMs: MAX_POLL_MS,
+            since,
           })
           consecutivePollFailures = 0
         } catch (pollErr) {

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/agencies",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "agentagencies/v1 — open file-format standard for entities that exercise agency. Operating layer over agentcompanies/v1 and agentgovernance/v1: services, counterparties, engagements, agreements, deliverables, invoices, vendor-neutral procedures, full-fidelity routines, capacity.",
   "keywords": [
     "agentagencies",
@@ -82,7 +82,7 @@
     "@agentproto/governance": "workspace:*",
     "gray-matter": "^4.0.3",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

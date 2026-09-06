@@ -1,5 +1,61 @@
 # @agentproto/adapter-openclaw
 
+## 0.1.15
+
+### Patch Changes
+
+- @agentproto/driver-agent-cli@2.4.1
+
+## 0.1.14
+
+### Patch Changes
+
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+  - @agentproto/driver-agent-cli@2.4.0
+
+## 0.1.13
+
+### Patch Changes
+
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+  - @agentproto/driver-agent-cli@2.3.1
+
+## 0.1.12
+
+### Patch Changes
+
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/driver-agent-cli@2.2.2
+
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/driver-agent-cli@2.2.0
+
 ## 0.1.8
 
 ### Patch Changes

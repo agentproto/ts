@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -44,6 +44,66 @@ describe("createTranscriptWriter", () => {
     expect(lines).toHaveLength(1)
     expect(lines[0]).toMatchObject({ kind: "user-prompt", text: "hello there", seq: 1 })
     expect(typeof lines[0]?.ts).toBe("string")
+  })
+
+  it("records a spawned child's role preamble as a SYSTEM system-prompt record ahead of the caller's user-prompt, stripping the preamble from the user text", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    const preamble = "You are the executor. Do the task yourself.\nKeep it short."
+    writer.recordPrompt("sess_1", `${preamble}\n\nfix the bug`, { system: preamble })
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    // The synthesized preamble is its own SYSTEM record FIRST…
+    expect(lines[0]).toMatchObject({ kind: "system-prompt", text: preamble })
+    // …and the user-prompt that follows carries ONLY the caller's ask —
+    // the daemon-composed preamble is not duplicated into the user bubble.
+    expect(lines[1]).toMatchObject({ kind: "user-prompt", text: "fix the bug" })
+    expect(lines).toHaveLength(2)
+  })
+
+  it("a system slice that is NOT a prefix of the composed text falls back to recording the FULL text, never a bad slice", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      // Composition invariant violated on purpose: `system` doesn't actually
+      // prefix `message` (as if a future refactor of composedPreamble/
+      // effectivePrompt broke the "<system>\n\n<user>" join this code relies
+      // on). The guard must not blindly slice — it must keep the full text.
+      writer.recordPrompt("sess_1", "the real composed text", { system: "not a real prefix" })
+      await writer.close("sess_1")
+
+      const lines = readLines("sess_1")
+      // The system record is still written (it's the caller's own claim)…
+      expect(lines[0]).toMatchObject({ kind: "system-prompt", text: "not a real prefix" })
+      // …but the user-prompt is the FULL, unsliced text — never corrupted.
+      expect(lines[1]).toMatchObject({ kind: "user-prompt", text: "the real composed text" })
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it("a prompt with no system slice is recorded as a single user-prompt, unchanged", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordPrompt("sess_1", "a human turn")
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ kind: "user-prompt", text: "a human turn" })
+  })
+
+  it("records prompt provenance — `opts.source` rides onto the user-prompt record", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordPrompt("sess_1", "status?", { source: "agent:sess_boss1" })
+    writer.recordPrompt("sess_1", "a human turn")
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    expect(lines[0]).toMatchObject({ kind: "user-prompt", text: "status?", source: "agent:sess_boss1" })
+    // A source-less prompt stays source-less — no empty/undefined key leaks in.
+    expect(lines[1]).toMatchObject({ kind: "user-prompt", text: "a human turn" })
+    expect("source" in (lines[1] ?? {})).toBe(false)
   })
 
   it("JSON-stringifies non-string prompt messages", async () => {
@@ -155,6 +215,108 @@ describe("createTranscriptWriter", () => {
       result: "file1.txt",
       isError: false,
     })
+  })
+
+  it("marks a successful shell gh pr create's tool-call-record with the created PR (exact provenance)", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", {
+      kind: "tool-call",
+      toolCallId: "t1",
+      toolName: "bash",
+      arguments: { command: 'git push && gh pr create --title "t" --body "b" | tail -1' },
+    })
+    writer.recordEvent("sess_1", {
+      kind: "tool-result",
+      toolCallId: "t1",
+      result: "Warning: 2 uncommitted changes\nhttps://github.com/o/r/pull/998",
+      isError: false,
+    })
+    await writer.close("sess_1")
+
+    const record = readLines("sess_1").find(l => l.kind === "tool-call-record")
+    expect(record).toMatchObject({
+      createdPrUrl: "https://github.com/o/r/pull/998",
+      createdPrNumber: 998,
+    })
+  })
+
+  it("does not mark a command that merely QUOTES gh pr create, nor a failed create", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", {
+      kind: "tool-call",
+      toolCallId: "t1",
+      toolName: "bash",
+      arguments: { command: 'grep -rn "gh pr create" src/' },
+    })
+    writer.recordEvent("sess_1", {
+      kind: "tool-result",
+      toolCallId: "t1",
+      result: "src/x.ts: // see https://github.com/o/r/pull/42",
+      isError: false,
+    })
+    writer.recordEvent("sess_1", {
+      kind: "tool-call",
+      toolCallId: "t2",
+      toolName: "bash",
+      arguments: { command: "gh pr create --title t" },
+    })
+    writer.recordEvent("sess_1", {
+      kind: "tool-result",
+      toolCallId: "t2",
+      result: "a pull request for branch already exists: https://github.com/o/r/pull/43",
+      isError: true,
+    })
+    await writer.close("sess_1")
+
+    const records = readLines("sess_1").filter(l => l.kind === "tool-call-record")
+    expect(records).toHaveLength(2)
+    for (const record of records) {
+      expect(record).not.toHaveProperty("createdPrUrl")
+      expect(record).not.toHaveProperty("createdPrNumber")
+    }
+  })
+
+  it("records an agent-prompt then its permission-resolved outcome, correlated by toolCallId", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", {
+      kind: "agent-prompt",
+      toolCallId: "perm1",
+      options: [{ optionId: "allow_once", name: "Allow Once" }],
+    })
+    writer.recordEvent("sess_1", {
+      kind: "permission-resolved",
+      toolCallId: "perm1",
+      decision: "approve",
+      optionId: "allow_always",
+    })
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatchObject({ kind: "agent-prompt", toolCallId: "perm1" })
+    expect(lines[1]).toMatchObject({
+      kind: "permission-resolved",
+      toolCallId: "perm1",
+      decision: "approve",
+      optionId: "allow_always",
+    })
+  })
+
+  it("resolves independently across multiple pending permissions in one session", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", { kind: "agent-prompt", toolCallId: "perm1", options: [] })
+    writer.recordEvent("sess_1", { kind: "agent-prompt", toolCallId: "perm2", options: [] })
+    writer.recordEvent("sess_1", {
+      kind: "permission-resolved",
+      toolCallId: "perm2",
+      decision: "deny",
+    })
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    const resolved = lines.filter(l => l.kind === "permission-resolved")
+    expect(resolved).toHaveLength(1)
+    expect(resolved[0]).toMatchObject({ toolCallId: "perm2", decision: "deny" })
   })
 
   it("flushes buffered text and writes a turn-end record at turn boundaries", async () => {

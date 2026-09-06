@@ -22,6 +22,7 @@ function makeHost(overrides: Partial<FakeHost> = {}): FakeHost {
     output: vi.fn(async () => ""),
     kill: vi.fn(async () => {}),
     waitForAny: vi.fn(async () => ({ timedOut: false, event: "turn-end" as const, sessionIds: [] })),
+    currentEventsCursor: vi.fn(async () => 0),
     stop: vi.fn(async () => {}),
     ...overrides,
   }

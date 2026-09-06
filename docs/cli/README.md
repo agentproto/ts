@@ -2,7 +2,7 @@
 
 The `agentproto` binary is the reference host for AgentProto agent-CLI
 adapters. It installs adapter packages (`claude-code`, `claude-sdk`,
-`hermes`, `opencode`, `codex`, `mastra-agent`, `openclaw`, …), runs them locally
+`hermes`, `opencode`, `jcode`, `codex`, `mastra-agent`, `openclaw`, `antigravity`, `grok-cli`, …), runs them locally
 for a single turn or a long-lived session, exposes them as a daemon over
 an outbound WebSocket tunnel, and orchestrates multi-agent swarms
 through the runtime kernel.
@@ -11,7 +11,7 @@ This tree is **tool docs** — what the binary does, what flags it takes,
 what files it touches. For the protocol it implements, see the AIPs
 at <https://agentproto.sh/docs>.
 
-> **Status:** alpha. The package is pre-1.0 (`0.10.0`). See
+> **Status:** alpha. The package is pre-1.0 (`0.14.0`). See
 > [`../../VERSIONING.md`](../../VERSIONING.md) for what the alpha
 > guarantees and what may change between minor releases.
 
@@ -35,23 +35,25 @@ Pick whichever matches what you're trying to do:
 
 ### Verbs
 
+- [`agentproto app`](./verbs/app.md) — package, unpack, or serve an agentproto app bundle (.agentapp)
 - [`agentproto acp`](./verbs/acp.md) — manage generic ACP agents (zero-code ACP CLIs)
+- [`agentproto adapters`](./verbs/adapters.md) — manage runtime adapters (swarm-kernel substrates/dispatchers/executors)
 - [`agentproto auth`](./verbs/auth.md) — log in to a host (RFC 8628 device flow)
 - [`agentproto browser`](./verbs/browser.md) — manage browser service sessions (Camofox, Bureau, Chromium)
 - [`agentproto chat` / `chat-tui`](./verbs/chat.md) — interactive REPL on a daemon agent session
 - [`agentproto config`](./verbs/config.md) — read/write `~/.agentproto/config.json`
 - [`agentproto conversation`](./verbs/conversation.md) — locate the native transcript behind a session, or the session behind a native transcript
 - [`agentproto cron`](./verbs/cron.md) — durable cron jobs on the daemon (command, fresh agent, or re-prompt a live session)
-- [`agentproto daemon`](./verbs/daemon.md) — install/start/stop the background service
+- [`agentproto daemon`](./verbs/daemon.md) — install/start/restart/stop the background service
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
 - [`agentproto install-mcp`](./verbs/install-mcp.md) — register the daemon's MCP server with installed coding CLIs
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
+- [`agentproto mcp-app`](./verbs/mcp-app.md) — stdio MCP server scoped to one installed app's tools
 - [`agentproto models`](./verbs/models.md) — list runnable models per adapter with provider-key status
 - [`agentproto onboard`](./verbs/onboard.md) — first-run: register MCP + install the skill pack in one pass
 - [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
 - [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, or auto-resolve with `watch` rules
-- [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
 - [`agentproto policy`](./verbs/policy.md) — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
 - [`agentproto provider-preset`](./verbs/presets.md) — list provider gateway definitions + key-env status
 - [`agentproto preset`](./verbs/preset.md) — manage saved user spawn configurations

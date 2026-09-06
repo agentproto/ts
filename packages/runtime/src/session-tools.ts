@@ -15,7 +15,12 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { SessionsRegistry } from "./sessions.js"
+import type {
+  QueuedPromptView,
+  SessionDescriptor,
+  SessionsRegistry,
+} from "./sessions.js"
+import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
   registerExportSessionTool,
@@ -24,14 +29,17 @@ import {
 } from "./agent-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
+import type { DiscoveredMcp } from "./mcp-discovery.js"
 import {
   decideRestartStrategy,
   augmentWithFsResume,
   describeResumePath,
   tokenizeCommand,
+  RESUME_STRATEGIES,
 } from "./resume-strategies.js"
 import {
   restartAgentSession,
+  resolveResumeAuth,
   RestartOverrideError,
   type RestartOverrides,
 } from "./session-restart-core.js"
@@ -40,8 +48,9 @@ import {
   saveImportedMcps,
   addImport,
   removeImport,
+  type ImportedMcpEntry,
 } from "./mcp-imports.js"
-import type { McpProxyRegistry } from "./mcp-proxy.js"
+import type { McpProxyRegistry, ProxyToolDescriptor } from "./mcp-proxy.js"
 import { projectSessionUsage } from "./usage.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import {
@@ -57,6 +66,9 @@ import {
   enrichRollupWithProviderQuota,
 } from "./usage-rollup-service.js"
 import { withToolSubset } from "./tool-subset.js"
+import { pageParamsShape } from "./tool-envelope.js"
+import { catchErrors, paginated } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type {
@@ -76,8 +88,17 @@ import {
 import {
   resolveWorktreeQueryRoot,
   type WorktreeStatusLister,
+  type WorktreeStatusView,
 } from "./worktree-status.js"
-import type { WorktreeGcRunner } from "./worktree-gc.js"
+import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
+import { basename, join } from "node:path"
+import {
+  ALLOWLIST_REL,
+  TERMINAL_GATE_ENV,
+  isCommandAllowed,
+  loadAllowlistEntries,
+  loadTerminalGateMode,
+} from "./command-allowlist.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -94,6 +115,9 @@ export interface SessionTreeNode {
   id: string
   label?: string
   status: string
+  currentPhase?: import("./sessions.js").SessionCurrentPhase
+  secondsSinceLastActivity?: number
+  toolCallsThisTurn?: number
   depth: number
   adapterSlug?: string
   parentSessionId?: string
@@ -178,6 +202,9 @@ export function buildSessionTree(
     id: s.id,
     ...(s.label ? { label: s.label } : {}),
     status: s.status,
+    currentPhase: s.currentPhase,
+    secondsSinceLastActivity: s.secondsSinceLastActivity,
+    toolCallsThisTurn: s.toolCallsThisTurn,
     depth: s.depth ?? 0,
     ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
@@ -197,6 +224,13 @@ export function buildSessionTree(
 
 export interface RegisterSessionToolsOptions {
   registry: SessionsRegistry
+  /** Absolute path to the workspace root the daemon is bound to — the
+   *  SAME workspace `command_execute` gates against. Required (not
+   *  optional) on purpose: `terminal_start` resolves its terminal-gate
+   *  mode from this workspace's allowlist file, and an unconfigured
+   *  host silently running ungated terminals is exactly the defect
+   *  class the gate exists to close. */
+  workspace: string
   /** Optional adapter resolver — required for `agent_start`
    *  (the others work with raw spawn sessions too). When unset the
    *  start tool returns a clear error pointing at the host wiring. */
@@ -217,6 +251,13 @@ export interface RegisterSessionToolsOptions {
    *  `catalog_models` MCP tool. Without it the tool returns a clear "not
    *  configured" error pointing at the host wiring. */
   listCatalogModels?: CatalogModelsLister
+  /** config.json `defaults` loader — same seam as
+   *  `RestartAgentSessionOptions.loadDefaultsConfig` in session-restart-core.ts.
+   *  Threaded into `session_restart`'s pty-native billing-auth re-resolution
+   *  (`resolveResumeAuth`) so tests can inject a stub instead of touching the
+   *  real `~/.agentproto/config.json`. Defaults to reading the real file via
+   *  `loadConfig` when omitted, same as every other restart call site. */
+  loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
   /** Forwarded to `registerAgentTools` — the daemon's own plain `/mcp`
    *  gateway URL, defaulted onto `hermes` `agent_start` spawns that
    *  pass no `mcpServers`. See `RegisterAgentToolsOptions.daemonMcpUrl`. */
@@ -258,6 +299,11 @@ export interface RegisterSessionToolsOptions {
    *  this `/mcp` request, used as the implicit auto-parent for attach-by-
    *  default. See `RegisterAgentToolsOptions.callerSessionId`. */
   callerSessionId?: string
+  /** Forwarded to `registerAgentTools` — the connecting client's source label
+   *  from this `/mcp` request's `?origin=` query, used as the default origin
+   *  for a spawn that doesn't set its own. See
+   *  `RegisterAgentToolsOptions.mcpBridgeOrigin`. */
+  mcpBridgeOrigin?: string
   /** Optional webhook notifier — when provided, per-session `notifyUrl`
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
@@ -306,6 +352,190 @@ const mcpBool = z.preprocess(
   z.boolean(),
 )
 
+// ── session_list COMPACT projection (PR-10) ──────────────────────────────
+// The default per-item shape for `session_list`: the identity fields a
+// caller needs to list, filter, and route follow-ups to the right session —
+// nothing else. The bulky/rarely-needed descriptor echo (context-continuity
+// policy detail, available commands, watcher rosters, AGENTS.md/RULES.md
+// content, auth + access-profile echoes, adapter config paths, restart
+// bookkeeping, …) stays behind `full: true` / `compact: false`, which
+// return the unmodified SessionDescriptor exactly as before.
+export interface SessionListCompactItem {
+  id: string
+  kind: SessionDescriptor["kind"]
+  name?: string
+  label?: string
+  status: SessionDescriptor["status"]
+  pty?: boolean
+  /** What was actually run — quoted joined, same string the full record carries. */
+  command: string
+  cwd?: string
+  adapterSlug?: string
+  model?: string
+  busy?: boolean
+  awaitingInput?: boolean
+  blockedOn?: SessionDescriptor["blockedOn"]
+  lastActivityAt?: string
+  startedAt: string
+  exitCode?: number
+  depth?: number
+  parentSessionId?: string
+  // Usage scalars (small, and codified as session_list output by
+  // session-usage-mcp.test.ts): cheap badge signals for list views.
+  usageSource?: SessionDescriptor["usageSource"]
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  contextSize?: number
+  contextUsed?: number
+}
+
+export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem => ({
+  id: s.id,
+  kind: s.kind,
+  name: s.name,
+  label: s.label,
+  status: s.status,
+  pty: s.pty,
+  command: s.command,
+  cwd: s.cwd,
+  adapterSlug: s.adapterSlug,
+  model: s.model,
+  busy: s.busy,
+  awaitingInput: s.awaitingInput,
+  blockedOn: s.blockedOn,
+  lastActivityAt: s.lastActivityAt,
+  startedAt: s.startedAt,
+  exitCode: s.exitCode,
+  depth: s.depth,
+  parentSessionId: s.parentSessionId,
+  usageSource: s.usageSource,
+  costUsd: s.costUsd,
+  tokensIn: s.tokensIn,
+  tokensOut: s.tokensOut,
+  contextSize: s.contextSize,
+  contextUsed: s.contextUsed,
+})
+
+// ── batch compact projections (tool-transformer migration) ───────────────
+// One compact projection per migrated list tool, same shape philosophy as
+// `compactSessionItem`: identity/routing fields + small usage scalars by
+// default; bulky, sensitive, or rarely-needed fields stay behind `full: true`.
+
+/** Default per-item shape for `mcp_discovered_list`: enough to identify,
+ *  attribute, and route `mcp_import` — never the spawn details. */
+export interface DiscoveredMcpCompactItem {
+  id: string
+  source: DiscoveredMcp["source"]
+  scope: string
+  name: string
+  type: DiscoveredMcp["type"]
+}
+
+export const compactDiscoveredMcp = (m: DiscoveredMcp): DiscoveredMcpCompactItem => ({
+  id: m.id,
+  source: m.source,
+  scope: m.scope,
+  name: m.name,
+  type: m.type,
+})
+
+/** Default per-item shape for `mcp_imported_list`: the curated-set bookkeeping
+ *  (id/alias/addedAt) plus the snapshot's identity trio. The full snapshot —
+ *  command/args/env/headers, some of it secret-bearing — stays behind
+ *  `full: true`. */
+export interface ImportedMcpCompactEntry {
+  id: string
+  alias: string
+  addedAt: string
+  source: DiscoveredMcp["source"]
+  name: string
+  type: DiscoveredMcp["type"]
+}
+
+export const compactImportedMcpEntry = (
+  e: ImportedMcpEntry,
+): ImportedMcpCompactEntry => ({
+  id: e.id,
+  alias: e.alias,
+  addedAt: e.addedAt,
+  source: e.snapshot.source,
+  name: e.snapshot.name,
+  type: e.snapshot.type,
+})
+
+/** Default per-item shape for `mcp_imported_tool_list`: name + description.
+ *  The upstream `inputSchema` (the bulky part) and `_meta` stay behind
+ *  `full: true` / a `fields` allowlist naming them. */
+export interface ProxyToolCompactItem {
+  name: string
+  description?: string
+}
+
+export const compactProxyTool = (t: ProxyToolDescriptor): ProxyToolCompactItem => ({
+  name: t.name,
+  ...(t.description !== undefined ? { description: t.description } : {}),
+})
+
+/** Default per-item shape for `session_queue_list`: position/origin/preview
+ *  + the stable id needed to route `session_queue_promote`/`deliver`/`drop`.
+ *  `queuedAt` stays behind `full: true`. */
+export interface QueuedPromptCompactItem {
+  id: string
+  origin: string
+  preview: string
+  position: number
+}
+
+export const compactQueuedPromptView = (
+  q: QueuedPromptView,
+): QueuedPromptCompactItem => ({
+  id: q.id,
+  origin: q.origin,
+  preview: q.preview,
+  position: q.position,
+})
+
+/** Default per-item shape for `worktree_status`: the worktree identity +
+ *  PR/class scalars. The per-session roster (`sessions[]`) stays behind
+ *  `full: true`. */
+export interface WorktreeStatusCompactItem {
+  path: string
+  branch: string | null
+  class: WorktreeStatusView["class"]
+  reclaimable: boolean
+  pr: WorktreeStatusView["pr"]
+  liveness: WorktreeStatusView["liveness"]
+}
+
+export const compactWorktreeStatus = (
+  w: WorktreeStatusView,
+): WorktreeStatusCompactItem => ({
+  path: w.path,
+  branch: w.branch,
+  class: w.class,
+  reclaimable: w.reclaimable,
+  pr: w.pr,
+  liveness: w.liveness,
+})
+
+/** Projection for `terminal_sessions_list` / `command_list`: session_list's
+ *  compact shape plus the provenance scalars (`origin`, `callerSessionId`)
+ *  those tools' callers route on. */
+export interface SessionListCompactItemWithProvenance
+  extends SessionListCompactItem {
+  origin?: string
+  callerSessionId?: string
+}
+
+export const compactSessionItemWithProvenance = (
+  s: SessionDescriptor,
+): SessionListCompactItemWithProvenance => ({
+  ...compactSessionItem(s),
+  ...(s.origin !== undefined ? { origin: s.origin } : {}),
+  ...(s.callerSessionId !== undefined ? { callerSessionId: s.callerSessionId } : {}),
+})
+
 export function registerSessionTools(
   rawServer: McpServer,
   opts: RegisterSessionToolsOptions
@@ -317,65 +547,113 @@ export function registerSessionTools(
     : rawServer
   const {
     registry,
+    workspace,
     mcpProxy,
     callerScope,
     resolveAgentAdapter,
     listWorktreeStatuses,
     runWorktreeGc,
+    listCatalogModels,
+    loadDefaultsConfig,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
+
+  // Shared registration helper for the list tools migrated onto the AIP
+  // contract layer (session_list's pattern): defineTool + implementTool +
+  // a single-candidate builtin driver + toMcpTool with catchErrors() and
+  // paginated() transformers. `body` returns the FULL, unprojected rows —
+  // the compact projection is `project`'s job; errors thrown anywhere in
+  // the body surface as the canonical MCP error result.
+  const registerPaginatedListTool = <TInput, TItem extends object>(args: {
+    id: string
+    description: string
+    schema: z.ZodType<TInput>
+    body: (input: TInput) => Promise<TItem[]>
+    project: (item: TItem) => object
+    keyOf: (item: TItem) => string | number | null
+    itemKey: string
+  }): void => {
+    registerBuiltinTool<TInput, TItem[]>(server, {
+      id: args.id,
+      description: args.description,
+      inputSchema: args.schema,
+      handler: (input) => args.body(input),
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: args.project,
+          keyOf: args.keyOf,
+          maxLimit: 200,
+          itemKey: args.itemKey,
+        }),
+      ],
+    })
+  }
 
   // Delegate the agent-family tools to the dedicated module.
   registerAgentTools(server, opts)
 
   // ── session_list (canonical lister) ──────────────────────────
-  server.tool(
-    "session_list",
-    "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) as the proof-of-concept for the ToolTransformer mechanism:
+  // the pagination/compact/fields concerns are now applied by the
+  // `paginated()` transformer at registration instead of hand-rolled in
+  // the handler. Observable behavior is unchanged.
+  const sessionListSchema = z.object({
+    kind: z
+      .enum(["terminal", "agent-cli", "command", "all"])
+      .optional()
+      .describe(
+        "Filter by session kind. `all` (default) returns every " +
+          "live-able kind (terminal + agent-cli) but excludes `command` " +
+          "unless `includeCommands` is set. Use `terminal` to list only " +
+          "PTY sessions, `agent-cli` for structured ACP agents, or " +
+          "`command` to list only raw shell-command runs.",
+      ),
+    includeCommands: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true and `kind` is unset/`all`, also include `kind:'command'` " +
+          "rows in the result (they're excluded by default — see `kind`). " +
+          "No effect when `kind` is set explicitly. Default false.",
+      ),
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe("When true, only running/starting sessions. Default false."),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status (overrides onlyAlive)."),
+    includeArchived: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, also include archived sessions (hidden from every " +
+          "other view by `session_archive`). Default false.",
+      ),
+    ...pageParamsShape,
+  })
+  type SessionListInput = z.infer<typeof sessionListSchema>
+
+  registerBuiltinTool<SessionListInput, SessionDescriptor[]>(server, {
+    id: "session_list",
+    description: "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
       "hermes, …) and terminal/PTY sessions (claude TUI, bash, …). Each " +
       "entry includes `kind`, `pty` (true for real PTYs), `name` (when set " +
       "at spawn), `status`, `command`, age + exit code. Use this when you " +
       "need to know what's already running before spawning anything new, " +
-      "or to discover a session id by name. Raw shell-command runs " +
+      "or to discover a session id by name. COMPACT BY DEFAULT: each entry " +
+      "is a slim projection (id/kind/name/label/status/command/cwd/model/" +
+      "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId); " +
+      "pass `full: true` (or `compact: false`) for the complete, unprojected " +
+      "per-session record. Raw shell-command runs " +
       "(`kind:'command'`) are a log, not a resumable session, so they're " +
       "excluded from the default view — pass `kind:'command'` or " +
       "`includeCommands:true` to see them, or use `command_list`.",
-    {
-      kind: z
-        .enum(["terminal", "agent-cli", "command", "all"])
-        .optional()
-        .describe(
-          "Filter by session kind. `all` (default) returns every " +
-            "live-able kind (terminal + agent-cli) but excludes `command` " +
-            "unless `includeCommands` is set. Use `terminal` to list only " +
-            "PTY sessions, `agent-cli` for structured ACP agents, or " +
-            "`command` to list only raw shell-command runs.",
-        ),
-      includeCommands: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true and `kind` is unset/`all`, also include `kind:'command'` " +
-            "rows in the result (they're excluded by default — see `kind`). " +
-            "No effect when `kind` is set explicitly. Default false.",
-        ),
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("When true, only running/starting sessions. Default false."),
-      status: z
-        .enum(["starting", "running", "exited", "killed", "error"])
-        .optional()
-        .describe("Filter by exact status (overrides onlyAlive)."),
-      includeArchived: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true, also include archived sessions (hidden from every " +
-            "other view by `session_archive`). Default false.",
-        ),
-    },
-    async input => {
+    inputSchema: sessionListSchema,
+    handler: async (input) => {
       // Always pull the FULL list (archived included) — subtree scoping
       // below needs every row to keep the parent→child graph connected
       // (an archived ancestor excluded from the base list would silently
@@ -409,13 +687,17 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
-        ],
-      }
+      return rows
     },
-  )
+    transformers: [
+      paginated({
+        project: compactSessionItem,
+        keyOf: s => s.id,
+        maxLimit: 200,
+        itemKey: "sessions",
+      }),
+    ],
+  })
 
   // ── session_usage ────────────────────────────────────────────────
   server.tool(
@@ -478,7 +760,7 @@ export function registerSessionTools(
       const usage = projectSessionUsage(desc)
       return {
         content: [
-          { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }, null, 2) },
+          { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }) },
         ],
       }
     },
@@ -556,7 +838,7 @@ export function registerSessionTools(
         desc.contextUsed,
       )
       return {
-        content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(status) }],
       }
     },
   )
@@ -700,6 +982,7 @@ export function registerSessionTools(
         ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
         ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
         ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
       }
       try {
         const result = await continueAgentSessionFresh(spawnDeps, desc)
@@ -921,34 +1204,42 @@ export function registerSessionTools(
         }
       }
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(result) }],
       }
     },
   )
 
   // ── terminal_sessions_list ──────────────────────────────────────
-  server.tool(
-    "terminal_sessions_list",
-    "List terminal/PTY sessions tracked by the daemon. Equivalent to `session_list({kind: 'terminal'})`. " +
+  // Migrated onto the AIP contract layer (session_list's pattern): the
+  // pagination/compact/fields concerns + error normalization are the
+  // catchErrors()/paginated() transformers' job; the handler keeps only
+  // the filters (subtree scoping left hand-rolled, see session_list).
+  const terminalSessionsListSchema = z.object({
+    kind: z
+      .enum(["terminal", "agent-cli", "command", "all"])
+      .optional()
+      .describe(
+        "Optional override of the default `terminal` filter. `all` returns every kind."
+      ),
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe("When true, only running/starting sessions. Default false."),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status (overrides onlyAlive)."),
+  })
+  registerPaginatedListTool<z.infer<typeof terminalSessionsListSchema>, SessionDescriptor>({
+    id: "terminal_sessions_list",
+    description:
+      "List terminal/PTY sessions tracked by the daemon. Equivalent to `session_list({kind: 'terminal'})`. " +
       "Each entry includes `kind`, `pty`, `status`, age, etc. Use this when you only want " +
-      "the terminal subset.",
-    {
-      kind: z
-        .enum(["terminal", "agent-cli", "command", "all"])
-        .optional()
-        .describe(
-          "Optional override of the default `terminal` filter. `all` returns every kind."
-        ),
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("When true, only running/starting sessions. Default false."),
-      status: z
-        .enum(["starting", "running", "exited", "killed", "error"])
-        .optional()
-        .describe("Filter by exact status (overrides onlyAlive)."),
-    },
-    async input => {
+      "the terminal subset. COMPACT BY DEFAULT: each entry is session_list's slim " +
+      "projection; pass `full: true` (or `compact: false`) for the complete, " +
+      "unprojected per-session record.",
+    schema: terminalSessionsListSchema,
+    body: async input => {
       // Full list (includeArchived) for subtree correctness — see
       // session_list's docblock; archived rows are hidden below,
       // unconditionally (this tool has no includeArchived opt-in).
@@ -969,37 +1260,42 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
-        ],
-      }
+      return rows
     },
-  )
+    project: compactSessionItemWithProvenance,
+    keyOf: s => s.id,
+    itemKey: "sessions",
+  })
 
   // ── command_list ────────────────────────────────────────────────
-  server.tool(
-    "command_list",
-    "List command sessions tracked by the daemon. Equivalent to `session_list({kind: 'command'})`. " +
+  // Migrated onto the AIP contract layer (session_list's pattern) — see
+  // terminal_sessions_list above.
+  const commandListSchema = z.object({
+    kind: z
+      .enum(["terminal", "agent-cli", "command", "all"])
+      .optional()
+      .describe(
+        "Optional override of the default `command` filter. `all` returns every kind."
+      ),
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe("When true, only running/starting sessions. Default false."),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status (overrides onlyAlive)."),
+  })
+  registerPaginatedListTool<z.infer<typeof commandListSchema>, SessionDescriptor>({
+    id: "command_list",
+    description:
+      "List command sessions tracked by the daemon. Equivalent to `session_list({kind: 'command'})`. " +
       "Each entry includes `kind`, `status`, age, exit code, etc. Use this when you only want " +
-      "the command subset.",
-    {
-      kind: z
-        .enum(["terminal", "agent-cli", "command", "all"])
-        .optional()
-        .describe(
-          "Optional override of the default `command` filter. `all` returns every kind."
-        ),
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("When true, only running/starting sessions. Default false."),
-      status: z
-        .enum(["starting", "running", "exited", "killed", "error"])
-        .optional()
-        .describe("Filter by exact status (overrides onlyAlive)."),
-    },
-    async input => {
+      "the command subset. COMPACT BY DEFAULT: each entry is session_list's slim " +
+      "projection (stdout/stderr and the rest of the bulky echo stay behind " +
+      "`full: true`).",
+    schema: commandListSchema,
+    body: async input => {
       // Full list (includeArchived) for subtree correctness — see
       // session_list's docblock; archived rows are hidden below,
       // unconditionally (this tool has no includeArchived opt-in).
@@ -1020,72 +1316,62 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
-        ],
-      }
+      return rows
     },
-  )
+    project: compactSessionItemWithProvenance,
+    keyOf: s => s.id,
+    itemKey: "sessions",
+  })
 
-  // ── mcp_discovered_list ───────────────────────────────────────
-  server.tool(
-    "mcp_discovered_list",
-    "Discover MCP servers already configured in the user's other agent " +
+  // ── mcp_discovered_list ─────────────────────────────────────────
+  // Migrated onto the AIP contract layer (session_list's pattern). The
+  // discovered entries are COMPACT by default — env/headers (potentially
+  // secret-bearing) and spawn details stay behind `full: true`.
+  const mcpDiscoveredListSchema = z.object({})
+  registerPaginatedListTool<Record<string, never>, DiscoveredMcp>({
+    id: "mcp_discovered_list",
+    description:
+      "Discover MCP servers already configured in the user's other agent " +
       "tooling (claude-code, cursor, goose). Returns the union with source " +
       "attribution so the operator can suggest 'I see you have a chrome-devtools " +
       "MCP set up in claude — want me to use it?' instead of asking the user " +
-      "to re-configure. Read-only — does not modify any host's config.",
-    {},
-    async () => {
-      try {
-        const mcps = await discoverMcps()
-        return {
-          content: [{ type: "text", text: JSON.stringify({ mcps }, null, 2) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `mcp_discovered_list failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+      "to re-configure. Read-only — does not modify any host's config. " +
+      "COMPACT BY DEFAULT: each entry carries id/source/scope/name/type; " +
+      "pass `full: true` for the complete entry (command/args/env/headers/url).",
+    schema: mcpDiscoveredListSchema,
+    body: async () => {
+      const mcps = await discoverMcps()
+      return mcps
+    },
+    project: compactDiscoveredMcp,
+    keyOf: m => m.id,
+    itemKey: "mcps",
+  })
 
-  // ── mcp_imported_list ─────────────────────────────────────────
-  server.tool(
-    "mcp_imported_list",
-    "Return the user's curated set of MCP servers — the ones they've " +
+  // ── mcp_imported_list ───────────────────────────────────────────
+  // Migrated onto the AIP contract layer (session_list's pattern). Each
+  // entry is the compact id/alias/addedAt + snapshot-identity projection;
+  // the full snapshot (command/args/env/headers) stays behind `full: true`.
+  const mcpImportedListSchema = z.object({})
+  registerPaginatedListTool<Record<string, never>, ImportedMcpEntry>({
+    id: "mcp_imported_list",
+    description:
+      "Return the user's curated set of MCP servers — the ones they've " +
       "imported from claude / cursor / workspace configs into the daemon. " +
       "Use to know which MCPs the operator may freely call vs. ones still " +
-      "showing up in `mcp_discovered_list` waiting on the user's blessing.",
-    {},
-    async () => {
-      try {
-        const config = await loadImportedMcps()
-        return {
-          content: [
-            { type: "text", text: JSON.stringify(config, null, 2) },
-          ],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `mcp_imported_list failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+      "showing up in `mcp_discovered_list` waiting on the user's blessing. " +
+      "COMPACT BY DEFAULT: each entry carries id/alias/addedAt plus the " +
+      "snapshot's source/name/type; pass `full: true` for the complete " +
+      "entry including the full snapshot.",
+    schema: mcpImportedListSchema,
+    body: async () => {
+      const config = await loadImportedMcps()
+      return config.imports
+    },
+    project: compactImportedMcpEntry,
+    keyOf: e => e.id,
+    itemKey: "imports",
+  })
 
   // ── mcp_import ─────────────────────────────────────────────────
   server.tool(
@@ -1133,7 +1419,7 @@ export function registerSessionTools(
         await saveImportedMcps(next)
         const entry = next.imports.find(e => e.id === snapshot.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(entry, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(entry) }],
         }
       } catch (err) {
         return {
@@ -1179,7 +1465,7 @@ export function registerSessionTools(
         await saveImportedMcps(removeImport(cfg, input.id))
         return {
           content: [
-            { type: "text", text: JSON.stringify({ ok: true, id: input.id }, null, 2) },
+            { type: "text", text: JSON.stringify({ ok: true, id: input.id }) },
           ],
         }
       } catch (err) {
@@ -1227,7 +1513,7 @@ export function registerSessionTools(
         const aliases = await mcpProxy.listAliases()
         return {
           content: [
-            { type: "text", text: JSON.stringify({ imports: aliases }, null, 2) },
+            { type: "text", text: JSON.stringify({ imports: aliases }) },
           ],
         }
       } catch (err) {
@@ -1245,54 +1531,50 @@ export function registerSessionTools(
   )
 
   // ── mcp_imported_tool_list ────────────────────────────────────
-  server.tool(
-    "mcp_imported_tool_list",
-    "List the tools exposed by one imported MCP server. The proxy " +
+  // Migrated onto the AIP contract layer (session_list's pattern). The
+  // bespoke `compact`/`schema` params are replaced by the transformer's
+  // shared pagination params: rows are COMPACT (name + description) by
+  // default, `full: true` returns the complete upstream descriptor
+  // (including `inputSchema`), and `fields` allowlists per-item keys.
+  const mcpImportedToolListSchema = z.object({
+    alias: z
+      .string()
+      .min(1)
+      .describe(
+        "Alias from `mcp_imported_list` / `mcp_imported_status` " +
+          "(typically the original MCP name, e.g. 'chrome-devtools')."
+      ),
+  })
+  registerPaginatedListTool<z.infer<typeof mcpImportedToolListSchema>, ProxyToolDescriptor>({
+    id: "mcp_imported_tool_list",
+    description:
+      "List the tools exposed by one imported MCP server. The proxy " +
       "lazily connects on first call — first-use latency includes the " +
       "transport handshake (stdio: ~1-2s for npx-spawned servers; " +
-      "http/sse: <100ms). Returns the upstream `inputSchema` (JSON " +
-      "Schema) verbatim so the operator can build a valid `arguments` " +
-      "object for the follow-up `mcp_imported_call` invocation.",
-    {
-      alias: z
-        .string()
-        .min(1)
-        .describe(
-          "Alias from `mcp_imported_list` / `mcp_imported_status` " +
-            "(typically the original MCP name, e.g. 'chrome-devtools')."
-        ),
-    },
-    async input => {
+      "http/sse: <100ms). COMPACT BY DEFAULT: each entry carries name + " +
+      "description; pass `full: true` for the upstream descriptor verbatim " +
+      "including its `inputSchema` (JSON Schema), which you can use to " +
+      "build a valid `arguments` object for the follow-up " +
+      "`mcp_imported_call` invocation.",
+    schema: mcpImportedToolListSchema,
+    body: async input => {
       if (!mcpProxy) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "mcp_imported_tool_list is not enabled — see mcp_imported_status.",
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          "mcp_imported_tool_list is not enabled — see mcp_imported_status.",
+        )
       }
       const out = await mcpProxy.listTools(input.alias)
       if (!out.ok) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `mcp_imported_tool_list "${input.alias}": ${out.error}`,
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          `mcp_imported_tool_list "${input.alias}": ${out.error}`,
+        )
       }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ alias: input.alias, tools: out.tools }, null, 2) },
-        ],
-      }
-    }
-  )
+      return out.tools
+    },
+    project: compactProxyTool,
+    keyOf: t => t.name,
+    itemKey: "tools",
+  })
 
   // ── mcp_imported_call ──────────────────────────────────────────
   server.tool(
@@ -1367,7 +1649,21 @@ export function registerSessionTools(
       "carries `id`, `label`, `status`, `depth`, `adapterSlug`, `parentSessionId`, " +
       "and `isOrchestrator` (true when the session itself spawned sub-agents). " +
       "Via a scoped orchestrator token only the caller's subtree is returned; " +
-      "from the root `/mcp` endpoint the full daemon tree is visible.",
+      "from the root `/mcp` endpoint the full daemon tree is visible. " +
+      "NAVIGATION (additive): pass `nodeId` + `direction` together to fetch a " +
+      "single slice of the tree instead of the whole dump. Shapes per direction: " +
+      "`children` → `{ children: SessionTreeNode[] }` (direct children, one level); " +
+      "`parent` → `{ parent: SessionTreeNode | null }` (null when the node is a root); " +
+      "`siblings` → `{ siblings: SessionTreeNode[] }` (other nodes sharing the node's " +
+      "parent, excluding the node itself); `ancestors` → " +
+      "`{ ancestors: SessionTreeNode[] }` (chain starting at the node's immediate " +
+      "parent and ending at its root, nearest-first); `descendants` → " +
+      "`{ tree: SessionTreeNode[] }` (a single-element array holding the subtree " +
+      "rooted at the node — same node shape as the full dump, no `byOrigin`). " +
+      "`depth` (int ≥ 1) caps how many levels `children`/`ancestors`/`descendants` " +
+      "walk, relative to the node; omit it for unlimited walk. `groupByOrigin` is " +
+      "ignored in navigation mode. Both `nodeId` and `direction` are required " +
+      "together — passing only one is a validation error.",
     {
       onlyAlive: z
         .boolean()
@@ -1375,6 +1671,38 @@ export function registerSessionTools(
         .describe(
           "When true, only include sessions with status running/starting. " +
             "Pruned nodes also hide their subtree. Default false.",
+        ),
+      groupByOrigin: z
+        .boolean()
+        .optional()
+        .describe(
+          "Set false to suppress the companion `byOrigin` view and trim the " +
+            "payload. Default true — `byOrigin` is emitted alongside `tree`. " +
+            "Ignored in navigation mode (`nodeId` + `direction`).",
+        ),
+      nodeId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Scope navigation to the session with this id. Must be paired with " +
+            "`direction`; the id must exist in the (scope-filtered) visible " +
+            "session list.",
+        ),
+      direction: z
+        .enum(["children", "parent", "siblings", "ancestors", "descendants"])
+        .optional()
+        .describe(
+          "Which slice of `nodeId`'s relationships to return. Must be paired " +
+            "with `nodeId`.",
+        ),
+      depth: z
+        .number().int().min(1)
+        .optional()
+        .describe(
+          "Level cap for `children`/`ancestors`/`descendants` navigation, " +
+            "relative to the node (1 = the node's direct relations only). " +
+            "Omit for unlimited walk. Ignored for `parent`/`siblings`.",
         ),
     },
     async input => {
@@ -1393,15 +1721,386 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
+      // ── Navigation mode (nodeId + direction) ──────────────────────
+      // Additive slice of the tree: when both params arrive, walk the flat
+      // (already scope/onlyAlive/archived-filtered) list instead of building
+      // the whole dump. Exactly one of the two params is a validation error,
+      // not a silent fallback to the full dump (PR #1194 bug class).
+      if (input.nodeId !== undefined || input.direction !== undefined) {
+        if (input.nodeId === undefined || input.direction === undefined) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error:
+                    "session_tree: `nodeId` and `direction` must be passed " +
+                    "together — got " +
+                    (input.nodeId === undefined ? "only `direction`" : "only `nodeId`") +
+                    ". Omit both for the full tree dump.",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        const nodeDesc = rows.find(s => s.id === input.nodeId)
+        if (!nodeDesc) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error:
+                    `session_tree: node "${input.nodeId}" not found in the ` +
+                    "(scope-filtered) session list — it may be archived, dead " +
+                    "under onlyAlive, or outside the caller's subtree.",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        // Same parent→children index buildSessionTree uses, so `isOrchestrator`
+        // and depth ordering stay consistent with the full-dump view.
+        const idSet = new Set(rows.map(s => s.id))
+        const childrenOf = new Map<string, SessionDescriptor[]>()
+        for (const s of rows) {
+          if (s.parentSessionId && idSet.has(s.parentSessionId)) {
+            const arr = childrenOf.get(s.parentSessionId)
+            if (arr) arr.push(s)
+            else childrenOf.set(s.parentSessionId, [s])
+          }
+        }
+        const orchestratorIds = new Set(childrenOf.keys())
+        const toNode = (s: SessionDescriptor): SessionTreeNode => ({
+          id: s.id,
+          ...(s.label ? { label: s.label } : {}),
+          status: s.status,
+          currentPhase: s.currentPhase,
+          secondsSinceLastActivity: s.secondsSinceLastActivity,
+          toolCallsThisTurn: s.toolCallsThisTurn,
+          depth: s.depth ?? 0,
+          ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
+          ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
+          ...(s.origin ? { origin: s.origin } : {}),
+          isOrchestrator: orchestratorIds.has(s.id),
+          children: [],
+        })
+        const sortSiblings = (list: SessionDescriptor[]) =>
+          [...list].sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
+
+        let body: Record<string, unknown>
+        switch (input.direction) {
+          case "children": {
+            const kids =
+              input.depth !== undefined && input.depth < 1
+                ? []
+                : sortSiblings(childrenOf.get(nodeDesc.id) ?? []).map(toNode)
+            body = { children: kids }
+            break
+          }
+          case "parent": {
+            const parent =
+              nodeDesc.parentSessionId && idSet.has(nodeDesc.parentSessionId)
+                ? toNode(rows.find(s => s.id === nodeDesc.parentSessionId)!)
+                : null
+            body = { parent }
+            break
+          }
+          case "siblings": {
+            const sibs = nodeDesc.parentSessionId
+              ? sortSiblings(childrenOf.get(nodeDesc.parentSessionId) ?? [])
+                  .filter(s => s.id !== nodeDesc.id)
+                  .map(toNode)
+              : []
+            body = { siblings: sibs }
+            break
+          }
+          case "ancestors": {
+            const chain: SessionDescriptor[] = []
+            let cur = nodeDesc.parentSessionId
+            while (cur && idSet.has(cur)) {
+              const desc = rows.find(s => s.id === cur)
+              if (!desc) break
+              chain.push(desc)
+              if (input.depth !== undefined && chain.length >= input.depth) break
+              cur = desc.parentSessionId
+            }
+            body = { ancestors: chain.map(toNode) }
+            break
+          }
+          case "descendants": {
+            // BFS from the node, at most `depth` levels deep (undefined =
+            // unlimited). Only nodes inside the included set are attached, so
+            // the nesting stops exactly at the cap.
+            const included = new Set<string>([nodeDesc.id])
+            let frontier: SessionDescriptor[] = [nodeDesc]
+            let level = 0
+            while (frontier.length > 0 && (input.depth === undefined || level < input.depth)) {
+              const next: SessionDescriptor[] = []
+              for (const f of frontier) {
+                for (const c of sortSiblings(childrenOf.get(f.id) ?? [])) {
+                  if (!included.has(c.id)) {
+                    included.add(c.id)
+                    next.push(c)
+                  }
+                }
+              }
+              frontier = next
+              level++
+            }
+            const subtreeRoot = toNode(nodeDesc)
+            const attach = (n: SessionTreeNode): SessionTreeNode => ({
+              ...n,
+              children: sortSiblings(childrenOf.get(n.id) ?? [])
+                .filter(c => included.has(c.id))
+                .map(toNode)
+                .map(attach),
+            })
+            body = { tree: [attach(subtreeRoot)] }
+            break
+          }
+          default: {
+            body = {}
+            break
+          }
+        }
+        return {
+          content: [{ type: "text", text: JSON.stringify(body) }],
+        }
+      }
       const tree = buildSessionTree(rows)
       // Additive companion view: the same roots bucketed by `origin` so a
       // client can show "claude-code desktop vs vscode extension vs cron"
       // groups — the human-launched roots have no agent parent to nest under,
       // so origin is their only cluster key. `tree` is unchanged.
       const byOrigin = groupRootsByOrigin(tree)
+      const body =
+        input.groupByOrigin === false
+          ? { tree }
+          : { tree, byOrigin }
       return {
         content: [
-          { type: "text", text: JSON.stringify({ tree, byOrigin }, null, 2) },
+          { type: "text", text: JSON.stringify(body) },
+        ],
+      }
+    },
+  )
+
+  // ── session_queue_list ───────────────────────────────────────
+  // After-the-fact inspection of a session's prompt FIFO: what's sitting in
+  // the queue RIGHT NOW (origin, preview, queuedAt, position), not just the
+  // enqueue-time acknowledgment `POST /sessions/:id/prompt` already echoes.
+  // Position 0 is next to dispatch. Reads `registry.listQueuedPrompts`, the
+  // same projection the HTTP route / GET /sessions/:id/queue serves, so the
+  // MCP and REST surfaces can't drift. Migrated onto the AIP contract layer
+  // (session_list's pattern): entries are COMPACT by default (id/origin/
+  // preview/position; `queuedAt` stays behind `full: true`).
+  const sessionQueueListSchema = z.object({
+    sessionId: z
+      .string()
+      .min(1)
+      .describe("Session id or name — from `session_list`, alive or historical."),
+  })
+  registerPaginatedListTool<z.infer<typeof sessionQueueListSchema>, QueuedPromptView>({
+    id: "session_queue_list",
+    description:
+      "List the prompts currently queued on a live session (its prompt FIFO — " +
+      "prompts that arrived mid-turn with queueing enabled and are waiting " +
+      "to dispatch once the current turn ends). Each entry carries `position` " +
+      "(0 = next to dispatch), `origin` (who queued it: \"user\", \"agent " +
+      "<sessionId>\", \"child <sessionId>\"), and `preview` (short text of the " +
+      "message); pass `full: true` to also get `queuedAt`. " +
+      "Pair with `session_queue_promote` (jump an " +
+      "item to the front without touching the in-flight turn), " +
+      "`session_queue_deliver` (interrupt the current turn and dispatch this " +
+      "item NOW), and `session_queue_drop` (remove without delivering).",
+    schema: sessionQueueListSchema,
+    body: async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        throw new Error(`no session "${input.sessionId}" found`)
+      }
+      // Subtree scoping (WP4/WP5): same gate as session_list/session_tree —
+      // a scoped orchestrator only sees its own subtree's queues.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        if (!subtree.has(desc.id)) {
+          throw new Error(
+            `session "${input.sessionId}" is outside the caller's subtree`,
+          )
+        }
+      }
+      return registry.listQueuedPrompts(desc.id) ?? []
+    },
+    project: compactQueuedPromptView,
+    keyOf: q => q.id,
+    itemKey: "queue",
+  })
+
+  // ── session_queue_promote ──────────────────────────────────────
+  // Reorder-only force: jump an already-queued item to the front WITHOUT
+  // touching the in-flight turn. Distinct from `session_queue_deliver`.
+  server.tool(
+    "session_queue_promote",
+    "Move an already-queued prompt to the FRONT of a session's queue (position 0, " +
+      "next to dispatch once the current turn ends) WITHOUT cancelling or touching " +
+      "the in-flight turn — a queue-reordering operation only. This is the " +
+      "after-the-fact counterpart of `force` on `POST /sessions/:id/prompt`, but " +
+      "acting on an item already in the queue. Distinct from `session_queue_deliver` " +
+      "(which interrupts and dispatches immediately). The queueId comes from " +
+      "`session_queue_list`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+      queueId: z
+        .string()
+        .min(1)
+        .describe("The queued item's id, from `session_queue_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      const result = registry.promoteQueuedPrompt(desc.id, input.queueId)
+      if (!result.promoted) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no queued item "${input.queueId}" on session "${desc.id}"` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok: true, sessionId: desc.id, queueId: input.queueId, position: result.position }),
+          },
+        ],
+      }
+    },
+  )
+
+  // ── session_queue_deliver ──────────────────────────────────────
+  // Deliver-now (interrupt): cancel the in-flight turn and dispatch a
+  // SPECIFIC queued item as the new turn, removing it from the queue. The
+  // "I need this NOW" op — deliberately distinct from promote.
+  server.tool(
+    "session_queue_deliver",
+    "Immediately dispatch a SPECIFIC queued prompt by interrupting whatever " +
+      "turn is currently running on the session and delivering this item as " +
+      "the new turn (removing it from the queue). The \"I need this NOW\" op — " +
+      "distinct from `session_queue_promote`, which only reorders and lets the " +
+      "current turn finish. No-op (error) if the item is not in the queue. " +
+      "The queueId comes from `session_queue_list`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+      queueId: z
+        .string()
+        .min(1)
+        .describe("The queued item's id, from `session_queue_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const result = await registry.deliverQueuedPrompt(desc.id, input.queueId)
+        if (!result.delivered) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: `no queued item "${input.queueId}" on session "${desc.id}"` }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { ok: true, sessionId: desc.id, queueId: input.queueId, interrupted: result.interrupted },
+                null,
+                2,
+              ),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `session_queue_deliver: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  // ── session_queue_drop ─────────────────────────────────────────
+  server.tool(
+    "session_queue_drop",
+    "Remove a prompt from a session's queue WITHOUT ever delivering it — it is " +
+      "cancelled, not dispatched. Idempotent: an unknown session or an item that's " +
+      "already gone (dispatched, removed, or never existed) reports `removed:false` " +
+      "rather than erroring, matching the no-op-is-not-an-error shape of " +
+      "`POST /sessions/:id/interrupt`. The queueId comes from `session_queue_list`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+      queueId: z
+        .string()
+        .min(1)
+        .describe("The queued item's id, from `session_queue_list`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      const { removed } = registry.removeQueuedPrompt(desc.id, input.queueId)
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              { ok: true, sessionId: desc.id, queueId: input.queueId, removed },
+              null,
+              2,
+            ),
+          },
         ],
       }
     },
@@ -1411,52 +2110,51 @@ export function registerSessionTools(
   // Read-only view of the repo's linked worktrees + their live PR
   // integration + the sessions that opened them. The heavy join is
   // delegated to an injected `listWorktreeStatuses` port so the runtime
-  // stays free of `@agentproto/worktree`.
+  // stays free of `@agentproto/worktree`. Migrated onto the AIP contract
+  // layer (session_list's pattern): entries are COMPACT by default (the
+  // per-session roster stays behind `full: true`).
 
-  server.tool(
-    "worktree_status",
-    "List the linked git worktrees for a repo and their live PR/session " +
+  const worktreeStatusSchema = z.object({
+    repoRoot: z
+      .string()
+      .optional()
+      .describe(
+        "Absolute path to the git repo root whose worktrees to list. " +
+          "Wins over `workspaceSlug` when both are set."
+      ),
+    workspaceSlug: z
+      .string()
+      .optional()
+      .describe(
+        "Workspace slug from `agentproto workspace list`. Resolves the " +
+          "repo root via the active workspace when omitted."
+      ),
+    openOnly: mcpBool
+      .optional()
+      .describe(
+        "When true, only return worktrees whose `pr.state` is `open`. " +
+          "Default false."
+      ),
+  })
+  registerPaginatedListTool<z.infer<typeof worktreeStatusSchema>, WorktreeStatusView>({
+    id: "worktree_status",
+    description:
+      "List the linked git worktrees for a repo and their live PR/session " +
       "linkage. Each entry includes path, branch, class, reclaimability, " +
       "PR state/number, the sessions whose cwd sits in the worktree, and " +
       "liveness. Use this to power a 'PRs in progress + linked sub-agents' " +
       "panel. Pass `openOnly: true` to surface only worktrees whose PR is " +
-      "still open.",
-    {
-      repoRoot: z
-        .string()
-        .optional()
-        .describe(
-          "Absolute path to the git repo root whose worktrees to list. " +
-            "Wins over `workspaceSlug` when both are set."
-        ),
-      workspaceSlug: z
-        .string()
-        .optional()
-        .describe(
-          "Workspace slug from `agentproto workspace list`. Resolves the " +
-            "repo root via the active workspace when omitted."
-        ),
-      openOnly: mcpBool
-        .optional()
-        .describe(
-          "When true, only return worktrees whose `pr.state` is `open`. " +
-            "Default false."
-        ),
-    },
-    async input => {
+      "still open. COMPACT BY DEFAULT: each entry carries path/branch/" +
+      "class/reclaimable/pr/liveness; pass `full: true` to also get the " +
+      "per-session roster (`sessions[]`).",
+    schema: worktreeStatusSchema,
+    body: async input => {
       if (!listWorktreeStatuses) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "worktree_status is not enabled — the daemon was started without " +
-                "a worktree status lister. The host must wire `listWorktreeStatuses` " +
-                "in createGateway.",
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          "worktree_status is not enabled — the daemon was started without " +
+            "a worktree status lister. The host must wire `listWorktreeStatuses` " +
+            "in createGateway.",
+        )
       }
 
       const resolved = await resolveWorktreeQueryRoot({
@@ -1464,43 +2162,19 @@ export function registerSessionTools(
         workspaceSlug: input.workspaceSlug,
       })
       if (!resolved.ok) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ error: resolved.error }, null, 2),
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(resolved.error)
       }
 
-      try {
-        let worktrees = await listWorktreeStatuses(resolved.repoRoot)
-        if (input.openOnly) {
-          worktrees = worktrees.filter(w => w.pr?.state === "open")
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ worktrees }, null, 2),
-            },
-          ],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `worktree_status failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
+      let worktrees = await listWorktreeStatuses(resolved.repoRoot)
+      if (input.openOnly) {
+        worktrees = worktrees.filter(w => w.pr?.state === "open")
       }
+      return worktrees
     },
-  )
+    project: compactWorktreeStatus,
+    keyOf: w => w.path,
+    itemKey: "worktrees",
+  })
 
   // ── worktree_gc ──────────────────────────────────────────────────
   // The transport surface over the `gc` engine (`planGc` / `applyGc` in
@@ -1586,7 +2260,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: resolved.error }, null, 2),
+              text: JSON.stringify({ error: resolved.error }),
             },
           ],
           isError: true,
@@ -1599,12 +2273,15 @@ export function registerSessionTools(
           apply: input.apply === true,
           salvageDirty: input.salvageDirty === true,
           includeDetached: input.includeDetached === true,
+          // The daemon's own live in-memory registry, not a disk re-read —
+          // see `livingSessionCwds`'s doc.
+          protectedPaths: livingSessionCwds(registry),
         })
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(result, null, 2),
+              text: JSON.stringify(result),
             },
           ],
         }
@@ -1659,15 +2336,19 @@ export function registerSessionTools(
       "continuity over a blank restart. Looks up the (possibly historical) " +
       "descriptor by id or name — same lookup as `session_list` — and picks " +
       "the same resume strategy `agentproto sessions restart` uses on the CLI: " +
-      "provider-native resume (spawns a PTY running the provider's own resume " +
-      "command, e.g. `claude --resume <id>`) when the adapter persisted one; " +
-      "else ACP-level resume via the adapter's own session id (retried as a " +
-      "fresh spawn if the adapter rejects the id with \"not found\" — typical " +
-      "when the prior session died before its first turn); else a plain PTY " +
-      "re-run for raw terminal sessions with no adapter match. Generic " +
-      "`command` sessions have no resume path and return an error. Returns " +
-      "the NEW session's descriptor plus `resumedFrom` (the prior id) and " +
-      "`resumeVia` (which path was used, empty string for a fresh respawn).",
+      "ACP-level resume via the adapter's own session id for an agent-cli/ACP-" +
+      "origin session (retried as a fresh spawn if the adapter rejects the id " +
+      "with \"not found\" — typical when the prior session died before its " +
+      "first turn); provider-native resume (spawns a PTY running the " +
+      "provider's own resume command, e.g. `claude --resume <id>`) for a " +
+      "session that was ITSELF already a raw PTY, or when `preferNativeTerminal` " +
+      "explicitly opts an ACP-origin session in (its isolated config dir was " +
+      "never TUI-onboarded, so defaulting there can strand the terminal on the " +
+      "provider's first-run wizard with no one attached to answer it); else a " +
+      "plain PTY re-run for raw terminal sessions with no adapter match. " +
+      "Generic `command` sessions have no resume path and return an error. " +
+      "Returns the NEW session's descriptor plus `resumedFrom` (the prior id) " +
+      "and `resumeVia` (which path was used, empty string for a fresh respawn).",
     {
       idOrName: z
         .string()
@@ -1744,6 +2425,18 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe("Legacy AIP-45 mode id override, forwarded verbatim to the driver at spawn."),
+      preferNativeTerminal: z
+        .boolean()
+        .optional()
+        .describe(
+          "Explicit opt-in to provider-native terminal resume (e.g. `claude --resume <id>` " +
+            "in a raw PTY) for a session that did NOT itself start as a PTY — an agent-cli/ACP " +
+            "session's isolated config dir was never TUI-onboarded (no theme/trust state), so " +
+            "the resumed terminal can otherwise block forever on the provider's first-run " +
+            "wizard with no one attached to answer it. Default false: an ACP-origin session " +
+            "always resumes at the ACP level instead. A session that WAS itself already a raw " +
+            "PTY still prefers native resume regardless of this flag."
+        ),
     },
     async input => {
       const prev = registry.findByIdOrName(input.idOrName)
@@ -1829,6 +2522,7 @@ export function registerSessionTools(
           const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
             forceAgentResume: true,
             overrides,
+            ...(listCatalogModels ? { listCatalogModels } : {}),
           })
           return {
             content: [
@@ -1878,7 +2572,27 @@ export function registerSessionTools(
       }
 
       const augmented = await augmentWithFsResume(prev)
-      const strategy = decideRestartStrategy(augmented)
+      const strategy = decideRestartStrategy(augmented, {
+        preferNativeTerminal: input.preferNativeTerminal === true,
+      })
+      // Trace WHICH restart path was chosen and why — the branching in
+      // `decideRestartStrategy` depends on state that can differ between two
+      // restarts of the SAME lineage (whether the output sniffer or the fs
+      // probe caught a resume id this time, whether the row is still an
+      // agent-cli descriptor or has already degraded to a bare PTY from a
+      // prior restart), so two consecutive restarts silently landing on
+      // different strategies is expected, not a bug — this line is what
+      // makes that legible in daemon.log instead of only inferable from argv.
+      console.log(
+        `[session_restart] ${prev.id} (kind=${prev.kind}, adapterSlug=${prev.adapterSlug ?? "-"}, ` +
+          `pty=${prev.pty === true}, nativeTerminalResume=${prev.nativeTerminalResume === true}) -> ${strategy.kind}` +
+          (strategy.kind === "pty-native" ? ` argv=${JSON.stringify(strategy.argv)}` : "") +
+          (strategy.kind === "agent"
+            ? ` resumeSessionId=${strategy.resumeSessionId ?? "none"}` +
+              (strategy.resumeFallback ? " (capability-downgrade fallback, no id attempted)" : "")
+            : "") +
+          (strategy.kind === "unsupported" ? ` reason="${strategy.reason}"` : "")
+      )
 
       if (strategy.kind === "unsupported") {
         return {
@@ -1913,6 +2627,78 @@ export function registerSessionTools(
               : Array.isArray(prev.argv) && prev.argv.length > 0
                 ? [...prev.argv]
                 : tokenizeCommand(prev.command)
+          // Thread the adapter's isolated config dir into the resumed PTY's
+          // env so the provider's own native resume looks in the SAME store
+          // its transcript actually lives in (see
+          // `ConversationStore.configDirEnvVar`'s doc) — this is the fix for
+          // the "No conversation found" failure a `claude --resume <id>`
+          // hits when it inherits the daemon's ambient (or no) config dir
+          // instead of the session's isolated one. `pty-native`: `prev` is
+          // still the agent-cli descriptor being restarted, so look up its
+          // strategy fresh. `pty-plain`: `prev` is ALREADY a bare PTY row
+          // (adapterSlug/adapterConfigDir gone by design), so replay
+          // whatever env the earlier hop recorded — see `ptyResumeEnv`'s doc
+          // on why that's the only way this survives more than one restart.
+          const envVarName =
+            strategy.kind === "pty-native" && prev.adapterSlug
+              ? RESUME_STRATEGIES[prev.adapterSlug]?.configDirEnvVar
+              : undefined
+          const ptyEnv: Record<string, string> | undefined =
+            strategy.kind === "pty-native"
+              ? envVarName && augmented.adapterConfigDir
+                ? { [envVarName]: augmented.adapterConfigDir }
+                : undefined
+              : prev.ptyResumeEnv
+          if (strategy.kind === "pty-native") {
+            console.log(
+              `[session_restart] ${prev.id} pty-native env: ` +
+                (ptyEnv
+                  ? `${Object.keys(ptyEnv).join(",")} threaded from adapterConfigDir`
+                  : envVarName
+                    ? "no adapterConfigDir on descriptor — resume may miss the isolated store"
+                    : `adapter "${prev.adapterSlug}" declares no configDirEnvVar — resume uses the global store`)
+            )
+          }
+          // Re-resolve billing-auth for a pty-native resume — same
+          // money-safety resolver the "agent" branch uses (`resolveResumeAuth`,
+          // session-restart-core.ts), never the daemon's own ambient env. A raw
+          // `claude --resume` PTY inherits `process.env` wholesale
+          // (sessions.ts's `spawnPty`), so without this it silently picks up
+          // whatever conflicting credential (e.g. an ambient `ANTHROPIC_API_KEY`
+          // set for some unrelated reason) happens to be in the daemon's own
+          // environment instead of THIS session's own resolved auth — the exact
+          // ambient-credential leak #824/#490 already closed for the ACP/agent
+          // paths. Concretely: an ambient `ANTHROPIC_API_KEY` the session's
+          // isolated config dir has never seen trips claude-code's own
+          // "detected a custom API key" prompt, which blocks forever with no
+          // one attached to answer it. `unsetEnv` scrubs that conflict;
+          // `setEnv`/`credential` inject the session's OWN resolved credential.
+          let authEnv: Record<string, string> | undefined
+          let authUnsetEnv: string[] | undefined
+          if (strategy.kind === "pty-native" && prev.adapterSlug && resolveAgentAdapter) {
+            const resolvedAdapter = await resolveAgentAdapter(prev.adapterSlug)
+            if (resolvedAdapter?.authDescriptor) {
+              const { authSpec } = await resolveResumeAuth(prev, resolvedAdapter, {
+                adapterSlug: prev.adapterSlug,
+                ...(prev.model ? { model: prev.model } : {}),
+                ...(prev.route ? { route: prev.route } : {}),
+                ...(prev.accessProfile?.profileRef
+                  ? { accessProfileRef: prev.accessProfile.profileRef }
+                  : {}),
+                prefix: "restart",
+                ...(loadDefaultsConfig ? { loadDefaultsConfig } : {}),
+                ...(listCatalogModels ? { listCatalogModels } : {}),
+              })
+              if (authSpec) {
+                authUnsetEnv = authSpec.unsetEnv
+                if (authSpec.credential !== undefined) {
+                  authEnv = { [authSpec.setEnv]: authSpec.credential }
+                }
+              }
+            }
+          }
+          const combinedPtyEnv: Record<string, string> | undefined =
+            ptyEnv || authEnv ? { ...ptyEnv, ...authEnv } : undefined
           // Persist the resume lineage onto the STORED descriptor (not just
           // grafted onto this response's JSON, as it used to be) — see
           // `SessionDescriptor.resumedFrom`'s doc for why that matters.
@@ -1922,16 +2708,27 @@ export function registerSessionTools(
             workspaceSlug: prev.workspaceSlug,
             cols: input.cols ?? 80,
             rows: input.rows ?? 24,
+            ...(combinedPtyEnv ? { env: combinedPtyEnv } : {}),
+            ...(authUnsetEnv && authUnsetEnv.length > 0 ? { unsetEnv: authUnsetEnv } : {}),
             ...(prev.name ? { name: prev.name } : {}),
             ...(prev.label ? { label: prev.label } : {}),
+            // Lineage carry-forward (#session-visibility) — same reasoning as
+            // the agent branch in session-restart-core.ts: a restart keeps the
+            // logical session's origin/parent/depth rather than resetting it to
+            // a bare root.
+            ...(prev.origin ? { origin: prev.origin } : {}),
+            ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
+            ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
             resumedFrom: prev.id,
-            resumeVia: describeResumePath(augmented),
+            resumeVia: describeResumePath(augmented, {
+              preferNativeTerminal: input.preferNativeTerminal === true,
+            }),
           })
           return {
             content: [
               {
                 type: "text",
-                text: JSON.stringify(desc, null, 2),
+                text: JSON.stringify(desc),
               },
             ],
           }
@@ -2064,7 +2861,7 @@ export function registerSessionTools(
       try {
         const desc = registry.archiveSession(prev.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2117,7 +2914,7 @@ export function registerSessionTools(
         ...(input.forget ? { forget: true } : {}),
         ...(onlyIds ? { onlyIds } : {}),
       })
-      return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+      return { content: [{ type: "text", text: JSON.stringify(res) }] }
     }
   )
 
@@ -2177,7 +2974,7 @@ export function registerSessionTools(
       try {
         const desc = registry.unarchiveSession(prev.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2185,6 +2982,141 @@ export function registerSessionTools(
             {
               type: "text",
               text: `session_unarchive: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── session_flag_status ───────────────────────────────────────────
+  // The ONE external write path over `awaitingInput`/`awaitingQuestion` —
+  // otherwise set only by the internal heuristic (`deriveHeuristicQuestion`
+  // in sessions.ts) or a driver-reported `agent-prompt`, and cleared
+  // automatically on the next prompt/turn start. Lets a human, another
+  // agent, or the future session watchdog correct a missed real question or
+  // clear a false positive. `flagAwaitingInput` carries its own liveness
+  // guard (sessions.ts) — the inverse of `session_archive`'s terminal-only
+  // one — so this handler's job is just lookup + subtree scoping +
+  // cross-field validation + translating the thrown error.
+  server.tool(
+    "session_flag_status",
+    "Manually correct a session's `awaitingInput`/`awaitingQuestion` " +
+      "classification. This is the ONLY write path for that pair besides " +
+      "the daemon's own internal heuristic (which guesses from the tail of " +
+      "the transcript) and a driver-reported structured prompt — use this " +
+      "when the heuristic missed a real question (set `awaitingInput:true`, " +
+      "optionally attaching `question`) or flagged a false positive (set " +
+      "`awaitingInput:false`, which also clears any attached " +
+      "`awaitingQuestion` — a question can't outlive its awaiting-input " +
+      "flag). `reason` is required — a short justification that rides on " +
+      "the emitted `session:awaiting-input-flagged` event, visible via " +
+      "`session_events_poll`, for audit. Only allowed on a LIVE session " +
+      "(running/starting) — mirrors the inverse of `session_archive`'s " +
+      "terminal-only guard: a terminal session has no turn left to be " +
+      "awaiting anything. The override itself is NOT sticky — it's cleared " +
+      "automatically like any other awaiting-input signal on the session's " +
+      "next prompt/turn start.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name to flag — from `session_list`, must be live."),
+      awaitingInput: z
+        .boolean()
+        .describe(
+          "New value for the session's awaiting-input classification — true " +
+            "if it's actually blocked on a question/decision the heuristic " +
+            "missed, false to clear a false positive."
+        ),
+      question: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "The question text to attach when `awaitingInput:true` — stored as " +
+            '`awaitingQuestion` (`source:"structured"`). Only meaningful ' +
+            "alongside `awaitingInput:true`; passing it with " +
+            "`awaitingInput:false` is a validation error."
+        ),
+      reason: z
+        .string()
+        .min(1)
+        .describe(
+          "Required short justification for this override — audit/log only, " +
+            "rides on the emitted `session:awaiting-input-flagged` event."
+        ),
+    },
+    async input => {
+      if (!input.awaitingInput && input.question !== undefined) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error:
+                  "session_flag_status: `question` is only meaningful when " +
+                  "`awaitingInput:true` (got `awaitingInput:false` with a " +
+                  "`question` set).",
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_archive.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_flag_status: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only flag sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const desc = registry.flagAwaitingInput(prev.id, {
+          awaitingInput: input.awaitingInput,
+          ...(input.question !== undefined ? { question: input.question } : {}),
+          reason: input.reason,
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_flag_status: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
@@ -2290,7 +3222,7 @@ export function registerSessionTools(
           ...(input.label !== undefined ? { label: input.label } : {}),
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2373,7 +3305,7 @@ export function registerSessionTools(
       try {
         const desc = registry.setKeepAlive(prev.id, input.keepAlive)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2381,6 +3313,90 @@ export function registerSessionTools(
             {
               type: "text",
               text: `session_set_keepalive: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── session_set_pinned ──────────────────────────────────────────
+  // A quiet, structural list-visibility flag — lets an operator favorite a
+  // session so it sorts to the top of the CLI table / VS Code webview list.
+  // Modeled EXACTLY on session_set_keepalive (itself modeled on
+  // session_rename): resolve + subtree-scope + delegate to the registry,
+  // which flips the field and persists. Deliberately does NOT touch
+  // keepAlive, reaper eligibility, or any notification path — see
+  // `SessionDescriptor.pinned`'s doc for why pin is distinct from those.
+  server.tool(
+    "session_set_pinned",
+    "Set or clear a session's list-visibility pin. When `pinned` is true, " +
+      "the session sorts to the top of `agentproto sessions` and the VS Code " +
+      "sessions webview's dedicated Pinned group. Set false to clear it. " +
+      "Persists across daemon restarts. Purely a sort/display flag — does " +
+      "NOT touch the idle-reaper, keepAlive, or emit any notification, and " +
+      "does NOT touch the running agent.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name to update — from `session_list`."),
+      pinned: mcpBool.describe(
+        "true to pin this session to the top of the list, false to unpin it.",
+      ),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_rename / session_set_keepalive
+      // — a scoped orchestrator may only touch sessions it (transitively)
+      // spawned.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_set_pinned: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only update sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const desc = registry.setPinned(prev.id, input.pinned)
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_set_pinned: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
@@ -2433,6 +3449,59 @@ export function registerSessionTools(
     },
     async input => {
       if (!ptyEnabled) return ptyNotConfigured("terminal_start")
+      // ── terminal gate (same allowlist as command_execute) ─────────
+      // `command_execute` refuses anything outside the workspace
+      // allowlist; without this check `terminal_start` spawns arbitrary
+      // argv under a PTY and the gate is decorative — anyone refused by
+      // one tool just uses the other. Resolve the mode per workspace:
+      //   "allowlist" (shipped default) — argv[0] must pass the SAME
+      //     allowlist check `command_execute` applies;
+      //   "all" — no check (a deliberate operator decision);
+      //   "off" — refused outright. NOTE: off means the door is CLOSED,
+      //     not that the gate is disabled.
+      const gateMode = await loadTerminalGateMode(workspace)
+      if (gateMode === "off") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "terminal_start is disabled for this workspace by its " +
+                'terminal gate ("terminalGate": "off"). To re-enable ' +
+                'terminals, set "terminalGate": "allowlist" or "all" in ' +
+                `${join(workspace, ALLOWLIST_REL)}.`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (gateMode === "allowlist") {
+        const allowlistEntries = await loadAllowlistEntries(workspace)
+        // noUncheckedIndexedAccess: argv is min(1)-validated, but fall back
+        // to "" (which matches no entry) rather than failing open.
+        const baseName = basename(input.argv[0] ?? "")
+        if (!isCommandAllowed(allowlistEntries, baseName, input.argv.slice(1))) {
+          const allowedBasenames =
+            [...new Set(allowlistEntries.map(e => e.command))].sort().join(", ") ||
+            "(empty)"
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `terminal_start: command '${baseName}' is not in the ` +
+                  `allowlist (the same one command_execute is gated by). ` +
+                  `Add it to ${join(workspace, ALLOWLIST_REL)} under ` +
+                  `"commands": [...]. Currently allowed: ${allowedBasenames}. ` +
+                  `To run any command from terminals in this workspace, set ` +
+                  `"terminalGate": "all" in that file, or globally set the ` +
+                  `${TERMINAL_GATE_ENV}=all environment variable.`,
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
       let cwd = input.cwd
       let resolvedSlug = input.workspaceSlug ?? "default"
       if (!cwd) {
@@ -2496,7 +3565,7 @@ export function registerSessionTools(
             : {}),
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(desc) }],
         }
       } catch (err) {
         return {
@@ -2604,7 +3673,7 @@ export function registerSessionTools(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok, sessionId: desc.id }, null, 2),
+            text: JSON.stringify({ ok, sessionId: desc.id }),
           },
         ],
         ...(ok ? {} : { isError: true as const }),
@@ -2616,8 +3685,11 @@ export function registerSessionTools(
     "terminal_output",
     "Snapshot the recent byte buffer of a PTY session. Returns base64-encoded " +
       "bytes (the buffer is RAW including ANSI escapes) by default; pass " +
-      "`clean: true` for ANSI-stripped plain text instead. `lastBytes` caps " +
-      "the read from the tail.",
+      "`clean: true` for ANSI-stripped plain text instead. Capped at the " +
+      "last 4096 bytes of the ring by default — pass `lastBytes` explicitly " +
+      "(up to 64 KiB) to widen the window. When a window is applied the " +
+      "result carries a `truncated` flag (true when the window was filled to " +
+      "capacity).",
     {
       sessionId: z
         .string()
@@ -2628,7 +3700,10 @@ export function registerSessionTools(
         .min(1)
         .max(64 * 1024)
         .optional()
-        .describe("Max bytes from the tail. Default: full ring buffer (~64 KiB)."),
+        .describe(
+          "Max bytes from the tail. Default 4096; the full ~64 KiB ring " +
+            "remains reachable by passing `lastBytes: 65536` explicitly."
+        ),
       clean: mcpBool
         .optional()
         .describe(
@@ -2650,9 +3725,13 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      // PR-10: the read window defaults to the last 4096 bytes when
+      // `lastBytes` is omitted; an explicit `lastBytes` (up to 64 KiB)
+      // keeps today's wider-window behaviour.
+      const windowBytes = input.lastBytes ?? 4096
       const buf = registry.readTerminalOutput(
         desc.id,
-        input.lastBytes,
+        windowBytes,
       )
       if (!buf) {
         return {
@@ -2673,7 +3752,13 @@ export function registerSessionTools(
               {
                 sessionId: desc.id,
                 status: desc.status,
+                currentPhase: desc.currentPhase,
+                toolCallsThisTurn: desc.toolCallsThisTurn,
+                ...(desc.secondsSinceLastActivity !== undefined
+                  ? { secondsSinceLastActivity: desc.secondsSinceLastActivity }
+                  : {}),
                 bytes: buf.byteLength,
+                truncated: buf.byteLength >= windowBytes,
                 ...(input.clean
                   ? { text: stripAnsi(buf.toString("utf8")) }
                   : { b64: buf.toString("base64") }),
@@ -2716,7 +3801,7 @@ export function registerSessionTools(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok, sessionId: desc.id }, null, 2),
+            text: JSON.stringify({ ok, sessionId: desc.id }),
           },
         ],
       }
@@ -2739,3 +3824,32 @@ export type { ExportSessionOps } from "./agent-tools.js"
  */
 export { registerConversationReadTool, readConversation } from "./conversation-read.js"
 export type { ConversationReadOps, ConversationReadInput, ConversationReadResult } from "./conversation-read.js"
+/**
+ * Re-exported from conversation-locate-tool.ts so index.ts has one import
+ * site with the other conversation tools. Canonical definition lives there.
+ */
+export {
+  registerConversationLocateTool,
+  locateConversation,
+} from "./conversation-locate-tool.js"
+export type {
+  ConversationLocateInput,
+  ConversationLocateResult,
+} from "./conversation-locate-tool.js"
+
+/**
+ * Re-exported from conversation-export.ts so callers of session-tools.ts
+ * (e.g. index.ts) have one import site for the cross-adapter conversation
+ * writer next to the reader above. The canonical definition lives there.
+ */
+export {
+  registerConversationExportTool,
+  exportConversation,
+  writeToNativeStore,
+} from "./conversation-export.js"
+export type {
+  ConversationExportOps,
+  ConversationExportInput,
+  ConversationExportResult,
+  ConversationExportTarget,
+} from "./conversation-export.js"

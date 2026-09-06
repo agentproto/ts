@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-mastracode",
-  "version": "0.3.0",
+  "version": "0.3.11",
   "description": "@agentproto/adapter-mastracode — AIP-45 AGENT-CLI adapter for Mastra Code. Spawns the documented headless CLI via `npx -y mastracode`; current Mastra Code does not expose a discoverable ACP subcommand.",
   "keywords": [
     "agentproto",
@@ -50,6 +50,7 @@
   },
   "dependencies": {
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/model-catalog": "workspace:*",
     "@agentproto/provider-kit": "workspace:*"
   },
   "devDependencies": {

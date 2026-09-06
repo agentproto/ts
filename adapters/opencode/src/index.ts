@@ -16,6 +16,8 @@
  *   await session.close()
  */
 
+import { homedir } from "node:os"
+import { join } from "node:path"
 import {
   createAgentCliRuntime,
   defineAgentCli,
@@ -112,6 +114,35 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // model-derived direct endpoint.
   routeSelection: "derived-from-model",
   modelDerivedApiKey: true,
+  // opencode ships TWO native OAuth logins reached via `opencode auth login`
+  // (provider selection), both stored in its own auth.json — the runtime
+  // declares one provider-scoped `authSubscription` surface per login (see
+  // `subscriptionSurfaceFor` in `@agentproto/runtime`'s spawn-defaults.ts,
+  // which resolves the matching entry for a spawn's resolved provider).
+  // Both are EXTERNAL: the runtime injects no bearer — an agentproto-held
+  // `sk-ant-oat…`/ChatGPT access token presented on opencode's x-api-key
+  // channel is rejected upstream as an invalid key, so the ONLY working
+  // subscription path is the CLI's own login. Each entry verifies its own
+  // login is present (fail-loud, via the `opencode` provision recipe's
+  // `anthropic-oauth`/`openai-oauth` methods) and scrubs the matching
+  // api-key var so a leftover ANTHROPIC_API_KEY/OPENAI_API_KEY can't
+  // override it.
+  //   - anthropic: "Claude Pro/Max" OAuth login (browser/headless).
+  //   - openai: "ChatGPT Pro/Plus" OAuth login (browser/headless, against
+  //     auth.openai.com). Reverse-engineered from the shipped binary (no
+  //     OSS source available for this build): opencode keys BOTH the
+  //     ChatGPT OAuth login and the plain API-key credential for this
+  //     provider under the SAME auth.json key `openai` (there is no
+  //     separate "chatgpt" key) — the generic `Cli.providers.login` /
+  //     `Auth.set(provider.id, …)` write path is provider-id-keyed, not
+  //     method-keyed. See the `opencode` provision recipe's `openai-oauth`
+  //     method docblock for the full trace.
+  // Each is scoped to its own `provider`, so neither ever lights up the
+  // other's (or openrouter/groq's) models.
+  authSubscription: [
+    { external: true, provider: "anthropic" },
+    { external: true, provider: "openai" },
+  ],
   models: {
     // Default to a canonical catalog model (claude-sonnet-4-5). The legacy
     // alias `claude-sonnet-4-6` still resolves to the same model, but the
@@ -164,8 +195,11 @@ export const opencode: AgentCliHandle = defineAgentCli({
         "Provider/model override for this operator binding (e.g. `openrouter/anthropic/claude-sonnet-4-6`). Applied via ACP " +
         "session/set_config_option after the session is created (see " +
         "`models.apply`, default \"config\"); no CLI flag for this exists on " +
-        "`opencode acp`. An id the server can't resolve is warned about and " +
-        "ignored (the session keeps the server's default model).",
+        "`opencode acp`. An id the server can't resolve REFUSES the spawn " +
+        "with the server's reason (derived-from-model guard in " +
+        "`define-agent-cli.ts`): opencode routes AND bills by the id's own " +
+        "provider prefix, so silently keeping the server's default model " +
+        "would run a model (and a bill) the operator didn't ask for.",
     },
   ],
   continuation: {
@@ -181,6 +215,53 @@ export const opencode: AgentCliHandle = defineAgentCli({
 
 export function opencodeRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(opencode)
+}
+
+/**
+ * Best-effort per-session usage reader, mirroring `readHermesUsage` in
+ * `@agentproto/adapter-hermes`. OpenCode's live ACP `usage_update` event only
+ * ever carries `{used, size, cost}` — no token fields exist on that wire
+ * event at all (confirmed by disassembling the installed opencode acp
+ * binary) — so `session_usage` can't get tokensIn/tokensOut from the live
+ * stream the way it does for other adapters. OpenCode does persist full
+ * token detail to its own sqlite store though (the same store
+ * `exportOpenCodeSession` in `@agentproto/runtime`'s transcript-export.ts
+ * reads for `sessions export --json`), so this hook re-reads it directly.
+ */
+export async function readOpenCodeUsage(
+  sessionId: string,
+): Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null> {
+  try {
+    // node:sqlite is a Node 22+ builtin. Build the specifier at runtime so the
+    // bundler (esbuild/tsup) can't statically rewrite it — it strips the
+    // `node:` prefix off this not-yet-recognised builtin, turning the import
+    // into a missing `sqlite` package that throws and silently yields null.
+    const sqliteSpecifier = ["node", "sqlite"].join(":")
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as {
+      DatabaseSync: new (p: string, o?: { readOnly?: boolean }) => {
+        prepare(sql: string): { get(...a: unknown[]): unknown }
+        close(): void
+      }
+    }
+    const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")
+    const dbPath = join(dataHome, "opencode", "opencode.db")
+    const db = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const row = db
+        .prepare("SELECT cost, tokens_input AS ti, tokens_output AS to_ FROM session WHERE id = ?")
+        .get(sessionId) as { cost?: number; ti?: number; to_?: number } | undefined
+      if (!row) return null
+      return {
+        ...(row.cost != null ? { costUsd: Number(row.cost) } : {}),
+        ...(row.ti != null ? { tokensIn: row.ti } : {}),
+        ...(row.to_ != null ? { tokensOut: row.to_ } : {}),
+      }
+    } finally {
+      db.close()
+    }
+  } catch {
+    return null
+  }
 }
 
 export type { AgentCliHandle, AgentCliRuntime }

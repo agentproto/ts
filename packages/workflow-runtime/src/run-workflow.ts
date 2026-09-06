@@ -9,17 +9,26 @@
 
 import { runTool } from "@agentproto/driver"
 import { createHash } from "node:crypto"
+import { execFile } from "node:child_process"
+import { readFile } from "node:fs/promises"
+import { isAbsolute, join, resolve } from "node:path"
 import type { ZodError } from "zod"
+import { resolveRefString } from "./ref-string.js"
 import type {
   AgentStep,
+  ApprovalDecision,
   Bindings,
   FanOutOutcome,
+  GateCommandResult,
+  GateStep,
+  KnowledgeAppliedRecord,
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
+import { materializeKnowledge, resolveKnowledgeSelectors } from "./knowledge.js"
 
 /** Thrown by a `suspend` step when no host `resume` hook is provided. */
 export class WorkflowSuspendedError extends Error {
@@ -55,6 +64,10 @@ interface RunCtx {
   readonly workspaceSlug?: string
   readonly cache?: RunWorkflowArgs["cache"]
   readonly cacheKey?: RunWorkflowArgs["cacheKey"]
+  readonly onStepStart?: RunWorkflowArgs["onStepStart"]
+  readonly onStepComplete?: RunWorkflowArgs["onStepComplete"]
+  readonly runGateCommand?: RunWorkflowArgs["runGateCommand"]
+  readonly onGateReport?: RunWorkflowArgs["onGateReport"]
 }
 
 function view(state: RunState, item?: unknown, index?: number): Bindings {
@@ -149,6 +162,7 @@ async function runSequence(
   for (const s of steps) {
     const out = await execStep(s, ctx, item, index)
     ctx.state.steps[s.id] = out
+    ctx.onStepComplete?.(s.id, out)
     last = out
   }
   return last
@@ -156,6 +170,9 @@ async function runSequence(
 
 /** Execute the full AgentStep body — spawn, prompt, policy, budget, outputSchema retry loop. */
 async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise<unknown> {
+  // Notify step start before any execution
+  ctx.onStepStart?.(step.id)
+
   if (
     step.adapter &&
     ctx.state.maxTotalCostUsd !== undefined &&
@@ -165,7 +182,44 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
       `step '${step.id}': budget_exceeded — run spend $${spentUsd(ctx.state).toFixed(4)} >= cap $${ctx.state.maxTotalCostUsd}`,
     )
   }
-  const cwd = step.cwd ? resolveSel(step.cwd, b) : ctx.cwd
+  // Harness precedence: step `harness.cwd` (highest, among what this runtime
+  // sees) beats the step's own `cwd` selector, which beats the run-level
+  // `ctx.cwd` — see `AgentHarness`'s doc for the full chain (AGENT.md
+  // frontmatter / app_run args / adapter default are resolved upstream of
+  // this runtime, by the host's spawn implementation).
+  const cwd = step.harness?.cwd ?? (step.cwd ? resolveSel(step.cwd, b) : ctx.cwd)
+  // AIP-15 P2 `harness.knowledge`: materialize matched corpus entries into
+  // the step cwd's `.knowledge/` BEFORE the spawn, and prepend the prompt
+  // note pointing the session at the INDEX. An empty match is not an error —
+  // it's recorded (`matched: 0`) and surfaced as a harness warning after the
+  // spawn gives us a session to attribute it to.
+  let knowledgeOut: KnowledgeAppliedRecord[] | undefined
+  let knowledgeWarnings: readonly string[] = []
+  if (step.harness?.knowledge && step.harness.knowledge.length > 0) {
+    if (cwd === undefined) {
+      throw new Error(
+        `step '${step.id}': harness.knowledge requires a resolvable working directory (set step cwd, harness.cwd, or the run cwd)`,
+      )
+    }
+    // Deferred selectors (loader-flagged `$…` refs) resolve per run against
+    // the bindings; a relative resolved workspace joins to this run cwd.
+    const knowledgeSelectors = resolveKnowledgeSelectors(step.id, step.harness.knowledge, b).map(
+      (sel) => ({
+        ...sel,
+        workspace: isAbsolute(sel.workspace) ? sel.workspace : join(cwd, sel.workspace),
+      }),
+    )
+    const materialized = await materializeKnowledge(step.id, knowledgeSelectors, cwd)
+    knowledgeOut = materialized.records
+    knowledgeWarnings = materialized.warnings
+    if (materialized.written > 0) {
+      const note =
+        `Knowledge for this step is materialized under .knowledge/ ` +
+        `(see .knowledge/INDEX.md, ${materialized.written} entries).`
+      const inner = step.prompt
+      step = { ...step, prompt: (b: Bindings) => `${note}\n\n${inner(b)}` }
+    }
+  }
   // Sandbox ref: a selector resolves per-run (undefined ⇒ host spawn); a
   // literal (slug string or inline spec object) passes through as-is.
   const sandbox =
@@ -176,9 +230,30 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         workspaceSlug: ctx.workspaceSlug,
         stepId: step.id,
         ...(sandbox !== undefined ? { sandbox } : {}),
+        ...(step.options !== undefined ? { options: step.options } : {}),
+        ...(step.harness !== undefined ? { harness: step.harness } : {}),
       })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
+  if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
+    ctx.agents!.emitHarnessWarning({
+      sessionId,
+      warnings: knowledgeWarnings,
+      label: step.id,
+    })
+  }
+  // `harness.tools` has no generic per-spawn allowlist mechanism reaching
+  // this runtime today (see `AgentHarness.tools`'s doc) — record that
+  // honestly on the run record rather than silently dropping the field.
+  const harnessOut =
+    step.harness !== undefined
+      ? {
+          ...step.harness,
+          ...(step.harness.tools && step.harness.tools.length > 0
+            ? { toolsApplied: false as const }
+            : {}),
+        }
+      : undefined
   await ctx.agents!.sendPromptAndWait(sessionId, step.prompt(b))
   if (step.policy && ctx.agents!.onAwaitingInput) {
     await ctx.agents!.onAwaitingInput(sessionId, step.policy)
@@ -188,7 +263,17 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
     ctx.state.costBySession.set(sessionId, await ctx.agents!.readCostUsd(sessionId))
   }
 
-  if (!step.outputSchema) return { sessionId }
+  if (!step.outputSchema) {
+    let text: string | undefined
+    if (ctx.agents!.readFinalMessage) {
+      try {
+        text = await ctx.agents!.readFinalMessage(sessionId)
+      } catch {
+        // ignore
+      }
+    }
+    return { sessionId, ...(text !== undefined ? { text } : {}), ...(harnessOut ? { harness: harnessOut } : {}), ...(knowledgeOut ? { knowledgeApplied: knowledgeOut } : {}) }
+  }
 
   // Validate-and-retry loop
   if (!ctx.agents!.readFinalMessage) {
@@ -214,7 +299,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
       continue
     }
     const res = step.outputSchema.safeParse(value)
-    if (res.success) return { sessionId, output: res.data }
+    if (res.success) return { sessionId, output: res.data, ...(harnessOut ? { harness: harnessOut } : {}), ...(knowledgeOut ? { knowledgeApplied: knowledgeOut } : {}) }
     lastErr = formatZodError(res.error)
     if (attempt < maxRetries) {
       await ctx.agents!.sendPromptAndWait(
@@ -227,6 +312,147 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   throw new Error(`step '${step.id}': output_invalid — final message never matched outputSchema (${lastErr})`)
 }
 
+/** Best-effort `JSON.parse` — `undefined` (never a throw) on blank/invalid text. */
+function tryParseJson(text: string): unknown {
+  const trimmed = text.trim()
+  if (!trimmed) return undefined
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The runtime's own subprocess runner for `kind: "gate"` steps, used when no
+ * `runGateCommand` host hook is injected — a plain `node:child_process`
+ * argv-vector invocation (no shell interpolation). Exit code 0 always
+ * resolves (never rejects on a non-zero exit); a timeout resolves with
+ * `timedOut: true` and whatever partial output was captured.
+ */
+function defaultRunGateCommand(spec: {
+  command: string
+  args: readonly string[]
+  cwd: string
+  timeoutMs?: number
+}): Promise<GateCommandResult> {
+  return new Promise((resolve) => {
+    execFile(
+      spec.command,
+      [...spec.args],
+      { cwd: spec.cwd, timeout: spec.timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (!err) {
+          resolve({ exitCode: 0, stdout, stderr })
+          return
+        }
+        const nodeErr = err as NodeJS.ErrnoException & { code?: number | string; killed?: boolean; signal?: string }
+        const timedOut = nodeErr.killed === true && nodeErr.signal !== undefined && spec.timeoutMs !== undefined
+        const exitCode = typeof nodeErr.code === "number" ? nodeErr.code : 1
+        resolve({ exitCode, stdout, stderr, ...(timedOut ? { timedOut: true } : {}) })
+      },
+    )
+  })
+}
+
+/** Resolve a gate's report: the command's stdout if it parses as JSON, else
+ *  the file at `reportPath` (relative to `cwd`), parsed as JSON. `undefined`
+ *  when neither yields parseable JSON — never a throw (a gate that emits no
+ *  structured report is still a valid pass/fail signal on its own). */
+async function resolveGateReport(
+  cmd: GateCommandResult,
+  cwd: string,
+  reportPath: string | undefined,
+): Promise<unknown> {
+  const fromStdout = tryParseJson(cmd.stdout)
+  if (fromStdout !== undefined) return fromStdout
+  if (!reportPath) return undefined
+  try {
+    const abs = isAbsolute(reportPath) ? reportPath : join(cwd, reportPath)
+    const raw = await readFile(abs, "utf8")
+    return tryParseJson(raw)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Resolve a gate step's `cwd` against the run bindings. The same string-ref
+ * rule as {@link resolveRefString} (leading `$input|$item|$steps.<id>|$index`
+ * token + trailing literal text; `$$` escapes a literal `$`; an unresolvable
+ * or malformed ref throws naming the step and the field). The RESOLVED cwd is
+ * then made absolute: an absolute value stays as-is, a RELATIVE one (incl.
+ * `.`) resolves against the run's own `ctx.cwd` — never the daemon process
+ * cwd. No `cwd` (or a selector resolving to one) falls back to the run cwd.
+ */
+function resolveGateCwd(step: GateStep, ctx: RunCtx, b: Bindings): string {
+  const fallback = ctx.cwd ?? process.cwd()
+  if (!step.cwd) return fallback
+  const resolved = resolveRefString(step.id, "cwd", resolveSel(step.cwd, b), b, "error")
+  return isAbsolute(resolved) ? resolved : resolve(fallback, resolved)
+}
+
+/** Execute the full GateStep body — run, parse report, retry-with-reprompt. */
+async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<unknown> {
+  const cwd = resolveGateCwd(step, ctx, b)
+  const args = (step.args ?? []).map((arg, index) =>
+    resolveRefString(step.id, `args[${index}]`, resolveSel(arg, b), b, "error"),
+  )
+  const maxAttempts = Math.max(1, step.retry?.maxAttempts ?? 1)
+
+  let last: { ok: boolean; exitCode: number; report: unknown } | undefined
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1 && step.onFail?.reprompt) {
+      if (!ctx.agents) {
+        throw new Error(`step '${step.id}': on_fail.reprompt requires a host agents implementation`)
+      }
+      const targetSessionId = ctx.agents.resolveByLabel(step.onFail.reprompt)
+      if (!targetSessionId) {
+        throw new Error(
+          `step '${step.id}': on_fail.reprompt targets unknown step '${step.onFail.reprompt}' — no session found`,
+        )
+      }
+      const reportText = JSON.stringify(last?.report ?? null, null, 2)
+      const extra = step.onFail.with ? `\n\nAdditional context:\n${JSON.stringify(step.onFail.with, null, 2)}` : ""
+      await ctx.agents.sendPromptAndWait(
+        targetSessionId,
+        `Gate '${step.id}' failed (exit code ${last?.exitCode}). Report:\n${reportText}${extra}\n\n` +
+          `Please address the findings above, then reply when done.`,
+      )
+    }
+
+    if (attempt > 1 && step.retry?.initialMs) {
+      const delayMs =
+        step.retry.backoff === "exponential"
+          ? step.retry.initialMs * 2 ** (attempt - 2)
+          : step.retry.initialMs
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+
+    const cmdResult = await (ctx.runGateCommand ?? defaultRunGateCommand)({
+      command: step.command,
+      args,
+      cwd,
+      timeoutMs: step.timeoutMs,
+    })
+    const report = await resolveGateReport(cmdResult, cwd, step.reportPath)
+    const ok = cmdResult.exitCode === 0
+    last = { ok, exitCode: cmdResult.exitCode, report }
+    ctx.onGateReport?.({ stepId: step.id, ok, exitCode: cmdResult.exitCode, report, attempt })
+    if (ok) break
+  }
+
+  if (!last!.ok) {
+    const err = new Error(
+      `step '${step.id}': gate failed after ${maxAttempts} attempt(s) — exit code ${last!.exitCode}`,
+    ) as Error & { exitCode?: number; report?: unknown }
+    err.exitCode = last!.exitCode
+    err.report = last!.report
+    throw err
+  }
+  return last
+}
+
 async function execStep(
   step: RunStep,
   ctx: RunCtx,
@@ -235,6 +461,12 @@ async function execStep(
 ): Promise<unknown> {
   const { state, signal } = ctx
   const b = view(state, item, index)
+
+  // Notify step start for non-agent steps (agent steps notify in execAgentStep)
+  if (step.kind !== "agent") {
+    ctx.onStepStart?.(step.id)
+  }
+
   switch (step.kind) {
     case "tool": {
       const input = step.input(b)
@@ -371,14 +603,26 @@ async function execStep(
     case "approval": {
       const prompt = step.prompt(b)
       const approvers = step.approvers ?? []
-      const approved = ctx.approve
-        ? await ctx.approve({ stepId: step.id, prompt, approvers })
+      const raw = ctx.approve
+        ? await ctx.approve({
+            stepId: step.id,
+            prompt,
+            approvers,
+            ...(step.artifacts !== undefined ? { artifacts: step.artifacts } : {}),
+            ...(step.timeoutMs !== undefined ? { timeoutMs: step.timeoutMs } : {}),
+          })
         : true
+      // A bare boolean is a host that doesn't record who decided — normalize
+      // it to a full decision so downstream ledger/audit writes always have a
+      // `who`.
+      const decision: ApprovalDecision =
+        typeof raw === "boolean" ? { approved: raw, who: "host" } : raw
+      const approved = decision.approved
       const followups = approved
         ? (step.onApprove ?? [])
         : (step.onReject ?? [])
       await runSequence(followups, ctx, item, index)
-      return { approved }
+      return { approved, who: decision.who, ...(decision.note !== undefined ? { note: decision.note } : {}) }
     }
 
     case "suspend": {
@@ -400,6 +644,8 @@ async function execStep(
         workspaceSlug: ctx.workspaceSlug,
         cache: ctx.cache,
         cacheKey: ctx.cacheKey,
+        runGateCommand: ctx.runGateCommand,
+        onGateReport: ctx.onGateReport,
       })
       return child.output
     }
@@ -418,13 +664,16 @@ async function execStep(
       await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
       return out
     }
+
+    case "gate":
+      return execGateStep(step, ctx, b)
   }
 }
 
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd }
@@ -433,6 +682,7 @@ async function runWorkflowInner(
   for (const step of workflow.steps) {
     const out = await execStep(step, ctx, undefined, undefined)
     state.steps[step.id] = out
+    ctx.onStepComplete?.(step.id, out)
     lastId = step.id
   }
   const bindings = view(state)
@@ -456,5 +706,9 @@ export async function runWorkflow(
     workspaceSlug: args.workspaceSlug,
     cache: args.cache,
     cacheKey: args.cacheKey,
+    onStepStart: args.onStepStart,
+    onStepComplete: args.onStepComplete,
+    runGateCommand: args.runGateCommand,
+    onGateReport: args.onGateReport,
   }, args.maxTotalCostUsd)
 }

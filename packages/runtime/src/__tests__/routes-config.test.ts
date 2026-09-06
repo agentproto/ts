@@ -99,9 +99,14 @@ describe("registerBuiltinRoutes — operator override", () => {
   })
 
   it("built-in llm-endpoint route wins over operator config if registered first", async () => {
-    await registerBuiltinRoutes()
+    await registerBuiltinRoutes({ llmEndpoint: true })
     const route = resolveCustomRoute("llm-endpoint")
     expect(route).toBeDefined()
     expect(route?.baseUrl).toBe("http://localhost:18090")
+  })
+
+  it("skips llm-endpoint route when the flag is off", async () => {
+    await registerBuiltinRoutes()
+    expect(resolveCustomRoute("llm-endpoint")).toBeUndefined()
   })
 })

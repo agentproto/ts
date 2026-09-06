@@ -491,7 +491,13 @@ describe("buildCatalogModels — mastracode model-derived api-key eligibility", 
     expect(route?.eligibleProfiles).toEqual(["work-anthropic-key"])
   })
 
-  it("does NOT make an anthropic subscription profile eligible for mastracode (no authSubscription)", () => {
+  it("does NOT make an anthropic subscription profile eligible for mastracode (x-api-key client — an OAT is rejected upstream)", () => {
+    // This asserted the OPPOSITE before the fix: `modelDerivedApiKey` alone
+    // granted oauth-bearer eligibility, so the runtime injected the
+    // subscription OAT into ANTHROPIC_API_KEY and the upstream rejected it
+    // as an invalid key AFTER the session was live (observed on opencode:
+    // "Internal error: API key is invalid"). mastracode declares no bearer
+    // surface, so a subscription profile must not light it up.
     const response = buildCatalogModels({
       adapters: [MASTRACODE],
       profiles: [anthropicSubscription],
@@ -499,6 +505,72 @@ describe("buildCatalogModels — mastracode model-derived api-key eligibility", 
     const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
     expect(route?.runnable).toBe(false)
     expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("makes an anthropic subscription profile eligible for pi via its provider-scoped authSubscription — and only on anthropic models", () => {
+    // pi's real shape: modelDerivedApiKey + an anthropic-only bearer door
+    // (`ANTHROPIC_OAUTH_TOKEN`, pi 0.80.x --help).
+    const PI: CatalogAdapterInput = {
+      slug: "pi",
+      models: [
+        { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+        { id: "openai/gpt-5.1", provider: "openai" },
+      ],
+      authDescriptor: {
+        modelDerivedApiKey: true,
+        authSubscription: { setEnv: "ANTHROPIC_OAUTH_TOKEN", provider: "anthropic" },
+      },
+      routeSelection: "derived-from-model",
+    }
+    const response = buildCatalogModels({
+      adapters: [PI],
+      profiles: [anthropicSubscription],
+    })
+    const anthropicRoute = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(anthropicRoute?.runnable).toBe(true)
+    expect(anthropicRoute?.eligibleProfiles).toEqual(["jeremy-max"])
+    // The scope holds: the same subscription profile must NOT light up pi's
+    // openai models (nothing reads an anthropic bearer there).
+    const openaiRoute = findRoute(response, "openai", "gpt-5.1", "openai")
+    expect(openaiRoute?.runnable).toBe(false)
+    expect(openaiRoute?.eligibleProfiles).toEqual([])
+  })
+
+  it("makes anthropic AND openai subscription profiles eligible for a multi-surface adapter (mastracode/opencode) — each scoped to its own surface", () => {
+    // mastracode/opencode's real shape: modelDerivedApiKey + an array of
+    // provider-scoped file-based bearer doors, one per native OAuth login
+    // (Claude Pro/Max AND ChatGPT).
+    const MASTRACODE_MULTI: CatalogAdapterInput = {
+      slug: "mastracode",
+      models: [
+        { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+        { id: "openai/gpt-5.1", provider: "openai" },
+      ],
+      authDescriptor: {
+        modelDerivedApiKey: true,
+        authSubscription: [
+          { external: true, provider: "anthropic" },
+          { external: true, provider: "openai" },
+        ],
+      },
+      routeSelection: "derived-from-model",
+    }
+    const openaiSubscription: AuthProfile = {
+      id: "jeremy-chatgpt",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      credentialRef: "ref-oauth-openai",
+    }
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE_MULTI],
+      profiles: [anthropicSubscription, openaiSubscription],
+    })
+    const anthropicRoute = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(anthropicRoute?.runnable).toBe(true)
+    expect(anthropicRoute?.eligibleProfiles).toEqual(["jeremy-max"])
+    const openaiRoute = findRoute(response, "openai", "gpt-5.1", "openai")
+    expect(openaiRoute?.runnable).toBe(true)
+    expect(openaiRoute?.eligibleProfiles).toEqual(["jeremy-chatgpt"])
   })
 
   it("keeps direct-route eligibility scoped by model-derived provider", () => {
@@ -1001,7 +1073,7 @@ describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", asyn
   // `<vendor>/<product>@llm-endpoint` row to carry a baseUrl to spawn against.
   // `registerBuiltinRoutes` writes it into the (module-global, idempotent)
   // custom-route map — the same call `createGateway` makes at daemon boot.
-  await registerBuiltinRoutes()
+  await registerBuiltinRoutes({ llmEndpoint: true })
 
   // claude-code curates a native id, an @openrouter id, and an @llm-endpoint id
   // — mirroring the real adapter allowlist, so the same fixture proves the new
@@ -1103,7 +1175,7 @@ describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", asyn
 describe("buildCatalogModels — xAI native + Anthropic-compatible routes", async () => {
   // xai-anthropic is a built-in custom route; ensure it is registered the same
   // way createGateway does at daemon boot.
-  await registerBuiltinRoutes()
+  await registerBuiltinRoutes({ llmEndpoint: true })
 
   const xaiApiKey: AuthProfile = {
     id: "personal-xai",

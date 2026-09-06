@@ -13,8 +13,9 @@ This installs the `agentproto` executable on your `PATH`.
 ```text
 agentproto auth         <login|status|logout> [--host <url>]        authenticate against a remote host
 agentproto config       <show|path|get|set|unset|edit>              read/write ~/.agentproto/config.json
-agentproto daemon       <install|uninstall|start|stop|status|logs>  manage launchd/systemd service
-agentproto install      <slug> [--force] [--dry-run]                install an adapter's underlying CLI
+agentproto app          <init|validate|pack|unpack|serve|build|dev>           package or serve an agentproto app bundle
+agentproto daemon       <install|uninstall|start|restart|stop|status|logs>  manage launchd/systemd service
+agentproto install      <slug> [--force] [--dry-run] [--allow-unverified]  install an adapter's underlying CLI
 agentproto plugins      <list|show|install|uninstall|enable|disable> manage runtime plugins
 agentproto setup        <slug> [--force] [--dry-run] [--only ...]   re-run an adapter's setup steps
 agentproto run          <slug> [--cwd <dir>] [--prompt <text>]      spawn the adapter, dispatch one turn, exit
@@ -24,7 +25,7 @@ agentproto models       [adapter] [--json]                          runnable mod
 agentproto run-swarm    --manifest <path> [--once] [--interval ...]  run a swarm manifest
 agentproto serve        [--port <n>] [--workspace <dir>] [--connect <wss>]  local daemon
 agentproto workspace    <add|list|remove|use>                       register spawn workspaces
-agentproto sessions     [start|terminal|mirror|stop|...]            browse / control live sessions
+agentproto sessions     [start|terminal|mirror|prompt|stop|...]     browse / control live sessions
 agentproto browser      <install|start|list|stop|status>            manage browser sessions
 agentproto tunnel       <create|list|stop|status>                   public URL tunnels
 agentproto provider-preset list [--json]                            provider gateway definitions
@@ -85,12 +86,13 @@ For multi-turn or interactive use, see [`serve`](#serve--the-local-daemon) + [`s
 agentproto install claude-code              # idempotent — skips if version_check passes
 agentproto install claude-code --force      # reinstall regardless
 agentproto install claude-code --dry-run    # print steps, don't execute
+agentproto install claude-code --allow-unverified  # run curl/download installers with no SHA
 
 agentproto setup openclaw                   # re-run adapter setup (env keys, login, …)
 agentproto setup openclaw --only login      # only specific steps
 ```
 
-Install methods are tried in declaration order (`npm`, `curl`, `brew`, …). Use `--force` to reinstall, `--dry-run` to preview steps.
+Install methods are tried in declaration order (`npm`, `curl`, `brew`, …). Use `--force` to reinstall, `--dry-run` to preview steps, `--allow-unverified` to opt in to unverified curl/download installers in non-interactive contexts.
 
 ## `config` — defaults at `~/.agentproto/config.json`
 
@@ -123,7 +125,8 @@ Schema (all fields optional; see [`docs/cli/reference/config-schema.md`](../../d
     "allowedOrigins": ["https://guilde.work"], // extends localhost defaults
     "strictOrigins": false,                    // when true, drops localhost defaults
     "authToken": "<random-hex>",               // stable bearer for /mcp, /events, …
-    "label": "jeremy@mbp"
+    "label": "jeremy@mbp",
+    "turnStallAfterMs": 300000                 // turn-liveness watchdog (see below)
   },
   "tunnel": {
     "host": "wss://guilde.work/api/v1/agentproto/tunnel",
@@ -149,9 +152,17 @@ Schema (all fields optional; see [`docs/cli/reference/config-schema.md`](../../d
   "terminalPresets": {
     "terra": { "argv": ["bash", "-l"], "env": { "TERM": "xterm-256color" } }
   },
-  "features": { "pty": true }
+  "features": { "pty": true, "llmEndpoint": false }
 }
 ```
+
+**Turn-liveness watchdog (`daemon.turnStallAfterMs`):** the daemon watches
+busy agent-cli sessions and flags ones that have had no adapter activity for
+longer than this threshold (default 5 minutes, env override
+`AGENTPROTO_TURN_STALL_AFTER_MS`). When tripped, the session descriptor gets a
+`stalledSinceMs` timestamp and the daemon emits a `session:stalled` event —
+surfacing a dead adapter stream without auto-killing or restarting. Set the
+threshold to `0` to disable.
 
 **About `strictOrigins`:** by default any browser on `localhost` (any port) is allowed to drive mutating routes — that's what makes Guilde dev / Vite / Storybook all "just work" without per-port config. Set `strictOrigins: true` if you want to lock the daemon down to a literal list (shared host, hardened setup). Note: any local user with shell access can read `runtime.json`'s token regardless of this setting; strict mode only narrows the browser-Origin surface.
 
@@ -166,7 +177,8 @@ agentproto daemon install                                  # write plist + boots
 agentproto daemon status                                   # plist? loaded? /health probe?
 agentproto daemon logs --lines 30                          # tail ~/.agentproto/daemon.log
 agentproto daemon stop                                     # SIGTERM
-agentproto daemon start                                    # kickstart again
+agentproto daemon start                                    # kickstart again (idempotent)
+agentproto daemon restart                                  # kill + relaunch
 agentproto daemon uninstall                                # bootout + delete plist
 ```
 
@@ -237,12 +249,13 @@ What `serve` exposes:
 
 | Surface           | URL                                       | Notes                                                  |
 |-------------------|-------------------------------------------|--------------------------------------------------------|
-| Health            | `GET /health`                             | Workspace + uptime — always public                     |
+| Health            | `GET /health`                             | Daemon status: workspace, uptime, `startedAt`, version, build identity (`sha`, `builtAt`, `source`), pid, node path, entry point — always public |
 | Events (SSE)      | `GET /events`                             | RuntimeEvents stream                                   |
 | MCP               | `POST /mcp` (Streamable HTTP)             | Adapter spawn, terminal sessions, fs/exec, …          |
 | Adapter discovery | `GET /adapters`                           | Globally-installed `@agentproto/adapter-*` packages    |
 | Sessions (list)   | `GET /sessions` / `GET /sessions/:id`     | id-or-name in `:id`                                   |
 | Agent spawn       | `POST /sessions/agent`                    | Long-lived ACP agent (multi-turn)                     |
+| Send prompt       | `POST /sessions/:id/prompt`               | Message a running session — `?wait=false` to queue/fire-and-forget |
 | Interrupt turn    | `POST /sessions/:id/interrupt`            | Cancel the in-flight turn and leave the session alive |
 | Terminal input    | `POST /sessions/:id/terminal/input`       | Write raw input into a live PTY session               |
 | Rename session    | `PATCH /sessions/:id`                     | Set or clear the session's user-facing `title`/`label`|
@@ -253,7 +266,7 @@ What `serve` exposes:
 
 ### Discovery + token
 
-At boot the daemon writes `<workspace>/.agentproto/runtime.json` (mode `0600`) with:
+At boot the daemon writes `<workspace>/.agentproto/runtime.json` (mode `0600`) **and** registers itself in the central registry `~/.agentproto/daemons/<port>.json` with:
 
 ```json
 {
@@ -268,10 +281,27 @@ At boot the daemon writes `<workspace>/.agentproto/runtime.json` (mode `0600`) w
 }
 ```
 
-- The CLI reads this file to find the daemon URL and the bearer token.
-- The token is required on **mutating** `/sessions/*` routes and the `/sessions/:id/pty` WebSocket upgrade. There is **no loopback bypass** — the threat we're defending against (a browser fetch from a localhost-loaded page) is itself on loopback. A browser can't read `runtime.json` (mode 0600); a same-user CLI can.
+The CLI does **not** just read one fixed file — `discoverDaemon()` (`src/commands/_daemon-helpers.ts`) walks candidates in this order and takes the **first one that's actually live**:
+
+1. **`AGENTPROTO_DAEMON_URL`** env override. If `AGENTPROTO_DAEMON_TOKEN` isn't also set, the CLI still searches every registered workspace's `runtime.json` for one whose URL matches, so mutating routes don't 401 just because the token wasn't forwarded.
+2. **`~/.agentproto/runtime.json`** — an explicit, hand-placed or previously-written file — but only if its `pid` is still alive (`process.kill(pid, 0)`). This is the file most docs (and older `--help` text) call out as *the* discovery mechanism; it's really just the second-highest-priority candidate, and a dead one is skipped rather than trusted.
+3. The **central registry**, `~/.agentproto/daemons/<port>.json`, preferring the entry whose port matches `config.json`'s declared `daemon.port` (default `18790`) over any other live entry — a short-lived transient runtime on a random port must not shadow the long-running `serve` daemon.
+4. Each configured workspace's own `<workspace>/.agentproto/runtime.json`, in `workspaces.json` order.
+
+A candidate whose `pid` is dead is never trusted — it's recorded as `stale` and discovery moves to the next one. This matters because a `runtime.json` **outlives an unclean shutdown**: `kill -9`, a crash, or a reboot all leave the file behind with a now-invalid token, and it can sit anywhere a daemon was ever started from (including `~` itself, if `agentproto serve` was ever run without `--workspace` from the home directory). `agentproto serve` also sweeps dead-PID `runtime.json` files for every *registered* workspace and the central registry at boot — but a stray file under a workspace that was never registered (e.g. `~` used as an ad-hoc workspace) isn't swept, so it can linger indefinitely; the pid-liveness check in `discoverDaemon()` is what actually keeps it harmless.
+
+- The token from whichever descriptor wins is required on **mutating** `/sessions/*` routes and the `/sessions/:id/pty` WebSocket upgrade. There is **no loopback bypass** — the threat we're defending against (a browser fetch from a localhost-loaded page) is itself on loopback. A browser can't read `runtime.json` (mode 0600); a same-user CLI can.
 - Override via env: `AGENTPROTO_DAEMON_URL=http://… AGENTPROTO_DAEMON_TOKEN=…`.
 - Read routes (`GET /sessions`, SSE `/stream`) stay open so existing read-only tooling keeps working.
+
+**Known limitation — the restart handoff window.** `pid` liveness is not the same as *token* liveness. For the few seconds right after `agentproto serve` is restarted, the **previous** daemon process can still be alive (mid-shutdown) with its now-superseded token, while a fresher descriptor for the new process hasn't been written yet. `discoverDaemon()` will validly pick the old-but-still-alive candidate and the daemon will answer `401 sessions_unauthorized`. This is a narrow race, not silent: the CLI's `explain401()` helper probes the resolved URL's `/health`, reports which file the rejected token came from, and — since the daemon *is* reachable — tells you it's a token mismatch rather than printing a bare 401. The workaround is the same env override as above, pointed at the file `explain401()` names in its output — typically the central registry entry for the daemon's port:
+
+```bash
+export AGENTPROTO_DAEMON_TOKEN=$(node -p "require('$HOME/.agentproto/daemons/18790.json').token")
+export AGENTPROTO_DAEMON_URL=http://127.0.0.1:18790
+```
+
+It resolves itself once the old process finishes exiting and the stale descriptor's `pid` check starts failing.
 
 ### Gateway auth (persistent bearer token)
 
@@ -327,6 +357,16 @@ agentproto sessions terminal --name claude-tui --attach -- claude
 agentproto sessions terminal --name shell --cwd /tmp -- bash -l
 agentproto sessions terminal --name htop --workspace my-project -- htop
 
+# Message an already-running session (default: fire-and-forget, queued
+# behind any in-flight turn — read the reply back with `sessions story`)
+agentproto sessions prompt claude-tui --prompt "go check the PR review comments"
+agentproto sessions prompt claude-tui --prompt "redirect now" --interrupt
+agentproto sessions prompt claude-tui --prompt "one more thing" --wait
+
+# Pin / unpin a session (list visibility only)
+agentproto sessions pin claude-tui
+agentproto sessions unpin ses_abc12
+
 # Stop by id or name
 agentproto sessions stop claude-tui
 ```
@@ -369,22 +409,41 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 | **`terminal_output`**         | Snapshot the recent byte buffer (base64)                  |
 | **`terminal_kill`**           | SIGTERM a PTY session                                     |
 | `session_rename`              | Set or clear a session's user-facing `title`/`label`      |
+| `session_set_pinned`          | Pin or unpin a session so it sorts first in lists         |
+| `session_flag_status`         | Manually correct a session's `awaitingInput` / `awaitingQuestion` classification |
 | `adapter_list`                | Enumerate installed `@agentproto/adapter-*` packages      |
 | `mcp_discovered_list`         | MCP servers configured in claude / cursor / goose         |
 | `mcp_imported_list`           | The user's curated MCP set                                |
 | `mcp_import` / `mcp_imported_remove` | Curate the set                                     |
 | `mcp_imported_status`         | Connection status of every imported MCP                   |
 | `mcp_imported_tool_list` / `mcp_imported_call` | Proxy the imported MCP's tools         |
+| `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` | Install and run `@agentproto/app-kit` apps as live sessions |
+| `app_apply` / `app_unapply` / `app_list_applied` | Mount / unmount apps to scopes with dependency validation |
+| `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane (read/write/list + legacy migration), anchored at the app's `dataDir` (default `<dir>/data`) |
+| `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets |
+| `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (BM25) |
+| `conversation_export` | Export a daemon transcript to a target adapter's native store (claude-code today) |
+| `llm_endpoint_start` / `llm_endpoint_stop` / `llm_endpoint_status` / `llm_endpoint_set_upstream_link` / `llm_endpoint_list_links` | Local LLM Endpoint proxy sidecar (requires `features.llmEndpoint`) |
 
 The terminal tools let one agent **orchestrate** other sessions: an agent in a structured ACP session can call `terminal_start({argv: ["bash"]})`, then drive it turn-by-turn with `terminal_input` + `terminal_output`. Same surface backs the future `wire`/`tee` primitive for cross-session piping.
 
 ## Adapter resolution
 
-`<slug>` resolves to the npm package `@agentproto/adapter-<slug>`. Install adapters globally so `agentproto` can find them on its `NODE_PATH`. Built-in adapters as of v0.1:
+`<slug>` resolves to the npm package `@agentproto/adapter-<slug>`. Install adapters globally so `agentproto` can find them on its `NODE_PATH`. First-party adapters shipped today include:
 
-- `@agentproto/adapter-claude-code` — Anthropic Claude Code via [@agentclientprotocol/claude-agent-acp](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp) (protocol: ACP, structured events)
+- `@agentproto/adapter-claude-code` — Anthropic Claude Code (protocol: ACP, structured events)
+- `@agentproto/adapter-claude-sdk` — Anthropic Claude Agent SDK
+- `@agentproto/adapter-codex` — OpenAI Codex
+- `@agentproto/adapter-gemini` — Google Gemini CLI (`gemini --experimental-acp`)
+- `@agentproto/adapter-grok-cli` — xAI Grok Build CLI (`grok agent stdio`)
 - `@agentproto/adapter-hermes` — Hermes (protocol: ACP)
-- `@agentproto/adapter-openclaw` / `opencode` / `codex` / `mastra` — others discoverable via `GET /adapters` on a live daemon
+- `@agentproto/adapter-opencode` — OpenCode
+- `@agentproto/adapter-openclaw` — OpenClaw
+- `@agentproto/adapter-antigravity` — Google Antigravity (`agy`, print/headless, multi-model)
+- `@agentproto/adapter-jcode` — jcode (Rust coding agent, print/headless, multi-provider)
+- `@agentproto/adapter-mastra` / `adapter-mastra-agent` / `adapter-mastracode` / `adapter-mastracode-inprocess` — Mastra-based agents
+- `@agentproto/adapter-browser` — browser / CDP session adapter
+- `@agentproto/adapter-pi` — pi
 
 Use `agentproto sessions terminal -- claude` (or `-- hermes`, `-- aider`, …) when you want the **raw interactive TUI** instead of the structured ACP event stream.
 

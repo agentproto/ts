@@ -9,6 +9,7 @@
  */
 
 import type { Posture, SessionDescriptor } from "../client/types.js"
+import type { PlanEntry } from "./conversation.js"
 
 /**
  * The glyph a session's harness/adapter wears in the header title. There is no
@@ -96,4 +97,100 @@ export function contextGauge(
   const pct = Math.round(ratio * 100)
   const level = pct >= 90 ? "high" : pct >= 70 ? "mid" : "low"
   return { ratio, pct, level }
+}
+
+/**
+ * Short cost label for the merged metrics pill — two decimals (the full
+ * precision moves to the pill's hover title). "—" when there's no figure yet.
+ */
+export function formatCostShort(costUsd: unknown): string {
+  if (typeof costUsd !== "number" || !isFinite(costUsd)) return "—"
+  return "$" + costUsd.toFixed(2)
+}
+
+/**
+ * The context ring's colour band, following the session's contextContinuity
+ * thresholds rather than fixed cutoffs: grey until `warnAtPct`, amber from
+ * there, red from `compactAtPct` (where auto-compaction kicks in). Falls back
+ * to 70/90 when a policy hasn't resolved yet. Pure — injected into the webview.
+ */
+export function contextRingLevel(
+  pct: number,
+  warnAtPct?: number,
+  compactAtPct?: number,
+): "grey" | "amber" | "red" {
+  const warn = typeof warnAtPct === "number" ? warnAtPct : 70
+  const compact = typeof compactAtPct === "number" ? compactAtPct : 90
+  if (pct >= compact) return "red"
+  if (pct >= warn) return "amber"
+  return "grey"
+}
+
+/**
+ * The visibility state for the title status dot (#session-visibility), with the
+ * precedence awaiting > stalled > busy > delegating > parked > quiet — the same
+ * order the tree's own `activityFor` uses for a session's OWN state (needs-you
+ * before stalled before working), not the different "busy > awaiting" order
+ * `subtreeBusiestActivity` uses to roll up a whole subtree. The previous
+ * `busy > delegating > awaiting-input > parked > quiet` order borrowed that
+ * subtree-rollup precedence for this single-session dot, so a busy session
+ * masked its own more-urgent awaiting/stalled state (#601-adjacent).
+ *
+ * `stalled` reads `stalledSinceMs` — the daemon's turn-liveness watchdog flag
+ * (stall-watchdog.ts), stamped once an agent-cli session goes silent mid-turn
+ * past its threshold. That is the one "claims busy longer than expected"
+ * surface (also consumed by the sessions webview's ⚠ badge); this dot is
+ * self-contained (stringified into the webview via `.toString()`, per this
+ * file's header) so it just reads the field rather than recomputing a
+ * silence threshold locally. A starting session counts as busy (a turn is
+ * coming). Pure — injected.
+ */
+export function titleStatusState(
+  session: Pick<
+    SessionDescriptor,
+    "busy" | "status" | "childrenBusy" | "awaitingInput" | "watchers" | "stalledSinceMs"
+  >,
+): "busy" | "stalled" | "delegating" | "awaiting" | "parked" | "quiet" {
+  if (session.awaitingInput) return "awaiting"
+  if (session.busy) return session.stalledSinceMs !== undefined ? "stalled" : "busy"
+  if (session.status === "starting") return "busy"
+  if ((session.childrenBusy ?? 0) > 0) return "delegating"
+  if ((session.watchers ?? 0) > 0) return "parked"
+  return "quiet"
+}
+
+/** The minimalist plan block's projection (#conversation-chrome). Completed
+ *  steps collapse to one "✓ N done" summary; failed stay individually visible;
+ *  upcoming = the current (in_progress) step + the next few pending, with the
+ *  remainder counted behind a "+N more". No strikethrough rows. Pure —
+ *  injected into the webview and unit-tested. */
+export interface PlanProjection {
+  doneCount: number
+  doneItems: PlanEntry[]
+  failed: PlanEntry[]
+  current: PlanEntry | undefined
+  upcoming: PlanEntry[]
+  moreCount: number
+}
+
+export function projectPlan(entries: PlanEntry[], upcomingLimit = 3): PlanProjection {
+  const doneItems: PlanEntry[] = []
+  const failed: PlanEntry[] = []
+  const pending: PlanEntry[] = []
+  let current: PlanEntry | undefined
+  for (const e of entries || []) {
+    if (e.status === "completed") doneItems.push(e)
+    else if (e.status === "failed") failed.push(e)
+    else if (e.status === "in_progress" && !current) current = e
+    else pending.push(e)
+  }
+  const upcoming = pending.slice(0, upcomingLimit)
+  return {
+    doneCount: doneItems.length,
+    doneItems,
+    failed,
+    current,
+    upcoming,
+    moreCount: pending.length - upcoming.length,
+  }
 }

@@ -19,8 +19,16 @@
  * `AcpClient.respondPermission` and the daemon's permission inbox.
  */
 export type AcpPermissionResolution =
-  | { optionId: string }
+  | { optionId: string; feedback?: string }
   | { cancelled: true }
+
+/**
+ * `_meta` key the daemon's respond path uses to carry the caller's free-text
+ * feedback (e.g. "reject, but do X instead") on the `selected` outcome of a
+ * held `session/request_permission` RPC. Defined once here so the acp client
+ * and adapters agree on the convention.
+ */
+export const ACP_META_FEEDBACK = "agentproto/feedback"
 
 export type AcpRole = "client" | "server" | "bridge"
 export type AcpTransport = "stdio" | "websocket"
@@ -180,6 +188,13 @@ export type StreamEvent =
        * stable schema.
        */
       rawInput?: unknown
+      /**
+       * The tool call's `_meta` (e.g. mastra-agent's
+       * `mastra-agent/suspendPayload` carrying a submit_plan's plan text),
+       * carried through unmodified. Harness-shaped and untyped — normalize
+       * defensively per-adapter rather than assuming a stable schema.
+       */
+      _meta?: unknown
     }
   | {
       kind: "turn-end"
@@ -197,6 +212,7 @@ export type StreamEvent =
   | {
       kind: "plan"
       sessionId: string
+      title?: string
       entries: Array<{
         content: string
         priority: "high" | "medium" | "low"
@@ -215,4 +231,19 @@ export type StreamEvent =
        *  no adapter-reported `cost`. */
       tokensIn?: number
       tokensOut?: number
+    }
+  | {
+      kind: "available-commands"
+      sessionId: string
+      /**
+       * The full, current set of slash-commands/skills the agent supports —
+       * an `available_commands_update` REPLACES any previously reported list
+       * wholesale, it is not a delta.
+       */
+      commands: Array<{
+        name: string
+        description?: string
+        input?: { hint?: string } | null
+        _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
+      }>
     }

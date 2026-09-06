@@ -1,0 +1,26 @@
+{
+  "name": "__APP_SLUG__-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@agentproto/app-client": "^__APP_CLIENT_VERSION__",
+    "@tanstack/react-query": "^5",
+    "@tanstack/react-router": "^1",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "typescript": "~5.8",
+    "vite": "^7"
+  }
+}

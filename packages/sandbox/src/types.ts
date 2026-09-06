@@ -96,6 +96,13 @@ export interface SandboxDefinition {
    */
   read_only?: boolean
   /**
+   * App ports to expose at boot time. Resolved into `BootedSandbox.ports` (port → public URL)
+   * by providers that support port exposure (e.g. e2b via `getHost(port)`). Providers that do
+   * not support exposure ignore this field — callers that need a URL must check `ports` on the
+   * booted handle and call `expose()` explicitly when the field is absent.
+   */
+  extraPorts?: number[]
+  /**
    * Free-form, namespaced. Adapter hints under `metadata.<adapter>.*`.
    */
   metadata?: {

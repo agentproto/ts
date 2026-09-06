@@ -12,7 +12,7 @@
  *
  * Usage:
  *   import { registerMcpApps } from "./mcp-apps-adapter.js"
- *   import { makeSessionsPanelApp } from "./sessions-panel-app.js"
+ *   import { makeSessionsPanelApp } from "@agentproto/apps"
  *
  *   registerMcpApps(server, [
  *     makeSessionsPanelApp({ listSessions: () => sessions.list() }),
@@ -20,7 +20,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import type { AgnoMcpApp } from "./sessions-panel-app.js"
+import type { AgnoMcpApp } from "@agentproto/apps"
 
 const MIME_TYPE = "text/html;profile=mcp-app"
 
@@ -98,7 +98,7 @@ export function registerMcpApps(
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(initData, null, 2),
+              text: JSON.stringify(initData),
             },
           ],
         }

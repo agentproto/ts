@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/workflow",
-  "version": "0.1.1",
+  "version": "0.4.0",
   "description": "@agentproto/workflow — AIP-15 WORKFLOW.md reference implementation. A markdown + frontmatter format for declaring a multi-step agent workflow's abstract orchestration shape — its steps, branching, parallelism, approval gates, suspend/resume, and compensation. Pairs with the standard `defineWorkflow` / `defineStep` signatures. Implementation lives entirely in the per-step TOOL.md contracts and their AIP-30 DRIVER bindings; workflows themselves are pure orchestration data.",
   "keywords": [
     "agentproto",
@@ -56,7 +56,7 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

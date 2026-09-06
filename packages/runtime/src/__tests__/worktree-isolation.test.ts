@@ -38,6 +38,18 @@ describe("normalizeWorktreeField", () => {
     expect(normalizeWorktreeField({ slug: "x" })).toEqual({ slug: "x" })
     expect(Object.keys(normalizeWorktreeField({ slug: "x" }) ?? {})).toEqual(["slug"])
   })
+
+  it("carries `async` through like any other pin — absent unless explicitly requested", () => {
+    expect(normalizeWorktreeField({ async: true })).toEqual({ async: true })
+    expect(normalizeWorktreeField({ slug: "x", async: false })).toEqual({
+      slug: "x",
+      async: false,
+    })
+    // `true` (the boolean shorthand) carries no async opt-in — matches
+    // `agent_start`'s documented default (synchronous unless asked).
+    expect(normalizeWorktreeField(true)).toEqual({})
+    expect(Object.keys(normalizeWorktreeField({}) ?? {})).toEqual([])
+  })
 })
 
 describe("decideWorktreeIsolation — resolution matrix", () => {
@@ -61,17 +73,17 @@ describe("decideWorktreeIsolation — resolution matrix", () => {
       })
     })
 
-    it("on-request + explicit request → provision, carrying the pins", () => {
+    it("on-request + explicit request → provision, carrying the pins, never implicit", () => {
       expect(
         decideWorktreeIsolation({ mode: "on-request", field: true, depth: 0 }),
-      ).toEqual({ action: "provision", request: {} })
+      ).toEqual({ action: "provision", request: {}, implicit: false })
       expect(
         decideWorktreeIsolation({
           mode: "on-request",
           field: { slug: "a", base: "origin/b" },
           depth: 0,
         }),
-      ).toEqual({ action: "provision", request: { slug: "a", base: "origin/b" } })
+      ).toEqual({ action: "provision", request: { slug: "a", base: "origin/b" }, implicit: false })
     })
 
     it("on-request + no request → spawn-in-place (back-compat)", () => {
@@ -80,18 +92,19 @@ describe("decideWorktreeIsolation — resolution matrix", () => {
       ).toEqual({ action: "spawn-in-place" })
     })
 
-    it("always → provision whether or not a request is present", () => {
+    it("always → provision whether or not a request is present; implicit only when the caller made none", () => {
       expect(
         decideWorktreeIsolation({ mode: "always", field: undefined, depth: 0 }),
-      ).toEqual({ action: "provision", request: {} })
-      // An explicit `false` cannot opt out of `always`.
+      ).toEqual({ action: "provision", request: {}, implicit: true })
+      // An explicit `false` cannot opt out of `always` — still implicit,
+      // since the caller made no request either way.
       expect(
         decideWorktreeIsolation({ mode: "always", field: false, depth: 0 }),
-      ).toEqual({ action: "provision", request: {} })
-      // An explicit request still contributes its pins.
+      ).toEqual({ action: "provision", request: {}, implicit: true })
+      // An explicit request still contributes its pins, and is never implicit.
       expect(
         decideWorktreeIsolation({ mode: "always", field: { slug: "z" }, depth: 0 }),
-      ).toEqual({ action: "provision", request: { slug: "z" } })
+      ).toEqual({ action: "provision", request: { slug: "z" }, implicit: false })
     })
   })
 

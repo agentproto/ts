@@ -208,11 +208,14 @@ const authSchema = z.object({
 //     runtime injects NOTHING and only scrubs the conflicting api-key vars.
 // `conflictEnv` are sibling credential vars scrubbed in every mode (except when
 // set); `unsetEnvAdd` is native-mode-only gateway hygiene.
-const authSubscriptionSchema = z.object({
+const authSubscriptionEntrySchema = z.object({
   setEnv: z.string().min(1).optional(),
   external: z.boolean().optional(),
   conflictEnv: z.array(z.string()).optional(),
   unsetEnvAdd: z.array(z.string()).optional(),
+  // Provider scope for a multi-provider adapter's bearer surface (pi's
+  // ANTHROPIC_OAUTH_TOKEN is anthropic-only) — see AgentCliAuthSubscription.
+  provider: z.string().min(1).optional(),
 }).strict().superRefine((v, ctx) => {
   if (v.external) {
     if (v.setEnv !== undefined) {
@@ -234,6 +237,34 @@ const authSubscriptionSchema = z.object({
     })
   }
 })
+
+// `authSubscription` accepts either ONE surface (today's shape, unscoped or
+// provider-scoped) or an ARRAY of surfaces — a multi-provider adapter that
+// ships more than one native OAuth login (mastracode: Claude AND ChatGPT)
+// declares one entry per provider. Two entries claiming the SAME provider
+// scope (or two unscoped entries) are ambiguous — the runtime's
+// `subscriptionSurfaceFor` has no tiebreak rule, so this is rejected at
+// validation time rather than resolved arbitrarily at spawn time.
+const authSubscriptionSchema = z
+  .union([authSubscriptionEntrySchema, z.array(authSubscriptionEntrySchema).min(1)])
+  .superRefine((v, ctx) => {
+    if (!Array.isArray(v)) return
+    const seen = new Set<string>()
+    for (const entry of v) {
+      const key = entry.provider ?? "\0unscoped"
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: entry.provider
+            ? `authSubscription: duplicate provider scope "${entry.provider}" — two ` +
+              `entries claim the same provider, which is ambiguous at spawn time.`
+            : "authSubscription: more than one unscoped entry (no `provider`) — " +
+              "ambiguous which one applies at spawn time.",
+        })
+      }
+      seen.add(key)
+    }
+  })
 
 const sessionSchema = z.object({
   mode: z.enum(["ephemeral", "persistent", "resumable"]).default("ephemeral"),
@@ -408,7 +439,7 @@ const printConfigSchema = z.object({
     flag: z.string(),
     kind: z.enum(["value", "boolean"]),
   }).strict().optional(),
-  event_schema: z.enum(["claude-stream-json", "mastra-jsonl"]).optional(),
+  event_schema: z.enum(["claude-stream-json", "mastra-jsonl", "antigravity-stream-json", "jcode-ndjson"]).optional(),
 }).strict().optional()
 
 export const agentCliFrontmatterSchema = z

@@ -8,10 +8,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 
 // Control the providers.json api-key lookup deterministically (the resolver's
@@ -43,15 +43,16 @@ const oauthState = vi.hoisted(() => ({
   // File-based (external) login presence check — default: login present (void).
   // A test sets `verifyImpl` to throw a SubscriptionSourceError to exercise the
   // fail-loud "not logged in" path.
-  verifyImpl: (async (_recipeId: string, _slug: string) => {}) as (
+  verifyImpl: (async (_recipeId: string, _slug: string, _methodId?: string) => {}) as (
     recipeId: string,
     slug: string,
+    methodId?: string,
   ) => Promise<void>,
 }))
 vi.mock("../claude-code-oauth-source.js", () => ({
   resolveClaudeCodeOauthToken: (id: string) => oauthState.impl(id),
-  verifyLocalLoginPresent: (recipeId: string, slug: string) =>
-    oauthState.verifyImpl(recipeId, slug),
+  verifyLocalLoginPresent: (recipeId: string, slug: string, methodId?: string) =>
+    oauthState.verifyImpl(recipeId, slug, methodId),
 }))
 
 // Control named auth-profile resolution (`access.profileRef`) deterministically
@@ -76,11 +77,28 @@ vi.mock("@agentproto/auth", async importOriginal => {
   }
 })
 
-import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import {
+  spawnAgentSession,
+  cleanAgentLines,
+  gcSpawnClaims,
+  shouldInjectDaemonSelfMount,
+  type SpawnAgentSessionDeps,
+  type SpawnAgentSessionResult,
+  type SpawnClaim,
+} from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
+import { EXECUTOR_ROLE } from "../role.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
-import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
+  PARENT_SESSION_ID_ENV,
+  APP_ID_ENV,
+  type SessionsRegistry,
+} from "../sessions.js"
+import { cdContractLine } from "../agents-md.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
@@ -118,12 +136,72 @@ function baseDeps(overrides: Partial<SpawnAgentSessionDeps> = {}): {
   const deps: SpawnAgentSessionDeps = {
     registry,
     resolveAgentAdapter: makeResolver(startSession),
+    // Fast, deterministic AGENTS.md resolution by default so the existing
+    // spawn tests never touch the real filesystem / git / config. Individual
+    // tests override `resolveAgentsMd` (or pass `undefined` to fall through
+    // to the REAL resolver) to exercise the actual injection path — see the
+    // AGENTS.md describe blocks below. `contractLine` mirrors the real
+    // resolver's shape (non-empty, present in every mode incl. "absent") so
+    // the many tests using this default aren't exercising an unrealistic
+    // empty-contract-line shape the production resolver never actually returns.
+    resolveAgentsMd: async () => ({ mode: "absent", contractLine: cdContractLine }),
+    // Fast, deterministic per-workspace RULES.md resolution by default (WP-R4)
+    // so existing spawn tests never touch the real `~/.agentproto` workspace
+    // buckets. Individual tests override `resolveWorkspaceRules` to exercise
+    // the actual injection path — see the RULES.md describe block below.
+    resolveWorkspaceRules: async () => ({}),
     ...overrides,
   }
   return { registry, deps }
 }
 
 describe("spawnAgentSession", () => {
+  it("injects AGENTPROTO_SESSION_ID/AGENTPROTO_WORKSPACE_SLUG into startSession's env, matching the minted descriptor id — each spawn gets its OWN id, never a shared/prior one", async () => {
+    const startSession = vi.fn(async (_opts: { env?: Record<string, string> }) =>
+      fakeAgentSession(),
+    )
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "real-workspace",
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected spawn")
+
+    const firstEnv = startSession.mock.calls[0]?.[0]?.env
+    expect(firstEnv).toEqual({
+      [SESSION_ID_ENV]: first.descriptor.id,
+      [WORKSPACE_SLUG_ENV]: "real-workspace",
+    })
+
+    const second = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "real-workspace",
+    })
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected spawn")
+
+    const secondEnv = startSession.mock.calls[1]?.[0]?.env
+    // Own id, not the first spawn's — no accidental sharing/inheritance
+    // across two spawns from the same deps/resolver.
+    expect(secondEnv?.[SESSION_ID_ENV]).toBe(second.descriptor.id)
+    expect(secondEnv?.[SESSION_ID_ENV]).not.toBe(firstEnv?.[SESSION_ID_ENV])
+  })
+
+  it("injects AGENTPROTO_APP_ID only when `appId` is set (P7 — app_run threading a daemon-tool proxy reads)", async () => {
+    const startSession = vi.fn(async (_opts: { env?: Record<string, string> }) => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", appId: "@agentik/seo-auditor" })
+    expect(startSession.mock.calls[0]?.[0]?.env?.[APP_ID_ENV]).toBe("@agentik/seo-auditor")
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    expect(startSession.mock.calls[1]?.[0]?.env?.[APP_ID_ENV]).toBeUndefined()
+  })
+
   it("expands a user preset at the shared spawn boundary and records every axis", async () => {
     const { deps } = baseDeps()
     const result = await spawnAgentSession(deps, {
@@ -408,6 +486,8 @@ describe("spawnAgentSession", () => {
     expect(result.descriptor).toMatchObject({
       model: "moonshot/kimi-k2.7-code",
       route: { gateway: "moonshot" },
+      routeSelection: "free",
+      adapterProvider: "anthropic",
     })
   })
 
@@ -448,9 +528,15 @@ describe("spawnAgentSession", () => {
       route: { gateway: "openrouter", baseUrl: "http://127.0.0.1:65535" },
     })
     expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
     expect(startSession).toHaveBeenCalledWith(
       expect.objectContaining({ model: "deepseek/deepseek-v4-pro" }),
     )
+    expect(result.descriptor).toMatchObject({
+      model: "deepseek/deepseek-v4-pro@openrouter",
+      routeSelection: "derived-from-model",
+      adapterProvider: "openrouter",
+    })
   })
 
   it("stamps `boardId` onto the spawned descriptor's meta — and omits meta without it", async () => {
@@ -569,7 +655,9 @@ describe("spawnAgentSession", () => {
     expect(captured[0]?.mcpServers).toEqual([])
   })
 
-  it("(c) does not default mcpServers for a non-hermes adapter", async () => {
+  it("(c) does not default mcpServers for an adapter outside the self-mount set", async () => {
+    // Mounting the daemon into adapters that never had it (codex, gemini, …)
+    // would be a capability grant, not an identity fix — they stay opt-in.
     const captured: { mcpServers?: AcpMcpServer[] }[] = []
     const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
       captured.push({ mcpServers: opts.mcpServers })
@@ -580,9 +668,68 @@ describe("spawnAgentSession", () => {
       daemonMcpUrl: "http://127.0.0.1:18790/mcp",
     })
 
-    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp" })
+    const result = await spawnAgentSession(deps, { adapter: "codex", cwd: "/tmp" })
     expect(result.ok).toBe(true)
     expect(captured[0]?.mcpServers).toBeUndefined()
+  })
+
+  it("(c) defaults mcpServers to the stamped daemon gateway for a claude-code spawn with none supplied", async () => {
+    // The identity arm of the default self-mount: claude-code sessions used
+    // to reach the daemon only through ambient project/global MCP config,
+    // which can never carry a per-session `callerSessionId` — so every spawn
+    // they made landed as an anonymous depth-0 orphan (spawn-attach.ts had
+    // no auto-parent to derive). The injected same-named entry shadows the
+    // ambient mount at the SDK layer and bakes the identity in.
+    const captured: { mcpServers?: AcpMcpServer[] }[] = []
+    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
+      captured.push({ mcpServers: opts.mcpServers })
+      return fakeAgentSession()
+    })
+    const daemonMcpUrl = "http://127.0.0.1:18790/mcp"
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      daemonMcpUrl,
+    })
+
+    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
+    expect(captured[0]?.mcpServers).toEqual([
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${ownId}` },
+    ])
+  })
+
+  it("(c) respects an explicit empty mcpServers opt-out for claude-code — no default injected", async () => {
+    const captured: { mcpServers?: AcpMcpServer[] }[] = []
+    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
+      captured.push({ mcpServers: opts.mcpServers })
+      return fakeAgentSession()
+    })
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      daemonMcpUrl: "http://127.0.0.1:18790/mcp",
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      mcpServers: [],
+    })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers).toEqual([])
+  })
+
+  it("(c) shouldInjectDaemonSelfMount: hermes always, claude-code on-host only, others never", () => {
+    // hermes keeps its historical behaviour even for a sandbox spawn (the
+    // box's own daemon re-resolves the spawn on its side); claude-code's
+    // mount is identity-only and a box can't reach this daemon's loopback
+    // gateway, so a sandbox spawn is excluded.
+    expect(shouldInjectDaemonSelfMount("hermes", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("hermes", "e2b")).toBe(true)
+    expect(shouldInjectDaemonSelfMount("claude-code", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("claude-code", "e2b")).toBe(false)
+    expect(shouldInjectDaemonSelfMount("codex", undefined)).toBe(false)
+    expect(shouldInjectDaemonSelfMount("gemini", undefined)).toBe(false)
   })
 
   it("(c) stamps callerSessionId onto a CALLER-provided mcpServers entry that targets the daemon (identity ≠ capability)", async () => {
@@ -765,6 +912,34 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
     expect(second.deduped).toBe(true)
   })
 
+  it("a dedupe hit logs a daemon-side trace naming the returned session (it used to return silently)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const startSession = vi.fn(async () => fakeAgentSession())
+      const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+      const input = {
+        adapter: "mock",
+        cwd: "/tmp",
+        label: "worker",
+        prompt: "do the thing",
+        idempotencyKey: "req-log",
+      }
+
+      const first = await spawnAgentSession(deps, input)
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("dedupe hit"))
+      const second = await spawnAgentSession(deps, input)
+
+      if (!first.ok || !second.ok) throw new Error("expected success")
+      const hit = warnSpy.mock.calls.map(c => String(c[0])).find(m => m.includes("dedupe hit"))
+      expect(hit).toBeDefined()
+      expect(hit).toContain("explicit")
+      expect(hit).toContain(first.descriptor.id)
+      expect(hit).toContain('label "worker"')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
   it("two truly concurrent calls (Promise.all, no await between them) with the same idempotencyKey still spawn only ONE process", async () => {
     // The claim is staked synchronously (check-then-set, no `await` in
     // between) right before the process fork, so whichever call's JS
@@ -790,9 +965,19 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
     expect(second.descriptor.id).toBe(first.descriptor.id)
   })
 
-  it("omitting idempotencyKey is a no-op — repeated identical calls still spawn independently (today's behaviour)", async () => {
+  it("omitting idempotencyKey under an 'on-request' dedupe policy is a no-op — repeated identical calls still spawn independently", async () => {
+    // Under the DEFAULT `spawn.dedupe: 'always'` policy this exact input (a
+    // label present, no idempotencyKey) now derives an implicit key and
+    // dedupes — see the "implicit dedupe default" describe block below for
+    // that behaviour. Pinning the policy to 'on-request' here isolates the
+    // pre-WP-E baseline this test was written to document: no policy, no
+    // opt-in ⇒ no dedup, exactly like an explicit idempotencyKey never
+    // being passed.
     const startSession = vi.fn(async () => fakeAgentSession())
-    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: async () => "on-request",
+    })
     const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
 
     const first = await spawnAgentSession(deps, input)
@@ -848,8 +1033,8 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
     const first = await spawnAgentSession(deps, input)
     expect(first.ok).toBe(true)
 
-    // 31s later — past SPAWN_CLAIM_WINDOW_MS (30s).
-    nowSpy.mockReturnValue(1_000 + 31_000)
+    // Past SPAWN_CLAIM_WINDOW_MS (10 minutes).
+    nowSpy.mockReturnValue(1_000 + 600_001)
     const second = await spawnAgentSession(deps, input)
     expect(second.ok).toBe(true)
 
@@ -882,6 +1067,417 @@ describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () =>
     expect(
       registry.list().filter(s => s.parentSessionId === "fanout-parent"),
     ).toHaveLength(2)
+  })
+
+  it("a same-key retry 42s later (the measured incident gap) is still deduped — the old 30s window would have missed it", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = { adapter: "mock", cwd: "/tmp", idempotencyKey: "req-incident-gap" }
+    const nowSpy = vi.spyOn(Date, "now")
+
+    nowSpy.mockReturnValue(1_000)
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(true)
+
+    nowSpy.mockReturnValue(1_000 + 42_000)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+
+    nowSpy.mockRestore()
+  })
+})
+
+describe("spawnAgentSession — implicit dedupe default (spawn.dedupe policy, WP-E)", () => {
+  // Every test here pins `resolveSpawnDedupe` explicitly (rather than
+  // relying on the real ~/.agentproto/config.json fallback, which the
+  // hardcoded default also resolves to "always") for the same reason the
+  // worktree-isolation suite pins `resolveWorktreeIsolation` everywhere:
+  // deterministic tests shouldn't depend on whatever happens to be in a
+  // config file on the machine running them.
+  const alwaysDedupe = async () => "always" as const
+  const onRequestDedupe = async () => "on-request" as const
+
+  it("under the default ('always') policy, a repeated labeled+prompted call derives an implicit key and dedupes to ONE process", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker", prompt: "do the thing" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(first.deduped).toBeUndefined()
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("implicit")
+  })
+
+  it("fan-out safety net: no label, identical adapter/cwd/prompt — still spawns two distinct sessions under the default policy", async () => {
+    // The false-dedup case the whole feature is built around: an
+    // unlabelled parallel fan-out into one cwd must never collapse, even
+    // under the default 'always' dedupe policy.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", prompt: "do the thing" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+  })
+
+  it("false-dedup guard: same label, a DIFFERENT prompt — spawns two distinct sessions (the reused-label-automation pattern)", async () => {
+    // Mirrors the inbound-watcher spawn pattern (orchestration-tools.ts),
+    // which reuses one label suffix across every relayed message but always
+    // sends a different prompt.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "watcher",
+      prompt: "message one",
+    })
+    const second = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "watcher",
+      prompt: "message two",
+    })
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+  })
+
+  it("an explicit idempotencyKey always wins over the derived implicit one, even when both would apply", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "worker",
+      prompt: "do the thing",
+      idempotencyKey: "req-1",
+    }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("explicit")
+  })
+
+  it("dedupe: false is the per-call escape hatch — spawns twice even under the default policy with a matching label+prompt", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "worker",
+      prompt: "do the thing",
+      dedupe: false as const,
+    }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+  })
+
+  it("dedupe: true is the per-call opt-in — derives and dedupes even under an 'on-request' policy", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: onRequestDedupe,
+    })
+    const input = {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "worker",
+      prompt: "do the thing",
+      dedupe: true as const,
+    }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("implicit")
+  })
+
+  it("an 'on-request' policy with no per-call opt-in derives nothing — repeated calls spawn independently (today's pre-WP-E behaviour, still available)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: onRequestDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker", prompt: "do the thing" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+  })
+
+  it("the implicit window (IMPLICIT_SPAWN_CLAIM_WINDOW_MS, 2min) is shorter than the explicit one — a repeat just past it spawns fresh", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker", prompt: "do the thing" }
+    const nowSpy = vi.spyOn(Date, "now")
+
+    nowSpy.mockReturnValue(1_000)
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(true)
+
+    // Just past the 120s implicit window, but nowhere near the explicit
+    // key's 600s window — proving the SHORTER window applies here.
+    nowSpy.mockReturnValue(1_000 + 120_001)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+
+    nowSpy.mockRestore()
+  })
+
+  it("a repeat WITHIN the implicit window is still deduped", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker", prompt: "do the thing" }
+    const nowSpy = vi.spyOn(Date, "now")
+
+    nowSpy.mockReturnValue(1_000)
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(true)
+
+    nowSpy.mockReturnValue(1_000 + 90_000)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+
+    nowSpy.mockRestore()
+  })
+
+  it("integration: the default policy supersedes the label+cwd warning backstop for its own incident shape — the second call is DEDUPED, not just warned", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: alwaysDedupe,
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("implicit")
+    // No "another LIVE session" warning fires — the second call never
+    // reached the registry.spawnAgent + warning check at all.
+    expect(second.warnings ?? []).toHaveLength(0)
+  })
+})
+
+describe("spawnAgentSession — resolved-claim eviction policy (gcSpawnClaims)", () => {
+  // Pure-function coverage of the size/LRU backstop, without driving 1000+
+  // real spawns through spawnAgentSession(). See the sizing docblock above
+  // SPAWN_CLAIM_WINDOW_MS / MAX_RESOLVED_CLAIMS in session-spawn.ts.
+  function resolvedClaim(resolvedAt: number): SpawnClaim {
+    return { result: Promise.resolve({ ok: true } as SpawnAgentSessionResult), resolvedAt }
+  }
+  function inFlightClaim(): SpawnClaim {
+    return { result: new Promise(() => {}) }
+  }
+
+  it("drops a resolved claim once it's older than SPAWN_CLAIM_WINDOW_MS", () => {
+    const claims = new Map<string, SpawnClaim>([
+      ["stale", resolvedClaim(0)],
+      ["fresh", resolvedClaim(500_000)],
+    ])
+    gcSpawnClaims(claims, 700_000)
+    expect(claims.has("stale")).toBe(false)
+    expect(claims.has("fresh")).toBe(true)
+  })
+
+  it("never evicts an in-flight claim on time, however old its entry", () => {
+    const claims = new Map<string, SpawnClaim>([["pending", inFlightClaim()]])
+    gcSpawnClaims(claims, 10_000_000)
+    expect(claims.has("pending")).toBe(true)
+  })
+
+  it("evicts the OLDEST-resolved entries first once resolved claims exceed MAX_RESOLVED_CLAIMS", () => {
+    const claims = new Map<string, SpawnClaim>()
+    // All well within the time window — only the size bound should fire.
+    for (let i = 0; i < 1_005; i++) {
+      claims.set(`key-${i}`, resolvedClaim(i))
+    }
+    gcSpawnClaims(claims, 1_005)
+    expect(claims.size).toBe(1_000)
+    // The 5 oldest-resolved (lowest resolvedAt) are gone…
+    for (let i = 0; i < 5; i++) expect(claims.has(`key-${i}`)).toBe(false)
+    // …the newest 1000 survive.
+    for (let i = 5; i < 1_005; i++) expect(claims.has(`key-${i}`)).toBe(true)
+  })
+
+  it("an in-flight claim never counts against the resolved-claim size cap", () => {
+    const claims = new Map<string, SpawnClaim>()
+    for (let i = 0; i < 1_000; i++) claims.set(`resolved-${i}`, resolvedClaim(i))
+    claims.set("pending", inFlightClaim())
+    gcSpawnClaims(claims, 1_000)
+    expect(claims.has("pending")).toBe(true)
+    expect(claims.size).toBe(1_001)
+  })
+
+  it("a claim's own windowMs (an implicit key's shorter window) governs its eviction, independent of other claims in the same map", () => {
+    // Explicit and implicit claims share one map (see the `claimsFor`
+    // docblock) but carry different windows — an implicit claim (120s) must
+    // expire on its own schedule even while a same-map explicit claim
+    // (600s, the default when `windowMs` is omitted) is still fresh.
+    const claims = new Map<string, SpawnClaim>([
+      ["implicit", { result: Promise.resolve({ ok: true } as SpawnAgentSessionResult), resolvedAt: 0, windowMs: 120_000 }],
+      ["explicit", resolvedClaim(0)],
+    ])
+    gcSpawnClaims(claims, 150_000)
+    expect(claims.has("implicit")).toBe(false)
+    expect(claims.has("explicit")).toBe(true)
+  })
+})
+
+describe("spawnAgentSession — no-key duplicate-live-session warning (label+cwd backstop)", () => {
+  // Distinct from the idempotencyKey guard above: this needs no caller
+  // opt-in and never blocks a spawn, it only warns — see the docblock at
+  // the `desc.label && desc.cwd` check in session-spawn.ts.
+  //
+  // The two tests below that repeat an identical labeled input pin
+  // `resolveSpawnDedupe` to 'on-request' so they keep exercising this
+  // backstop in isolation: under the DEFAULT 'always' policy, a repeated
+  // label+cwd+prompt call like theirs is now caught earlier by the implicit
+  // dedupe claim (see the "implicit dedupe default" describe block below)
+  // and never reaches this warning check at all — that interaction is
+  // covered separately there.
+
+  it("warns when a second LIVE session shares label AND cwd with an existing one", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: async () => "on-request",
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(first.warnings ?? []).toHaveLength(0)
+    expect(second.warnings?.some(w => w.includes("worker") && w.includes(first.descriptor.id))).toBe(
+      true,
+    )
+  })
+
+  it("does NOT warn when cwd matches but label differs", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", label: "worker-a" })
+    const second = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", label: "worker-b" })
+
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.warnings ?? []).toHaveLength(0)
+  })
+
+  it("does NOT warn when neither spawn carries a label, even sharing cwd (cwd alone is too noisy)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    const second = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.warnings ?? []).toHaveLength(0)
+  })
+
+  it("does NOT warn against a session that already exited — only LIVE duplicates count", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveSpawnDedupe: async () => "on-request",
+    })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
+
+    const first = await spawnAgentSession(deps, input)
+    if (!first.ok) throw new Error("expected success")
+    registry.get(first.descriptor.id)!.status = "exited"
+
+    const second = await spawnAgentSession(deps, input)
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.warnings ?? []).toHaveLength(0)
   })
 })
 
@@ -972,6 +1568,29 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     }
   })
 
+  it("executor (explicit) gates the claude-code default-gateway injection with denyTools too", async () => {
+    // The identity mount obeys the same delegation hard-gate as the hermes
+    // capability mount — an executor claude-code child gets the daemon's
+    // tools minus agent_start/agent_prompt.
+    const { deps } = baseDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      role: "executor",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.mcpServers).toEqual([
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&callerSessionId=${result.descriptor.id}`,
+        },
+      ])
+    }
+  })
+
   it("supervisor (explicit) keeps the plain hermes default-gateway ref (no denyTools, still carries callerSessionId)", async () => {
     const { deps } = baseDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
 
@@ -1024,12 +1643,40 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     expect(sendPrompt).toHaveBeenCalledTimes(1)
     const sentMessage = sendPrompt.mock.calls[0]?.[1]
     const prompt = typeof sentMessage === "string" ? sentMessage : ""
-    const dispositionIdx = prompt.indexOf("You are the leaf")
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
     const appendIdx = prompt.indexOf("focus on the CLI package")
     const taskIdx = prompt.indexOf("fix the bug")
     expect(dispositionIdx).toBeGreaterThanOrEqual(0)
     expect(dispositionIdx).toBeLessThan(appendIdx)
     expect(appendIdx).toBeLessThan(taskIdx)
+  })
+
+  it("passes the role disposition to the recorder as the SYSTEM preamble while the adapter still gets the single composed string", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+      prompt: "fix the bug",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const [id, message, opts] = sendPrompt.mock.calls[0] ?? []
+    expect(typeof id).toBe("string")
+    // The adapter STILL receives the full composed prompt — the split is
+    // recording-only, on the daemon's own event stream. The composed prompt
+    // also carries the WP-R2 AGENTS.md preamble (baseDeps's default resolver
+    // is "absent" mode, which still always carries the real cd-contract
+    // line — see agents-md.ts) between the disposition and the caller's ask.
+    expect(message).toBe(`${EXECUTOR_ROLE.disposition}\n\n${cdContractLine}\n\nfix the bug`)
+    // The daemon records the WHOLE daemon-composed preamble (disposition +
+    // AGENTS.md contract line) as the system slice; the caller's ask is the
+    // user turn.
+    expect(opts?.system).toBe(`${EXECUTOR_ROLE.disposition}\n\n${cdContractLine}`)
   })
 
   it("depth-derived default: root spawn (depth 0) with no role defaults to supervisor", async () => {
@@ -2071,7 +2718,7 @@ describe("spawnAgentSession — worktree isolation", () => {
     branch: "wt/agent-abcd1234",
   }
 
-  it("on-request + worktree:true → provisions and lands the session in the worktree", async () => {
+  it("on-request + worktree:true → provisions and lands the session in the worktree, never auto-reclaimable (explicit request)", async () => {
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
     const result = await spawnAgentSession(
@@ -2082,6 +2729,9 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ cwd: ORIGINAL, labelHint: "fix login" })
     expect(registry.list()[0]?.cwd).toBe(WORKTREE)
+    // The caller asked for this worktree explicitly — exit-time auto-reclaim
+    // (session-spawn.ts's `worktreeAutoProvisioned`) must never touch it.
+    expect(registry.list()[0]?.worktreeAutoProvisioned).toBeUndefined()
   })
 
   it("on-request + no field → never touches the provisioner, spawns in place", async () => {
@@ -2096,7 +2746,7 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(registry.list()[0]?.cwd).toBe(ORIGINAL)
   })
 
-  it("always → provisions even with no field", async () => {
+  it("always → provisions even with no field, and marks the descriptor auto-provisioned (implicit)", async () => {
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
     const result = await spawnAgentSession(
@@ -2106,6 +2756,24 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(result.ok).toBe(true)
     expect(calls).toHaveLength(1)
     expect(registry.list()[0]?.cwd).toBe(WORKTREE)
+    // No explicit `worktree` field — the "always" policy minted this one on
+    // its own, so it's a candidate for exit-time auto-reclaim.
+    expect(registry.list()[0]?.worktreeAutoProvisioned).toBe(true)
+  })
+
+  it("always + an explicit worktree field → still provisions, but NEVER marks it auto-provisioned", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { slug: "pinned" } },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ cwd: ORIGINAL, slug: "pinned" })
+    // The caller pinned this one explicitly, even though `always` would have
+    // provisioned it anyway — exit-time auto-reclaim must leave it alone.
+    expect(registry.list()[0]?.worktreeAutoProvisioned).toBeUndefined()
   })
 
   it("always + a cwd that is not in a git repo → spawns plain at the original cwd", async () => {
@@ -2305,6 +2973,236 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(result.code).toBe("sandbox_provider_not_found")
     expect(calls).toHaveLength(0)
     expect(registry.list()).toHaveLength(0)
+  })
+})
+
+// ── async worktree provisioning (WP-F) ──────────────────────────────────
+// `worktree.async` returns a real, registered session before `git worktree
+// add` + the setup hooks finish, provisioning in the background — the fix
+// for the actual root cause #803/#805 mitigated from the retry side (no
+// session id existed yet for a retry to dedupe against). These drive a
+// CONTROLLABLE (deferred) provisioner so the test can observe the window
+// between "session registered" and "provisioning settles".
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (err: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (err: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+function deferredProvisioner(): {
+  provisionWorktree: WorktreeProvisioner
+  calls: Parameters<WorktreeProvisioner>[0][]
+  resolve: (outcome: WorktreeProvisionOutcome) => void
+  reject: (err: unknown) => void
+} {
+  const calls: Parameters<WorktreeProvisioner>[0][] = []
+  const d = deferred<WorktreeProvisionOutcome>()
+  const provisionWorktree: WorktreeProvisioner = vi.fn(async req => {
+    calls.push(req)
+    return d.promise
+  })
+  return { provisionWorktree, calls, resolve: d.resolve, reject: d.reject }
+}
+
+describe("spawnAgentSession — async worktree provisioning (WP-F)", () => {
+  const ORIGINAL = "/repo/checkout"
+  const WORKTREE = "/root/repo/agent-abcd1234"
+  const isolated: WorktreeProvisionOutcome = {
+    isolated: true,
+    cwd: WORKTREE,
+    branch: "wt/agent-abcd1234",
+  }
+
+  it("returns a registered, starting session BEFORE the provisioner settles, then flips to running once it does", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      routeSelection: "derived-from-model",
+      authDescriptor: { provider: "openrouter" },
+    })
+    const { registry, deps } = baseDeps({ resolveAgentAdapter })
+    const { provisionWorktree, calls, resolve } = deferredProvisioner()
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true }, label: "fix login" },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    // The provisioner was invoked (the background task started)…
+    expect(calls).toHaveLength(1)
+    // …but `agent_start` did not wait for it.
+    expect(startSession).not.toHaveBeenCalled()
+    expect(result.descriptor.status).toBe("starting")
+    expect(registry.get(result.descriptor.id)).toMatchObject({
+      status: "starting",
+      routeSelection: "derived-from-model",
+      adapterProvider: "openrouter",
+    })
+
+    resolve(isolated)
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("running")
+    })
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.get(result.descriptor.id)?.cwd).toBe(WORKTREE)
+  })
+
+  it("a provisioning failure ends the session in status \"error\" with a readable lastError — never stuck in \"starting\"", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, reject } = deferredProvisioner()
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true } },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(registry.get(result.descriptor.id)?.status).toBe("starting")
+
+    reject(new Error("git worktree add: branch already exists"))
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("error")
+    })
+    expect(registry.get(result.descriptor.id)?.lastError).toContain(
+      "branch already exists",
+    )
+    expect(startSession).not.toHaveBeenCalled()
+  })
+
+  it("a driver spawn failure AFTER provisioning succeeds also ends in status \"error\"", async () => {
+    const startSession = vi.fn().mockRejectedValueOnce(new Error("adapter boot failed"))
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree } = spyProvisioner(isolated)
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true } },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("error")
+    })
+    expect(registry.get(result.descriptor.id)?.lastError).toContain("adapter boot failed")
+  })
+
+  it("`worktree.async` + `wait` is rejected outright — no session created", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true }, wait: true, prompt: "hi" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_async_wait_conflict")
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("the initial prompt is held until the tree + driver session exist, never dispatched into an unbuilt tree", async () => {
+    let promptedAt: "before" | "after" | undefined
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, resolve } = deferredProvisioner()
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true }, prompt: "do the thing" },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    // No turn dispatched yet — the descriptor carries no adapterSessionId
+    // (only set once `startSession` has actually run) and is still busy-free.
+    expect(registry.get(result.descriptor.id)?.adapterSessionId).toBeUndefined()
+    promptedAt = "before"
+
+    resolve(isolated)
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("running")
+    })
+    expect(startSession).toHaveBeenCalledTimes(1)
+    promptedAt = "after"
+    expect(promptedAt).toBe("after")
+  })
+
+  // ── the regression this PR exists to prevent ──────────────────────────
+  // A retry arriving WHILE the background worktree provisioning is still in
+  // flight must dedupe against the already-registered session, not fork a
+  // second `git worktree add` (the exact incident #803/#805 mitigated from
+  // the retry side — this treats the wait that provokes it instead).
+  it("a retry arriving mid-provision dedupes against the SAME session instead of forking a second provision", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls, resolve } = deferredProvisioner()
+    const input = {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { async: true },
+      idempotencyKey: "req-async-retry",
+    }
+    const shared = { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") }
+
+    const first = await spawnAgentSession(shared, input)
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected success")
+    // Provisioning has started but not settled yet.
+    expect(calls).toHaveLength(1)
+    expect(registry.get(first.descriptor.id)?.status).toBe("starting")
+
+    // The retry: same idempotencyKey, arriving while provisioning is still
+    // in flight. Must dedupe immediately — NOT call the provisioner again,
+    // NOT block on the in-flight provisioning.
+    const second = await spawnAgentSession(shared, input)
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.deduped).toBe(true)
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(calls).toHaveLength(1) // still exactly one provision attempt
+    expect(registry.list()).toHaveLength(1) // still exactly one session
+
+    // Let provisioning + the driver spawn actually finish.
+    resolve(isolated)
+    await vi.waitFor(() => {
+      expect(registry.get(first.descriptor.id)?.status).toBe("running")
+    })
+    expect(startSession).toHaveBeenCalledTimes(1) // exactly one process, ever
+    expect(registry.list()).toHaveLength(1)
+  })
+
+  it("a plain (synchronous) worktree spawn is completely unaffected by the async branch", async () => {
+    // No `async: true` on the request ⇒ takes the pre-existing synchronous
+    // path verbatim: `spawnAgentSession` still blocks on provisioning and
+    // the descriptor is "running" (never "starting") by the time it returns.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.status).toBe("running")
+    expect(calls).toHaveLength(1)
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.get(result.descriptor.id)?.cwd).toBe(WORKTREE)
   })
 })
 
@@ -2770,6 +3668,33 @@ describe("spawnAgentSession — auth.source self-refreshing subscription (Mode 3
     expect(result.descriptor.auth?.credentialSource).toBe("explicit-config")
     expect(spy).not.toHaveBeenCalled()
   })
+
+  // Regression: spawning a modelDerivedApiKey adapter with NO `authSubscription`
+  // (e.g. `pi`) using `auth.source: "codex"` — a value that IS real elsewhere
+  // (the codex/gemini adapters' own file-based `authSubscription.external`
+  // login) but names a file this adapter's own CLI never reads. Still fails
+  // loud (DECISION 5 — unchanged), but the message must explain the file-based/
+  // bearer-fetch mismatch instead of implying claude-code-oauth is the only
+  // auth concept that exists.
+  it("a file-based source (codex/gemini) on an adapter with no authSubscription.external ⇒ unsupported_auth_source with an actionable message", async () => {
+    const { resolver, captured } = makeAuthResolver({ modelDerivedApiKey: true })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "pi",
+        cwd: "/tmp",
+        model: "claude-sonnet-5",
+        auth: { source: "codex" },
+      },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("unsupported_auth_source")
+    expect(result.message).toContain("file-based")
+    expect(result.message).toContain("authSubscription.external")
+    expect(captured).toHaveLength(0)
+  })
 })
 
 describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
@@ -2891,6 +3816,107 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
   })
 })
 
+// Regression coverage for the profile-aware route fallback: a
+// `modelDerivedApiKey` adapter (opencode-shaped) with no fixed `provider`
+// derives its billing route from the model id's slash prefix
+// (`modelIdPrefixProvider`) BEFORE ever consulting the catalog's real
+// model→provider mapping. For "deepseek/deepseek-v4-flash" that guess is
+// route "deepseek" — but the catalog (and OpenRouter's own route table)
+// says this model is actually billed through "openrouter", which is exactly
+// what the caller's named profile serves. Without the fallback, a caller who
+// supplies only a genuinely-eligible openrouter profile and no explicit
+// `route.gateway` gets rejected for a route they never asked to bill.
+describe("spawnAgentSession — access.profileRef profile-aware route fallback (opencode/deepseek)", () => {
+  const OPENCODE_LIKE_DESCRIPTOR: AdapterAuthDescriptor = {
+    modelDerivedApiKey: true,
+  }
+  const DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash"
+
+  function authDeps() {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: OPENCODE_LIKE_DESCRIPTOR,
+    })
+    return baseDeps({ resolveAgentAdapter })
+  }
+
+  beforeEach(() => {
+    authProfileState.profiles = {}
+    authProfileState.keychain = {}
+  })
+
+  it("resolves the naive prefix-guessed route (\"deepseek\") to the model's real serviceable route (\"openrouter\") when that's what the named profile serves, with no explicit route.gateway", async () => {
+    authProfileState.profiles["openrouter-env"] = {
+      id: "openrouter-env",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "agentproto.auth.openrouter.env",
+    }
+    authProfileState.keychain["agentproto.auth.openrouter.env"] = "sk-or-v1-test-key"
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      model: DEEPSEEK_MODEL,
+      access: { profileRef: "openrouter-env" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.provider).toBe("openrouter")
+    expect(result.descriptor.auth?.setEnv).toBe("OPENROUTER_API_KEY")
+    expect(result.descriptor.accessProfile).toMatchObject({
+      profileRef: "openrouter-env",
+      endpoint: "openrouter",
+      method: "api-key",
+    })
+  })
+
+  it("still fails loud when the profile is genuinely ineligible on every candidate route for the model (regression baseline, no silent pass)", async () => {
+    authProfileState.profiles["anthropic-env"] = {
+      id: "anthropic-env",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "agentproto.auth.anthropic.env",
+    }
+    authProfileState.keychain["agentproto.auth.anthropic.env"] = "sk-ant-test-key"
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      model: DEEPSEEK_MODEL,
+      access: { profileRef: "anthropic-env" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("access_profile_ineligible")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("an explicit route.gateway is untouched by the fallback — still resolves exactly as before", async () => {
+    authProfileState.profiles["openrouter-env"] = {
+      id: "openrouter-env",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "agentproto.auth.openrouter.env",
+    }
+    authProfileState.keychain["agentproto.auth.openrouter.env"] = "sk-or-v1-test-key"
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      model: DEEPSEEK_MODEL,
+      route: { gateway: "openrouter" },
+      access: { profileRef: "openrouter-env" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.provider).toBe("openrouter")
+    expect(result.descriptor.auth?.setEnv).toBe("OPENROUTER_API_KEY")
+  })
+})
+
 // "Use my existing Codex login" — a FILE-BASED (external) subscription. The
 // codex adapter declares `authSubscription: { external: true }`: the CLI reads
 // its own ~/.codex/auth.json, so the daemon injects NOTHING — it verifies the
@@ -2938,7 +3964,7 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     expect(result.descriptor.auth?.setEnv).toBe("")
     expect(result.descriptor.auth?.fingerprint).toBe("subscription · local-login")
     // The login was verified against the `codex` recipe.
-    expect(verify).toHaveBeenCalledWith("codex", "codex")
+    expect(verify).toHaveBeenCalledWith("codex", "codex", undefined)
   })
 
   it("`auth.mode: subscription` with no source verifies against the adapter slug", async () => {
@@ -2953,7 +3979,7 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
-    expect(verify).toHaveBeenCalledWith("codex", "codex")
+    expect(verify).toHaveBeenCalledWith("codex", "codex", undefined)
   })
 
   it("login NOT present ⇒ loud spawn failure (auth_source_unresolved), no session, nothing injected", async () => {
@@ -2996,7 +4022,7 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.mode).toBe("subscription")
     expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
-    expect(verify).toHaveBeenCalledWith("codex", "codex")
+    expect(verify).toHaveBeenCalledWith("codex", "codex", undefined)
     expect(result.descriptor.accessProfile).toMatchObject({
       profileRef: "codex-local",
       endpoint: "openai",
@@ -3049,6 +4075,106 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
   })
 })
 
+// External verification must resolve the ADAPTER's recipe, never the
+// profile's/config's source: an external surface verifies the adapter CLI's
+// OWN login file, and a source naming ANOTHER CLI's login (codex-local's
+// `source: "codex"` on a mastracode spawn) used to shadow the adapter recipe
+// — observed live as "provider 'codex' has no method 'openai-oauth'" instead
+// of checking mastracode's own auth.json.
+describe("spawnAgentSession — external verification uses the adapter's recipe, not the source", () => {
+  const MASTRACODE_MULTI_SURFACE: AdapterAuthDescriptor = {
+    modelDerivedApiKey: true,
+    authSubscription: [
+      { external: true, provider: "anthropic" },
+      { external: true, provider: "openai" },
+    ],
+  }
+
+  function authDeps() {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: MASTRACODE_MULTI_SURFACE,
+    })
+    return baseDeps({ resolveAgentAdapter })
+  }
+
+  beforeEach(() => {
+    authProfileState.profiles = {}
+    authProfileState.keychain = {}
+    oauthState.verifyImpl = async () => {}
+  })
+
+  it("codex-local profile (source 'codex') on mastracode verifies mastracode's recipe + openai-oauth method", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    authProfileState.profiles["codex-local"] = {
+      id: "codex-local",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      source: "codex",
+      label: "My Codex login",
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mastracode",
+      cwd: "/tmp",
+      model: "openai/gpt-5.1",
+      access: { profileRef: "codex-local" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(result.descriptor.auth?.setEnv).toBe("")
+    // The adapter's recipe + the provider-keyed method — NOT the profile's
+    // "codex" source recipe (which has no openai-oauth method at all).
+    expect(verify).toHaveBeenCalledWith("mastracode", "mastracode", "openai-oauth")
+  })
+
+  it("an anthropic subscription profile on mastracode verifies the anthropic-oauth method", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    authProfileState.profiles["claude-subs"] = {
+      id: "claude-subs",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      credentialRef: "agentproto.auth.anthropic.sub",
+      label: "Claude Subs",
+    }
+    authProfileState.keychain["agentproto.auth.anthropic.sub"] = "sk-ant-oat01-sub"
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mastracode",
+      cwd: "/tmp",
+      model: "anthropic/claude-sonnet-4-5",
+      access: { profileRef: "claude-subs" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(verify).toHaveBeenCalledWith("mastracode", "mastracode", "anthropic-oauth")
+  })
+
+  it("config-defaults source naming another CLI's login still verifies the adapter's own recipe", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mastracode",
+      cwd: "/tmp",
+      model: "anthropic/claude-sonnet-4-5",
+      auth: { mode: "subscription", source: "claude-code-oauth" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // NOT the "claude-code-oauth" recipe (Claude Code's own Keychain login) —
+    // mastracode's login is the one that matters for an external spawn.
+    expect(verify).toHaveBeenCalledWith("mastracode", "mastracode", "anthropic-oauth")
+  })
+})
+
 // "Use my existing Gemini login" — the SAME file-based (external) subscription
 // primitive as codex, on the native `@agentproto/adapter-gemini` adapter. The
 // Gemini CLI reads its own ~/.gemini/oauth_creds.json, so the daemon injects
@@ -3097,7 +4223,7 @@ describe("spawnAgentSession — gemini file-based (external) subscription login"
     expect(result.descriptor.auth?.setEnv).toBe("")
     expect(result.descriptor.auth?.fingerprint).toBe("subscription · local-login")
     // The login was verified against the `gemini` recipe.
-    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini", undefined)
   })
 
   it("`auth.mode: subscription` with no source verifies against the adapter slug", async () => {
@@ -3112,7 +4238,7 @@ describe("spawnAgentSession — gemini file-based (external) subscription login"
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
-    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini", undefined)
   })
 
   it("login NOT present ⇒ loud spawn failure (auth_source_unresolved), no session, nothing injected", async () => {
@@ -3155,7 +4281,7 @@ describe("spawnAgentSession — gemini file-based (external) subscription login"
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.mode).toBe("subscription")
     expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
-    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini", undefined)
     expect(result.descriptor.accessProfile).toMatchObject({
       profileRef: "gemini-local",
       endpoint: "google",
@@ -3249,7 +4375,7 @@ describe("spawnAgentSession — D2/D3: wire model form + adapter-declared provid
     expect(captured[0]?.auth?.setEnv).toBe("OPENAI_API_KEY")
   })
 
-  it("D2: a derived-from-model adapter KEEPS its vendor prefix (the prefix IS its route)", async () => {
+  it("D2: a modelDerivedApiKey adapter gets the router RE-ADDED as a literal leading segment (opencode/mastracode/jcode/pi/mastra-agent shape)", async () => {
     const { resolver, captured } = makeResolver(
       { modelDerivedApiKey: true },
       { routeSelection: "derived-from-model" },
@@ -3260,8 +4386,19 @@ describe("spawnAgentSession — D2/D3: wire model form + adapter-declared provid
       { adapter: "hermes", cwd: "/tmp", model: "z-ai/glm-5.2@openrouter", auth: { mode: "api-key" } },
     )
     expect(result.ok).toBe(true)
-    // Only the @route suffix goes; the vendor prefix is load-bearing here.
-    expect(captured[0]?.model).toBe("z-ai/glm-5.2")
+    // The @route suffix is catalog-join metadata and never reaches the wire —
+    // but for a `modelDerivedApiKey` adapter (opencode/mastracode/jcode/pi/
+    // mastra-agent all set this; the REAL hermes manifest does not, this
+    // fixture's `adapter: "hermes"` label is only a stand-in slug for the
+    // generic contract) the gateway must survive as a literal LEADING path
+    // segment: the adapter parses the wire model's own first segment to pick
+    // which provider key to inject AND its ACP model selector validates that
+    // same literal shape. Bare `z-ai/glm-5.2` is exactly the production bug
+    // (`z-ai/glm-5.3-flash` sent bare to opencode 404'd — see
+    // `model-wire.ts`'s `ModelWireOptions.modelDerivedApiKey` doc); the wire
+    // form opencode's own manifest actually advertises is
+    // `openrouter/z-ai/glm-5.2`.
+    expect(captured[0]?.model).toBe("openrouter/z-ai/glm-5.2")
   })
 
   it("D3: the adapter's OWN declared provider wins over the catalog (pi bills kimi via moonshot, not openrouter)", async () => {
@@ -3376,5 +4513,543 @@ describe("spawnAgentSession — model/route reconciliation", () => {
       expect(result.descriptor.model).toBe("claude-opus-4-8")
       expect(result.descriptor.route).toEqual({ gateway: "anthropic" })
     }
+  })
+
+  // Hermes false-positive fix: a by-model-router adapter (no fixed
+  // `authDescriptor.provider` — hermes, pi, opencode) that spawns a model
+  // with NO explicit `@route` suffix and NO caller-supplied `route` still
+  // bills a real gateway (derived via `getModelProvider`, mirroring what
+  // `resolveAuthSpec` independently resolves for the credential). Before
+  // this fix the descriptor's `route` stayed empty, so the VS Code
+  // change-model picker's `resolveEffectiveRoute(session.model,
+  // session.route?.gateway)` fell back to treating the session as running
+  // the model's bare/direct route and flagged a false "restart required"
+  // the moment the operator picked another row on the SAME gateway.
+  it("stamps the resolved gateway onto the descriptor for a by-model-router adapter with no explicit route", async () => {
+    const { resolver } = localResolver({})
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "hermes", cwd: "/tmp", model: "deepseek/deepseek-v3.2" },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.model).toBe("deepseek/deepseek-v3.2")
+      expect(result.descriptor.route).toEqual({ gateway: "openrouter" })
+    }
+  })
+
+  it("does NOT stamp a route for a fixed-provider adapter's direct spawn (no regression)", async () => {
+    const { resolver } = localResolver({ provider: "anthropic" })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "claude-code", cwd: "/tmp", model: "claude-opus-4-8" },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.route).toBeUndefined()
+    }
+  })
+})
+
+describe("spawnAgentSession — child→parent report-back plumbing", () => {
+  function scopeWithOwner(ownerSessionId: string): OrchestratorScope {
+    return {
+      token: "tok",
+      tools: new Set(["agent_start", "message_parent"]),
+      ownerSessionId,
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+  }
+
+  function makeBuildOrchestratorMcp(): {
+    entry: AcpMcpServer
+    build: NonNullable<SpawnAgentSessionDeps["buildOrchestratorMcp"]>
+  } {
+    const entry: AcpMcpServer = {
+      name: "agentproto",
+      transport: "http",
+      ref: "http://127.0.0.1:1/mcp/orchestrator?scope=report-tok",
+    }
+    const build = vi.fn(() => ({
+      entry,
+      bindLifecycle: () => () => {},
+    }))
+    return { entry, build }
+  }
+
+  it("injects AGENTPROTO_PARENT_SESSION_ID for a scope-attributed child; a root spawn never carries it", async () => {
+    const startSession = vi.fn(async (_opts: { env?: Record<string, string> }) =>
+      fakeAgentSession(),
+    )
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    const child = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      { adapter: "mock", cwd: "/tmp", workspaceSlug: "w" },
+    )
+    expect(child.ok).toBe(true)
+    expect(startSession.mock.calls[0]?.[0]?.env?.[PARENT_SESSION_ID_ENV]).toBe("sess_parent01")
+
+    const root = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "w",
+    })
+    expect(root.ok).toBe(true)
+    expect(startSession.mock.calls[1]?.[0]?.env).not.toHaveProperty(PARENT_SESSION_ID_ENV)
+  })
+
+  it("a gateway-less child with a parent gets a minimal message_parent-only scope (role-independent, no delegation)", async () => {
+    const { entry, build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp: build })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      // Depth 1 → executor default: proves the report-only scope is minted
+      // even for the role whose delegation gate strips agent_start/agent_prompt.
+      { adapter: "mock", cwd: "/tmp", workspaceSlug: "w" },
+    )
+    expect(result.ok).toBe(true)
+    expect(build).toHaveBeenCalledTimes(1)
+    expect(build).toHaveBeenCalledWith({ tools: ["message_parent"], role: "executor" })
+    if (result.ok) {
+      expect(result.descriptor.mcpServers).toEqual([entry])
+    }
+  })
+
+  it("explicit `mcpServers` (even []) is a deliberate opt-out — no report-only scope minted", async () => {
+    const { build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp: build })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      { adapter: "mock", cwd: "/tmp", workspaceSlug: "w", mcpServers: [] },
+    )
+    expect(result.ok).toBe(true)
+    expect(build).not.toHaveBeenCalled()
+  })
+
+  it("`orchestrator: false` opts out of ANY injected scope, report-only included", async () => {
+    const { build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp: build })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      { adapter: "mock", cwd: "/tmp", workspaceSlug: "w", orchestrator: false },
+    )
+    expect(result.ok).toBe(true)
+    expect(build).not.toHaveBeenCalled()
+  })
+
+  it("hermes default gateway already reaches message_parent on the root /mcp server — no extra scope minted on top", async () => {
+    const { build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({
+      buildOrchestratorMcp: build,
+      daemonMcpUrl: "http://127.0.0.1:18790/mcp",
+    })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      { adapter: "hermes", cwd: "/tmp", workspaceSlug: "w" },
+    )
+    expect(result.ok).toBe(true)
+    expect(build).not.toHaveBeenCalled()
+    if (result.ok) {
+      // The executor-default denyTools strip keeps the delegation surface
+      // out but never names message_parent — the child keeps its report-back.
+      const ref = result.descriptor.mcpServers?.[0]?.ref ?? ""
+      expect(ref).toContain("denyTools=agent_start,agent_prompt")
+      expect(ref).not.toContain("message_parent")
+    }
+  })
+
+  it("a parentless root spawn mints nothing — there is no one to report to", async () => {
+    const { build } = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp: build })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "w",
+    })
+    expect(result.ok).toBe(true)
+    expect(build).not.toHaveBeenCalled()
+    if (result.ok) {
+      expect(result.descriptor.mcpServers ?? []).toEqual([])
+    }
+  })
+
+  it("the composed prompt tells a parented child who spawned it and how to report back, between disposition and task", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithOwner("sess_parent01") },
+      {
+        adapter: "mock",
+        cwd: "/tmp",
+        workspaceSlug: "w",
+        prompt: "fix the bug",
+        wait: true,
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const sentMessage = sendPrompt.mock.calls[0]?.[1]
+    const prompt = typeof sentMessage === "string" ? sentMessage : ""
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
+    const lineageIdx = prompt.indexOf("You were spawned by session sess_parent01")
+    const taskIdx = prompt.indexOf("fix the bug")
+    expect(dispositionIdx).toBeGreaterThanOrEqual(0)
+    expect(lineageIdx).toBeGreaterThan(dispositionIdx)
+    expect(taskIdx).toBeGreaterThan(lineageIdx)
+    expect(prompt).toContain(PARENT_SESSION_ID_ENV)
+    expect(prompt).toContain("message_parent")
+  })
+})
+
+describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
+  it("injects the AGENTS.md block after the role disposition and before the caller's prompt, plus the cd-contract line", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: async () => ({
+        mode: "inline",
+        path: "/x/AGENTS.md",
+        block: "--- AGENTS.md (/x/AGENTS.md) ---\ninline content\n--- end AGENTS.md ---",
+        contractLine: "THE_CONTRACT_LINE",
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+      prompt: "do the thing",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
+    const agIdx = prompt.indexOf("--- AGENTS.md (/x/AGENTS.md) ---")
+    const contractIdx = prompt.indexOf("THE_CONTRACT_LINE")
+    const taskIdx = prompt.indexOf("do the thing")
+    expect(dispositionIdx).toBeGreaterThanOrEqual(0)
+    expect(agIdx).toBeGreaterThan(dispositionIdx)
+    expect(contractIdx).toBeGreaterThan(agIdx)
+    expect(taskIdx).toBeGreaterThan(contractIdx)
+
+    // Stamped on the descriptor too.
+    expect(result.descriptor.agentsMd).toBe("/x/AGENTS.md")
+    expect(result.descriptor.agentsMdMode).toBe("inline")
+  })
+
+  it("absent mode: no AGENTS.md up the walk → descriptor carries 'absent' and no path, and no AGENTS.md content is injected", async () => {
+    // A real (non-repo) temp dir with nothing in it — the real resolver's git
+    // probe reports non-repo, so only the dir itself is checked.
+    const tmp = mkdtempSync(join(tmpdir(), "agentproto-am-absent-"))
+    try {
+      const startSession = vi.fn(async () => fakeAgentSession())
+      const { deps } = baseDeps({
+        resolveAgentAdapter: makeResolver(startSession),
+        resolveAgentsMd: undefined, // fall through to the REAL resolver.
+      })
+      const result = await spawnAgentSession(deps, {
+        adapter: "mock",
+        cwd: tmp,
+        prompt: "hi",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("expected success")
+      expect(result.descriptor.agentsMd).toBeUndefined()
+      expect(result.descriptor.agentsMdMode).toBe("absent")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("a resolveAgentsMd failure falls back to 'absent' WITHOUT blocking the spawn, and still injects the real cd-contract line (never an empty one)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: async () => {
+        throw new Error("git rev-parse blew up")
+      },
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/x",
+      prompt: "hi",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    // The spawn succeeds despite the resolution failure — advisory-on-top-
+    // of-the-role, never a hard gate.
+    expect(result.descriptor.agentsMd).toBeUndefined()
+    expect(result.descriptor.agentsMdMode).toBe("absent")
+    // The cd-contract sentence is a static fact independent of resolution
+    // succeeding — a read/git failure must not silently drop it.
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).toContain(cdContractLine)
+  })
+
+  it("resolves + injects THIS repo's own AGENTS.md (pointer mode, since it's ≥ the 8 KiB default) and stamps it on the descriptor", async () => {
+    // The repo root is four levels above this test file.
+    const repoRoot = resolve(import.meta.dirname, "../../../../")
+    const agentsMdPath = join(repoRoot, "AGENTS.md")
+    expect(existsSync(agentsMdPath)).toBe(true)
+
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: undefined, // fall through to the REAL resolver.
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: repoRoot,
+      role: "executor",
+      prompt: "verify the leaf contract",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.agentsMd).toBe(agentsMdPath)
+    // This repo's AGENTS.md is well over 8 KiB → pointer mode.
+    expect(result.descriptor.agentsMdMode).toBe("pointer")
+
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).toContain("read it before your first tool call")
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
+    const pointerIdx = prompt.indexOf("read it before your first tool call")
+    const taskIdx = prompt.indexOf("verify the leaf contract")
+    expect(pointerIdx).toBeGreaterThan(dispositionIdx)
+    expect(taskIdx).toBeGreaterThan(pointerIdx)
+  })
+
+  it("preserves an inherited pointer and grants only its exact external AGENTS.md path to the adapter", async () => {
+    const startSession = vi.fn(
+      async (_opts?: { additionalReadPaths?: string[] }) => fakeAgentSession(),
+    )
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveAgentsMd: async () => ({
+        mode: "pointer",
+        path: "/repo/AGENTS.md",
+        block: "Read the resolved AGENTS.md at /repo/AGENTS.md before your first tool call.",
+        contractLine: cdContractLine,
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/repo/apps/child",
+      prompt: "follow the inherited contract",
+      wait: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(sendPrompt.mock.calls[0]?.[1]).toContain("Read the resolved AGENTS.md")
+    expect(startSession.mock.calls[0]?.[0]?.additionalReadPaths).toEqual(["/repo/AGENTS.md"])
+  })
+
+  it("inlines a small AGENTS.md when cwd is a non-repo dir carrying one (real resolver)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agentproto-am-inline-"))
+    writeFileSync(join(tmp, "AGENTS.md"), "short contract body")
+    try {
+      const startSession = vi.fn(async () => fakeAgentSession())
+      const { deps } = baseDeps({
+        resolveAgentAdapter: makeResolver(startSession),
+        resolveAgentsMd: undefined, // fall through to the REAL resolver.
+      })
+      const result = await spawnAgentSession(deps, {
+        adapter: "mock",
+        cwd: tmp,
+        prompt: "hi",
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("expected success")
+      expect(result.descriptor.agentsMd).toBe(join(tmp, "AGENTS.md"))
+      expect(result.descriptor.agentsMdMode).toBe("inline")
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
+  const RULES_MD_BLOCK = "--- Workspace RULES.md (/buckets/agentik-studio/RULES.md) ---\nCONTENT\n--- end Workspace RULES.md ---"
+
+  it("injects the RULES.md block BEFORE the role disposition and the caller's prompt, and stamps the path on the descriptor", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => ({
+        path: "/buckets/agentik-studio/RULES.md",
+        content: "CONTENT",
+        block: RULES_MD_BLOCK,
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "agentik-studio",
+      role: "executor",
+      prompt: "do the thing",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    const rulesIdx = prompt.indexOf(RULES_MD_BLOCK)
+    const dispositionIdx = prompt.indexOf(EXECUTOR_ROLE.disposition)
+    const taskIdx = prompt.indexOf("do the thing")
+    expect(rulesIdx).toBeGreaterThanOrEqual(0)
+    expect(dispositionIdx).toBeGreaterThan(rulesIdx) // RULES.md leads the composition.
+    expect(taskIdx).toBeGreaterThan(dispositionIdx)
+
+    // Stamped on the descriptor too — present-or-absent, no mode field.
+    expect(result.descriptor.rulesMd).toBe("/buckets/agentik-studio/RULES.md")
+  })
+
+  it("no RULES.md → nothing extra injected, spawn unaffected, no rulesMd on the descriptor", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => ({}), // absent.
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "agentik-studio",
+      role: "executor",
+      prompt: "do the thing",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.rulesMd).toBeUndefined()
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).not.toContain("Workspace RULES.md")
+    // The spawn is otherwise unaffected — the caller's ask still arrives.
+    expect(prompt).toContain("do the thing")
+  })
+
+  it("a resolveWorkspaceRules read failure falls through to absent WITHOUT blocking the spawn (advisory, never a hard gate)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => {
+        throw new Error("EACCES: permission denied reading RULES.md")
+      },
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/x",
+      workspaceSlug: "agentik-studio",
+      prompt: "hi",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.rulesMd).toBeUndefined()
+    expect(sendPrompt).toHaveBeenCalledTimes(1)
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    expect(prompt).not.toContain("Workspace RULES.md")
+    expect(prompt).toContain("hi")
+  })
+
+  it("acceptance: a bare spawn in a workspace whose RULES.md carries the four plan rules gets them all in the composed prompt reaching the adapter", async () => {
+    // The four rules named in the plan — main checkout untouchable, PR-only
+    // never merge, named staging, no AI attribution.
+    const fourRules = [
+      "NEVER touch the main checkout — work only in your own isolated worktree",
+      "PR-only: never merge; open a ready PR and stop",
+      "STAGING: only deploy to the named staging environment spelled out in the brief",
+      "No AI attribution in commits or PR bodies",
+    ].join("\n")
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => ({
+        path: "/buckets/agentik-studio/RULES.md",
+        content: fourRules,
+        block: `--- Workspace RULES.md (/buckets/agentik-studio/RULES.md) ---\n${fourRules}\n--- end Workspace RULES.md ---`,
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    // A bare spawn — trivial prompt, no elaborate brief; the rules must ride
+    // along on their own.
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "agentik-studio",
+      role: "executor",
+      prompt: "hello",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    const prompt = sendPrompt.mock.calls[0]?.[1] as string
+    for (const rule of fourRules.split("\n")) {
+      expect(prompt).toContain(rule)
+    }
+    expect(result.descriptor.rulesMd).toBe("/buckets/agentik-studio/RULES.md")
+  })
+
+  it("system-tagging rides along for free: the RULES.md block is part of the daemon-composed preamble recorded as the system slice (WP-R3 generalizes)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveWorkspaceRules: async () => ({
+        path: "/buckets/agentik-studio/RULES.md",
+        content: "CONTENT",
+        block: RULES_MD_BLOCK,
+      }),
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      workspaceSlug: "agentik-studio",
+      role: "executor",
+      prompt: "do the thing",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    const [id, message, opts] = sendPrompt.mock.calls[0] ?? []
+    expect(id).toBe(result.descriptor.id)
+    // The adapter still receives the single composed string, RULES.md first.
+    expect(message).toContain(RULES_MD_BLOCK)
+    // The system slice is everything ahead of the caller's ask — including
+    // RULES.md — because composedPreamble() recovers it automatically.
+    expect(opts?.system).toContain(RULES_MD_BLOCK)
+    expect(opts?.system).toContain(EXECUTOR_ROLE.disposition)
   })
 })

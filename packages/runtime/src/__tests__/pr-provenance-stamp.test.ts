@@ -103,8 +103,9 @@ describe("stampPrProvenance", () => {
     })
     expect(outcome).toMatchObject({ stamped: true, alreadyStamped: true })
     expect((run as ReturnType<typeof vi.fn>).mock.calls.some(([a]) => a[1] === "edit")).toBe(false)
-    // Still records the PR (idempotent on the registry side).
-    expect(reg.recorded).toHaveLength(1)
+    // An already-marked body was already attributed to its rightful session —
+    // recording it again here would misattribute it onto this one.
+    expect(reg.recorded).toHaveLength(0)
   })
 
   it("skips a non-create command without touching gh", async () => {
@@ -134,6 +135,75 @@ describe("stampPrProvenance", () => {
       run: vi.fn<GhRunner>(async () => ({ exitCode: 0, stdout: "" })),
     })
     expect(outcome).toEqual({ stamped: false, reason: "command failed" })
+  })
+
+  it("prefers callerSessionId over the cwd-guess heuristic — an unrelated live session sharing the cwd must not win", async () => {
+    // Reproduces the mis-attribution incident: a live, unrelated session
+    // (BENCH) shares the exact same cwd as the real executor (EXECUTOR), and
+    // is newer/alive — pickExecutorSession's heuristic alone would pick it.
+    // callerSessionId names EXECUTOR directly and must win instead.
+    const BENCH: FooterSession = {
+      id: "sess_bench",
+      kind: "agent-cli",
+      status: "running",
+      startedAt: "2026-07-21T12:00:00.000Z",
+      cwd: "/work/wt",
+    }
+    const reg = fakeRegistry([EXECUTOR, SUPER, BENCH])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 0, stdout: "Original body.\n" } : { exitCode: 0, stdout: "" },
+    )
+
+    const outcome = await stampPrProvenance({
+      command: "gh",
+      args: CREATE_ARGS,
+      cwd: "/work/wt",
+      exitCode: 0,
+      stdout: `${PR_URL}\n`,
+      registry: reg,
+      run,
+      callerSessionId: "sess_exec",
+    })
+
+    expect(outcome).toMatchObject({ stamped: true, sessionId: "sess_exec" })
+    expect(reg.recorded).toEqual([
+      { sessionId: "sess_exec", adapter: "claude-code", number: 601, url: PR_URL },
+    ])
+  })
+
+  it("falls back to the cwd-guess heuristic when callerSessionId is absent (shared /mcp mount)", async () => {
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 0, stdout: "Original body.\n" } : { exitCode: 0, stdout: "" },
+    )
+    const outcome = await stampPrProvenance({
+      command: "gh",
+      args: CREATE_ARGS,
+      cwd: "/work/wt",
+      exitCode: 0,
+      stdout: `${PR_URL}\n`,
+      registry: reg,
+      run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, sessionId: "sess_exec" })
+  })
+
+  it("falls back to the cwd-guess heuristic when callerSessionId doesn't resolve in the registry", async () => {
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 0, stdout: "Original body.\n" } : { exitCode: 0, stdout: "" },
+    )
+    const outcome = await stampPrProvenance({
+      command: "gh",
+      args: CREATE_ARGS,
+      cwd: "/work/wt",
+      exitCode: 0,
+      stdout: `${PR_URL}\n`,
+      registry: reg,
+      run,
+      callerSessionId: "sess_gone",
+    })
+    expect(outcome).toMatchObject({ stamped: true, sessionId: "sess_exec" })
   })
 
   it("skips when no executor session can be attributed", async () => {
@@ -212,7 +282,8 @@ describe("stampFooterOnPr", () => {
     })
     expect(outcome).toMatchObject({ stamped: true, alreadyStamped: true })
     expect((run as ReturnType<typeof vi.fn>).mock.calls.some(([a]) => a[1] === "edit")).toBe(false)
-    expect(reg.recorded).toHaveLength(1)
+    // No re-record on an already-stamped body — see the idempotency test above.
+    expect(reg.recorded).toHaveLength(0)
   })
 
   it("does not edit when the body read fails", async () => {
@@ -247,5 +318,120 @@ describe("stampFooterOnPr", () => {
       },
     })
     expect(outcome).toEqual({ stamped: false, reason: "boom" })
+  })
+})
+
+describe("stampFooterOnPr — prose marker mention", () => {
+  it("still stamps a body that MENTIONS the marker in prose (no rendered footer)", async () => {
+    const reg = fakeRegistry([EXECUTOR])
+    const calls: Array<readonly string[]> = []
+    const run: GhRunner = vi.fn(async args => {
+      calls.push(args)
+      if (args[1] === "view")
+        return { exitCode: 0, stdout: "This PR fixes the `@agentproto-bot` stamper.\n" }
+      return { exitCode: 0, stdout: "" }
+    })
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: null,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/w",
+      run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, alreadyStamped: false })
+    const editCall = calls.find(c => c[1] === "edit")!
+    expect(editCall[4] as string).toContain("<sub>")
+    expect(reg.recorded).toHaveLength(1)
+  })
+})
+
+describe("stampFooterOnPr — recognizing the gh PATH shim's own-session footer", () => {
+  // gh-provenance-shim.ts's inlined buildFooter() — session id + adapter +
+  // model + host + cwd ONLY, never auth-profile/cost/tokens (a bare `gh`
+  // subprocess can't know any of that). Same shape a prior daemon stamp with
+  // no known signals yet would also render, so recognizing it doesn't need
+  // to distinguish "shim" from "us, earlier" — both are equally safe to
+  // enrich because both already name this exact session.
+  const shimFooterFor = (sessionId: string) =>
+    `Original body.\n\n---\n<sub>🤖 **${MARKER}** — PR · session \`${sessionId}\` · claude-code · model \`opus-4.8\` · host \`h\` · cwd \`/wt\`</sub>`
+
+  it("records it and upgrades it once recognized as OUR OWN session (auth-profile is a signal the shim could never render)", async () => {
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const calls: Array<readonly string[]> = []
+    const run: GhRunner = vi.fn(async args => {
+      calls.push(args)
+      if (args[1] === "view") return { exitCode: 0, stdout: shimFooterFor("sess_exec") }
+      return { exitCode: 0, stdout: "" }
+    })
+
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      run,
+    })
+
+    expect(outcome).toMatchObject({ stamped: true, alreadyStamped: true, refreshed: true })
+    const editCall = calls.find(c => c[1] === "edit")!
+    expect(editCall[4] as string).toContain("auth-profile `Jeremy Max`")
+    expect(editCall[4] as string).toContain("supervisor `sess_super`")
+    // Recorded exactly once, even though the body was already stamped — the
+    // BUG this closes: before, an own-footer body other than "not yet
+    // stamped" never reached `recordOpenedPr` at all, so a shim-stamped PR's
+    // `openedPrs` stayed empty forever and the reconciler's cost-refresh
+    // (which only ever iterates `openedPrs`) had nothing to find.
+    expect(reg.recorded).toEqual([{ sessionId: "sess_exec", adapter: "claude-code", number: 601, url: PR_URL }])
+  })
+
+  it("does not touch or record a footer naming a DIFFERENT session (misattribution guard still holds)", async () => {
+    const reg = fakeRegistry([EXECUTOR])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 0, stdout: shimFooterFor("sess_someone_else") } : { exitCode: 0, stdout: "" },
+    )
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: null,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/w",
+      run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, alreadyStamped: true })
+    expect((run as ReturnType<typeof vi.fn>).mock.calls.some(([a]) => a[1] === "edit")).toBe(false)
+    expect(reg.recorded).toHaveLength(0)
+  })
+
+  it("does not re-edit an own-session footer that is already at least as rich as the fresh render", async () => {
+    // A footer this daemon already fully rendered earlier (cost, auth
+    // profile, tokens all present) must not be treated as a stale shim stamp
+    // and rewritten on every subsequent (non-refresh) stamp attempt.
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const fullBody =
+      `Original body.\n\n---\n<sub>🤖 **${MARKER}** — PR · session \`sess_exec\` · claude-code / subscription · ` +
+      "auth-profile `Jeremy Max` · model `opus-4.8` · supervisor `sess_super` · 100 in / 200 out · $0.5000 · " +
+      "host `h` · cwd `/wt`</sub>"
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 0, stdout: fullBody } : { exitCode: 0, stdout: "" },
+    )
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: { ...EXECUTOR, costUsd: 0.5, tokensIn: 100, tokensOut: 200 },
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, alreadyStamped: true, refreshed: false })
+    expect((run as ReturnType<typeof vi.fn>).mock.calls.some(([a]) => a[1] === "edit")).toBe(false)
+    // Still recorded — own-footer PRs are always recorded on first sight,
+    // regardless of whether an upgrade was needed.
+    expect(reg.recorded).toEqual([{ sessionId: "sess_exec", adapter: "claude-code", number: 601, url: PR_URL }])
   })
 })

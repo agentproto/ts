@@ -1,5 +1,92 @@
 # @agentproto/corpus
 
+## 0.7.1
+
+### Patch Changes
+
+- f9e21fd: AIP-15 P2: `harness.knowledge[]` on `kind: "agent"` steps. A selector pins an AIP-10 corpus workspace (relative paths resolve against the WORKFLOW.md dir at load time; a missing workspace fails the load), `anyOf`/`allOf` tag filters, refined `kinds`, a `maxEntries` cap (default 50, slug-ascending deterministic order) and v1 `mode: "files"`. Before an agent step's spawn, the runtime resolves each selector with the corpus `resolveKnowledge`, writes the matched raw entries to `<stepCwd>/.knowledge/<workspaceBasename>/<slug>.md` plus a deterministic `INDEX.md`, prepends a prompt note pointing at the index, and records `knowledgeApplied: { workspace, matched, written }[]` on the step's run record. An empty match is not an error — it is recorded and emitted as a `session:harness-warning` (`knowledge-empty`). `resolveKnowledge`'s signature is unchanged; the new `filterEntriesByAllOf` helper beside it provides the AND-semantics post-filter.
+- Updated dependencies [c4bff00]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [a48dc03]
+- Updated dependencies [ece3cae]
+  - @agentproto/workflow@0.4.0
+  - @agentproto/collection@0.1.1
+  - @agentproto/knowledge@0.1.1
+  - @agentproto/operator@0.1.1
+  - @agentproto/playbook@0.1.1
+  - @agentproto/registry@0.1.0
+  - @agentproto/routine@0.2.1
+
+## 0.7.0
+
+### Minor Changes
+
+- 4fb28be: Introduce `@agentproto/batch` — a unified batch-inference contract over provider Batch APIs (Anthropic Message Batches, OpenRouter Batch) plus a local-queue emulation for providers without native batch support. Supports submit, status polling, result collection, and cancellation with a driver-agnostic `BatchDriver` interface; includes durable filesystem store with resumption after crashes.
+
+  Add optional `DistillBatchPort` capability to `@agentproto/corpus` for multi-item distillation in a single call, and implement batch distiller in `@agentproto/corpus-cli` with new `anthropic-batch` and `openrouter-batch` engines for the `corpus distill` command. Both existing `DistillPort` single-item and new batch paths are fully supported and tested.
+
+## 0.6.0
+
+### Minor Changes
+
+- 2ac7025: Add optional book publishing features to report engine: `injectAnchors` parameter for HTML anchor injection, `outline` parameter for cross-chapter references in prompts, new schema fields for artifacts (`artifact`), cover body text (`body`), and print/ebook configuration (`bundleRepo`, `pageSize`, `pageBleed`, `epub`). All changes are backward compatible.
+- 5864268: Improve applyEdits edit safety: check each edit individually and surface pre-existing defects.
+
+  Previously, if any edit failed post-check (introducing an out-of-range cite or breaking the heading), the entire batch would be reverted silently. Now:
+  - Each edit is post-checked individually: a bad edit reverts itself, not the whole chapter
+  - Pre-existing defects (e.g., a writer-introduced stray `[0]` citation) no longer block valid edits from landing
+  - Contextual checking: replacements are checked both in isolation and in context (composing with surrounding text)
+  - New field in stats: `preExistingOutOfRange` surfaces defects that pre-existed the edits
+
+  This enables better resilience: valid edits always land even when the chapter carries pre-existing citation defects, and the draft defects are surfaced in the report rather than silently reverted.
+
+- b7d9221: Add bibliography content-SHA verification to prevent citations from silently mismatching when packs are regenerated mid-run. New exports: `bibliographySha`, `bibShaMarker`, `recordedBibSha`, `stripBibShaMarker`. New optional parameters: `bibSha` in `AssembleOptions`, `bibSha` and `checkBibSha` in `ApplyEditsOptions`/`CollectSectionsOptions`. Enhanced CLI output and error handling.
+
+### Patch Changes
+
+- dee9bd8: Fix citation parsing to safely ignore array indexing in code blocks and inline code; add support for anchor-prefixed chapters from `assembleChapters({ injectAnchors: true })`; improve post-check failure tracking with new `postCheckFailed` stats field.
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/collection@0.1.1
+  - @agentproto/knowledge@0.1.1
+  - @agentproto/operator@0.1.1
+  - @agentproto/playbook@0.1.1
+  - @agentproto/routine@0.2.1
+  - @agentproto/workflow@0.3.1
+
+## 0.5.2
+
+### Patch Changes
+
+- Updated dependencies [b1a8b7e]
+  - @agentproto/workflow@0.3.0
+
+## 0.5.1
+
+### Patch Changes
+
+- Updated dependencies [087f0ea]
+  - @agentproto/workflow@0.2.0
+
+## 0.5.0
+
+### Minor Changes
+
+- bdba3a5: Add PDF fetcher: browser-free extraction with `unpdf` as tier-3 in the import-web fetcher chain. Preserves page breaks, extracts document metadata (page count, sha256, title/author/dates), and fails loudly on encryption/missing text layer. Type-safe integration with backward-compatible additions to `FetchedSource` interface.
+
 ## 0.4.0
 
 ### Minor Changes

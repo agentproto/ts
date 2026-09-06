@@ -79,9 +79,19 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url === "/sessions/agent" && req.method === "POST") return { status: 201, body: { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url === "/sessions/terminal" && req.method === "POST") return { status: 201, body: { id: "t1", kind: "terminal", status: "running", command: "claude --resume X", pid: 3, startedAt: "t", workspaceSlug: "ws", pty: true, argv: ["claude", "--resume", "X"], cwd: "/ws" } }
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
+      if (req.url?.startsWith("/sessions/s1/pin") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1", pinned: (req.body as { pinned: boolean }).pinned } }
       if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
       if (req.url?.startsWith("/sessions/s1/model") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, model: (req.body as { model?: string }).model } }
+      if (req.url?.startsWith("/sessions/s1/effort") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, effort: (req.body as { effort?: string }).effort } }
+      // Posture that has no native mode: a clean, non-fatal reject.
+      if (req.url?.startsWith("/sessions/s1/posture") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: false, reason: "requires-restart" } }
+      if (req.url?.startsWith("/sessions/s1/restart") && req.method === "POST") return { status: 200, body: { id: "s2", kind: "agent-cli", status: "running", command: "c", pid: 9, startedAt: "t", workspaceSlug: "ws", resumedFrom: "s1", resumeVia: "resumed via ACP" } }
+      if (req.url?.startsWith("/sessions/ghostwallet/restart") && req.method === "POST") return { status: 400, body: { error: "restart_override_invalid", message: "unknown access profile", sessionId: "ghostwallet" } }
       if (req.url?.startsWith("/sessions/s1/prompt") && req.method === "POST") return { status: 200, body: { ok: true } }
+      if (req.url?.startsWith("/sessions/s1/queue/") && req.method === "DELETE") {
+        const queueId = req.url.split("/").pop()!
+        return { status: 200, body: { ok: true, id: "s1", queueId, removed: true } }
+      }
       if (req.url === "/sessions/s1" && req.method === "PATCH") {
         const patch = req.body as { title?: string | null; label?: string | null }
         return { status: 200, body: { id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws", ...(patch.label ? { label: patch.label } : {}), ...(patch.title ? { title: patch.title } : {}) } }
@@ -108,7 +118,7 @@ describe("DaemonClient — URL + auth header mapping", () => {
           },
         }
       }
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code" }] }) }] } } }
@@ -134,6 +144,29 @@ describe("DaemonClient — URL + auth header mapping", () => {
         if (rpc.method === "tools/call" && rpc.params.name === "llm_endpoint_set_upstream_link") {
           const a = rpc.params.arguments as { provider: string; profileId: string | null }
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ ok: true, provider: a.provider, profileId: a.profileId, applied: false, restartRequired: true }) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_list") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", ui: { path: "/apps/mail/ui.html", title: "Mail Triage", tools: ["mail_list"] } }]) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_tool_call") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ echoed: rpc.params.arguments }) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_catalog") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", dir: "/apps/mail", category: "app", installed: true, hasUi: true }, { appId: "code-team", dir: "/apps/code-team", category: "team", installed: true, hasUi: false }]) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "workflow_run_file") {
+          const a = rpc.params.arguments as { path: string }
+          if (a.path.endsWith("/missing/WORKFLOW.md")) {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "workflow file not found" }) }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ runId: "run_42", status: "running", echoed: rpc.params.arguments }) }] } } }
+        }
+        if (rpc.method === "resources/read") {
+          const params = (req.body as { params: { uri: string } }).params
+          if (params.uri === "ui://app_ui_mail_triage/view") {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { contents: [{ uri: params.uri, mimeType: "text/html;profile=mcp-app", text: "<html><body>panel</body></html>" }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, error: { code: -32002, message: "resource not found" } } }
         }
         return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "{}" }] } } }
       }
@@ -217,9 +250,40 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(last.body).toMatchObject({ prompt: "go", interrupt: true })
   })
 
+  it("prompt queue:true and force:true are sent in the body", async () => {
+    await client().prompt("s1", "go", { queue: true, force: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ prompt: "go", queue: true, force: true })
+  })
+
+  it("prompt omits queue/force from the body when not set — no accidental FIFO opt-in", async () => {
+    await client().prompt("s1", "go")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toEqual({ prompt: "go" })
+  })
+
+  it("DELETE /sessions/:id/queue/:queueId cancels a queued item", async () => {
+    const res = await client().removeQueuedPrompt("s1", "q_abc")
+    expect(res).toEqual({ ok: true, id: "s1", queueId: "q_abc", removed: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("DELETE")
+    expect(last.url).toBe("/sessions/s1/queue/q_abc")
+  })
+
   it("POST /sessions/:id/kill returns { ok, sessionId }", async () => {
     const res = await client().kill("s1")
     expect(res).toEqual({ ok: true, sessionId: "s1" })
+  })
+
+  it("POST /sessions/:id/pin sends { pinned } and returns { ok, sessionId, pinned }", async () => {
+    const res = await client().setPinned("s1", true)
+    expect(res).toEqual({ ok: true, sessionId: "s1", pinned: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url.split("?")[0]).toBe("/sessions/s1/pin")
+    expect(last.body).toEqual({ pinned: true })
+
+    const unpin = await client().setPinned("s1", false)
+    expect(unpin).toEqual({ ok: true, sessionId: "s1", pinned: false })
   })
 
   it("POST /sessions/:id/interrupt returns { ok, id, wasBusy }", async () => {
@@ -237,6 +301,36 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(last.method).toBe("POST")
     expect(last.url).toBe("/sessions/s1/model")
     expect(last.body).toEqual({ model: "opus-5" })
+  })
+
+  it("POST /sessions/:id/effort sends the effort body and returns the structured result", async () => {
+    const res = await client().setSessionEffort("s1", "high")
+    expect(res).toEqual({ ok: true, id: "s1", applied: true, effort: "high" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/s1/effort")
+    expect(last.body).toEqual({ effort: "high" })
+  })
+
+  it("POST /sessions/:id/posture surfaces a clean {applied:false, reason} reject without throwing", async () => {
+    const res = await client().setSessionPosture("s1", "plan")
+    expect(res.applied).toBe(false)
+    expect(res.reason).toBe("requires-restart")
+  })
+
+  it("POST /sessions/:id/restart carries overrides and returns the NEW descriptor + resumeVia", async () => {
+    const res = await client().restartSessionWithOverride("s1", { access: { profileRef: "claude-subs" } })
+    expect(res.id).toBe("s2") // rebind target — a fresh session id
+    expect(res.resumedFrom).toBe("s1")
+    expect(res.resumeVia).toBe("resumed via ACP")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/s1/restart")
+    expect(last.body).toEqual({ access: { profileRef: "claude-subs" } })
+  })
+
+  it("restart-with-override THROWS on a rejected override — never a silent blank session", async () => {
+    await expect(
+      client().restartSessionWithOverride("ghostwallet", { access: { profileRef: "nope" } }),
+    ).rejects.toThrow(/400/)
   })
 
   it("throws on a non-2xx response", async () => {
@@ -270,7 +364,10 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const result = await client().mcpCall<{ adapters: Array<{ slug: string }> }>("adapter_list")
     expect(result.adapters?.[0]?.slug).toBe("claude-code")
     const last = daemon.requests[daemon.requests.length - 1]!
-    expect(last.url).toBe("/mcp")
+    // Path is /mcp; the client announces its source channel via ?origin=
+    // (#session-visibility) so a spawn it makes is stamped origin=vscode.
+    expect(last.url?.split("?")[0]).toBe("/mcp")
+    expect(last.url).toContain("origin=vscode")
     expect(last.body).toMatchObject({ jsonrpc: "2.0", method: "tools/call", params: { name: "adapter_list" } })
   })
 
@@ -331,6 +428,80 @@ describe("DaemonClient — URL + auth header mapping", () => {
   it("listAdapters() routes through mcpCall adapter_list", async () => {
     const adapters = await client().listAdapters()
     expect(adapters[0]?.slug).toBe("claude-code")
+  })
+
+  it("listApps() routes through mcpCall app_list", async () => {
+    const apps = await client().listApps()
+    expect(apps).toHaveLength(1)
+    expect(apps[0]?.appId).toBe("mail-triage")
+    expect(apps[0]?.ui?.title).toBe("Mail Triage")
+  })
+
+  it("appCatalog() routes through mcpCall app_catalog and keeps each entry's category", async () => {
+    const entries = await client().appCatalog()
+    expect(entries.map(e => [e.appId, e.category])).toEqual([
+      ["mail-triage", "app"],
+      ["code-team", "team"],
+    ])
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ method: "tools/call", params: { name: "app_catalog" } })
+  })
+
+  it("runWorkflowFile() posts workflow_run_file with path/cwd/input and returns the run ack", async () => {
+    const run = await client().runWorkflowFile({
+      path: "/apps/code-team/.agentproto/workflows/deliver-change/WORKFLOW.md",
+      cwd: "/apps/code-team",
+      input: { topic: "x" },
+    })
+    expect(run).toMatchObject({ runId: "run_42", status: "running" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({
+      method: "tools/call",
+      params: {
+        name: "workflow_run_file",
+        arguments: {
+          path: "/apps/code-team/.agentproto/workflows/deliver-change/WORKFLOW.md",
+          cwd: "/apps/code-team",
+          input: { topic: "x" },
+        },
+      },
+    })
+  })
+
+  it("runWorkflowFile() omits cwd/input when not given, and throws on an isError result", async () => {
+    await client().runWorkflowFile({ path: "/apps/x/WORKFLOW.md" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(Object.keys(args)).toEqual(["path"])
+
+    await expect(client().runWorkflowFile({ path: "/apps/missing/WORKFLOW.md" })).rejects.toThrow(
+      /workflow file not found/,
+    )
+  })
+
+  it("appToolCall() posts app_tool_call with appId/tool/args", async () => {
+    const result = await client().appToolCall("mail-triage", "mail_list", { folder: "inbox" })
+    expect(result).toEqual({
+      echoed: { appId: "mail-triage", tool: "mail_list", args: { folder: "inbox" } },
+    })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ method: "tools/call", params: { name: "app_tool_call" } })
+  })
+
+  it("readResource posts a JSON-RPC resources/read envelope and returns the first contents text", async () => {
+    const html = await client().readResource("ui://app_ui_mail_triage/view")
+    expect(html).toBe("<html><body>panel</body></html>")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url?.split("?")[0]).toBe("/mcp")
+    expect(last.body).toMatchObject({
+      jsonrpc: "2.0",
+      method: "resources/read",
+      params: { uri: "ui://app_ui_mail_triage/view" },
+    })
+  })
+
+  it("readResource throws on a JSON-RPC error envelope", async () => {
+    await expect(client().readResource("ui://app_ui_ghost/view")).rejects.toThrow(/resource not found/)
   })
 
   it("harnessCapabilities() routes through mcpCall harness_capabilities", async () => {
@@ -765,7 +936,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
   it("reads the status baseUrl, POSTs /v1/packs/reload directly, and returns the result", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { params?: { name?: string } }
         if (rpc.params?.name === "llm_endpoint_status") {
           return {
@@ -826,7 +997,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
   it("throws with the field-scoped errors when the reload is rejected (HTTP 400)", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {
@@ -868,7 +1039,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
 
   it("throws when the router is not running (no base URL)", async () => {
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {
@@ -898,7 +1069,7 @@ describe("DaemonClient — llmEndpointTestUpstream", () => {
   it("reads the status baseUrl, POSTs /v1/upstreams/:p/test directly, and returns the verdict", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { params?: { name?: string } }
         if (rpc.params?.name === "llm_endpoint_status") {
           return {
@@ -946,7 +1117,7 @@ describe("DaemonClient — llmEndpointTestUpstream", () => {
 
   it("throws when the router is not running (no base URL)", async () => {
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {

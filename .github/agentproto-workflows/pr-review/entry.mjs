@@ -17,7 +17,16 @@ import {
   workspaceCwdFor,
 } from "../lib/sandbox-agent.mjs"
 
-const sandboxRef = (bindings) => sandboxRefFor(bindings?.input?.reviewConfig, "review")
+// placement "local" is always a HOST spawn on the CALLER's daemon, in the
+// caller's cwd — regardless of what reviewConfig says. This is a deliberate
+// second line of defense: the daemon caller (scripts/agentflow/primitives/
+// review.mjs#reviewViaDaemon) already strips reviewerSandbox before sending
+// reviewConfig, but this step must not depend on that — a mis-scoped or
+// stale reviewConfig reaching here must never accidentally route a "local"
+// run through sandboxRefFor (which would try to provision e2b, something a
+// dev's own daemon has no way to do).
+const sandboxRef = (bindings) =>
+  bindings?.input?.placement === "local" ? undefined : sandboxRefFor(bindings?.input?.reviewConfig, "review")
 
 const inSandbox = (bindings) => sandboxRef(bindings) !== undefined
 
@@ -274,8 +283,11 @@ export default {
       // sandbox:"local", 5/6 adapters green). undefined ⇒ host spawn.
       sandbox: sandboxRef,
       // A remote box can't see the runner's checkout path — land in the box
-      // workspace and let the Phase 0 bootstrap clone the repo there.
-      cwd: (b) => workspaceCwdFor(b?.input?.reviewConfig, "review"),
+      // workspace and let the Phase 0 bootstrap clone the repo there. Same
+      // "local" override as sandboxRef above — undefined ⇒ run in the
+      // caller's own cwd (its already-checked-out worktree).
+      cwd: (b) =>
+        b?.input?.placement === "local" ? undefined : workspaceCwdFor(b?.input?.reviewConfig, "review"),
       prompt: reviewPrompt,
     },
   ],

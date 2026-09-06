@@ -1,0 +1,75 @@
+{
+  "name": "@agentproto/app-config",
+  "version": "0.2.0",
+  "description": "@agentproto/app-config — layered YAML config kit for agentproto apps. defineAppConfig({ app, item, itemsKey, defaultsKey }) returns a typed kit: load() merges app-level defaults → app items[] entry → item file (deep for objects, replace for arrays), emits input-io JSON Schemas, generates per-item contract files with sha256 drift check, runs declarative config gates, and composes them into one verify report.",
+  "keywords": [
+    "agentproto",
+    "app-config",
+    "yaml",
+    "zod",
+    "json-schema",
+    "contracts",
+    "gates",
+    "open-standard"
+  ],
+  "homepage": "https://agentproto.sh/docs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/app-config"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.mjs",
+      "default": "./dist/cli.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "app-config": "./bin/app-config.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "zod": "^4"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.5.4"
+  }
+}

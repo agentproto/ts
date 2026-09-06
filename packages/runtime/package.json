@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/runtime",
-  "version": "2.0.0",
+  "version": "2.12.0",
   "description": "@agentproto/runtime — long-running gateway that turns an agentproto workspace into a live runtime. Composes @agentproto/mcp-server (CRUD verbs) with HTTP transport, HEARTBEAT.md autonomy loop, and append-only conversation persistence. Drop a workspace dir, point your MCP client at it, and the agent ticks on its own.",
   "keywords": [
     "agentproto",
@@ -34,6 +34,11 @@
       "types": "./dist/catalog-models.d.ts",
       "import": "./dist/catalog-models.mjs",
       "default": "./dist/catalog-models.mjs"
+    },
+    "./command-allowlist": {
+      "types": "./dist/command-allowlist.d.ts",
+      "import": "./dist/command-allowlist.mjs",
+      "default": "./dist/command-allowlist.mjs"
     },
     "./conversations": {
       "types": "./dist/conversations.d.ts",
@@ -71,6 +76,11 @@
       "import": "./dist/providers-store.mjs",
       "default": "./dist/providers-store.mjs"
     },
+    "./release-check": {
+      "types": "./dist/release-check.d.ts",
+      "import": "./dist/release-check.mjs",
+      "default": "./dist/release-check.mjs"
+    },
     "./mcp-imports": {
       "types": "./dist/mcp-imports.d.ts",
       "import": "./dist/mcp-imports.mjs",
@@ -81,20 +91,25 @@
       "import": "./dist/resume-strategies.mjs",
       "default": "./dist/resume-strategies.mjs"
     },
+    "./session-presence": {
+      "types": "./dist/session-presence.d.ts",
+      "import": "./dist/session-presence.mjs",
+      "default": "./dist/session-presence.mjs"
+    },
     "./session-story": {
       "types": "./dist/session-story.d.ts",
       "import": "./dist/session-story.mjs",
       "default": "./dist/session-story.mjs"
     },
-    "./session-story-panel": {
-      "types": "./dist/session-story-panel.d.ts",
-      "import": "./dist/session-story-panel.mjs",
-      "default": "./dist/session-story-panel.mjs"
-    },
     "./user-presets": {
       "types": "./dist/user-presets.d.ts",
       "import": "./dist/user-presets.mjs",
       "default": "./dist/user-presets.mjs"
+    },
+    "./tool-envelope": {
+      "types": "./dist/tool-envelope.d.ts",
+      "import": "./dist/tool-envelope.mjs",
+      "default": "./dist/tool-envelope.mjs"
     }
   },
   "files": [
@@ -118,6 +133,9 @@
   "dependencies": {
     "@agentproto/acp": "workspace:*",
     "@agentproto/agent": "workspace:*",
+    "@agentproto/app-client": "workspace:*",
+    "@agentproto/app-kit": "workspace:*",
+    "@agentproto/apps": "workspace:*",
     "@agentproto/auth": "workspace:*",
     "@agentproto/command-sandbox": "workspace:*",
     "@agentproto/driver": "workspace:*",
@@ -138,11 +156,13 @@
     "@agentproto/workflow": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@agentproto/workspace-brain": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ai": "^6.0.204",
     "croner": "^9.0.0",
     "gray-matter": "^4.0.3",
-    "ws": "^8.21.1",
-    "zod": "^4.4.3"
+    "ws": "^8.21.3",
+    "zod": "^4.5.4"
   },
   "optionalDependencies": {
     "@agentproto/sandbox-e2b": "workspace:*"
@@ -150,6 +170,7 @@
   "devDependencies": {
     "@agentproto/rendezvous": "workspace:*",
     "@agentproto/tooling": "workspace:*",
+    "@agentproto/transcript-fixtures": "workspace:*",
     "@types/node": "^25.6.2",
     "@types/ws": "^8.5.13",
     "tsup": "^8.5.1",

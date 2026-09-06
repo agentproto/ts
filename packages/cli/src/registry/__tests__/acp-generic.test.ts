@@ -6,6 +6,7 @@ import {
   ACP_CATALOG,
   resolveAcpSpec,
   binOnPath,
+  fallbackBinDirs,
   listAcpGenericAdapters,
   type AcpAgentSpec,
 } from "../acp-generic.js"
@@ -158,6 +159,26 @@ describe("binOnPath", () => {
   })
 })
 
+// ── fallbackBinDirs ─────────────────────────────────────────────────────
+// `binOnPath` also checks these — the well-known install dirs for the
+// package managers `install-hint.ts` drives (uv/pipx/pip --user, cargo, go,
+// brew) — so a `uv tool install`/`cargo install`/… run by a long-running
+// daemon process is visible on the very next listing even when that
+// directory isn't (yet) on the daemon's inherited PATH. See the doc comment
+// on `fallbackBinDirs` for the "installed but doesn't show as installed"
+// bug this guards against.
+
+describe("fallbackBinDirs", () => {
+  it("includes the well-known package-manager install directories", () => {
+    const dirs = fallbackBinDirs()
+    expect(dirs.some((d) => d.endsWith(".local/bin"))).toBe(true)
+    expect(dirs.some((d) => d.endsWith(".cargo/bin"))).toBe(true)
+    expect(dirs.some((d) => d.endsWith("go/bin"))).toBe(true)
+    expect(dirs).toContain("/opt/homebrew/bin")
+    expect(dirs).toContain("/usr/local/bin")
+  })
+})
+
 // ── listAcpGenericAdapters ──────────────────────────────────────────────
 
 describe("listAcpGenericAdapters", () => {
@@ -165,7 +186,7 @@ describe("listAcpGenericAdapters", () => {
     const entries = await listAcpGenericAdapters({ config: {} })
     expect(entries.length).toBe(ACP_CATALOG.length)
     for (const e of entries) {
-      expect(["available", "supported"]).toContain(e.status)
+      expect(["ready", "supported"]).toContain(e.status)
       expect(e.source).toBe("acp-catalog")
       expect(e.protocol).toBe("acp")
     }
@@ -189,6 +210,23 @@ describe("listAcpGenericAdapters", () => {
     const exclude = new Set([ACP_CATALOG[0]!.slug])
     const entries = await listAcpGenericAdapters({ config: {}, excludeSlugs: exclude })
     expect(entries.find((e) => e.slug === ACP_CATALOG[0]!.slug)).toBeUndefined()
+  })
+
+  it("projects the spec-level billing provider onto the listing and its model details", async () => {
+    const config: AgentprotoConfig = {
+      acpAgents: {
+        "billed-agent": { bin: "billed", provider: "mistral", models: { allowed: ["m-large"] } },
+      },
+    }
+    const entries = await listAcpGenericAdapters({ config })
+    const vibe = entries.find((e) => e.slug === "mistral-vibe")
+    expect(vibe?.provider).toBe("mistral")
+    const billed = entries.find((e) => e.slug === "billed-agent")
+    expect(billed?.provider).toBe("mistral")
+    expect(billed?.modelDetails).toEqual([{ id: "m-large", provider: "mistral" }])
+    // No provider declared → none invented.
+    const iflow = entries.find((e) => e.slug === "iflow-cli")
+    expect(iflow?.provider).toBeUndefined()
   })
 
   const specForType: AcpAgentSpec = { slug: "type-check", bin: "type-check" }

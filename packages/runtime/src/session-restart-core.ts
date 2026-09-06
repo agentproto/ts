@@ -44,13 +44,17 @@
  * announced via `session:config-changed` (#490).
  */
 
-import type {
-  SessionDescriptor,
-  SessionsRegistry,
-  SessionAuthEcho,
-  SessionAccessProfileEcho,
+import {
+  adapterConfigDirFor,
+  mintSessionId,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
+  type SessionDescriptor,
+  type SessionsRegistry,
+  type SessionAuthEcho,
+  type SessionAccessProfileEcho,
 } from "./sessions.js"
-import type { AgentAdapterResolver } from "./http-server.js"
+import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
   augmentWithFsResume,
@@ -61,6 +65,7 @@ import {
 import {
   resolveSpawnDefaults,
   resolveAuthSpec,
+  subscriptionSurfaceFor,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -75,7 +80,9 @@ import { buildResumeContextDigest } from "./resume-context-digest.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
+  checkModelAdapterEligibility,
   checkModelWalletEligibility,
+  modelAdapterIncompatibleMessage,
   modelWalletIneligibleMessage,
   reconcileModelRoute,
 } from "./catalog-models.js"
@@ -174,9 +181,16 @@ function methodToMode(method: AuthMethod): "subscription" | "api-key" {
  *  from the same projection `resolveAuthSpec` reads (`authSubscription` ⇒
  *  oauth-bearer, `provider` ⇒ api-key) — the method-side of the eligibility
  *  predicate (SPEC §3.4). Mirrors `catalog-models.ts`'s `methodsForDirect`. */
-function directMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
+function directMethods(
+  descriptor: AdapterAuthDescriptor | undefined,
+  endpoint?: string,
+): AuthMethod[] {
   const methods: AuthMethod[] = []
-  if (descriptor?.authSubscription) methods.push("oauth-bearer")
+  // oauth-bearer requires an explicit, provider-matching subscription
+  // surface — see `subscriptionSurfaceFor`'s doc in spawn-defaults.ts.
+  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
+    methods.push("oauth-bearer")
+  }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
@@ -208,7 +222,9 @@ function eligibilityManifest(
   // oauth-bearer path). Otherwise it's the direct route.
   const isDirect = baseVendor !== undefined && routeId === baseVendor
   const billedVendor = isDirect ? baseVendor : routeId
-  const methods: readonly AuthMethod[] = isDirect ? directMethods(descriptor) : ["api-key"]
+  const methods: readonly AuthMethod[] = isDirect
+    ? directMethods(descriptor, billedVendor)
+    : ["api-key"]
   return {
     manifest: {
       id: adapterSlug,
@@ -256,6 +272,10 @@ export interface ResolveResumeAuthOptions {
   /** Resolve `accessProfileRef` → profile metadata + secret. Defaults to
    *  {@link resolveAccessProfileFromStore}; tests inject a stub. */
   resolveAccessProfile?: AccessProfileResolver
+  /** Same seam as `SpawnAgentSessionDeps.listCatalogModels` in
+   *  session-spawn.ts — feeds the adapter-capability guard
+   *  (`checkModelAdapterEligibility`). Omitted ⇒ the guard is skipped. */
+  listCatalogModels?: CatalogModelsLister
 }
 
 /**
@@ -434,6 +454,30 @@ export async function resolveResumeAuth(
       )
     }
   }
+  // Adapter-capability guard — same rationale/scope as session-spawn.ts's
+  // mirror: the wallet guard above proves the ROUTE can bill this model, not
+  // that THIS adapter's manifest can reach it there. Optional dep; skipped
+  // (no protection, same as before this guard existed) when unwired.
+  if (
+    effRoute?.gateway === undefined &&
+    authModel !== undefined &&
+    resolvedProvider !== undefined &&
+    opts.listCatalogModels
+  ) {
+    const catalog = await opts.listCatalogModels({})
+    const verdict = checkModelAdapterEligibility(catalog, adapterSlug, authModel, resolvedProvider)
+    if (!verdict.ok) {
+      throw new RestartOverrideError(
+        modelAdapterIncompatibleMessage({
+          prefix,
+          adapter: adapterSlug,
+          model: authModel,
+          route: resolvedProvider,
+          compatibleAdapters: verdict.compatibleAdapters,
+        }),
+      )
+    }
+  }
   // Same non-authenticating hint as session-spawn.ts: only when about to
   // hard-fail (enforce "always", no credential) and auth wasn't explicit.
   if (
@@ -456,6 +500,13 @@ export interface RestartAgentSessionResult {
   resumedFrom: string
   resumeVia: string
   resumeFallback?: boolean
+  /** True when a fallback occurred AND the daemon transcript contained
+   *  actual conversation content that was injected as a digest. False
+   *  when no digest was available (daemon transcript empty/missing) or
+   *  when no fallback occurred (successful native/ACP resume). This
+   *  lets callers distinguish "fresh with zero context" from "fresh
+   *  with partial digest injected" for the restart banner. */
+  digestRecovered?: boolean
 }
 
 export interface RestartAgentSessionOptions {
@@ -493,6 +544,11 @@ export interface RestartAgentSessionOptions {
    *  Defaults to {@link resolveAccessProfileFromStore}; tests inject a stub.
    *  Only consulted when `overrides.access.profileRef` is set. */
   resolveAccessProfile?: AccessProfileResolver
+  /** Same seam as `SpawnAgentSessionDeps.listCatalogModels` in
+   *  session-spawn.ts — feeds the adapter-capability guard
+   *  (`checkModelAdapterEligibility`) via `resolveResumeAuth`. Omitted ⇒ the
+   *  guard is skipped. */
+  listCatalogModels?: CatalogModelsLister
 }
 
 /**
@@ -664,19 +720,20 @@ export async function restartAgentSession(
       method: profile.method,
     }
   } else if (resolved.authDescriptor) {
-    // Base mode path (no `access` override): re-resolve billing-auth from the
-    // prior descriptor's `auth.mode` echo through the shared helper the lazy
-    // in-place resume hook also uses. `accessProfileRef` is intentionally NOT
-    // passed here — this branch's job is the base mode re-resolution ONLY (the
-    // `access` OVERRIDE is the `if` branch above), so passing no profileRef
-    // keeps this byte-identical to the pre-extraction inline block. `prefix:
-    // "restart"` preserves the exact model↔wallet ineligibility wording.
+    // Base mode path (no explicit `access` override): re-resolve billing-auth.
+    // When the prior session was pinned to a named profile, pass its profileRef
+    // so `resolveResumeAuth` re-reads the CURRENT credential from the keychain
+    // rather than falling through to the stale mode-based path.
     const resumeAuth = await resolveResumeAuth(prev, resolved, {
       adapterSlug,
       ...(effModel ? { model: effModel } : {}),
       ...(effRoute ? { route: effRoute } : {}),
+      ...(prev.accessProfile?.profileRef
+        ? { accessProfileRef: prev.accessProfile.profileRef }
+        : {}),
       prefix: "restart",
       ...(opts.loadDefaultsConfig ? { loadDefaultsConfig: opts.loadDefaultsConfig } : {}),
+      ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
     })
     authSpec = resumeAuth.authSpec
     authEcho = resumeAuth.authEcho
@@ -686,6 +743,13 @@ export async function restartAgentSession(
     resumeSessionId?: string,
   ): Promise<SessionDescriptor> => {
     let liveSessionId: string | undefined
+    // Minted BEFORE `startSession` — same reason as session-spawn.ts's
+    // `mintedSessionId`: a restart/resume gets a FRESH id (see
+    // `spawnAgent`'s `resumedFrom: prev.id` lineage below, not an in-place
+    // id reuse), and that fresh id has to be known before the adapter
+    // process ever exec's so it can be injected as AGENTPROTO_SESSION_ID —
+    // never the id being restarted FROM.
+    const restartedSessionId = mintSessionId()
     let launchConfig: RouteAwareLaunchConfig
     try {
       launchConfig = buildRouteAwareLaunchConfig({
@@ -696,15 +760,25 @@ export async function restartAgentSession(
         declaredOptions: resolved.declaredOptions,
         routeSelection: resolved.routeSelection,
         adapterProvider: resolved.authDescriptor?.provider,
+        modelDerivedApiKey: resolved.authDescriptor?.modelDerivedApiKey,
         prefix: "restart",
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       throw new Error(message)
     }
+    // Carry the prior session's persistent isolated-config dir forward —
+    // the provider's conversation store lives inside it, so reusing the
+    // SAME dir is what lets `resumeSessionId` restore full context (a
+    // fresh dir here is exactly the old always-degrade-to-digest bug).
+    // A legacy row with no recorded dir gets one keyed by the NEW id, so
+    // the lineage is resumable from here on even if THIS restart lands as
+    // a digest fallback.
+    const restartConfigDir = prev.adapterConfigDir ?? adapterConfigDirFor(restartedSessionId)
     const agentSession = await resolved.startSession({
       cwd,
       ...(resumeSessionId ? { resumeSessionId } : {}),
+      configDir: restartConfigDir,
       ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
@@ -715,6 +789,10 @@ export async function restartAgentSession(
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
+      env: {
+        [SESSION_ID_ENV]: restartedSessionId,
+        [WORKSPACE_SLUG_ENV]: prev.workspaceSlug,
+      },
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
@@ -741,15 +819,26 @@ export async function restartAgentSession(
         ? "resumed via ACP"
         : describeResumePath(augmented)
     const desc = registry.spawnAgent({
+      id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
       cwd,
       agentSession,
       adapterSlug,
+      adapterConfigDir: restartConfigDir,
       ...(resolved.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       ...(resolved.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
         : {}),
       harness: effHarness,
+      ...(resolved.routeSelection !== undefined
+        ? { routeSelection: resolved.routeSelection }
+        : {}),
+      ...(resolved.authDescriptor?.provider !== undefined
+        ? { adapterProvider: resolved.authDescriptor.provider }
+        : {}),
+      ...(resolved.authDescriptor?.modelDerivedApiKey !== undefined
+        ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
+        : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(effModel ? { model: effModel } : {}),
@@ -764,6 +853,15 @@ export async function restartAgentSession(
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+      // Lineage carry-forward (#session-visibility). A restart is a NEW
+      // descriptor, but it is the same logical session continued — so its
+      // origin (which channel spawned it: cowork/vscode/codex/cron) and its
+      // parent/depth must survive, exactly as continue-fresh already carries
+      // them (session-continue-fresh.ts). Dropping them here is what left a
+      // restarted session a bare top-level root with no source trace.
+      ...(prev.origin ? { origin: prev.origin } : {}),
+      ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
+      ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
       // Verifiability echo (never the credential) — see the auth
       // resolution block above. Absent when no credential resolved,
       // same as session-spawn.ts.
@@ -812,9 +910,13 @@ export async function restartAgentSession(
   // `runAgentTurn` to inject once. Gated strictly on `resumeFallback` — a
   // successful resume (pty-native or a clean ACP resume) never reaches
   // here, so it's never double-fed its own context.
+  let digestRecovered = false
   if (resumeFallback) {
-    const digest = await buildResumeContextDigest(prev.id)
-    if (digest) desc.pendingResumeContext = digest
+    const result = await buildResumeContextDigest(prev.id)
+    if (result.digest) {
+      desc.pendingResumeContext = result.digest
+      digestRecovered = result.hasContent
+    }
   }
 
   // ── Announce the changed axes (SPEC §4.3) ────────────────────────
@@ -854,5 +956,6 @@ export async function restartAgentSession(
     // satisfying the optional field's type.
     resumeVia: desc.resumeVia ?? "",
     ...(resumeFallback ? { resumeFallback: true } : {}),
+    ...(digestRecovered ? { digestRecovered: true } : {}),
   }
 }

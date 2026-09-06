@@ -154,16 +154,49 @@ export type ExtMessage =
       /** Latest session descriptor (cost, status, tokens, etc.). */
       session: SessionDescriptor
     }
-  | { type: "sending" }
-  | { type: "sendAck" }
+  | {
+      type: "sending"
+      /**
+       * Optional status line shown in place of the bare "Sending…" — e.g.
+       * "Waking session…" when the send will trigger a lazy resume, or
+       * "Session is slow to respond — retrying…" during the one automatic
+       * retry after a prompt timeout (see TranscriptPanelController.onSend).
+       * Absent for an ordinary send.
+       */
+      note?: string
+    }
+  /** `localId` is echoed back from the `send` message that triggered this —
+   *  absent for a plain (non-queued) send, present when this ack corresponds
+   *  to a queued-item POST whose `queued` ack (below) hasn't landed yet (a
+   *  race the webview treats as "nothing to reconcile"). */
+  | { type: "sendAck"; localId?: string }
   /**
    * A prompt POST was refused. `kind` decides the panel's reaction: "busy"
-   * means the agent is mid-turn, which is normal — the panel re-queues `text`
-   * and flushes it when the turn ends rather than surfacing an error. Anything
-   * else is a real failure and earns the banner. `text` is echoed back so the
-   * queue can be rebuilt without the webview having to hold in-flight copies.
+   * is now unreachable from the composer's own sends (it always sets `queue:
+   * true` — see TranscriptPanelController.onSend — so a mid-turn session
+   * queues instead of 409ing) but is kept for any other caller that still
+   * hits the bare mid-turn rejection. Anything else is a real failure and
+   * earns the banner. `text` is echoed back for the "busy" arm's legacy
+   * re-queue path; `localId` (present for a queued send) lets the webview
+   * drop the right optimistic placeholder on a genuine failure.
    */
-  | { type: "sendError"; message: string; kind: SendFailureKind; title: string; text: string }
+  | {
+      type: "sendError"
+      message: string
+      kind: SendFailureKind
+      title: string
+      text: string
+      localId?: string
+    }
+  /**
+   * A `send`/`interruptSend` with a mid-turn session landed in the daemon's
+   * FIFO (`SessionsRegistry.enqueuePrompt`'s `queue` arm) instead of
+   * dispatching immediately. `localId` echoes the webview's own optimistic
+   * placeholder id (see `WebviewMessage.send.localId`) so it can be
+   * reconciled with the daemon-assigned `queueId` — the id `cancelQueued`
+   * and `SessionDescriptor.promptQueue` both key on from here on.
+   */
+  | { type: "queued"; localId: string; queueId: string; text: string; queuePosition: number }
   /**
    * A pasted image finished uploading — `path` is the absolute on-disk path the
    * agent's Read tool can pick up. The webview inserts it into the composer as
@@ -191,6 +224,7 @@ export type ExtMessage =
    * own arm rather than overloading one that means something else.
    */
   | { type: "stopError"; title: string; message: string }
+  | { type: "restartFailed"; title: string; message: string }
   /**
    * PTY mode: base64-encoded raw bytes from the daemon's PTY WebSocket.
    * The webview decodes to a Uint8Array and hands it to xterm.js — never to
@@ -214,6 +248,18 @@ export type ExtMessage =
       delayMs?: number
       detail?: string
     }
+  /**
+   * A transient INFORMATIONAL banner above the composer (E3) — visually the
+   * error banner's informational variant, with a dismiss X. Used for
+   * cross-session visibility: "a watcher attached", "a message arrived from
+   * another session". `id` dedupes: a second `infoBanner` with the SAME id
+   * replaces the current one (no stacking), and a dismissed id may reappear
+   * on a NEW occurrence. `tooltip` rides the banner's `title` attribute.
+   */
+  | { type: "infoBanner"; id: string; text: string; tooltip?: string }
+  /** Hide the info banner with this `id` (its auto-dismiss timer fired, or
+   *  the condition it reported cleared). A no-op when that id isn't up. */
+  | { type: "dismissInfoBanner"; id: string }
 
 /**
  * Messages sent from the webview to the extension host.
@@ -229,8 +275,25 @@ export type ExtMessage =
  */
 export type WebviewMessage =
   | { type: "ready" }
-  | { type: "send"; text: string }
+  /**
+   * `force`, on a MID-TURN session, jumps this prompt to the front of the
+   * daemon's FIFO instead of the back — see `SessionsRegistry.enqueuePrompt`'s
+   * `force` opt. Ignored on an idle session (dispatches immediately either
+   * way) and ignored when `interruptSend` is used instead (that bypasses the
+   * queue entirely). `localId` is the webview's own optimistic placeholder id
+   * for a send issued while busy — absent for an idle send, where there's no
+   * placeholder to reconcile (see `ExtMessage.queued`/`sendError.localId`).
+   */
+  | { type: "send"; text: string; force?: boolean; localId?: string }
   | { type: "interruptSend"; text: string }
+  /**
+   * Cancel one not-yet-dispatched item from the composer's queued-messages
+   * block (`DELETE /sessions/:id/queue/:queueId`). The webview removes it
+   * from its own list optimistically the instant the user clicks — this is
+   * fire-and-forget from the webview's side, same as the old single-slot
+   * queue's cancel button.
+   */
+  | { type: "cancelQueued"; queueId: string }
   | { type: "stop" }
   /**
    * The composer's "Restart" button (shown only once the session has
@@ -251,6 +314,16 @@ export type WebviewMessage =
    * out of the webview even for the values the user explicitly asks to read.
    */
   | { type: "openToolIo"; segmentId: string; field: "input" | "output" }
+  /**
+   * Pop a wide book block (a narration table or fenced code block) out into a
+   * read-only editor tab, for content too wide for the book column.
+   *
+   * Unlike `openToolIo`, this one DOES carry its text: a book block is the
+   * agent's own narration prose, already fully rendered inside the webview
+   * (never raw daemon tool output), so there's nothing to re-derive host-side —
+   * the webview serializes the block it's showing and the host just opens it.
+   */
+  | { type: "openBlock"; text: string; name: string }
   /**
    * Raw bytes of a pasted image, headed for `POST /files/upload`. The webview
    * can't write disk, so it structured-clones the ArrayBuffer to the host. Typed
@@ -279,6 +352,18 @@ export type WebviewMessage =
    * never touches daemon data directly).
    */
   | { type: "changeModel" }
+  /**
+   * The effort chip was clicked — open the per-axis config picker for effort
+   * (`agentproto.configureSessionAxis` with axis "effort"). Carries no payload,
+   * same reasoning as `changeModel`.
+   */
+  | { type: "changeEffort" }
+  /**
+   * The route chip was clicked — open the per-axis config picker for route
+   * (`agentproto.configureSessionAxis` with axis "route"), a restart-bound
+   * switch. Carries no payload, same reasoning as `changeModel`.
+   */
+  | { type: "changeRoute" }
   /**
    * The posture chip was clicked — open the unified per-session config
    * picker (`agentproto.configureSession`) so the user can switch posture.
@@ -332,6 +417,23 @@ export type WebviewMessage =
    * `{kind:"resize",cols,rows}` frame.
    */
   | { type: "ptyResize"; cols: number; rows: number }
+  /**
+   * A clickable link in the transcript prose was activated (see the `.tlink`
+   * anchors `renderMarkdown` emits). `kind` is `external` (a URL, opened in the
+   * browser) or `file` (a path, opened in the editor). `target` is the raw
+   * URL/path — the webview reads it back from the anchor's `data-target`, which
+   * the browser has already un-escaped from its HTML-entity form. `line` is a
+   * 1-based line number when the citation carried a `:line` suffix.
+   */
+  | { type: "openLink"; kind: "external" | "file"; target: string; line?: number }
+  /**
+   * The user clicked an option in a permission-ask (clarify / agent-question)
+   * block. Carries `toolCallId` (to correlate with the pending permission),
+   * `decision` and the chosen `optionId` so the host can call
+   * `permissions_respond` on the daemon — no daemon data crosses into the
+   * webview; only ids do.
+   */
+  | { type: "resolveQuestion"; toolCallId?: string; decision: "approve" | "deny"; optionId: string }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -344,15 +446,26 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "restart":
     case "restartAsTerminal":
     case "changeModel":
+    case "changeEffort":
+    case "changeRoute":
     case "changePosture":
     case "changeAccess":
     case "openTerminal":
       return true
     case "send":
+      return (
+        typeof m.text === "string" &&
+        (m.force === undefined || typeof m.force === "boolean") &&
+        (m.localId === undefined || typeof m.localId === "string")
+      )
     case "interruptSend":
       return typeof m.text === "string"
+    case "cancelQueued":
+      return typeof m.queueId === "string"
     case "openToolIo":
       return typeof m.segmentId === "string" && (m.field === "input" || m.field === "output")
+    case "openBlock":
+      return typeof m.text === "string" && typeof m.name === "string"
     case "attachImage":
       return isBinaryPayload(m.bytes) && typeof m.mime === "string"
     case "attachFile":
@@ -367,6 +480,18 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return typeof m.text === "string"
     case "ptyResize":
       return typeof m.cols === "number" && typeof m.rows === "number"
+    case "openLink":
+      return (
+        (m.kind === "external" || m.kind === "file") &&
+        typeof m.target === "string" &&
+        (m.line === undefined || typeof m.line === "number")
+      )
+    case "resolveQuestion":
+      return (
+        (m.decision === "approve" || m.decision === "deny") &&
+        typeof m.optionId === "string" &&
+        (m.toolCallId === undefined || typeof m.toolCallId === "string")
+      )
     default:
       return false
   }

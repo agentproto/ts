@@ -1,0 +1,61 @@
+# jcode adapter
+
+AIP-45 adapter for [1jehuang/jcode](https://github.com/1jehuang/jcode) — a
+RAM-efficient Rust coding agent with semantic memory, multi-agent swarm
+coordination, and broad provider support.
+
+## Protocol
+
+`print` — spawns `jcode run --ndjson "<prompt>"` per turn and parses the
+NDJSON event stream (`jcode-stream-json` schema). No ACP or interactive
+mode is currently documented.
+
+If the adapter cannot spawn `jcode` because a required interactive setup
+step needs a TTY, the spawn fails fast with exit code `78`
+(`EXIT_SETUP_NEEDS_TTY`) and the install result carries
+`needsInteractiveSetup: true` so callers can offer an "Open Setup Terminal"
+option.
+
+## Installation
+
+```bash
+# Homebrew (macOS)
+brew tap 1jehuang/jcode && brew install jcode
+
+# curl (Linux/macOS)
+curl -fsSL https://jcode.sh/install | bash
+
+# From source
+git clone https://github.com/1jehuang/jcode.git && cargo build --release
+```
+
+## Authentication
+
+jcode reads provider API keys from the environment:
+
+| Provider   | Env var              |
+|------------|----------------------|
+| Anthropic  | `ANTHROPIC_API_KEY`  |
+| OpenAI     | `OPENAI_API_KEY`     |
+| OpenRouter | `OPENROUTER_API_KEY` |
+| Google     | `GOOGLE_API_KEY`     |
+| DeepSeek   | `DEEPSEEK_API_KEY`   |
+| Groq       | `GROQ_API_KEY`       |
+| Mistral    | `MISTRAL_API_KEY`    |
+
+Interactive login is also available: `jcode login --provider <name>`.
+
+## Capabilities
+
+- Multi-provider model routing via `--model` / `--provider`
+- Semantic vector memory (ambient recall without explicit tool calls)
+- Multi-agent swarm with conflict detection and inter-agent messaging
+- MCP server support (`~/.jcode/mcp.json` and `.jcode/mcp.json`)
+- Session resume via `--resume <name>`
+- Voice input via `jcode dictate`
+
+## Known gaps
+
+- No ACP mode — adapter uses print/headless arm
+- Swarm coordination not yet wired into the adapter
+- Browser tool (Firefox Agent Bridge) not exposed

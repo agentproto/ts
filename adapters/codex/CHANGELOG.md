@@ -1,5 +1,79 @@
 # @agentproto/adapter-codex
 
+## 2.0.7
+
+### Patch Changes
+
+- @agentproto/driver-agent-cli@2.4.1
+
+## 2.0.6
+
+### Patch Changes
+
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+  - @agentproto/driver-agent-cli@2.4.0
+
+## 2.0.5
+
+### Patch Changes
+
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+  - @agentproto/driver-agent-cli@2.3.1
+
+## 2.0.4
+
+### Patch Changes
+
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
+## 2.0.3
+
+### Patch Changes
+
+- a6b06b2: Three adapter infrastructure fixes:
+  1. Codex model list expanded from 8 to ~40 models — covers GPT-5 family
+     (5/5.1/5.2/5.4/5.5), GPT-5.6 (luna/sol/terra), GPT-4.1/4o, and
+     o-series reasoning models (o1/o3/o4-mini).
+  2. CLI `agentproto install <slug>` now drives a generic ACP agent's
+     `install_hint` through the shared hint parser (new `install-hint.ts`
+     module, extracted from `install-driver.ts` to break a circular dep).
+     The `vendored` install step checks if the binary is already on PATH,
+     runs npm/uv/pip/brew/cargo/go hints when recognized, and fails loud
+     with an actionable message otherwise.
+  3. `binOnPath` in `acp-generic.ts` now checks well-known package-manager
+     install directories (`~/.local/bin`, `~/.cargo/bin`, `~/go/bin`,
+     `/opt/homebrew/bin`, `/usr/local/bin`) as a fallback when PATH hasn't
+     picked them up yet — fixes adapters installed via `uv tool install`
+     not showing as "available" until the daemon restarts.
+
+  Also: modelDerivedApiKey provider resolution for adapters like mastra-agent.
+
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/driver-agent-cli@2.2.2
+
+## 2.0.2
+
+### Patch Changes
+
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 2.0.1
+
+### Patch Changes
+
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/driver-agent-cli@2.2.0
+
 ## 2.0.0
 
 ### Major Changes

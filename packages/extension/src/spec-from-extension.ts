@@ -6,11 +6,15 @@
  * The parent argument is the public AIP's spec (e.g. `toolSpec` from
  * `@agentproto/tool`). The function composes:
  *
- *   schema       parent.schema ∪ ext.add_fields, then ext.tighten
- *   path         ext.path_convention ?? parent.pathOf
- *   defaults     parent defaults ⨁ ext.defaults
- *   define       wraps parent.define with default-application
- *   parse        parent.parse (frontmatter shape stays compatible)
+ *   schema       parent.schema ∪ ext.add_fields, minus ext.remove_fields,
+ *                then ext.tighten
+ *   path         ext.path_convention ?? parent.pathOf (unless inherit.path
+ *                is false, which makes path_convention REQUIRED)
+ *   defaults     (inherit.defaults) parent defaults ⨁ ext.defaults
+ *   define       wraps parent.define with default-application + removed-
+ *                field enforcement
+ *   parse        parent.parse (frontmatter shape stays compatible), or the
+ *                extension's own when inherit.parse is false
  *
  * Tightening monotonicity is verified by-field: pattern subset
  * (cheap heuristic — full regex-language inclusion is undecidable),
@@ -19,6 +23,13 @@
  * For `extends: none`, `parent` is null/undefined and the extension
  * acts as a root doctype: the `add_fields` becomes its full schema,
  * `path_convention` is required (no parent fallback).
+ *
+ * AIP-40 v2 — selective composition. `remove_fields` drops parent
+ * properties (GUARDED: parent-required fields refuse removal, mirroring
+ * AIP-18's "children MUST NOT remove an inherited status" rule — the
+ * parent declares its required fields via `opts.requiredFields`). The
+ * `inherit` block selects aspects independently; omitted = wholesale
+ * inheritance, byte-identical to v1 behavior.
  */
 
 import type { DoctypeSpec } from "@agentproto/manifest"
@@ -33,6 +44,19 @@ export interface SpecFromExtensionOptions<
    * Pass e.g. `toolSpec` from `@agentproto/tool`.
    */
   parent?: DoctypeSpec<TParams, THandle>
+  /**
+   * The parent's `required[]` field names, for the `remove_fields`
+   * guard. Optional — when absent the guard treats NO fields as
+   * required (the manifest layer's JSON Schema is not introspectable
+   * from here; see `verifyTightening`'s note on the same limitation).
+   * Hosts that know the parent's schema MUST pass it.
+   */
+  parentRequired?: readonly string[]
+  /**
+   * When `inherit.parse: false`, the extension's own parser. Required
+   * in that case — same rule as root doctypes.
+   */
+  parse?: DoctypeSpec<TParams, THandle>["parse"]
 }
 
 export function specFromExtension<
@@ -53,6 +77,40 @@ export function specFromExtension<
   if (isRoot && !extension.path_convention) {
     throw new Error(
       `specFromExtension (AIP-40): extension '${extension.slug}' is a root doctype (extends: none) and MUST declare path_convention`,
+    )
+  }
+
+  // ── AIP-40 v2: selective composition ──────────────────────────────
+  const inherit = {
+    schema: extension.inherit?.schema ?? true,
+    defaults: extension.inherit?.defaults ?? true,
+    parse: extension.inherit?.parse ?? true,
+    path: extension.inherit?.path ?? true,
+  }
+  const removed = new Set(extension.remove_fields ?? [])
+
+  // Guard: removing a parent-required field would invalidate
+  // parent-validated instances. Mirrors AIP-18's "children MUST NOT
+  // remove an inherited status". Only enforced when the host supplied
+  // the parent's required list (see SpecFromExtensionOptions).
+  if (removed.size > 0 && parent) {
+    const required = opts.parentRequired ?? []
+    for (const f of removed) {
+      if (required.includes(f)) {
+        throw new Error(
+          `specFromExtension (AIP-40): extension '${extension.slug}' remove_fields includes '${f}', which is required by the parent — removing a parent-required field is refused (AIP-18-style guard)`,
+        )
+      }
+    }
+  }
+  if (!inherit.parse && !opts.parse) {
+    throw new Error(
+      `specFromExtension (AIP-40): extension '${extension.slug}' sets inherit.parse: false but no replacement parser was provided in opts.parse`,
+    )
+  }
+  if (!inherit.path && !extension.path_convention) {
+    throw new Error(
+      `specFromExtension (AIP-40): extension '${extension.slug}' sets inherit.path: false but declares no path_convention`,
     )
   }
 
@@ -82,13 +140,22 @@ export function specFromExtension<
         }
       }
     }
-    if (isRoot) {
-      // Root doctype — no parent.define to delegate to. Return the
-      // params verbatim, frozen. (A more disciplined runtime would
-      // compile the add_fields schema to zod and validate; deferred
-      // because root doctypes are rare and the manifest layer's
-      // schema-level zod catches malformed input.)
+    if (isRoot || !inherit.schema) {
+      // Root doctype, or schema-inheritance opted out: the extension's
+      // add_fields IS the schema. Return the params verbatim, frozen.
+      // (A more disciplined runtime would compile the add_fields schema
+      // to zod and validate; deferred because root doctypes are rare and
+      // the manifest layer's schema-level zod catches malformed input.)
       return Object.freeze(withDefaults) as unknown as THandle
+    }
+    // Enforce removed fields AWAY, not just dropped: an input carrying a
+    // removed field is a composition violation, surfaced here.
+    for (const f of removed) {
+      if ((withDefaults as Record<string, unknown>)[f] !== undefined) {
+        throw new Error(
+          `specFromExtension (AIP-40): field '${f}' was removed by extension '${extension.slug}' but is present in the input`,
+        )
+      }
     }
     // Split params before delegating: parent specs typically validate
     // through `zod.strict()` (e.g. AIP-42 `agentFrontmatterSchema`),
@@ -111,7 +178,13 @@ export function specFromExtension<
     }) as unknown as THandle
   }
 
-  const parse = isRoot ? rootParse(extension) : parent!.parse
+  // parse aspect: root → rootParse; inherit.parse: false → the supplied
+  // opts.parse; otherwise parent.parse (v1 behavior).
+  const parse = isRoot
+    ? rootParse(extension)
+    : inherit.parse
+      ? parent!.parse
+      : opts.parse!
 
   const pathOf = (handle: THandle) => {
     if (pathTemplate) {

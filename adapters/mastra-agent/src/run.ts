@@ -6,9 +6,11 @@
 
 import { Readable, Writable } from "node:stream"
 import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk"
-import { MastraAcpAgent, type AgentFactory } from "./acp-host.js"
+import { MastraAcpAgent, type ControllerFactory } from "./acp-host.js"
 
-export function runAcpOverStdio(buildAgent: AgentFactory): AgentSideConnection {
+export function runAcpOverStdio(
+  buildController: ControllerFactory,
+): AgentSideConnection {
   // ndJsonStream(writable, readable): outgoing bytes -> stdout, incoming <- stdin.
   const toClient = Writable.toWeb(process.stdout) as WritableStream<Uint8Array>
   const fromClient = Readable.toWeb(
@@ -16,7 +18,7 @@ export function runAcpOverStdio(buildAgent: AgentFactory): AgentSideConnection {
   ) as unknown as ReadableStream<Uint8Array>
   const stream = ndJsonStream(toClient, fromClient)
   return new AgentSideConnection(
-    (conn) => new MastraAcpAgent(conn, buildAgent),
+    (conn) => new MastraAcpAgent(conn, buildController),
     stream,
   )
 }

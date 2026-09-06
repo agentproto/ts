@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentproto-workstation-versions.schema.json",
+  "title": "agentproto workstation e2b template — canonical pin declaration",
+  "description": "Single source of truth for the versions baked into the agentproto-workstation e2b template and surfaced via scripts/sync-templates.mjs. Hand-edit this file, then run `node scripts/sync-templates.mjs` to regenerate the derived files.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["baseImage", "cli", "adapters", "runtime", "resources", "templates"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "baseImage": {
+      "type": "string",
+      "description": "Base image the workstation Dockerfile builds FROM (ARG BASE_IMAGE)."
+    },
+    "cli": {
+      "type": "string",
+      "description": "Pinned @agentproto/cli version baked into the template.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+    },
+    "adapters": {
+      "type": "object",
+      "description": "Adapter packages baked into the template, at exact pins.",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "description": "Agent runtime CLIs baked into the template (e.g. opencode-ai), at exact pins.",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpuCount", "memoryMb"],
+      "description": "Sandbox runtime resources the template is created with. The e2b CLI IGNORES e2b.template.toml for `template create -d Dockerfile`, so these are passed as `--cpu-count` / `--memory-mb` build flags (see README); versions.json stays the single source of truth.",
+      "properties": {
+        "cpuCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "vCPUs for sandboxes created from this template (e2b `--cpu-count`)."
+        },
+        "memoryMb": {
+          "type": "integer",
+          "minimum": 512,
+          "multipleOf": 2,
+          "description": "Memory in MB for sandboxes created from this template (e2b `--memory-mb`, must be even)."
+        }
+      }
+    },
+    "templates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable", "dev"],
+      "properties": {
+        "stable": { "$ref": "#/$defs/templateEntry" },
+        "dev": { "$ref": "#/$defs/templateEntry" }
+      }
+    }
+  },
+  "$defs": {
+    "templateEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "alias", "baked"],
+      "properties": {
+        "id": {
+          "type": ["string", "null"],
+          "description": "The published e2b template id (opaque). null when not yet published."
+        },
+        "alias": { "type": "string" },
+        "baked": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cli", "adapters", "builtAt"],
+          "description": "What the published image was PROVEN to contain at its last real e2b build. null = unknown / out-of-band bake — consumers must assume the image does NOT match the declared pins.",
+          "properties": {
+            "cli": {
+              "type": ["string", "null"],
+              "description": "The @agentproto/cli version actually verified inside the published image."
+            },
+            "adapters": {
+              "type": ["object", "null"],
+              "description": "Adapter package -> version actually verified inside the published image.",
+              "additionalProperties": { "type": "string" }
+            },
+            "builtAt": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "When the published image was built (ISO 8601)."
+            }
+          }
+        }
+      }
+    }
+  }
+}

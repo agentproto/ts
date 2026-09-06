@@ -36,6 +36,12 @@ interface SegmentBase {
 export interface TextSegment extends SegmentBase {
   kind: "user" | "assistant-text" | "reasoning"
   text: string
+  /** Reducer-internal continuation hint: true when the LATEST record folded
+   *  into this segment was flagged `partial` (an explicitly unterminated
+   *  flush). Most unterminated debounce flushes carry no flag today, so the
+   *  endsWith("\n") check in the reducer is the load-bearing signal; this
+   *  only adds precision when the writer does say so. */
+  partial?: boolean
 }
 
 export interface ToolSegment extends SegmentBase {
@@ -156,16 +162,29 @@ export function reduceConversation(
         const turn = openAssistant(rec)
         const last = turn.segments[turn.segments.length - 1]
         if (last && last.kind === "assistant-text") {
-          last.text += rec.text
-        } else {
-          turn.segments.push({
-            kind: "assistant-text",
-            id: `seg-${rec.seq}`,
-            seq: rec.seq,
-            ts: rec.ts,
-            text: rec.text,
-          })
+          appendTextDelta(last, rec)
+          break
         }
+        // The daemon's transcript debounce can flush an unterminated mid-word
+        // fragment ("Bien re"), let a tool-call record land, then flush the
+        // continuation ("çu — …"). Terminated lines carry their trailing "\n"
+        // (transcript-writer contract), so an earlier assistant-text segment
+        // in THIS turn that does not end in "\n" (or was explicitly flagged
+        // `partial`) is still mid-line — continue it in place rather than
+        // splitting the sentence into a second paragraph after the interleave.
+        const open = lastAssistantText(turn)
+        if (open && (open.partial === true || !open.text.endsWith("\n"))) {
+          appendTextDelta(open, rec)
+          break
+        }
+        turn.segments.push({
+          kind: "assistant-text",
+          id: `seg-${rec.seq}`,
+          seq: rec.seq,
+          ts: rec.ts,
+          text: rec.text,
+          ...(rec.partial === true ? { partial: true } : {}),
+        })
         break
       }
       case "thought": {
@@ -282,6 +301,11 @@ export function reduceConversation(
         break
       }
       case "turn-end":
+        // A terminal event settles an adapter's orphaned tool starts. Hermes
+        // can omit completion frames for nested/parallel calls; a completed
+        // turn is the authoritative proof that these cards are no longer
+        // running. Existing explicit results retain their output/error state.
+        settlePendingTools(assistant)
         assistant = undefined
         break
       default:
@@ -290,6 +314,33 @@ export function reduceConversation(
   }
 
   return { version: CONVERSATION_SCHEMA_VERSION, sessionId, turns, usage, cursor }
+}
+
+/** Most recent assistant-text segment of a turn, looking past interleaved
+ *  non-text segments (tool cards, reasoning, …). */
+function lastAssistantText(turn: ConversationTurn): TextSegment | undefined {
+  for (let i = turn.segments.length - 1; i >= 0; i--) {
+    const seg = turn.segments[i]!
+    if (seg.kind === "assistant-text") return seg
+  }
+  return undefined
+}
+
+/** Fold a text-delta record into an existing segment, keeping the segment's
+ *  `partial` hint in step with the latest folded record. */
+function appendTextDelta(seg: TextSegment, rec: SessionEventRecord): void {
+  seg.text += rec.text ?? ""
+  if (rec.partial === true) seg.partial = true
+  else delete seg.partial
+}
+
+function settlePendingTools(turn: ConversationTurn | undefined): void {
+  if (!turn) return
+  for (const segment of turn.segments) {
+    if (segment.kind === "tool" && segment.status === "pending") {
+      segment.status = "ok"
+    }
+  }
 }
 
 function mergeUsage(

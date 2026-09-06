@@ -40,6 +40,8 @@ describe("parseArgs", () => {
       "node_modules",
       "--link",
       "projects/agentproto/ts",
+      "--write-file",
+      '{"path":"pnpm-workspace.yaml","content":"virtualStoreDir: /tmp/vstore\\n","mode":"append"}',
       "--no-cleanup",
       "--yes",
     ])
@@ -54,8 +56,21 @@ describe("parseArgs", () => {
       depsCmd: "pnpm install --prefer-offline",
       copyGlobs: ["envs/**/.env.local", "secrets/*.json"],
       linkPaths: ["node_modules", "projects/agentproto/ts"],
+      writeFiles: [{ path: "pnpm-workspace.yaml", content: "virtualStoreDir: /tmp/vstore\n", mode: "append" }],
     })
     expect(yes).toBe(true)
+  })
+
+  it("throws CliUsageError when --write-file isn't valid JSON", () => {
+    expect(() =>
+      parseArgs(["run", "--repo", "/tmp/repo", "--slug", "s", "--task", "t", "--gate", "true", "--write-file", "not json"]),
+    ).toThrow(/not valid JSON/)
+  })
+
+  it("throws CliUsageError when --write-file JSON is missing path/content", () => {
+    expect(() =>
+      parseArgs(["run", "--repo", "/tmp/repo", "--slug", "s", "--task", "t", "--gate", "true", "--write-file", '{"path":"x"}']),
+    ).toThrow(/requires \{"path"/)
   })
 
   it("resolves a relative --repo against cwd", () => {

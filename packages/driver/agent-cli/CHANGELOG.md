@@ -1,5 +1,102 @@
 # @agentproto/driver-agent-cli
 
+## 2.4.1
+
+### Patch Changes
+
+- Updated dependencies [0012980]
+  - @agentproto/acp@0.8.0
+  - @agentproto/command-sandbox@0.2.0
+  - @agentproto/define-doctype@0.1.1
+
+## 2.4.0
+
+### Minor Changes
+
+- dfda0b1: Fix spawn ENOENT on launchd daemons: resolve npx/npm to sibling binaries, ensure exec dir on child PATH, and disambiguate missing cwd from missing binary in error messages.
+- 12bb9e8: Add support for tracking model switches sent as ordinary prompts. Introduces an optional `activeModel` field to `SessionDescriptor` that captures the model believed to be running after a live switch, distinct from `model` (the requested/spawn-time value). The daemon learns switches from two paths: (1) a successful `setModel` call (verified, mirrors `model`), or (2) a `/model <id>` command sent as a plain conversational prompt followed by an adapter acknowledgement (unverified, advisory only — for UI display, never billing). Exports `isModelSwitchAcknowledgement()` and `parseModelSwitchCommand()` from agent-cli for reuse across both paths. VS Code's composer chip now renders "requested → active" when they diverge.
+
+### Patch Changes
+
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/acp@0.7.3
+
+## 2.3.1
+
+### Patch Changes
+
+- 76f2c78: Multi-surface external subscriptions — one adapter can now declare BOTH a Claude and a ChatGPT native OAuth login, so mastracode/opencode's subscription eligibility no longer forces an anthropic-or-openai choice. `authSubscription` accepts a single surface (unchanged) OR an array of surfaces, one per billing provider; two entries claiming the same provider scope (or two unscoped entries) are rejected at manifest-validation time rather than resolved arbitrarily at spawn time. The runtime's old `subscriptionAppliesTo` boolean predicate is replaced by `subscriptionSurfaceFor`, which resolves the MATCHING surface for a spawn's resolved provider — used by `resolveAuthSpec` and the three mirrored direct-methods projections (`session-spawn.ts`, `session-restart-core.ts`, `catalog-models.ts`) so they stay in lockstep. `verifyLocalLoginPresent` now takes an optional provision-recipe `methodId` (convention `<provider>-oauth`) so a multi-surface spawn verifies the RIGHT login file instead of always checking the recipe's default method. mastracode declares both `{external: true, provider: "anthropic"}` and `{external: true, provider: "openai"}` — its ChatGPT login (`openaiCodexOAuthProvider`) is stored in its own auth.json under the key `openai-codex`, verified live. opencode declares the same pair: its ChatGPT OAuth login was reverse-engineered from the shipped binary (no OSS source available for this build) and is keyed under the SAME `openai` provider id its API-key flow already uses — there is no separate "chatgpt" key, confirmed by tracing the binary's generic `Cli.providers.login` → `Auth.set(provider.id, …)` write path. Both adapters' provision recipes gained an `openai-oauth` method alongside the existing `anthropic-oauth` one.
+- 64088e0: Refuse to run a derived-from-model adapter on its default model when the requested model was not applied. Launching opencode with an id its server can't resolve (e.g. a claude-code-style `…@openrouter` suffix) used to warn on the daemon's stderr and silently run — and bill — the server's default `anthropic/claude-sonnet-4-5` instead; hermes had the same hole one strategy over (its spawn-time `/model <id>` control turn's result was ignored), and jcode a protocol over (its CLI silently falls back to its own default on an unknown `--model` id — observed live: `--model totally-bogus-xyz` → started on `gpt-5.6-sol`/OpenAI). Three guards now share one contract for `routeSelection:"derived-from-model"` adapters: the ACP client records a connect-time model rejection structurally (`AcpClientSession.modelApplyRejection`) and the driver refuses the spawn on a rejected `set_config_option` (opencode-style `apply:"config"`) or an unacknowledged/failed `/model` control turn (hermes-style `apply:"command"`); the print arm aborts a turn whose jcode-ndjson `start` line reports a model contradicting the requested one (basename compare, `@route`-suffix/`provider/`-prefix tolerant). Every refusal names the requested id and the concrete reason. Free/fixed-routing adapters keep the agentproto#186 warn-and-continue behavior unchanged; pi errors properly on its own (`Model not found`) and needs no guard.
+- e3ad769: Claude subscription on pi/opencode/mastracode — each through the door that actually exists — and honest subscription eligibility everywhere. The runtime assumed "Anthropic OATs work as API keys" for every model-derived adapter and silently injected the subscription OAuth token into `ANTHROPIC_API_KEY`, where Anthropic's edge rejects it as an invalid key after the session is live (observed on opencode: "Internal error: API key is invalid"). Subscription support now requires an explicit, provider-matching `authSubscription` surface, shared across all four eligibility/resolution sites via one `subscriptionAppliesTo` predicate. pi declares its documented bearer env (`ANTHROPIC_OAUTH_TOKEN`, scoped `provider: "anthropic"`) so a Claude subscription profile runs pi's anthropic models natively. opencode and mastracode declare `external` anthropic-scoped subscriptions — each CLI's OWN Claude Pro/Max OAuth login (`opencode auth login`; mastracode's `/login`), backed by new `opencode`/`mastracode` provision recipes pointing at each CLI's auth store: the runtime verifies the login is present (fail-loud), injects nothing, and scrubs the api-key vars so a leftover key can't override it. Adapters/models with no matching surface fail fast at spawn with an actionable message instead of failing opaquely upstream, and the catalog stops advertising subscription profiles as runnable on them.
+- Updated dependencies [64088e0]
+- Updated dependencies [baf8570]
+  - @agentproto/acp@0.7.2
+
+## 2.3.0
+
+### Minor Changes
+
+- 27a22ca: Persistent per-session isolated adapter config directories to enable native resume after adapter respawns.
+
+  Previously, the isolated `CLAUDE_CONFIG_DIR` was a throwaway mkdtemp recreated on every spawn. This meant the SDK's conversation store (projects/<cwd-slug>/<uuid>.jsonl) was lost on respawn, causing resumeSessionId to degrade to a digest fallback every time an adapter process was reaped and restarted.
+
+  The fix introduces `SessionDescriptor.adapterConfigDir` to persist the config location across respawns, keyed by the first session id in a lineage (`~/.agentproto/adapter-config/<sessionId>`). The runtime threads this through all spawn paths (agent_start, session_restart, lazy resume, cron, judges, webhooks, workflow steps), and the driver preserves the SDK's own state when reusing a persistent dir while always re-asserting `mcpServers: {}` to prevent ambient leaks from mid-session `claude mcp add` commands.
+
+  Backward compatible: legacy rows without the new field keep today's digest-fallback behavior.
+
+- cbe11c2: Fix jcode print arm: add `--ndjson` output format and move `run` subcommand to `bin_args` so composed flags land after it (not before). Add comprehensive jcode NDJSON event mapper with full test coverage. Implement fail-fast TTY handling for interactive setup steps: refuse pre-spawn when stdin is not a TTY, return distinct `EXIT_SETUP_NEEDS_TTY (78)` to surface the condition separately from real failures. Add `needsInteractiveSetup` flag to `AdapterInstallResult` and VS Code install action to offer "Open Setup Terminal" for TTY-blocked installs.
+
+### Patch Changes
+
+- ce7cbb7: Append actionable PATH hint when spawn fails with ENOENT, helping users diagnose daemon environment issues.
+
+## 2.2.2
+
+### Patch Changes
+
+- bf3407e: Fix unhandled ChildProcess 'error' events that crash the daemon on spawn failures (e.g., bad binary, missing PATH entry). Resolve "node" binary to process.execPath to sidestep PATH lookup issues in minimal launchd environments. Convert spawn errors to rejected promises instead of unhandled exceptions.
+- 82ca9e6: Fix daemon crash from unhandled spawn errors and PATH-based node resolution issues:
+  - Add error event listeners to spawn processes to prevent unhandled exceptions from crashing the daemon
+  - Resolve `bin: "node"` in agent CLI definitions to `process.execPath` instead of relying on PATH lookup, preventing failures in launchd environments with minimal PATH
+  - Fix auth method availability detection for models with `modelDerivedApiKey` by checking both `authSubscription` and `modelDerivedApiKey` for oauth-bearer eligibility
+  - Improve test mocks to properly emit spawn events, enabling proper coverage of spawn failure scenarios
+
+- Updated dependencies [b5ec52b]
+  - @agentproto/acp@0.7.1
+
+## 2.2.1
+
+### Patch Changes
+
+- 08bcd4a: Fix: Always suppress attribution (PR footer / commit trailer) in isolated agent-cli spawns, preventing settings leakage from operator's global configuration. Isolated processes now receive an explicit empty `attribution` configuration to close the ambient-leak surface.
+
+## 2.2.0
+
+### Minor Changes
+
+- 3e187e5: Add Google Antigravity adapter and extend print-arm event mapper.
+  - **New adapter: @agentproto/adapter-antigravity** — AIP-45 print/headless adapter for Google Antigravity's `agy` CLI (a multi-model coding agent supporting Gemini, Claude, GPT-OSS). Includes auth documentation (OS keyring + Google Sign-In), sandbox policy, and model/option configuration.
+  - **Print-arm event mapper extension** — Added `antigravity-stream-json` event schema handler to support `agy`'s custom wire-event taxonomy (discriminated by `event` field, nested `conversation_id`, incremental `text_delta` fragments). The mapper handles text streaming, tool calls, tool errors, usage tracking, and session resumption via `--conversation <id>`. Supports single wire lines that fan out to multiple StreamEvents (e.g., a tool step's terminal DONE carries both call and result).
+  - **Type safety** — Introduced `PrintEventSchema` type to union all supported event taxonomies; updated Zod schema validation to include `antigravity-stream-json`.
+  - **Catalog entries** — Added antigravity to the CLI adapter catalog; also included two new ACP generic agents (Mistral Vibe, Kimi CLI) with their VS Code lettermark overrides.
+
+### Patch Changes
+
+- 492240c: Fix: unconditionally isolate CLAUDE_CONFIG_DIR for all claude-code spawns to prevent inheritance of ambient global MCP server configuration. Previously only isolated when a permission mode was explicitly requested, leading to production incidents where unscoped workers could self-spawn uncontrolled child sessions through circular MCP references. Now every claude-code spawn gets an isolated temporary config directory with explicit empty mcpServers, preventing the SDK from loading real ~/.claude.json. The permission-mode settings.json file write remains conditional on whether a mode was requested.
+
 ## 2.1.0
 
 ### Minor Changes

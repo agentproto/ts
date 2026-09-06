@@ -1,0 +1,734 @@
+/**
+ * Tests for `agentproto app serve` (`commands/app-serve.ts`):
+ * bridge-script construction + injection, declared ui.port parsing, and the
+ * `/__agentproto/tool-call` proxy contract (bad body / daemon unreachable /
+ * success). Every case is hermetic — the tool-call route is exercised with a
+ * mocked client (the real daemon isn't needed and isn't contacted). No live
+ * bind is done here; `runAppServe`'s full flow is covered by the pieces below.
+ */
+
+import { describe, it, expect, afterEach, vi } from "vitest"
+
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import type { IncomingMessage, ServerResponse } from "node:http"
+import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
+import {
+  applyCors,
+  buildBridgeScript,
+  injectBridge,
+  readDeclaredUIPort,
+  resolveRequestedPort,
+  readDeclaredUITools,
+  readDeclaredCategory,
+  readDeclaredLibraryBookIds,
+  callDaemonTool,
+  resolveListenHost,
+  sanitizeUploadName,
+  resolveInboxTarget,
+  UploadSizeTracker,
+  MAX_UPLOAD_BYTES,
+  resolveRemoteMcpTarget,
+  resolveRemoteAppResourceUri,
+  createDaemonMcpClientGetter,
+} from "../app-serve.js"
+
+// Captures the options `createDaemonMcpClientGetter` hands to the transport
+// constructor, without a real network connection: the transport's
+// constructor runs synchronously before `client.connect()` is awaited, so
+// this still captures the auth header even though connect() then fails
+// (this fake has no `start`/`send`) and the returned getter rejects.
+vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => {
+  class FakeTransport {
+    static lastOpts: unknown
+    constructor(_url: URL, opts?: unknown) {
+      FakeTransport.lastOpts = opts
+    }
+  }
+  return { StreamableHTTPClientTransport: FakeTransport }
+})
+
+const tmpRoots: string[] = []
+
+async function mktmp(prefix = "app-serve-test-"): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix))
+  tmpRoots.push(dir)
+  return dir
+}
+
+afterEach(async () => {
+  for (const p of tmpRoots) await rm(p, { recursive: true, force: true })
+  tmpRoots.length = 0
+})
+
+describe("buildBridgeScript", () => {
+  it("defines window.McpApp with connect returning callTool/updateModelContext/openLink/onTeardown", () => {
+    const script = buildBridgeScript("/__agentproto/tool-call")
+    expect(script).toContain("window.McpApp")
+    expect(script).toContain("connect")
+    expect(script).toContain("callTool")
+    expect(script).toContain("updateModelContext")
+    expect(script).toContain("openLink")
+    expect(script).toContain("onTeardown")
+  })
+
+  it("callTool POSTs the tool name + args to the configured route and resolves with the body", () => {
+    const script = buildBridgeScript("/__agentproto/tool-call")
+    expect(script).toContain('var ROUTE = "/__agentproto/tool-call"')
+    expect(script).toContain('fetch(ROUTE')
+    expect(script).toContain('JSON.stringify({ name: name, args: args || {} })')
+  })
+
+  it("onTeardown registers a beforeunload cleanup (standalone tab lifecycle)", () => {
+    const script = buildBridgeScript("/x")
+    expect(script).toContain('addEventListener("beforeunload"')
+  })
+})
+
+describe("buildBridgeScript + RUNNER_SELECT_SCRIPT", () => {
+  it("concatenates cleanly so injectBridge places both before app scripts, bridge first", () => {
+    const combined = buildBridgeScript("/__agentproto/tool-call") + RUNNER_SELECT_SCRIPT
+    const html = "<html><head><title>t</title></head><body><script>window.McpApp.connect();</script></body></html>"
+    const out = injectBridge(html, combined)
+    expect(out).toContain("window.McpApp")
+    expect(out).toContain("window.AgentprotoUI")
+    expect(out.indexOf("window.McpApp = {")).toBeLessThan(out.indexOf("window.AgentprotoUI = window.AgentprotoUI"))
+    expect(out.indexOf("window.AgentprotoUI")).toBeLessThan(out.indexOf("</head>"))
+  })
+})
+
+describe("injectBridge", () => {
+  it("injects the script immediately before </head>, so it runs before app scripts", () => {
+    const script = "<script>/* bridge */</script>"
+    const html = "<html><head><title>t</title></head><body><script>window.McpApp.connect();</script></body></html>"
+    const out = injectBridge(html, script)
+    expect(out.indexOf(script)).toBeLessThan(out.indexOf("</head>"))
+    expect(out.indexOf(script)).toBeLessThan(out.indexOf("window.McpApp.connect()"))
+    expect(out).toContain('<title>t</title>')
+  })
+
+  it("falls back to prepending when there is no </head> or structural tag", () => {
+    const script = "<script>/* bridge */</script>"
+    const out = injectBridge("Panel", script)
+    expect(out.startsWith(script)).toBe(true)
+  })
+
+  it("falls back to after <head> when there is a head but no closing tag", () => {
+    const script = "<script>/* bridge */</script>"
+    const out = injectBridge("<html><head><body>Panel</body></html>", script)
+    expect(out.indexOf(script)).toBeLessThan(out.indexOf("<body>"))
+  })
+})
+
+describe("applyCors", () => {
+  function fakeReqRes(headers: Record<string, string> = {}) {
+    const req = { headers } as unknown as IncomingMessage
+    const set: Record<string, string> = {}
+    const res = {
+      setHeader: (name: string, value: string) => {
+        set[name] = value
+      },
+    } as unknown as ServerResponse
+    return { req, res, set }
+  }
+
+  it("allows any origin so a cross-origin viewer page can reach the tool-call bridge", () => {
+    const { req, res, set } = fakeReqRes()
+    applyCors(req, res)
+    expect(set["Access-Control-Allow-Origin"]).toBe("*")
+  })
+
+  it("allows GET, POST, and OPTIONS", () => {
+    const { req, res, set } = fakeReqRes()
+    applyCors(req, res)
+    expect(set["Access-Control-Allow-Methods"]).toBe("GET,POST,OPTIONS")
+  })
+
+  it("echoes the preflight's requested headers when present", () => {
+    const { req, res, set } = fakeReqRes({
+      "access-control-request-headers": "content-type,x-custom",
+    })
+    applyCors(req, res)
+    expect(set["Access-Control-Allow-Headers"]).toBe("content-type,x-custom")
+  })
+
+  it("defaults Access-Control-Allow-Headers to content-type", () => {
+    const { req, res, set } = fakeReqRes()
+    applyCors(req, res)
+    expect(set["Access-Control-Allow-Headers"]).toBe("content-type")
+  })
+})
+
+describe("readDeclaredUIPort", () => {
+  async function writeAppMd(dir: string, frontmatter: string) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(dir, ".agentproto", "APP.md"),
+      `---\n${frontmatter}---\n`,
+      "utf8",
+    )
+  }
+
+  it("resolveRequestedPort: --port wins, then PORT env, else undefined", () => {
+    expect(resolveRequestedPort("8123", { PORT: "9000" })).toEqual({
+      value: "8123",
+      source: "--port",
+    })
+    expect(resolveRequestedPort(undefined, { PORT: " 9000 " })).toEqual({
+      value: "9000",
+      source: "PORT env",
+    })
+    expect(resolveRequestedPort("", { PORT: "9000" })?.source).toBe("PORT env")
+    expect(resolveRequestedPort(undefined, { PORT: "" })).toBeUndefined()
+    expect(resolveRequestedPort(undefined, {})).toBeUndefined()
+  })
+
+  it("reads a valid ui.port from APP.md frontmatter", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nui:\n  path: .agentproto/ui/index.html\n  port: 8123\n")
+    expect(await readDeclaredUIPort(dir)).toBe(8123)
+  })
+
+  it("returns undefined when no ui.port is declared", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nagents:\n  - id: a\n")
+    expect(await readDeclaredUIPort(dir)).toBeUndefined()
+  })
+
+  it("returns undefined for a missing APP.md", async () => {
+    const dir = await mktmp()
+    expect(await readDeclaredUIPort(dir)).toBeUndefined()
+  })
+
+  it("returns undefined for an invalid port value (string / out of range)", async () => {
+    const strDir = await mktmp()
+    await writeAppMd(strDir, "schema: app/v1\nui:\n  port: \"8123\"\n")
+    expect(await readDeclaredUIPort(strDir)).toBeUndefined()
+
+    const rangeDir = await mktmp()
+    await writeAppMd(rangeDir, "schema: app/v1\nui:\n  port: 99999\n")
+    expect(await readDeclaredUIPort(rangeDir)).toBeUndefined()
+  })
+})
+
+describe("resolveListenHost", () => {
+  it("returns 127.0.0.1 when no host option is given", () => {
+    expect(resolveListenHost()).toBe("127.0.0.1")
+    expect(resolveListenHost(undefined)).toBe("127.0.0.1")
+  })
+
+  it("returns the caller-supplied address when given", () => {
+    expect(resolveListenHost("0.0.0.0")).toBe("0.0.0.0")
+    expect(resolveListenHost("::1")).toBe("::1")
+  })
+})
+
+describe("readDeclaredUITools", () => {
+  async function writeAppMd(dir: string, frontmatter: string) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(dir, ".agentproto", "APP.md"),
+      `---\n${frontmatter}---\n`,
+      "utf8",
+    )
+  }
+
+  it("reads a ui.tools list from APP.md frontmatter", async () => {
+    const dir = await mktmp()
+    await writeAppMd(
+      dir,
+      "schema: app/v1\nui:\n  path: .agentproto/ui/index.html\n  tools:\n    - app_run\n    - app_status\n",
+    )
+    expect(await readDeclaredUITools(dir)).toEqual(["app_run", "app_status"])
+  })
+
+  it("returns an empty array when ui.tools is explicitly declared as []", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nui:\n  path: .agentproto/ui/index.html\n  tools: []\n")
+    expect(await readDeclaredUITools(dir)).toEqual([])
+  })
+
+  it("returns undefined when ui.tools is not declared (absent field)", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nui:\n  path: .agentproto/ui/index.html\n")
+    expect(await readDeclaredUITools(dir)).toBeUndefined()
+  })
+
+  it("returns undefined when there is no ui section at all", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nagents:\n  - id: a\n")
+    expect(await readDeclaredUITools(dir)).toBeUndefined()
+  })
+
+  it("returns undefined for a missing APP.md", async () => {
+    const dir = await mktmp()
+    expect(await readDeclaredUITools(dir)).toBeUndefined()
+  })
+})
+
+describe("readDeclaredCategory", () => {
+  async function writeAppMd(dir: string, frontmatter: string) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(dir, ".agentproto", "APP.md"),
+      `---\n${frontmatter}---\n`,
+      "utf8",
+    )
+  }
+
+  it("reads a declared category from APP.md frontmatter", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\ncategory: book\n")
+    expect(await readDeclaredCategory(dir)).toBe("book")
+  })
+
+  it("returns undefined when category is not declared", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nagents:\n  - id: a\n")
+    expect(await readDeclaredCategory(dir)).toBeUndefined()
+  })
+
+  it("returns undefined for a missing APP.md", async () => {
+    const dir = await mktmp()
+    expect(await readDeclaredCategory(dir)).toBeUndefined()
+  })
+
+  it("returns undefined for a non-string category value", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\ncategory: 42\n")
+    expect(await readDeclaredCategory(dir)).toBeUndefined()
+  })
+})
+
+describe("readDeclaredLibraryBookIds", () => {
+  async function writeAppMd(dir: string, frontmatter: string) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(dir, ".agentproto", "APP.md"),
+      `---\n${frontmatter}---\n`,
+      "utf8",
+    )
+  }
+
+  it("reads book ids from a declared library.books block", async () => {
+    const dir = await mktmp()
+    await writeAppMd(
+      dir,
+      "schema: app/v1\nlibrary:\n  books:\n    - id: book1\n      title: Book One\n    - id: book2\n",
+    )
+    expect(await readDeclaredLibraryBookIds(dir)).toEqual(["book1", "book2"])
+  })
+
+  it("returns an empty array when no library block is declared", async () => {
+    const dir = await mktmp()
+    await writeAppMd(dir, "schema: app/v1\nagents:\n  - id: a\n")
+    expect(await readDeclaredLibraryBookIds(dir)).toEqual([])
+  })
+
+  it("returns an empty array when library.books is empty or malformed", async () => {
+    const emptyDir = await mktmp()
+    await writeAppMd(emptyDir, "schema: app/v1\nlibrary:\n  books: []\n")
+    expect(await readDeclaredLibraryBookIds(emptyDir)).toEqual([])
+
+    const malformedDir = await mktmp()
+    await writeAppMd(malformedDir, "schema: app/v1\nlibrary:\n  notBooks: true\n")
+    expect(await readDeclaredLibraryBookIds(malformedDir)).toEqual([])
+  })
+
+  it("returns an empty array for a missing APP.md", async () => {
+    const dir = await mktmp()
+    expect(await readDeclaredLibraryBookIds(dir)).toEqual([])
+  })
+})
+
+describe("callDaemonTool", () => {
+  it("returns 400 for a malformed body", async () => {
+    const [status, body] = await callDaemonTool(
+      async () => new Client({ name: "t", version: "0" }, { capabilities: {} }),
+      { name: 42 },
+    )
+    expect(status).toBe(400)
+    expect((body as { error: string }).error).toBe("bad_request")
+  })
+
+  it("returns 502 with a friendly message when the daemon is unreachable", async () => {
+    const [status, body] = await callDaemonTool(
+      () => Promise.reject(new Error("connect ECONNREFUSED")),
+      { name: "command_execute" },
+    )
+    expect(status).toBe(502)
+    expect((body as { message: string }).message).toContain("Start the daemon first")
+  })
+
+  it("forwards the call through the client and returns the MCP result envelope", async () => {
+    const called: { name: string; args: unknown }[] = []
+    const fakeClient = {
+      callTool: (params: { name: string; arguments?: unknown }) => {
+        called.push({ name: params.name, args: params.arguments })
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "read_file", args: { path: "/tmp/x" } },
+    )
+    expect(status).toBe(200)
+    expect(called).toEqual([{ name: "read_file", args: { path: "/tmp/x" } }])
+    expect(body).toEqual({ content: [{ type: "text", text: "ok" }] })
+  })
+
+  it("normalizes non-object args to {} and still forwards", async () => {
+    const called: unknown[] = []
+    const fakeClient = {
+      callTool: (params: { name: string; arguments?: unknown }) => {
+        called.push(params.arguments)
+        return Promise.resolve({ content: [] })
+      },
+    }
+    await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "do", args: "not-an-object" },
+    )
+    expect(called).toEqual([{}])
+  })
+
+  it("returns 403 for a tool not in the allowlist, without calling the daemon", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [] })
+      },
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "command_execute", args: {} },
+      ["app_run", "app_status"],
+    )
+    expect(status).toBe(403)
+    expect((body as { error: string }).error).toBe("forbidden")
+    expect((body as { message: string }).message).toContain("command_execute")
+    expect(called).toHaveLength(0)
+  })
+
+  it("checks the inner tool of an app_tool_call meta-call against the allowlist, not the wrapper name", async () => {
+    // The scaffolded UI bridge (create-agentproto-app templates, vscode app
+    // panel) always sends `callTool("app_tool_call", { appId, tool, args })`.
+    // The daemon's /apps/:appId/tool-call route unwraps that before checking
+    // ui.tools; `app serve` must do the same or every UI call 403s.
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    const [status] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "app_tool_call", args: { appId: "demo", tool: "app_run", args: {} } },
+      ["app_run", "app_status"],
+    )
+    expect(status).toBe(200)
+    expect(called).toEqual(["app_tool_call"])
+  })
+
+  it("rejects an app_tool_call meta-call whose inner tool is outside the allowlist", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [] })
+      },
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "app_tool_call", args: { appId: "demo", tool: "command_execute", args: {} } },
+      ["app_run", "app_status"],
+    )
+    expect(status).toBe(403)
+    expect((body as { message: string }).message).toContain('tool "command_execute"')
+    expect(called).toHaveLength(0)
+  })
+
+  it("forwards a tool that is in the allowlist", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    const [status] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "app_run", args: {} },
+      ["app_run", "app_status"],
+    )
+    expect(status).toBe(200)
+    expect(called).toEqual(["app_run"])
+  })
+
+  it("allows all tools when allowedTools is undefined (ui.tools absent from APP.md)", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    const [status] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "command_execute", args: {} },
+      undefined,
+    )
+    expect(status).toBe(200)
+    expect(called).toEqual(["command_execute"])
+  })
+
+  it("blocks all tools when allowedTools is an empty array", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [] })
+      },
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "app_run", args: {} },
+      [],
+    )
+    expect(status).toBe(403)
+    expect((body as { error: string }).error).toBe("forbidden")
+    expect((body as { message: string }).message).toContain("(empty)")
+    expect(called).toHaveLength(0)
+  })
+
+  it("allows APP_UI_DISCOVERY_TOOLS even when the declared ui.tools allowlist omits them", async () => {
+    const called: string[] = []
+    const fakeClient = {
+      callTool: (params: { name: string }) => {
+        called.push(params.name)
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] })
+      },
+    }
+    for (const tool of APP_UI_DISCOVERY_TOOLS) {
+      const [status] = await callDaemonTool(
+        () => Promise.resolve(fakeClient as unknown as Client),
+        { name: tool, args: {} },
+        ["app_run"],
+      )
+      expect(status).toBe(200)
+    }
+    expect(called).toEqual([...APP_UI_DISCOVERY_TOOLS])
+  })
+
+  it("still blocks a non-discovery tool when allowedTools is an empty array", async () => {
+    const fakeClient = {
+      callTool: () => Promise.resolve({ content: [] }),
+    }
+    const [status, body] = await callDaemonTool(
+      () => Promise.resolve(fakeClient as unknown as Client),
+      { name: "command_execute", args: {} },
+      [],
+    )
+    expect(status).toBe(403)
+    expect((body as { error: string }).error).toBe("forbidden")
+  })
+})
+
+describe("sanitizeUploadName", () => {
+  it("accepts a plain filename, preserving its extension", () => {
+    expect(sanitizeUploadName("photo.png")).toBe("photo.png")
+  })
+
+  it("takes the basename of a path-y value", () => {
+    expect(sanitizeUploadName("some/dir/photo.png")).toBe("photo.png")
+    expect(sanitizeUploadName("some\\dir\\photo.png")).toBe("photo.png")
+  })
+
+  it("rejects traversal attempts", () => {
+    expect(sanitizeUploadName("../../etc/passwd")).toBe("passwd")
+    expect(sanitizeUploadName("..")).toBeNull()
+    expect(sanitizeUploadName("foo..bar")).toBeNull()
+  })
+
+  it("rejects empty and null/undefined names", () => {
+    expect(sanitizeUploadName("")).toBeNull()
+    expect(sanitizeUploadName(null)).toBeNull()
+    expect(sanitizeUploadName(undefined)).toBeNull()
+    expect(sanitizeUploadName("dir/")).toBeNull()
+  })
+
+  it("rejects dotfiles", () => {
+    expect(sanitizeUploadName(".env")).toBeNull()
+    expect(sanitizeUploadName(".gitignore")).toBeNull()
+  })
+})
+
+describe("resolveInboxTarget", () => {
+  it("uses the given name when the inbox is empty", async () => {
+    const dir = await mktmp()
+    const { finalName, path } = await resolveInboxTarget(dir, "report.pdf")
+    expect(finalName).toBe("report.pdf")
+    expect(path).toBe(join(dir, "report.pdf"))
+  })
+
+  it("suffixes with -2, -3, ... before the extension on collision", async () => {
+    const dir = await mktmp()
+    await writeFile(join(dir, "report.pdf"), "one", "utf8")
+    const first = await resolveInboxTarget(dir, "report.pdf")
+    expect(first.finalName).toBe("report-2.pdf")
+
+    await writeFile(join(dir, "report-2.pdf"), "two", "utf8")
+    const second = await resolveInboxTarget(dir, "report.pdf")
+    expect(second.finalName).toBe("report-3.pdf")
+  })
+
+  it("suffixes extensionless names directly", async () => {
+    const dir = await mktmp()
+    await writeFile(join(dir, "notes"), "one", "utf8")
+    const { finalName } = await resolveInboxTarget(dir, "notes")
+    expect(finalName).toBe("notes-2")
+  })
+})
+
+describe("UploadSizeTracker", () => {
+  it("stays under the default 200 MB limit for small uploads", () => {
+    const tracker = new UploadSizeTracker()
+    expect(tracker.add(1024)).toBe(false)
+    expect(tracker.bytes).toBe(1024)
+  })
+
+  it("flags the chunk that pushes the running total past the limit", () => {
+    const tracker = new UploadSizeTracker(100)
+    expect(tracker.add(60)).toBe(false)
+    expect(tracker.add(60)).toBe(true)
+    expect(tracker.bytes).toBe(120)
+  })
+
+  it("defaults to MAX_UPLOAD_BYTES (200 MB)", () => {
+    expect(MAX_UPLOAD_BYTES).toBe(200 * 1024 * 1024)
+    const tracker = new UploadSizeTracker()
+    expect(tracker.add(MAX_UPLOAD_BYTES)).toBe(false)
+    expect(tracker.add(1)).toBe(true)
+  })
+})
+
+describe("resolveRemoteMcpTarget", () => {
+  const ENV_KEYS = [
+    "AGENTPROTO_REMOTE_MCP_URL",
+    "AGENTPROTO_REMOTE_MCP_AUTH",
+    "AGENTPROTO_REMOTE_APP_ID",
+  ] as const
+  const saved: Record<string, string | undefined> = {}
+
+  function clearEnv() {
+    for (const k of ENV_KEYS) {
+      saved[k] = process.env[k]
+      delete process.env[k]
+    }
+  }
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+  })
+
+  it("returns undefined when neither the flag nor the env var is set (default local-daemon path)", () => {
+    clearEnv()
+    expect(resolveRemoteMcpTarget({})).toBeUndefined()
+  })
+
+  it("enables remote mode from --remote-mcp-url alone", () => {
+    clearEnv()
+    expect(resolveRemoteMcpTarget({ "remote-mcp-url": "https://api.example.com/mcp" })).toEqual({
+      url: "https://api.example.com/mcp",
+    })
+  })
+
+  it("falls back to AGENTPROTO_REMOTE_MCP_URL / _AUTH / _APP_ID env vars", () => {
+    clearEnv()
+    process.env.AGENTPROTO_REMOTE_MCP_URL = "https://api.example.com/mcp"
+    process.env.AGENTPROTO_REMOTE_MCP_AUTH = "gld_env_token"
+    process.env.AGENTPROTO_REMOTE_APP_ID = "dashboard"
+    expect(resolveRemoteMcpTarget({})).toEqual({
+      url: "https://api.example.com/mcp",
+      authToken: "gld_env_token",
+      appId: "dashboard",
+    })
+  })
+
+  it("prefers an explicit flag over its env-var fallback", () => {
+    clearEnv()
+    process.env.AGENTPROTO_REMOTE_MCP_URL = "https://env.example.com/mcp"
+    process.env.AGENTPROTO_REMOTE_MCP_AUTH = "gld_env_token"
+    process.env.AGENTPROTO_REMOTE_APP_ID = "env-app"
+    expect(
+      resolveRemoteMcpTarget({
+        "remote-mcp-url": "https://flag.example.com/mcp",
+        "remote-mcp-auth": "gld_flag_token",
+        "remote-app-id": "flag-app",
+      }),
+    ).toEqual({
+      url: "https://flag.example.com/mcp",
+      authToken: "gld_flag_token",
+      appId: "flag-app",
+    })
+  })
+
+  it("trims whitespace and omits authToken/appId when blank", () => {
+    clearEnv()
+    expect(
+      resolveRemoteMcpTarget({
+        "remote-mcp-url": "  https://api.example.com/mcp  ",
+        "remote-mcp-auth": "   ",
+        "remote-app-id": "",
+      }),
+    ).toEqual({ url: "https://api.example.com/mcp" })
+  })
+
+  it("treats a blank --remote-mcp-url (and blank env fallback) as unset", () => {
+    clearEnv()
+    expect(resolveRemoteMcpTarget({ "remote-mcp-url": "   " })).toBeUndefined()
+  })
+})
+
+describe("resolveRemoteAppResourceUri", () => {
+  it("maps a bare app id to its ui:// resource URI", () => {
+    expect(resolveRemoteAppResourceUri("dashboard")).toBe("ui://dashboard")
+  })
+
+  it("passes a full ui:// URI through unchanged", () => {
+    expect(resolveRemoteAppResourceUri("ui://dashboard")).toBe("ui://dashboard")
+  })
+
+  it("passes any other schemed URI through unchanged", () => {
+    expect(resolveRemoteAppResourceUri("https://example.com/dashboard")).toBe(
+      "https://example.com/dashboard",
+    )
+  })
+})
+
+describe("createDaemonMcpClientGetter", () => {
+  it("sends no Authorization header for the local daemon (no authToken)", async () => {
+    const getClient = createDaemonMcpClientGetter("http://127.0.0.1:18790/mcp", "test")
+    await getClient().catch(() => {})
+    expect((StreamableHTTPClientTransport as unknown as { lastOpts: unknown }).lastOpts).toEqual({})
+  })
+
+  it("sends a Bearer Authorization header when authToken is given (remote-target path)", async () => {
+    const getClient = createDaemonMcpClientGetter("https://api.example.com/mcp", "test", {
+      authToken: "gld_abc123",
+    })
+    await getClient().catch(() => {})
+    expect((StreamableHTTPClientTransport as unknown as { lastOpts: unknown }).lastOpts).toEqual({
+      requestInit: { headers: { Authorization: "Bearer gld_abc123" } },
+    })
+  })
+})

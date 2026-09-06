@@ -1,5 +1,109 @@
 # @agentproto/adapter-claude-code
 
+## 2.1.10
+
+### Patch Changes
+
+- Updated dependencies [692d659]
+- Updated dependencies [6bfb633]
+  - @agentproto/model-catalog@0.9.2
+  - @agentproto/driver-agent-cli@2.4.1
+  - @agentproto/provider-presets@0.6.1
+
+## 2.1.9
+
+### Patch Changes
+
+- Updated dependencies [139c198]
+  - @agentproto/model-catalog@0.9.1
+
+## 2.1.8
+
+### Patch Changes
+
+- 001a2a0: Refactor model catalog to derive existence from live-synced sources, not hand-typed pricing rows.
+
+  **Model existence inversion**: `LlmModelId` union now derives from `CONTEXT_WINDOWS` + `OPENROUTER_ROUTES` keys, with pricing overlaid on top. Hand-written pricing is now bounded to the `PRICING_OVERRIDES` map (rare edge cases only).
+
+  **Native model lists**: Both Anthropic adapters now use `listNativeModelIds("anthropic")` with an empty denylist, eliminating the hand-maintained list. Google native ids extracted to `google-native-model-ids.mjs` for reuse across sync scripts.
+
+  **Sync scripts**: Added generators for Anthropic, xAI, Google, OpenAI, MiniMax. Fallback strategy: Anthropic uses `CONTEXT_WINDOWS` when API key unavailable.
+
+  **Pricing optionality**: `ResolvedModel.pricing?: LLMPricing` signals "known but unpriced" models. Consumers updated (enrichment, registry, cost dispatcher).
+
+  **Data quality**: Generated prices replace stale hand-typed entries. No pricing regressions; Anthropic, Mistral, Moonshot, Groq all carry live sync-derived values or documented placeholders.
+
+- Updated dependencies [4b924c9]
+- Updated dependencies [008a483]
+- Updated dependencies [3496977]
+- Updated dependencies [008a483]
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+- Updated dependencies [001a2a0]
+- Updated dependencies [5dcc733]
+  - @agentproto/model-catalog@0.9.0
+  - @agentproto/driver-agent-cli@2.4.0
+
+## 2.1.7
+
+### Patch Changes
+
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+  - @agentproto/driver-agent-cli@2.3.1
+
+## 2.1.6
+
+### Patch Changes
+
+- 9473480: Bump @agentclientprotocol/claude-agent-acp from 0.59.0 to 0.67.0 to track Claude Code 2.1.x. Includes fixes for denied-tool resolution and ExitPlanMode single-tool representation, improving plan-mode rendering reliability. Changes are backward compatible; new session capabilities (fork/list/resume/delete) are additive.
+- Updated dependencies [132ffe5]
+  - @agentproto/provider-presets@0.6.1
+
+## 2.1.5
+
+### Patch Changes
+
+- Updated dependencies [27a22ca]
+- Updated dependencies [0bdd564]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+  - @agentproto/provider-presets@0.6.0
+
+## 2.1.4
+
+### Patch Changes
+
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/driver-agent-cli@2.2.2
+
+## 2.1.3
+
+### Patch Changes
+
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 2.1.2
+
+### Patch Changes
+
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/driver-agent-cli@2.2.0
+
+## 2.1.1
+
+### Patch Changes
+
+- e7ab81a: Expose Kimi K3 model across adapters and llm-endpoint library. Adds direct moonshot routes and llm-endpoint proxy variants for unified model routing.
+- Updated dependencies [832870d]
+  - @agentproto/provider-presets@0.5.1
+
 ## 2.1.0
 
 ### Minor Changes

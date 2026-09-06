@@ -3,7 +3,7 @@
   "displayName": "agentproto desktop",
   "description": "Native desktop shell for the agentproto daemon — sessions, health, spawn/drive/stop from a standalone window.",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -21,8 +21,8 @@
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@tauri-apps/cli": "^2",
-    "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"

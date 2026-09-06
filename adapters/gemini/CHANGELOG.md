@@ -1,5 +1,70 @@
 # @agentproto/adapter-gemini
 
+## 0.2.8
+
+### Patch Changes
+
+- @agentproto/driver-agent-cli@2.4.1
+- @agentproto/provider-kit@0.4.2
+
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+  - @agentproto/driver-agent-cli@2.4.0
+  - @agentproto/provider-kit@0.4.2
+
+## 0.2.6
+
+### Patch Changes
+
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+  - @agentproto/driver-agent-cli@2.3.1
+
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/driver-agent-cli@2.2.2
+
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/driver-agent-cli@2.2.0
+
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [c1399f3]
+  - @agentproto/provider-kit@0.4.1
+
 ## 0.2.0
 
 ### Minor Changes

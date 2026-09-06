@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/tooling",
-  "version": "0.1.0-alpha.0",
-  "description": "Shared development tooling for the agentproto workspace — TypeScript configs (base, bundler) and tsup config factory. Internal package; not published to npm.",
+  "version": "0.1.0",
+  "description": "Shared development tooling for the agentproto workspace — TypeScript configs (base, bundler) and tsup config factory.",
   "keywords": [
     "agentproto",
     "tooling",
@@ -11,10 +11,13 @@
   "homepage": "https://agentproto.sh",
   "repository": {
     "type": "git",
-    "url": "https://github.com/agentproto/agentproto"
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/tooling"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
   },
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
   "exports": {
     "./typescript/base.json": "./typescript/base.json",
@@ -26,8 +29,12 @@
   "files": [
     "typescript",
     "tsup",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "peerDependencies": {
     "tsup": "^8.5.0",
     "typescript": "^5.0.0"

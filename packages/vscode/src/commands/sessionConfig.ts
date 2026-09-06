@@ -19,7 +19,8 @@
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
-import type { SessionDescriptor } from "../client/types.js"
+import type { RestartOverridePayload, SessionDescriptor } from "../client/types.js"
+import { resumeBadge } from "./chipPickers.logic.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
 import { runCreateAuthProfileFlow } from "./authProfiles.js"
@@ -32,7 +33,7 @@ import {
   planChipDispatch,
   type RestartOverride,
 } from "./sessionConfigDispatch.logic.js"
-import { describeRestart, parseRestartResult } from "./sessionRestart.logic.js"
+import { describeRestart, type RestartResult } from "./sessionRestart.logic.js"
 
 interface ChipItem extends vscode.QuickPickItem {
   chip: ConfigChip
@@ -204,7 +205,7 @@ async function runSessionConfigFlow(
       await vscode.commands.executeCommand("agentproto.configureSession", session)
       return
     case "restart":
-      await applyRestart(client, store, session, plan.override, plan.value)
+      await applyRestart(client, store, session, plan.axis, plan.override, plan.value)
       return
     case "live": {
       const result = await applyLive(client, session.id, plan.axis, plan.value)
@@ -213,7 +214,7 @@ async function runSessionConfigFlow(
         return
       }
       if (liveFallbackToRestart(result)) {
-        await applyRestart(client, store, session, plan.override, plan.value)
+        await applyRestart(client, store, session, plan.axis, plan.override, plan.value)
         return
       }
       vscode.window.showWarningMessage(
@@ -232,40 +233,56 @@ async function applyLive(
   value: string,
 ): Promise<{ applied?: boolean; reason?: string }> {
   try {
+    // In-place switches over the dedicated HTTP routes (chip-pickers WP) — same
+    // non-fatal { applied, reason } contract; a posture with no native mode
+    // comes back { applied:false, reason:"requires-restart" }, which
+    // liveFallbackToRestart routes into the restart-with-override path below.
     if (axis === "model") return await client.setSessionModel(sessionId, value)
-    if (axis === "effort") {
-      return await client.mcpCall("agent_set_effort", { sessionId, effort: value })
-    }
-    if (axis === "posture") {
-      return await client.mcpCall("agent_set_posture", { sessionId, posture: value })
-    }
+    if (axis === "effort") return await client.setSessionEffort(sessionId, value)
+    if (axis === "posture") return await client.setSessionPosture(sessionId, value)
     return { applied: false, reason: "not-supported" }
   } catch (err) {
     return { applied: false, reason: err instanceof Error ? err.message : String(err) }
   }
 }
 
-/** Apply an axis change via `session_restart` with an override, revealing the
- *  new session on success and surfacing the daemon's reason on failure. */
+/** Apply an axis change via the restart-with-override route (chip-pickers WP):
+ *  confirm (a restart is disruptive; the conversation carries over) → restart →
+ *  REBIND the view to the new session id → badge what actually carried over from
+ *  `resumeVia`/`resumeFallback`. A rejected override throws (never a silent
+ *  blank session), surfaced as an error. */
 async function applyRestart(
   client: DaemonClient,
   store: SessionStore,
   session: SessionDescriptor,
+  axis: ConfigAxis,
   override: RestartOverride,
   value: string,
 ): Promise<void> {
+  // We're about to restart — always confirm, even for a live axis that reached
+  // here via requires-restart. The wording matches restartConfirmMessage's
+  // contract (named axis + carry-over promise).
+  const go = await vscode.window.showWarningMessage(
+    `Switching ${axisLabel(axis)} to "${value}" restarts the session — the conversation carries over. Continue?`,
+    { modal: true },
+    "Restart & switch",
+  )
+  if (go !== "Restart & switch") return
   try {
-    const raw = await client.mcpCall("session_restart", { idOrName: session.id, ...override })
-    const result = parseRestartResult(raw)
+    const result = await client.restartSessionWithOverride(session.id, override as RestartOverridePayload)
     await store.refreshAll()
-    if (!result) {
-      vscode.window.showErrorMessage(
-        `agentproto: could not apply \"${value}\" — ${daemonErrorText(raw)}`,
-      )
-      return
-    }
-    vscode.window.showInformationMessage(describeRestart(session, result))
+    // Rebind: the restart minted a NEW session id — follow it, don't leave the
+    // view on the dead session.
     await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
+    const badge = resumeBadge(result.resumeVia, result.resumeFallback)
+    const restarted: RestartResult = {
+      id: result.id,
+      ...(result.label ? { label: result.label } : {}),
+      ...(result.resumedFrom ? { resumedFrom: result.resumedFrom } : {}),
+      ...(result.resumeVia ? { resumeVia: result.resumeVia } : {}),
+      ...(result.resumeFallback ? { resumeFallback: "summary" } : {}),
+    }
+    vscode.window.showInformationMessage(`${describeRestart(session, restarted)} · ${badge.label}`)
   } catch (err) {
     vscode.window.showErrorMessage(
       `agentproto: restart failed — ${err instanceof Error ? err.message : String(err)}`,
@@ -290,13 +307,4 @@ function axisLabel(axis: string): string {
     default:
       return axis
   }
-}
-
-function daemonErrorText(raw: unknown): string {
-  if (raw && typeof raw === "object") {
-    const obj = raw as Record<string, unknown>
-    if (typeof obj.message === "string") return obj.message
-    if (typeof obj.error === "string") return obj.error
-  }
-  return "the daemon returned an unrecognised result"
 }

@@ -265,11 +265,35 @@ const ORIGIN_LABELS: Record<string, string> = {
   cron: "Cron",
   codex: "Codex",
   cowork: "Cowork",
+  gate: "Automated gate reviews",
   [UNKNOWN_ORIGIN_SLUG]: "Unknown source",
 }
 
 export function originLabelFor(origin: string): string {
   return ORIGIN_LABELS[origin] ?? origin
+}
+
+/**
+ * Origins the daemon stamps for a session that a MACHINE started for its own
+ * bookkeeping, not a person — today just `gate` (POST /sessions/agent's
+ * `origin: "gate"`, stamped by the agentik-studio push gate's per-push
+ * reviewer spawn). Before the gate started labelling+killing its own
+ * sessions, 77 of them piled up live on one operator's daemon, and every
+ * consumer of the sessions list rendered them identically to a session the
+ * operator actually started.
+ *
+ * This is the ONE place that string compares against an origin slug to
+ * decide "is this machinery" — sessionsTree.ts (group glyph + sort),
+ * statusBar.logic.ts (excluded from the needs-you/stalled/working/idle
+ * counts), and sessionFilter.logic.ts (the origin filter dimension +
+ * agentproto.hideMachineSessions default) all read `isMachineOrigin`
+ * instead of re-testing `=== "gate"`. A second machine origin is a one-line
+ * addition to this Set, not a grep across three files.
+ */
+const MACHINE_ORIGINS = new Set<string>(["gate"])
+
+export function isMachineOrigin(origin: string | undefined): boolean {
+  return origin !== undefined && MACHINE_ORIGINS.has(origin)
 }
 
 /** Stable TreeItem id for an origin group row — distinct namespace from the
@@ -288,6 +312,13 @@ export function originGroupNodeId(origin: string): string {
  * divider + parentSessionId nesting). Buckets sort alphabetically by label,
  * with the `unknown` bucket always last. A root with no origin lands in
  * `unknown` rather than being dropped.
+ *
+ * Machine-origin buckets (isMachineOrigin — e.g. `gate`) sort AFTER every
+ * human-origin bucket regardless of count, and only then alphabetically
+ * among themselves — an operator with one live session of their own and a
+ * hundred queued gate reviews should never scroll past the gate group to
+ * reach their own. `unknown` still sorts last of all: it isn't "known to be
+ * automated", it's "we don't know", which is worse than either.
  */
 export function buildOriginGroups(
   sessions: readonly SessionDescriptor[],
@@ -303,6 +334,9 @@ export function buildOriginGroups(
   return groups.sort((a, b) => {
     if (a.slug === UNKNOWN_ORIGIN_SLUG) return b.slug === UNKNOWN_ORIGIN_SLUG ? 0 : 1
     if (b.slug === UNKNOWN_ORIGIN_SLUG) return -1
+    const aMachine = isMachineOrigin(a.slug)
+    const bMachine = isMachineOrigin(b.slug)
+    if (aMachine !== bMachine) return aMachine ? 1 : -1
     return a.label.localeCompare(b.label)
   })
 }

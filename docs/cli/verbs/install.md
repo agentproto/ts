@@ -2,6 +2,7 @@
 
 ```text
 agentproto install <adapter-slug>             [--force] [--dry-run] [--skip-setup]
+                                              [--allow-unverified]
 agentproto install runtime-profile/<name>     [--force] [--dry-run] [--skip-setup]
                                               [--cwd <dir>] [--package <pkg>]
 agentproto install skill/<slug>               [--pack <path|name>] [--target ...]
@@ -27,7 +28,7 @@ already-installed checks pass.
 agentproto install claude-code
 agentproto install hermes
 agentproto install opencode --force          # reinstall ignoring version_check
-agentproto install gemini-cli --dry-run      # print would-be steps
+agentproto install gemini --dry-run          # print would-be steps
 agentproto install goose --skip-setup        # install binary, skip post-install pipeline
 ```
 
@@ -41,15 +42,18 @@ reads the adapter's `AgentCliHandle` and walks its `install[]` block.
 | Method | Status | Notes |
 |--------|:--:|-------|
 | `npm` | ✓ | `npm install [-g] <package>` |
+| `uv` | ✓ | `uv tool install <package>` (Python-based agents) |
+| `pip` | ✓ | `pip install [--user] <package>` |
+| `pip3` | ✓ | `pip3 install [--user] <package>` |
+| `pipx` | ✓ | `pipx install <package>` (isolated Python tools) |
 | `brew` | ✓ | `brew install <package>` (supports `tap/repo/pkg` form) |
 | `curl` | ✓ | Downloads `<url>`, optionally verifies `verify_sha256`, then `bash <script>`. Warns when no SHA is declared. |
 | `download` | ✓ | Fetches archive (`.tar`/`.tar.gz`/`.tgz`/`.zip`), optionally verifies `verify_sha256`, extracts, copies `extract_bin` into `~/.local/bin` (or `$AGENTPROTO_BIN_DIR`), `chmod +x`. |
-| `pip` | ✓ | `pip install [--user] <package>` |
 | `cargo` | ✓ | `cargo install <package>` |
 | `go` | ✓ | `go install <package>` |
 | `apt` / `dnf` / `pacman` | ✗ | Privilege-escalation policy isn't defined yet. |
 | `choco` / `scoop` | ✗ | Windows-only; not yet platform-detected. |
-| `vendored` | ✗ | Needs a workspace root concept that the host CLI doesn't have yet. |
+| `vendored` | ✓ | Generic ACP agents: run the agent's `install_hint` through a recognized package manager (`npm`, `uv`, `pip`/`pip3`, `pipx`, `brew`, `cargo`, `go`). Fails loud with an actionable message if the hint is unsupported or the package manager is missing. |
 
 Methods are tried **in order until one succeeds**. So adapters can
 ship an `npm` step followed by a `curl`/`download` fallback, and the
@@ -57,6 +61,18 @@ fallback fires automatically when npm isn't viable.
 
 `experimental: true` steps are skipped by default — they're listed in
 the output for visibility but not run.
+
+### `--allow-unverified`
+
+```bash
+agentproto install claude-code --allow-unverified
+```
+
+Opt-in to running `curl | bash` or `download` installers that declare no
+`verify_sha256`. In an interactive terminal the CLI warns and proceeds; in a
+non-interactive context (agent, daemon, CI) an unverified installer is
+refused by default as a supply-chain mitigation. Pass `--allow-unverified`
+to override the refusal.
 
 ### Idempotency
 

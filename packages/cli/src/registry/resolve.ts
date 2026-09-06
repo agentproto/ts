@@ -2,22 +2,29 @@
  * Resolve a slug like "claude-code" to a runnable `AgentCliHandle`.
  *
  * Resolution order:
- *   1. `@agentproto/adapter-<slug>` from npm (must default-export or
- *      named-export an `AgentCliHandle` — convention is the camelCased
- *      slug, e.g. `claudeCode`).
- *   2. (TODO) `~/.agentproto/adapters/<slug>/AGENT-CLI.md` on disk.
- *   3. (TODO) bundled fallbacks for the canonical adapters.
+ *   1. `@agentproto/adapter-<slug>` from npm/node_modules (must
+ *      default-export or named-export an `AgentCliHandle` — convention is
+ *      the camelCased slug, e.g. `claudeCode`). Also covers a workspace
+ *      `workspace:*` dependency resolved the normal pnpm-symlink way — an
+ *      adapter that already resolves this way keeps doing so unchanged.
+ *   2. Workspace-local: `adapters/<slug>/dist/index.mjs`, checked only when
+ *      step 1 misses, if the daemon is running inside this monorepo's own
+ *      workspace and that adapter has been built locally — lets an adapter
+ *      under active development resolve before it's ever added as a
+ *      dependency anywhere or published to npm.
+ *   3. (TODO) `~/.agentproto/adapters/<slug>/AGENT-CLI.md` on disk.
+ *   4. (TODO) bundled fallbacks for the canonical adapters.
  *
- * Step 1 covers 100% of v0 usage. The on-disk path is only there for
- * users authoring their own adapters; we'll add it once `defineAgentCli`
- * supports MD-source authoring end to end.
+ * Step 1 covers 100% of v0 usage. The on-disk path (step 3) is only there
+ * for users authoring their own adapters; we'll add it once
+ * `defineAgentCli` supports MD-source authoring end to end.
  */
 
 import { promises as fs } from "node:fs"
-import { join } from "node:path"
+import { dirname, join, resolve as resolvePath } from "node:path"
 import { homedir } from "node:os"
 import { createRequire } from "node:module"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import type {
   AgentCliHandle,
   AgentCliMode,
@@ -147,6 +154,15 @@ export interface AdapterInfo {
    * from the auth-derivation axis (`modelDerivedApiKey`).
    */
   routeSelection?: AgentCliRouteSelection
+  /**
+   * Billing endpoint this adapter's own auth bills (manifest-level
+   * `provider`, or an ACP spec's `provider`), e.g. "mistral" for
+   * mistral-vibe. Lets a client link the harness to that provider's
+   * wallets even when the adapter declares no model list. Undefined when
+   * the adapter's billing target isn't a single stated endpoint — never
+   * guessed here.
+   */
+  provider?: string
 }
 
 /** One entry of an adapter's declared model menu, projected from a
@@ -286,6 +302,156 @@ export class AdapterImportFailedError extends Error {
 }
 
 /**
+ * Pick an importable entry target out of a package.json `exports` value —
+ * a plain string target, or a conditions object searched `import` → `node`
+ * → `default` (recursing into nested condition objects; `types` and
+ * `require` are deliberately not candidates for a dynamic `import()`).
+ * Returns undefined when nothing importable is declared.
+ */
+function pickExportTarget(value: unknown): string | undefined {
+  if (typeof value === "string") return value
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      const picked = pickExportTarget(candidate)
+      if (picked !== undefined) return picked
+    }
+    return undefined
+  }
+  if (typeof value !== "object" || value === null) return undefined
+  const record = value as Record<string, unknown>
+  for (const condition of ["import", "node", "default"]) {
+    const picked = pickExportTarget(record[condition])
+    if (picked !== undefined) return picked
+  }
+  return undefined
+}
+
+/** The subset of a package.json `importPackageManually` reads to find the
+ *  package's entry file. */
+interface ManifestEntryFields {
+  exports?: unknown
+  module?: unknown
+  main?: unknown
+}
+
+/**
+ * Resolve a package.json to the relative path of its import entry:
+ * `exports` (root subpath `"."` in a subpath map, or the whole value when
+ * it's a bare target / conditions object), then `module`, then `main`,
+ * then the `index.js` legacy default. Exported for tests only — production
+ * callers go through `importPackageManually`.
+ */
+export function _pickPackageEntryForTests(pkg: ManifestEntryFields): string {
+  return pickPackageEntry(pkg)
+}
+
+function pickPackageEntry(pkg: ManifestEntryFields): string {
+  if (pkg.exports !== undefined) {
+    const isSubpathMap =
+      typeof pkg.exports === "object" &&
+      pkg.exports !== null &&
+      "." in (pkg.exports as Record<string, unknown>)
+    const root = isSubpathMap
+      ? (pkg.exports as Record<string, unknown>)["."]
+      : pkg.exports
+    const target = pickExportTarget(root)
+    if (target !== undefined) return target
+  }
+  if (typeof pkg.module === "string") return pkg.module
+  if (typeof pkg.main === "string") return pkg.main
+  return "index.js"
+}
+
+/**
+ * Import a bare `@agentproto/*` specifier by hand: walk the same
+ * `node_modules/@agentproto` roots the adapter lister already walks, read
+ * the first matching package.json with plain (uncached) `fs`, compute its
+ * entry file, and import it by absolute file URL with the usual
+ * `?v=<mtime>` cache-buster. This bypasses Node's specifier resolution —
+ * and therefore its package.json read cache — completely; see the call
+ * site in `importFresh` for the negative-cache incident this exists for.
+ * Returns undefined when the package genuinely isn't on disk (caller
+ * rethrows the original resolver error, keeping the honest "not
+ * installed" message). `rootsOverride` is for tests.
+ */
+async function importPackageManually(
+  specifier: string,
+  rootsOverride?: readonly string[]
+): Promise<Record<string, unknown> | undefined> {
+  if (!specifier.startsWith("@agentproto/")) return undefined
+  const packageDirName = specifier.slice("@agentproto/".length)
+  const roots = rootsOverride ?? (await collectAgentprotoNamespaceRoots())
+  for (const root of roots) {
+    const packageDir = join(root, packageDirName)
+    let raw: string
+    try {
+      raw = await fs.readFile(join(packageDir, "package.json"), "utf8")
+    } catch {
+      continue /* no package here — try the next root */
+    }
+    let entryRelative: string
+    try {
+      entryRelative = pickPackageEntry(JSON.parse(raw) as ManifestEntryFields)
+    } catch {
+      continue /* unparseable package.json — try the next root */
+    }
+    const entryPath = join(packageDir, entryRelative)
+    try {
+      await fs.stat(entryPath)
+    } catch {
+      continue /* declared entry missing on disk — try the next root */
+    }
+    return importFreshFromResolvedPath(entryPath, specifier)
+  }
+  return undefined
+}
+
+/** Test-only: run the manual walk against explicit roots. */
+export function _importPackageManuallyForTests(
+  specifier: string,
+  roots: readonly string[]
+): Promise<Record<string, unknown> | undefined> {
+  return importPackageManually(specifier, roots)
+}
+
+/**
+ * True only for the stale-negative-package.json-cache failure shape: the
+ * resolver found the package DIRECTORY (it exists on disk) but reused a
+ * cached "no package.json" read, so it fell back to the CJS-era guess of
+ * `<packageDir>/index.js` and failed on that path. The two failures this
+ * must NOT match: a genuinely-absent package (bare-specifier message,
+ * "Cannot find package '@agentproto/adapter-x'"), and a mid-rebuild
+ * package (package.json read fine — the message names the real entry,
+ * e.g. `…/dist/index.mjs`, and the last-known-good fallback owns that
+ * case). Gating the manual walk on this signature keeps it from ever
+ * shadow-loading a second on-disk copy of a package in the healthy paths
+ * (a pnpm workspace can hold both the workspace package and a
+ * registry-published copy).
+ */
+function looksLikeStaleNegativePackageJsonCache(
+  err: unknown,
+  specifier: string
+): boolean {
+  if (!(err instanceof Error)) return false
+  const code = (err as NodeJS.ErrnoException).code
+  if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false
+  const packageDirName = specifier.split("/").pop() ?? specifier
+  return (
+    err.message.includes(`${packageDirName}/index.js`) ||
+    err.message.includes(`${packageDirName}\\index.js`)
+  )
+}
+
+/** Test-only: classify an import failure the way `importFresh`'s manual-
+ *  walk gate does. */
+export function _looksLikeStaleNegativePackageJsonCacheForTests(
+  err: unknown,
+  specifier: string
+): boolean {
+  return looksLikeStaleNegativePackageJsonCache(err, specifier)
+}
+
+/**
  * Dynamic-`import()` a bare specifier without inheriting Node's process-
  * lifetime ESM module cache. In a long-running daemon, `resolveAdapter`
  * calls stack up over hours/days — a plain `import(packageName)` returns
@@ -307,16 +473,17 @@ export class AdapterImportFailedError extends Error {
  * last-known-good fallback is what keeps that throw from being reported as
  * "not installed" — see there for the rest of the story.
  */
-async function importFresh(specifier: string): Promise<Record<string, unknown>> {
-  let resolvedPath: string
-  try {
-    resolvedPath = resolveFromHere.resolve(specifier)
-  } catch {
-    // Not resolvable to a file on disk from here (e.g. an export condition
-    // the CJS resolver can't see) — fall back to a plain import; there's
-    // no local file to bust a cache against.
-    return (await import(specifier)) as Record<string, unknown>
-  }
+/**
+ * Import an already-resolved absolute path with the same mtime cache-buster
+ * as `importFresh` below (shared so a workspace-local adapter's rebuilds
+ * are picked up live exactly like an npm-resolved one — see `importFresh`'s
+ * doc comment for why that matters in a long-running daemon). `specifier`
+ * is only used to phrase `AdapterImportFailedError`'s message.
+ */
+async function importFreshFromResolvedPath(
+  resolvedPath: string,
+  specifier: string
+): Promise<Record<string, unknown>> {
   let cacheBuster = ""
   try {
     cacheBuster = `?v=${(await fs.stat(resolvedPath)).mtimeMs}`
@@ -335,6 +502,153 @@ async function importFresh(specifier: string): Promise<Record<string, unknown>> 
       resolvedPath
     )
   }
+}
+
+async function importFresh(specifier: string): Promise<Record<string, unknown>> {
+  let resolvedPath: string
+  try {
+    resolvedPath = resolveFromHere.resolve(specifier)
+  } catch {
+    // Not resolvable to a file on disk from here (e.g. an export condition
+    // the CJS resolver can't see) — fall back to a plain import; there's
+    // no local file to bust a cache against.
+    try {
+      return (await import(specifier)) as Record<string, unknown>
+    } catch (importErr) {
+      // Last resort: resolve the package BY HAND, without Node's resolver.
+      // Node ≥23 caches a failed package.json read process-wide (the C++
+      // package-json reader keeps negative entries), so a package installed
+      // AFTER this process first probed for it stays invisible to BOTH the
+      // CJS resolve above and the bare `import()` here for the rest of the
+      // process lifetime — the resolver stats the now-existing package dir
+      // but reuses the cached "no package.json" and dies guessing at
+      // `<pkg>/index.js`. That is exactly the cold-install bootstrap flow:
+      // `agentproto install <slug>` fails resolution once (populating the
+      // negative cache), runs `npm i -g`, then retries in-process — and the
+      // retry failed on the first invocation, demanding a rerun. A manual
+      // walk with plain `fs` reads sees the fresh package.json, and importing
+      // the entry by absolute file URL sidesteps bare-specifier resolution
+      // entirely. (Node 22 doesn't cache the negative, which is why this
+      // only bit some machines.) Gated on the poisoned-cache failure shape
+      // so the walk never shadow-loads a second on-disk copy in the
+      // genuinely-absent or mid-rebuild paths — see
+      // `looksLikeStaleNegativePackageJsonCache`.
+      if (looksLikeStaleNegativePackageJsonCache(importErr, specifier)) {
+        const manual = await importPackageManually(specifier)
+        if (manual) return manual
+      }
+      throw importErr
+    }
+  }
+  return importFreshFromResolvedPath(resolvedPath, specifier)
+}
+
+let workspaceRootCache: string | null | undefined
+
+/** Test-only: drop the cached workspace-root lookup so tests can exercise
+ *  a fresh search. */
+export function _resetWorkspaceRootCacheForTests(): void {
+  workspaceRootCache = undefined
+}
+
+/** Test-only: force `findWorkspaceRoot` to report `root` without walking
+ *  disk, so workspace-local resolution can be exercised against a scratch
+ *  fixture instead of this repo's own `adapters/*`. Returns a restore
+ *  function that puts the previous cache state back. */
+export function _setWorkspaceRootForTests(root: string): () => void {
+  const prev = workspaceRootCache
+  workspaceRootCache = root
+  return () => {
+    workspaceRootCache = prev
+  }
+}
+
+/**
+ * Walk up from the daemon's cwd — and separately from this module's own
+ * location, so a pnpm-linked caller finds it regardless of caller cwd, the
+ * same reasoning `collectAgentprotoNamespaceRoots` in provider-kit already
+ * uses for its node_modules walk — looking for this monorepo's
+ * `pnpm-workspace.yaml` marker. Returns null (not a thrown error) when
+ * nothing turns up within a bounded number of parent hops, e.g. when the
+ * daemon runs outside this workspace entirely — that's the common case for
+ * a globally-installed daemon and just means step 1 is skipped.
+ *
+ * Cached for the process lifetime: the workspace root can't move while the
+ * daemon is running, and `resolveAdapter` calls this on every resolution.
+ */
+async function findWorkspaceRoot(): Promise<string | null> {
+  if (workspaceRootCache !== undefined) return workspaceRootCache
+  const starts = [process.cwd()]
+  try {
+    starts.push(dirname(fileURLToPath(import.meta.url)))
+  } catch {
+    /* import.meta not available in this context */
+  }
+  for (const start of starts) {
+    let cur = resolvePath(start)
+    for (let depth = 0; depth < 20; depth++) {
+      try {
+        await fs.stat(join(cur, "pnpm-workspace.yaml"))
+        workspaceRootCache = cur
+        return cur
+      } catch {
+        /* not here */
+      }
+      const parent = resolvePath(cur, "..")
+      if (parent === cur) break
+      cur = parent
+    }
+  }
+  workspaceRootCache = null
+  return null
+}
+
+/**
+ * Absolute path to `adapters/<slug>/dist/index.mjs` when the daemon is
+ * running inside this monorepo's own workspace and that adapter has been
+ * built locally. Returns null when there's no workspace root, or the built
+ * file isn't there — both cases just fall through to the npm path in
+ * `resolveAdapter`, unchanged.
+ */
+async function findWorkspaceLocalAdapterPath(slug: string): Promise<string | null> {
+  const root = await findWorkspaceRoot()
+  if (!root) return null
+  const candidate = join(root, "adapters", slug, "dist", "index.mjs")
+  try {
+    await fs.stat(candidate)
+    return candidate
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Every slug under `<workspaceRoot>/adapters/*` with a built
+ * `dist/index.mjs` — the local-build counterpart to
+ * `collectAgentprotoNamespaceRoots`'s node_modules walk, so
+ * `listInstalledAdapters()` surfaces an adapter under active development
+ * even before it's added as a dependency anywhere or published.
+ */
+async function discoverWorkspaceLocalSlugs(): Promise<string[]> {
+  const root = await findWorkspaceRoot()
+  if (!root) return []
+  const adaptersDir = join(root, "adapters")
+  let entries: string[] = []
+  try {
+    entries = await fs.readdir(adaptersDir)
+  } catch {
+    return []
+  }
+  const out: string[] = []
+  for (const entry of entries) {
+    try {
+      await fs.stat(join(adaptersDir, entry, "dist", "index.mjs"))
+      out.push(entry)
+    } catch {
+      /* not built */
+    }
+  }
+  return out
 }
 
 interface LastKnownGoodEntry {
@@ -396,9 +710,61 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   const camel = slugToCamel(slug)
   let mod: Record<string, unknown>
   let resolvedPackageName = packageName
+  // Specifier re-importable a second time by `withResolvedProprietaryAdapter`
+  // below (it rewrites a `protocol: "proprietary"` handle's self-referencing
+  // `adapter` field) — the package name, same as the npm path always used.
+  const proprietaryRewriteSpecifier = packageName
   try {
     mod = await importFresh(packageName)
   } catch (primaryErr) {
+    // npm/node_modules resolution missed — before the parent-package and
+    // generic-ACP fallbacks below, check for a workspace-local build:
+    // `adapters/<slug>/dist/index.mjs`, when the daemon is running inside
+    // this monorepo's own workspace and that adapter has been built
+    // locally. This is what lets an adapter under active development
+    // resolve before it's ever added as a dependency anywhere or
+    // published — see the module doc comment's resolution order.
+    //
+    // Deliberately AFTER the npm attempt, not before: an adapter that
+    // already resolves via npm/a workspace `workspace:*` dependency (the
+    // common case for every adapter shipped in this monorepo, which also
+    // has a local `dist/` from `pnpm build`) must keep reporting
+    // `source: "npm"` and importing through the exact same path it always
+    // has — changing that for an adapter that already works would be an
+    // unforced, silent behavior change for something this fix isn't
+    // trying to touch.
+    const workspaceLocalPath = await findWorkspaceLocalAdapterPath(slug)
+    if (workspaceLocalPath) {
+      try {
+        const localMod = await importFreshFromResolvedPath(workspaceLocalPath, packageName)
+        const localCandidate =
+          (localMod[camel] as AgentCliHandle | undefined) ??
+          (localMod.default as AgentCliHandle | undefined) ??
+          (localMod.handle as AgentCliHandle | undefined)
+        if (localCandidate && typeof localCandidate === "object" && "name" in localCandidate) {
+          const localCapabilitiesStrategy = localMod[`${camel}Capabilities`] as
+            | CapabilityStrategy
+            | undefined
+          const resolved: ResolvedAdapter = {
+            slug,
+            handle: withResolvedProprietaryAdapter(localCandidate, workspaceLocalPath),
+            source: "file",
+            packageName,
+            ...(typeof localCapabilitiesStrategy === "function"
+              ? { capabilitiesStrategy: localCapabilitiesStrategy }
+              : {}),
+          }
+          lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
+          return resolved
+        }
+      } catch {
+        /* workspace-local build present but broken/mid-rebuild — fall
+           through to the rest of the fallback chain below rather than
+           surfacing a workspace-local-specific error, since npm already
+           missed too and the generic/last-known-good paths still apply. */
+      }
+    }
+
     // Fallback: strip the last hyphen-segment and try the parent package,
     // looking for the full camelCase export there.
     // e.g. "claude-code-print" → "@agentproto/adapter-claude-code" + export "claudeCodePrint"
@@ -497,7 +863,7 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   const capabilitiesStrategy = mod[`${camel}Capabilities`] as CapabilityStrategy | undefined
   const resolved: ResolvedAdapter = {
     slug,
-    handle: withResolvedProprietaryAdapter(candidate, resolvedPackageName),
+    handle: withResolvedProprietaryAdapter(candidate, proprietaryRewriteSpecifier),
     source: "npm",
     packageName: resolvedPackageName,
     ...(typeof capabilitiesStrategy === "function" ? { capabilitiesStrategy } : {}),
@@ -525,6 +891,32 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
  * adapter sets typically change rarely (npm i / rm) and a fresh
  * scan stays fast (~10 packages worth of dynamic imports).
  */
+/** Project a resolved adapter into the UI-safe `AdapterInfo` shape shared
+ *  by both of `listInstalledAdapters`' discovery passes below. */
+function toAdapterInfo(slug: string, resolved: ResolvedAdapter): AdapterInfo {
+  const handle = resolved.handle as Record<string, unknown>
+  const modelsField = (handle.models as { allowed?: unknown } | undefined)?.allowed
+  const modelDetails = toModelDetails(modelsField)
+  return {
+    slug,
+    name: typeof handle.name === "string" ? handle.name : slug,
+    version: typeof handle.version === "string" ? handle.version : "?",
+    description: typeof handle.description === "string" ? handle.description : "",
+    protocol: typeof handle.protocol === "string" ? handle.protocol : "unknown",
+    streaming: !!(handle.capabilities as { streaming?: boolean })?.streaming,
+    packageName: resolved.packageName ?? `@agentproto/adapter-${slug}`,
+    commands: Array.isArray(handle.commands) ? (handle.commands as AgentCliCommand[]) : [],
+    models: modelDetails.map((m) => m.id),
+    modes: toAdapterModes(resolved.handle.modes),
+    modelDetails,
+    modelApply: toModelApply(handle.models),
+    ...(toRouteSelection(handle.routeSelection)
+      ? { routeSelection: toRouteSelection(handle.routeSelection) }
+      : {}),
+    ...(typeof handle.provider === "string" ? { provider: handle.provider } : {}),
+  }
+}
+
 export async function listInstalledAdapters(opts?: {
   /** Override the search root. Defaults to walking up from the cli
    *  package's own location until we hit a `node_modules/@agentproto`. */
@@ -554,30 +946,7 @@ export async function listInstalledAdapters(opts?: {
       seen.add(slug)
       try {
         const resolved = await resolveAdapter(slug)
-        const handle = resolved.handle as Record<string, unknown>
-        const modelsField = (handle.models as { allowed?: unknown } | undefined)?.allowed
-        const modelDetails = toModelDetails(modelsField)
-        const info: AdapterInfo = {
-          slug,
-          name: typeof handle.name === "string" ? handle.name : slug,
-          version: typeof handle.version === "string" ? handle.version : "?",
-          description:
-            typeof handle.description === "string" ? handle.description : "",
-          protocol:
-            typeof handle.protocol === "string" ? handle.protocol : "unknown",
-          streaming: !!(handle.capabilities as { streaming?: boolean })
-            ?.streaming,
-          packageName: resolved.packageName ?? `@agentproto/adapter-${slug}`,
-          commands: Array.isArray(handle.commands) ? (handle.commands as AgentCliCommand[]) : [],
-          models: modelDetails.map((m) => m.id),
-          modes: toAdapterModes(resolved.handle.modes),
-          modelDetails,
-          modelApply: toModelApply(handle.models),
-          ...(toRouteSelection(handle.routeSelection)
-            ? { routeSelection: toRouteSelection(handle.routeSelection) }
-            : {}),
-        }
-        out.push(info)
+        out.push(toAdapterInfo(slug, resolved))
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         // ERR_MODULE_NOT_FOUND / "Cannot find package" is the expected
@@ -597,6 +966,25 @@ export async function listInstalledAdapters(opts?: {
           )
         }
       }
+    }
+  }
+
+  // Workspace-local adapters built directly under `adapters/<slug>/dist`
+  // — not necessarily hoisted into any `node_modules/@agentproto` walked
+  // above (e.g. an adapter under active development, not yet added as a
+  // workspace dependency anywhere). Same `resolveAdapter()` call, same
+  // `seen` dedupe, so a slug reachable both ways is never listed twice.
+  for (const slug of await discoverWorkspaceLocalSlugs()) {
+    if (seen.has(slug)) continue
+    seen.add(slug)
+    try {
+      const resolved = await resolveAdapter(slug)
+      out.push(toAdapterInfo(slug, resolved))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(
+        `[agentproto/cli] listInstalledAdapters: skipping broken workspace-local adapter '${slug}': ${msg}`
+      )
     }
   }
 
@@ -921,6 +1309,7 @@ export async function listAdaptersWithCatalog(
       modelDetails: e.info?.modelDetails ?? [],
       modelApply: e.info?.modelApply ?? "config",
       ...(e.info?.routeSelection ? { routeSelection: e.info.routeSelection } : {}),
+      ...(e.info?.provider ? { provider: e.info.provider } : {}),
       status: stale ? ("unresolvable" as const) : e.status,
       ...(stale
         ? {
@@ -952,7 +1341,8 @@ export type AdapterListing = AdapterInfo & {
  * `ACP_CATALOG` + user `config.acpAgents`). Generic entries whose slug is
  * already covered by a native adapter are dropped, so a slug never appears
  * twice. Native adapters keep their richer status (`ready` after setup);
- * generic entries are `available` (bin on PATH) or `supported` (not yet).
+ * generic entries are `ready` (bin on PATH — they have no setup/auth axis
+ * to be pending on, see `AcpGenericListEntry`) or `supported` (not yet).
  */
 export async function listAdaptersWithAcp(
   catalog: readonly AdapterCatalogEntry[]

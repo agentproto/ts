@@ -23,9 +23,17 @@ function conditionPaths(entry: unknown): string[] {
 describe("@agentproto/apps package exports", () => {
   const paths = Object.values(pkg.exports).flatMap(conditionPaths)
 
-  it("declares subpath entries for both teams", () => {
+  it("declares subpath entries for all apps", () => {
     expect(Object.keys(pkg.exports)).toEqual(
-      expect.arrayContaining([".", "./code-team", "./content-team"]),
+      expect.arrayContaining([
+        ".",
+        "./code-team",
+        "./content-team",
+        "./mail-triage",
+        "./media-viewer",
+        "./ops-panel",
+        "./session-viewer",
+      ]),
     )
   })
 

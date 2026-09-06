@@ -20,6 +20,23 @@ export interface DaemonConfig {
   authHeaders?: Record<string, string>
 }
 
+const DEFAULT_RELEASE_CHECK_INTERVAL_MIN = 60
+const MIN_RELEASE_CHECK_INTERVAL_MIN = 10
+
+/** `agentproto.releaseCheck.intervalMin` — npm poll TTL for the release
+ *  indicator, in minutes. Default ~1 h, floor 10 (never below: a sub-10 min
+ *  npm poll would be aggressive noise, per the plan). */
+export function getReleaseCheckIntervalMin(): number {
+  const v = vscode.workspace.getConfiguration(SECTION).get<number>("releaseCheck.intervalMin")
+  if (typeof v === "number" && v >= MIN_RELEASE_CHECK_INTERVAL_MIN) return v
+  return DEFAULT_RELEASE_CHECK_INTERVAL_MIN
+}
+
+/** Convenience: the same interval in milliseconds. */
+export function getReleaseCheckIntervalMs(): number {
+  return getReleaseCheckIntervalMin() * 60_000
+}
+
 const SECTION = "agentproto"
 const DEFAULT_DAEMON_URL = "http://127.0.0.1:18790"
 

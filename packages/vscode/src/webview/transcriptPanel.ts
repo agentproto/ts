@@ -15,7 +15,8 @@
 
 import { randomBytes } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { homedir } from "node:os"
+import { isAbsolute, join } from "node:path"
 
 import * as vscode from "vscode"
 
@@ -34,11 +35,28 @@ import {
   parseUriList,
 } from "./attachments.logic.js"
 import { mentionQueryAt } from "./mentions.logic.js"
+import { commandQueryAt, filterCommands, leadingCommandEnd } from "./commands.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
-import { accessIdentity, contextGauge, defaultPostureLabel, harnessGlyph, postureLabel } from "./panelChrome.logic.js"
+import { accessIdentity, contextGauge, contextRingLevel, defaultPostureLabel, formatCostShort, harnessGlyph, postureLabel, projectPlan, titleStatusState } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
+import {
+  ASK_LONG_CHARS,
+  TITLE_MAX_CHARS,
+  activityFailed,
+  askOf,
+  buildBook,
+  chapterDurationMs,
+  chapterTitle,
+  clampTitle,
+  fillChapter,
+  firstSentence,
+  formatChapterDuration,
+  htmlToText,
+  newChapter,
+  pad2,
+} from "./conversationBook.logic.js"
 import type { SeenTracker } from "../services/seen.js"
-import { formatTitle } from "./transcript.logic.js"
+import { formatTitle, describePromptSource } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
 import { TranscriptPanelController } from "./transcriptPanelController.js"
 import { runChangeModelFlow } from "../commands/changeModel.js"
@@ -245,15 +263,44 @@ export async function handleWebviewMessage(
     case "changeModel":
       await runChangeModelFlow(controller, client)
       return
+    case "changeEffort":
+      // Per-axis picker: switches in place via POST /sessions/:id/effort, or
+      // routes to the restart-confirm flow if the value needs a restart.
+      await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+        sessionId: controller.session.id,
+        axis: "effort",
+      })
+      return
+    case "changeRoute":
+      // Restart-bound: configureSessionAxis runs the confirm → restart-with-
+      // override → rebind → resume-badge flow.
+      await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+        sessionId: controller.session.id,
+        axis: "route",
+      })
+      return
     case "changePosture":
+      await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+        sessionId: controller.session.id,
+        axis: "posture",
+      })
+      return
     case "changeAccess":
-      await vscode.commands.executeCommand("agentproto.configureSession", controller.session.id)
+      // Wallet — restart-bound; the per-axis flow runs the confirm → restart →
+      // rebind → resume-badge path.
+      await vscode.commands.executeCommand("agentproto.configureSessionAxis", {
+        sessionId: controller.session.id,
+        axis: "access",
+      })
       return
     case "send":
-      await controller.onSend(msg.text, false)
+      await controller.onSend(msg.text, false, msg.force, msg.localId)
       return
     case "interruptSend":
       await controller.onSend(msg.text, true)
+      return
+    case "cancelQueued":
+      await controller.onCancelQueued(msg.queueId)
       return
     case "stop":
       await controller.onStop()
@@ -302,7 +349,216 @@ export async function handleWebviewMessage(
       await outputDocs.show(doc.name, doc.text)
       return
     }
+    case "openBlock":
+      // A book narration block (table / code) the user popped out. The text is
+      // the webview's own rendered prose, so it opens directly — no host-side
+      // re-derivation, same read-only editor tab as a tool value.
+      await outputDocs.show(msg.name, msg.text)
+      return
+    case "openLink":
+      // A URL or file path in the transcript prose was clicked. External URLs
+      // hand off to the OS browser; file paths open in the editor, positioned
+      // at the cited line. Both validated defensively — a hostile/broken target
+      // is dropped quietly rather than thrown.
+      await openLinkTarget(msg.kind, msg.target, msg.line, controller)
+      return
+    case "resolveQuestion": {
+      // A permission-ask chip was clicked in the transcript. Resolve the
+      // daemon's pending permission by toolCallId, then respond.
+      if (!msg.toolCallId) {
+        void vscode.window.showWarningMessage("agentproto: permission has no toolCallId — cannot respond.")
+        return
+      }
+      const sessionId = controller.session.id
+      const permissions = await client.listPermissions(sessionId)
+      const perm = permissions.find(p => p.toolCallId === msg.toolCallId)
+      if (!perm) {
+        void vscode.window.showWarningMessage(
+          `agentproto: permission ${msg.toolCallId} not found (already resolved?).`,
+        )
+        return
+      }
+      await client.respondPermission(perm.id, { decision: msg.decision, optionId: msg.optionId })
+      return
+    }
   }
+}
+
+/**
+ * Open a transcript link. `external` → the OS browser (http/https/file only);
+ * `file` → an editor tab at `line` (1-based). File-path resolution:
+ *   - absolute path → itself
+ *   - `~/…`         → against the home dir
+ *   - relative      → against the session cwd, then each workspace folder,
+ *                     preferring the first that actually exists on disk
+ * A missing file surfaces a gentle notice, never an exception.
+ */
+export async function openLinkTarget(
+  kind: "external" | "file",
+  target: string,
+  line: number | undefined,
+  controller: TranscriptPanelController,
+): Promise<void> {
+  if (kind === "external") {
+    let uri: vscode.Uri
+    try {
+      uri = vscode.Uri.parse(target, true)
+    } catch {
+      return
+    }
+    // Belt-and-braces: the renderer only emits http/https/file, but never hand
+    // an arbitrary scheme to openExternal.
+    if (!["http", "https", "file"].includes(uri.scheme.toLowerCase())) return
+    await vscode.env.openExternal(uri)
+    return
+  }
+
+  const uri = await resolveFileTarget(target, controller)
+  if (!uri) {
+    void vscode.window.showInformationMessage(`agentproto: couldn't find "${target}".`)
+    return
+  }
+  try {
+    const doc = await vscode.workspace.openTextDocument(uri)
+    const selection =
+      line != null && line > 0
+        ? new vscode.Range(line - 1, 0, line - 1, 0)
+        : undefined
+    await vscode.window.showTextDocument(doc, {
+      viewColumn: vscode.ViewColumn.Beside,
+      preview: true,
+      preserveFocus: false,
+      selection,
+    })
+  } catch {
+    // openTextDocument only handles text: an image or other binary (a pasted
+    // screenshot attachment, a PDF) throws here. Hand it to VS Code's generic
+    // `vscode.open`, which routes each type to its real editor — the image
+    // preview for a PNG — so a clicked attachment opens instead of erroring.
+    try {
+      await vscode.commands.executeCommand("vscode.open", uri, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preview: true,
+      })
+    } catch {
+      void vscode.window.showInformationMessage(`agentproto: couldn't open "${target}".`)
+    }
+  }
+}
+
+/** Directories never worth searching when a link doesn't resolve directly. */
+const LINK_SEARCH_EXCLUDES = "**/{node_modules,dist,out,.git,.turbo,.next,coverage}/**"
+
+/**
+ * Strip the decorations a rendered link often carries so a path resolves:
+ * surrounding quotes/backticks/brackets, a truncation ellipsis (the render
+ * clamps long paths), a trailing `:line[:col]`, and trailing sentence
+ * punctuation. Returns the cleaned path (trimmed), possibly unchanged. Pure —
+ * exported for unit tests.
+ */
+export function sanitizeLinkTarget(target: string): string {
+  let t = target.trim()
+  t = t.replace(/^[`'"(<[]+/, "").replace(/[`'")>\]]+$/, "")
+  t = t.replace(/(?:…|\.\.\.)$/, "")
+  t = t.replace(/:\d+(?::\d+)?$/, "")
+  t = t.replace(/[.,;:]+$/, "")
+  return t.trim()
+}
+
+/** The direct on-disk candidates for a link target — home / absolute / the
+ *  session cwd + each workspace folder for a relative path. */
+function buildFileCandidates(target: string, controller: TranscriptPanelController): string[] {
+  const candidates: string[] = []
+  if (target.startsWith("~/") || target === "~") {
+    candidates.push(join(homedir(), target.slice(1)))
+  } else if (isAbsolute(target)) {
+    candidates.push(target)
+  } else {
+    const rel = target.replace(/^\.\//, "")
+    const cwd = controller.session.cwd
+    if (cwd) candidates.push(join(cwd, rel))
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      candidates.push(join(folder.uri.fsPath, rel))
+    }
+  }
+  return candidates
+}
+
+/** First candidate that exists on disk as a file, or undefined. Never throws. */
+async function firstExistingFile(candidates: string[]): Promise<vscode.Uri | undefined> {
+  for (const fsPath of candidates) {
+    const uri = vscode.Uri.file(fsPath)
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      if (stat.type === vscode.FileType.File) return uri
+    } catch {
+      // Not there — try the next candidate.
+    }
+  }
+  return undefined
+}
+
+/** Present multiple search hits and return the chosen file, or undefined if the
+ *  user dismissed the picker. Labels are workspace-relative for readability. */
+async function pickFileFromHits(
+  hits: readonly vscode.Uri[],
+  target: string,
+): Promise<vscode.Uri | undefined> {
+  const items = hits.map(uri => ({ label: vscode.workspace.asRelativePath(uri), uri }))
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: `Multiple files match "${target}" — pick one to open`,
+    matchOnDescription: true,
+  })
+  return picked?.uri
+}
+
+/**
+ * Resolve a file-path link target to an on-disk Uri, or undefined. Never throws.
+ *
+ * A rendered transcript link is often NOT a live, valid path from here: it can
+ * be a bare basename ("authProfilesWebviewPanel.ts"), a stale absolute path
+ * (a removed worktree), or clamped/decorated by the renderer. So the direct
+ * candidates are only the first rung — on a miss we sanitize, then search the
+ * workspace by progressively shorter path suffixes, then by basename, opening
+ * a unique hit outright and offering a QuickPick when several match.
+ */
+export async function resolveFileTarget(
+  target: string,
+  controller: TranscriptPanelController,
+): Promise<vscode.Uri | undefined> {
+  // 1. Direct candidates — the common, exact case.
+  const direct = await firstExistingFile(buildFileCandidates(target, controller))
+  if (direct) return direct
+
+  // 2. Sanitize (trailing :line, punctuation, ellipsis, wrappers) and retry.
+  const cleaned = sanitizeLinkTarget(target)
+  if (cleaned && cleaned !== target) {
+    const viaClean = await firstExistingFile(buildFileCandidates(cleaned, controller))
+    if (viaClean) return viaClean
+  }
+
+  const searchPath = cleaned || target
+  const segments = searchPath.split(/[\\/]/).filter(Boolean)
+  if (segments.length === 0) return undefined
+
+  // 3. Suffix-match: the last 3, then last 2 path segments — specific enough
+  //    that a single hit is almost always the file the link meant.
+  for (const n of [3, 2]) {
+    if (segments.length < n) continue
+    const suffix = segments.slice(-n).join("/")
+    const hits = await vscode.workspace.findFiles(`**/${suffix}`, LINK_SEARCH_EXCLUDES, 8)
+    if (hits.length === 1) return hits[0]
+    if (hits.length > 1) return pickFileFromHits(hits, target)
+  }
+
+  // 4. Basename search — last resort. Exactly one hit opens; several prompt;
+  //    zero falls through to the caller's "couldn't find" notice.
+  const basename = segments[segments.length - 1]!
+  const hits = await vscode.workspace.findFiles(`**/${basename}`, LINK_SEARCH_EXCLUDES, 20)
+  if (hits.length === 1) return hits[0]
+  if (hits.length > 1) return pickFileFromHits(hits, target)
+
+  return undefined
 }
 
 function randomNonce(): string {
@@ -358,6 +614,9 @@ export function buildHtml(
   // so `.toString()` yields a clean, named, hoistable declaration.
   const injectedHelpers = [
     mentionQueryAt,
+    commandQueryAt,
+    filterCommands,
+    leadingCommandEnd,
     parseUriList,
     recallHistory,
     pushHistoryEntry,
@@ -366,6 +625,33 @@ export function buildHtml(
     postureLabel,
     defaultPostureLabel,
     contextGauge,
+    // Conversation-chrome pure helpers (#conversation-chrome) — same by-value
+    // injection so the webview runs the tested source.
+    contextRingLevel,
+    formatCostShort,
+    titleStatusState,
+    projectPlan,
+    // Book (chapter) segmentation — injected by value so the webview runs the
+    // SAME tested pure functions the logic module's unit tests pin. buildBook
+    // calls the rest by name, so every one it touches must ride along as a
+    // sibling declaration; ASK_LONG_CHARS/TITLE_MAX_CHARS are interpolated as
+    // literals in the script below.
+    buildBook,
+    newChapter,
+    askOf,
+    fillChapter,
+    activityFailed,
+    chapterTitle,
+    firstSentence,
+    clampTitle,
+    htmlToText,
+    chapterDurationMs,
+    formatChapterDuration,
+    pad2,
+    // Cross-session visibility (E2): describePromptSource formats the "⇄ from
+    // <id>" badge on an agent-injected user turn — injected by value so the
+    // webview runs the tested source, same as the helpers above.
+    describePromptSource,
   ]
     .map(fn => fn.toString())
     .join("\n      ")
@@ -466,6 +752,57 @@ export function buildHtml(
     .header-action { position: relative; }
     .header-btn { font-size: 0.85em; }
     .header-btn:empty { display: none; }
+    /* Merged metrics pill (#conversation-chrome): cost · context ring in one
+       bordered capsule, so the two figures read as one glance. The inner
+       buttons shed their own chrome. */
+    .metrics-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));
+      border-radius: 999px; padding: 1px 9px;
+    }
+    .metrics-pill .header-btn { border: none; background: none; padding: 0; }
+    .metrics-pill .metrics-sep { color: var(--vscode-descriptionForeground); opacity: 0.6; }
+    .metrics-pill #context-btn[hidden] { display: none; }
+    .metrics-pill #context-btn[hidden] + #context-popover { display: none; }
+    /* When there's no context figure yet, the trailing separator would dangle. */
+    .metrics-pill:has(#context-btn[hidden]) .metrics-sep { display: none; }
+    /* Watcher presence chip (#session-visibility) — a persistent eye+count in
+       the header, shown only while session.watchers is greater than zero.
+       Hover (title) gives a quick summary; click opens the popover with one
+       row per waiter (who + what they're waiting for). Calm/monochrome,
+       matching the cost pill's register rather than an alarm color — being
+       watched isn't a warning. */
+    #watchers-wrap[hidden] { display: none; }
+    #watchers-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));
+      border-radius: 999px; padding: 1px 9px;
+      color: var(--vscode-descriptionForeground);
+    }
+    #watchers-list .popover-row { justify-content: flex-start; gap: 8px; }
+    #watchers-list .popover-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground); }
+    #watchers-list .watcher-wait { color: var(--vscode-descriptionForeground); white-space: nowrap; }
+    /* View segmented control — shows WHERE YOU ARE, active segment filled. */
+    .segmented { display: inline-flex; border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35)); border-radius: 6px; overflow: hidden; }
+    .segmented[hidden] { display: none; }
+    .segmented button {
+      font: inherit; font-size: 0.82em; padding: 2px 9px; border: none; cursor: pointer;
+      background: transparent; color: var(--vscode-descriptionForeground);
+    }
+    .segmented button + button { border-left: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35)); }
+    .segmented button.on { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); color: var(--vscode-foreground); }
+    .segmented button:hover:not(.on) { color: var(--vscode-foreground); }
+    /* Title status dot — the visibility state at a glance (#session-visibility). */
+    .tstatus { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
+    .tstatus:empty, .tstatus.quiet { background: transparent; border: 1px solid var(--vscode-descriptionForeground); }
+    .tstatus.busy { background: var(--vscode-charts-green, #4caf50); }
+    /* A busy session the turn-liveness watchdog has flagged silent past its
+       threshold (#601-adjacent) — distinct from plain busy (green) and from
+       awaiting (yellow) so a wedged session stops masquerading as working. */
+    .tstatus.stalled { background: var(--vscode-charts-red, #e51400); }
+    .tstatus.delegating { background: transparent; border: 2px solid var(--vscode-charts-green, #4caf50); }
+    .tstatus.awaiting { background: var(--vscode-charts-yellow, #d7a600); }
+    .tstatus.parked { background: var(--vscode-descriptionForeground); }
     /* The harness/adapter mark, sitting left of the session name so a glance at
        any transcript tab says which agent answers there. A quiet glyph, not a
        chip — colour comes from the surrounding title row. Empty (no adapter
@@ -487,6 +824,53 @@ export function buildHtml(
       fill: currentColor;
     }
     #header-icon:empty { display: none; }
+    /* Dimmed harness watermark, bottom-left of the panel — a subtle,
+       always-visible reminder of which harness runs this session, distinct
+       from the crisp #header-icon. Fixed to the viewport (not the scrolling
+       transcript) so it never drifts with scroll; the composer's own z-index
+       keeps it from ever painting over the input box. Empty (lettermark-only
+       adapter, no SVG asset) collapses to nothing — no glyph fallback here,
+       a watermark is decoration, not information. */
+    #harness-watermark {
+      position: fixed;
+      left: 14px;
+      bottom: 14px;
+      width: 30px;
+      height: 30px;
+      opacity: 0.35;
+      pointer-events: none;
+      z-index: 1;
+      color: var(--vscode-descriptionForeground);
+    }
+    #harness-watermark svg { width: 100%; height: 100%; fill: currentColor; }
+    #harness-watermark:empty { display: none; }
+    /* Background-task chip strip (#background-tasks-ux) — one small rounded
+       chip per still-running run_in_background tool call, click to jump to
+       its card. Amber/brown, matching the sessions panel's bg-task tell. */
+    #bg-chips {
+      flex: 0 0 auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 6px 14px 0;
+    }
+    #bg-chips[hidden] { display: none; }
+    .bgchip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border: 1px solid rgba(181, 133, 75, 0.4);
+      border-radius: 10px;
+      background: rgba(181, 133, 75, 0.14);
+      color: #b5854b;
+      font: inherit;
+      font-size: 0.82em;
+      cursor: pointer;
+    }
+    .bgchip:hover { background: rgba(181, 133, 75, 0.26); }
+    /* Brief highlight on the segment a chip click scrolled to, so "click to
+       view" has an obvious landing even in a long transcript. */
+    .seg-flash { outline: 2px solid #b5854b; outline-offset: 2px; transition: outline-color 1.1s ease; }
     /* A single Terminal button that opens the terminal view (FIX 2) — replaces
        the old Conversation⇄Terminal segmented control, which was too heavy for
        what is a one-way jump to the raw view. Reuses the openTerminal command.
@@ -526,9 +910,10 @@ export function buildHtml(
     .ctx-gauge[hidden] { display: none; }
     .ctx-ring { flex: 0 0 auto; }
     .ctx-track { stroke: var(--vscode-panel-border, rgba(128,128,128,0.35)); }
-    .ctx-arc { stroke: var(--vscode-charts-green, #4caf50); transition: stroke-dasharray 0.2s ease; }
-    .ctx-arc.mid { stroke: var(--vscode-charts-yellow, #d7a600); }
-    .ctx-arc.high { stroke: var(--vscode-charts-red, #e51400); }
+    /* Grey until warnAtPct, amber to compactAtPct, red past it (#conversation-chrome). */
+    .ctx-arc { stroke: var(--vscode-descriptionForeground); transition: stroke-dasharray 0.2s ease, stroke 0.2s ease; }
+    .ctx-arc.amber { stroke: var(--vscode-charts-yellow, #d7a600); }
+    .ctx-arc.red { stroke: var(--vscode-charts-red, #e51400); }
     .ctx-pct {
       font-size: 0.8em;
       color: var(--vscode-descriptionForeground);
@@ -562,12 +947,32 @@ export function buildHtml(
        script. Sits in the conversation body, next to the tool call it
        describes, not the header: the tab icon already carries the states
        that deserve a permanent glyph. */
+    /* Neutral on purpose: a long-running block (usually "command") is normal
+       supervision behavior, not an error — warning-yellow reads as one. The
+       dismiss ✕ below stays low-key. */
     #blocked-note {
       flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       padding: 4px 14px 0;
       font-size: 0.85em;
-      color: var(--vscode-editorWarning-foreground);
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.85;
     }
+    #blocked-note-text { flex: 1 1 auto; min-width: 0; }
+    /* The dismiss X is deliberately low-key — the note is itself low-key. */
+    #blocked-note-dismiss {
+      flex: 0 0 auto;
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: inherit;
+      opacity: 0.7;
+    }
+    #blocked-note-dismiss:hover { opacity: 1; }
     #blocked-note[hidden] { display: none; }
     /* Resume-chain history — a restarted session's ancestor transcripts,
        rendered ONCE at init as the FIRST content INSIDE #transcript (see the
@@ -623,6 +1028,27 @@ export function buildHtml(
     }
     #transcript ul, #transcript ol { margin: 0 0 10px 18px; padding: 0; }
     #transcript li { margin-bottom: 2px; }
+    /* GFM pipe tables: quiet hairline grid, a slightly emphasized header, and
+       no zebra loudness. display:block + width:max-content lets a wide table
+       scroll horizontally at panel width instead of squashing its columns. */
+    #transcript table {
+      display: block;
+      width: max-content;
+      max-width: 100%;
+      overflow-x: auto;
+      border-collapse: collapse;
+      margin: 0 0 10px;
+      font-size: 0.95em;
+    }
+    #transcript th, #transcript td {
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      padding: 4px 10px;
+      text-align: left;
+    }
+    #transcript th {
+      font-weight: 600;
+      background: var(--vscode-textCodeBlock-background);
+    }
     .line {
       font-family: var(--vscode-editor-font-family);
       white-space: pre-wrap;
@@ -800,15 +1226,125 @@ export function buildHtml(
        escalation is "this number is now shouting", not another border. */
     .tool-still-running > summary > .seg-elapsed { font-weight: 600; }
     .seg.plan {
-      border-left: 3px solid var(--vscode-progressBar-background);
+      /* Semantic state colours resolved to VS Code theme tokens on the
+         timeline. #book re-binds these same vars to the paper palette (see the
+         "#book .seg.plan" block near .notices), so the ONE structural ruleset
+         below serves both reading surfaces without duplication. */
+      --plan-accent: var(--vscode-charts-green, var(--vscode-progressBar-background));
+      --plan-muted: var(--vscode-descriptionForeground);
+      --plan-faint: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+      --plan-error: var(--vscode-errorForeground);
+      --plan-track: var(--vscode-progressBar-background);
+      border-left: 3px solid var(--plan-accent);
       padding: 4px 0 4px 10px;
     }
     .plan-head { font-weight: 600; font-size: 0.9em; margin-bottom: 4px; }
+    /* Thin done/total track under the head — accent fill over a faint groove. */
+    .plan-progress {
+      height: 2px; border-radius: 2px; margin: 0 0 6px;
+      background: var(--plan-track); opacity: 0.35; overflow: hidden;
+    }
+    .plan-progress-fill {
+      height: 100%; width: 0; border-radius: 2px;
+      background: var(--plan-accent); transition: width .2s ease;
+    }
     .plan-list { list-style: none; margin: 0; padding: 0; }
-    .plan-list li { font-size: 0.92em; }
-    .plan-list li.plan-completed { color: var(--vscode-descriptionForeground); text-decoration: line-through; }
+    /* Two columns: [marker | text]. A fixed marker column + baseline alignment
+       give wrapped lines a hanging indent that lands on the text's left edge,
+       not under the glyph. The marker is its own element, never a text prefix. */
+    .plan-list li {
+      display: grid;
+      grid-template-columns: 1.3em 1fr;
+      align-items: baseline;
+      column-gap: 0.4em;
+      font-size: 0.92em;
+      line-height: 1.45;
+      padding: 3px 0;
+    }
+    .plan-mark { text-align: center; }
+    .plan-text { min-width: 0; }
+    .plan-list li.plan-pending { color: var(--plan-faint); }
+    .plan-list li.plan-pending .plan-mark { color: var(--plan-faint); }
+    .plan-list li.plan-in_progress { font-weight: 600; }
+    .plan-list li.plan-in_progress .plan-mark { color: var(--plan-accent); }
+    /* Completed steps: muted, NO strikethrough (#conversation-chrome — struck
+       rows read as "cancelled", not "done"). Only shown when the summary is
+       expanded, indented as sub-rows. */
+    .plan-list li.plan-completed { color: var(--plan-muted); }
+    .plan-list li.plan-completed .plan-mark { color: var(--plan-accent); }
+    .plan-list li.plan-sub { padding-left: 18px; opacity: 0.85; }
+    .plan-list li.plan-failed { color: var(--plan-error); }
+    .plan-list li.plan-failed .plan-mark { color: var(--plan-error); }
+    /* Collapsed "✓ N done" summary + the "+N more" upcoming toggle — both
+       clickable, with a faint chevron pushed to the right on the summary. */
+    .plan-list li.plan-donesum { cursor: pointer; color: var(--plan-muted); display: flex; align-items: baseline; column-gap: 0.4em; }
+    .plan-list li.plan-donesum .plan-mark { color: var(--plan-accent); min-width: 1.3em; text-align: center; }
+    .plan-list li.plan-donesum:hover { color: var(--plan-accent); }
+    .plan-list li.plan-donesum .plan-chev { margin-left: auto; color: var(--plan-faint); font-size: 0.85em; }
+    .plan-list li.plan-more { cursor: pointer; color: var(--plan-faint); }
+    .plan-list li.plan-more:hover { color: var(--plan-muted); }
+    /* ── Question / permission ask ───────────────────────────────────
+       A bordered card like the assistant bubble, with a prompt label and
+       clickable option chips that resolve the pending permission. */
     .seg.question {
-      border-left: 3px solid var(--vscode-editorWarning-foreground);
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      border-radius: 6px;
+      padding: 10px 14px;
+      background: var(--vscode-textCodeBlock-background);
+      margin: 8px 0;
+    }
+    .question-label {
+      font-size: 0.88em;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 10px;
+    }
+    .question-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .question-option {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 14px;
+      border-radius: 5px;
+      border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+      background: var(--vscode-button-secondaryBackground, var(--vscode-input-background));
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      font-size: 0.88em;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    .question-option:hover {
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+      border-color: var(--vscode-focusBorder, #007acc);
+    }
+    .question-option:active {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    /* Approve-style option — primary action. */
+    .question-option.primary {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: var(--vscode-button-background);
+    }
+    .question-option.primary:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    /* Deny-style option — subtle, secondary. */
+    .question-option.secondary {
+      opacity: 0.7;
+    }
+    .question-option.secondary:hover {
+      opacity: 1;
+    }
+    /* Resolved: the ask is already answered — a calmer card. */
+    .seg.question.resolved {
+      border-left: 3px solid var(--vscode-descriptionForeground);
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
       padding: 4px 0 4px 10px;
     }
     .seg.error {
@@ -861,12 +1397,24 @@ export function buildHtml(
        one earns colour on hover only, so a red slab never sits permanently
        under the user's eyes. */
     #input-area {
+      /* Locked palette, mirroring #book: the composer is part of the same
+         DESIGNED reading surface, not vscode chrome, so it shares the book's
+         ink / paper / phosphor instead of the editor theme — which is why it
+         used to read as a blue-focused box on a different background. */
+      --ink: #1b1b1c; --ink-2: #232324; --edge: #333335;
+      --paper: #f4f0e6; --paper-45: rgba(244,240,230,.45); --paper-28: rgba(244,240,230,.28);
+      --phosphor: #2f9e63;
       flex: 0 0 auto;
       display: flex;
       flex-direction: column;
       gap: 8px;
       padding: 10px 14px 12px;
-      background-color: var(--vscode-editor-background);
+      background-color: var(--ink);
+      color: var(--paper);
+      /* Above #harness-watermark (z-index: 1) so the composer's opaque
+         background always wins where the two would otherwise overlap. */
+      position: relative;
+      z-index: 2;
     }
     /* ── Error banner ─────────────────────────────────────────────────
        Errors used to be one line of red text wedged under the buttons,
@@ -896,9 +1444,59 @@ export function buildHtml(
       user-select: text;
     }
     #eb-dismiss { flex: 0 0 auto; }
-    /* ── Queued message ───────────────────────────────────────────────
-       A prompt typed mid-turn is held here rather than rejected. */
+    /* ── Info banner (E3) ─────────────────────────────────────────────
+       The error banner's informational variant: cross-session "something
+       just happened" pings (a watcher attached/detached, a message arrived
+       from another session). Same flex/dismiss shape, informational colour. */
+    #info-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 12px;
+      border: 1px solid var(--vscode-inputValidation-infoBorder, var(--vscode-focusBorder, var(--vscode-panel-border)));
+      background: var(--vscode-inputValidation-infoBackground, var(--vscode-editorWidget-background, transparent));
+      border-radius: 6px;
+    }
+    #info-banner[hidden] { display: none; }
+    #ib-icon { flex: 0 0 auto; color: var(--vscode-inputValidation-infoForeground, var(--vscode-descriptionForeground)); }
+    #ib-body { flex: 1 1 auto; min-width: 0; }
+    #ib-text {
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+    }
+    #ib-dismiss { flex: 0 0 auto; }
+    /* ── Agent-sourced turn (E2) ──────────────────────────────────────
+       A user turn another session injected (agent_prompt) is visibly not
+       "you": a left accent + faint tint using theme variables, plus a
+       "⇄ from <id>" badge on the header. No hardcoded hex. */
+    .turn-agent-sourced .bubble {
+      border-left: 3px solid var(--vscode-charts-purple, var(--vscode-focusBorder, var(--vscode-panel-border)));
+      background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+    }
+    .prompt-source-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 0 6px;
+      font-size: 0.78em;
+      border-radius: 8px;
+      vertical-align: middle;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+    }
+    /* ── Queued messages ──────────────────────────────────────────────
+       Prompts typed mid-turn are held here (daemon-side FIFO — see
+       SessionsRegistry.enqueuePrompt's queue opt) rather than rejected.
+       One row per pending item, oldest (next to dispatch) on top. */
     #queued {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #queued[hidden] { display: none; }
+    .queued-item {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -908,30 +1506,35 @@ export function buildHtml(
       font-size: 0.9em;
       color: var(--vscode-descriptionForeground);
     }
-    #queued[hidden] { display: none; }
-    #queued-label {
+    .queued-item-position {
+      flex: 0 0 auto;
+      font-variant-numeric: tabular-nums;
+      opacity: 0.7;
+    }
+    .queued-item-label {
       flex: 1 1 auto;
       min-width: 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    #queued-cancel { flex: 0 0 auto; }
+    .queued-item-send { flex: 0 0 auto; }
+    .queued-item-cancel { flex: 0 0 auto; }
     #composer {
       position: relative;
       display: flex;
       flex-direction: column;
       gap: 6px;
       padding: 8px 10px;
-      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,0.35)));
+      border: 1px solid var(--edge);
       border-radius: 8px;
-      background: var(--vscode-input-background);
+      background: var(--ink-2);
     }
-    #composer:focus-within { border-color: var(--vscode-focusBorder); }
+    #composer:focus-within { border-color: var(--phosphor); }
     #composer.disabled { opacity: 0.6; }
     /* Drop affordance: the composer is the drop target, so it lights up while a
        file is dragged over the panel. */
-    #composer.drag-over { border-color: var(--vscode-focusBorder); border-style: dashed; }
+    #composer.drag-over { border-color: var(--phosphor); border-style: dashed; }
     /* ── Attachment chips ─────────────────────────────────────────────
        A pasted/dragged/mentioned path becomes a removable chip here, not
        raw text in the box — the path still rides along in the sent prompt
@@ -948,10 +1551,10 @@ export function buildHtml(
       gap: 6px;
       max-width: 260px;
       padding: 2px 4px 2px 8px;
-      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,0.35)));
+      border: 1px solid var(--edge);
       border-radius: 10px;
-      background: var(--vscode-badge-background, rgba(128,128,128,0.18));
-      color: var(--vscode-badge-foreground, var(--vscode-editor-foreground));
+      background: var(--ink);
+      color: var(--paper);
       font-size: 0.85em;
     }
     .attach-chip-label {
@@ -1005,30 +1608,91 @@ export function buildHtml(
       color: var(--vscode-descriptionForeground);
       font-style: italic;
     }
+    /* ── /command popup ───────────────────────────────────────────────
+       Same floating shape as #mention-popup, own id so the two (mutually
+       exclusive — one opens on @, the other only at position 0) never
+       fight over visibility. */
+    #command-popup {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: calc(100% + 4px);
+      max-height: 260px;
+      overflow-y: auto;
+      z-index: 5;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
+      border-radius: 6px;
+      background: var(--vscode-editorSuggestWidget-background, var(--vscode-input-background));
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+    #command-popup[hidden] { display: none; }
+    .command-popup-header {
+      padding: 4px 10px;
+      font-size: 0.78em;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+    }
+    .command-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      white-space: nowrap;
+    }
+    .command-item-name {
+      font-family: var(--vscode-editor-font-family);
+      flex: 0 0 auto;
+    }
+    .command-item-desc {
+      flex: 1 1 auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+    }
+    .command-item-scope {
+      flex: 0 0 auto;
+      font-size: 0.78em;
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.8;
+    }
+    #composer-commands {
+      flex: 0 0 auto;
+      font-family: var(--vscode-editor-font-family);
+    }
     #input {
       width: 100%;
       resize: none;
-      min-height: 22px;
+      /* Default to ~3 lines of breathing room (auto-grows beyond via autoGrow);
+         min-height is the floor even when the inline height goes smaller
+         (#conversation-chrome). */
+      min-height: 4.2em;
       max-height: 200px;
       overflow-y: auto;
       padding: 0;
       border: none;
       background: transparent;
-      color: var(--vscode-input-foreground);
+      color: var(--paper);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
       line-height: 1.4;
     }
     #input:focus { outline: none; }
-    #input::placeholder { color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); }
+    #input::placeholder { color: var(--paper-45); }
     #input:disabled { cursor: not-allowed; }
     #composer-bar {
       display: flex;
       align-items: center;
       gap: 8px;
       font-size: 0.85em;
-      color: var(--vscode-descriptionForeground);
+      color: var(--paper-45);
+      /* Clear the in-field send/stop button parked at the composer's bottom-right. */
+      padding-right: 40px;
     }
+    /* Quiet keyboard hint (#conversation-chrome). */
+    .send-hint { color: var(--paper-45); opacity: 0.75; white-space: nowrap; font-size: 0.95em; }
+    #composer.disabled .send-hint { display: none; }
     /* Which agent/model will answer belongs where you type, not only in the
        header — so the header no longer repeats it. */
     #composer-meta {
@@ -1044,6 +1708,10 @@ export function buildHtml(
       text-overflow: ellipsis;
     }
     .composer-chip:empty { display: none; }
+    /* A non-switchable axis (e.g. harness on a live session) reads as present
+       but inert — dimmed, with a tooltip explaining why (chip-pickers WP). */
+    .composer-chip.dimmed { opacity: 0.5; cursor: default; }
+    #composer-harness svg { display: inline-block; color: inherit; }
     /* The model chip is the one clickable chip (click → switch model) — reset
        the generic button rule's chrome so it still reads as plain chip text,
        only gaining an underline + link color on hover as the click affordance. */
@@ -1057,9 +1725,16 @@ export function buildHtml(
     }
     .composer-chip-btn:hover:not(:disabled) {
       background: transparent;
-      color: var(--vscode-textLink-foreground, var(--vscode-editor-foreground));
+      color: var(--phosphor);
       text-decoration: underline;
     }
+    /* Requested-vs-active divergence inside the model chip (#composer-model)
+       — only rendered when the two facts actually disagree (a live /model
+       switch the daemon learned about mid-session). The active model is the
+       one the user is actually talking to right now, so it reads at full
+       strength; the requested/spawn-time id is de-emphasized alongside it. */
+    .composer-model-requested { opacity: 0.6; }
+    .composer-model-active { opacity: 1; }
     button {
       padding: 3px 8px;
       border: none;
@@ -1083,6 +1758,9 @@ export function buildHtml(
       color: var(--vscode-errorForeground);
     }
     /* The submit key. Stays quiet until there is actually something to send. */
+    /* Send/Stop live at the field's bottom-right corner, inside the box
+       (#conversation-chrome), rather than trailing the chip row. */
+    #send, #stop { position: absolute; right: 8px; bottom: 7px; z-index: 2; }
     #send {
       flex: 0 0 auto;
       min-width: 26px;
@@ -1091,12 +1769,12 @@ export function buildHtml(
       padding: 4px 8px;
     }
     #send.has-text {
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
+      background: var(--phosphor);
+      color: var(--ink);
     }
     #send.has-text:hover:not(:disabled) {
-      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
-      color: var(--vscode-button-foreground);
+      background: #37b473;
+      color: var(--ink);
     }
     /* Destructive-but-not-alarming: it abandons a turn, not the session, so
        this stops short of the errorForeground/errorBackground pair #kill's
@@ -1122,11 +1800,11 @@ export function buildHtml(
       font-size: 0.85em;
       line-height: 1;
       padding: 4px 8px;
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
+      background: var(--phosphor);
+      color: var(--ink);
     }
     #restart-btn:hover:not(:disabled) {
-      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+      background: #37b473;
     }
     #send-status {
       flex: 0 0 auto;
@@ -1148,21 +1826,361 @@ export function buildHtml(
     #pty-view.active { display: block; }
     .xterm-viewport { background-color: transparent !important; }
     .xterm-screen { background-color: transparent !important; }
+
+    /* ── Book view ─────────────────────────────────────────────────────
+       A session as a BOOK: chapters split on asks. The palette here is
+       DELIBERATELY fixed (not vscode-themed) — same locked posture as the
+       sessions revamp — because the book is a designed reading surface, not a
+       chrome panel. Prose is a system serif stack (no webfont dependency,
+       offline-safe); chrome/steps/kickers are mono. */
+    #book {
+      --ink: #1b1b1c; --ink-2: #232324; --edge: #333335;
+      --paper: #f4f0e6;
+      --paper-72: rgba(244,240,230,.72); --paper-45: rgba(244,240,230,.45);
+      --paper-28: rgba(244,240,230,.28); --paper-tint: rgba(244,240,230,.055);
+      --phosphor: #2f9e63;
+      --serif: Charter, 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+      --bkmono: ui-monospace, 'SF Mono', Menlo, monospace;
+      flex: 1 1 auto;
+      overflow-y: auto;
+      background: var(--ink);
+      color: var(--paper);
+      font: 13px/1.6 var(--bkmono);
+      padding: 26px 0 40px;
+    }
+    #book[hidden] { display: none; }
+    #book .book-page { max-width: 640px; margin: 0 auto; padding: 0 26px; }
+    #book #book-empty { color: var(--paper-45); font-size: 12px; }
+    /* Blank-conversation hero — a session-identity card, not a dead placeholder. */
+    #book .book-hero {
+      border: 1px solid var(--edge); border-radius: 10px;
+      background: var(--paper-tint);
+      padding: 18px 20px; max-width: 460px; margin: 8px 0;
+    }
+    #book .book-hero .bh-title { font: 600 17px/1.3 var(--serif); color: var(--paper); }
+    #book .book-hero .bh-sub {
+      font: 12px/1.6 var(--bkmono); color: var(--paper-45); margin-top: 6px;
+    }
+    #book .book-hero .bh-facts {
+      margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--edge);
+      display: flex; flex-direction: column; gap: 7px;
+    }
+    #book .book-hero .bh-row { display: flex; align-items: baseline; gap: 12px; }
+    #book .book-hero .bh-k {
+      flex: 0 0 68px; font: 700 9px var(--bkmono); letter-spacing: .13em;
+      color: var(--paper-28); text-transform: uppercase; padding-top: 1px;
+    }
+    #book .book-hero .bh-v { font: 13px var(--bkmono); color: var(--paper-72); }
+
+    #book .chapter { margin-top: 6px; }
+    #book .fold {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 9px 10px; margin: 0 -10px; border-radius: 8px;
+      cursor: pointer; width: calc(100% + 20px);
+      background: transparent; border: none; text-align: left; color: inherit;
+      font: inherit;
+    }
+    #book .fold:hover { background: var(--ink-2); }
+    #book .fold:focus-visible { outline: 1px solid var(--phosphor); outline-offset: -1px; }
+    #book .fold .arrow { font-size: 10px; color: var(--paper-28); transition: transform .13s; flex: 0 0 auto; }
+    #book .chapter.openc .fold .arrow { transform: rotate(90deg); }
+    #book .fold h2 {
+      font: 600 15px var(--serif); color: var(--paper-72);
+      flex: 1; min-width: 0; margin: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #book .chapter.openc .fold h2 { color: var(--paper); white-space: normal; }
+    #book .fold .who { font-size: 9.5px; color: var(--paper-28); flex-shrink: 0; }
+    #book .fold .t { font-size: 10px; color: var(--paper-28); flex-shrink: 0; }
+
+    /* Body sits in the CHEVRON column: the fold bleeds 10px left (margin 0 -10px)
+       and pads 10px, so its arrow's left edge lands at the chapter's content
+       edge (0). Zeroing the body's left padding lines the ask card / narration /
+       steps up under the ▸ rather than under the title. */
+    #book .cbody { display: none; padding: 2px 0 16px 0; }
+    #book .chapter.openc .cbody, #book .chapter.live .cbody { display: block; }
+    /* The live chapter is always open and offers no fold affordance. */
+    #book .chapter.live .fold { cursor: default; }
+    #book .chapter.live .fold .arrow { visibility: hidden; }
+
+    /* The ask block is the HUMAN turn: a persistent, tinted paper card pinned
+       ABOVE its response chapter (not inside the fold), left edge in the chevron
+       column. The tint alone marks it as an incoming voice — no colored edge;
+       the response chapter builds directly beneath it. */
+    #book .ask {
+      background: var(--paper-tint); border-radius: 8px;
+      padding: 10px 14px; margin: 8px 0 6px;
+    }
+    #book .ask .alabel { font: 600 9.5px var(--bkmono); letter-spacing: .13em; color: var(--paper-45); }
+    #book .ask .atext { font: 14px/1.7 var(--serif); color: var(--paper); margin-top: 4px; }
+    #book .ask .atext > :first-child { margin-top: 0; }
+    #book .ask .atext > :last-child { margin-bottom: 0; }
+    #book .ask.clamped .atext {
+      display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    #book .amore {
+      font: 10.5px var(--bkmono); color: var(--paper-45); cursor: pointer;
+      margin-top: 4px; display: inline-block; background: none; border: none; padding: 0;
+    }
+    #book .amore:hover { color: var(--paper-72); }
+
+    #book .story { font: 14.5px/1.85 var(--serif); color: var(--paper-72); margin: 10px 0 0; }
+    #book .story b, #book .story strong { color: var(--paper); font-weight: 600; }
+    #book .story code {
+      font: 12px var(--bkmono); background: var(--ink-2); border: 1px solid var(--edge);
+      padding: 1px 5px; border-radius: 4px; color: var(--paper);
+    }
+    #book .story a { color: var(--phosphor); }
+
+    /* Clickable URLs / file paths in transcript prose (renderMarkdown's .tlink
+       anchors). Calm by default — phosphor, no underline until hover — with a
+       small "open" glyph (.tlink-open) that only fades in on hover so prose
+       stays quiet. Styled for both surfaces (#book paper + #transcript). */
+    .tlink {
+      color: var(--phosphor); text-decoration: none; cursor: pointer;
+      border-radius: 3px;
+    }
+    .tlink:hover { text-decoration: underline; }
+    .tlink:focus-visible { outline: 1px solid var(--phosphor); outline-offset: 1px; }
+    .tlink-open {
+      display: inline-block; opacity: 0; font-size: 0.85em;
+      margin-left: 0.15em; vertical-align: baseline;
+      transition: opacity 0.12s ease;
+    }
+    .tlink:hover .tlink-open, .tlink:focus-visible .tlink-open { opacity: 0.8; }
+
+    #book .story > :first-child { margin-top: 0; }
+    #book .story > :last-child { margin-bottom: 0; }
+
+    /* Markdown BLOCK structure inside the book's two prose surfaces — narration
+       (.story) and the ask card (.ask .atext). renderMarkdown emits real
+       <p>/<br>/<ul>/<ol>/<pre>/<blockquote>/<h*>; the book surface is
+       deliberately not vscode-themed, so without these rules those blocks fall
+       back to inconsistent UA defaults and read as one run-on wall. Style them
+       as distinct, spaced blocks so line breaks, lists, and code fences stay
+       legible (mirrors what #transcript already does, themed for dark paper). */
+    #book .story p, #book .ask .atext p { margin: 0 0 8px; }
+    #book .story ul, #book .story ol,
+    #book .ask .atext ul, #book .ask .atext ol { margin: 6px 0 8px; padding-left: 20px; }
+    #book .story li, #book .ask .atext li { margin: 3px 0; }
+    #book .story li::marker, #book .ask .atext li::marker { color: var(--paper-45); }
+    #book .story pre, #book .ask .atext pre {
+      margin: 8px 0; padding: 10px 12px; border-radius: 6px;
+      background: var(--ink-2); border: 1px solid var(--edge);
+      overflow-x: auto; white-space: pre;
+      font: 12px/1.55 var(--bkmono); color: var(--paper);
+    }
+    /* A fenced block's <code> must shed the inline-code chip styling above. */
+    #book .story pre code, #book .ask .atext pre code {
+      background: none; border: 0; padding: 0; border-radius: 0;
+      font: inherit; color: inherit;
+    }
+    #book .story blockquote, #book .ask .atext blockquote {
+      margin: 8px 0; padding-left: 12px; color: var(--paper-45);
+      border-left: 2px solid var(--edge);
+    }
+    #book .story h1, #book .story h2, #book .story h3,
+    #book .story h4, #book .story h5, #book .story h6,
+    #book .ask .atext h1, #book .ask .atext h2, #book .ask .atext h3,
+    #book .ask .atext h4, #book .ask .atext h5, #book .ask .atext h6 {
+      font: 600 15px/1.35 var(--serif); color: var(--paper); margin: 12px 0 4px;
+    }
+    /* Tables read as LIGHT horizontal rules on the book surface — a hairline
+       between rows and a slightly firmer one under the header, no column grid
+       or outer box. display:block + max-content + overflow-x lets a wide table
+       scroll horizontally (contained to the book column) instead of squashing
+       or wrapping its cells. */
+    #book .story table, #book .ask .atext table {
+      display: block; width: max-content; max-width: 100%; overflow-x: auto;
+      border-collapse: collapse; margin: 10px 0; font: 13px/1.5 var(--bkmono);
+    }
+    #book .story th, #book .story td,
+    #book .ask .atext th, #book .ask .atext td {
+      padding: 5px 16px 5px 0; text-align: left; vertical-align: top;
+      white-space: nowrap; border-bottom: 1px solid var(--edge);
+    }
+    #book .story th, #book .ask .atext th {
+      color: var(--paper); font-weight: 600; border-bottom: 1px solid var(--paper-28);
+    }
+    #book .story td, #book .ask .atext td { color: var(--paper-72); }
+    #book .story tr:last-child td, #book .ask .atext tr:last-child td { border-bottom: none; }
+
+    #book .details {
+      font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px;
+      cursor: pointer; display: inline-block; background: none; border: none; padding: 0;
+    }
+    #book .details:hover { color: var(--paper-72); }
+    #book .details::before { content: "$ "; color: var(--phosphor); }
+    #book .steps-body { margin-top: 8px; padding-left: 0; }
+    #book .steps-body[hidden] { display: none; }
+    /* The steps drawer reuses the transcript's own tool/reasoning/activity
+       disclosure cards, but on the book surface they must read as QUIET ROWS on
+       paper — hairline dividers, mono chrome, a phosphor check — not the boxed
+       vscode-themed cards the transcript draws. Everything below re-skins those
+       reused nodes for the paper/phosphor palette. */
+    #book .steps-body details.tool,
+    #book .steps-body details.reasoning {
+      background: none; border: none; border-radius: 0;
+      border-bottom: 1px solid var(--edge); padding: 5px 2px;
+    }
+    #book .steps-body > details.tool:last-child,
+    #book .steps-body > details.reasoning:last-child,
+    #book .steps-body > details.activity:last-child { border-bottom: none; }
+    /* A group is the one box that stays — a faint tinted card holding its run of
+       steps — so the tree of children reads as one unit. */
+    #book .steps-body details.activity {
+      background: var(--paper-tint); border: 1px solid var(--edge);
+      border-radius: 7px; padding: 4px 10px; margin: 4px 0;
+    }
+    #book .steps-body details.reasoning > summary,
+    #book .steps-body details.tool > summary,
+    #book .steps-body details.activity > summary {
+      font: 11.5px var(--bkmono); color: var(--paper-45);
+    }
+    #book .steps-body .seg-label { color: var(--paper-72); font-family: var(--bkmono); }
+    #book .steps-body details[open] > summary > .seg-label { color: var(--paper); }
+    /* The ✓ is phosphor (a settled step), a failure is a quiet clay ✗. */
+    #book .steps-body .seg-badge.badge-ok { color: var(--phosphor); opacity: 1; }
+    #book .steps-body .seg-badge.badge-error { color: #cf8b73; }
+    /* The live step's dot pulses in phosphor, matching the book's live cursor. */
+    #book .steps-body .seg-dot { background: var(--phosphor); }
+    #book .steps-body .seg-elapsed { color: var(--paper-45); }
+    /* A findable-but-quiet chevron affordance, rotating open like the fold's. */
+    #book .steps-body .seg-chev { color: var(--paper-28); opacity: 1; }
+    #book .steps-body summary:hover > .seg-chev { color: var(--paper-72); }
+    #book .steps-body .act-children { border-left-color: var(--edge); }
+    #book .steps-body .reasoning-body { color: var(--paper-45); }
+    #book .steps-body .tool-field-label { color: var(--paper-45); }
+    #book .steps-body .tool-args,
+    #book .steps-body .tool-result {
+      background: var(--ink); border: 1px solid var(--edge); border-radius: 5px;
+      color: var(--paper-72); font-family: var(--bkmono);
+    }
+    #book .steps-body .tool-io-open { color: var(--phosphor); }
+    #book .steps-body .tool-io-clamped { border-bottom-color: var(--edge); }
+    #book .notices { margin-top: 10px; }
+    /* The plan notice re-themed for the paper surface: the structural rules
+       (grid, hanging indent, progress track) are shared with the timeline —
+       only the state colours swap from VS Code tokens to the book palette, by
+       re-binding the same --plan-* vars the base .seg.plan rules read. */
+    #book .seg.plan {
+      --plan-accent: var(--phosphor);
+      --plan-muted: var(--paper-45);
+      --plan-faint: var(--paper-28);
+      --plan-error: #cf8b73;
+      --plan-track: var(--paper-45);
+    }
+    #book .seg.plan .plan-head { color: var(--paper-72); }
+
+    /* Pop-out affordance: a small hover button on a WIDE narration block (table
+       or fenced code) to open it in a full read-only editor tab, for content
+       too wide for the book column. */
+    #book .book-block { position: relative; margin: 8px 0; }
+    #book .book-block > pre, #book .book-block > table { margin: 0; }
+    #book .block-popout {
+      position: absolute; top: 5px; right: 5px; z-index: 1;
+      font: 11px/1 var(--bkmono); padding: 3px 6px; border-radius: 5px;
+      background: var(--ink-2); border: 1px solid var(--edge); color: var(--paper-45);
+      cursor: pointer; opacity: 0; transition: opacity .12s, color .12s, border-color .12s;
+    }
+    #book .book-block:hover .block-popout,
+    #book .block-popout:focus-visible { opacity: 1; }
+    #book .block-popout:hover { color: var(--phosphor); border-color: var(--phosphor); }
+
+    /* Live chapter: the blinking phosphor block cursor + the "$ now:" ticker. */
+    #book .cursor {
+      display: inline-block; width: 8px; height: 15px; border-radius: 2px;
+      background: var(--phosphor); vertical-align: -2px; margin-left: 3px;
+      animation: agentproto-blink 1.1s steps(1) infinite;
+    }
+    @keyframes agentproto-blink { 50% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      #book .cursor { animation: none; }
+      #book .under { transition: none; }
+    }
+    #book .under {
+      font: 10.5px var(--bkmono); color: var(--paper-45); margin-top: 12px;
+      /* Label swaps fade old -> new instead of snapping (NOW_FADE_MS in the
+         script drives the classes; the ticker never re-fades a same label). */
+      transition: opacity 220ms ease;
+    }
+    #book .under::before { content: "$ "; color: var(--phosphor); }
+    #book .under b { color: var(--paper-72); font-weight: 500; }
+    #book .under.fading-out { opacity: 0; }
+    #book .under.fading-in { opacity: 1; }
+
+    /* The pause: the inverted PAPER card when the agent stops to ask. */
+    #book .pause {
+      margin: 22px 0 4px; background: var(--paper); color: var(--ink);
+      border-radius: 10px; padding: 16px 18px;
+    }
+    #book .pause .phead {
+      font: 700 10px var(--bkmono); letter-spacing: .14em;
+      display: flex; align-items: center; gap: 8px;
+    }
+    #book .pause .phead .blk { width: 9px; height: 14px; border-radius: 2px; background: var(--phosphor); }
+    #book .pause .pquestion { font: 14px/1.7 var(--serif); margin-top: 8px; }
+    /* The pause question is the last rendered assistant narration block.
+       Keep its Markdown structure (rather than flattening it to text) while
+       adapting the normal paper-surface prose treatment to this light card. */
+    #book .pause .pquestion > :first-child { margin-top: 0; }
+    #book .pause .pquestion > :last-child { margin-bottom: 0; }
+    #book .pause .pquestion p { margin: 0 0 8px; }
+    #book .pause .pquestion ul, #book .pause .pquestion ol { margin: 6px 0 8px; padding-left: 20px; }
+    #book .pause .pquestion li { margin: 3px 0; }
+    #book .pause .pquestion li::marker { color: var(--phosphor); }
+    #book .pause .pquestion strong, #book .pause .pquestion b { font-weight: 650; }
+    #book .pause .pquestion code {
+      font: 12px var(--bkmono); background: var(--ink-2); border: 1px solid var(--edge);
+      padding: 1px 5px; border-radius: 4px; color: var(--paper);
+    }
+    #book .pause .pquestion pre {
+      margin: 8px 0; padding: 10px 12px; border-radius: 6px;
+      background: var(--ink-2); border: 1px solid var(--edge);
+      overflow-x: auto; white-space: pre; font: 12px/1.55 var(--bkmono); color: var(--paper);
+    }
+    #book .pause .pquestion pre code {
+      background: none; border: 0; padding: 0; border-radius: 0; font: inherit; color: inherit;
+    }
+    #book .pause .pquestion blockquote {
+      margin: 8px 0; padding-left: 12px; color: rgba(27,27,28,.72); border-left: 2px solid var(--phosphor);
+    }
+    #book .pause .pquestion h1, #book .pause .pquestion h2, #book .pause .pquestion h3,
+    #book .pause .pquestion h4, #book .pause .pquestion h5, #book .pause .pquestion h6 {
+      font: 650 15px/1.35 var(--serif); margin: 12px 0 4px;
+    }
+    #book .pause .pquestion table {
+      display: block; width: max-content; max-width: 100%; overflow-x: auto;
+      border-collapse: collapse; margin: 10px 0; font: 13px/1.5 var(--bkmono);
+    }
+    #book .pause .pquestion th, #book .pause .pquestion td {
+      padding: 5px 16px 5px 0; text-align: left; vertical-align: top;
+      white-space: nowrap; border-bottom: 1px solid rgba(27,27,28,.16);
+    }
+    #book .pause .pquestion th { font-weight: 650; border-bottom-color: rgba(27,27,28,.32); }
+    #book .pause .pquestion tr:last-child td { border-bottom: none; }
   </style>
   ${bundles.xtermCss ? `<style>${bundles.xtermCss}</style>` : ""}
 </head>
 <body>
+  <span id="harness-watermark" aria-hidden="true"></span>
   <div id="header">
     <div id="header-left">
       <span id="header-icon" title="" aria-hidden="true"></span>
+      <span id="title-status" class="tstatus" title=""></span>
       <div id="header-title-block">
         <div id="header-title" title="Click to rename this session"></div>
         <div id="header-subtitle" title=""></div>
       </div>
     </div>
     <div id="header-actions">
-      <div class="header-action">
+      <div id="view-toggle" class="segmented" role="group" aria-label="View" hidden>
+        <button type="button" data-view="book" title="Read as a book">Book</button>
+        <button type="button" data-view="transcript" title="Read the raw transcript">Transcript</button>
+      </div>
+      <div class="header-action metrics-pill">
         <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <span class="metrics-sep" aria-hidden="true">·</span>
         <div id="cost-popover" class="popover" hidden>
           <div class="popover-row"><span class="popover-label">Tokens in</span><span id="popover-tokens-in"></span></div>
           <div class="popover-row"><span class="popover-label">Tokens out</span><span id="popover-tokens-out"></span></div>
@@ -1170,8 +2188,6 @@ export function buildHtml(
           <div class="popover-row"><span class="popover-label">Harness</span><span id="popover-harness"></span></div>
           <div class="popover-row"><span class="popover-label">Access</span><span id="popover-auth"></span></div>
         </div>
-      </div>
-      <div class="header-action">
         <button id="context-btn" class="header-btn ctx-gauge" type="button" aria-haspopup="true" title="Context window usage" hidden>
           <svg class="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <circle class="ctx-track" cx="8" cy="8" r="6" fill="none" stroke-width="2"></circle>
@@ -1184,14 +2200,22 @@ export function buildHtml(
           <div class="popover-row"><span class="popover-label">Size</span><span id="popover-context-size"></span></div>
         </div>
       </div>
+      <div id="watchers-wrap" class="header-action" hidden>
+        <button id="watchers-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <div id="watchers-popover" class="popover" hidden>
+          <div id="watchers-list"></div>
+        </div>
+      </div>
       <button id="open-terminal-btn" class="header-action term-btn" type="button" title="Open a real VS Code terminal for this session" hidden>
         <span class="term-glyph" aria-hidden="true">&gt;_</span>Terminal
       </button>
     </div>
   </div>
+  <div id="bg-chips" hidden></div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
+  <div id="book" hidden></div>
   <div id="pty-view"></div>
-  <div id="blocked-note" hidden></div>
+  <div id="blocked-note" hidden><span id="blocked-note-text"></span><button id="blocked-note-dismiss" title="Dismiss">✕</button></div>
   <div id="working" hidden>
     <span id="working-glyph">✳</span>
     <span id="working-text"></span>
@@ -1205,24 +2229,32 @@ export function buildHtml(
       </div>
       <button id="eb-dismiss" title="Dismiss">✕</button>
     </div>
-    <div id="queued" hidden>
-      <span id="queued-icon">&#9203;</span>
-      <span id="queued-label"></span>
-      <button id="queued-cancel" title="Discard the queued message">✕</button>
+    <div id="info-banner" hidden>
+      <span id="ib-icon">&#9432;</span>
+      <div id="ib-body">
+        <div id="ib-text"></div>
+      </div>
+      <button id="ib-dismiss" title="Dismiss">✕</button>
     </div>
+    <div id="queued" hidden></div>
     <div id="composer">
       <div id="mention-popup" hidden></div>
+      <div id="command-popup" hidden></div>
       <div id="composer-attachments" hidden></div>
       <textarea id="input" rows="1" placeholder="Reply to the agent… (paste, drop, or @-mention a file)"></textarea>
       <div id="composer-bar">
+        <button id="composer-commands" class="composer-chip composer-chip-btn" type="button" title="Browse slash commands">/</button>
         <span id="composer-meta">
-          <span id="composer-harness" class="composer-chip"></span>
+          <span id="composer-harness" class="composer-chip dimmed" title="Harness can't be switched on a live session — start a new one to change it"></span>
           <button id="composer-model" class="composer-chip composer-chip-btn" type="button" title="Switch model"></button>
+          <button id="composer-effort" class="composer-chip composer-chip-btn" type="button" title="Switch effort"></button>
           <button id="composer-posture" class="composer-chip composer-chip-btn" type="button" title="Switch mode / posture"></button>
-          <button id="composer-auth" class="composer-chip composer-chip-btn" type="button" title="Switch access profile"></button>
+          <button id="composer-route" class="composer-chip composer-chip-btn" type="button" title="Switch route (restarts the session — conversation carries over)"></button>
+          <button id="composer-auth" class="composer-chip composer-chip-btn" type="button" title="Switch wallet (restarts the session — conversation carries over)"></button>
         </span>
+        <span id="send-hint" class="send-hint">⏎ send · ⇧⏎ newline</span>
         <span id="send-status"></span>
-        <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
+        <button id="interrupt-send" hidden title="Interrupt the current turn and send now — the typed text, or the next queued message">Interrupt &amp; send</button>
         <button id="restart-btn" hidden title="Restart this session — resumes the conversation in a new session">↻ Restart</button>
         <button id="send" title="Send (Enter)">↵</button>
         <button id="stop" hidden title="Stop the current turn">■</button>
@@ -1243,10 +2275,16 @@ export function buildHtml(
       const MAX_ATTACHMENT_BYTES = ${MAX_ATTACHMENT_BYTES};
       const WARN_ATTACHMENT_BYTES = ${WARN_ATTACHMENT_BYTES};
       const ATTACHMENT_COUNT_CAP = ${ATTACHMENT_COUNT_CAP};
+      // Interpolated from conversationBook.logic.ts so the injected buildBook
+      // (and its helpers) resolve the SAME literals their unit tests pin.
+      const ASK_LONG_CHARS = ${ASK_LONG_CHARS};
+      const TITLE_MAX_CHARS = ${TITLE_MAX_CHARS};
       const INITIAL_ICON_SVG = ${JSON.stringify(bundles.headerIconSvg ?? "")};
       // Injected by value from the tested logic modules — see buildHtml.
       ${injectedHelpers}
       const headerIcon = document.getElementById('header-icon');
+      const harnessWatermark = document.getElementById('harness-watermark');
+      const titleStatus = document.getElementById('title-status');
       const headerTitle = document.getElementById('header-title');
       const headerSubtitle = document.getElementById('header-subtitle');
       const openTerminalBtn = document.getElementById('open-terminal-btn');
@@ -1263,15 +2301,25 @@ export function buildHtml(
       const ctxPct = document.getElementById('ctx-pct');
       const popoverContextUsed = document.getElementById('popover-context-used');
       const popoverContextSize = document.getElementById('popover-context-size');
+      const watchersWrap = document.getElementById('watchers-wrap');
+      const watchersBtn = document.getElementById('watchers-btn');
+      const watchersPopover = document.getElementById('watchers-popover');
+      const watchersList = document.getElementById('watchers-list');
       const blockedNote = document.getElementById('blocked-note');
+      const bgChips = document.getElementById('bg-chips');
       const transcript = document.getElementById('transcript');
+      const book = document.getElementById('book');
+      const viewToggle = document.getElementById('view-toggle');
       const working = document.getElementById('working');
       const workingText = document.getElementById('working-text');
       const composer = document.getElementById('composer');
       const composerHarness = document.getElementById('composer-harness');
       const composerModel = document.getElementById('composer-model');
+      const composerEffort = document.getElementById('composer-effort');
+      const composerRoute = document.getElementById('composer-route');
       const composerPosture = document.getElementById('composer-posture');
       const composerAuth = document.getElementById('composer-auth');
+      const composerCommands = document.getElementById('composer-commands');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
       const stopBtn = document.getElementById('stop');
@@ -1282,11 +2330,15 @@ export function buildHtml(
       const ebTitle = document.getElementById('eb-title');
       const ebMessage = document.getElementById('eb-message');
       const ebDismiss = document.getElementById('eb-dismiss');
+      const infoBanner = document.getElementById('info-banner');
+      const ibText = document.getElementById('ib-text');
+      const ibDismiss = document.getElementById('ib-dismiss');
+      const blockedNoteText = document.getElementById('blocked-note-text');
+      const blockedNoteDismiss = document.getElementById('blocked-note-dismiss');
       const queuedRow = document.getElementById('queued');
-      const queuedLabel = document.getElementById('queued-label');
-      const queuedCancel = document.getElementById('queued-cancel');
       const attachmentsRow = document.getElementById('composer-attachments');
       const mentionPopup = document.getElementById('mention-popup');
+      const commandPopup = document.getElementById('command-popup');
       const ptyView = document.getElementById('pty-view');
 
       // Mirrors STALL_AFTER_MS in views/sessionsTree.logic.ts — the tree and
@@ -1297,12 +2349,43 @@ export function buildHtml(
       // two, so showing it instantly just flashes; only a block that outlasts
       // this delay is worth a note in the conversation body.
       const BLOCKED_NOTE_DELAY_MS = 20 * 1000;
+      // The "$ now:" line's staleness cutoff. A pending step that outlives
+      // this has almost certainly never resolved — the agent went quiet,
+      // usually because it handed off to a child session (supervising an
+      // executor) and stopped emitting its own [tool] markers. Past this age
+      // the line stops trusting the transcript's frozen last action and leans
+      // on the daemon's own activitySummary (or an explicit supervision label).
+      const NOW_STALE_MS = 30 * 1000;
+      // Progressive "$ now:" timer thresholds — see nowSuffix/renderNow.
+      const NOW_NO_TIME_MS = 5 * 1000;
+      const NOW_SECONDS_MS = 60 * 1000;
+      const NOW_LONG_RUNNING_MS = 90 * 1000;
+      const NOW_DOT_CYCLE_MS = 600; // "Still working…" dot cycle
+      // "$ now:" fade-out/in length — see the .under CSS transition.
+      const NOW_FADE_MS = 220;
+      // Minimum time a given label stays on screen. Rapid sequential tool
+      // calls would otherwise strobe the line; this holds the previous label
+      // in place until it has been up at least this long.
+      const NOW_MIN_DISPLAY_MS = 500;
+
+      // "$ now:" fade/debounce state — see renderNow. shownNowLabel is the
+      // label currently ON SCREEN; pendingNowLabel is one whose swap is already
+      // scheduled (a mid-window re-render coalesces into it instead of stacking
+      // timers); nowSwapToken invalidates stale timers when a "Still working…"
+      // state or a hide cancels a pending fade.
+      let shownNowLabel = null;
+      let shownNowSwapAt = 0;
+      let pendingNowLabel = null;
+      let nowSwapToken = 0;
 
       let exited = false;
       let busy = false;
       /** Wall-clock ms when the current turn's blockedOn note started being
        *  true (0 when not currently blocked) — see refreshBlockedNote. */
       let blockedSince = 0;
+      /** The (blockedOn, toolCallId) pair the user dismissed — hidden until a
+       *  DIFFERENT pair arrives. Cleared when the block clears. */
+      let dismissedBlockedKey = null;
       /** Wall-clock ms when the current turn started (0 when idle). */
       let busySince = 0;
       let lastTokensOut;
@@ -1312,12 +2395,25 @@ export function buildHtml(
        *  Guards updateHeader from wiping the input on a mid-edit sessionUpdate. */
       let isEditingTitle = false;
       /**
-       * Text typed while the agent was mid-turn. The daemon takes ONE turn at
-       * a time and rejects anything else with a 409, so instead of firing that
-       * at the user we hold the message here and flush it the moment the turn
-       * ends — or immediately, if they choose to interrupt.
+       * Messages typed while the agent was mid-turn, oldest (next to
+       * dispatch) first. The daemon holds these in its own FIFO
+       * (SessionsRegistry.enqueuePrompt's queue opt) and drains them one at
+       * a time as turns end — this array just mirrors that for display.
+       * Each entry is { localId, queueId, text }: localId is minted HERE
+       * the instant send() fires (for the optimistic row shown before the
+       * daemon's ack arrives); queueId is the daemon-assigned id, filled in
+       * once the 'queued' ack lands (see the message-switch below) and
+       * null until then. Reconciliation in applySession keys on queueId
+       * once it exists; a still-null one is left alone (it hasn't landed
+       * in session.promptQueue yet either).
        */
-      let queuedText = null;
+      let queuedItems = [];
+      let queuedLocalIdSeq = 0;
+      // A cancelQueued click that races an in-flight 'queued' ack (the
+      // user cancelled before the daemon confirmed the id) — the ack
+      // handler consults this to fire the DELETE immediately instead of
+      // resurrecting a row the user already dismissed.
+      const cancelledLocalIds = new Set();
       // PTY-mode state (live xterm.js view fed by the host-side WS bridge).
       let ptyTerm = null;
       let ptyFitAddon = null;
@@ -1336,12 +2432,24 @@ export function buildHtml(
       // bracket the @token in the textarea so a selection replaces exactly it;
       // active is the index of the highlighted item.
       let mention = null;
+      // Slash commands the active harness currently advertises for THIS
+      // session (SessionDescriptor.availableCommands, mirrored fresh on every
+      // applySession — see the ACP available_commands_update doc there).
+      // { name, description, scope } — scope is the raw ACP _meta.scope
+      // ("user"/"project"/...) when the harness reports one.
+      let availableCommands = [];
+      // Active /command popup: { start, end, query, items, active } or null —
+      // same shape as 'mention' above, but items are CommandCandidate (from
+      // availableCommands, filtered locally — no host round trip needed,
+      // unlike @mentions which need a live file listing).
+      let commandPopupState = null;
       let isScrolledUp = false;
       let isSending = false;
       /** True from the Stop click until the turn actually settles (busy goes
        *  false) or a stopError comes back — guards against a double-click
        *  firing a second interrupt at an already-cancelling turn. */
       let isStopping = false;
+      let isRestarting = false;
       let mode = 'raw';
       // Cached copy of the current session's resume chain (oldest-first, see
       // protocol.ts's init.resumeChain doc) so a full-transcript reset
@@ -1354,9 +2462,51 @@ export function buildHtml(
       // Turns/segments are addressed by stable id (data-turn-id/data-seg-id)
       // and patched in place — a live update never tears the DOM down, so
       // expand/collapse state and text selection survive for free.
-      // Pending tool rows whose elapsed-time label ticks independently of
-      // any patch: segId -> { startedMs, label, node }.
+      // Pending tool/activity rows whose elapsed-time label ticks
+      // independently of any patch. Keyed by the DOM NODE, not the seg id, so
+      // the same pending step can appear in BOTH the transcript timeline and
+      // the book's step drawer at once (they share seg ids) and each node ticks
+      // its own label — a seg-id key would let one view clobber the other's
+      // ticker. Value: { startedMs, label, node }.
       const pendingTools = new Map();
+      // Still-running run_in_background tool calls (#background-tasks-ux) —
+      // segId -> { toolName }. Keyed by seg id (not DOM node, unlike
+      // pendingTools above) because the chip strip shows ONE chip per
+      // background task regardless of whether its segment is currently
+      // painted in the transcript, the book's step drawer, or both.
+      const bgTasks = new Map();
+
+      // ── Book (chapter) view state ──────────────────────────────────
+      // The book is a fold ABOVE the turn/segment timeline: it reuses the
+      // SAME presented turns (accumulated here from init + patch) and the SAME
+      // step renderer, and only groups them into chapters. It's the default
+      // for a structured session; the header 'transcript' toggle flips back to
+      // the raw turn rendering (#transcript), which is left fully intact.
+      const bookTurns = new Map();      // turnId -> PresentedTurn (insertion order preserved)
+      const bookChapterNodes = new Map(); // chapterId -> chapter DOM node
+      // The user's explicit fold choices, so a live patch never overrides a
+      // chapter they opened/closed by hand. A chapter absent from both keeps
+      // the default (newest open, the rest folded).
+      const bookOpened = new Set();
+      const bookClosed = new Set();
+      // Chapter ids whose ask card the user expanded ("$ full message") — so a
+      // live re-render doesn't re-clamp a message they chose to read in full.
+      const bookAskExpanded = new Set();
+      // Plan-block expansion state (#conversation-chrome), keyed by plan segment
+      // id so a live re-render keeps whatever the user opened: the collapsed
+      // "✓ N done" summary and the "+N more" upcoming tail.
+      const planDoneOpen = new Set();
+      const planMoreOpen = new Set();
+      let bookScrolledUp = false;
+      // Book is the default view for a structured session; persisted per panel
+      // (webview state is already scoped to this session) so the choice sticks.
+      let bookView = true;
+      try {
+        const st = vscode.getState && vscode.getState();
+        if (st && typeof st.bookView === 'boolean') bookView = st.bookView;
+      } catch (e) { /* no persisted state yet */ }
+      const DEFAULT_PLACEHOLDER = input.getAttribute('placeholder') || '';
+      const BOOK_PLACEHOLDER = 'write back — your message opens the next chapter…';
 
       // Grow with the text instead of forcing the user to drag a resize
       // handle, up to the CSS max-height (then the textarea scrolls).
@@ -1374,6 +2524,7 @@ export function buildHtml(
         const hasText = Boolean(input.value.trim()) || attachments.length > 0;
         const live = !exited && !isSending;
         input.disabled = !live;
+        composerCommands.disabled = !live;
         sendBtn.disabled = !live || !hasText;
         sendBtn.classList.toggle('has-text', hasText && live);
         // Send/Stop are mutually exclusive: mid-turn, there is nothing to
@@ -1382,29 +2533,75 @@ export function buildHtml(
         sendBtn.hidden = busy && !exited;
         stopBtn.hidden = !busy || exited;
         stopBtn.disabled = isStopping;
-        // "Interrupt & send" exists to force a message the agent hasn't taken
-        // yet — so it appears only when there IS one waiting, not merely
-        // whenever the agent is busy.
-        interruptBtn.hidden = queuedText === null || exited;
-        interruptBtn.disabled = !live;
+        // "Interrupt & send" is the stop-and-go affordance: mid-turn it
+        // forces the text being typed (cutting the current turn short), or —
+        // composer empty — the FRONT of the queue. Shown whenever the agent
+        // is busy; inert until there is actually something to force.
+        interruptBtn.hidden = !busy || exited;
+        interruptBtn.disabled = !live || (!hasText && queuedItems.length === 0);
         // The one useful action left once a session has exited — shown
         // beside the now-disabled input rather than replacing it, so the
         // last message typed (if any) stays visible instead of vanishing.
         restartBtn.hidden = !exited;
+        restartBtn.disabled = isRestarting;
+        if (isRestarting) restartBtn.textContent = 'Restarting\\u2026';
+        else restartBtn.textContent = '\\u21bb Restart';
         composer.classList.toggle('disabled', exited);
         renderQueued();
       }
 
       function renderQueued() {
-        queuedRow.hidden = queuedText === null;
-        if (queuedText === null) return;
-        // \\s, not \s: this script lives in a template literal, where an
-        // unrecognised escape collapses to its own letter — /\s+/ would ship
-        // as /s+/ and blank out every "s" in the user's message.
-        const oneLine = queuedText.replace(/\\s+/g, ' ').trim();
-        const clipped = oneLine.length > 90 ? oneLine.slice(0, 90) + '…' : oneLine;
-        queuedLabel.textContent = 'Queued · ' + clipped;
-        queuedRow.title = queuedText;
+        queuedRow.hidden = queuedItems.length === 0;
+        queuedRow.textContent = '';
+        for (let i = 0; i < queuedItems.length; i++) {
+          const item = queuedItems[i];
+          const row = document.createElement('div');
+          row.className = 'queued-item';
+          row.title = item.text;
+          const position = document.createElement('span');
+          position.className = 'queued-item-position';
+          position.textContent = '#' + (i + 1);
+          row.appendChild(position);
+          const label = document.createElement('span');
+          label.className = 'queued-item-label';
+          // \\s, not \s: this script lives in a template literal, where an
+          // unrecognised escape collapses to its own letter — /\s+/ would
+          // ship as /s+/ and blank out every "s" in the user's message.
+          const oneLine = item.text.replace(/\\s+/g, ' ').trim();
+          label.textContent = oneLine.length > 90 ? oneLine.slice(0, 90) + '…' : oneLine;
+          row.appendChild(label);
+          const localId = item.localId;
+          const sendNow = document.createElement('button');
+          sendNow.className = 'queued-item-send';
+          sendNow.title = 'Interrupt the current turn and send this message now';
+          sendNow.textContent = '\\u25B6';
+          sendNow.addEventListener('click', function() { flushQueuedItem(localId); });
+          row.appendChild(sendNow);
+          const cancel = document.createElement('button');
+          cancel.className = 'queued-item-cancel';
+          cancel.title = 'Discard this queued message';
+          cancel.textContent = '\\u2715';
+          cancel.addEventListener('click', function() { removeQueuedItem(localId); });
+          row.appendChild(cancel);
+          queuedRow.appendChild(row);
+        }
+      }
+
+      /** Drop one item from the local queue view and, if the daemon has
+       *  already confirmed a real id for it, cancel it there too. A cancel
+       *  that races the 'queued' ack (no real id yet) is recorded in
+       *  cancelledLocalIds so the ack handler cancels it server-side the
+       *  moment the id actually arrives, instead of resurrecting the row. */
+      function removeQueuedItem(localId) {
+        const item = queuedItems.find(function(q) { return q.localId === localId; });
+        queuedItems = queuedItems.filter(function(q) { return q.localId !== localId; });
+        refreshComposer();
+        if (!item) return;
+        if (item.queueId) {
+          vscode.postMessage({ type: 'cancelQueued', queueId: item.queueId });
+        } else {
+          cancelledLocalIds.add(localId);
+        }
       }
 
       function showError(title, message) {
@@ -1418,14 +2615,51 @@ export function buildHtml(
         ebMessage.textContent = '';
       }
 
-      /** Hand the queued text to the agent, optionally cutting its turn short. */
-      function flushQueued(interrupt) {
-        if (queuedText === null) return;
-        const text = queuedText;
-        queuedText = null;
-        renderQueued();
-        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: text });
-        refreshComposer();
+      // ── Cross-session info banner (E3) ─────────────────────────────
+      // The transient informational twin of the error banner. One slot:
+      // currentInfoBannerId tracks what's up so a same-id message replaces
+      // (never stacks) and a dismissInfoBanner only hides a matching id.
+      // User-dismissed ids are remembered so a re-post of the SAME id (a
+      // still-true state re-announced) doesn't fight the user's choice — but
+      // a NEW occurrence carries a new id (the controller mints one per
+      // event), which shows again.
+      let currentInfoBannerId = null;
+      const dismissedInfoBannerIds = new Set();
+
+      function showInfoBanner(id, text, tooltip) {
+        if (dismissedInfoBannerIds.has(id) && currentInfoBannerId !== id) return;
+        currentInfoBannerId = id;
+        ibText.textContent = text;
+        if (tooltip) infoBanner.title = tooltip; else infoBanner.removeAttribute('title');
+        infoBanner.hidden = false;
+      }
+
+      function dismissInfoBanner(id, byUser) {
+        if (currentInfoBannerId !== id) return;
+        currentInfoBannerId = null;
+        infoBanner.hidden = true;
+        ibText.textContent = '';
+        if (byUser) dismissedInfoBannerIds.add(id);
+      }
+
+      /** Cancel the current turn and hand ONE queued item to the agent
+       *  right away — the rest of the queue stays put, still in order,
+       *  behind whatever this dispatches. Removes the item from the local
+       *  queue view immediately; if the daemon hadn't confirmed a real id
+       *  for it yet, removeQueuedItem records the cancel so the eventual
+       *  ack tidies it up server-side too (it is about to be sent by an
+       *  independent interruptSend, not drained from the FIFO — leaving it
+       *  queued would send it TWICE). */
+      function flushQueuedItem(localId) {
+        const item = queuedItems.find(function(q) { return q.localId === localId; });
+        if (!item) return;
+        removeQueuedItem(item.localId);
+        vscode.postMessage({ type: 'interruptSend', text: item.text });
+      }
+
+      function flushFrontQueued() {
+        const item = queuedItems[0];
+        if (item) flushQueuedItem(item.localId);
       }
 
       // "busy" said nothing: it covered an agent writing a reply and an agent
@@ -1441,7 +2675,14 @@ export function buildHtml(
       // Plus how long and how much — the three things a user waiting on a
       // reply actually wants, without expanding anything.
       function refreshWorking() {
-        working.hidden = !busy;
+        // The book view carries the live "Working…" state inside its own live
+        // chapter (title + "$ now:" line), so this separate row is pure
+        // redundancy there — a second working bar stacked above the composer.
+        // Hide it in book view; keep it for the raw transcript, where nothing
+        // else narrates the in-flight turn (and its stall warning earns its
+        // place). The text is still computed so a view switch shows it current.
+        const inBook = bookView && bookApplies();
+        working.hidden = !busy || inBook;
         if (!busy) return;
         const now = Date.now();
         const silent = lastSession ? silentForMs(lastSession, now) : undefined;
@@ -1477,19 +2718,46 @@ export function buildHtml(
         // The turn is over (however it ended) — Stop's job is done.
         if (wasBusy && !nowBusy) isStopping = false;
         if (typeof session.tokensOut === 'number') lastTokensOut = session.tokensOut;
+        // Drop any locally-shown item the daemon no longer lists as
+        // pending — it was either dispatched (drained by the daemon's own
+        // FIFO) or cancelled from elsewhere. This is the SOLE removal path
+        // for a normally-drained item: the daemon does the draining now,
+        // not this webview — see the doc comment on queuedItems above. An
+        // item still awaiting its 'queued' ack (no queueId yet) is left
+        // alone; it isn't in session.promptQueue yet either, so a naive
+        // presence check would drop it right after it was optimistically
+        // added.
+        if (Array.isArray(session.promptQueue)) {
+          const liveIds = new Set(session.promptQueue.map(function(p) { return p.id; }));
+          queuedItems = queuedItems.filter(function(item) {
+            return item.queueId === null || liveIds.has(item.queueId);
+          });
+        }
+        // The active harness's slash commands — REPLACED wholesale on every
+        // descriptor (see SessionDescriptor.availableCommands' doc), so a
+        // harness/session switch picks up the new list for free here.
+        availableCommands = Array.isArray(session.availableCommands)
+          ? session.availableCommands.map(function(c) {
+              return { name: c.name, description: c.description, scope: c._meta && c._meta.scope };
+            })
+          : [];
+        if (commandPopupState) {
+          commandPopupState.items = filterCommands(availableCommands, commandPopupState.query);
+          if (commandPopupState.active >= commandPopupState.items.length) commandPopupState.active = 0;
+          renderCommandPopup();
+        }
         refreshComposer();
         refreshWorking();
         refreshBlockedNote();
-        // The turn just ended — the daemon will accept a prompt again, so hand
-        // over whatever was typed during it. This is the whole point of the
-        // queue: the user types when they think of it, not when the agent is ready.
-        if (wasBusy && !nowBusy && !exited && queuedText !== null) flushQueued(false);
+        // The book's live chapter, pause card, and "$ now:" line derive from
+        // session state, so repaint them on any descriptor change.
+        renderBook();
       }
 
-      function setSending(sending) {
+      function setSending(sending, note) {
         isSending = sending;
         refreshComposer();
-        sendStatus.textContent = sending ? 'Sending…' : '';
+        sendStatus.textContent = sending ? (note || 'Sending…') : '';
       }
 
       // A terminal session is over: whatever busy/blockedOn still say about an
@@ -1525,13 +2793,34 @@ export function buildHtml(
       // rendering that verbatim told the user a dead session was blocked on a
       // command. isTerminal already governs busy/exited elsewhere — this must
       // not contradict it.
+      // The book's live "$ now:" line already narrates the in-flight step (in
+      // the supervisor case, "Watching executor"), so a separate "blocked on
+      // …" note below it is redundant — and a warning-yellow banner for normal
+      // long-running command/supervision is exactly the false alarm this commit
+      // removes. Suppress the note while that line is visible; it returns when
+      // the book is left (raw transcript has no now-line, so the note earns its
+      // place there).
+      function liveNowLineVisible() {
+        if (!bookView || !bookApplies()) return false;
+        const live = book.querySelector('.chapter.live .under');
+        return Boolean(live && !live.hidden);
+      }
+
       function refreshBlockedNote() {
         const session = lastSession;
         const live = Boolean(session) && !isTerminal(session) && Boolean(session.busy) && Boolean(session.blockedOn);
         if (!live) {
+          // The block cleared (or the session exited) — the note hides AND the
+          // user's dismissal resets, so the NEXT block shows again.
           blockedSince = 0;
+          dismissedBlockedKey = null;
           blockedNote.hidden = true;
-          blockedNote.textContent = '';
+          blockedNoteText.textContent = '';
+          return;
+        }
+        if (liveNowLineVisible()) {
+          blockedNote.hidden = true;
+          blockedNoteText.textContent = '';
           return;
         }
         if (!blockedSince) blockedSince = Date.now();
@@ -1540,22 +2829,138 @@ export function buildHtml(
         // delay is worth a note, and it clears the instant live goes false.
         if (Date.now() - blockedSince < BLOCKED_NOTE_DELAY_MS) {
           blockedNote.hidden = true;
-          blockedNote.textContent = '';
+          blockedNoteText.textContent = '';
+          return;
+        }
+        // Dismissal is keyed on the (kind, toolCallId) pair: dismissing hides
+        // the note for THIS block, but a different toolCallId (or a different
+        // kind) is a new block worth showing again.
+        const key = session.blockedOn + ' · ' + (session.pendingToolCallId || '');
+        if (dismissedBlockedKey === key) {
+          blockedNote.hidden = true;
           return;
         }
         blockedNote.hidden = false;
-        blockedNote.textContent = 'blocked on ' + session.blockedOn +
+        blockedNoteText.textContent = 'blocked on ' + session.blockedOn +
           (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '');
+      }
+
+      // Two distinct facts, not one value with two versions: session.model is
+      // what the session was REQUESTED to run at spawn, session.activeModel
+      // is what's actually running now when the daemon learned of a mid-
+      // session switch (a live model-switch verb, or an adapter's own
+      // acknowledgement of a /model command typed as a plain prompt — see
+      // SessionDescriptor.activeModel's doc in client/types.ts: that second
+      // source is REPORTED BY THE ADAPTER, NOT INDEPENDENTLY VERIFIED, a
+      // display hint only). Coincide (the majority case) -> render exactly
+      // as before, no visual noise. Diverge -> both shown, active
+      // foregrounded. Built via DOM APIs + textContent, never innerHTML/
+      // string interpolation — a model id ultimately traces back to an
+      // adapter's own reply text, same injection-safety reasoning as the
+      // watcher rows above.
+      function renderModelChip(session) {
+        const requested = session.model || 'model?';
+        const active = session.activeModel;
+        composerModel.textContent = '';
+        if (active && session.model && active !== session.model) {
+          const requestedSpan = document.createElement('span');
+          requestedSpan.className = 'composer-model-requested';
+          requestedSpan.textContent = requested;
+          const activeSpan = document.createElement('span');
+          activeSpan.className = 'composer-model-active';
+          activeSpan.textContent = active;
+          composerModel.appendChild(requestedSpan);
+          composerModel.appendChild(document.createTextNode(' → '));
+          composerModel.appendChild(activeSpan);
+          composerModel.title = 'Requested: ' + requested + ' · Active: ' + active +
+            ' (reported by the adapter, unverified) — click to switch';
+        } else {
+          composerModel.textContent = requested;
+          composerModel.title = 'Switch model';
+        }
       }
 
       function renderCostPopover(session) {
         popoverTokensIn.textContent = typeof session.tokensIn === 'number' ? String(session.tokensIn) : '—';
         popoverTokensOut.textContent = typeof session.tokensOut === 'number' ? String(session.tokensOut) : '—';
-        popoverModel.textContent = session.model || '—';
+        const requestedModel = session.model || '—';
+        popoverModel.textContent =
+          session.activeModel && session.model && session.activeModel !== session.model
+            ? requestedModel + ' → ' + session.activeModel + ' (unverified)'
+            : requestedModel;
         popoverHarness.textContent = session.adapterSlug || '—';
         // The named wallet the session's access axis is bound to (profile
         // label/ref), falling back to the raw auth method — never a secret.
         popoverAuth.textContent = accessIdentity(session);
+      }
+
+      // Mirrors watcherIdentity/describeWaitCondition in transcript.logic.ts —
+      // this inline script has no module system to import them from, so the
+      // small pure formatting is duplicated here (same rationale as
+      // displayName above) and the two must stay in sync.
+      var WATCHER_WAIT_PHRASES = { 'turn-end': 'until turn-end', 'awaiting-input': 'until it asks for input', 'exited': 'until it exits', 'any': 'for any change' };
+      function watcherWaitDuration(ms) {
+        var seconds = Math.floor(ms / 1000);
+        if (seconds < 60) return seconds + 's';
+        var minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return minutes + 'min';
+        var hours = Math.floor(minutes / 60);
+        if (hours < 24) return hours + 'h';
+        return Math.floor(hours / 24) + 'd';
+      }
+      function watcherWaitPhrase(detail) {
+        var phrase = WATCHER_WAIT_PHRASES[detail.event] || ('until ' + detail.event);
+        return typeof detail.timeoutMs === 'number' ? (phrase + ', ' + watcherWaitDuration(detail.timeoutMs) + ' timeout') : phrase;
+      }
+      function watcherIdentity(detail) {
+        return detail.watcherLabel || detail.watcherSessionId || 'an anonymous waiter';
+      }
+
+      // Persistent header presence chip (#session-visibility) — eye + count,
+      // shown only while someone is actually watching. Hover (title) gives a
+      // one-line summary; click opens the popover with one row per waiter.
+      // Built via DOM APIs + textContent (not innerHTML): a watcher's label
+      // is a renamed session's title, i.e. arbitrary user text, and
+      // textContent is what the rest of this header already relies on to
+      // stay injection-safe (see displayName/headerTitle above).
+      function renderWatchers(session) {
+        var count = typeof session.watchers === 'number' ? session.watchers : 0;
+        watchersWrap.hidden = count === 0;
+        if (count === 0) {
+          watchersPopover.hidden = true;
+          return;
+        }
+        watchersBtn.textContent = '\\uD83D\\uDC41 ' + count;
+        var details = session.watcherDetails || [];
+        if (details.length === 1) {
+          watchersBtn.title = watcherIdentity(details[0]) + ' — ' + watcherWaitPhrase(details[0]);
+        } else {
+          watchersBtn.title = count + ' waiters attached — click for detail';
+        }
+        watchersList.textContent = '';
+        if (details.length === 0) {
+          var fallbackRow = document.createElement('div');
+          fallbackRow.className = 'popover-row';
+          var fallbackLabel = document.createElement('span');
+          fallbackLabel.className = 'popover-label';
+          fallbackLabel.textContent = count + ' waiter' + (count === 1 ? '' : 's');
+          fallbackRow.appendChild(fallbackLabel);
+          watchersList.appendChild(fallbackRow);
+          return;
+        }
+        details.forEach(function(d) {
+          var row = document.createElement('div');
+          row.className = 'popover-row';
+          var label = document.createElement('span');
+          label.className = 'popover-label';
+          label.textContent = watcherIdentity(d);
+          var wait = document.createElement('span');
+          wait.className = 'watcher-wait';
+          wait.textContent = watcherWaitPhrase(d);
+          row.appendChild(label);
+          row.appendChild(wait);
+          watchersList.appendChild(row);
+        });
       }
 
       // Mirrors sessionDisplayName in client/sessionName.ts — this inline
@@ -1595,21 +3000,46 @@ export function buildHtml(
         if (session.adapterSlug && INITIAL_ICON_SVG) {
           headerIcon.innerHTML = INITIAL_ICON_SVG;
           headerIcon.title = session.adapterSlug;
+          harnessWatermark.innerHTML = INITIAL_ICON_SVG;
+          harnessWatermark.title = session.adapterSlug;
         } else {
           const mark = harnessGlyph(session.adapterSlug);
           headerIcon.textContent = session.adapterSlug ? mark.glyph : '';
           headerIcon.title = session.adapterSlug ? mark.label : '';
+          harnessWatermark.innerHTML = '';
+          harnessWatermark.title = '';
         }
         // Plain PTY sessions have no agent model/posture/wallet to configure —
         // hide the composer chips entirely instead of showing "model?" placeholders.
         const isPlainPty = session.kind === 'terminal' && session.pty === true;
         composerHarness.hidden = isPlainPty;
         composerModel.hidden = isPlainPty;
+        composerEffort.hidden = isPlainPty;
+        composerRoute.hidden = isPlainPty;
         composerPosture.hidden = isPlainPty;
         composerAuth.hidden = isPlainPty;
         if (!isPlainPty) {
-          composerHarness.textContent = session.adapterSlug || '';
-          composerModel.textContent = session.model || 'model?';
+          if (session.adapterSlug && INITIAL_ICON_SVG) {
+            composerHarness.innerHTML = INITIAL_ICON_SVG;
+            var cSvg = composerHarness.querySelector('svg');
+            if (cSvg) { cSvg.setAttribute('width', '12'); cSvg.setAttribute('height', '12'); cSvg.style.verticalAlign = 'middle'; }
+          } else {
+            composerHarness.textContent = session.adapterSlug || '';
+          }
+          composerHarness.title = session.adapterSlug || '';
+          renderModelChip(session);
+          // The effort chip only shows when the session carries one — an adapter
+          // that has no effort axis leaves the chip empty (:empty hides it).
+          composerEffort.textContent = session.effort ? ('effort: ' + session.effort) : '';
+          // Route chip only shows when a gateway is pinned (:empty hides it).
+          composerRoute.textContent = session.route && session.route.gateway ? ('route: ' + session.route.gateway) : '';
+          // Dim when the model has a single valid gateway — nothing to switch to
+          // (chip-pickers). Undefined (catalog not loaded yet) leaves it active.
+          const routeLocked = session.routeSwitchable === false;
+          composerRoute.classList.toggle('dimmed', routeLocked);
+          composerRoute.title = routeLocked
+            ? 'Only one route is available for this model'
+            : 'Switch route (restarts the session — conversation carries over)';
           composerPosture.textContent = defaultPostureLabel(session);
           const auth = accessIdentity(session);
           composerAuth.textContent = auth === '—' ? 'no wallet' : auth;
@@ -1619,10 +3049,25 @@ export function buildHtml(
         // decides the rate (model/harness/auth) lives one click away, in the
         // popover, rather than crowding the header with numbers nobody acts
         // on at a glance.
-        costBtn.textContent = typeof session.costUsd === 'number'
-          ? '$' + session.costUsd.toFixed(4)
-          : '—';
+        // Merged metrics pill (#conversation-chrome): two decimals on the face,
+        // full precision on hover.
+        costBtn.textContent = formatCostShort(session.costUsd);
+        costBtn.title = typeof session.costUsd === 'number' ? '$' + session.costUsd.toFixed(4) : 'No cost recorded yet';
         renderCostPopover(session);
+        renderWatchers(session);
+        // Title status dot — the visibility state at a glance.
+        if (titleStatus) {
+          const st = titleStatusState(session);
+          titleStatus.className = 'tstatus ' + st;
+          titleStatus.title = st === 'stalled'
+              ? 'Stalled' + (typeof session.stalledSinceMs === 'number'
+                  ? ' — no output for ' + formatDuration(Math.max(0, Date.now() - session.stalledSinceMs))
+                  : '') + ' — the agent may be stuck'
+            : st === 'delegating' ? 'Delegating — waiting on its busy subtree'
+            : st === 'parked' ? 'Parked — supervised, will be re-prompted'
+            : st === 'awaiting' ? 'Awaiting your input'
+            : st === 'busy' ? 'Working' : 'Quiet';
+        }
       }
 
       function appendLines(lines) {
@@ -1655,6 +3100,72 @@ export function buildHtml(
         if (className) e.className = className;
         if (text !== undefined) e.textContent = text;
         return e;
+      }
+
+      // Minimalist plan block (#conversation-chrome). Rebuilds the node in place
+      // from the injected, tested projectPlan: done steps collapse to one
+      // "✓ N done" summary (click to expand the completed list); failed steps
+      // stay individually visible; upcoming = the current step (bold) + the next
+      // few pending, with the rest behind a "+N more". No strikethrough rows.
+      function planRow(cls, mark, text) {
+        const li = el('li', cls);
+        li.appendChild(el('span', 'plan-mark', mark));
+        li.appendChild(el('span', 'plan-text', text));
+        return li;
+      }
+      function buildPlan(node, seg) {
+        node.innerHTML = '';
+        const proj = projectPlan(seg.entries || []);
+        const headText = seg.title
+          ? 'Plan ' + seg.done + '/' + seg.total + ' — ' + seg.title
+          : 'Plan ' + seg.done + '/' + seg.total;
+        node.appendChild(el('div', 'plan-head', headText));
+        const track = el('div', 'plan-progress');
+        const fill = el('div', 'plan-progress-fill');
+        const pct = seg.total > 0 ? Math.round((seg.done / seg.total) * 100) : 0;
+        fill.style.width = pct + '%';
+        track.appendChild(fill);
+        node.appendChild(track);
+        const ul = el('ul', 'plan-list');
+
+        // Done → one collapsible summary line.
+        if (proj.doneCount > 0) {
+          const open = planDoneOpen.has(seg.id);
+          const sum = el('li', 'plan-donesum');
+          sum.appendChild(el('span', 'plan-mark', '✓'));
+          sum.appendChild(el('span', 'plan-text', proj.doneCount + ' done'));
+          sum.appendChild(el('span', 'plan-chev', open ? '▾' : '▸'));
+          sum.addEventListener('click', function() {
+            if (open) planDoneOpen.delete(seg.id); else planDoneOpen.add(seg.id);
+            buildPlan(node, seg);
+          });
+          ul.appendChild(sum);
+          if (open) for (const d of proj.doneItems) ul.appendChild(planRow('plan-completed plan-sub', '✓', d.content));
+        }
+        // Failed → always visible, individually.
+        for (const f of proj.failed) ul.appendChild(planRow('plan-failed', '✗', f.content));
+        // Current step (bold).
+        if (proj.current) ul.appendChild(planRow('plan-in_progress', '●', proj.current.content));
+        // Next few pending.
+        for (const p of proj.upcoming) ul.appendChild(planRow('plan-pending', '○', p.content));
+        // The rest of the queue, behind a "+N more" toggle.
+        if (proj.moreCount > 0) {
+          if (planMoreOpen.has(seg.id)) {
+            const restPending = (seg.entries || []).filter(function(e) {
+              return e.status !== 'completed' && e.status !== 'failed' && e.status !== 'in_progress';
+            }).slice(proj.upcoming.length);
+            for (const p of restPending) ul.appendChild(planRow('plan-pending', '○', p.content));
+          }
+          const more = el('li', 'plan-more');
+          more.appendChild(el('span', 'plan-mark', ''));
+          more.appendChild(el('span', 'plan-text', planMoreOpen.has(seg.id) ? 'show fewer' : ('+' + proj.moreCount + ' more')));
+          more.addEventListener('click', function() {
+            if (planMoreOpen.has(seg.id)) planMoreOpen.delete(seg.id); else planMoreOpen.add(seg.id);
+            buildPlan(node, seg);
+          });
+          ul.appendChild(more);
+        }
+        node.appendChild(ul);
       }
 
       // Lay out one disclosure row: status on the LEFT, the open/close
@@ -1739,6 +3250,60 @@ export function buildHtml(
         entry.node.classList.toggle('tool-still-running', stillRunning);
       }
 
+      // Rebuilds the bg-task chip strip from the bgTasks map (#background-tasks-ux).
+      // Cheap and called on every 'tool' segment repaint, not just the ones that
+      // actually change bgTasks — the map is small (a handful of entries at
+      // most) so a full rebuild is simpler than diffing it.
+      function renderBgChips() {
+        bgChips.innerHTML = '';
+        bgChips.hidden = bgTasks.size === 0;
+        if (bgTasks.size === 0) return;
+        const nameCounts = {};
+        bgTasks.forEach(entry => {
+          nameCounts[entry.toolName] = (nameCounts[entry.toolName] || 0) + 1;
+        });
+        const seenCounts = {};
+        bgTasks.forEach((entry, segId) => {
+          let label = entry.toolName;
+          if (nameCounts[entry.toolName] > 1) {
+            seenCounts[entry.toolName] = (seenCounts[entry.toolName] || 0) + 1;
+            label = entry.toolName + ' #' + seenCounts[entry.toolName];
+          }
+          const chip = el('button', 'bgchip', label);
+          chip.type = 'button';
+          chip.title = 'Background task running — click to view';
+          // Deliberately NOT data-seg-id — that attribute means "I am a
+          // segment card" to reconcileSegments/scrollToSegment, and this
+          // button is neither; a shared name would make it match its own
+          // "find the live segment" query.
+          chip.dataset.targetSegId = segId;
+          bgChips.appendChild(chip);
+        });
+      }
+
+      // Scrolls to (and briefly highlights) the live segment node for segId —
+      // preferring a currently-visible one (transcript vs. book, whichever
+      // view is active) over an off-screen duplicate that shares the id.
+      function scrollToSegment(segId) {
+        const nodes = document.querySelectorAll('[data-seg-id]');
+        let target;
+        for (const node of nodes) {
+          if (node.dataset.segId !== segId) continue;
+          if (node.offsetParent !== null) { target = node; break; }
+          if (!target) target = node;
+        }
+        if (!target) return;
+        if (target.tagName === 'DETAILS') target.open = true;
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('seg-flash');
+        setTimeout(() => target.classList.remove('seg-flash'), 1200);
+      }
+
+      bgChips.addEventListener('click', e => {
+        const chip = e.target.closest('.bgchip');
+        if (chip) scrollToSegment(chip.dataset.targetSegId);
+      });
+
       // Paint a segment's content into an EXISTING shell node. Called both
       // right after buildSegmentShell (new segment) and whenever an existing
       // segment's signature changes (updated segment) — the shell itself is
@@ -1779,39 +3344,71 @@ export function buildHtml(
               // card is collapsed, and the body is exactly what's hidden.
               const startedMs = seg.ts ? Date.parse(seg.ts) : NaN;
               const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label: elapsed, node };
-              pendingTools.set(seg.id, entry);
+              pendingTools.set(node, entry);
               paintElapsed(entry);
             } else {
-              pendingTools.delete(seg.id);
+              pendingTools.delete(node);
               node.classList.remove('tool-still-running');
             }
             if (seg.resultText !== undefined) {
               node.appendChild(el('div', 'tool-field-label', 'output'));
               appendToolIo(node, seg, 'output', 'tool-result', seg.resultText, seg.resultClamped, seg.resultLines);
             }
+            if (seg.background) bgTasks.set(seg.id, { toolName: seg.toolName || 'task' });
+            else bgTasks.delete(seg.id);
+            renderBgChips();
             return;
           }
           case 'plan': {
             node.className = 'seg plan';
-            node.innerHTML = '';
-            node.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
-            const ul = el('ul', 'plan-list');
-            for (const entry of seg.entries || []) {
-              const mark = entry.status === 'completed' ? '☑ '
-                : entry.status === 'in_progress' ? '▸ ' : '☐ ';
-              ul.appendChild(el('li', 'plan-' + entry.status, mark + entry.content));
-            }
-            node.appendChild(ul);
+            buildPlan(node, seg);
             return;
           }
           case 'agent-question': {
-            node.className = 'seg question';
             node.innerHTML = '';
-            node.appendChild(el('div', undefined, 'Awaiting your decision'));
-            if (seg.options && seg.options.length) {
-              const ul = el('ul');
-              for (const opt of seg.options) ul.appendChild(el('li', undefined, opt));
-              node.appendChild(ul);
+            if (seg.resolved) {
+              const decision = seg.resolved.decision;
+              node.className = 'seg question resolved resolved-' + decision;
+              const label = decision === 'approve' ? 'Approved'
+                : decision === 'deny' ? 'Denied'
+                : 'Cancelled';
+              const optionLabel = seg.resolved.optionLabel;
+              node.appendChild(el('div', undefined, optionLabel ? label + ' — ' + optionLabel : label));
+              return;
+            }
+            node.className = 'seg question';
+            node.appendChild(el('div', 'question-label', 'Awaiting your decision'));
+            // Chips render from the presenter's ordered {id?, label} items —
+            // the daemon's own optionId rides with its label, so no reverse
+            // lookup (labels are not unique keys). Legacy asks without items
+            // fall back to bare labels, presentational only.
+            const items = seg.optionItems && seg.optionItems.length
+              ? seg.optionItems
+              : (seg.options || []).map((label) => ({ label }));
+            if (items.length) {
+              const row = el('div', 'question-options');
+              for (const item of items) {
+                const btn = el('button', 'question-option', item.label);
+                if (item.id && seg.toolCallId) {
+                  const optionId = item.id;
+                  btn.addEventListener('click', () => {
+                    vscode.postMessage({
+                      type: 'resolveQuestion',
+                      toolCallId: seg.toolCallId,
+                      decision: 'approve',
+                      optionId,
+                    });
+                  });
+                } else {
+                  // Not respondable from here: a plain-string option carries
+                  // no optionId, and without a toolCallId there is no pending
+                  // permission to answer.
+                  btn.disabled = true;
+                  btn.title = item.id ? 'no pending permission to answer' : 'option id unavailable';
+                }
+                row.appendChild(btn);
+              }
+              node.appendChild(row);
             }
             return;
           }
@@ -1840,10 +3437,10 @@ export function buildHtml(
             if (seg.status === 'pending') {
               const startedMs = seg.pendingSince ? Date.parse(seg.pendingSince) : NaN;
               const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label: elapsed, node };
-              pendingTools.set(seg.id, entry);
+              pendingTools.set(node, entry);
               paintElapsed(entry);
             } else {
-              pendingTools.delete(seg.id);
+              pendingTools.delete(node);
               node.classList.remove('tool-still-running');
             }
             return;
@@ -1854,9 +3451,24 @@ export function buildHtml(
       // Ticks pending tools' elapsed labels independently of any patch —
       // "started but no answer yet" must keep moving even on a quiet poll.
       setInterval(() => {
-        for (const [segId, entry] of pendingTools) {
-          if (!entry.node.isConnected) { pendingTools.delete(segId); continue; }
+        for (const [key, entry] of pendingTools) {
+          if (!entry.node.isConnected) { pendingTools.delete(key); continue; }
           paintElapsed(entry);
+        }
+        // A bg task's segment can vanish from the DOM (turn dropped, resync)
+        // without ever repainting through the 'tool' branch above — prune any
+        // chip whose backing segment is no longer live, the same safety net
+        // pendingTools gets via node.isConnected above.
+        if (bgTasks.size > 0) {
+          const liveSegIds = new Set();
+          document.querySelectorAll('[data-seg-id]').forEach(node => {
+            if (node.isConnected) liveSegIds.add(node.dataset.segId);
+          });
+          let pruned = false;
+          for (const segId of bgTasks.keys()) {
+            if (!liveSegIds.has(segId)) { bgTasks.delete(segId); pruned = true; }
+          }
+          if (pruned) renderBgChips();
         }
         // The working row's elapsed must keep moving on a quiet poll too — a
         // frozen counter is exactly what "is it stuck?" looks like.
@@ -1864,6 +3476,11 @@ export function buildHtml(
         // The blocked note's delay must elapse on a quiet poll too — nothing
         // else re-renders it while the session sits unchanged mid-block.
         refreshBlockedNote();
+        // The live chapter's "$ now:" line must keep ticking on a quiet poll —
+        // a frozen counter is what "is it stuck?" looks like.
+        if (bookView && bookApplies()) {
+          book.querySelectorAll('.chapter.live .under[data-since]').forEach(renderNow);
+        }
       }, 1000);
 
       // Marks runs of consecutive tool segments so CSS can merge them into
@@ -1958,8 +3575,21 @@ export function buildHtml(
         node.dataset.turnId = turn.id;
         // "You" labels a user turn; an unlabeled bubble (transparent
         // background, see CSS) reads as the assistant without repeating it
-        // on every single turn.
-        if (turn.role === 'user') node.appendChild(el('div', 'role', 'You'));
+        // on every single turn. A turn another session injected
+        // (agent_prompt) additionally carries the "⇄ from <id>" badge and
+        // the agent-sourced accent (E2) — same rendering as
+        // renderStaticTurn's frozen-history path.
+        if (turn.role === 'user') {
+          const role = el('div', 'role', 'You');
+          const source = describePromptSource(turn.promptSource);
+          if (source) {
+            node.classList.add('turn-agent-sourced');
+            const badge = el('span', 'prompt-source-badge', source.label);
+            badge.title = source.tooltip;
+            role.appendChild(badge);
+          }
+          node.appendChild(role);
+        }
         const bubble = el('div', 'bubble');
         node.appendChild(bubble);
         reconcileSegments(bubble, turn.segments || []);
@@ -2004,8 +3634,13 @@ export function buildHtml(
         if (gauge) {
           const circumference = 2 * Math.PI * 6; // r=6 in the 16×16 viewBox
           ctxArc.setAttribute('stroke-dasharray', (gauge.ratio * circumference) + ' ' + circumference);
-          ctxArc.classList.remove('mid', 'high');
-          if (gauge.level !== 'low') ctxArc.classList.add(gauge.level);
+          // Colour the ring by the session's contextContinuity thresholds
+          // (#conversation-chrome): grey → amber at warnAtPct → red at
+          // compactAtPct, rather than the old fixed 70/90 cutoffs.
+          const cc = lastSession && lastSession.contextContinuity;
+          const level = contextRingLevel(gauge.pct, cc && cc.warnAtPct, cc && cc.compactAtPct);
+          ctxArc.classList.remove('amber', 'red');
+          if (level !== 'grey') ctxArc.classList.add(level);
           ctxPct.textContent = gauge.pct + '%';
         }
         popoverContextUsed.textContent = typeof used === 'number' ? String(used) : '—';
@@ -2032,6 +3667,7 @@ export function buildHtml(
         const atBottom = !isScrolledUp;
         clearTranscript();
         pendingTools.clear();
+        bgTasks.clear();
         const nodes = {};
         if (conv && conv.turns) {
           for (const turn of conv.turns) upsertTurn(turn, nodes);
@@ -2059,6 +3695,607 @@ export function buildHtml(
         if (atBottom) transcript.scrollTop = transcript.scrollHeight;
       }
 
+      // ── Book view ──────────────────────────────────────────────────
+      // The book is a fold ABOVE the SAME presented turns the transcript view
+      // renders — grouped into chapters by buildBook (injected, tested). It
+      // reuses reconcileSegments/paintSegment verbatim for its step drawer, so
+      // tool cards / activity folds behave identically. #transcript is left
+      // fully intact as the 'transcript' escape hatch.
+
+      function bookApplies() { return mode === 'structured'; }
+
+      // Keep #book/#transcript visibility, the header toggle, and the composer
+      // placeholder in sync with the mode + the user's book/transcript choice.
+      function applyViewVisibility() {
+        const applies = bookApplies();
+        viewToggle.hidden = !applies;
+        if (applies) {
+          // Segmented control: the active view is highlighted, not the target —
+          // it shows WHERE YOU ARE, and each segment switches to its own view.
+          const seg = viewToggle.querySelectorAll('button');
+          for (const b of seg) {
+            const on = (b.getAttribute('data-view') === 'book') === bookView;
+            b.classList.toggle('on', on);
+            b.setAttribute('aria-pressed', String(on));
+          }
+          book.hidden = !bookView;
+          transcript.hidden = bookView;
+          input.placeholder = bookView ? BOOK_PLACEHOLDER : DEFAULT_PLACEHOLDER;
+        } else {
+          book.hidden = true;
+          input.placeholder = DEFAULT_PLACEHOLDER;
+        }
+        // The working row is suppressed in book view (renderBook's live chapter
+        // shows it instead) — re-evaluate on every view change so it appears the
+        // moment the user drops to the raw transcript and hides on the way back.
+        refreshWorking();
+      }
+
+      function setBookView(next) {
+        if (bookView === next) return;
+        bookView = next;
+        try {
+          const prev = (vscode.getState && vscode.getState()) || {};
+          if (vscode.setState) vscode.setState(Object.assign({}, prev, { bookView: bookView }));
+        } catch (e) { /* state persistence best-effort */ }
+        applyViewVisibility();
+        if (bookView) renderBook();
+      }
+
+      function setBookConversation(conv) {
+        bookTurns.clear();
+        if (conv && conv.turns) for (const t of conv.turns) bookTurns.set(t.id, t);
+      }
+
+      function applyBookPatch(patch) {
+        for (const id of (patch.removeTurnIds || [])) bookTurns.delete(id);
+        for (const t of (patch.upsertTurns || [])) bookTurns.set(t.id, t);
+      }
+
+      function clearBookDom() {
+        book.textContent = '';
+        bookChapterNodes.clear();
+      }
+
+      // A patch may deliver a late earlier turn, so order by the seq suffix of
+      // the turn id rather than trusting Map insertion order.
+      function orderedBookTurns() {
+        return Array.from(bookTurns.values())
+          .sort(function(a, b) { return turnSeq(a.id) - turnSeq(b.id); });
+      }
+
+      // The step actually running now, for a live chapter's "$ now:" line.
+      function currentStepInfo(steps) {
+        for (const seg of steps) {
+          if (seg.kind === 'tool' && seg.status === 'pending') {
+            return { label: seg.toolName || 'tool', since: seg.ts };
+          }
+          if (seg.kind === 'activity' && seg.status === 'pending') {
+            const head = (seg.summary || '').split(' · ')[0];
+            return { label: head || 'working', since: seg.pendingSince };
+          }
+        }
+        return undefined;
+      }
+
+      function buildChapterNode(ch) {
+        const node = el('div', 'chapter');
+        node.dataset.chapterId = ch.id;
+
+        // Ask block — the HUMAN turn. It lives ABOVE the fold and OUTSIDE the
+        // foldable body, so it stays visible (pinned) whether the chapter is
+        // open or folded, and never doubles as the chapter title. The agent's
+        // response builds as its OWN chapter below, titled by its narration.
+        const ask = el('div', 'ask');
+        ask.hidden = true;
+        ask.appendChild(el('div', 'alabel', 'YOU ASKED'));
+        ask.appendChild(el('div', 'atext'));
+        const amore = el('button', 'amore', '$ full message');
+        amore.type = 'button';
+        amore.hidden = true;
+        amore.addEventListener('click', function() {
+          bookAskExpanded.add(node.dataset.chapterId);
+          ask.classList.remove('clamped');
+          amore.hidden = true;
+        });
+        ask.appendChild(amore);
+        node.appendChild(ask);
+
+        const fold = el('div', 'fold');
+        fold.setAttribute('tabindex', '0');
+        fold.setAttribute('role', 'button');
+        fold.appendChild(el('span', 'arrow', '▶'));
+        fold.appendChild(el('h2'));
+        fold.appendChild(el('span', 'who'));
+        fold.appendChild(el('span', 't'));
+        const toggle = function() {
+          // The live chapter never folds.
+          if (node.classList.contains('live')) return;
+          const id = node.dataset.chapterId;
+          const nowOpen = !node.classList.contains('openc');
+          node.classList.toggle('openc', nowOpen);
+          fold.setAttribute('aria-expanded', String(nowOpen));
+          if (nowOpen) { bookOpened.add(id); bookClosed.delete(id); }
+          else { bookClosed.add(id); bookOpened.delete(id); }
+        };
+        fold.addEventListener('click', toggle);
+        fold.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+        });
+        node.appendChild(fold);
+
+        const cbody = el('div', 'cbody');
+        // Narration (the agent's own words).
+        cbody.appendChild(el('div', 'narration'));
+        // Steps drawer ("$ show N steps").
+        const steps = el('div', 'chapter-steps');
+        steps.hidden = true;
+        const details = el('button', 'details');
+        details.type = 'button';
+        const stepsBody = el('div', 'steps-body');
+        stepsBody.hidden = true;
+        details.addEventListener('click', function() {
+          const openNow = stepsBody.hidden;
+          stepsBody.hidden = !openNow;
+          node.classList.toggle('steps-open', openNow);
+        });
+        steps.appendChild(details);
+        steps.appendChild(stepsBody);
+        cbody.appendChild(steps);
+        // Notices (plans / errors / questions — kept visible, never folded).
+        cbody.appendChild(el('div', 'notices'));
+        // Live "$ now:" ticker line.
+        const under = el('div', 'under');
+        under.hidden = true;
+        cbody.appendChild(under);
+
+        node.appendChild(cbody);
+        return node;
+      }
+
+      // Give every WIDE narration block (a table or fenced code block) a hover
+      // pop-out button that opens it in a full read-only editor tab — the book
+      // column is narrow, and some tables/code simply don't fit. Re-run on each
+      // paint: narration html is rebuilt every time, so wrappers stay fresh (the
+      // guard just skips a block already wrapped within one paint). The block's
+      // own rendered text is what ships to the host (openBlock) — it's the
+      // agent's narration, already in the webview, not raw daemon output.
+      function enhanceBookBlocks(root) {
+        const blocks = root.querySelectorAll('pre, table');
+        for (const block of blocks) {
+          const parent = block.parentElement;
+          if (!parent || parent.classList.contains('book-block')) continue;
+          const wrap = el('div', 'book-block');
+          parent.insertBefore(wrap, block);
+          wrap.appendChild(block);
+          const btn = el('button', 'block-popout', '⤢');
+          btn.type = 'button';
+          btn.title = 'Open in editor';
+          btn.setAttribute('aria-label', 'Open this block in an editor');
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const text = serializeBookBlock(block);
+            vscode.postMessage({ type: 'openBlock', text: text, name: bookBlockName(block, text) });
+          });
+          wrap.appendChild(btn);
+        }
+      }
+
+      // A <pre> is its own text; a table becomes tab-separated rows so it stays
+      // readable and re-pasteable in a plain editor. (fromCharCode, not '\\t' /
+      // '\\n' literals — this whole script is emitted from a template literal,
+      // where a literal newline inside a quoted string would break parsing.)
+      var TAB_CHAR = String.fromCharCode(9);
+      var NL_CHAR = String.fromCharCode(10);
+      function serializeBookBlock(block) {
+        if (block.tagName === 'TABLE') {
+          const lines = [];
+          const rows = block.querySelectorAll('tr');
+          for (const row of rows) {
+            const parts = [];
+            const cells = row.querySelectorAll('th, td');
+            for (const c of cells) parts.push((c.textContent || '').trim());
+            lines.push(parts.join(TAB_CHAR));
+          }
+          return lines.join(NL_CHAR);
+        }
+        return block.textContent || '';
+      }
+
+      function bookBlockName(block, text) {
+        const isTable = block.tagName === 'TABLE';
+        const first = (text.split(NL_CHAR)[0] || '').replace(/[^\w .-]+/g, ' ').trim().slice(0, 40);
+        return (first ? first + ' — ' : '') + (isTable ? 'table.tsv' : 'code.txt');
+      }
+
+      function paintChapter(node, ch, index, chapters, isLive) {
+        node.classList.toggle('live', isLive);
+        // Provenance: a prompt injected by another session (agent_prompt from
+        // a supervisor, a parent's spawn prompt) carries source
+        // "agent:<sessionId>" — attribute the ask to it instead of "you".
+        // NB: this whole script is a template literal — no backticks here.
+        const askSource = ch.ask && typeof ch.ask.source === 'string' ? ch.ask.source : '';
+        const fromAgent = askSource.indexOf('agent:') === 0;
+        const fold = node.querySelector(':scope > .fold');
+        fold.querySelector('h2').textContent = ch.title;
+        fold.querySelector('.who').textContent =
+          ch.origin === 'you' ? (fromAgent ? '◈ supervisor' : '◈ you') : '';
+        const dur = chapterDurationMs(chapters, index);
+        fold.querySelector('.t').textContent = typeof dur === 'number' ? formatChapterDuration(dur) : '';
+
+        const open = isLive || bookOpened.has(ch.id) ||
+          (!bookClosed.has(ch.id) && index === chapters.length - 1);
+        node.classList.toggle('openc', open);
+        fold.setAttribute('aria-expanded', String(open));
+
+        // Ask block — pinned above the fold, its own persistent human turn.
+        const ask = node.querySelector(':scope > .ask');
+        if (ch.ask) {
+          ask.hidden = false;
+          const alabel = ask.querySelector('.alabel');
+          alabel.textContent = fromAgent ? 'SUPERVISOR ASKED' : 'YOU ASKED';
+          // Full provenance on hover — the injecting session's id.
+          if (fromAgent) alabel.title = askSource.slice('agent:'.length);
+          else alabel.removeAttribute('title');
+          const atext = ask.querySelector('.atext');
+          atext.innerHTML = ch.ask.html || '';
+          enhanceBookBlocks(atext);
+          // Respect an earlier "$ full message" expansion across live re-renders.
+          const amore = ask.querySelector('.amore');
+          let clamp = Boolean(ch.ask.long) && !bookAskExpanded.has(ch.id);
+          ask.classList.toggle('clamped', clamp);
+          // The char-count is only a heuristic — trust the actual layout: a
+          // message that already fits entirely inside the clamp needs no
+          // "$ full message" expander. (clientHeight is 0 before first
+          // layout — keep the heuristic's verdict in that case.)
+          if (clamp && atext.clientHeight > 0 && atext.scrollHeight <= atext.clientHeight + 1) {
+            clamp = false;
+            ask.classList.remove('clamped');
+          }
+          amore.hidden = !clamp;
+          // First paint measures clientHeight as 0, so the fit-check above is
+          // skipped and a >220-char message that actually wraps to ≤5 lines
+          // keeps a spurious expander. Re-measure once layout has settled and
+          // drop it if the whole message is already on screen. Guard on the
+          // still-clamped class so a user expansion in between isn't undone.
+          if (clamp) {
+            requestAnimationFrame(function() {
+              if (!ask.classList.contains('clamped')) return;
+              if (atext.scrollHeight <= atext.clientHeight + 1) {
+                ask.classList.remove('clamped');
+                amore.hidden = true;
+              }
+            });
+          }
+        } else {
+          ask.hidden = true;
+        }
+
+        // Narration — rebuilt each paint (cheap prose); the live chapter gets
+        // the blinking phosphor cursor after its last block.
+        const narration = node.querySelector(':scope > .cbody > .narration');
+        narration.textContent = '';
+        for (const seg of ch.narration) {
+          const p = el('div', 'story');
+          p.innerHTML = seg.html || '';
+          enhanceBookBlocks(p);
+          narration.appendChild(p);
+        }
+        if (isLive) {
+          let last = narration.lastElementChild;
+          if (!last) { last = el('div', 'story'); narration.appendChild(last); }
+          last.appendChild(el('span', 'cursor'));
+        }
+
+        // Steps drawer — reuse the transcript's own segment reconciler so tool
+        // cards / activity folds render (and keep their open state) identically.
+        const steps = node.querySelector(':scope > .cbody > .chapter-steps');
+        const stepsBody = steps.querySelector('.steps-body');
+        if (ch.steps.segments.length > 0) {
+          steps.hidden = false;
+          const n = ch.steps.count;
+          let label = 'show ' + n + ' step' + (n === 1 ? '' : 's');
+          if (ch.steps.failed > 0) label += ' · ' + ch.steps.failed + ' failed';
+          steps.querySelector('.details').textContent = label;
+          reconcileSegments(stepsBody, ch.steps.segments);
+        } else {
+          steps.hidden = true;
+          reconcileSegments(stepsBody, []);
+        }
+
+        // Notices.
+        reconcileSegments(node.querySelector(':scope > .cbody > .notices'), ch.notices);
+
+        // Live "$ now:" line.
+        paintNowLine(node, ch, isLive);
+      }
+
+      function paintNowLine(node, ch, isLive) {
+        const under = node.querySelector(':scope > .cbody > .under');
+        const info = isLive ? currentStepInfo(ch.steps.segments) : undefined;
+        const since = info && info.since ? Date.parse(info.since) : NaN;
+        if (!info || isNaN(since)) {
+          under.hidden = true;
+          under.removeAttribute('data-since');
+          under.removeAttribute('data-label');
+          under.removeAttribute('data-dotting');
+          // Only the LIVE line owns the fade/debounce state. A kept-closed past
+          // chapter painting its (empty) line every renderBook must not clobber
+          // the live line's pending/fade tracking — that would snap every label
+          // change in any multi-chapter book.
+          if (isLive) {
+            nowSwapToken++;
+            shownNowLabel = pendingNowLabel = null;
+          }
+          return;
+        }
+        under.hidden = false;
+        under.dataset.since = String(since);
+        // A pending step that outlives NOW_STALE_MS has almost certainly never
+        // resolved — the agent went quiet, usually because it handed off to a
+        // child session (supervising an executor) and stopped emitting its own
+        // [tool] markers. The transcript's last action then freezes forever, so
+        // "now:" stops trusting it and falls back to the daemon's own
+        // activitySummary (or an explicit supervision label).
+        under.dataset.label =
+          Date.now() - since > NOW_STALE_MS ? nowStaleLabel() : info.label;
+        renderNow(under);
+      }
+
+      // What a >30s-old unresolved step is really doing: supervising a child,
+      // or whatever the daemon's activitySummary says. Falls back to the
+      // trusty "Working" — never the stale tool name.
+      function nowStaleLabel() {
+        if (lastSession && lastSession.blockedOn === 'subagent') return 'Watching executor';
+        const text = lastSession && lastSession.activitySummary && lastSession.activitySummary.text;
+        return text ? clampNowLabel(text) : 'Working';
+      }
+
+      // activitySummary.text is a prose sentence, not a terse tool name —
+      // cap it so the "$ now:" line stays one short line.
+      function clampNowLabel(s) {
+        if (s.length <= 48) return s;
+        const cut = s.slice(0, 48).replace(/\s+\S*$/, '');
+        return (cut.length ? cut : s.slice(0, 48)) + '…';
+      }
+
+      function renderNow(under) {
+        const since = Number(under.dataset.since);
+        const label = under.dataset.label || '';
+        const elapsed = Math.max(0, Date.now() - since);
+        // > 90s: a counter that climbs into many minutes is exactly the stale
+        // look this line exists to avoid — drop the number and the "now:"
+        // prefix, replace the whole line with a "Still working…" dot-cycle.
+        // Reschedule only while no dot tick is already pending so the 1s
+        // quiet-poll ticker doesn't stack. Any pending label fade is moot here.
+        if (elapsed > NOW_LONG_RUNNING_MS) {
+          nowSwapToken++;
+          shownNowLabel = pendingNowLabel = null;
+          if (under.dataset.dotting !== '1') {
+            under.dataset.dotting = '1';
+            window.setTimeout(function () {
+              under.removeAttribute('data-dotting');
+              renderNow(under);
+            }, NOW_DOT_CYCLE_MS);
+          }
+          const dots = '.'.repeat(1 + Math.floor(Date.now() / NOW_DOT_CYCLE_MS) % 3);
+          under.textContent = '';
+          under.appendChild(document.createTextNode('Still working' + dots));
+          return;
+        }
+        under.removeAttribute('data-dotting');
+
+        const suffix = nowSuffix(elapsed);
+        // First paint for this node: there is no older label to hold against,
+        // so paint right away — the line must never sit blank.
+        if (shownNowLabel === null && pendingNowLabel === null) {
+          shownNowLabel = label;
+          paintNowText(under, label, suffix);
+          return;
+        }
+        // Same label already on screen → the seconds ticker just re-paints
+        // (no fade). Same label mid-swap → leave the old text in place; the
+        // scheduled fade will land it.
+        if (label === shownNowLabel) {
+          if (under.classList.contains('fading-out')) return;
+          paintNowText(under, label, suffix);
+          return;
+        }
+        if (label === pendingNowLabel) return;
+        if (pendingNowLabel !== null) {
+          // A newer label arrived inside the debounce window — coalesce into
+          // the scheduled swap, which reads dataset.label at fire time.
+          pendingNowLabel = label;
+          return;
+        }
+        // A real label change: hold the current text >= NOW_MIN_DISPLAY_MS,
+        // then fade old -> new.
+        pendingNowLabel = label;
+        shownNowSwapAt = Math.max(Date.now(), shownNowSwapAt + NOW_MIN_DISPLAY_MS);
+        const token = ++nowSwapToken;
+        window.setTimeout(function () {
+          if (nowSwapToken !== token || pendingNowLabel === null) return;
+          under.classList.add('fading-out');
+          window.setTimeout(function () {
+            if (nowSwapToken !== token || pendingNowLabel === null) return;
+            under.classList.remove('fading-out');
+            const cur = under.dataset.label || '';
+            const curSince = Number(under.dataset.since);
+            paintNowText(under, cur, nowSuffix(Math.max(0, Date.now() - curSince)));
+            shownNowLabel = cur;
+            pendingNowLabel = null;
+            under.classList.add('fading-in');
+            window.setTimeout(function () {
+              if (nowSwapToken === token) under.classList.remove('fading-in');
+            }, NOW_FADE_MS);
+          }, NOW_FADE_MS);
+        }, Math.max(0, shownNowSwapAt - Date.now()));
+      }
+
+      function paintNowText(under, label, suffix) {
+        under.textContent = '';
+        under.appendChild(document.createTextNode('now: '));
+        under.appendChild(el('b', undefined, label));
+        if (suffix) under.appendChild(document.createTextNode(suffix));
+      }
+
+      // Progressive elapsed display for the "$ now:" line.
+      //   <5s      — nothing at all ("now" is current; a '· 0s' is noise)
+      //   5–60s    — seconds (· 12s)
+      //   60–90s   — minutes (· 1 min)
+      //   >90s     — handled by renderNow's "Still working…" branch
+      function nowSuffix(elapsedMs) {
+        if (elapsedMs < NOW_NO_TIME_MS) return '';
+        if (elapsedMs < NOW_SECONDS_MS) return ' · ' + Math.round(elapsedMs / 1000) + 's';
+        return ' · ' + Math.floor(elapsedMs / 60000) + ' min';
+      }
+
+      // Narration is already safe, host-rendered Markdown HTML. Returning that
+      // HTML instead of flattening it keeps the agent's question readable:
+      // links remain actionable and headings, lists, code and tables retain
+      // their structure inside the pause card.
+      function pauseQuestionHtml(chapters) {
+        const last = chapters[chapters.length - 1];
+        if (last && last.narration.length) {
+          return last.narration[last.narration.length - 1].html || '';
+        }
+        return '<p>The agent is waiting for your input.</p>';
+      }
+
+      function renderPauseCard(page, awaiting, chapters) {
+        let pause = page.querySelector(':scope > .pause');
+        if (!awaiting) { if (pause) pause.remove(); return; }
+        if (!pause) {
+          pause = el('div', 'pause');
+          const head = el('div', 'phead');
+          head.appendChild(el('span', 'blk'));
+          head.appendChild(document.createTextNode('THE AGENT PAUSED TO ASK'));
+          pause.appendChild(head);
+          pause.appendChild(el('div', 'pquestion'));
+          page.appendChild(pause);
+          // Focus the composer once, so the user can answer immediately (M0:
+          // structured answer buttons are M1).
+          if (!exited) input.focus();
+        } else {
+          page.appendChild(pause); // keep it last
+        }
+        const question = pause.querySelector('.pquestion');
+        question.innerHTML = pauseQuestionHtml(chapters);
+        enhanceBookBlocks(question);
+      }
+
+      // The blank-conversation view. Rather than a dead "No messages yet."
+      // placeholder, introduce WHO is about to answer and on whose dime —
+      // harness / model / mode / wallet, the same facts the composer chips
+      // carry — so a fresh tab reads as a ready session, not an empty void.
+      function buildEmptyHero() {
+        const hero = el('div', 'book-hero');
+        hero.appendChild(el('div', 'bh-title', 'Ready when you are'));
+        const s = lastSession;
+        const isPlainPty = s && s.kind === 'terminal' && s.pty === true;
+        if (s && !isPlainPty) {
+          hero.appendChild(el('div', 'bh-sub', 'Your first message opens the book. This session will answer with:'));
+          const facts = el('div', 'bh-facts');
+          const row = function(k, v) {
+            if (!v) return;
+            const r = el('div', 'bh-row');
+            r.appendChild(el('span', 'bh-k', k));
+            r.appendChild(el('span', 'bh-v', v));
+            facts.appendChild(r);
+          };
+          const auth = accessIdentity(s);
+          row('Harness', s.adapterSlug || '');
+          row('Model', s.model || 'default');
+          row('Mode', defaultPostureLabel(s));
+          row('Wallet', auth && auth !== '—' ? auth : 'no wallet');
+          hero.appendChild(facts);
+        } else {
+          hero.appendChild(el('div', 'bh-sub', 'Your first message opens the book.'));
+        }
+        return hero;
+      }
+
+      // Rebuild the book from the accumulated turns. Reconciles chapters by id
+      // so fold state survives live updates. A no-op when the book is hidden.
+      function renderBook() {
+        if (!bookApplies() || !bookView) return;
+        const atBottom = !bookScrolledUp;
+        const chapters = buildBook(orderedBookTurns());
+        let page = book.querySelector(':scope > .book-page');
+        if (!page) { page = el('div', 'book-page'); book.appendChild(page); }
+
+        if (chapters.length === 0) {
+          page.textContent = '';
+          bookChapterNodes.clear();
+          page.appendChild(buildEmptyHero());
+          return;
+        }
+
+        // The chapter reconcile below inserts around existing children, so a
+        // hero left over from the empty state would survive it — drop it the
+        // moment real content exists.
+        const staleHero = page.querySelector(':scope > .book-hero');
+        if (staleHero) staleHero.remove();
+
+        const live = !exited && busy;
+        const seen = {};
+        let anchor = null;
+        for (let i = 0; i < chapters.length; i++) {
+          const ch = chapters[i];
+          const isLive = i === chapters.length - 1 && live;
+          seen[ch.id] = true;
+          let node = bookChapterNodes.get(ch.id);
+          if (!node) { node = buildChapterNode(ch); bookChapterNodes.set(ch.id, node); }
+          paintChapter(node, ch, i, chapters, isLive);
+          const inPlace = anchor ? anchor.nextElementSibling === node : page.firstElementChild === node;
+          if (!inPlace) { if (anchor) anchor.after(node); else page.insertBefore(node, page.firstChild); }
+          anchor = node;
+        }
+        for (const id of Array.from(bookChapterNodes.keys())) {
+          if (!seen[id]) {
+            const n = bookChapterNodes.get(id);
+            if (n) n.remove();
+            bookChapterNodes.delete(id);
+          }
+        }
+        // The pause card is ONLY for a genuine end-of-turn wait — never while
+        // the agent is actively working. awaitingInput can linger from a prior
+        // pause after the user sends and the agent resumes (busy flips back to
+        // true before the next poll clears awaitingInput); a genuine awaiting
+        // state always carries busy=false (both the awaiting-input and turn-end
+        // lifecycle events set busy=false), so gate on !busy. While busy, the
+        // live chapter's "Working…" / "$ now:" state carries the moment instead.
+        const awaiting = Boolean(lastSession && lastSession.awaitingInput) && !busy && !exited;
+        renderPauseCard(page, awaiting, chapters);
+        if (atBottom) book.scrollTop = book.scrollHeight;
+      }
+
+      book.addEventListener('scroll', function() {
+        const threshold = 20;
+        bookScrolledUp = book.scrollHeight - book.clientHeight - book.scrollTop > threshold;
+      });
+      viewToggle.addEventListener('click', function(e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button[data-view]') : null;
+        if (btn) setBookView(btn.getAttribute('data-view') === 'book');
+      });
+
+      // One delegated listener for every clickable link (.tlink) in the prose —
+      // book narration, ask cards, and the raw transcript all share it. Reading
+      // data-target off the anchor auto-un-escapes the HTML entities back to the
+      // real URL/path; the host decides browser-vs-editor from data-open.
+      document.addEventListener('click', function(e) {
+        const link = e.target && e.target.closest && e.target.closest('.tlink');
+        if (!link) return;
+        e.preventDefault();
+        const kind = link.getAttribute('data-open');
+        const target = link.getAttribute('data-target');
+        if (!target || (kind !== 'external' && kind !== 'file')) return;
+        const rawLine = link.getAttribute('data-line');
+        const line = rawLine ? parseInt(rawLine, 10) : undefined;
+        vscode.postMessage({ type: 'openLink', kind: kind, target: target, line: line });
+      });
+
       // A resume-chain ancestor's turns are rendered ONCE, statically — they
       // never patch again (the ancestor session is dead history), so this
       // deliberately does NOT go through upsertTurn/insertTurnInOrder (those
@@ -2071,7 +4308,19 @@ export function buildHtml(
       // folded activity runs, plans, …) applies to frozen history for free.
       function renderStaticTurn(turn) {
         const node = el('div', 'turn turn-' + turn.role);
-        if (turn.role === 'user') node.appendChild(el('div', 'role', 'You'));
+        // Same agent-attribution badge as the live upsertTurn path (E2) — an
+        // ancestor turn another session injected is still agent-sourced.
+        if (turn.role === 'user') {
+          const role = el('div', 'role', 'You');
+          const source = describePromptSource(turn.promptSource);
+          if (source) {
+            node.classList.add('turn-agent-sourced');
+            const badge = el('span', 'prompt-source-badge', source.label);
+            badge.title = source.tooltip;
+            role.appendChild(badge);
+          }
+          node.appendChild(role);
+        }
         const bubble = el('div', 'bubble');
         node.appendChild(bubble);
         for (const seg of turn.segments || []) {
@@ -2149,7 +4398,11 @@ export function buildHtml(
         return parts.join(' ');
       }
 
-      function send(interrupt) {
+      // force (only meaningful mid-turn, ignored otherwise) jumps this
+      // message to the FRONT of the daemon's FIFO instead of the back —
+      // see SessionsRegistry.enqueuePrompt's force opt. Bound to
+      // Cmd/Ctrl+Enter below; plain Enter appends to the back.
+      function send(interrupt, force) {
         const composed = composePrompt();
         if (!composed) return;
         input.value = '';
@@ -2161,14 +4414,32 @@ export function buildHtml(
         // Pushed here, not per-arm below: a queued message IS sent, just
         // later, so it belongs in history the moment the user commits to it.
         historyState = pushHistoryEntry(historyState, composed);
-        // Mid-turn and not explicitly interrupting: hold it rather than POST a
-        // prompt the daemon will refuse with a 409. It goes out on turn-end.
+        // Mid-turn and not explicitly interrupting: show it in the queued
+        // block right away (optimistic — queueId fills in once the
+        // 'queued' ack lands) rather than waiting on the round trip. The
+        // daemon's OWN busy check (not this snapshot) decides whether it
+        // actually lands in the FIFO — always sending queue: true (see
+        // TranscriptPanelController.onSend) means a race where the turn
+        // ended between this check and the POST just dispatches it
+        // immediately instead, and the sendAck handler below drops the
+        // optimistic row again when that happens.
+        let localId = null;
         if (busy && !interrupt) {
-          queuedText = composed;
+          localId = 'local_' + (queuedLocalIdSeq++);
+          const item = { localId: localId, queueId: null, text: composed };
+          queuedItems = force ? [item].concat(queuedItems) : queuedItems.concat([item]);
           refreshComposer();
-          return;
         }
-        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: composed });
+        if (interrupt) {
+          vscode.postMessage({ type: 'interruptSend', text: composed });
+        } else {
+          vscode.postMessage({
+            type: 'send',
+            text: composed,
+            force: force || undefined,
+            localId: localId || undefined,
+          });
+        }
         refreshComposer();
       }
 
@@ -2253,9 +4524,12 @@ export function buildHtml(
       }
 
       input.addEventListener('keydown', function(e) {
-        // While the @mention popup is open it owns the arrow/enter/tab/escape
-        // keys — otherwise Enter would send instead of picking a file.
+        // While the @mention or /command popup is open it owns the
+        // arrow/enter/tab/escape keys — otherwise Enter would send instead of
+        // picking an item. The two never overlap (one triggers on @, the
+        // other only at position 0), so checking both in sequence is safe.
         if (mention && handleMentionKey(e)) return;
+        if (commandPopupState && handleCommandKey(e)) return;
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           const noSelection = input.selectionStart === input.selectionEnd;
           // ↑ recalls once the caret is parked at the very start (index 0) —
@@ -2286,7 +4560,10 @@ export function buildHtml(
         }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          send(false);
+          // Cmd/Ctrl+Enter mid-turn jumps this message to the FRONT of the
+          // queue instead of the back (force — a no-op when idle, since
+          // there is no queue to jump).
+          send(false, e.metaKey || e.ctrlKey);
         }
       });
 
@@ -2298,15 +4575,18 @@ export function buildHtml(
         autoGrow();
         refreshComposer();
         updateMention();
+        updateCommandPopup();
       });
 
-      // Clicking elsewhere in the textarea moves the caret out of an @token.
+      // Clicking elsewhere in the textarea moves the caret out of an @token
+      // or the leading /command.
       input.addEventListener('click', function() {
         // A click means "I'm editing this now, not browsing" — exit history
         // navigation, same escape hatch as typing. Only the cursor resets;
         // entries/draft are untouched so history is still there next time.
         historyState = { ...historyState, index: null };
         updateMention();
+        updateCommandPopup();
       });
 
       // Paste an image → the agent reads it. The webview can't touch disk, so
@@ -2445,6 +4725,121 @@ export function buildHtml(
         autoGrow();
       }
 
+      // ── /command popup ────────────────────────────────────────────────
+      // Unlike @mentions, the candidate list is already local (from the
+      // session descriptor's availableCommands — see applySession), so there
+      // is no host round trip: filtering is synchronous.
+      function closeCommandPopup() {
+        commandPopupState = null;
+        commandPopup.hidden = true;
+        commandPopup.textContent = '';
+      }
+
+      function updateCommandPopup() {
+        const caret = input.selectionStart == null ? input.value.length : input.selectionStart;
+        const found = commandQueryAt(input.value, caret);
+        if (!found) { closeCommandPopup(); return; }
+        commandPopupState = {
+          start: found.start,
+          end: found.end,
+          query: found.query,
+          items: filterCommands(availableCommands, found.query),
+          active: 0,
+        };
+        renderCommandPopup();
+      }
+
+      function renderCommandPopup() {
+        if (!commandPopupState) return;
+        commandPopup.textContent = '';
+        const header = document.createElement('div');
+        header.className = 'command-popup-header';
+        header.textContent = 'Commands' + (lastSession && lastSession.adapterSlug ? ' \\u00b7 ' + lastSession.adapterSlug : '');
+        commandPopup.appendChild(header);
+        if (commandPopupState.items.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'mention-empty';
+          empty.textContent = availableCommands.length === 0
+            ? 'This harness has not reported any commands'
+            : 'No matching commands';
+          commandPopup.appendChild(empty);
+          commandPopup.hidden = false;
+          return;
+        }
+        for (let i = 0; i < commandPopupState.items.length; i++) {
+          const item = commandPopupState.items[i];
+          const row = document.createElement('div');
+          row.className = 'mention-item command-item' + (i === commandPopupState.active ? ' active' : '');
+          const name = document.createElement('span');
+          name.className = 'command-item-name';
+          name.textContent = '/' + item.name;
+          row.appendChild(name);
+          if (item.description) {
+            const desc = document.createElement('span');
+            desc.className = 'command-item-desc';
+            desc.textContent = item.description;
+            row.appendChild(desc);
+          }
+          if (item.scope) {
+            const scope = document.createElement('span');
+            scope.className = 'command-item-scope';
+            scope.textContent = item.scope;
+            row.appendChild(scope);
+          }
+          row.title = item.description ? '/' + item.name + ' \\u2014 ' + item.description : '/' + item.name;
+          const idx = i;
+          row.addEventListener('mousedown', function(ev) {
+            // mousedown, not click: click fires after the textarea blurs,
+            // which would tear the popup state down before the handler runs.
+            ev.preventDefault();
+            chooseCommand(idx);
+          });
+          commandPopup.appendChild(row);
+        }
+        commandPopup.hidden = false;
+      }
+
+      // Returns true if it consumed the key (popup navigation), false otherwise.
+      function handleCommandKey(e) {
+        if (!commandPopupState) return false;
+        if (e.key === 'Escape') { e.preventDefault(); closeCommandPopup(); return true; }
+        if (commandPopupState.items.length === 0) return false;
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          commandPopupState.active = (commandPopupState.active + 1) % commandPopupState.items.length;
+          renderCommandPopup();
+          return true;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          commandPopupState.active = (commandPopupState.active - 1 + commandPopupState.items.length) % commandPopupState.items.length;
+          renderCommandPopup();
+          return true;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          chooseCommand(commandPopupState.active);
+          return true;
+        }
+        return false;
+      }
+
+      // Replace the leading /token with "/name " — plain composer text (not
+      // a chip like @mentions), so the agent receives it exactly as if typed.
+      function chooseCommand(index) {
+        if (!commandPopupState || !commandPopupState.items[index]) return;
+        const chosen = commandPopupState.items[index];
+        const after = input.value.slice(commandPopupState.end);
+        const inserted = '/' + chosen.name + ' ';
+        input.value = inserted + after;
+        closeCommandPopup();
+        const pos = inserted.length;
+        input.focus();
+        input.setSelectionRange(pos, pos);
+        autoGrow();
+        refreshComposer();
+      }
+
       // ── PTY-mode helpers (live xterm.js view) ─────────────────────────
       function ensurePtyTerm() {
         if (ptyTerm) return;
@@ -2540,6 +4935,14 @@ export function buildHtml(
       composerModel.addEventListener('click', function() {
         vscode.postMessage({ type: 'changeModel' });
       });
+      composerEffort.addEventListener('click', function() {
+        vscode.postMessage({ type: 'changeEffort' });
+      });
+      composerRoute.addEventListener('click', function() {
+        // Inert while dimmed — a single-gateway model has nothing to switch to.
+        if (composerRoute.classList.contains('dimmed')) return;
+        vscode.postMessage({ type: 'changeRoute' });
+      });
       // Posture and auth chips route through the same unified config picker
       // (agentproto.configureSession) rather than their own dedicated flow —
       // see handleWebviewMessage's changePosture/changeAccess cases.
@@ -2549,31 +4952,62 @@ export function buildHtml(
       composerAuth.addEventListener('click', function() {
         vscode.postMessage({ type: 'changeAccess' });
       });
+      // [/] button: same popup the typed trigger opens, reusing commandQueryAt
+      // by first making sure the caret sits at the end of a leading /token
+      // (inserting the '/' itself when the composer doesn't have one yet).
+      composerCommands.addEventListener('click', function() {
+        if (input.disabled) return;
+        if (input.value.charAt(0) !== '/') input.value = '/' + input.value;
+        const end = leadingCommandEnd(input.value);
+        input.setSelectionRange(end, end);
+        input.focus();
+        updateCommandPopup();
+        autoGrow();
+        refreshComposer();
+      });
       sendBtn.addEventListener('click', function() { send(false); });
       // Abandon the in-flight turn, send nothing — distinct from "Interrupt &
-      // send" below, which takes the queued message NOW instead of waiting.
+      // send" below, which sends something (typed text or queued message) NOW.
       stopBtn.addEventListener('click', function() {
         isStopping = true;
         refreshComposer();
         vscode.postMessage({ type: 'stop' });
       });
-      // Interrupt only ever acts on the queued message — it's the only thing
-      // waiting, and it's what the button offers to stop waiting for.
-      interruptBtn.addEventListener('click', function() { flushQueued(true); });
+      // Stop-and-go: the typed text wins (interrupt the turn and send it
+      // now); with an empty composer it forces the FRONT of the queue
+      // instead — the rest stays queued, in order, behind it.
+      interruptBtn.addEventListener('click', function() {
+        if (composePrompt()) { send(true); return; }
+        flushFrontQueued();
+      });
       // The host resolves which session to restart from the CONTROLLER, not
       // from anything this message carries — see protocol.ts's restart doc.
-      restartBtn.addEventListener('click', function() { vscode.postMessage({ type: 'restart' }); });
-      queuedCancel.addEventListener('click', function() {
-        queuedText = null;
+      restartBtn.addEventListener('click', function() {
+        isRestarting = true;
         refreshComposer();
+        vscode.postMessage({ type: 'restart' });
       });
       ebDismiss.addEventListener('click', clearError);
+      // The info banner's X dismisses by user choice (remembered so a same-id
+      // re-announce stays hidden — see dismissInfoBanner's byUser arm).
+      ibDismiss.addEventListener('click', function() {
+        if (currentInfoBannerId !== null) dismissInfoBanner(currentInfoBannerId, true);
+      });
+      // The blocked-note's X hides the note for the CURRENT (kind, toolCallId)
+      // pair only; a different pair re-shows it (see refreshBlockedNote).
+      blockedNoteDismiss.addEventListener('click', function() {
+        const session = lastSession;
+        if (session && session.blockedOn) {
+          dismissedBlockedKey = session.blockedOn + ' · ' + (session.pendingToolCallId || '');
+        }
+        blockedNote.hidden = true;
+      });
 
       // ── Header popovers ─────────────────────────────────────────────
       // A webview has no VS Code popover API, so this is plain DOM: toggle
       // on the button, dismiss on Escape or a click outside, and never more
       // than one open — opening either one closes the other first.
-      const popovers = [costPopover, contextPopover];
+      const popovers = [costPopover, contextPopover, watchersPopover];
       function closeAllPopovers() {
         for (const p of popovers) p.hidden = true;
       }
@@ -2636,9 +5070,14 @@ export function buildHtml(
         e.stopPropagation();
         togglePopover(contextPopover);
       });
+      watchersBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        togglePopover(watchersPopover);
+      });
       document.addEventListener('click', function(e) {
         if (!costPopover.contains(e.target) && e.target !== costBtn) costPopover.hidden = true;
         if (!contextPopover.contains(e.target) && e.target !== contextBtn) contextPopover.hidden = true;
+        if (!watchersPopover.contains(e.target) && e.target !== watchersBtn) watchersPopover.hidden = true;
       });
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') closeAllPopovers();
@@ -2664,6 +5103,10 @@ export function buildHtml(
               composer.hidden = false;
               disposePtyTerm();
               renderFullConversation(msg.conversation);
+              // Rebuild the book from the same conversation snapshot.
+              clearBookDom();
+              setBookConversation(msg.conversation);
+              renderBook();
             } else if (mode === 'pty') {
               transcript.hidden = true;
               composer.hidden = true;
@@ -2697,12 +5140,20 @@ export function buildHtml(
             // PTY in a real VS Code terminal tab).
             openTerminalBtn.hidden = msg.session.kind !== 'agent-cli' && msg.mode !== 'pty';
             applySession(msg.session);
+            // Book is the default view for a structured session; this also
+            // hides the book + toggle for raw/pty and sets the placeholder.
+            applyViewVisibility();
             break;
           case 'conversation':
             renderFullConversation(msg.conversation);
+            clearBookDom();
+            setBookConversation(msg.conversation);
+            renderBook();
             break;
           case 'patch':
             applyPatch(msg);
+            applyBookPatch(msg);
+            renderBook();
             break;
           case 'sessionUpdate':
             applySession(msg.session);
@@ -2711,10 +5162,42 @@ export function buildHtml(
             if (mode !== 'structured') appendLines(msg.lines);
             break;
           case 'sending':
-            setSending(true);
+            setSending(true, msg.note);
             break;
           case 'sendAck':
             setSending(false);
+            // A localId means this send WAS shown optimistically in the
+            // queued block (see send()) but dispatched immediately instead
+            // (turn ended between the client's busy check and the POST, or
+            // interrupt/timeout-race path) — drop the now-stale row rather
+            // than leaving a "queued" entry for a message that already sent.
+            if (msg.localId) removeQueuedItem(msg.localId);
+            break;
+          case 'queued':
+            // The send arc is over: the daemon confirmed the prompt landed in
+            // its FIFO. Without this the composer stays stuck on "Sending…"
+            // forever — every mid-turn send resolves as 'queued', not
+            // 'sendAck', so this arm MUST clear isSending too (input dead,
+            // interrupt disabled — the exact lock-up shipped with #967).
+            setSending(false);
+            // Fill in the real id on the optimistic row send() already added
+            // (keyed by localId) — unless the user already cancelled it while
+            // the ack was in flight, in which case cancel it server-side now.
+            if (cancelledLocalIds.has(msg.localId)) {
+              cancelledLocalIds.delete(msg.localId);
+              vscode.postMessage({ type: 'cancelQueued', queueId: msg.queueId });
+              break;
+            }
+            queuedItems = queuedItems.map(function(item) {
+              return item.localId === msg.localId ? Object.assign({}, item, { queueId: msg.queueId }) : item;
+            });
+            refreshComposer();
+            break;
+          case 'infoBanner':
+            showInfoBanner(msg.id, msg.text, msg.tooltip);
+            break;
+          case 'dismissInfoBanner':
+            dismissInfoBanner(msg.id, false);
             break;
           case 'attachmentUploaded':
             addAttachment(msg.path);
@@ -2733,20 +5216,21 @@ export function buildHtml(
             break;
           case 'sendError':
             setSending(false);
-            if (msg.kind === 'busy') {
-              // Lost the race: the turn started between our busy check and the
-              // POST. Not an error — re-queue and let turn-end flush it, which
-              // is exactly what would have happened had we seen busy in time.
-              queuedText = msg.text || queuedText;
-              refreshComposer();
-              break;
-            }
+            // A genuine failure — the optimistic row (if any) never landed
+            // in the daemon's FIFO, so it comes back out of the local view
+            // too, not just the error banner.
+            if (msg.localId) removeQueuedItem(msg.localId);
             showError(msg.title || 'Send failed', msg.message || '');
             break;
           case 'stopError':
             isStopping = false;
             refreshComposer();
             showError(msg.title || 'Stop failed', msg.message || '');
+            break;
+          case 'restartFailed':
+            isRestarting = false;
+            refreshComposer();
+            showError(msg.title || 'Restart failed', msg.message || '');
             break;
           case 'ptyData':
             if (ptyTerm) ptyTerm.write(decodeB64(msg.b64));

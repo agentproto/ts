@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { createSandboxAgentSessionHost, type SandboxProvider, type SandboxSpec } from "../agent-session-host.js"
+import {
+  createSandboxAgentSessionHost,
+  exposePort,
+  SandboxPortExposureUnsupportedError,
+  type BootedSandbox,
+  type SandboxProvider,
+  type SandboxSpec,
+} from "../agent-session-host.js"
 
 const { connectDaemonAgentSessionHostMock } = vi.hoisted(() => ({
   connectDaemonAgentSessionHostMock: vi.fn(),
@@ -212,5 +219,84 @@ describe("createSandboxAgentSessionHost", () => {
       secrets: { slugs: [FAKE_SLUG] },
     })
     expect(host.pause).toBeUndefined()
+  })
+
+  it("forwards expose() and ports from the booted sandbox when present", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const exposeFn = vi.fn(async (port: number) => ({ url: `https://sbx-abc-${port}.e2b.dev` }))
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: vi.fn(async () => {}),
+        expose: exposeFn,
+        ports: { 3210: "https://sbx-abc-3210.e2b.dev" },
+      })),
+    })
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.expose).toBeDefined()
+    const result = await host.expose!(3210)
+    expect(result.url).toBe("https://sbx-abc-3210.e2b.dev")
+    expect(host.ports).toEqual({ 3210: "https://sbx-abc-3210.e2b.dev" })
+  })
+
+  it("omits expose() and ports when the booted sandbox doesn't support them", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const provider = fakeProvider()
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.expose).toBeUndefined()
+    expect(host.ports).toBeUndefined()
+  })
+})
+
+describe("exposePort", () => {
+  it("delegates to booted.expose when present", async () => {
+    const exposeFn = vi.fn(async (port: number) => ({ url: `https://sbx-abc-${port}.e2b.dev` }))
+    const booted: BootedSandbox = {
+      mcpUrl: "https://sbx-abc-18790.e2b.dev/mcp",
+      sandboxId: "sbx_abc",
+      expose: exposeFn,
+      stop: vi.fn(async () => {}),
+    }
+    const result = await exposePort(booted, 3210)
+    expect(result.url).toBe("https://sbx-abc-3210.e2b.dev")
+    expect(exposeFn).toHaveBeenCalledWith(3210)
+  })
+
+  it("throws SandboxPortExposureUnsupportedError when expose is absent", async () => {
+    const booted: BootedSandbox = {
+      mcpUrl: "https://local-sandbox/mcp",
+      sandboxId: "local-abc",
+      stop: vi.fn(async () => {}),
+    }
+    await expect(exposePort(booted, 3210)).rejects.toBeInstanceOf(SandboxPortExposureUnsupportedError)
+    await expect(exposePort(booted, 3210)).rejects.toThrow(/does not support port exposure/)
+  })
+})
+
+describe("SandboxPortExposureUnsupportedError", () => {
+  it("has the expected name and inherits from Error", () => {
+    const err = new SandboxPortExposureUnsupportedError()
+    expect(err).toBeInstanceOf(Error)
+    expect(err).toBeInstanceOf(SandboxPortExposureUnsupportedError)
+    expect(err.name).toBe("SandboxPortExposureUnsupportedError")
+  })
+
+  it("uses a default message when none is provided", () => {
+    const err = new SandboxPortExposureUnsupportedError()
+    expect(err.message).toMatch(/does not support port exposure/)
+  })
+
+  it("uses a custom message when provided", () => {
+    const err = new SandboxPortExposureUnsupportedError("custom message")
+    expect(err.message).toBe("custom message")
   })
 })

@@ -167,6 +167,15 @@ outputs:
       sandboxId, parentSessionId, model, costUsd, tokensIn, tokensOut, source).
       Empty [] when no agent session ran. Feeds delivery-specific footer stamps.
     value: ${{ steps.run.outputs.provenance }}
+  artifacts:
+    description: >
+      JSON array of the GitHub artifacts (PR / review / comment) the agent
+      created, recorded AT CREATION TIME via the shared delivery helper and
+      harvested from the session's `::agentproto-artifact::` marker lines. Each
+      record is {kind, id, number?, url?, sha?, sessionId?}. Empty [] when the
+      run created nothing (or the ledger transport missed). Feeds the stamp
+      scripts so they key the provenance footer by id instead of discovery.
+    value: ${{ steps.run.outputs.artifacts }}
 
 runs:
   using: composite

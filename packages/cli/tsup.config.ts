@@ -1,3 +1,5 @@
+import { execSync } from "node:child_process"
+import { copyFile } from "node:fs/promises"
 import { readFileSync } from "node:fs"
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
@@ -5,8 +7,30 @@ const { version } = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8")
 )
 
+// Build identity, embedded so a running daemon can say WHICH build it is
+// (version alone can't: a workspace dist and the published tarball of the
+// same release both report e.g. "0.13.0"). Best-effort: a tarball rebuild
+// outside git gets empty strings, and consumers render that as "unknown".
+const gitSha = (() => {
+  try {
+    return execSync("git rev-parse --short HEAD", {
+      cwd: new URL(".", import.meta.url).pathname,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim()
+  } catch {
+    return ""
+  }
+})()
+const builtAt = new Date().toISOString()
+
 export default createTsupConfig({
-  define: { __CLI_VERSION__: JSON.stringify(version) },
+  define: {
+    __CLI_VERSION__: JSON.stringify(version),
+    __CLI_BUILD_SHA__: JSON.stringify(gitSha),
+    __CLI_BUILT_AT__: JSON.stringify(builtAt),
+  },
   banner: `/**
  * @agentproto/cli v${version}
  * The \`agentproto\` binary — install / run / serve AIP-45 agent CLIs.
@@ -21,7 +45,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     cli: "src/cli.ts",
     "registry/runtime": "src/registry/runtime.ts",
     "registry/builtins": "src/registry/builtins.ts",
-    "registry/plugins": "src/registry/plugins.ts",
+    "registry/adapters": "src/registry/adapters.ts",
     "registry/manifest": "src/registry/manifest.ts",
     "util/credentials": "src/util/credentials.ts",
   },
@@ -32,7 +56,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
       index: "src/index.ts",
       "registry/runtime": "src/registry/runtime.ts",
       "registry/builtins": "src/registry/builtins.ts",
-      "registry/plugins": "src/registry/plugins.ts",
+      "registry/adapters": "src/registry/adapters.ts",
       "registry/manifest": "src/registry/manifest.ts",
       "util/credentials": "src/util/credentials.ts",
     },
@@ -67,6 +91,13 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@modelcontextprotocol/sdk",
     "@modelcontextprotocol/sdk/*",
     "gray-matter",
+    // create-agentproto-app resolves its templates/ tree relative to its OWN
+    // module (`new URL("../templates", import.meta.url)` in scaffold.ts) —
+    // bundling it would bake a cli/dist/templates path that doesn't exist.
+    // Externalised so it (and its published templates/) resolves from
+    // node_modules; declared under `dependencies` in package.json.
+    "create-agentproto-app",
+    "create-agentproto-app/*",
     // pi-tui is externalised — it's pure ESM with no monorepo react conflict.
     // Chalk is also externalised (it's widely available and ESM-safe).
     "@earendil-works/pi-tui",
@@ -89,6 +120,16 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // node-pty is an optional dep with a native binary (.node). Bundling
     // it breaks the relative-path native-binding resolution at runtime.
     "node-pty",
+    // @ast-grep/napi ships per-platform native .node bindings selected by
+    // a switch in its own JS shim, and is pulled in transitively (@mastra/
+    // core -> its bundled workspace/code-search tooling does a dynamic
+    // `import("@ast-grep/napi")`, reachable once @agentproto/runtime ->
+    // @agentproto/app-kit -> @agentproto/mastra is bundled into cli.mjs).
+    // Bundling it makes esbuild statically resolve every platform branch
+    // in that shim, which fails for every platform's binary except
+    // whichever one happens to be installed locally. Externalise it like
+    // node-pty so it resolves from node_modules at runtime instead.
+    "@ast-grep/napi",
   ],
   // Workspace @agentproto/* packages NOT yet on npm — bundle them
   // into cli.mjs. Once each lands on npm independently, move it to
@@ -109,4 +150,14 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@agentproto/extension",
     "@agentproto/define-doctype",
   ],
+  // The stage board module is a plain-JS asset served verbatim by
+  // `app serve` / `app dev` (see src/stageboard/serve.ts) — esbuild only
+  // bundles TS entries, so copy it into dist next to cli.mjs where the
+  // runtime URL lookup lands.
+  onSuccess: async () => {
+    await copyFile(
+      new URL("./src/stageboard/stageboard.js", import.meta.url),
+      new URL("./dist/stageboard.js", import.meta.url),
+    )
+  },
 })

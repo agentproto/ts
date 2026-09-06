@@ -1,0 +1,62 @@
+{
+  "name": "@agentproto/transcript-fixtures",
+  "version": "0.2.0",
+  "description": "@agentproto/transcript-fixtures — canonical RAW daemon-transcript fixtures. The single source of truth for the `{seq, ts, kind, ...}` records produced by the daemon's transcript writer, consumed as anti-drift conformity data by the `packages/runtime` test suites (this repo) and by `packages/react-agentproto`'s `normalize.ts` (the agentik-studio repo, via `workspace:*`). Zero runtime dependencies — just typed data.",
+  "keywords": [
+    "agentproto",
+    "transcript",
+    "fixtures",
+    "canonical",
+    "jsonl",
+    "anti-drift",
+    "open-standard",
+    "agentic"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/transcript-fixtures"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "fixtures",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "generate:fixtures": "node scripts/write-jsonl.mjs",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

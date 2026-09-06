@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/apps",
-  "version": "0.2.1",
+  "version": "0.9.1",
   "description": "@agentproto/apps — a home for ready-made agentproto apps (teams of agents + their workflows), declared with @agentproto/app-kit. Import a team (code-team, content-team, …) and use any of its agents/workflows from your own host: in-process via toMastraAgents(), or emit its manifests to disk.",
   "keywords": [
     "agentproto",
@@ -25,6 +25,9 @@
   "main": "dist/index.mjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
+  "bin": {
+    "agentproto-apps-sync": "dist/bin/sync.mjs"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -40,6 +43,76 @@
       "types": "./dist/content-team/index.d.ts",
       "import": "./dist/content-team.mjs",
       "default": "./dist/content-team.mjs"
+    },
+    "./mail-triage": {
+      "types": "./dist/mail-triage/index.d.ts",
+      "import": "./dist/mail-triage.mjs",
+      "default": "./dist/mail-triage.mjs"
+    },
+    "./media-viewer": {
+      "types": "./dist/media-viewer/index.d.ts",
+      "import": "./dist/media-viewer.mjs",
+      "default": "./dist/media-viewer.mjs"
+    },
+    "./ops-panel": {
+      "types": "./dist/ops-panel/index.d.ts",
+      "import": "./dist/ops-panel.mjs",
+      "default": "./dist/ops-panel.mjs"
+    },
+    "./session-viewer": {
+      "types": "./dist/session-viewer/index.d.ts",
+      "import": "./dist/session-viewer.mjs",
+      "default": "./dist/session-viewer.mjs"
+    },
+    "./sessions-panel": {
+      "types": "./dist/sessions-panel/index.d.ts",
+      "import": "./dist/sessions-panel.mjs",
+      "default": "./dist/sessions-panel.mjs"
+    },
+    "./sessions-panel/panel": {
+      "types": "./dist/sessions-panel/panel.d.ts",
+      "import": "./dist/sessions-panel/panel.mjs",
+      "default": "./dist/sessions-panel/panel.mjs"
+    },
+    "./agents-overview": {
+      "types": "./dist/agents-overview/index.d.ts",
+      "import": "./dist/agents-overview.mjs",
+      "default": "./dist/agents-overview.mjs"
+    },
+    "./agents-overview/panel": {
+      "types": "./dist/agents-overview/panel.d.ts",
+      "import": "./dist/agents-overview/panel.mjs",
+      "default": "./dist/agents-overview/panel.mjs"
+    },
+    "./bureau-sessions": {
+      "types": "./dist/bureau-sessions/index.d.ts",
+      "import": "./dist/bureau-sessions.mjs",
+      "default": "./dist/bureau-sessions.mjs"
+    },
+    "./bureau-sessions/panel": {
+      "types": "./dist/bureau-sessions/panel.d.ts",
+      "import": "./dist/bureau-sessions/panel.mjs",
+      "default": "./dist/bureau-sessions/panel.mjs"
+    },
+    "./session-story": {
+      "types": "./dist/session-story/index.d.ts",
+      "import": "./dist/session-story.mjs",
+      "default": "./dist/session-story.mjs"
+    },
+    "./session-story/panel": {
+      "types": "./dist/session-story/panel.d.ts",
+      "import": "./dist/session-story/panel.mjs",
+      "default": "./dist/session-story/panel.mjs"
+    },
+    "./live-session": {
+      "types": "./dist/live-session/index.d.ts",
+      "import": "./dist/live-session.mjs",
+      "default": "./dist/live-session.mjs"
+    },
+    "./live-session/panel": {
+      "types": "./dist/live-session/panel.d.ts",
+      "import": "./dist/live-session/panel.mjs",
+      "default": "./dist/live-session/panel.mjs"
     },
     "./package.json": "./package.json"
   },
@@ -62,7 +135,8 @@
   "dependencies": {
     "@agentproto/agent": "workspace:*",
     "@agentproto/app-kit": "workspace:*",
-    "@agentproto/workflow": "workspace:*"
+    "@agentproto/workflow": "workspace:*",
+    "zod": "^4.5.4"
   },
   "peerDependencies": {
     "@mastra/core": ">=1.0.0"
@@ -70,7 +144,7 @@
   "devDependencies": {
     "@agentproto/mastra": "workspace:*",
     "@agentproto/tooling": "workspace:*",
-    "@mastra/core": "1.52.1",
+    "@mastra/core": "1.61.0",
     "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",

@@ -42,6 +42,7 @@ import type {
   DiscoveredCredential,
   HarnessCapabilities,
   ImportCredentialRequest,
+  InstalledAppInfo,
   LlmEndpointDescriptorResult,
   LlmEndpointLinksResult,
   LlmEndpointReloadPacksResult,
@@ -51,6 +52,7 @@ import type {
   LlmEndpointUpstreamTestResult,
   PendingPermission,
   ProviderPresetEntry,
+  RestartOverridePayload,
   RouteSpec,
   SessionDescriptor,
   SessionEventsPage,
@@ -59,6 +61,8 @@ import type {
   UserPreset,
   WorkspacesConfig,
   WorktreeGcResult,
+  AppCatalogEntry,
+  WorkflowRunStart,
 } from "./types.js"
 
 export interface SessionEventsOptions {
@@ -144,6 +148,38 @@ export interface PromptOptions {
   interrupt?: boolean
   /** wait=true blocks until the turn ends; wait=false is fire-and-forget. */
   wait?: boolean
+  /** Append to the daemon's FIFO instead of the mid-turn 409 rejection when
+   *  the session is busy — see `SessionsRegistry.enqueuePrompt`'s `queue`
+   *  opt. A no-op on an idle session (dispatches immediately either way). */
+  queue?: boolean
+  /** Only meaningful alongside `queue`: insert at the FRONT of the FIFO
+   *  instead of the back. Never touches the live turn — that's `interrupt`. */
+  force?: boolean
+}
+
+/** One entry in `GET /sessions/:id/queue` — the after-the-fact prompt FIFO
+ *  view. Mirrors `@agentproto/runtime` QueuedPromptView. */
+export interface QueueViewItem {
+  id: string
+  /** Human-readable origin ("user", "agent <id>", "child <id>"). */
+  origin: string
+  /** Short text preview of the queued message. */
+  preview: string
+  queuedAt: string
+  /** 0 = next to dispatch. */
+  position: number
+}
+
+/** `POST /sessions/:id/prompt?wait=false`'s response body — `pending` (with
+ *  `queueId`/`queuePosition`) is present only when the prompt genuinely
+ *  landed in the FIFO rather than dispatching immediately. */
+export interface PromptResult {
+  ok: boolean
+  id: string
+  queued: boolean
+  pending?: boolean
+  queueId?: string
+  queuePosition?: number
 }
 
 export interface WaitOptions {
@@ -311,13 +347,66 @@ export class DaemonClient {
     id: string,
     prompt: string,
     opts: PromptOptions = {},
-  ): Promise<unknown> {
+  ): Promise<PromptResult> {
     const wait = opts.wait ?? true
     const url = `/sessions/${encodeURIComponent(id)}/prompt?wait=${wait ? "true" : "false"}`
-    return this.postJson<unknown>(url, {
-      prompt,
-      ...(opts.interrupt ? { interrupt: true } : {}),
-    })
+    return this.postJson<PromptResult>(
+      url,
+      {
+        prompt,
+        ...(opts.interrupt ? { interrupt: true } : {}),
+        ...(opts.queue ? { queue: true } : {}),
+        ...(opts.force ? { force: true } : {}),
+      },
+      // The prompt route AWAITS registry.enqueuePrompt even in wait=false
+      // (fire-and-forget) mode, because admission includes the lazy resume
+      // attempt (maybeResumeAgent respawns a dead/reaped adapter) plus the
+      // admission checks. A resume — or a slow adapter — can blow well past
+      // the blanket 30s, so the client aborted with a TimeoutError while the
+      // daemon finished the work anyway (which is why the instant retry
+      // "worked"). Give the prompt POST enough room for a cold resume; every
+      // other route keeps the 30s default.
+      { timeoutMs: 120_000 },
+    )
+  }
+
+  /** Cancel one not-yet-dispatched item from a session's prompt FIFO —
+   *  `DELETE /sessions/:id/queue/:queueId`. Idempotent: an already-gone id
+   *  (dispatched, already removed) still resolves `{removed: false}`. */
+  async removeQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; removed: boolean }> {
+    return this.deleteJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}`)
+  }
+
+  /** One entry in `GET /sessions/:id/queue` — the after-the-fact view of a
+   *  session's prompt FIFO (origin, preview, queuedAt, position; position 0
+   *  = next to dispatch). Mirrors the runtime `QueuedPromptView`. */
+  async getSessionQueue(
+    id: string,
+  ): Promise<{ ok: boolean; id: string; queue: QueueViewItem[] }> {
+    return this.getJson(`/sessions/${encodeURIComponent(id)}/queue`)
+  }
+
+  /** Reorder-only force: jump an already-queued item to the FRONT without
+   *  touching the in-flight turn — `POST /:id/queue/:queueId/promote`.
+   *  The after-the-fact counterpart of the enqueue-time `force` opt. */
+  async promoteQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; position: number }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}/promote`, {})
+  }
+
+  /** Deliver-now (interrupt): cancel whatever's running and dispatch THIS
+   *  queued item as the new turn — `POST /:id/queue/:queueId/deliver`. The
+   *  "I need this NOW" op; distinct from promote. */
+  async deliverQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; interrupted: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}/deliver`, {})
   }
 
   /**
@@ -385,6 +474,16 @@ export class DaemonClient {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/kill`, {})
   }
 
+  /**
+   * Set or clear a session's list-visibility pin — `POST /sessions/:id/pin`,
+   * the HTTP twin of the `session_set_pinned` MCP verb. Pure sort/display
+   * state: never touches keepAlive, the idle-reaper, or emits any
+   * notification. See `SessionDescriptor.pinned`.
+   */
+  async setPinned(id: string, pinned: boolean): Promise<{ ok: boolean; sessionId: string; pinned: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/pin`, { pinned })
+  }
+
   /** Cancel the in-flight turn on a live agent session and leave the
    *  session itself alive and idle — unlike `kill()`, which ends it. */
   async interrupt(id: string): Promise<{ ok: boolean; id: string; wasBusy: boolean }> {
@@ -403,6 +502,49 @@ export class DaemonClient {
     model: string,
   ): Promise<{ ok: boolean; id: string; applied: boolean; model?: string; reason?: string }> {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/model`, { model })
+  }
+
+  /**
+   * Switch the reasoning/compute budget (effort) on a LIVE agent-cli session —
+   * `POST /sessions/:id/effort`, the effort-axis sibling of {@link setSessionModel}.
+   * Same non-fatal contract: an effort the current model rejects resolves
+   * `{applied:false, reason}` rather than throwing.
+   */
+  async setSessionEffort(
+    id: string,
+    effort: string,
+  ): Promise<{ ok: boolean; id: string; applied: boolean; effort?: string; reason?: string }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/effort`, { effort })
+  }
+
+  /**
+   * Switch the posture on a LIVE agent-cli session — `POST /sessions/:id/posture`.
+   * A posture that maps to a native advertised harness mode switches live; one
+   * with no native mode resolves `{applied:false, reason:"requires-restart"}`,
+   * telling the caller to route it through {@link restartSessionWithOverride}.
+   * `posture` is a canonical value ("plan"/"bypass"/…) or a raw harness mode id.
+   */
+  async setSessionPosture(
+    id: string,
+    posture: string,
+  ): Promise<{ ok: boolean; id: string; applied: boolean; posture?: string; reason?: string }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/posture`, { posture })
+  }
+
+  /**
+   * Restart an agent-cli session with axis overrides, carrying the conversation
+   * over — `POST /sessions/:id/restart`. The single path for the restart-only
+   * axes (wallet via `access.profileRef`, route via `route.gateway`, plus
+   * model/effort/posture/contextProfile/mode). Returns the NEW descriptor (a
+   * fresh id) with `resumeVia` ("resumed via ACP" / "…summary") and
+   * `resumeFallback` describing what carried over. An unknown/ineligible
+   * override is a real error (thrown), NEVER a silent blank session.
+   */
+  async restartSessionWithOverride(
+    id: string,
+    overrides: RestartOverridePayload,
+  ): Promise<SessionDescriptor & { resumedFrom?: string; resumeVia?: string; resumeFallback?: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/restart`, overrides)
   }
 
   async deleteSession(id: string): Promise<{ ok: boolean; id: string }> {
@@ -506,7 +648,10 @@ export class DaemonClient {
    */
   async mcpCall<T = unknown>(toolName: string, args: Record<string, unknown> = {}): Promise<T> {
     const token = await this.resolveToken()
-    const res = await this.fetchImpl(`${this.url}/mcp`, {
+    // Announce this client's source label so a spawn made through it (agent_start)
+    // is stamped origin=vscode instead of landing as a bare root
+    // (#session-visibility — the daemon reads `?origin=` in handleMcp).
+    const res = await this.fetchImpl(`${this.url}/mcp?origin=vscode`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -533,6 +678,44 @@ export class DaemonClient {
   }
 
   /**
+   * Read an MCP resource over the same stateless /mcp endpoint (JSON-RPC
+   * `resources/read`). Returns the first contents entry's text — the shape
+   * every `ui://` panel resource serves (mcp-apps-adapter.ts registers one
+   * text/html content item per read).
+   */
+  async readResource(uri: string): Promise<string> {
+    const token = await this.resolveToken()
+    const res = await this.fetchImpl(`${this.url}/mcp?origin=vscode`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // Streamable-HTTP MCP servers 406 unless the client accepts BOTH.
+        accept: "application/json, text/event-stream",
+        ...buildAuthHeaders(this.config.authHeaders, token),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "resources/read",
+        params: { uri },
+      }),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) {
+      throw new Error(`MCP resources/read failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const envelope = await parseMcpBody<{ contents?: Array<{ text?: string }> }>(res)
+    if (envelope.error) {
+      throw new Error(`MCP resources/read error: ${JSON.stringify(envelope.error)}`)
+    }
+    const text = envelope.result?.contents?.[0]?.text
+    if (typeof text !== "string") {
+      throw new Error(`MCP resource ${uri} returned no text content`)
+    }
+    return text
+  }
+
+  /**
    * adapter_list is an MCP-only tool — fetch the daemon's installed
    * adapter registry via mcpCall("adapter_list").
    */
@@ -553,6 +736,58 @@ export class DaemonClient {
    */
   async installAdapter(slug: string): Promise<AdapterInstallResult> {
     return this.mcpCall<AdapterInstallResult>("adapter_install", { slug })
+  }
+
+  /**
+   * `app_list` is an MCP-only tool — fetch the daemon's installed-app
+   * registry (each record carries the `ui` block when the app ships a
+   * panel).
+   */
+  async listApps(): Promise<InstalledAppInfo[]> {
+    const result = await this.mcpCall<InstalledAppInfo[]>("app_list")
+    return Array.isArray(result) ? result : []
+  }
+
+  /**
+   * `app_catalog` — the curated catalog file merged with installed status.
+   * The Apps view reads it only for each app's `category`; a daemon without
+   * the verb makes this throw, which callers tolerate (ungrouped fallback).
+   */
+  async appCatalog(): Promise<AppCatalogEntry[]> {
+    const result = await this.mcpCall<AppCatalogEntry[]>("app_catalog")
+    return Array.isArray(result) ? result : []
+  }
+
+  /**
+   * `workflow_run_file` — start one of an installed app's workflows from
+   * its emitted WORKFLOW.md (the path `app_list` reports under
+   * `workflows[].path`). `cwd` should be the app's install dir so spawned
+   * steps resolve the app's agents. Throws with the daemon's message when
+   * the run is refused (the tool answers `isError`).
+   */
+  async runWorkflowFile(args: {
+    path: string
+    cwd?: string
+    input?: Record<string, unknown>
+  }): Promise<WorkflowRunStart> {
+    return this.mcpCall<WorkflowRunStart>("workflow_run_file", {
+      path: args.path,
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(args.input ? { input: args.input } : {}),
+    })
+  }
+
+  /**
+   * `app_tool_call` — call one of an installed app's UI-exposed tools
+   * (the `ui.tools` allowlist the daemon enforces). Returns the dispatched
+   * tool's own result, unwrapped from the MCP content envelope.
+   */
+  async appToolCall(
+    appId: string,
+    tool: string,
+    args?: Record<string, unknown>,
+  ): Promise<unknown> {
+    return this.mcpCall("app_tool_call", { appId, tool, ...(args ? { args } : {}) })
   }
 
   /**
@@ -1019,8 +1254,8 @@ export class DaemonClient {
     return this.request<T>("GET", path)
   }
 
-  private async postJson<T>(path: string, body: unknown): Promise<T> {
-    return this.request<T>("POST", path, body)
+  private async postJson<T>(path: string, body: unknown, opts: { timeoutMs?: number } = {}): Promise<T> {
+    return this.request<T>("POST", path, body, opts)
   }
 
   private async deleteJson<T>(path: string): Promise<T> {
@@ -1068,12 +1303,13 @@ export class DaemonClient {
     method: string,
     path: string,
     body?: unknown,
+    opts: { timeoutMs?: number } = {},
   ): Promise<T> {
     const res = await this.authedFetch(path, {
       method,
       headers: { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      timeoutMs: 30_000,
+      timeoutMs: opts.timeoutMs ?? 30_000,
     })
     if (!res.ok) {
       throw new Error(`${method} ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
@@ -1176,10 +1412,10 @@ interface McpResult {
   isError?: boolean
 }
 
-interface McpResponse {
+interface McpResponse<R = McpResult> {
   jsonrpc: "2.0"
   id: number
-  result?: McpResult
+  result?: R
   error?: { code: number; message: string; data?: unknown }
 }
 
@@ -1188,17 +1424,17 @@ interface McpResponse {
  * (content-type text/event-stream) even for a single request/response —
  * in the SSE case the JSON-RPC envelope is the first `data:` frame.
  */
-async function parseMcpBody(res: Response): Promise<McpResponse> {
+async function parseMcpBody<R = McpResult>(res: Response): Promise<McpResponse<R>> {
   const contentType = res.headers.get("content-type") ?? ""
   if (!contentType.includes("text/event-stream")) {
-    return (await res.json()) as McpResponse
+    return (await res.json()) as McpResponse<R>
   }
   const text = await res.text()
   for (const line of text.split("\n")) {
     if (!line.startsWith("data:")) continue
     const payload = line.slice(5).trim()
     if (!payload) continue
-    const parsed = JSON.parse(payload) as McpResponse
+    const parsed = JSON.parse(payload) as McpResponse<R>
     if (parsed.result !== undefined || parsed.error !== undefined) return parsed
   }
   throw new Error("MCP SSE response contained no JSON-RPC envelope")

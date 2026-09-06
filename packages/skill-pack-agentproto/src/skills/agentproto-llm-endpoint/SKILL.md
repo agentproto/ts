@@ -104,10 +104,11 @@ The proxy accepts `?m=<code>` query param override and `?p=<provider>` override.
 **Working spawn via CLI:**
 
 ```bash
-# DOES NOT WORK — CLI has no --base-url flag
-agentproto sessions start claude-sdk --model neptune-4 --auth api-key
+# Primary path — the CLI has --base-url and --auth-token flags:
+agentproto sessions start claude-sdk --model neptune-4 --auth api-key \
+  --base-url http://localhost:18090/v1 --auth-token AAAA --prompt "..."
 
-# WORKAROUND: set env vars before the CLI command
+# Alternative: set env vars before the CLI command
 ANTHROPIC_BASE_URL=http://localhost:18090/v1 \
 ANTHROPIC_API_KEY=AAAA \
 agentproto sessions start claude-sdk --model neptune-4 --prompt "..."
@@ -207,7 +208,8 @@ Stored in `~/.agentproto/providers.json` (mode 0600):
 }
 ```
 
-Set via: `agentproto auth provider set <provider>` or edit the file directly.
+Set via: `agentproto auth provider set <provider> <api-key> [--base-url <url>]`
+or edit the file directly.
 
 ### Securing a public deployment (gate env vars)
 
@@ -241,8 +243,8 @@ expression from the configured token(s) — paste into a **Block** rule (add a
 
 - `claude-code` adapter: you're using a proxy codename. Use `claude-sdk`
   instead.
-- `claude-sdk` adapter: check `ANTHROPIC_BASE_URL` is actually set (CLI doesn't
-  support `--base-url`; use env var or MCP `options.base_url`).
+- `claude-sdk` adapter: check the base URL is actually set (CLI `--base-url`
+  flag, `ANTHROPIC_BASE_URL` env var, or MCP `options.base_url`).
 - Proxy not running: `curl http://localhost:18090/v1/models` should return the
   codename list.
 
@@ -283,7 +285,7 @@ pkill -f "agentproto serve"
 ## See also
 
 - `agentproto` skill — general daemon/CLI/MCP usage
-- `adapter-setup-kit` skill — tunnel creation, adapter catalog
+- `ap-tunnels` / `ap-adapters` skills — tunnel creation, adapter catalog
 - `projects/agentproto/ts/packages/llm-endpoint` — proxy source
 - `projects/agentproto/ts/adapters/claude-sdk/src/index.ts` — SDK adapter
   manifest

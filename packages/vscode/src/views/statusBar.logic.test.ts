@@ -60,6 +60,21 @@ describe("summarizeLive", () => {
     expect(summary.stalled).toBe(1)
   })
 
+  it("counts watched live sessions and surfaces a '· N watched' segment (#session-visibility)", () => {
+    const summary = summarizeLive(
+      [
+        session({ watchers: 2 }),
+        session({ id: "s2", watchers: 0 }),
+        working({ id: "s3", watchers: 1 }),
+        // A finished session is history — its stale watcher count is not counted.
+        session({ id: "s4", status: "exited", watchers: 5 }),
+      ],
+      NOW,
+    )
+    expect(summary.watched).toBe(2)
+    expect(buildStatusCounts(summary)).toContain("2 watched")
+  })
+
   it("sums cost across live sessions only", () => {
     const summary = summarizeLive(
       [
@@ -122,6 +137,103 @@ describe("buildStatusText", () => {
   it("says so plainly when the daemon has nothing live, and drops the $0.00", () => {
     const summary = summarizeLive([session({ status: "exited" })], NOW)
     expect(buildStatusText(summary)).toBe("agentproto: no sessions")
+  })
+})
+
+describe("parked-bg vs stalled (#601-adjacent)", () => {
+  /** Alive, idle (turn ended), with background work from the last turn still
+   *  outstanding — a healthy dead end, not a stall. */
+  function parkedBg(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
+    return session({ busy: false, pendingBgTasks: 2, ...over })
+  }
+
+  it("counts a parked-bg session separately from a genuinely stalled one", () => {
+    const summary = summarizeLive(
+      [
+        parkedBg(),
+        working({ id: "s2", lastActivityAt: new Date(NOW - STALL_AFTER_MS - 1_000).toISOString() }),
+      ],
+      NOW,
+    )
+    expect(summary.parkedBg).toBe(1)
+    expect(summary.stalled).toBe(1)
+  })
+
+  it("never lets a healthy parked-bg backlog inflate the 'stuck' count", () => {
+    const summary = summarizeLive([parkedBg(), parkedBg({ id: "s2" }), parkedBg({ id: "s3" })], NOW)
+    expect(summary.stalled).toBe(0)
+    expect(summary.parkedBg).toBe(3)
+    expect(buildStatusCounts(summary)).toBe("3 awaiting bg")
+  })
+
+  it("gives parked-bg its own status-bar segment, distinct from 'stuck'", () => {
+    const summary = summarizeLive(
+      [
+        parkedBg(),
+        working({ id: "s2", lastActivityAt: new Date(NOW - STALL_AFTER_MS - 1_000).toISOString() }),
+      ],
+      NOW,
+    )
+    expect(buildStatusCounts(summary)).toBe("1 stuck · 1 awaiting bg")
+  })
+
+  it("ranks stalled ahead of parked-bg for the dominant icon, both ahead of idle", () => {
+    expect(dominantActivity(summarizeLive([parkedBg()], NOW))).toBe("parked-bg")
+    expect(statusBarIcon(summarizeLive([parkedBg()], NOW))).toBe("clock")
+    const both = summarizeLive(
+      [parkedBg(), working({ id: "s2", lastActivityAt: new Date(NOW - STALL_AFTER_MS - 1_000).toISOString() })],
+      NOW,
+    )
+    expect(dominantActivity(both)).toBe("stalled")
+  })
+})
+
+describe("machine-origin sessions (gate reviews)", () => {
+  // The incident this covers: 77 live `gate-review` sessions piled up and
+  // inflated "working" as if the operator had 77 things mid-turn.
+  it("excludes a live machine-origin session from needsYou/stalled/working/idle", () => {
+    const summary = summarizeLive(
+      [working({ id: "human" }), working({ id: "bot", origin: "gate" })],
+      NOW,
+    )
+    expect(summary.working).toBe(1)
+    expect(summary.live).toHaveLength(1)
+    expect(summary.machineLive.map(s => s.id)).toEqual(["bot"])
+  })
+
+  it("still surfaces a wedged (stalled) gate session via machineLive, not the four counts", () => {
+    const stalledGate = working({
+      id: "bot",
+      origin: "gate",
+      lastActivityAt: new Date(NOW - STALL_AFTER_MS - 1_000).toISOString(),
+    })
+    const summary = summarizeLive([stalledGate], NOW)
+    expect(summary.stalled).toBe(0)
+    expect(summary.machineLive).toHaveLength(1)
+    expect(buildStatusCounts(summary)).toBe("no sessions · 1 gate")
+  })
+
+  it("sums costUsd across human AND machine sessions", () => {
+    const summary = summarizeLive(
+      [working({ id: "human", costUsd: 1 }), working({ id: "bot", origin: "gate", costUsd: 0.5 })],
+      NOW,
+    )
+    expect(summary.costUsd).toBeCloseTo(1.5)
+  })
+
+  it("appends a trailing '· N gate' segment to the counts, singular vs plural", () => {
+    const one = summarizeLive([working({ id: "bot", origin: "gate" })], NOW)
+    expect(buildStatusCounts(one)).toBe("no sessions · 1 gate")
+    const two = summarizeLive(
+      [working({ id: "bot1", origin: "gate" }), working({ id: "bot2", origin: "gate" })],
+      NOW,
+    )
+    expect(buildStatusCounts(two)).toBe("no sessions · 2 gate")
+  })
+
+  it("shows cost in buildStatusText even when only a gate session is live", () => {
+    const summary = summarizeLive([working({ id: "bot", origin: "gate", costUsd: 0.42 })], NOW)
+    expect(buildStatusText(summary)).toBe("agentproto: no sessions · 1 gate · $0.42")
   })
 })
 

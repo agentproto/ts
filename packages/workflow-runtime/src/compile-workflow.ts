@@ -17,15 +17,20 @@
  *
  * Scope: the **linear / structured subset** of AIP-15 — steps run in document
  * order; `map`/`loop`/`parallel` nest their child step lists. Non-linear `next`
- * gotos and goto-style `branch` routing are rejected with a clear diagnostic
- * (hand-author a structured `BranchStep`, or nest). Compiling the full goto
- * graph is a separable follow-up.
+ * gotos are rejected with a clear diagnostic. `kind:"branch"` compiles in its
+ * **forward-only** form: every `branches[].next`/`default` must name a later
+ * sibling in the SAME step list (not backward, not into a nested map/loop/
+ * parallel body) — see `compileBranchChain` below. Compiling a full goto graph
+ * (backward jumps, cross-scope targets) is a separable follow-up; hand-author
+ * a `loop` step for retry-style control flow instead.
  */
 
 import type { WorkflowHandle } from "@agentproto/workflow"
+import { assertKnownStepRefs } from "@agentproto/workflow"
 import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
-import type { Bindings, RunStep, RuntimeWorkflow } from "./types.js"
+import type { AgentRefResolution, AgentStep, Bindings, GateStep, RunStep, RuntimeWorkflow } from "./types.js"
+import { buildAgentStep } from "./build-agent-step.js"
 
 export interface CompileWorkflowOptions {
   /** TOOL contracts by id — each `tool` step resolves its handle here. */
@@ -38,6 +43,14 @@ export interface CompileWorkflowOptions {
   workflows?:
     | ReadonlyMap<string, WorkflowHandle>
     | Record<string, WorkflowHandle>
+  /** App-scoped agent ids for a declarative `kind:"agent"` step's
+   *  `agent.ref` — e.g. `{ "@app/reviewer": { adapter: "mastra-agent",
+   *  options: { agent: "<dir>/.agentproto/agents/reviewer/AGENT.md" } } }`.
+   *  Built by the host from its own app-install state (see
+   *  `@agentproto/runtime`'s `resolveAgentRefsForWorkflow`). A step using
+   *  `agent.ref` with this unset, or naming a ref this map doesn't have,
+   *  fails compilation — never the runtime. */
+  agentRefs?: ReadonlyMap<string, AgentRefResolution> | Record<string, AgentRefResolution>
 }
 
 export class WorkflowCompileError extends Error {
@@ -64,10 +77,21 @@ function dig(value: unknown, path: readonly string[]): unknown {
   return v
 }
 
+const REF_RE = /^\$(input|item|steps)((?:\.[^.]+)*)$/
+
+/**
+ * The prefix form of the ref grammar: a ref token at the START of a string
+ * that continues with a literal suffix (e.g. `$input.bookDir/knowledge` —
+ * resolve `$input.bookDir`, append `/knowledge` verbatim). The token's path
+ * segments stop at the first `.`, `$`, or `/` — so `$input.a$b/c` resolves
+ * `$input.a` with rest `$b/c`. `$index` is recognized as a whole token too.
+ */
+const REF_PREFIX_RE = /^\$(?:input|item|steps|index)((?:\.[^.$/]+)*)/
+
 /** Resolve a single `$…` reference string against the run bindings. */
 export function resolveRef(ref: string, b: Bindings): unknown {
   if (ref === "$index") return b.index
-  const m = ref.match(/^\$(input|item|steps)((?:\.[^.]+)*)$/)
+  const m = ref.match(REF_RE)
   if (!m) throw new WorkflowCompileError(`bad reference '${ref}'`)
   const segs = m[2] ? m[2].slice(1).split(".") : []
   switch (m[1]) {
@@ -83,6 +107,22 @@ export function resolveRef(ref: string, b: Bindings): unknown {
   }
 }
 
+/** Resolve the leading ref token of a string (see {@link REF_PREFIX_RE}):
+ *  if `value` starts with a `$input`/`$item`/`$steps`/`$index` reference
+ *  token, resolve it against the bindings and return the resolved value plus
+ *  the literal remainder (`rest`). Throws exactly like {@link resolveRef} for
+ *  a matched-but-malformed token; returns `undefined` when the string does
+ *  not START with a ref token at all (caller decides pass-through vs error). */
+export function resolveRefPrefixed(
+  value: string,
+  b: Bindings,
+): { resolved: unknown; rest: string } | undefined {
+  const m = value.match(REF_PREFIX_RE)
+  if (!m) return undefined
+  const token = value.slice(0, m[0].length)
+  return { resolved: resolveRef(token, b), rest: value.slice(m[0].length) }
+}
+
 /** Recursively resolve a value node: refs in strings, into arrays/objects. */
 export function resolveValue(node: unknown, b: Bindings): unknown {
   if (typeof node === "string") {
@@ -95,6 +135,60 @@ export function resolveValue(node: unknown, b: Bindings): unknown {
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(node as Record<string, unknown>))
       out[k] = resolveValue(v, b)
+    return out
+  }
+  return node
+}
+
+/** Like {@link resolveRef} but reports whether the referenced path actually
+ *  exists in the bindings — a strict subworkflow projection uses this to turn
+ *  a silently-`undefined` reference into a named error instead. */
+function refPathExists(ref: string, b: Bindings): boolean {
+  const m = ref.match(REF_RE)
+  if (!m) return false
+  const segs = m[2] ? m[2].slice(1).split(".") : []
+  let v: unknown
+  if (m[1] === "steps") {
+    const [stepId, ...rest] = segs
+    if (!stepId || !(stepId in b.steps)) return false
+    v = b.steps[stepId]
+    segs.length = 0
+    segs.push(...rest)
+  } else {
+    v = m[1] === "input" ? b.input : b.item
+  }
+  for (const seg of segs) {
+    if (v === null || typeof v !== "object") return false
+    const o = v as Record<string, unknown>
+    if (!(seg in o)) return false
+    v = o[seg]
+  }
+  return true
+}
+
+/** Strict variant of {@link resolveValue} for a subworkflow step's input
+ *  projection: an exact `$…` reference that resolves to `undefined` AND names
+ *  a path that doesn't exist in the bindings is a hard error naming the step
+ *  and key — never a silent `undefined` handed to the child. */
+export function resolveValueStrict(node: unknown, b: Bindings, label: string): unknown {
+  if (typeof node === "string") {
+    if (node.startsWith("$$")) return node.slice(1) // $$ → literal $
+    if (node.startsWith("$")) {
+      const v = resolveRef(node, b)
+      if (v === undefined && !refPathExists(node, b)) {
+        throw new WorkflowCompileError(
+          `${label}: reference '${node}' resolves to nothing — the referenced field does not exist`,
+        )
+      }
+      return v
+    }
+    return node
+  }
+  if (Array.isArray(node)) return node.map((n) => resolveValueStrict(n, b, label))
+  if (node && typeof node === "object") {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(node as Record<string, unknown>))
+      out[k] = resolveValueStrict(v, b, label)
     return out
   }
   return node
@@ -162,6 +256,28 @@ function assertLinear(steps: readonly { id: string; kind: string; next?: string 
   })
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collectStepIds(steps: any[], ids: Set<string> = new Set()): Set<string> {
+  for (const s of steps) {
+    if (typeof s?.id === "string") ids.add(s.id)
+    if (Array.isArray(s?.steps)) collectStepIds(s.steps, ids)
+    if (Array.isArray(s?.branches)) {
+      for (const br of s.branches) {
+        if (Array.isArray(br?.steps)) collectStepIds(br.steps, ids)
+      }
+    }
+  }
+  return ids
+}
+
+/** Per-compile context: the public options plus the full set of step ids
+ *  declared anywhere in THIS workflow (recomputed fresh for each nested
+ *  `subworkflow` child, which has its own id namespace). */
+interface Ctx {
+  opts: CompileWorkflowOptions
+  knownStepIds: ReadonlySet<string>
+}
+
 export function compileWorkflow(
   handle: WorkflowHandle,
   opts: CompileWorkflowOptions,
@@ -173,7 +289,7 @@ export function compileWorkflow(
       `start='${handle.start}' is not the first step — structured-subset runs in order`,
     )
   }
-  assertLinear(steps)
+  const ctx: Ctx = { opts, knownStepIds: collectStepIds(steps) }
   // `result` is the optional output value-expression (AIP-15): map it through
   // the same ref grammar as a step's inputs. Absent ⇒ no output selector, so
   // runWorkflow falls back to the final step's result.
@@ -183,24 +299,203 @@ export function compileWorkflow(
   return {
     id: handle.id,
     description: handle.description,
-    steps: steps.map((s) => compileStep(s, opts)),
+    steps: compileSiblingsToSteps(steps, ctx),
     ...(output ? { output } : {}),
   }
+}
+
+/**
+ * Compile a sibling step list in document order. A `kind:"branch"` step
+ * swallows every sibling after it at this level (they're reachable only
+ * through its arms — see {@link compileBranchChain}), so this stops emitting
+ * as soon as it hits one.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compileSiblingsToSteps(steps: any[], ctx: Ctx): RunStep[] {
+  assertLinear(steps)
+  const out: RunStep[] = []
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i]
+    if (s.kind === "branch") {
+      out.push(compileBranchChain(steps, i, ctx))
+      return out
+    }
+    out.push(compileStep(s, ctx))
+  }
+  return out
 }
 
 function compileStepList(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   steps: any[],
   id: string,
-  opts: CompileWorkflowOptions,
+  ctx: Ctx,
 ): RunStep {
-  assertLinear(steps)
-  if (steps.length === 1) return compileStep(steps[0], opts)
-  return { kind: "group", id, steps: steps.map((s) => compileStep(s, opts)) }
+  const compiled = compileSiblingsToSteps(steps, ctx)
+  if (compiled.length === 1) return compiled[0]!
+  return { kind: "group", id, steps: compiled }
+}
+
+/**
+ * Compile a forward-only goto `kind:"branch"` step (index `i` in `steps`)
+ * into a nested runtime {@link BranchStep} chain: `branches[]` evaluate in
+ * order, the first truthy `when` jumps to its `next` sibling and falls
+ * through in document order from there; no match jumps to `default` (or
+ * falls through to `i + 1`). Every target MUST be a later sibling in this
+ * SAME list — an unknown id, a backward target, or a target inside a nested
+ * map/loop/parallel body all fail compilation here.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compileBranchChain(steps: any[], i: number, ctx: Ctx): RunStep {
+  const branchStep = steps[i]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const branches = f<{ when: string; next: string }[]>(branchStep, "branches")
+  const defaultTarget = f<string | undefined>(branchStep, "default")
+
+  const resolveTarget = (targetId: string, label: string): number => {
+    const idx = steps.findIndex((s) => s.id === targetId)
+    if (idx === -1 || idx <= i) {
+      throw new WorkflowCompileError(
+        `branch '${branchStep.id}' ${label} targets '${targetId}', which is not a sibling later in this ` +
+          `step list — the forward-only branch compiler only supports jumping to a later sibling in the ` +
+          `SAME list (not backward, and not into a nested map/loop/parallel body). Hand-author a 'loop' ` +
+          `step for retry-style control flow instead.`,
+      )
+    }
+    return idx
+  }
+
+  const defaultIdx = defaultTarget !== undefined ? resolveTarget(defaultTarget, "default") : i + 1
+  let otherwise: RunStep[] = compileSiblingsToSteps(steps.slice(defaultIdx), ctx)
+
+  for (let k = branches.length - 1; k >= 0; k--) {
+    const br = branches[k]!
+    const targetIdx = resolveTarget(br.next, `branches[${k}].next`)
+    const thenSteps = compileSiblingsToSteps(steps.slice(targetIdx), ctx)
+    const condExpr = br.when
+    const nodeId = k === 0 ? branchStep.id : `${branchStep.id}__branch${k}`
+    otherwise = [
+      {
+        kind: "branch",
+        id: nodeId,
+        cond: (b: Bindings) => evalPredicate(condExpr, b),
+        then: thenSteps,
+        ...(otherwise.length > 0 ? { otherwise } : {}),
+      },
+    ]
+  }
+  return otherwise[0]!
+}
+
+/**
+ * Compile a declarative `kind:"agent"` manifest step — `{ agent: { ref },
+ * prompt, adapter?, sessionRef?, sandbox?, cacheable?, policy?, outputSchema?,
+ * maxRetries? }` — into a real {@link AgentStep}. `prompt` runs through the
+ * same `$input`/`$steps.<id>` ref grammar as a `tool` step's `inputs`.
+ * `agent.ref` resolves via `opts.agentRefs` — unresolvable (no map, or an id
+ * the map doesn't have) fails HERE, at compile time, never at the runtime
+ * spawn.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
+  const opts = ctx.opts
+  const prompt = f<string>(step, "prompt")
+  if (typeof prompt !== "string" || prompt.length === 0) {
+    throw new WorkflowCompileError(`agent step '${id}' needs a non-empty 'prompt'`)
+  }
+
+  let adapter: string | undefined = typeof step.adapter === "string" ? step.adapter : undefined
+  let options: Record<string, boolean | number | string> | undefined =
+    step.options !== undefined ? step.options : undefined
+
+  const agentRef: unknown = step.agent?.ref
+  if (agentRef !== undefined) {
+    if (typeof agentRef !== "string" || agentRef.trim().length === 0) {
+      throw new WorkflowCompileError(`agent step '${id}' has an empty 'agent.ref'`)
+    }
+    const resolved = opts.agentRefs ? get(opts.agentRefs, agentRef) : undefined
+    if (!resolved) {
+      const available = opts.agentRefs
+        ? opts.agentRefs instanceof Map
+          ? [...opts.agentRefs.keys()]
+          : Object.keys(opts.agentRefs)
+        : []
+      throw new WorkflowCompileError(
+        `agent step '${id}' references unknown agent ref '${agentRef}'` +
+          (available.length > 0
+            ? ` — available refs: ${available.join(", ")}`
+            : " — no agent refs are configured for this compile (not running in an app context?)"),
+      )
+    }
+    adapter = resolved.adapter
+    options = resolved.options
+  }
+
+  return buildAgentStep(id, {
+    prompt: (b: Bindings) => String(resolveValue(prompt, b)),
+    ...(adapter !== undefined ? { adapter } : {}),
+    ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
+    ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
+    ...(step.cacheable ? { cacheable: true } : {}),
+    ...(options !== undefined ? { options } : {}),
+    policy: step.policy,
+    ...(step.outputSchema !== undefined ? { outputSchema: step.outputSchema } : {}),
+    ...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),
+    ...(step.harness !== undefined ? { harness: step.harness } : {}),
+  })
+}
+
+/**
+ * Compile a declarative `kind:"gate"` manifest step — `{ command, args?,
+ * cwd?, report?, timeout_ms?, retry?, on_fail? }` — into a real
+ * {@link GateStep}. `command` is re-validated here (compile time) even
+ * though `@agentproto/workflow`'s `defineWorkflow` already rejects an
+ * empty one at LOAD time — an ENTRY-based handle that hand-builds a gate
+ * step in TS bypasses that manifest-only check.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compileGateStep(step: any, id: string): GateStep {
+  const command = f<string>(step, "command")
+  if (typeof command !== "string" || command.trim().length === 0) {
+    throw new WorkflowCompileError(`gate step '${id}' needs a non-empty 'command'`)
+  }
+  const args = f<string[] | undefined>(step, "args")
+  const cwd = f<string | undefined>(step, "cwd")
+  const reportPath = f<string | undefined>(step, "report")
+  const timeoutMs = f<number | undefined>(step, "timeout_ms")
+  const retry = f<
+    { max_attempts: number; backoff: "fixed" | "exponential"; initial_ms?: number } | undefined
+  >(step, "retry")
+  const onFail = f<{ reprompt: string; with?: Record<string, unknown> } | undefined>(
+    step,
+    "on_fail",
+  )
+  return {
+    kind: "gate",
+    id,
+    command,
+    ...(args !== undefined ? { args } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(reportPath !== undefined ? { reportPath } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(retry !== undefined
+      ? {
+          retry: {
+            maxAttempts: retry.max_attempts,
+            backoff: retry.backoff,
+            ...(retry.initial_ms !== undefined ? { initialMs: retry.initial_ms } : {}),
+          },
+        }
+      : {}),
+    ...(onFail !== undefined
+      ? { onFail: { reprompt: onFail.reprompt, ...(onFail.with !== undefined ? { with: onFail.with } : {}) } }
+      : {}),
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
+function compileStep(step: any, ctx: Ctx): RunStep {
+  const opts = ctx.opts
   const id: string = step.id
   switch (step.kind) {
     case "tool": {
@@ -210,6 +505,9 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
       if (!tool)
         throw new WorkflowCompileError(`no tool registered for '${toolId}'`)
       const inputs = f<unknown>(step, "inputs") ?? {}
+      assertKnownStepRefs(inputs, ctx.knownStepIds, `tool step '${id}' inputs`, {
+        makeError: (message) => new WorkflowCompileError(message),
+      })
       return {
         kind: "tool",
         id,
@@ -224,13 +522,15 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
 
     case "map": {
       const over = f<string>(step, "over")
-      const inner = compileStepList(f(step, "steps"), `${id}__body`, opts)
+      const inner = compileStepList(f(step, "steps"), `${id}__body`, ctx)
+      const onError = f<"throw" | "collect" | undefined>(step, "onError")
       return {
         kind: "map",
         id,
         parallelism: f<number | undefined>(step, "parallelism"),
         over: (b) => resolveRef(over, b) as readonly unknown[],
         body: () => inner,
+        ...(onError !== undefined ? { onError } : {}),
       }
     }
 
@@ -241,7 +541,7 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
         id,
         maxIterations: f<number>(step, "max_iterations"),
         while: (b) => evalPredicate(whileExpr, b),
-        body: [compileStepList(f(step, "steps"), `${id}__body`, opts)],
+        body: [compileStepList(f(step, "steps"), `${id}__body`, ctx)],
       }
     }
 
@@ -253,7 +553,7 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
         id,
         branches: branches.map((br) => ({
           id: br.id,
-          steps: [compileStepList(br.steps, `${id}__${br.id}`, opts)],
+          steps: [compileStepList(br.steps, `${id}__${br.id}`, ctx)],
         })),
       }
     }
@@ -264,10 +564,14 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
       const approvers = (f<any[]>(step, "approvers") ?? []).map(
         (a) => a.role ?? a.userId ?? String(a),
       )
+      const artifacts = f<string[]>(step, "artifacts")
+      const timeoutMs = f<number>(step, "timeout_ms")
       return {
         kind: "approval",
         id,
         approvers,
+        ...(artifacts !== undefined ? { artifacts } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         prompt: (b) => String(resolveValue(prompt, b)),
       }
     }
@@ -285,30 +589,72 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
           `subworkflow '${wfId}' not found — pass it in opts.workflows`,
         )
       const compiledChild = compileWorkflow(child, opts)
-      return { kind: "subworkflow", id, workflow: compiledChild }
+      // `inputs` is an optional projection into the child's `$input` — the
+      // same ref grammar as a `tool` step's `inputs` (refs resolved against
+      // THIS (parent) workflow's bindings). Absent ⇒ today's behavior: the
+      // child runs with the parent's own workflow input, unchanged.
+      const inputs = f<unknown>(step, "inputs")
+      if (inputs === undefined) {
+        return { kind: "subworkflow", id, workflow: compiledChild }
+      }
+      assertKnownStepRefs(inputs, ctx.knownStepIds, `subworkflow step '${id}' inputs`, {
+        makeError: (message) => new WorkflowCompileError(message),
+      })
+      const entries = Object.entries(inputs as Record<string, unknown>)
+      return {
+        kind: "subworkflow",
+        id,
+        workflow: compiledChild,
+        // Each top-level key resolves strictly: a missing referenced field
+        // throws at run time naming this step + key (no silent `undefined`).
+        input: (b) => {
+          const out: Record<string, unknown> = {}
+          for (const [k, v] of entries)
+            out[k] = resolveValueStrict(v, b, `subworkflow step '${id}' input key '${k}'`)
+          return out
+        },
+      }
     }
 
-    case "agent":
+    case "agent": {
+      // Two shapes reach here under the same `kind:"agent"`: an ENTRY-based
+      // handle's already-built runtime AgentStep (function-valued `prompt`
+      // selector — nothing declarative left to resolve, pass through
+      // unchanged), or a purely-declarative manifest step (`prompt` is a
+      // plain string) that this compiler must turn into a real AgentStep,
+      // the same way `translateStages` does for `workflow_start`.
+      if (typeof step.prompt === "function") {
+        const passthrough: RunStep = step
+        return passthrough
+      }
+      return compileAgentStep(step, id, ctx)
+    }
+
+    case "gate":
+      return compileGateStep(step, id)
+
     case "transform": {
-      // Neither `agent` nor `transform` is a declarative manifest kind — both
-      // only reach the compiler from an ENTRY-based handle, already built as
-      // a runtime AgentStep (function-valued adapter/cwd/prompt selectors) or
-      // TransformStep (function-valued `compute`). There is nothing
-      // declarative to resolve, so pass through unchanged. This is what lets
-      // a WORKFLOW.md whose entry.mjs chains agent steps run via
-      // `startFromFile` — and, for `transform`, what lets an entry.mjs step
-      // shape/serialize an earlier tool step's output (e.g. `JSON.stringify`
-      // a prior `$steps.<id>` value) for a later tool step to consume as a
-      // plain string input, something the `$steps.*` ref grammar alone can't
-      // do. `step` is `any`, so no cast is needed.
+      // Not a declarative manifest kind — no string expression language for
+      // `compute` — so it only reaches the compiler from an ENTRY-based
+      // handle, already built as a runtime TransformStep (function-valued
+      // `compute`). Passes through unchanged: this is what lets an entry.mjs
+      // step shape/serialize an earlier tool step's output (e.g.
+      // `JSON.stringify` a prior `$steps.<id>` value) for a later tool step
+      // to consume as a plain string input, something the `$steps.*` ref
+      // grammar alone can't do. `step` is `any`, so no cast is needed.
       const passthrough: RunStep = step
       return passthrough
     }
 
     case "branch":
+      // Unreachable through the normal entry points: `compileSiblingsToSteps`
+      // intercepts every `branch` step and routes it to `compileBranchChain`
+      // before it would ever reach here (that's what makes the forward-only
+      // swallow-the-rest-of-the-list semantics work). A direct call would be
+      // an internal invariant violation, not a manifest problem.
       throw new WorkflowCompileError(
-        `goto-style 'branch' (step '${id}') is unsupported in the structured ` +
-          `subset — hand-author a structured BranchStep, or nest.`,
+        `internal: branch step '${id}' reached compileStep directly — branch ` +
+          `steps must be compiled via the sibling-list walker`,
       )
 
     default:

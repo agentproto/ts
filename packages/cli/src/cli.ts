@@ -21,7 +21,7 @@ import { runAuth } from "./commands/auth.js"
 import { runConfig } from "./commands/config.js"
 import { runInstall } from "./commands/install.js"
 import { runSetupCommand } from "./commands/setup.js"
-import { runPlugins } from "./commands/plugins.js"
+import { runAdapters } from "./commands/adapters.js"
 import { runRun } from "./commands/run.js"
 import { runChat } from "./commands/chat.js"
 import { runChatTui } from "./commands/chat-tui.js"
@@ -37,10 +37,12 @@ import { runProviderPresets } from "./commands/presets.js"
 import { runPreset } from "./commands/preset.js"
 import { runBrowser } from "./commands/browser.js"
 import { runMcpBridge } from "./commands/mcp-bridge.js"
+import { runMcpApp } from "./commands/mcp-app.js"
 import { runInstallMcp } from "./commands/install-mcp.js"
 import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
+import { runApp } from "./commands/app.js"
 import { runWorktree } from "./commands/worktree.js"
 import { runPolicy } from "./commands/policy.js"
 import { runPermissions } from "./commands/permissions.js"
@@ -60,7 +62,7 @@ Usage:
                        --allow-unverified: run a curl/download installer that
                        declares no verify_sha256 (refused by default in
                        non-interactive contexts)
-  agentproto plugins   <list|show|install|uninstall|enable|disable> [args]
+  agentproto adapters  <list|show|install|uninstall|enable|disable> [args]
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
   agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
@@ -102,14 +104,21 @@ Usage:
   agentproto presets  list [--json]          deprecated alias for provider-preset
   agentproto preset   <list|show|add|delete> saved user spawn configurations
   agentproto mcp-bridge                    stdio MCP proxy to daemon /mcp endpoint
+  agentproto mcp-app <appId>               stdio MCP server scoped to one installed app's tools
   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
                                            register the daemon's MCP server with coding CLIs
+                         [--app <appId>]  write a scoped mcp-app entry instead (book apps only)
   agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
                                            first-run: register MCP + install the skill pack
   agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]
   agentproto cron      list [--json]
   agentproto cron      remove <id>
   agentproto cron      run    <id>
+  agentproto pack      skill --manifest <path> [--source <dir>] [--version <semver>]
+                             [--bump patch|minor|major] [--dry-run] [--out <dir>]
+  agentproto pack      build [dir]             build a skill-pack package: flat skills/ +
+                                               .claude-plugin/ at the package root, plus
+                                               dist/<name>-v<version>/ bundle + .zip
   agentproto worktree  ls      [--repo <dir>] [--json]
   agentproto worktree  archive <path> [--base <ref>] [--keep-branch] [--json]
   agentproto policy    attach (--session <id>|--sessions <id,id,…>) [--then emit|commit]
@@ -131,6 +140,12 @@ Usage:
   agentproto pair      exec   <fingerprint|name> -- <verb> [args…]
   agentproto rendezvous serve [--port <n>] [--host <ip>]
   agentproto sandbox   attach <provider> <sandboxId> [--config-json <json>] [--json]
+  agentproto app       pack <appDir> [--out <path.agentapp>] [--json]
+  agentproto app       unpack <file.agentapp> [--dir <outDir>] [--json]
+  agentproto app       install <appDir>
+  agentproto app       list
+  agentproto app       serve [appDir] [--port <n>] [--app <appId>] [--json]
+                     serve an app's .agentproto/ui/ with an MCP bridge
   agentproto --help
   agentproto --version
 
@@ -159,7 +174,7 @@ const VERBS = new Set([
   "config",
   "daemon",
   "install",
-  "plugins",
+  "adapters",
   "setup",
   "run",
   "chat",
@@ -177,6 +192,7 @@ const VERBS = new Set([
   "preset",
   "browser",
   "mcp-bridge",
+  "mcp-app",
   "install-mcp",
   "onboard",
   "cron",
@@ -184,6 +200,7 @@ const VERBS = new Set([
   "worktree",
   "policy",
   "permissions",
+  "app",
   "acp",
   "pair",
   "rendezvous",
@@ -198,7 +215,10 @@ async function main(argv: readonly string[]): Promise<number> {
 
   if (verbIdx === -1) {
     if (argv.includes("--version") || argv.includes("-v")) {
-      process.stdout.write(`agentproto ${__CLI_VERSION__}\n`)
+      const build = __CLI_BUILD_SHA__
+        ? ` (${__CLI_BUILD_SHA__}, built ${__CLI_BUILT_AT__})`
+        : ""
+      process.stdout.write(`agentproto ${__CLI_VERSION__}${build}\n`)
       return 0
     }
     if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) {
@@ -228,8 +248,8 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     case "install":
       return runInstall(rest)
-    case "plugins":
-      return runPlugins(rest)
+    case "adapters":
+      return runAdapters(rest)
     case "setup":
       return runSetupCommand(rest)
     case "run":
@@ -265,6 +285,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runBrowser(rest)
     case "mcp-bridge":
       return runMcpBridge(rest)
+    case "mcp-app":
+      return runMcpApp(rest)
     case "install-mcp":
       return runInstallMcp(rest)
     case "onboard":
@@ -273,6 +295,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runCron(rest)
     case "pack":
       return runPack(rest)
+    case "app":
+      return runApp(rest)
     case "worktree":
       return runWorktree(rest)
     case "policy":

@@ -48,7 +48,8 @@ agentproto config set daemon.port 18791
     "bind": "127.0.0.1",
     "allowedOrigins": [
       "https://guilde.work"
-    ]
+    ],
+    "turnStallAfterMs": 300000
   },
 
   // End-to-end pairing over an untrusted rendezvous broker. Read by
@@ -107,10 +108,27 @@ agentproto config set daemon.port 18791
     "isolation": "on-request"
   },
 
+  // Spawn-time policy for `agent_start` (dedupe, attach). See "spawn" below.
+  "spawn": {
+    "dedupe": "always",
+    "attach": "always"
+  },
+
+  // Provenance policy — the opt-in `gh` PATH shim. See "provenance" below.
+  "provenance": {
+    "wrapGh": false
+  },
+
   // Named terminal/TUI launch presets for `agentproto sessions terminal
   // --preset <name>`. See "terminalPresets" below.
   "terminalPresets": {
     "terra": { "argv": ["bash", "-l"], "env": { "TERM": "xterm-256color" } }
+  },
+
+  // Feature toggles. See "features" below.
+  "features": {
+    "pty": true,
+    "llmEndpoint": false
   }
 }
 ```
@@ -161,6 +179,7 @@ Defaults for `agentproto daemon` and `agentproto serve`:
 | `bind`           | string   | Bind address (default `127.0.0.1` — loopback-only).    |
 | `allowedOrigins` | string[] | CORS allow-list for browser callers of the daemon API. |
 | `authToken`      | string   | Stable bearer token for `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route — survives restarts, unlike the per-boot `runtime.json` token. Overridden inline by `agentproto serve --auth-token <token>`. Loopback callers with no `X-Forwarded-For` header are still exempt. Unset ⇒ those routes stay open. |
+| `turnStallAfterMs` | number | Turn-liveness watchdog threshold in ms. When a busy agent-cli session has had no adapter activity for longer than this, the daemon stamps `stalledSinceMs` on the descriptor and emits `session:stalled`. Detection-only — never auto-kills. Default on at 5 minutes (`300000`). Set to `0` or a negative value to disable. Env override: `AGENTPROTO_TURN_STALL_AFTER_MS`. |
 
 Verb flags override config; config overrides hard-coded defaults.
 
@@ -221,6 +240,23 @@ policy for isolating spawned agent sessions into one.
 | `root` | string | Absolute path new worktrees are created under (layout `<root>/<repoName>/<slug>`). Resolution order: `--root` flag > `AGENTPROTO_WORKTREES_ROOT` env > this field > the hardcoded default `~/.agentproto/worktrees`. |
 | `isolation` | `"always"` \| `"on-request"` \| `"never"` | Policy for `agent_start`'s `worktree` field. `on-request` (default) isolates only when a spawn passes `worktree`; `always` isolates every **root** spawn whose cwd is inside a git repo (a spawn made through an orchestrator inherits its parent's tree; a cwd outside any repo spawns plain); `never` turns it off and **rejects** an explicit `worktree` rather than silently ignoring it. Resolution order: `AGENTPROTO_WORKTREES_ISOLATION` env > this field > the default `on-request`. The worktree is **not** auto-removed on session exit — reclaim it with `agentproto worktree rm\|archive\|gc`. |
 
+### `spawn: object`
+
+Daemon-side policy for `agent_start` spawns.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `attach` | `"always"` \| `"on-request"` | Whether a spawn auto-attaches to its caller as parent lineage. `"always"` (default) nests a child under the spawning session whenever the identity is derivable; `"on-request"` disables auto-attribution unless the caller opts in. Resolution order: `AGENTPROTO_SPAWN_ATTACH` env > this field > `"always"`. A per-call `attach: false` opts out. |
+| `dedupe` | `"always"` \| `"on-request"` | Implicit idempotency-key policy. `"always"` (default) derives a key from the spawn's `label` + a hash of the initial `prompt` when no explicit `idempotencyKey` is given; `"on-request"` disables implicit derivation. Resolution order: `AGENTPROTO_SPAWN_DEDUPE` env > this field > `"always"`. A per-call `dedupe: false` opts out. |
+
+### `provenance: object`
+
+Daemon-side provenance policy — the opt-in `gh` PATH shim.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `wrapGh` | `boolean` | When `true`, every agent session the daemon spawns gets a shim directory prepended to its PATH so any `gh pr create` it — or an adapter subprocess shelling out (claude-code, codex, …) — runs has a deterministic `🤖 @agentproto-bot` provenance footer (session id, adapter, model, workspace) appended to the created PR's **body**, matching the footer the cloud runner stamps. The tool stamps, never the model; commit messages are never touched. Stamping is cosmetic — a failure never fails the underlying `gh`. Resolution order: `AGENTPROTO_PROVENANCE_WRAP_GH` env > this field > default `false` (off). |
+
 ### `terminalPresets: Record<string, object>`
 
 User-defined named terminal/TUI launch recipes for `agentproto sessions
@@ -235,6 +271,16 @@ manifests or `defaults`.
 | `workspace` | `string`                  | Workspace slug used for `cwd` fallback when `cwd` is omitted.           |
 | `name`      | `string`                  | Stable session name passed to the registry.                            |
 | `label`     | `string`                  | Human-readable label surfaced in session listings.                     |
+
+### `features: object`
+
+Daemon feature toggles. All fields are optional; defaults are conservative
+(off / informational) so upgrades don't change behaviour.
+
+| Field         | Type      | Meaning |
+| ------------- | --------- | ------- |
+| `pty`         | `boolean` | Informational hint that PTY support is desired. The daemon still detects `node-pty`'s presence at runtime. |
+| `llmEndpoint` | `boolean` | Enable the local `@agentproto/llm-endpoint` proxy sidecar. When `true`, the daemon registers the `llm-endpoint` route and exposes the `llm_endpoint_*` MCP tools. Default `false` — opt-in because the sidecar spawns a child process and binds an extra port. |
 
 ### `tunnel: object`
 

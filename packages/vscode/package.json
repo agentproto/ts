@@ -2,8 +2,9 @@
   "name": "agentproto-vscode",
   "displayName": "agentproto",
   "description": "Live operational views for the agentproto daemon — sessions, permissions, cost — plus spawn/drive/stop from the editor.",
-  "version": "0.3.0",
+  "version": "0.14.0",
   "publisher": "agentproto",
+  "icon": "media/icon.png",
   "license": "Apache-2.0",
   "private": true,
   "repository": {
@@ -32,17 +33,18 @@
     "package": "pnpm run build && mkdir -p output && pnpm dlx @vscode/vsce package --no-dependencies --out output/"
   },
   "dependencies": {
+    "@agentproto/apps": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
-    "ws": "^8.21.1"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "1.90.0",
     "@types/ws": "^8.18.1",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "jsdom": "^29.1.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
@@ -61,7 +63,7 @@
         {
           "id": "agentprotoConfig",
           "title": "Agentproto Lab",
-          "icon": "media/activitybar.svg"
+          "icon": "media/activitybar-lab.svg"
         }
       ]
     },
@@ -100,9 +102,13 @@
         },
         {
           "id": "agentproto.authProfilesWebview",
-          "name": "Auth Profiles",
+          "name": "Wallets",
           "type": "webview",
           "when": "config.agentproto.authProfilesView == 'webview'"
+        },
+        {
+          "id": "agentproto.apps",
+          "name": "Apps"
         }
       ],
       "agentprotoConfig": [
@@ -137,6 +143,18 @@
         "title": "agentproto: Open Configuration Lab",
         "category": "agentproto",
         "icon": "$(gear)"
+      },
+      {
+        "command": "agentproto.openAuthModel",
+        "title": "agentproto: Open Auth & Model Map",
+        "category": "agentproto",
+        "icon": "$(circuit-board)"
+      },
+      {
+        "command": "agentproto.openAuthExplorer",
+        "title": "agentproto: Open Auth & Models Explorer",
+        "category": "agentproto",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "agentproto.promptSession",
@@ -185,6 +203,18 @@
         "title": "agentproto: Save as Favorite…",
         "category": "agentproto",
         "icon": "$(star-full)"
+      },
+      {
+        "command": "agentproto.watchSession",
+        "title": "agentproto: Watch Session",
+        "category": "agentproto",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "agentproto.unwatchSession",
+        "title": "agentproto: Unwatch Session",
+        "category": "agentproto",
+        "icon": "$(eye-closed)"
       },
       {
         "command": "agentproto.archiveSession",
@@ -262,6 +292,18 @@
         "title": "agentproto: Open Transcript",
         "category": "agentproto",
         "icon": "$(open-preview)"
+      },
+      {
+        "command": "agentproto.openSession",
+        "title": "agentproto: Open Session",
+        "category": "agentproto",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "agentproto.openBrowser",
+        "title": "agentproto: Open Browser View",
+        "category": "agentproto",
+        "icon": "$(browser)"
       },
       {
         "command": "agentproto.openStory",
@@ -364,6 +406,36 @@
       {
         "command": "agentproto.spawnWithHarness",
         "title": "agentproto: Spawn with Harness",
+        "category": "agentproto",
+        "icon": "$(play)"
+      },
+      {
+        "command": "agentproto.refreshApps",
+        "title": "agentproto: Refresh Apps",
+        "category": "agentproto",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentproto.openAppPanel",
+        "title": "agentproto: Open App Panel",
+        "category": "agentproto",
+        "icon": "$(window)"
+      },
+      {
+        "command": "agentproto.openAppInBrowser",
+        "title": "agentproto: Open App in Browser",
+        "category": "agentproto",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "agentproto.openAppManifest",
+        "title": "agentproto: Open App Manifest",
+        "category": "agentproto",
+        "icon": "$(book)"
+      },
+      {
+        "command": "agentproto.runAppWorkflow",
+        "title": "agentproto: Run App Workflow…",
         "category": "agentproto",
         "icon": "$(play)"
       },
@@ -471,6 +543,11 @@
           "group": "navigation"
         },
         {
+          "command": "agentproto.refreshApps",
+          "when": "view == 'agentproto.apps'",
+          "group": "navigation"
+        },
+        {
           "command": "agentproto.refreshAuthProfiles",
           "when": "view == 'agentproto.authProfiles'",
           "group": "navigation"
@@ -533,83 +610,123 @@
       ],
       "view/item/context": [
         {
+          "command": "agentproto.openAppInBrowser",
+          "when": "view == agentproto.apps && viewItem == app",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.openAppPanel",
+          "when": "view == agentproto.apps && viewItem == app",
+          "group": "1_app@1"
+        },
+        {
+          "command": "agentproto.openAppManifest",
+          "when": "view == agentproto.apps && viewItem =~ /^app(-no-ui)?$/",
+          "group": "1_app@2"
+        },
+        {
+          "command": "agentproto.runAppWorkflow",
+          "when": "view == agentproto.apps && viewItem == app-workflow",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.runAppWorkflow",
+          "when": "view == agentproto.apps && viewItem == app-workflow",
+          "group": "1_app@1"
+        },
+        {
+          "command": "agentproto.openAppManifest",
+          "when": "view == agentproto.apps && viewItem =~ /^app-(agent|workflow)$/",
+          "group": "1_app@2"
+        },
+        {
           "command": "agentproto.promptSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-watched)?$/",
           "group": "inline@1"
         },
         {
           "command": "agentproto.interruptSession",
-          "when": "view == agentproto.sessions && viewItem == session-live",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-live(-watched)?$/",
           "group": "inline@2"
         },
         {
           "command": "agentproto.killSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-watched)?$/",
           "group": "inline@3"
         },
         {
+          "command": "agentproto.watchSession",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "group": "inline@5"
+        },
+        {
+          "command": "agentproto.unwatchSession",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)-watched$/",
+          "group": "inline@5"
+        },
+        {
           "command": "agentproto.openTranscript",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
           "group": "inline@4"
         },
         {
           "command": "agentproto.openStory",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
           "group": "modify@0"
         },
         {
           "command": "agentproto.restartSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-done(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-done(-archived)?(-watched)?$/",
           "group": "inline@5"
         },
         {
           "command": "agentproto.resumeSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-interrupted(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-interrupted(-archived)?(-watched)?$/",
           "group": "inline@5"
         },
         {
           "command": "agentproto.restartSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-interrupted(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-interrupted(-archived)?(-watched)?$/",
           "group": "1_config@3"
         },
         {
           "command": "agentproto.renameSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
           "group": "modify@1"
         },
         {
           "command": "agentproto.copySessionId",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
           "group": "modify@2"
         },
         {
           "command": "agentproto.saveFavorite",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
           "group": "modify@3"
         },
         {
           "command": "agentproto.archiveSession",
-          "when": "view == agentproto.sessions && viewItem == session-done",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-done(-watched)?$/",
           "group": "inline@6"
         },
         {
           "command": "agentproto.unarchiveSession",
-          "when": "view == agentproto.sessions && viewItem == session-done-archived",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-done-archived(-watched)?$/",
           "group": "inline@6"
         },
         {
           "command": "agentproto.openTerminal",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
           "group": "inline@7"
         },
         {
           "command": "agentproto.switchHarness",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-watched)?$/",
           "group": "inline@8"
         },
         {
           "command": "agentproto.openTranscriptChannel",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
           "group": "transcript@1"
         },
         {
@@ -825,6 +942,11 @@
           "deprecationMessage": "Superseded by agentproto.sessionGrouping. Still honoured for migration when sessionGrouping is unset (false → \"none\", otherwise \"workspace\").",
           "description": "Deprecated — use agentproto.sessionGrouping. Group the Sessions panel by registered agentproto workspace. Off restores the flat session list."
         },
+        "agentproto.hideMachineSessions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide machine-origin sessions (e.g. automated push-gate reviews, origin \"gate\") from the Sessions panel by default. The panel always reports how many it hid (view badge/description), and an explicit origin filter you set yourself (agentproto: Filter Sessions…) always wins over this setting."
+        },
         "agentproto.sessionsView": {
           "type": "string",
           "enum": [
@@ -859,7 +981,7 @@
           ],
           "enumDescriptions": [
             "The classic TreeView auth profiles panel.",
-            "The newer Auth Profiles webview panel — collapsible sections, provider logos, expandable model profiles."
+            "The newer Wallets webview panel — wallets grouped by provider, access-kind chips, provider logos."
           ],
           "default": "tree",
           "description": "Which Auth Profiles panel to show in the sidebar."
@@ -878,6 +1000,12 @@
           ],
           "default": "ask",
           "description": "On activation, whether to adopt an existing local Claude Code login as a self-refreshing auth profile. The token is resolved fresh from your local login per spawn — nothing is pasted or stored. You can always connect one manually from Auth Settings (\"Use my existing Claude Code login\")."
+        },
+        "agentproto.releaseCheck.intervalMin": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "description": "How often (minutes) the release indicator polls the npm registry for a newer @agentproto/cli. Results are cached offline in ~/.agentproto/release-check.json; when unreachable, the last cached value is reused until this TTL expires, then the indicator shows nothing rather than a false \"update available\"."
         }
       }
     }

@@ -67,6 +67,17 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "antigravity",
+    name: "Google Antigravity",
+    description:
+      "Google Antigravity's headless CLI (`agy`) — a multi-model coding agent " +
+      "(Gemini 3.x, Claude, GPT-OSS) driven via `agy -p --output-format stream-json`. " +
+      "No ACP mode yet (feature request google-antigravity/antigravity-cli#31).",
+    packageName: "@agentproto/adapter-antigravity",
+    hint: "google · headless · multi-model",
+  },
+  {
+    type: "agent-cli",
     slug: "pi",
     name: "Pi",
     description:
@@ -93,6 +104,15 @@ export const CATALOG: readonly CatalogEntry[] = [
       "Google's Gemini CLI in ACP mode (`gemini --experimental-acp`). Native billing-auth: \"use my existing Gemini login\".",
     packageName: "@agentproto/adapter-gemini",
     hint: "google · ACP · resumable",
+  },
+  {
+    type: "agent-cli",
+    slug: "grok-cli",
+    name: "Grok",
+    description:
+      "xAI's official Grok Build CLI in ACP mode (`grok agent stdio`). Native billing-auth: \"use my existing Grok login\".",
+    packageName: "@agentproto/adapter-grok-cli",
+    hint: "xai · ACP · resumable",
   },
   {
     type: "agent-cli",
@@ -129,6 +149,16 @@ export const CATALOG: readonly CatalogEntry[] = [
       "First-party agentproto adapter — Claude Code's agent harness run as a library via the Claude Agent SDK's headless query(), behind an ACP server. Clean model pinning, native usage, custom base_url.",
     packageName: "@agentproto/adapter-claude-sdk",
     hint: "anthropic · first-party · ACP · resumable",
+  },
+  {
+    type: "agent-cli",
+    slug: "jcode",
+    name: "jcode",
+    description:
+      "1jehuang/jcode — RAM-efficient Rust coding agent with semantic memory and multi-agent swarm. " +
+      "Multi-provider (Claude, OpenAI, Gemini, OpenRouter, DeepSeek, Groq, Mistral, Ollama). Print/headless arm.",
+    packageName: "@agentproto/adapter-jcode",
+    hint: "rust · headless · multi-provider · swarm",
   },
 ] as const
 

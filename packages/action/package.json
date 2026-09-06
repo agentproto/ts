@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/action",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "@agentproto/action — AIP-39 ACTION.md reference implementation. A markdown + frontmatter format for declaring an abstract verb / operation that can be performed on a resource — its identity, semantics, side-effect profile, approval class, and lifecycle events. The pivot primitive that TOOL implements (with LLM schema), POLICY references (for grants), INTENT routes to (from user verbs), and WORKFLOW steps invoke. Bottom-up — implementations declare which actions they implement.",
   "keywords": [
     "agentproto",
@@ -57,7 +57,7 @@
     "@agentproto/define-doctype": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

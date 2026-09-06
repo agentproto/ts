@@ -13,15 +13,23 @@
  *   agentproto sessions --attach <id>    SSE-stream a session's output
  *   agentproto sessions start <slug>     POST /sessions/agent to spawn
  *                                        a persistent agent-cli session
+ *   agentproto sessions prompt <id> -p .. POST /sessions/:id/prompt to send a
+ *                                        message into an already-running session
  *   agentproto sessions stop <id>        POST /sessions/:id/kill (SIGTERM)
  *
  * The TUI is intentionally minimal — raw stdin keypresses, no inquirer
  * / blessed dep. Terminal emulator quirks (xterm vs iTerm, key
  * sequences for arrow keys) are limited to a couple lines below.
  *
- * Endpoint discovery: reads `~/.agentproto/runtime.json` written by
- * the daemon at startup. Falls back to the env var
- * `AGENTPROTO_DAEMON_URL` when the file is missing or stale.
+ * Endpoint discovery: layered fallback, first live candidate wins — env
+ * override (`AGENTPROTO_DAEMON_URL`/`_TOKEN`) > home
+ * `~/.agentproto/runtime.json` (only if its pid is still alive) > the
+ * central registry `~/.agentproto/daemons/<port>.json` for the port
+ * declared in config.json > each workspace's own runtime.json. A
+ * descriptor whose pid is dead is skipped, never trusted — see
+ * `discoverDaemon()` in `_daemon-helpers.ts` and this package's README
+ * ("Discovery + token") for the full order and the daemon-restart race
+ * it's guarding against.
  */
 import { parseArgs } from "node:util"
 import { basename, resolve } from "node:path"
@@ -29,6 +37,10 @@ import http from "node:http"
 import https from "node:https"
 import WebSocket from "ws"
 import { loadConfig } from "@agentproto/runtime/config"
+import {
+  presenceFor,
+  resolveAttentionDelaySec,
+} from "@agentproto/runtime/session-presence"
 import {
   resolveTerminalPreset,
   type TerminalPresetCliValues,
@@ -39,6 +51,7 @@ import {
   printNoDaemonError,
   httpPostJson,
   httpGetJson,
+  httpDelete,
   humaniseDelta,
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
@@ -75,6 +88,9 @@ Usage:
                                       [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
+                                      [--access-profile <ref>]
+                                      [--worktree | --no-worktree]
+                                      [--sandbox <provider-or-json>]
                                       [--hold-permissions] [--no-color]
   agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
                                             [--workspace <slug>] [--name <slug>]
@@ -84,7 +100,25 @@ Usage:
                              [--source auto|native|daemon]
   agentproto sessions story <id-or-name> [--json] [--no-color]
                              [--source auto|native|daemon]
+  agentproto sessions prompt <id-or-name> --prompt <text>
+                              [--wait] [--interrupt] [--force] [--json]
+                              (default: fire-and-forget, queued behind any
+                               in-flight turn — the reply isn't printed,
+                               read it back with 'sessions story'/'export'.
+                               --wait blocks until the turn this prompt
+                               starts finishes (still no reply text — just
+                               confirms the turn drained). --interrupt
+                               cancels a mid-turn session and dispatches
+                               immediately instead of queuing. --force
+                               jumps the queue — only meaningful without
+                               --wait.)
   agentproto sessions stop <id-or-name> [--json]
+  agentproto sessions pin <id-or-name> [--json]
+  agentproto sessions unpin <id-or-name> [--json]
+                              (list-visibility only — pinned sessions sort to
+                               the top of the table, marked with a PIN
+                               indicator. No effect on keepAlive/reaper/
+                               notifications.)
   agentproto sessions gc [--older-than-days <n>] [--forget] [--json]
                               (archive terminal sessions by default; --forget
                                DROPS descriptors instead. Never touches live.)
@@ -94,10 +128,34 @@ Usage:
                                explicit unit: 500ms, 30s, 5m, 2h. default
                                timeout: 900000ms/15m with --until, 60000ms/60s
                                bare — --timeout always wins)
+  agentproto sessions queue <id-or-name> [--force <n>] [--deliver <n>]
+                              [--drop <n>] [--json]
+                              (inspect the prompt FIFO, and optionally act on
+                               an item. With no action flag, lists what's
+                               queued: each item's position (1 = next to
+                               dispatch), origin (user/agent/child), preview and
+                               queuedAt. --force <n> jumps position n to the
+                               FRONT without touching the in-flight turn.
+                               --deliver <n> interrupts whatever is running and
+                               dispatches position n NOW. --drop <n> removes it
+                               without delivering. Positions are 1-indexed here,
+                               matching 'sessions prompt' output. After any
+                               action the queue is re-listed to show the result.)
 
-Discovers the daemon via ~/.agentproto/runtime.json. The token in that file
-is sent as Bearer on mutating routes; set AGENTPROTO_DAEMON_URL +
-AGENTPROTO_DAEMON_TOKEN to override.
+Discovers the daemon in this order — first live candidate wins:
+  1. AGENTPROTO_DAEMON_URL env var (token from AGENTPROTO_DAEMON_TOKEN, or
+     looked up from a matching runtime.json if that's unset)
+  2. ~/.agentproto/runtime.json, only if its pid is still alive
+  3. the central registry ~/.agentproto/daemons/<port>.json, for the port
+     declared in config.json (falling back to any other live entry)
+  4. each configured workspace's own <workspace>/.agentproto/runtime.json
+A descriptor whose pid is dead is ignored, never trusted — see this
+package's README ("Discovery + token") for the full explanation. The
+token from whichever descriptor wins is sent as Bearer on mutating
+routes. A 401 here almost always means the few-second window right after
+a daemon restart, where the previous process is still alive with a
+now-stale token; the error diagnoses that case and names the file it
+came from — AGENTPROTO_DAEMON_TOKEN is the manual override.
 
 sessions start flags:
   --auth subscription|api-key   deterministic billing-auth mode for adapters that
@@ -123,6 +181,30 @@ sessions start flags:
                                  (wins over --orchestrator when both are given)
   --mcp-servers-json <json>     JSON array of {name, transport, ref?} servers
   --mcp-servers-json @<file>    same, read from a file instead of inline JSON
+  --access-profile <ref>        bill this spawn through the named auth profile
+                                 (CLI twin of the MCP agent_start access.profileRef
+                                 — pin endpoint + credential, never silently the
+                                 default). Overrides the daemon's default profile.
+  --worktree                    isolate this spawn in its OWN git worktree (auto-
+                                 minted slug/branch on origin/main) regardless of
+                                 the daemon's worktrees.isolation policy. Mirrors
+                                 MCP agent_start.worktree=true.
+  --no-worktree                 spawn in cwd directly, overriding an isolation
+                                 policy that would otherwise isolate. Mirrors
+                                 MCP agent_start.worktree=false.
+  --mode <id>                   manifest-declared mode id applied at spawn (e.g.
+                                 claude-code 'plan' / codex 'read-only'). Mirrors
+                                 MCP agent_start.mode.
+  --effort <level>              reasoning effort ('low'|'medium'|'high'|'xhigh'|
+                                 'max'|'ultracode'). Calibrated per model. Mirrors
+                                 MCP agent_start.effort.
+  --sandbox <provider-or-json>  spawn INSIDE an isolated sandbox box instead of on
+                                 the host — a provider slug (e.g. 'e2b'/'box', set up
+                                 via the MCP \`setup_sandbox_provider\` tool) or an
+                                 inline AIP-36 SandboxDefinition JSON object
+                                 (optionally carrying \`{"reuse":"<sandboxId>"}\`).
+                                 Mirrors MCP agent_start.sandbox.
+  --sandbox @<file>              same, read the provider slug or JSON from a file
   --hold-permissions            park each tool-permission request in the inbox
                                  (approve/deny with \`agentproto permissions\`)
                                  instead of auto-answering it
@@ -142,6 +224,15 @@ sessions terminal flags:
                                        }
                                      }
                                    }
+
+In the watch list (--watch):
+  ↑/↓ or j/k   move selection
+  Enter         attach selected — opens the PTY directly for terminal
+                 sessions (kind terminal / pty), SSE stream otherwise
+  s             show the selected session's Story / conversation
+  m             read-only mirror
+  R             restart · K kill · d forget · r refresh
+  q or Ctrl-C   quit
 
 While attached:
   Ctrl-] q   detach (session keeps running on the daemon)
@@ -164,7 +255,10 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   // parser — they take positionals the flag parser would reject.
   const sub = args[0]
   if (sub === "start") return runStart(args.slice(1))
+  if (sub === "prompt") return runPrompt(args.slice(1))
   if (sub === "stop") return runStop(args.slice(1))
+  if (sub === "pin") return runPin(args.slice(1), true)
+  if (sub === "unpin") return runPin(args.slice(1), false)
   if (sub === "gc") return runGc(args.slice(1))
   if (sub === "terminal") return runTerminal(args.slice(1))
   if (sub === "export") return runExport(args.slice(1))
@@ -172,6 +266,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "mirror") return runMirror(args.slice(1))
   if (sub === "restart") return runRestart(args.slice(1))
   if (sub === "wait") return runWait(args.slice(1))
+  if (sub === "queue") return runQueue(args.slice(1))
 
   const { values } = parseArgs({
     args: [...args],
@@ -208,14 +303,17 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   }
 
   if (values.watch) {
+    // Grace window for the presence classifier — daemon config could override
+    // the 60s default; resolved once here and threaded through every renderer.
+    const attentionDelaySec = await resolveAttentionDelaySec()
     return values.simple
-      ? runWatchSimple(endpoint, !values["no-color"])
-      : runWatch(endpoint, !values["no-color"])
+      ? runWatchSimple(endpoint, !values["no-color"], attentionDelaySec)
+      : runWatch(endpoint, !values["no-color"], attentionDelaySec)
   }
 
   // One-shot
   const list = await fetchSessions(endpoint.url)
-  printTable(list)
+  printTable(list, await resolveAttentionDelaySec())
   return 0
 }
 
@@ -243,6 +341,12 @@ async function runStart(args: readonly string[]): Promise<number> {
       "orchestrator-json": { type: "string" },
       "mcp-servers-json": { type: "string" },
       "hold-permissions": { type: "boolean" },
+      "access-profile": { type: "string" },
+      worktree: { type: "boolean" },
+      "no-worktree": { type: "boolean" },
+      mode: { type: "string" },
+      effort: { type: "string" },
+      sandbox: { type: "string" },
     },
   })
   const slug = positionals[0]
@@ -355,6 +459,57 @@ async function runStart(args: readonly string[]): Promise<number> {
     if (values["auth-token"]) options.auth_token = values["auth-token"]
   }
 
+  // Parse --sandbox client-side, before any network activity. A bare
+  // provider slug (e.g. "e2b") passes through as a string; anything that
+  // parses as JSON (inline AIP-36 SandboxDefinition, optionally with
+  // `reuse: "<sandboxId>"`) is sent as an object instead — same @file
+  // convention as --mcp-servers-json/--options-json above. The daemon
+  // validates the parsed value against `sandboxSpecWithReuseSchema`
+  // (http-server.ts's `parseSandboxField`), so malformed shapes still fail
+  // there with a clear error; this parse only decides string-vs-object.
+  let sandbox: string | Record<string, unknown> | undefined
+  if (values.sandbox !== undefined) {
+    const raw = values.sandbox
+    let text: string
+    if (raw.startsWith("@")) {
+      const filePath = resolve(raw.slice(1))
+      try {
+        const { readFile } = await import("node:fs/promises")
+        text = await readFile(filePath, "utf8")
+      } catch (err) {
+        process.stderr.write(
+          `agentproto sessions start: could not read --sandbox file "${filePath}": ${err instanceof Error ? err.message : String(err)}\n`
+        )
+        return 2
+      }
+    } else {
+      text = raw
+    }
+    const trimmed = text.trim()
+    if (trimmed.startsWith("{")) {
+      try {
+        sandbox = JSON.parse(trimmed) as Record<string, unknown>
+      } catch (err) {
+        process.stderr.write(
+          `agentproto sessions start: invalid --sandbox JSON: ${err instanceof Error ? err.message : String(err)}\n`
+        )
+        return 2
+      }
+    } else {
+      sandbox = trimmed
+    }
+  }
+
+  // --worktree and --no-worktree are opposite overrides — both being set is a
+  // usage error, rejected before any network activity like the other fast-fail
+  // checks above.
+  if (values.worktree && values["no-worktree"]) {
+    process.stderr.write(
+      "agentproto sessions start: --worktree and --no-worktree are mutually exclusive.\n"
+    )
+    return 2
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -385,6 +540,29 @@ async function runStart(args: readonly string[]): Promise<number> {
   // ~/.agentproto/config.json's defaults.adapters.<slug>.auth.{token,apiKey}
   // (never inherited from the shell, per the auth-mode design).
   if (values.auth) body.auth = { mode: values.auth }
+  // Named billing profile — the CLI twin of the MCP `agent_start` tool's
+  // `access.profileRef` field. A bare `--auth subscription|api-key` says the
+  // MODE but never names a profile; this pins the exact auth profile (billed
+  // endpoint + method/credential) the daemon resolves via
+  // `resolveAccessProfileAuth`. Mutation-free: the secret itself is resolved
+  // daemon-side, never carried over HTTP/on the command line.
+  if (values["access-profile"]) body.access = { profileRef: values["access-profile"] }
+  // Worktree isolation — the CLI twin of the MCP `agent_start` tool's
+  // `worktree` field. `--worktree` requests True (auto-mint a slug/branch on
+  // `origin/main`); `--no-worktree` forces False even when the daemon's
+  // `worktrees.isolation` policy would otherwise isolate. Omitted ⇒ the
+  // daemon's policy decides, matching today's behaviour.
+  if (values.worktree) body.worktree = true
+  if (values["no-worktree"]) body.worktree = false
+  // Manifest-declared mode id + reasoning effort — the CLI twins of the MCP
+  // `agent_start` `mode`/`effort` fields. Sent verbatim; the daemon validates
+  // them against each adapter's declared modes / each model's effort calibration.
+  if (values.mode) body.mode = values.mode
+  if (values.effort) body.effort = values.effort
+  // Sandbox spawn — the CLI twin of the MCP `agent_start` tool's `sandbox`
+  // field. A provider slug (string) boots/reconnects via that provider; an
+  // inline object is the AIP-36 SandboxDefinition, forwarded verbatim.
+  if (sandbox !== undefined) body.sandbox = sandbox
   if (options !== undefined && Object.keys(options).length > 0) body.options = options
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
@@ -411,7 +589,7 @@ async function runStart(args: readonly string[]): Promise<number> {
         (await explain401(endpoint, "agentproto sessions start")) + "\n",
       )
     } else {
-      process.stderr.write(`agentproto sessions start: ${msg}\n`)
+      process.stderr.write(`agentproto sessions start: ${describeSpawnFailure(msg)}\n`)
     }
     return 1
   }
@@ -421,7 +599,12 @@ async function runStart(args: readonly string[]): Promise<number> {
   } else {
     process.stdout.write(
       `agentproto sessions start: spawned ${desc.kind} ${desc.id}` +
-        ` (${desc.status}) — ${desc.command}\n`
+        ` (${desc.status}) — ${desc.command}` +
+        // The worktree this session was provisioned into, when it has one —
+        // surfaced in the plain-text success line (not just `--json`) so a
+        // caller who asked for `--worktree` can immediately `cd` / verify.
+        (desc.worktreePath ? `\n  worktree: ${desc.worktreePath}` : "") +
+        `\n`
     )
   }
 
@@ -433,6 +616,158 @@ async function runStart(args: readonly string[]): Promise<number> {
     })
   }
   return 0
+}
+
+/**
+ * Re-frame a daemon spawn failure (`POST /sessions/agent`) into an
+ * actionable CLI message. The daemon returns structured error bodies like
+ *
+ *   HTTP 400: {"error":"access_profile_ineligible","message":"profile \"x\" ..."}
+ *
+ * for the named-access-profile path (`session-spawn.ts`'s
+ * `resolveAccessProfileAuth`). Raw, that reads as an opaque HTTP status +
+ * JSON blob; here we surface the daemon's own `message` (which already names
+ * the profile, adapter, route, and billed endpoint) inside a hint that tells
+ * the caller the flag they passed (`--access-profile`) is what's being
+ * rejected and where to look for eligible profiles. Any other failure is
+ * returned unchanged.
+ */
+export function describeSpawnFailure(msg: string): string {
+  const m = /^HTTP \d+:\s*/i.exec(msg)
+  const bodyText = m ? msg.slice(m[0].length) : null
+  if (!bodyText) return msg
+  let body: { error?: string; message?: string } | null = null
+  try {
+    body = JSON.parse(bodyText) as { error?: string; message?: string }
+  } catch {
+    return msg
+  }
+  if (
+    body &&
+    (body.error === "access_profile_ineligible" ||
+      body.error === "access_profile_not_found")
+  ) {
+    const why = body.message ?? "the named access profile was rejected."
+    return (
+      `${body.error}: ${why}\n` +
+      "  --access-profile rejected this spawn. ProfileRef and its billed endpoint are shown above; " +
+      "re-run with an eligible profileRef (see `agentproto preset list` and `agentproto usage " +
+      "rollup --json` for your configured profileRefs), or drop --access-profile to let the daemon " +
+      "pick its default profile."
+    )
+  }
+  return msg
+}
+
+/**
+ * `agentproto sessions prompt <id-or-name> --prompt <text> [--wait] [--interrupt]
+ *                              [--force] [--json]`
+ *
+ * CLI parity for the daemon's `POST /sessions/:id/prompt` — the same route
+ * `agent_prompt` (MCP) and the VS Code panel already use to send a follow-up
+ * message into a session that's already running, but which had no `sessions`
+ * verb of its own. Without it, reaching a live session from the shell meant
+ * hand-crafting a `curl -X POST .../sessions/:id/prompt` against daemon
+ * internals (endpoint discovery + bearer token) that every other verb here
+ * already wraps.
+ *
+ * Default is fire-and-forget + queued (`?wait=false`, `queue: true`): safe
+ * against a busy session (appends to its FIFO instead of the 409 a bare
+ * `queue: false` admission would hit) and doesn't block the CLI on however
+ * long the session's turn takes. `--wait` switches to the blocking route
+ * (`sendPrompt`, no `queue`/`force` — see the HTTP route's own comment for
+ * why those are blocking-mode-incompatible) for callers who want the command
+ * to return only once the turn this prompt starts has drained.
+ */
+async function runPrompt(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      prompt: { type: "string", short: "p" },
+      wait: { type: "boolean" },
+      interrupt: { type: "boolean" },
+      force: { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id || !values.prompt) {
+    process.stderr.write(
+      "agentproto sessions prompt: missing session id or --prompt.\n" +
+        "  Try: agentproto sessions prompt <id-or-name> --prompt \"go check X\"\n" +
+        "       agentproto sessions prompt <id-or-name> --prompt \"redirect now\" --interrupt\n" +
+        "       agentproto sessions prompt <id-or-name> --prompt \"...\" --wait\n",
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions prompt: unexpected extra positionals: ${positionals
+        .slice(1)
+        .join(" ")}\n`,
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions prompt")
+    return 2
+  }
+  const endpoint = report.found
+
+  const url = values.wait
+    ? `${endpoint.url}/sessions/${encodeURIComponent(id)}/prompt`
+    : `${endpoint.url}/sessions/${encodeURIComponent(id)}/prompt?wait=false`
+  const body: Record<string, unknown> = { prompt: values.prompt }
+  if (values.interrupt) body.interrupt = true
+  // queue/force are blocking-mode-incompatible server-side (see the route's
+  // own comment) — only sent on the fire-and-forget arm.
+  if (!values.wait) {
+    body.queue = true
+    if (values.force) body.force = true
+  }
+
+  try {
+    const result = await httpPostJson<Record<string, unknown>>(url, body, endpoint.token)
+    if (values.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } else if (values.wait) {
+      process.stdout.write(`agentproto sessions prompt: ${id} turn complete\n`)
+    } else {
+      const pending = result.pending === true
+      process.stdout.write(
+        pending
+          ? `agentproto sessions prompt: queued for ${id}` +
+              ` (position ${String(result.queuePosition)})\n`
+          : `agentproto sessions prompt: sent to ${id}\n`,
+      )
+    }
+    return 0
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 401/.test(msg)) {
+      process.stderr.write(
+        (await explain401(endpoint, "agentproto sessions prompt")) + "\n",
+      )
+      return 1
+    }
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(`agentproto sessions prompt: no session "${id}".\n`)
+      return 2
+    }
+    if (/HTTP 409/.test(msg)) {
+      process.stderr.write(
+        `agentproto sessions prompt: ${id} is not alive or mid-turn` +
+          " (retry with --interrupt or --wait, or omit --wait to queue).\n",
+      )
+      return 1
+    }
+    process.stderr.write(`agentproto sessions prompt: ${msg}\n`)
+    return 1
+  }
 }
 
 async function runStop(args: readonly string[]): Promise<number> {
@@ -499,6 +834,83 @@ async function runStop(args: readonly string[]): Promise<number> {
       return 2
     }
     process.stderr.write(`agentproto sessions stop: ${msg}\n`)
+    return 1
+  }
+}
+
+/**
+ * `agentproto sessions pin <id-or-name> [--json]` / `sessions unpin` — CLI
+ * parity for the `session_set_pinned` MCP verb. Structurally identical to
+ * `runStop`: resolve the daemon, POST the mutation, print/return the result.
+ * Pure list-visibility toggle — pinned sessions sort to the top of
+ * `printTable`'s output with a PIN marker. No effect on keepAlive, the
+ * idle-reaper, or notifications.
+ */
+async function runPin(args: readonly string[], pinned: boolean): Promise<number> {
+  const verb = pinned ? "pin" : "unpin"
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id) {
+    process.stderr.write(
+      `agentproto sessions ${verb}: missing session id.\n` +
+        `  Try: agentproto sessions ${verb} <id-or-name>  (find ids with \`agentproto sessions\`)\n`
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions ${verb}: unexpected extra positionals: ${positionals
+        .slice(1)
+        .join(" ")}\n`
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, `agentproto sessions ${verb}`)
+    return 2
+  }
+  const endpoint = report.found
+
+  try {
+    const result = await httpPostJson<{ ok: boolean; sessionId: string; pinned: boolean }>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/pin`,
+      { pinned },
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } else {
+      process.stdout.write(
+        result.ok
+          ? `agentproto sessions ${verb}: ${id} ${pinned ? "pinned" : "unpinned"}\n`
+          : `agentproto sessions ${verb}: ${id} not found\n`
+      )
+    }
+    return result.ok ? 0 : 1
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 401/.test(msg)) {
+      process.stderr.write(
+        (await explain401(endpoint, `agentproto sessions ${verb}`)) + "\n",
+      )
+      return 1
+    }
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(
+        `agentproto sessions ${verb}: no session "${id}".\n`
+      )
+      return 2
+    }
+    process.stderr.write(`agentproto sessions ${verb}: ${msg}\n`)
     return 1
   }
 }
@@ -588,6 +1000,213 @@ async function runGc(args: readonly string[]): Promise<number> {
 }
 
 /**
+ * `agentproto sessions queue <id-or-name> [--force <n>] [--deliver <n>]
+ *                              [--drop <n>] [--json]` — CLI parity for the
+ * daemon's queue-surface (`GET /sessions/:id/queue` + the per-item
+ * promote/deliver/drop routes, the same ops the `session_queue_*` MCP tools
+ * expose). Lists what's sitting in a session's prompt FIFO right now, and
+ * optionally acts on one item by 1-indexed position.
+ *
+ * Positions are 1-INDEXED here (the first queued item is `1`, reading as
+ * "next to dispatch") — matching the "position N" message `sessions prompt`
+ * already prints at enqueue time, so the two surfaces agree. The daemon's
+ * raw `position` field is 0-indexed; this command maps `n` (1-indexed) onto
+ * the item at `n - 1` before calling the op, and labels its own output
+ * 1-indexed.
+ *
+ * The three action flags are deliberately DISTINCT (mirroring the daemon's
+ * two force ops + drop — never one flag with two meanings):
+ *   --force <n>    promote position n to the FRONT (reorder-only; the
+ *                  current in-flight turn is untouched, the item just
+ *                  becomes next to dispatch when it ends)
+ *   --deliver <n>  interrupt whatever's running and dispatch position n NOW
+ *                  (the "I need this NOW" op)
+ *   --drop <n>     remove position n without ever delivering it
+ * After any action the queue is re-listed so the caller sees the result.
+ */
+async function runQueue(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      force: { type: "string" },
+      deliver: { type: "string" },
+      drop: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id) {
+    process.stderr.write(
+      "agentproto sessions queue: missing session id.\n" +
+        "  Try: agentproto sessions queue <id-or-name>\n" +
+        "       agentproto sessions queue <id-or-name> --force 2\n" +
+        "       agentproto sessions queue <id-or-name> --deliver 2\n" +
+        "       agentproto sessions queue <id-or-name> --drop 1\n",
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions queue: unexpected extra positionals: ${positionals.slice(1).join(" ")}\n`,
+    )
+    return 2
+  }
+  // Exactly one action at a time — force/deliver/drop are mutually exclusive.
+  const actions = (["force", "deliver", "drop"] as const).filter(f => values[f] !== undefined)
+  if (actions.length > 1) {
+    process.stderr.write(
+      `agentproto sessions queue: choose one of --force/--deliver/--drop, not multiple.\n`,
+    )
+    return 2
+  }
+  const action: "force" | "deliver" | "drop" | undefined = actions[0]
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions queue")
+    return 2
+  }
+  const endpoint = report.found
+
+  // Fetch the current queue to (a) render it and (b) resolve the 1-indexed
+  // action position onto a real queued item's id, which the ops address by.
+  const listResult = await httpGetJson<{ ok: boolean; queue: QueueViewItem[] }>(
+    `${endpoint.url}/sessions/${encodeURIComponent(id)}/queue`,
+  )
+  if (!listResult || !Array.isArray(listResult.queue)) {
+    process.stderr.write(`agentproto sessions queue: no session "${id}".\n`)
+    return 2
+  }
+  const queue = listResult.queue
+
+  if (action) {
+    let n: number
+    try {
+      n = Number.parseInt(values[action]!, 10)
+    } catch {
+      n = NaN
+    }
+    if (Number.isNaN(n) || n < 1 || !Number.isInteger(n)) {
+      process.stderr.write(
+        `agentproto sessions queue: invalid position "${values[action]}" (expected a positive integer).\n`,
+      )
+      return 2
+    }
+    const item = queue[n - 1]
+    if (!item) {
+      process.stderr.write(
+        `agentproto sessions queue: position ${n} is out of range (${queue.length} queued) on "${id}".\n`,
+      )
+      return 2
+    }
+    let result: Record<string, unknown>
+    try {
+      if (action === "drop") {
+        result = await httpDelete<Record<string, unknown>>(
+          `${endpoint.url}/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(item.id)}`,
+          endpoint.token,
+        )
+      } else {
+        const verb = action === "force" ? "promote" : "deliver"
+        result = await httpPostJson<Record<string, unknown>>(
+          `${endpoint.url}/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(item.id)}/${verb}`,
+          {},
+          endpoint.token,
+        )
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 404/.test(msg)) {
+        process.stderr.write(
+          `agentproto sessions queue: position ${n} (item ${item.id}) is no longer queued on "${id}".\n`,
+        )
+        return 1
+      }
+      process.stderr.write(`agentproto sessions queue: ${msg}\n`)
+      return 1
+    }
+    if (!values.json) {
+      const verbLabel =
+        action === "force" ? "promoted to front" : action === "deliver" ? "delivered now" : "dropped"
+      process.stdout.write(
+        `agentproto sessions queue: position ${n} ${verbLabel} on ${id}.\n`,
+      )
+    }
+    // Re-list so the caller sees the post-action state (drop shifts positions).
+    const refreshed = await httpGetJson<{ ok: boolean; queue: QueueViewItem[] }>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/queue`,
+    )
+    const newQueue = refreshed?.queue ?? queue
+    if (values.json) {
+      process.stdout.write(
+        JSON.stringify(
+          { ok: true, id, action, position: n, result, queue: newQueue },
+          null,
+          2,
+        ) + "\n",
+      )
+    } else {
+      printQueueTable(id, newQueue)
+    }
+    return 0
+  }
+
+  // No action — just list.
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ ok: true, id, queue }, null, 2) + "\n")
+  } else {
+    printQueueTable(id, queue)
+  }
+  return 0
+}
+
+/** Shape of one item in `GET /sessions/:id/queue` — see `QueuedPromptView`. */
+export interface QueueViewItem {
+  id: string
+  origin: string
+  preview: string
+  queuedAt: string
+  /** 0 = next to dispatch (the daemon's index); display 1-indexed. */
+  position: number
+}
+
+function printQueueTable(id: string, queue: QueueViewItem[]): void {
+  process.stdout.write(`\x1b[2mqueue · ${id}\x1b[0m\n`)
+  if (queue.length === 0) {
+    process.stdout.write("(nothing queued)\n")
+    return
+  }
+  const widths = {
+    position: Math.max(...queue.map(q => String(q.position + 1).length), 3),
+    origin: Math.max(...queue.map(q => q.origin.length), 6),
+    queuedAt: 12,
+  }
+  const header =
+    pad("#", widths.position) +
+    "  " +
+    pad("ORIGIN", widths.origin) +
+    "  " +
+    pad("QUEUED", widths.queuedAt) +
+    "  PREVIEW"
+  process.stdout.write(`\x1b[2m${header}\x1b[0m\n`)
+  for (const q of queue) {
+    const ts = q.queuedAt.slice(0, 16).replace("T", " ")
+    process.stdout.write(
+      pad(String(q.position + 1), widths.position) +
+        "  " +
+        pad(q.origin, widths.origin) +
+        "  " +
+        pad(ts, widths.queuedAt) +
+        "  " +
+        truncate(q.preview, 60) +
+        "\n",
+    )
+  }
+}
+
+/**
  * `agentproto sessions wait <id-or-name>` — scriptable blocking wait.
  *
  * Blocks until the session fires a lifecycle event (default: any) or, when
@@ -600,6 +1219,15 @@ async function runGc(args: readonly string[]): Promise<number> {
  *   2  timeout (no resolution within `--timeout`) OR a usage error (bad
  *      arguments) OR policy `blocked`/`cancelled`
  *   3  session/policy not found or daemon unreachable
+ *   4  matched turn-end was a silent no-op (`empty: true` — zero assistant
+ *      output, zero tool calls) or ended with `reason: "error"` (the
+ *      adapter reported a failed turn) — commonly a bad auth/model config.
+ *      Distinct from a real timeout/not-found: the daemon DID resolve the
+ *      wait, but the turn it resolved on produced nothing a caller should
+ *      treat as progress. Mirrors the workflow runner's `waitTurnEnd`
+ *      precedent (sessions-registry-agent-host.ts) so a caller can't
+ *      mistake a bare "turn-end: success" for one that actually did
+ *      something.
  *
  * Timeout used to share exit code 1 with hard CLI failures, so a caller
  * couldn't tell "just needs a bigger --timeout" from "something broke" —
@@ -793,6 +1421,15 @@ async function runWaitSession(opts: {
       continue
     }
     // Matched.
+    const sid = typeof result.sessionId === "string" ? result.sessionId : idOrName
+    // Fail loud on a silent no-op turn instead of reporting a bare
+    // "matched" — same precedent as sessions-registry-agent-host.ts's
+    // `waitTurnEnd` (used by the workflow runner against the same bus
+    // event). A caller branching only on exit-code-0-vs-nonzero must not
+    // read this as success: the wait DID resolve, but the turn it resolved
+    // on produced nothing.
+    const empty = result.empty === true
+    const erroredReason = result.reason === "error"
     if (json) {
       process.stdout.write(
         JSON.stringify(
@@ -803,13 +1440,26 @@ async function runWaitSession(opts: {
       )
     } else {
       const ev = typeof result.event === "string" ? result.event : "event"
-      const sid = typeof result.sessionId === "string" ? result.sessionId : idOrName
       const status = typeof result.status === "string" ? result.status : ""
       process.stdout.write(
         `agentproto sessions wait: ${sid} → ${ev}` +
           (status ? ` (${status})` : "") +
           "\n",
       )
+    }
+    if (empty) {
+      process.stderr.write(
+        `agentproto sessions wait: session ${sid} produced an empty turn — no assistant ` +
+          `output or tool call (commonly an auth failure or an invalid model id).\n`,
+      )
+      return 4
+    }
+    if (erroredReason) {
+      process.stderr.write(
+        `agentproto sessions wait: session ${sid} ended its turn with reason 'error' — ` +
+          `the adapter reported a failed turn (commonly an auth failure).\n`,
+      )
+      return 4
     }
     return 0
   }
@@ -1114,7 +1764,8 @@ async function runExport(args: readonly string[]): Promise<number> {
  * `agentproto sessions story <id-or-name>` — CLI parity for the daemon's
  * `agentproto_session_story` MCP app. That app's panel computes its
  * chapters/steps client-side (a JS port of session-story.ts's heuristics,
- * driven live over a postMessage bridge — see session-story-panel-app.ts).
+ * driven live over a postMessage bridge — see @agentproto/apps's
+ * session-story/index.ts).
  * The CLI can't run that HTML/JS, so it reuses the canonical TS source of
  * truth directly: fetch the same transcript `sessions export --json`
  * already exposes over HTTP, then fold it with `buildStory` (the same
@@ -1350,24 +2001,48 @@ function worktreeCell(s: SessionDescriptor): string {
   return s.worktreePath ? truncate(basename(s.worktreePath), WORKTREE_COL_MAX) : "—"
 }
 
-function printTable(rows: SessionDescriptor[]): void {
+/** QUEUED column cell — "N queued", or blank when nothing is waiting. */
+function queuedCell(s: SessionDescriptor): string {
+  const n = s.queuedPrompts ?? 0
+  return n > 0 ? `${n} queued` : ""
+}
+
+/** Pinned sessions first, each side keeping its incoming relative order —
+ *  a stable sort on a single boolean key (`Array.prototype.sort` is
+ *  guaranteed stable since ES2019). Exported for direct unit coverage. */
+export function sortPinnedFirst(rows: readonly SessionDescriptor[]): SessionDescriptor[] {
+  return rows
+    .slice()
+    .sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0))
+}
+
+function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void {
   if (rows.length === 0) {
     process.stdout.write("No sessions.\n")
     return
   }
+  // Pinned sessions surface at the top of the table — see sortPinnedFirst.
+  const sorted = sortPinnedFirst(rows)
   // The WORKTREE column earns its width only when something is actually in a
   // worktree — a column of em-dashes is noise for the (common) case of a
   // daemon whose sessions all run in plain checkouts.
-  const showWorktree = rows.some(r => r.worktreePath !== undefined)
+  const showWorktree = sorted.some(r => r.worktreePath !== undefined)
+  // A session is only "N queued"-worthy once something actually sits in its
+  // prompt FIFO — a column of dashes is noise for the common no-queue case.
+  const showQueued = sorted.some(r => (r.queuedPrompts ?? 0) > 0)
   const widths = {
-    id: Math.max(...rows.map(r => r.id.length), 4),
-    kind: Math.max(...rows.map(r => r.kind.length), 4),
-    workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
-    worktree: Math.max(...rows.map(r => worktreeCell(r).length), 8),
-    status: Math.max(...rows.map(r => statusLabel(r).length), 8),
+    pin: 3,
+    id: Math.max(...sorted.map(r => r.id.length), 4),
+    kind: Math.max(...sorted.map(r => r.kind.length), 4),
+    workspace: Math.max(...sorted.map(r => r.workspaceSlug.length), 9),
+    worktree: Math.max(...sorted.map(r => worktreeCell(r).length), 8),
+    queued: showQueued ? Math.max(...sorted.map(r => queuedCell(r).length), 6) : 0,
+    status: Math.max(...sorted.map(r => statusLabel(r, attentionDelaySec).length), 8),
     age: 8,
   }
   const header =
+    pad("PIN", widths.pin) +
+    "  " +
     pad("ID", widths.id) +
     "  " +
     pad("KIND", widths.kind) +
@@ -1375,24 +2050,28 @@ function printTable(rows: SessionDescriptor[]): void {
     pad("WORKSPACE", widths.workspace) +
     "  " +
     (showWorktree ? pad("WORKTREE", widths.worktree) + "  " : "") +
+    (showQueued ? pad("QUEUED", widths.queued) + "  " : "") +
     pad("STATUS", widths.status) +
     "  " +
     pad("AGE", widths.age) +
     "  COMMAND"
   process.stdout.write(`\x1b[2m${header}\x1b[0m\n`)
   const now = Date.now()
-  for (const r of rows) {
+  for (const r of sorted) {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
-    const tone = statusColour(r)
+    const tone = statusColour(r, attentionDelaySec)
     process.stdout.write(
-      pad(r.id, widths.id) +
+      pad(r.pinned === true ? "●" : "", widths.pin) +
         "  " +
-        pad(r.kind, widths.kind) +
+        pad(r.id, widths.id) +
+        "  " +
+        pad(terminalKindMark(r) || r.kind, widths.kind) +
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
         (showWorktree ? pad(worktreeCell(r), widths.worktree) + "  " : "") +
-        `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
+        (showQueued ? `\x1b[33m${pad(queuedCell(r), widths.queued)}\x1b[0m  ` : "") +
+        `${tone}${pad(statusLabel(r, attentionDelaySec), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
         "  " +
@@ -1409,65 +2088,206 @@ function printTable(rows: SessionDescriptor[]): void {
  *  surfaced distinctly everywhere status is rendered so it never reads as a
  *  healthy session. */
 export function isStaleRunning(
-  s: Pick<SessionDescriptor, "status" | "processAlive">,
+  s: { status?: string; processAlive?: boolean },
 ): boolean {
   return s.status === "running" && s.processAlive === false
 }
 
-/** Single-character badge for the session's live activity — busy
- *  processing a turn, awaiting input, idle after completing at least one
- *  turn, or (the important case) claiming to run with no process behind
- *  it. Empty string for a freshly-spawned session that hasn't run a turn
- *  yet.
+/** Single-character badge for the session's presence state, driven by the
+ *  shared dashboard classifier (`presenceFor` in @agentproto/runtime/session-
+ *  presence) — the SAME source the VS Code tree/panel render from, so the two
+ *  can no longer drift. Busy/just-finished → ● (running), active children or
+ *  background tasks pending → ◐ (tending), something waiting on the human →
+ *  ?/! / ✗ (attention), nothing → ○ (quiet). Plus the stale-running ⚠ which
+ *  is purely a dead-pid lifecycle flag the classifier doesn't know about.
  *
- *  Agent-cli sessions are long-lived: they stay `status: "running"` after
- *  a turn ends, so `status` alone can't distinguish "still working" from
- *  "finished its turn and sitting idle" — and without `turnsCompleted`,
- *  "idle, finished a turn" was indistinguishable from "idle, never
- *  started one" (both fell through to the same blank badge). The `○`
- *  case below closes that gap. */
-export function statusBadge(
-  s: Pick<
-    SessionDescriptor,
-    "status" | "processAlive" | "busy" | "awaitingInput" | "awaitingPermission" | "turnsCompleted"
-  >,
-): string {
-  if (isStaleRunning(s)) return "⚠" // ⚠
-  if (s.status !== "running") return ""
-  if (s.awaitingPermission) return "!" // ! — held permission awaiting approve/deny
-  if (s.busy) return "●" // ● — mid-turn
-  if (s.awaitingInput) return "?" // ? — blocked on the user
-  if ((s.turnsCompleted ?? 0) > 0) return "○" // ○ — idle, has completed ≥1 turn
-  return "" // never run a turn yet
+ *  Empty string for a terminal (non-running) session — the STATUS column shows
+ *  the raw `status` word for those instead.
+ */
+export type PresenceRenderSession = {
+  status?: string
+  processAlive?: boolean
+  busy?: boolean
+  awaitingInput?: boolean
+  awaitingPermission?: boolean
+  childrenBusy?: number
+  pendingBgTasks?: number
+  lastActivityAt?: string
+  lastOutputAt?: string
+  lastTurnErroredAt?: string
+  exitCode?: number
 }
 
-/** STATUS column/field text — status plus its badge, when any. */
-export function statusLabel(
-  s: Pick<
-    SessionDescriptor,
-    "status" | "processAlive" | "busy" | "awaitingInput" | "awaitingPermission" | "turnsCompleted"
-  >,
+export function statusBadge(
+  s: PresenceRenderSession,
+  attentionDelaySec?: number,
 ): string {
-  const badge = statusBadge(s)
-  return badge ? `${s.status} ${badge}` : s.status
+  if (isStaleRunning(s)) return "⚠" // ⚠ — running, but the pid is dead
+  if (s.status !== "running" && s.status !== "starting") return ""
+  const presence = presenceFor(s, { attentionDelaySec })
+  switch (presence) {
+    case "running":
+      return "●" // ● — turning, or just finished (inside the grace window)
+    case "tending":
+      return "◐" // ◐ — idle but busy through children / background tasks
+    case "attention":
+      if (s.awaitingPermission) return "!" // ! — held permission awaiting decide
+      if (s.awaitingInput) return "?" // ? — blocked on the user
+      if (s.lastTurnErroredAt) return "✗" // ✗ — last turn failed in-band
+      return "!" // terminal-error fold-in — colour carries the warning
+    case "quiet":
+      return "○" // ○ — parked, nothing new
+    default:
+      return ""
+  }
+}
+
+/** STATUS column/field text — presence badge for a live session, else the
+ *  raw lifecycle `status` word for a terminal one. */
+export function statusLabel(
+  s: PresenceRenderSession,
+  attentionDelaySec?: number,
+): string {
+  if (s.status !== "running" && s.status !== "starting") return s.status ?? ""
+  const badge = statusBadge(s, attentionDelaySec)
+  return badge ? `${s.status} ${badge}` : s.status ?? ""
 }
 
 export function statusColour(
-  s: Pick<SessionDescriptor, "status" | "processAlive">,
+  s: PresenceRenderSession,
+  attentionDelaySec?: number,
 ): string {
   if (isStaleRunning(s)) return "\x1b[33m" // amber — "running" contradicted by a dead pid
-  switch (s.status) {
+  if (s.status !== "running") {
+    switch (s.status) {
+      case "starting":
+        return "\x1b[33m" // yellow
+      case "exited":
+        return "\x1b[2m" // dim
+      case "killed":
+      case "error":
+        return "\x1b[31m" // red
+      default:
+        return ""
+    }
+  }
+  // Live agent-cli session (status stays "running" across turns) — colour by
+  // the presence axis, so a parked session reads grey, not healthy-green.
+  switch (presenceFor(s, { attentionDelaySec })) {
     case "running":
-      return "\x1b[32m" // green
-    case "starting":
-      return "\x1b[33m" // yellow
-    case "exited":
-      return "\x1b[2m" // dim
-    case "killed":
-    case "error":
-      return "\x1b[31m" // red
+    case "tending":
+      return "\x1b[32m" // green — in motion, leave alone
+    case "attention":
+      return "\x1b[33m" // amber — needs a look
+    case "quiet":
+      return "\x1b[2m" // dim — parked, nothing new
     default:
       return ""
+  }
+}
+
+/** True when a session carries a real PTY — the `kind: "terminal"`,
+ *  `pty: true` case that must surface in the list as an attachable
+ *  interactive terminal rather than a bare row. `pty` is the stronger
+ *  signal (it's what actually selects the WS pty transport), so either
+ *  flag marks it. */
+export function isTerminalSession(
+  s: Pick<SessionDescriptor, "kind" | "pty">,
+): boolean {
+  return s.kind === "terminal" || s.pty === true
+}
+
+/** Row label for the interactive lists: a human-given `name` outranks
+ *  everything; a terminal session with no name is labelled by the
+ *  command it actually ran (`claude --resume …`) instead of its opaque
+ *  id — which is what makes supervisors launched via `claude --resume`
+ *  recognisable at a glance. Anything else falls back to the id. */
+export function sessionRowLabel(
+  s: Pick<SessionDescriptor, "kind" | "pty" | "name" | "command" | "id">,
+): string {
+  if (s.name) return s.name
+  if (isTerminalSession(s) && s.command) return s.command
+  return s.id
+}
+
+/** Simplest possible rendering of the "Terminal"/"PTY" identification
+ *  for the flat tables — a short, sharply visible marker for terminal
+ *  sessions, empty for the agent-cli rows that show a KIND column
+ *  already. Returns plain ASCII (no colour) so it composes with the
+ *  caller's own wrapping. */
+export function terminalKindMark(
+  s: Pick<SessionDescriptor, "kind" | "pty">,
+): string {
+  if (isTerminalSession(s)) return s.pty ? "PTY" : "TERM"
+  return ""
+}
+
+/** Which attach transport a session needs. Enter routes to the same
+ *  `runAttach` for every kind; this is the pure decision that makes a
+ *  `kind: "terminal", pty: true` session land on the interactive PTY
+ *  attach (WS /sessions/:id/pty) instead of the line-based SSE stream.
+ *  Exported so the "Enter on terminal attaches the PTY" behaviour is
+ *  unit-testable without driving a terminal. */
+export function attachMode(
+  s: Pick<SessionDescriptor, "pty">,
+): "pty" | "sse" {
+  return s.pty === true ? "pty" : "sse"
+}
+
+/** Normalised action decoded from a single watch-list keypress. Both
+ *  watch loops (the 3-pane `--watch` and the flat `--simple`) share it
+ *  so the touch→action mapping (Enter = attach, `s` = story, …) is one
+ *  tested source of truth instead of two hand-rolled if-chains.
+ *
+ *  Enter is decoded to `{ kind: "attach" }` unconditionally — the
+ *  terminal-vs-agent-cli split happens downstream in `attachMode`/
+ *  `runAttach`, which is what makes Enter on a `kind: "terminal"`
+ *  session open the PTY directly.
+ */
+export type WatchKeyAction =
+  | { kind: "up" }
+  | { kind: "down" }
+  | { kind: "attach" }
+  | { kind: "story" }
+  | { kind: "mirror" }
+  | { kind: "restart" }
+  | { kind: "kill" }
+  | { kind: "forget" }
+  | { kind: "refresh" }
+  | { kind: "quit" }
+  | null
+
+/** Decode a single-char (or single arrow-sequence) keypress into a
+ *  `WatchKeyAction`. Returns null for anything unrecognised — callers
+ *  silently discard it. Ctrl-C (`\x03`) and `q` both quit. */
+export function decodeWatchKey(key: string): WatchKeyAction {
+  switch (key) {
+    case "\x1b[A":
+    case "k":
+      return { kind: "up" }
+    case "\x1b[B":
+    case "j":
+      return { kind: "down" }
+    case "\r":
+    case "\n":
+      return { kind: "attach" }
+    case "s":
+      return { kind: "story" }
+    case "m":
+      return { kind: "mirror" }
+    case "R":
+      return { kind: "restart" }
+    case "K":
+      return { kind: "kill" }
+    case "d":
+      return { kind: "forget" }
+    case "r":
+      return { kind: "refresh" }
+    case "q":
+    case "\x03":
+      return { kind: "quit" }
+    default:
+      return null
   }
 }
 
@@ -1486,7 +2306,9 @@ function truncate(s: string, n: number): string {
  * daemon's session list. Auto-refreshes every 2 s; key bindings:
  *
  *   ↑/↓ or j/k   move selection
- *   Enter         attach to selected (PTY-aware via runAttach)
+ *   Enter         attach to selected (PTY-aware via runAttach — opens
+ *                 the interactive PTY directly for a terminal session)
+ *   s             show the selected session's Story / conversation
  *   K             kill selected (POST /sessions/:id/kill)
  *   d             forget selected (DELETE /sessions/:id; exited only)
  *   r             refresh now
@@ -1504,11 +2326,12 @@ function truncate(s: string, n: number): string {
 async function runWatchSimple(
   endpoint: DaemonEndpoint,
   colour: boolean,
+  attentionDelaySec?: number,
 ): Promise<number> {
   const tty = process.stdin.isTTY === true
   if (!tty) {
     const list = await fetchSessions(endpoint.url)
-    printTable(list)
+    printTable(list, attentionDelaySec)
     return 0
   }
 
@@ -1517,7 +2340,7 @@ async function runWatchSimple(
   process.stdin.setEncoding("utf8")
 
   let stop = false
-  let action: "attach" | null = null
+  let action: "attach" | "story" | null = null
   let attachTargetId: string | null = null
   let cursor = 0
   let rows: SessionDescriptor[] = []
@@ -1526,12 +2349,12 @@ async function runWatchSimple(
   const repaint = (): void => {
     process.stdout.write("\x1bc")
     process.stdout.write(
-      `\x1b[2magentproto sessions · ${endpoint.url} · ↑/↓ move · Enter attach · K kill · d forget · r refresh · q quit\x1b[0m\n\n`,
+      `\x1b[2magentproto sessions · ${endpoint.url} · ↑/↓ move · Enter attach · s story · K kill · d forget · r refresh · q quit\x1b[0m\n\n`,
     )
     if (statusMsg) {
       process.stdout.write(`\x1b[33m${statusMsg}\x1b[0m\n\n`)
     }
-    printPickerTable(rows, cursor)
+    printPickerTable(rows, cursor, attentionDelaySec)
   }
 
   const refresh = async (): Promise<void> => {
@@ -1545,82 +2368,90 @@ async function runWatchSimple(
   }
 
   const onKey = (key: string): void => {
-    // Arrow keys arrive as ESC [ A/B/C/D — match common terminals.
-    if (key === "\x1b[A" || key === "k") {
-      if (cursor > 0) cursor--
-      repaint()
-      return
-    }
-    if (key === "\x1b[B" || key === "j") {
-      if (cursor < rows.length - 1) cursor++
-      repaint()
-      return
-    }
-    if (key === "\r" || key === "\n") {
-      const target = rows[cursor]
-      if (target) {
-        action = "attach"
-        attachTargetId = target.id
-        stop = true
-      }
-      return
-    }
-    if (key === "K") {
-      const target = rows[cursor]
-      if (!target) return
-      void httpPostJson<{ ok: boolean }>(
-        `${endpoint.url}/sessions/${encodeURIComponent(target.id)}/kill`,
-        {},
-        endpoint.token,
-      )
-        .then(r => {
-          statusMsg = r.ok
-            ? `sent SIGTERM to ${target.id}`
-            : `${target.id} not running`
-          return refresh()
-        })
-        .catch(err => {
-          statusMsg = `kill error: ${err instanceof Error ? err.message : String(err)}`
-        })
-        .finally(() => repaint())
-      return
-    }
-    if (key === "d") {
-      const target = rows[cursor]
-      if (!target) return
-      if (
-        target.status !== "exited" &&
-        target.status !== "killed" &&
-        target.status !== "error"
-      ) {
-        statusMsg = `d: ${target.id} still ${target.status} — use K first`
+    switch (decodeWatchKey(key)?.kind) {
+      case "up":
+        if (cursor > 0) cursor--
         repaint()
         return
+      case "down":
+        if (cursor < rows.length - 1) cursor++
+        repaint()
+        return
+      case "attach": {
+        const target = rows[cursor]
+        if (target) {
+          action = "attach"
+          attachTargetId = target.id
+          stop = true
+        }
+        return
       }
-      void httpDelete(
-        `${endpoint.url}/sessions/${encodeURIComponent(target.id)}`,
-        endpoint.token,
-      )
-        .then(() => {
-          statusMsg = `forgot ${target.id}`
-          return refresh()
-        })
-        .catch(err => {
-          statusMsg = `forget error: ${err instanceof Error ? err.message : String(err)}`
-        })
-        .finally(() => repaint())
-      return
+      case "story": {
+        const target = rows[cursor]
+        if (target) {
+          action = "story"
+          attachTargetId = target.id
+          stop = true
+        }
+        return
+      }
+      case "kill": {
+        const target = rows[cursor]
+        if (!target) return
+        void httpPostJson<{ ok: boolean }>(
+          `${endpoint.url}/sessions/${encodeURIComponent(target.id)}/kill`,
+          {},
+          endpoint.token,
+        )
+          .then(r => {
+            statusMsg = r.ok
+              ? `sent SIGTERM to ${target.id}`
+              : `${target.id} not running`
+            return refresh()
+          })
+          .catch(err => {
+            statusMsg = `kill error: ${err instanceof Error ? err.message : String(err)}`
+          })
+          .finally(() => repaint())
+        return
+      }
+      case "forget": {
+        const target = rows[cursor]
+        if (!target) return
+        if (
+          target.status !== "exited" &&
+          target.status !== "killed" &&
+          target.status !== "error"
+        ) {
+          statusMsg = `d: ${target.id} still ${target.status} — use K first`
+          repaint()
+          return
+        }
+        void httpDelete(
+          `${endpoint.url}/sessions/${encodeURIComponent(target.id)}`,
+          endpoint.token,
+        )
+          .then(() => {
+            statusMsg = `forgot ${target.id}`
+            return refresh()
+          })
+          .catch(err => {
+            statusMsg = `forget error: ${err instanceof Error ? err.message : String(err)}`
+          })
+          .finally(() => repaint())
+        return
+      }
+      case "refresh":
+        statusMsg = ""
+        void refresh().finally(() => repaint())
+        return
+      case "quit":
+        stop = true
+        return
+      default:
+        void colour // silence unused-var; reserved for future colour toggle
+        return
     }
-    if (key === "r") {
-      statusMsg = ""
-      void refresh().finally(() => repaint())
-      return
-    }
-    if (key === "q" || key === "" /* Ctrl-C */) {
-      stop = true
-      return
-    }
-    void colour // silence unused-var; reserved for future colour toggle
   }
 
   process.stdin.on("data", onKey)
@@ -1653,6 +2484,9 @@ async function runWatchSimple(
       colour,
     })
   }
+  if (action === "story" && attachTargetId) {
+    return runStory([attachTargetId])
+  }
   return 0
 }
 
@@ -1662,7 +2496,7 @@ async function runWatchSimple(
  * needs distinct visual treatment that would otherwise add yet more
  * conditionals to the read-only printer.
  */
-function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
+function printPickerTable(rows: SessionDescriptor[], cursor: number, attentionDelaySec?: number): void {
   if (rows.length === 0) {
     process.stdout.write("No sessions.\n")
     return
@@ -1671,7 +2505,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
     id: Math.max(...rows.map(r => r.id.length), 4),
     kind: Math.max(...rows.map(r => r.kind.length), 4),
     workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
-    status: Math.max(...rows.map(r => statusLabel(r).length), 8),
+    status: Math.max(...rows.map(r => statusLabel(r, attentionDelaySec).length), 8),
     age: 8,
   }
   const header =
@@ -1690,18 +2524,18 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
   const now = Date.now()
   rows.forEach((r, i) => {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
-    const tone = statusColour(r)
+    const tone = statusColour(r, attentionDelaySec)
     const marker = i === cursor ? "\x1b[7m▸" : " "
     const reset = i === cursor ? "\x1b[0m" : ""
     process.stdout.write(
       `${marker} ` +
         pad(r.id, widths.id) +
         "  " +
-        pad(r.kind, widths.kind) +
+        pad(terminalKindMark(r) || r.kind, widths.kind) +
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
-        `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
+        `${tone}${pad(statusLabel(r, attentionDelaySec), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
         "  " +
@@ -1719,7 +2553,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
  *   │ SESSIONS                       │ DETAIL                          │
  *   │ ▸ name  pty status age         │ id / name / kind / status / …   │
  *   │   …                            │                                 │
- *   │                                │   press Enter to attach         │
+ *   │                                │   Enter to attach · s story      │
  *   ├─ events strip (last 3 from /events SSE) ───────────────────────── │
  *   └─ keys footer ────────────────────────────────────────────────────┘
  *
@@ -1730,11 +2564,12 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
 async function runWatch(
   endpoint: DaemonEndpoint,
   colour: boolean,
+  attentionDelaySec?: number,
 ): Promise<number> {
   const tty = process.stdin.isTTY === true && process.stdout.isTTY === true
   if (!tty) {
     const list = await fetchSessions(endpoint.url)
-    printTable(list)
+    printTable(list, attentionDelaySec)
     return 0
   }
   // Non-colour pass-through: callers can still pipe via --no-color
@@ -1743,7 +2578,7 @@ async function runWatch(
 
   // ─── state ─────────────────────────────────────────────────────
   let stop = false
-  let action: "attach" | "mirror" | null = null
+  let action: "attach" | "mirror" | "story" | null = null
   let attachTargetId: string | null = null
   let cursor = 0
   let sessions: SessionDescriptor[] = []
@@ -1911,101 +2746,129 @@ async function runWatch(
         render()
         continue
       }
-      const ch = keyBuf[0]
+      const hit = decodeWatchKey(keyBuf.charAt(0))
       keyBuf = keyBuf.slice(1)
-      if (ch === "j") {
-        if (cursor < sessions.length - 1) cursor++
-        const t = sessions[cursor]
-        if (t && !previewCache.has(t.id)) void refreshPreview(t.id).then(render)
-        render()
-      } else if (ch === "k") {
-        if (cursor > 0) cursor--
-        const t = sessions[cursor]
-        if (t && !previewCache.has(t.id)) void refreshPreview(t.id).then(render)
-        render()
-      } else if (ch === "q" || ch === "\x03" /* Ctrl-C */) {
-        stop = true
-        return
-      } else if (ch === "r") {
-        flash("refreshing…")
-        void Promise.all([refresh(), refreshHealth()]).finally(render)
-      } else if (ch === "\r" || ch === "\n") {
-        const t = sessions[cursor]
-        if (t) {
-          action = "attach"
-          attachTargetId = t.id
-          stop = true
-          return
-        }
-      } else if (ch === "m") {
-        // Read-only mirror — safer than full attach because Ctrl-C
-        // cleanly exits without needing the Ctrl-] q chord some
-        // terminal emulators swallow.
-        const t = sessions[cursor]
-        if (t) {
-          action = "mirror"
-          attachTargetId = t.id
-          stop = true
-          return
-        }
-      } else if (ch === "R") {
-        // Restart: respawn from history without leaving the dashboard.
-        // Inline httpPostJson (like K kill) so failures flash inline
-        // and a successful restart shows up in the next refresh —
-        // never tears down the watch loop or the parent daemon.
-        const t = sessions[cursor]
-        if (!t) continue
-        void restartSessionInline(endpoint, t)
-          .then(msg => flash(msg))
-          .catch(err =>
-            flash(
-              `restart error: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          )
-          .finally(() => void refresh().then(render))
-      } else if (ch === "K") {
-        const t = sessions[cursor]
-        if (!t) continue
-        void httpPostJson<{ ok: boolean }>(
-          `${endpoint.url}/sessions/${encodeURIComponent(t.id)}/kill`,
-          {},
-          endpoint.token,
-        )
-          .then(out =>
-            flash(out.ok ? `SIGTERM sent to ${t.id}` : `${t.id} not running`),
-          )
-          .catch(err =>
-            flash(
-              `kill error: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          )
-          .finally(() => void refresh().then(render))
-      } else if (ch === "d") {
-        const t = sessions[cursor]
-        if (!t) continue
-        if (
-          t.status !== "exited" &&
-          t.status !== "killed" &&
-          t.status !== "error"
-        ) {
-          flash(`d: ${t.id} still ${t.status} — use K first`)
+      switch (hit?.kind) {
+        case "down": {
+          if (cursor < sessions.length - 1) cursor++
+          const t = sessions[cursor]
+          if (t && !previewCache.has(t.id)) void refreshPreview(t.id).then(render)
           render()
-          continue
+          break
         }
-        void httpDelete(
-          `${endpoint.url}/sessions/${encodeURIComponent(t.id)}`,
-          endpoint.token,
-        )
-          .then(() => {
-            flash(`forgot ${t.id}`)
-            return refresh()
-          })
-          .catch(err =>
-            flash(
-              `forget error: ${err instanceof Error ? err.message : String(err)}`,
-            ),
+        case "up": {
+          if (cursor > 0) cursor--
+          const t = sessions[cursor]
+          if (t && !previewCache.has(t.id)) void refreshPreview(t.id).then(render)
+          render()
+          break
+        }
+        case "quit":
+          stop = true
+          return
+        case "refresh":
+          flash("refreshing…")
+          void Promise.all([refresh(), refreshHealth()]).finally(render)
+          break
+        case "attach": {
+          const t = sessions[cursor]
+          if (t) {
+            action = "attach"
+            attachTargetId = t.id
+            stop = true
+            return
+          }
+          break
+        }
+        case "story": {
+          const t = sessions[cursor]
+          if (t) {
+            action = "story"
+            attachTargetId = t.id
+            stop = true
+            return
+          }
+          break
+        }
+        case "mirror": {
+          // Read-only mirror — safer than full attach because Ctrl-C
+          // cleanly exits without needing the Ctrl-] q chord some
+          // terminal emulators swallow.
+          const t = sessions[cursor]
+          if (t) {
+            action = "mirror"
+            attachTargetId = t.id
+            stop = true
+            return
+          }
+          break
+        }
+        case "restart": {
+          // Restart: respawn from history without leaving the dashboard.
+          // Inline httpPostJson (like K kill) so failures flash inline
+          // and a successful restart shows up in the next refresh —
+          // never tears down the watch loop or the parent daemon.
+          const t = sessions[cursor]
+          if (!t) continue
+          void restartSessionInline(endpoint, t)
+            .then(msg => flash(msg))
+            .catch(err =>
+              flash(
+                `restart error: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            )
+            .finally(() => void refresh().then(render))
+          break
+        }
+        case "kill": {
+          const t = sessions[cursor]
+          if (!t) continue
+          void httpPostJson<{ ok: boolean }>(
+            `${endpoint.url}/sessions/${encodeURIComponent(t.id)}/kill`,
+            {},
+            endpoint.token,
           )
-          .finally(() => render())
+            .then(out =>
+              flash(out.ok ? `SIGTERM sent to ${t.id}` : `${t.id} not running`),
+            )
+            .catch(err =>
+              flash(
+                `kill error: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            )
+            .finally(() => void refresh().then(render))
+          break
+        }
+        case "forget": {
+          const t = sessions[cursor]
+          if (!t) continue
+          if (
+            t.status !== "exited" &&
+            t.status !== "killed" &&
+            t.status !== "error"
+          ) {
+            flash(`d: ${t.id} still ${t.status} — use K first`)
+            render()
+            continue
+          }
+          void httpDelete(
+            `${endpoint.url}/sessions/${encodeURIComponent(t.id)}`,
+            endpoint.token,
+          )
+            .then(() => {
+              flash(`forgot ${t.id}`)
+              return refresh()
+            })
+            .catch(err =>
+              flash(
+                `forget error: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            )
+            .finally(() => render())
+          break
+        }
+        default:
+          break
       }
       // Unknown chars silently discarded — TUI stays calm.
     }
@@ -2039,17 +2902,30 @@ async function runWatch(
         red: "",
       }
   const statusTone = (
-    s: Pick<SessionDescriptor, "status" | "processAlive">,
-  ): string =>
-    isStaleRunning(s)
-      ? c.amber
-      : s.status === "running"
-        ? c.green
-        : s.status === "starting"
-          ? c.amber
-          : s.status === "killed" || s.status === "error"
-            ? c.red
-            : c.dim
+    s: PresenceRenderSession,
+  ): string => {
+    if (isStaleRunning(s)) return c.amber
+    if (s.status !== "running") {
+      return s.status === "starting"
+        ? c.amber
+        : s.status === "killed" || s.status === "error"
+          ? c.red
+          : c.dim
+    }
+    // Live agent-cli session — colour by the same presence axis as the table,
+    // so a parked session reads dim, not healthy green.
+    switch (presenceFor(s, { attentionDelaySec })) {
+      case "running":
+      case "tending":
+        return c.green
+      case "attention":
+        return c.amber
+      case "quiet":
+        return c.dim
+      default:
+        return c.dim
+    }
+  }
 
   const render = (): void => {
     const cols = process.stdout.columns || 100
@@ -2078,7 +2954,15 @@ async function runWatch(
     // escapes as zero-width so the column separator lands at the
     // sidebarWidth-th visible column, not the sidebarWidth-th
     // string-index (which over-pads when colors are on).
-    const sidebarLines = renderSidebar(sessions, cursor, sidebarWidth, bodyRows, c, statusTone)
+    const sidebarLines = renderSidebar(
+      sessions,
+      cursor,
+      sidebarWidth,
+      bodyRows,
+      c,
+      statusTone,
+      attentionDelaySec,
+    )
     const selected = sessions[cursor]
     const preview = selected ? previewCache.get(selected.id) : undefined
     const detailLines = renderDetail(selected, detailWidth, bodyRows, c, preview)
@@ -2112,8 +2996,8 @@ async function runWatch(
     const footer = showFlash
       ? `${c.amber}${statusMsg}${c.reset}`
       : isDead
-        ? `${c.dim}↑/↓ select · ${c.reset}${c.bold}R restart${c.reset}${c.dim} · m mirror · d forget · r refresh · q quit${c.reset}`
-        : `${c.dim}↑/↓ select · Enter attach · R restart · m mirror · K kill · d forget · r refresh · q quit${c.reset}`
+        ? `${c.dim}↑/↓ select · s story · ${c.reset}${c.bold}R restart${c.reset}${c.dim} · m mirror · d forget · r refresh · q quit${c.reset}`
+        : `${c.dim}↑/↓ select · Enter attach · s story · R restart · m mirror · K kill · d forget · r refresh · q quit${c.reset}`
     out.push(truncateAnsi(footer, cols))
 
     // Paint: clear + home + write.
@@ -2178,6 +3062,16 @@ async function runWatch(
     void code
     return runWatch(endpoint, colour)
   }
+  if (action === "story" && attachTargetId) {
+    // Render the story on the normal terminal, then re-enter the
+    // watch loop — same "peek, then return to the list" flow as
+    // attach/mirror. Leave the alt screen + raw mode first so the
+    // transcript isn't painted over the dashboard buffer.
+    restore()
+    const code = await runStory([attachTargetId])
+    void code
+    return runWatch(endpoint, colour)
+  }
   return 0
 }
 
@@ -2215,9 +3109,15 @@ interface RestartBody {
  * `{url, body}` REST call — the CLI-specific half (cols/rows come from
  * the attached terminal). The daemon's `session_restart` MCP tool runs
  * the same decision in-process instead of shaping an HTTP body.
+ *
+ * `preferNativeTerminal` mirrors `session_restart`'s own opt-in (session-
+ * tools.ts): an agent-cli/ACP-origin session defaults to ACP-level resume,
+ * never a surprise provider-native terminal (its isolated config dir was
+ * never TUI-onboarded — see `decideRestartStrategy`'s doc). Omitted here ⇒
+ * false, same default.
  */
-function buildRestartBody(prev: SessionDescriptor): RestartBody {
-  const strategy = decideRestartStrategy(prev)
+function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false): RestartBody {
+  const strategy = decideRestartStrategy(prev, { preferNativeTerminal })
   if (strategy.kind === "unsupported") {
     throw new Error(`${prev.id} is a ${strategy.reason}`)
   }
@@ -2304,7 +3204,8 @@ function renderSidebar(
   width: number,
   height: number,
   c: Record<string, string>,
-  statusTone: (s: Pick<SessionDescriptor, "status" | "processAlive">) => string,
+  statusTone: (s: PresenceRenderSession) => string,
+  attentionDelaySec?: number,
 ): string[] {
   const out: string[] = []
   out.push(`${c.bold}SESSIONS${c.reset} ${c.dim}(${rows.length})${c.reset}`)
@@ -2320,12 +3221,12 @@ function renderSidebar(
       const ptyBadge = r.pty
         ? `${c.green}PTY${c.reset}`
         : `${c.dim}   ${c.reset}`
-      const label = r.name ?? r.id
+      const label = sessionRowLabel(r)
       const tone = statusTone(r)
       const age = humaniseDelta(now - new Date(r.startedAt).getTime())
       const labelTrunc = truncate(label, 18)
       const line =
-        `${marker} ${ptyBadge} ${labelTrunc.padEnd(18)} ${tone}${statusLabel(r).padEnd(7)}${c.reset} ${c.dim}${age.padStart(4)}${c.reset}`
+        `${marker} ${ptyBadge} ${labelTrunc.padEnd(18)} ${tone}${statusLabel(r, attentionDelaySec).padEnd(7)}${c.reset} ${c.dim}${age.padStart(4)}${c.reset}`
       out.push(selected ? line : line)
     }
   }
@@ -2444,7 +3345,10 @@ export function renderDetail(
 
     out.push("")
     if (s.status === "running" || s.status === "starting") {
-      out.push(`  ${c.dim}Enter to attach${c.reset}`)
+      const isTerm = isTerminalSession(s)
+      out.push(
+        `  ${c.dim}Enter to attach${isTerm ? ` (PTY)` : ""} · s story${c.reset}`,
+      )
     } else if (
       s.status === "exited" ||
       s.status === "killed" ||
@@ -2553,34 +3457,6 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "")
 }
 
-function httpDelete(url: string, token?: string): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === "https:" ? https : http
-    const headers: Record<string, string> = {}
-    if (token) headers.authorization = `Bearer ${token}`
-    const req = lib.request(u, { method: "DELETE", headers }, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", c => (raw += c))
-      res.on("end", () => {
-        const status = res.statusCode ?? 0
-        if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
-          return
-        }
-        try {
-          resolve(raw ? JSON.parse(raw) : {})
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-    })
-    req.on("error", reject)
-    req.end()
-  })
-}
-
 interface AttachOpts {
   endpoint: DaemonEndpoint
   /** id or name. We fetch the descriptor first and switch transport
@@ -2621,6 +3497,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
       attach: { type: "boolean" },
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
+      "prefer-native-terminal": { type: "boolean" },
     },
   })
   const id = positionals[0]
@@ -2662,7 +3539,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
   prev = await augmentWithFsResume(prev)
   let built: RestartBody
   try {
-    built = buildRestartBody(prev)
+    built = buildRestartBody(prev, values["prefer-native-terminal"] === true)
   } catch (err) {
     process.stderr.write(
       `agentproto sessions restart: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -2715,7 +3592,9 @@ async function runRestart(args: readonly string[]): Promise<number> {
   } else {
     const lineage = resumeFallback
       ? "fresh — resume not available"
-      : describeResumePath(prev) || "fresh shape"
+      : describeResumePath(prev, {
+          preferNativeTerminal: values["prefer-native-terminal"] === true,
+        }) || "fresh shape"
     process.stdout.write(
       `agentproto sessions restart: spawned ${next.id}` +
         `${next.name ? ` (${next.name})` : ""} — ${next.command}\n` +
@@ -2893,7 +3772,7 @@ async function runAttach(opts: AttachOpts): Promise<number> {
     printDeadSessionHint("agentproto sessions --attach", desc)
     return 2
   }
-  if (desc.pty === true) {
+  if (attachMode(desc) === "pty") {
     return runPtyAttach(opts.endpoint, desc, opts.colour)
   }
   return runSseAttach(opts.endpoint, desc, opts.colour)

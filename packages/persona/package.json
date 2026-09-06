@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/persona",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/persona — AIP-25 PERSONA.md reference implementation. A single-doc markdown + frontmatter format for portable agent personas — the public face, voice register, backstory, and boundaries of a character — sibling to AIP-23 IDENTITY (heavy substance) and building block of AIP-24 ASSEMBLY.",
   "keywords": [
     "agentproto",
@@ -56,7 +56,7 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

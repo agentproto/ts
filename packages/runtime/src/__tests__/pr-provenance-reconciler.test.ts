@@ -15,6 +15,7 @@ import {
   type ReconcilerSession,
 } from "../pr-provenance-reconciler.js"
 import type { GhRunner } from "../pr-provenance-stamp.js"
+import type { ToolCallRecord } from "../tool-call-record.js"
 import { MARKER } from "../pr-provenance.js"
 
 const flush = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
@@ -84,7 +85,8 @@ describe("createPrProvenanceReconciler", () => {
       return { exitCode: 0, stdout: "" }
     }
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -108,7 +110,8 @@ describe("createPrProvenanceReconciler", () => {
     let call = 0
     const resolveOpenPr: OpenPrResolver = async () => (call++ === 0 ? A : B)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -127,7 +130,8 @@ describe("createPrProvenanceReconciler", () => {
     }
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -142,7 +146,8 @@ describe("createPrProvenanceReconciler", () => {
     const { recorded, reg } = fakeRegistry([execSession()])
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -155,7 +160,8 @@ describe("createPrProvenanceReconciler", () => {
     const { reg } = fakeRegistry([execSession()])
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
@@ -170,7 +176,8 @@ describe("createPrProvenanceReconciler", () => {
     const { reg } = fakeRegistry([execSession(), execSession({ id: "sess_cmd", kind: "command" })])
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
     const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec", true)) // empty turn
     bus.emit(turnEnd("sess_cmd")) // not agent-cli
@@ -179,7 +186,108 @@ describe("createPrProvenanceReconciler", () => {
     expect(resolveOpenPr).not.toHaveBeenCalled()
   })
 
-  it("records but does not re-edit when the PR body already carries the marker", async () => {
+  it("refreshes cost on an EMPTY turn-end — adapters (e.g. OpenRouter-routed opencode) that settle spend on a trailing no-op turn must not go unstamped forever", async () => {
+    // Mirrors a real opencode/openrouter session: the PR-creating turn stamps
+    // a footer with no amount (cost not known yet), then a LATER turn
+    // reports zero assistant text / zero tool calls (so `ev.empty === true`)
+    // but is exactly when the adapter's cost becomes known. PR discovery
+    // (resolveOpenPr) correctly stays skipped on an empty turn — there's
+    // nothing new to find — but the cost refresh must still run.
+    const session = execSession({
+      harness: "opencode",
+      adapterSlug: "opencode",
+      openedPrs: [{ url: PR.url, number: PR.number }],
+    })
+    const { reg } = fakeRegistry([session, SUPER])
+    let body =
+      "Body.\n\n---\n<sub>🤖 **" +
+      MARKER +
+      "** — PR · session `sess_exec` · opencode · model `openrouter/z-ai/glm-5.3-flash` · host `mac.home` · cwd `agentproto/e2b-template-baked`</sub>"
+    const edits: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: body }
+      if (args[1] === "edit") {
+        body = args[4] as string
+        edits.push(body)
+      }
+      return { exitCode: 0, stdout: "" }
+    }
+    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr,
+      run,
+    })
+
+    // The session learns its adapter-reported cost, then reports it on a
+    // trailing turn with no new output — `empty: true`.
+    session.costUsd = 0.0971799
+    bus.emit(turnEnd("sess_exec", true))
+    await flush()
+
+    // Discovery correctly never runs on an empty turn...
+    expect(resolveOpenPr).not.toHaveBeenCalled()
+    // ...but the footer IS refreshed with the now-known cost.
+    expect(edits.length).toBe(1)
+    expect(edits[0]).toContain("$0.0972")
+  })
+
+  it("recognizes a gh-PATH-shim-stamped PR as its own, records it (never happened before), then upgrades once cost is known", async () => {
+    // The REAL end-to-end gap this closes: `provenance.wrapGh` stamps a THIN
+    // footer (gh-provenance-shim.ts — session/adapter/model/host/cwd only)
+    // the instant `gh pr create` returns, entirely outside the daemon. By
+    // the time this session's first turn ends, the PR already carries a
+    // footer naming it — but `openedPrs` has never heard of it, so the
+    // cost-refresh below (which only iterates `openedPrs`) had nothing to
+    // find, for ANY adapter (this isn't opencode-specific — the shim runs
+    // for every local session regardless of harness).
+    const session = execSession({ harness: "opencode", adapterSlug: "opencode", model: "openrouter/z-ai/glm-5.3-flash" })
+    const { reg, recorded } = fakeRegistry([session, SUPER])
+    let body =
+      "Some PR body.\n\n---\n<sub>🤖 **" +
+      MARKER +
+      "** — PR · session `sess_exec` · opencode · model `openrouter/z-ai/glm-5.3-flash` · host `mac.home` · cwd `agentproto/e2b-template-baked`</sub>"
+    const edits: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: body }
+      if (args[1] === "edit") {
+        body = args[4] as string
+        edits.push(body)
+      }
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      run,
+    })
+
+    // First turn-end: Lane B (branch resolution) finds the shim-stamped PR.
+    // Recognized as OUR OWN session → recorded — but no cost known yet and
+    // this fixture carries no auth-profile either, so genuinely nothing to
+    // upgrade.
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(recorded).toEqual([{ sessionId: "sess_exec", number: PR.number, url: PR.url }])
+    expect(edits).toEqual([])
+
+    // Cost becomes known → the reconciler's cost-refresh can now find this
+    // PR via `openedPrs` (it couldn't before this fix) and re-renders it.
+    session.costUsd = 0.0971799
+    bus.emit(exited("sess_exec"))
+    await flush()
+    expect(edits.length).toBe(1)
+    expect(edits[0]).toContain("$0.0972")
+    expect(edits[0]).toContain("opencode")
+  })
+
+  it("neither re-edits nor records when the PR body already carries the marker", async () => {
     const { reg, recorded } = fakeRegistry([execSession(), SUPER])
     const editCalls: number[] = []
     const run: GhRunner = async args => {
@@ -190,6 +298,7 @@ describe("createPrProvenanceReconciler", () => {
     const bus = createSessionEventBus()
     createPrProvenanceReconciler({
       registry: reg,
+      listToolCalls: async () => [],
       sessionEvents: bus,
       resolveOpenPr: async () => PR,
       run,
@@ -199,7 +308,9 @@ describe("createPrProvenanceReconciler", () => {
     await flush()
 
     expect(editCalls).toHaveLength(0)
-    expect(recorded).toHaveLength(1)
+    // An already-marked body belongs to whichever session stamped it first —
+    // recording it on THIS session would misattribute it (the phantom-PR bug).
+    expect(recorded).toHaveLength(0)
   })
 
   it("never throws out of a handler when gh fails", async () => {
@@ -207,6 +318,7 @@ describe("createPrProvenanceReconciler", () => {
     const bus = createSessionEventBus()
     createPrProvenanceReconciler({
       registry: reg,
+      listToolCalls: async () => [],
       sessionEvents: bus,
       resolveOpenPr: async () => PR,
       run: async () => {
@@ -225,7 +337,8 @@ describe("createPrProvenanceReconciler", () => {
     const { reg } = fakeRegistry([execSession()])
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
     const bus = createSessionEventBus()
-    const reconciler = createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
+    const reconciler = createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr, run: okRun })
 
     reconciler.dispose()
     bus.emit(turnEnd("sess_exec"))
@@ -233,5 +346,203 @@ describe("createPrProvenanceReconciler", () => {
     await flush()
 
     expect(resolveOpenPr).not.toHaveBeenCalled()
+  })
+})
+
+// ─── Lane A: exact attribution from recorded tool calls ─────────────────────
+describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
+  const createRecord = (sessionId: string, number: number): ToolCallRecord => ({
+    sessionId,
+    tool: "bash",
+    command: `gh pr create --title t-${number}`,
+    isError: false,
+    createdPrUrl: `https://github.com/o/r/pull/${number}`,
+    createdPrNumber: number,
+    ts: "t",
+  })
+
+  it("stamps from the session's own record even when the branch no longer resolves (chat back on main)", async () => {
+    // The blind spot this lane closes: the session branched, opened the PR,
+    // and checked the shared main checkout back out within one turn — so by
+    // turn-end the branch resolver answers null. The record still names it.
+    const { reg, recorded } = fakeRegistry([execSession(), SUPER])
+    const editBodies: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
+      editBodies.push(String(args[4]))
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => null,
+      listToolCalls: async id => (id === "sess_exec" ? [createRecord("sess_exec", 77)] : []),
+      run,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(recorded).toEqual([
+      { sessionId: "sess_exec", number: 77, url: "https://github.com/o/r/pull/77" },
+    ])
+    expect(editBodies).toHaveLength(1)
+    expect(editBodies[0]).toContain(MARKER)
+    expect(editBodies[0]).toContain("`sess_exec`")
+  })
+
+  it("attributes each PR to ITS author when two different sessions share one cwd", async () => {
+    // Two chat sessions in the same repo-root checkout, each opened its own
+    // PR mid-turn. Branch resolution answers null for both (default-branch
+    // guard) — the records keep the attributions apart.
+    const a = execSession({ id: "sess_a", parentSessionId: undefined })
+    const b = execSession({ id: "sess_b", parentSessionId: undefined })
+    const { reg, recorded } = fakeRegistry([a, b])
+    const editBodies: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
+      editBodies.push(String(args[4]))
+      return { exitCode: 0, stdout: "" }
+    }
+    const records: Record<string, ToolCallRecord[]> = {
+      sess_a: [createRecord("sess_a", 101)],
+      sess_b: [createRecord("sess_b", 102)],
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => null,
+      listToolCalls: async id => records[id] ?? [],
+      run,
+    })
+
+    bus.emit(turnEnd("sess_b"))
+    await flush()
+    bus.emit(turnEnd("sess_a"))
+    await flush()
+
+    expect(recorded).toEqual([
+      { sessionId: "sess_b", number: 102, url: "https://github.com/o/r/pull/102" },
+      { sessionId: "sess_a", number: 101, url: "https://github.com/o/r/pull/101" },
+    ])
+    expect(editBodies).toHaveLength(2)
+    expect(editBodies[0]).toContain("`sess_b`")
+    expect(editBodies[1]).toContain("`sess_a`")
+  })
+
+  it("does not let a same-cwd sibling steal a PR another session already stamped via lane B", async () => {
+    // sess_a stamps its PR from its record; later sess_b's turn ends while
+    // the shared cwd's branch still resolves to sess_a's PR — the shared
+    // per-PR dedupe must stop lane B from restamping it as sess_b's.
+    const a = execSession({ id: "sess_a", parentSessionId: undefined })
+    const b = execSession({ id: "sess_b", parentSessionId: undefined })
+    const { reg, recorded } = fakeRegistry([a, b])
+    const editBodies: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
+      editBodies.push(String(args[4]))
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => ({ number: 101, url: "https://github.com/o/r/pull/101" }),
+      listToolCalls: async id => (id === "sess_a" ? [createRecord("sess_a", 101)] : []),
+      run,
+    })
+
+    bus.emit(turnEnd("sess_a"))
+    await flush()
+    bus.emit(turnEnd("sess_b"))
+    await flush()
+
+    expect(recorded).toEqual([
+      { sessionId: "sess_a", number: 101, url: "https://github.com/o/r/pull/101" },
+    ])
+    expect(editBodies).toHaveLength(1)
+    expect(editBodies[0]).toContain("`sess_a`")
+  })
+
+  it("skips a recorded PR already on the descriptor without touching gh", async () => {
+    const { reg, recorded } = fakeRegistry([
+      execSession({ openedPrs: [{ url: "https://github.com/o/r/pull/77" }] }),
+    ])
+    const run = vi.fn<GhRunner>(async () => ({ exitCode: 0, stdout: "" }))
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => null,
+      listToolCalls: async () => [createRecord("sess_exec", 77)],
+      run,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(run).not.toHaveBeenCalled()
+    expect(recorded).toHaveLength(0)
+  })
+
+  it("still falls back to branch resolution for a session with no usable records", async () => {
+    const { reg, recorded } = fakeRegistry([execSession(), SUPER])
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      listToolCalls: async () => [
+        { sessionId: "sess_exec", tool: "bash", command: "ls", isError: false, ts: "t" },
+      ],
+      run: okRun,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(recorded).toEqual([{ sessionId: "sess_exec", number: 42, url: PR.url }])
+  })
+
+  it("refreshes a recorded PR's footer with the session's spend once it is known — once", async () => {
+    // Stamped mid-turn (no cost), then the session learns its spend.
+    const session = execSession({ openedPrs: [{ url: PR.url, number: PR.number }] })
+    const { reg } = fakeRegistry([session, SUPER])
+    let body = "Body.\n\n---\n<sub>🤖 **" + MARKER + "** — PR · session `sess_exec` · claude-code · host `h` · cwd `/wt`</sub>"
+    const edits: string[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "view") return { exitCode: 0, stdout: body }
+      if (args[1] === "edit") {
+        body = args[4] as string
+        edits.push(body)
+      }
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({ registry: reg,
+      listToolCalls: async () => [], sessionEvents: bus, resolveOpenPr: async () => null, run })
+
+    // No cost yet → nothing to refresh.
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(edits).toEqual([])
+
+    // Cost learned at turn-end → footer re-rendered exactly once.
+    session.costUsd = 0.42
+    bus.emit(exited("sess_exec"))
+    await flush()
+    expect(edits.length).toBe(1)
+    const refreshed = edits[0] ?? ""
+    expect(refreshed).toContain("$0.4200")
+    expect(refreshed.match(new RegExp("<sub>[^\\n]*" + MARKER, "g"))?.length).toBe(1)
+    expect(refreshed.startsWith("Body.")).toBe(true)
+
+    // A later turn-end with the same (or higher) cost does not edit again.
+    session.costUsd = 0.99
+    bus.emit(exited("sess_exec"))
+    await flush()
+    expect(edits.length).toBe(1)
   })
 })

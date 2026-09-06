@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/workflow-loader",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Host-side loader for AIP-15 WORKFLOW.md: reads a manifest off disk, imports its optional TypeScript entry module, and reconciles the entry's step graph against the declared manifest. The I/O layer the pure @agentproto/workflow + @agentproto/workflow-runtime packages deliberately omit.",
   "keywords": [
     "agentproto",
@@ -54,6 +54,6 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   }
 }

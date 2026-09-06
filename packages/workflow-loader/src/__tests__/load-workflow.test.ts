@@ -7,6 +7,8 @@
 import { describe, it, expect } from "vitest"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
+import { readFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 import {
   loadWorkflowHandle,
   WorkflowLoadError,
@@ -55,6 +57,139 @@ describe("loadWorkflowHandle", () => {
   it("throws a clear error when the file does not exist", async () => {
     await expect(loadWorkflowHandle(fix("nope/WORKFLOW.md"))).rejects.toThrow(
       WorkflowLoadError,
+    )
+  })
+})
+
+describe("loadWorkflowHandle — subworkflow with: threading", () => {
+  it("compiles with: parent input fields into step inputs", async () => {
+    const h = await loadWorkflowHandle(fix("with-threading/WORKFLOW.md"))
+    const sub = h.steps.find((s) => s.id === "sub") as unknown as Record<string, unknown>
+    expect(sub.inputs).toMatchObject({
+      topic: "$input.bookDir",
+      audience: "$input.audience",
+    })
+    expect(sub.with).toBeUndefined()
+  })
+
+  it("compiles with: a prior step's output into step inputs", async () => {
+    const h = await loadWorkflowHandle(fix("with-threading/WORKFLOW.md"))
+    const sub = h.steps.find((s) => s.id === "sub") as unknown as Record<string, unknown>
+    expect(sub.inputs).toMatchObject({ n: "$steps.d.n" })
+  })
+
+  it("passes with: literals through as literal values", async () => {
+    const h = await loadWorkflowHandle(fix("with-threading/WORKFLOW.md"))
+    const sub = h.steps.find((s) => s.id === "sub") as unknown as Record<string, unknown>
+    expect(sub.inputs).toMatchObject({ limit: 3 })
+  })
+
+  it("leaves a subworkflow step without with: untouched (verbatim input)", async () => {
+    const h = await loadWorkflowHandle(fix("with-threading/WORKFLOW.md"))
+    const bare = h.steps.find((s) => s.id === "bare") as unknown as Record<string, unknown>
+    expect(bare.inputs).toBeUndefined()
+    expect(bare.with).toBeUndefined()
+  })
+
+  it("rejects a with: ref to an unknown step id, naming the step and key", async () => {
+    await expect(loadWorkflowHandle(fix("with-bad-ref/WORKFLOW.md"))).rejects.toThrow(
+      /subworkflow step 'sub' with\.topic references unknown step 'ghost'/,
+    )
+  })
+})
+
+describe("loadWorkflowHandle — harness.promptFile (AIP-15 P2)", () => {
+  it("reads harness.promptFile relative to the WORKFLOW.md dir into the step's prompt + sha256", async () => {
+    const h = await loadWorkflowHandle(fix("harness-promptfile/WORKFLOW.md"))
+    const step = h.steps.find((s) => s.id === "s1") as unknown as Record<string, unknown>
+    const raw = readFileSync(fix("harness-promptfile/prompt.txt"))
+    expect(step.prompt).toBe(raw.toString("utf8").trim())
+    const harness = step.harness as Record<string, unknown>
+    expect(harness.promptSha).toBe(createHash("sha256").update(raw).digest("hex"))
+  })
+
+  it("throws a clear error naming the step when harness.promptFile does not exist", async () => {
+    await expect(
+      loadWorkflowHandle(fix("harness-promptfile-missing/WORKFLOW.md")),
+    ).rejects.toThrow(/agent step 's1': cannot read harness\.promptFile/)
+  })
+})
+
+describe("loadWorkflowHandle — harness.knowledge (AIP-15 P2)", () => {
+  it("resolves relative knowledge workspaces against the WORKFLOW.md dir, leaving absolute ones untouched", async () => {
+    const h = await loadWorkflowHandle(fix("harness-knowledge/WORKFLOW.md"))
+    const step = h.steps.find((s) => s.id === "s1") as unknown as Record<string, unknown>
+    const harness = step.harness as {
+      knowledge?: { workspace: string }[]
+    }
+    expect(harness.knowledge).toHaveLength(2)
+    expect(harness.knowledge![0]!.workspace).toBe(fix("harness-knowledge/corpus"))
+    expect(harness.knowledge![1]!.workspace).toBe("/tmp")
+  })
+
+  it("throws a clear error when a knowledge workspace directory does not exist", async () => {
+    await expect(
+      loadWorkflowHandle(fix("harness-knowledge-missing/WORKFLOW.md")),
+    ).rejects.toThrow(
+      /agent step 's1': harness\.knowledge\[0\]\.workspace '\.\/no-such-corpus' does not name an existing directory/,
+    )
+  })
+
+  it("rejects a knowledge selector whose mode is not the v1 'files'", async () => {
+    await expect(
+      loadWorkflowHandle(fix("harness-knowledge-bad-mode/WORKFLOW.md")),
+    ).rejects.toThrow(/harness\.knowledge\[0\]\.mode must be "files"/)
+  })
+
+  it("leaves a $-bearing workspace and tags verbatim and flags the selector deferred", async () => {
+    const h = await loadWorkflowHandle(fix("harness-knowledge-deferred/WORKFLOW.md"))
+    const step = h.steps.find((s) => s.id === "s1") as unknown as Record<string, unknown>
+    const harness = step.harness as {
+      knowledge?: { workspace: string; anyOf?: string[]; deferred?: boolean }[]
+    }
+    expect(harness.knowledge).toHaveLength(2)
+    expect(harness.knowledge![0]!.workspace).toBe("$input.bookDir/knowledge")
+    expect(harness.knowledge![0]!.anyOf).toEqual(["$input.topicTag"])
+    expect(harness.knowledge![0]!.deferred).toBe(true)
+  })
+
+  it("resolves a ref-free relative workspace against the WORKFLOW.md dir even when only the tags carry refs", async () => {
+    const h = await loadWorkflowHandle(fix("harness-knowledge-deferred/WORKFLOW.md"))
+    const step = h.steps.find((s) => s.id === "s1") as unknown as Record<string, unknown>
+    const harness = step.harness as {
+      knowledge?: { workspace: string; anyOf?: string[]; deferred?: boolean }[]
+    }
+    expect(harness.knowledge).toHaveLength(2)
+    expect(harness.knowledge![1]!.workspace).toBe(fix("harness-knowledge-deferred/corpus"))
+    expect(harness.knowledge![1]!.anyOf).toEqual(["$input.topicTag"])
+    expect(harness.knowledge![1]!.deferred).toBe(true)
+  })
+
+  it("resolves a ref-free workspace to absolute even when a tag carries a ref (tag-only selector)", async () => {
+    const h = await loadWorkflowHandle(fix("harness-knowledge-deferred-tag-only/WORKFLOW.md"))
+    const step = h.steps.find((s) => s.id === "s1") as unknown as Record<string, unknown>
+    const harness = step.harness as {
+      knowledge?: { workspace: string; anyOf?: string[]; deferred?: boolean }[]
+    }
+    expect(harness.knowledge).toHaveLength(1)
+    expect(harness.knowledge![0]!.workspace).toBe(
+      fix("harness-knowledge-deferred-tag-only/corpus"),
+    )
+    expect(harness.knowledge![0]!.anyOf).toEqual(["$input.topicTag"])
+    expect(harness.knowledge![0]!.deferred).toBe(true)
+  })
+
+  it("rejects a user-authored deferred field on a knowledge selector", async () => {
+    await expect(
+      loadWorkflowHandle(fix("harness-knowledge-deferred-authored/WORKFLOW.md")),
+    ).rejects.toThrow(/deferred/)
+  })
+})
+
+describe("loadWorkflowHandle — kind: gate (AIP-15 P3)", () => {
+  it("rejects a declarative gate step with no command", async () => {
+    await expect(loadWorkflowHandle(fix("gate-no-command/WORKFLOW.md"))).rejects.toThrow(
+      /gate step 'g' needs a non-empty 'command'/,
     )
   })
 })

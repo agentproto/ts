@@ -23,8 +23,10 @@ import type { ExtMessage } from "./protocol.js"
 import type {
   PresentedActivitySegment,
   PresentedConversation,
+  PresentedPlanSegment,
   PresentedTurn,
   PresentedToolSegment,
+  PresentedQuestionSegment,
 } from "./conversation.js"
 import type { SessionDescriptor } from "../client/types.js"
 import type { DomWindow, DomDocument, DomElement, DomEvent } from "jsdom"
@@ -33,6 +35,7 @@ interface Panel {
   window: DomWindow
   document: DomDocument
   transcript: DomElement
+  book: DomElement
   send: (msg: ExtMessage) => void
 }
 
@@ -50,17 +53,26 @@ interface RenderOptions {
   /** Observe what the webview posts BACK to the host — the only way to assert
    *  that a mid-turn message was withheld rather than sent. */
   onPost?: (msg: unknown) => void
+  /** Backing store for the webview's persisted state (getState/setState) —
+   *  lets a test seed a prior choice and observe what the panel persists. */
+  state?: { value: Record<string, unknown> | undefined }
+  /** The inline adapter-icon SVG baked into the shipped HTML — mirrors
+   *  readAdapterIconSvg's output, empty by default (no icon asset). */
+  headerIconSvg?: string
 }
 
 function renderPanel(opts: RenderOptions = {}): Panel {
-  const dom = new JSDOM(buildHtml("test-nonce", { xtermJs: "", xtermCss: "", headerIconSvg: "" }), {
+  const html = buildHtml("test-nonce", { xtermJs: "", xtermCss: "", headerIconSvg: opts.headerIconSvg ?? "" })
+  const dom = new JSDOM(html, {
     runScripts: "dangerously",
     url: "https://example.test/",
     beforeParse(window) {
       window.acquireVsCodeApi = () => ({
         postMessage: (msg: unknown) => opts.onPost?.(msg),
-        getState: () => undefined,
-        setState: () => {},
+        getState: () => (opts.state ? opts.state.value : undefined),
+        setState: (v: unknown) => {
+          if (opts.state) opts.state.value = v as Record<string, unknown>
+        },
       })
       if (opts.fakeTimers) {
         // DateConstructor is the same ambient type in both realms — a
@@ -78,10 +90,13 @@ function renderPanel(opts: RenderOptions = {}): Panel {
   const { document } = window
   const transcript = document.getElementById("transcript")
   if (!transcript) throw new Error("transcript element missing from buildHtml output")
+  const book = document.getElementById("book")
+  if (!book) throw new Error("book element missing from buildHtml output")
   return {
     window,
     document,
     transcript,
+    book,
     send: msg => window.dispatchEvent(new window.MessageEvent("message", { data: msg })),
   }
 }
@@ -150,6 +165,103 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
     expect(after?.querySelector(".seg-dot")).toBeNull()
     expect(after?.querySelector(".seg-badge")?.textContent).toBe("✓")
     expect(after?.querySelector(".tool-result")).not.toBeNull()
+  })
+
+  it("shows a permission ask as awaiting until a permission-resolved patch lands, then as resolved", () => {
+    const panel = renderPanel()
+    const pendingSeg: PresentedQuestionSegment = {
+      kind: "agent-question",
+      id: "q1",
+      options: ["Allow Once", "Always Allow", "Deny"],
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [pendingSeg] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const before = segNode(panel, "q1")
+    expect(before?.textContent).toContain("Awaiting your decision")
+    expect(before?.textContent).toContain("Always Allow")
+
+    const resolvedSeg: PresentedQuestionSegment = {
+      ...pendingSeg,
+      resolved: { decision: "approve", optionId: "allow_always", optionLabel: "Always Allow" },
+    }
+    const resolvedTurn: PresentedTurn = { id: "turn-1", role: "assistant", segments: [resolvedSeg] }
+    panel.send({ type: "patch", upsertTurns: [resolvedTurn], removeTurnIds: [] })
+
+    const after = segNode(panel, "q1")
+    expect(after).toBe(before) // same node — patched in place, not replaced
+    expect(after?.textContent).not.toContain("Awaiting your decision")
+    expect(after?.textContent).toContain("Approved")
+    expect(after?.textContent).toContain("Always Allow")
+  })
+
+  it("renders structured options as ENABLED chips that post resolveQuestion with the paired optionId", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: msg => posted.push(msg) })
+    const seg: PresentedQuestionSegment = {
+      kind: "agent-question",
+      id: "q1",
+      toolCallId: "perm-1",
+      options: ["Allow Once", "Always Allow", "Deny"],
+      optionItems: [
+        { id: "allow_once", label: "Allow Once" },
+        { id: "allow_always", label: "Always Allow" },
+        { id: "deny", label: "Deny" },
+      ],
+      optionsById: { allow_once: "Allow Once", allow_always: "Always Allow", deny: "Deny" },
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [seg] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const buttons = [...segNode(panel, "q1")!.querySelectorAll("button.question-option")]
+    expect(buttons.map(b => b.textContent)).toEqual(["Allow Once", "Always Allow", "Deny"])
+    expect(buttons.every(b => !(b as unknown as HTMLButtonElement).disabled)).toBe(true)
+
+    buttons[1]!.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+    expect(posted).toContainEqual({
+      type: "resolveQuestion",
+      toolCallId: "perm-1",
+      decision: "approve",
+      optionId: "allow_always",
+    })
+  })
+
+  it("disables chips for a legacy ask (labels only) and for an ask without a toolCallId", () => {
+    const panel = renderPanel()
+    const legacy: PresentedQuestionSegment = {
+      kind: "agent-question",
+      id: "q-legacy",
+      toolCallId: "perm-1",
+      options: ["Allow", "Deny"], // no optionItems — labels only
+    }
+    const noPermission: PresentedQuestionSegment = {
+      kind: "agent-question",
+      id: "q-noperm",
+      options: ["Allow"],
+      optionItems: [{ id: "allow", label: "Allow" }], // id, but nothing to answer
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [legacy, noPermission] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const legacyButtons = [...segNode(panel, "q-legacy")!.querySelectorAll("button.question-option")]
+    expect(legacyButtons).toHaveLength(2)
+    expect(legacyButtons.every(b => (b as unknown as HTMLButtonElement).disabled)).toBe(true)
+
+    const nopermButtons = [...segNode(panel, "q-noperm")!.querySelectorAll("button.question-option")]
+    expect(nopermButtons).toHaveLength(1)
+    expect((nopermButtons[0] as unknown as HTMLButtonElement).disabled).toBe(true)
   })
 
   it("leaves untouched turns and segments referentially identical (===) across a patch touching one turn", () => {
@@ -409,6 +521,29 @@ describe("transcriptPanel webview — composer", () => {
     expect(panel.document.getElementById("header-subtitle")?.textContent).toBe("")
   })
 
+  it("renders the model chip unchanged when requested and active agree (nominal case)", () => {
+    const panel = renderPanel()
+    init(panel, { adapterSlug: "claude-code", model: "sonnet-5", activeModel: "sonnet-5" })
+    const chip = btn(panel, "composer-model")
+    expect(chip.textContent).toBe("sonnet-5")
+    expect(chip.querySelector(".composer-model-active")).toBeNull()
+  })
+
+  it("foregrounds the active model and dims the requested one once a live switch diverges them", () => {
+    const panel = renderPanel()
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "z-ai/glm-5.2@openrouter",
+      activeModel: "z-ai/glm-5.3-flash",
+    })
+    const chip = btn(panel, "composer-model")
+    expect(chip.textContent).toBe("z-ai/glm-5.2@openrouter → z-ai/glm-5.3-flash")
+    expect(chip.querySelector(".composer-model-requested")?.textContent).toBe(
+      "z-ai/glm-5.2@openrouter",
+    )
+    expect(chip.querySelector(".composer-model-active")?.textContent).toBe("z-ai/glm-5.3-flash")
+  })
+
   it("clicking the model chip posts changeModel to the host", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
@@ -417,6 +552,37 @@ describe("transcriptPanel webview — composer", () => {
     btn(panel, "composer-model").dispatchEvent(new panel.window.Event("click"))
 
     expect(posted).toContainEqual({ type: "changeModel" })
+  })
+
+  it("dims the route chip and makes it inert when only one gateway is valid (chip-pickers)", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "sonnet-5",
+      route: { gateway: "anthropic" } as SessionDescriptor["route"],
+      routeSwitchable: false,
+    })
+    const route = btn(panel, "composer-route")
+    expect(route.textContent).toBe("route: anthropic")
+    expect(route.classList.contains("dimmed")).toBe(true)
+    route.dispatchEvent(new panel.window.Event("click"))
+    expect(posted).not.toContainEqual({ type: "changeRoute" })
+  })
+
+  it("keeps the route chip active (clickable) when more than one gateway is valid", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "sonnet-5",
+      route: { gateway: "anthropic" } as SessionDescriptor["route"],
+      routeSwitchable: true,
+    })
+    const route = btn(panel, "composer-route")
+    expect(route.classList.contains("dimmed")).toBe(false)
+    route.dispatchEvent(new panel.window.Event("click"))
+    expect(posted).toContainEqual({ type: "changeRoute" })
   })
 
   it("clicking the posture chip posts changePosture to the host", () => {
@@ -474,10 +640,24 @@ describe("transcriptPanel webview — composer", () => {
     expect(send.classList.contains("has-text")).toBe(true)
   })
 
-  it("hides interrupt until a message is actually waiting — busy alone is not enough", () => {
+  it("shows interrupt while busy but keeps it inert until there is something to force", () => {
     const panel = renderPanel()
     init(panel, { busy: true })
-    // The agent is working, but nothing is queued: there is nothing to force.
+    const interrupt = btn(panel, "interrupt-send")
+    // The agent is working: the stop-and-go affordance is offered, but with
+    // nothing typed and nothing queued there is nothing to force yet.
+    expect(interrupt.hidden).toBe(false)
+    expect(interrupt.disabled).toBe(true)
+
+    const input = btn(panel, "input")
+    input.value = "change of plan"
+    input.dispatchEvent(new panel.window.Event("input"))
+    expect(interrupt.disabled).toBe(false)
+  })
+
+  it("hides interrupt entirely when the agent is idle — nothing to interrupt", () => {
+    const panel = renderPanel()
+    init(panel, { busy: false })
     expect(btn(panel, "interrupt-send").hidden).toBe(true)
   })
 
@@ -1115,9 +1295,9 @@ describe("transcriptPanel webview — honest session state", () => {
     // they repeated the cost button in the same header.
     expect(el(panel, "ctx-pct").textContent).toBe("21%")
     expect(el(panel, "context-btn").hidden).toBe(false)
-    // 21% is a calm fill — the arc stays at the default (green) level.
-    expect(el(panel, "ctx-arc").classList.contains("mid")).toBe(false)
-    expect(el(panel, "ctx-arc").classList.contains("high")).toBe(false)
+    // 21% is a calm fill — the arc stays grey (below warnAtPct).
+    expect(el(panel, "ctx-arc").classList.contains("amber")).toBe(false)
+    expect(el(panel, "ctx-arc").classList.contains("red")).toBe(false)
   })
 
   it("colours the gauge arc as the context fills toward the ceiling", () => {
@@ -1130,7 +1310,8 @@ describe("transcriptPanel webview — honest session state", () => {
       conversation: { version: 1, sessionId: "s1", turns: [], usage: { seq: 1, contextUsed: 95, contextSize: 100 } },
     })
     expect(el(panel, "ctx-pct").textContent).toBe("95%")
-    expect(el(panel, "ctx-arc").classList.contains("high")).toBe(true)
+    // Past compactAtPct (default 90) — the ring goes red.
+    expect(el(panel, "ctx-arc").classList.contains("red")).toBe(true)
   })
 
   it("hides the context button rather than dividing by zero", () => {
@@ -1146,10 +1327,21 @@ describe("transcriptPanel webview — honest session state", () => {
     expect(el(panel, "context-btn").hidden).toBe(true)
   })
 
-  it("shows the working row with a ticking elapsed only while busy", () => {
+  it("keeps the working row hidden in book view — the live chapter carries 'Working…' there instead", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running", busy: true, tokensOut: 983 })
+    // Book view is the default; its live chapter already narrates the in-flight
+    // turn, so the separate row stays hidden to avoid a doubled "Working…".
+    expect(el(panel, "working").hidden).toBe(true)
+  })
+
+  it("shows the working row with a ticking elapsed only while busy — in the raw transcript", () => {
     vi.useFakeTimers()
     const panel = renderPanel({ fakeTimers: true })
     init(panel, { status: "running", busy: true, tokensOut: 983 })
+    // The row lives in the raw transcript, where nothing else narrates the turn.
+    // The segmented control delegates clicks, so the event must bubble.
+    el(panel, "view-toggle").querySelector('[data-view="transcript"]')!.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
 
     const row = el(panel, "working")
     expect(row.hidden).toBe(false)
@@ -1202,7 +1394,9 @@ describe("transcriptPanel webview — blocked-on note", () => {
 
     vi.advanceTimersByTime(1_000) // total 20s
     expect(el(panel, "blocked-note").hidden).toBe(false)
-    expect(el(panel, "blocked-note").textContent).toBe("blocked on command · toolu_01")
+    // The note text lives in its own span since the dismissable-✕ split —
+    // asserting the container would drag the button's glyph into the string.
+    expect(el(panel, "blocked-note-text").textContent).toBe("blocked on command · toolu_01")
   })
 
   it("clears the instant the tool returns, without waiting", () => {
@@ -1224,7 +1418,27 @@ describe("transcriptPanel webview — blocked-on note", () => {
     init(panel, { status: "killed", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
     vi.advanceTimersByTime(30_000)
     expect(el(panel, "blocked-note").hidden).toBe(true)
-    expect(el(panel, "blocked-note").textContent).toBe("")
+    expect(el(panel, "blocked-note-text").textContent).toBe("")
+  })
+
+  it("stays hidden while the live '$ now:' line already narrates the block", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    const pending: PresentedToolSegment = {
+      kind: "tool", id: "t1", toolName: "bash", isError: false, status: "pending", ts: new Date(Date.now() - 2_000).toISOString(),
+    }
+    panel.send({
+      type: "init",
+      session: session({ status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" }),
+      nonce: "n", mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [pending] }] },
+    })
+    // Past BLOCKED_NOTE_DELAY_MS — a long-running block.
+    vi.advanceTimersByTime(20_000)
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+    // The live "$ now:" line is what carries the story instead.
+    const under = panel.book.querySelector(".chapter.live .under") as DomElement
+    expect(under.hidden).toBe(false)
   })
 })
 
@@ -1249,7 +1463,7 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     input.dispatchEvent(new panel.window.Event("input"))
   }
 
-  it("holds a message typed mid-turn rather than posting a prompt the daemon would 409", () => {
+  it("shows a message typed mid-turn in the queued block right away, and posts it to the host with a localId (queue: true is the host's job)", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
     init(panel, { busy: true })
@@ -1257,10 +1471,16 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     type(panel, "also fix the tests")
     el(panel, "send").dispatchEvent(new panel.window.Event("click"))
 
-    // Nothing went to the daemon — the agent is mid-turn.
-    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    const sendMsgs = posted.filter(m => (m as { type: string }).type === "send") as Array<{
+      type: string
+      text: string
+      localId?: string
+    }>
+    expect(sendMsgs).toHaveLength(1)
+    expect(sendMsgs[0]?.text).toBe("also fix the tests")
+    expect(typeof sendMsgs[0]?.localId).toBe("string")
     expect(el(panel, "queued").hidden).toBe(false)
-    expect(el(panel, "queued-label").textContent).toBe("Queued · also fix the tests")
+    expect(el(panel, "queued").textContent).toContain("also fix the tests")
     // No error anywhere: typing while it works is normal.
     expect(el(panel, "error-banner").hidden).toBe(true)
     // ...and NOW there is something to force.
@@ -1268,22 +1488,28 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     expect(el(panel, "input").value).toBe("")
   })
 
-  it("flushes the queued message when the turn ends", () => {
+  it("drops the queued row once the daemon's own FIFO no longer lists it — the daemon drains it, not the webview", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
     init(panel, { busy: true })
     type(panel, "next task")
     el(panel, "send").dispatchEvent(new panel.window.Event("click"))
-    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    const localId = (
+      posted.find(m => (m as { type: string }).type === "send") as { localId: string }
+    ).localId
 
-    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+    // The host's `queued` ack fills in the daemon-assigned id.
+    panel.send({ type: "queued", localId, queueId: "q_1", text: "next task", queuePosition: 1 })
+    expect(el(panel, "queued").hidden).toBe(false)
 
-    expect(posted).toContainEqual({ type: "send", text: "next task" })
+    // Turn ends; the daemon's own drain removed it from promptQueue.
+    panel.send({ type: "sessionUpdate", session: session({ busy: false, promptQueue: [] }) })
+
     expect(el(panel, "queued").hidden).toBe(true)
     expect(el(panel, "interrupt-send").hidden).toBe(true)
   })
 
-  it("interrupt & send forces the queued message immediately", () => {
+  it("interrupt & send forces the front queued message immediately", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
     init(panel, { busy: true })
@@ -1296,23 +1522,78 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     expect(el(panel, "queued").hidden).toBe(true)
   })
 
-  it("cancelling the queued message drops it — it must not fire on turn-end", () => {
+  it("interrupt & send sends the TYPED text when the composer has content — stop and go", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "drop that, do this instead")
+
+    el(panel, "interrupt-send").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "interruptSend", text: "drop that, do this instead" })
+    // Sent, not queued — and the composer is ready for the next thought.
+    expect(el(panel, "input").value).toBe("")
+    expect(el(panel, "queued").hidden).toBe(true)
+  })
+
+  it("clears the Sending… state when the ack is 'queued', not just sendAck — the composer must not stay locked (regression: stuck Sending after the FIFO queue landed)", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "next task")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    // The host announces the send arc, then confirms FIFO placement — the
+    // mid-turn path resolves as 'queued', never 'sendAck'.
+    panel.send({ type: "sending" })
+    expect(el(panel, "send-status").textContent).toBe("Sending…")
+    const localId = (
+      posted.find(m => (m as { type: string }).type === "send") as { localId: string }
+    ).localId
+    panel.send({ type: "queued", localId, queueId: "q_1", text: "next task", queuePosition: 1 })
+
+    expect(el(panel, "send-status").textContent).toBe("")
+    expect(el(panel, "input").disabled).toBe(false)
+    expect(el(panel, "interrupt-send").disabled).toBe(false)
+  })
+
+  it("each queued row has a send-now button that interrupt-sends THAT message, leaving the rest queued", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "first")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    type(panel, "second")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    const sendButtons = Array.from(el(panel, "queued").querySelectorAll(".queued-item-send"))
+    expect(sendButtons).toHaveLength(2)
+    sendButtons[1]?.dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "interruptSend", text: "second" })
+    expect(el(panel, "queued").textContent).toContain("first")
+    expect(el(panel, "queued").textContent).not.toContain("second")
+  })
+
+  it("cancelling a queued item drops it locally and it is never resurrected by a later drain", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: m => posted.push(m) })
     init(panel, { busy: true })
     type(panel, "never mind")
     el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "queued").hidden).toBe(false)
 
-    el(panel, "queued-cancel").dispatchEvent(new panel.window.Event("click"))
-    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+    const cancelBtn = el(panel, "queued").querySelector(".queued-item-cancel")
+    expect(cancelBtn).toBeTruthy()
+    cancelBtn?.dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "queued").hidden).toBe(true)
 
-    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    panel.send({ type: "sessionUpdate", session: session({ busy: false, promptQueue: [] }) })
     expect(el(panel, "queued").hidden).toBe(true)
   })
 
-  it("re-queues rather than erroring when a 409 wins the race against the busy check", () => {
+  it("surfaces the busy error banner if a bare mid-turn rejection ever reaches sendError (queue: true normally prevents this)", () => {
     const panel = renderPanel()
-    init(panel, { busy: false }) // idle as far as the panel knows, so it posts
+    init(panel, { busy: false })
     panel.send({
       type: "sendError",
       kind: "busy",
@@ -1320,8 +1601,9 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
       message: 'HTTP 409 ... is mid-turn — wait for it to finish or cancel',
       text: "raced message",
     })
-    expect(el(panel, "error-banner").hidden).toBe(true)
-    expect(el(panel, "queued-label").textContent).toBe("Queued · raced message")
+    expect(el(panel, "error-banner").hidden).toBe(false)
+    expect(el(panel, "eb-title").textContent).toBe("Agent is mid-turn")
+    expect(el(panel, "queued").hidden).toBe(true)
   })
 
   it("shows a REAL failure in the banner, with the daemon's full message intact", () => {
@@ -1410,8 +1692,20 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
     const panel = renderPanel()
     init(panel, { costUsd: 0.03, tokensIn: 68694, tokensOut: 141 })
     // in/out used to render here AND again in #context-btn, in the same header.
-    expect(el(panel, "cost-btn").textContent).toBe("$0.0300")
+    // Two decimals on the pill face; full precision moves to the hover title.
+    expect(el(panel, "cost-btn").textContent).toBe("$0.03")
+    expect(el(panel, "cost-btn").title).toBe("$0.0300")
     expect(el(panel, "cost-btn").textContent).not.toContain("in ")
+  })
+
+  it("paints the title status dot from the visibility state (#conversation-chrome)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running", busy: true })
+    expect(el(panel, "title-status").className).toContain("busy")
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: false, awaitingInput: true }) })
+    expect(el(panel, "title-status").className).toContain("awaiting")
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: false }) })
+    expect(el(panel, "title-status").className).toContain("quiet")
   })
 
   it("shows context fill WITHOUT the token counts trailing it", () => {
@@ -1839,6 +2133,145 @@ describe("transcriptPanel webview — @file mentions", () => {
   })
 })
 
+describe("transcriptPanel webview — /command popup", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  const availableCommands: SessionDescriptor["availableCommands"] = [
+    { name: "plan", description: "Enter planning mode" },
+    { name: "planReview", description: "Review the current plan", _meta: { scope: "user" } },
+    { name: "compact", description: "Compact the conversation" },
+  ]
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session({ adapterSlug: "claude-code", availableCommands, ...over }),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  function type(panel: Panel, text: string): void {
+    const input = el(panel, "input")
+    input.value = text
+    input.selectionStart = text.length
+    input.dispatchEvent(new panel.window.Event("input"))
+  }
+  function keydown(panel: Panel, key: string): DomEvent {
+    const ev = new panel.window.Event("keydown", { cancelable: true })
+    ev.key = key
+    el(panel, "input").dispatchEvent(ev)
+    return ev
+  }
+  const items = (panel: Panel): DomElement[] => [...el(panel, "command-popup").querySelectorAll(".command-item")]
+
+  it("opens on a bare / at the start, listing every command with its harness in the header", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    type(panel, "/")
+
+    expect(el(panel, "command-popup").hidden).toBe(false)
+    expect(items(panel)).toHaveLength(3)
+    expect(el(panel, "command-popup").querySelector(".command-popup-header")?.textContent).toContain("claude-code")
+  })
+
+  it("filters as the command name is typed, and does NOT open for a / mid-message", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    type(panel, "/plan")
+    expect(items(panel).map(i => i.querySelector(".command-item-name")?.textContent)).toEqual(["/plan", "/planReview"])
+
+    type(panel, "hi /plan")
+    expect(el(panel, "command-popup").hidden).toBe(true)
+  })
+
+  it("closes once a space follows the command name — no longer filtering", () => {
+    const panel = renderPanel()
+    init(panel)
+    type(panel, "/plan")
+    expect(el(panel, "command-popup").hidden).toBe(false)
+
+    type(panel, "/plan ")
+    expect(el(panel, "command-popup").hidden).toBe(true)
+  })
+
+  it("shows each command's description and scope", () => {
+    const panel = renderPanel()
+    init(panel)
+    type(panel, "/planR")
+    const row = items(panel)[0]
+    expect(row?.querySelector(".command-item-desc")?.textContent).toBe("Review the current plan")
+    expect(row?.querySelector(".command-item-scope")?.textContent).toBe("user")
+  })
+
+  it("keyboard nav (arrow + enter) inserts the chosen command as plain text, keeping trailing args", () => {
+    const panel = renderPanel()
+    init(panel)
+    type(panel, "/pla")
+
+    keydown(panel, "ArrowDown") // -> planReview
+    keydown(panel, "Enter")
+
+    expect(el(panel, "input").value).toBe("/planReview ")
+    expect(el(panel, "command-popup").hidden).toBe(true)
+  })
+
+  it("closes the popup on Escape without sending", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    type(panel, "/pl")
+
+    keydown(panel, "Escape")
+
+    expect(el(panel, "command-popup").hidden).toBe(true)
+    expect(posted.filter(m => (m as { type?: string }).type === "send")).toEqual([])
+  })
+
+  it("the [/] button opens the same popup on an empty composer", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    el(panel, "composer-commands").dispatchEvent(new panel.window.Event("click"))
+
+    expect(el(panel, "command-popup").hidden).toBe(false)
+    expect(items(panel)).toHaveLength(3)
+    expect(el(panel, "input").value).toBe("/")
+  })
+
+  it("refreshes the list when the session/harness changes", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    panel.send({
+      type: "sessionUpdate",
+      session: session({
+        adapterSlug: "codex",
+        availableCommands: [{ name: "review", description: "Review the diff" }],
+      }),
+    })
+    type(panel, "/")
+
+    expect(items(panel).map(i => i.querySelector(".command-item-name")?.textContent)).toEqual(["/review"])
+    expect(el(panel, "command-popup").querySelector(".command-popup-header")?.textContent).toContain("codex")
+  })
+
+  it("shows an empty-state message for a harness that reports no commands", () => {
+    const panel = renderPanel()
+    init(panel, { availableCommands: [] })
+
+    type(panel, "/")
+
+    expect(el(panel, "command-popup").hidden).toBe(false)
+    expect(items(panel)).toHaveLength(0)
+    expect(el(panel, "command-popup").querySelector(".mention-empty")).not.toBeNull()
+  })
+})
+
 describe("transcriptPanel webview — tool IO opens in an editor", () => {
   function initWithTool(panel: Panel, tool: PresentedToolSegment): void {
     panel.send({
@@ -2039,6 +2472,119 @@ describe("transcriptPanel webview — header detail popovers", () => {
   })
 })
 
+describe("transcriptPanel webview — watcher presence chip (#session-visibility)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function initWith(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("stays hidden when nobody is watching", () => {
+    const panel = renderPanel()
+    initWith(panel, { watchers: 0 })
+    expect(el(panel, "watchers-wrap").hidden).toBe(true)
+  })
+
+  it("shows the eye + count once someone is watching, with identity in the popover", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 1,
+      watcherDetails: [
+        { watcherSessionId: "sup1", watcherLabel: "orchestrator-lead", event: "turn-end", since: "t0" },
+      ],
+    })
+    expect(el(panel, "watchers-wrap").hidden).toBe(false)
+    expect(el(panel, "watchers-btn").textContent).toBe("\u{1F441} 1")
+    expect((el(panel, "watchers-btn") as unknown as HTMLElement).title).toBe(
+      "orchestrator-lead — until turn-end",
+    )
+    expect(el(panel, "watchers-popover").hidden).toBe(true)
+
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "watchers-popover").hidden).toBe(false)
+    const rows = [...el(panel, "watchers-list").querySelectorAll(".popover-row")]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.querySelector(".popover-label")?.textContent).toBe("orchestrator-lead")
+    expect(rows[0]!.querySelector(".watcher-wait")?.textContent).toBe("until turn-end")
+  })
+
+  it("falls back to the session id, then to a generic count, when identity is unavailable", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 1,
+      watcherDetails: [{ watcherSessionId: "sess_abc123", event: "awaiting-input", since: "t0" }],
+    })
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "watchers-list").textContent).toContain("sess_abc123")
+    expect(el(panel, "watchers-list").textContent).toContain("until it asks for input")
+
+    const panel2 = renderPanel()
+    initWith(panel2, { watchers: 2, watcherDetails: [] })
+    expect(el(panel2, "watchers-btn").textContent).toBe("\u{1F441} 2")
+    el(panel2, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel2, "watchers-list").textContent).toBe("2 waiters")
+  })
+
+  it("shows the timeout alongside the wait condition when the daemon reported one", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 1,
+      watcherDetails: [{ watcherLabel: "supervisor", event: "any", timeoutMs: 7_200_000, since: "t0" }],
+    })
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "watchers-list").querySelector(".watcher-wait")?.textContent).toBe(
+      "for any change, 2h timeout",
+    )
+  })
+
+  it("lists every waiter and titles the button generically once there is more than one", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 2,
+      watcherDetails: [
+        { watcherLabel: "first", event: "turn-end", since: "t0" },
+        { watcherLabel: "second", event: "exited", since: "t1" },
+      ],
+    })
+    expect((el(panel, "watchers-btn") as unknown as HTMLElement).title).toBe("2 waiters attached — click for detail")
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    const rows = [...el(panel, "watchers-list").querySelectorAll(".popover-row")]
+    expect(rows.map(r => r.querySelector(".popover-label")?.textContent)).toEqual(["first", "second"])
+  })
+
+  it("hides again on a live update once the last watcher detaches", () => {
+    const panel = renderPanel()
+    initWith(panel, { watchers: 1, watcherDetails: [{ event: "turn-end", since: "t0" }] })
+    expect(el(panel, "watchers-wrap").hidden).toBe(false)
+
+    panel.send({ type: "sessionUpdate", session: session({ watchers: 0, watcherDetails: [] }) })
+    expect(el(panel, "watchers-wrap").hidden).toBe(true)
+    expect(el(panel, "watchers-popover").hidden).toBe(true)
+  })
+
+  it("never renders raw HTML from a watcher label — textContent only", () => {
+    const panel = renderPanel()
+    initWith(panel, {
+      watchers: 1,
+      watcherDetails: [{ watcherLabel: "<img src=x onerror=alert(1)>", event: "turn-end", since: "t0" }],
+    })
+    el(panel, "watchers-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "watchers-list").querySelector("img")).toBeNull()
+    expect(el(panel, "watchers-list").querySelector(".popover-label")?.textContent).toBe(
+      "<img src=x onerror=alert(1)>",
+    )
+  })
+})
+
 describe("header terminal button", () => {
   function el(panel: Panel, id: string): DomElement {
     const found = panel.document.getElementById(id)
@@ -2166,5 +2712,806 @@ describe("transcriptPanel webview — PTY mode", () => {
 
     const ptyView = el(panel, "pty-view")
     expect(ptyView.textContent).toContain("exited")
+  })
+})
+
+describe("transcriptPanel webview — book view", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error("missing #" + id)
+    return node
+  }
+  const chapters = (panel: Panel): DomElement[] => [...panel.book.querySelectorAll(".chapter")]
+
+  // One user prompt + its answering assistant turn = one chapter.
+  function askConv(): PresentedConversation {
+    return {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "Fix the boot" }], startedAt: "2026-01-01T00:00:00Z" },
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [{ kind: "assistant-text", id: "a1", html: "<p>The shell was lying. More detail.</p>" }],
+          startedAt: "2026-01-01T00:00:05Z",
+        },
+      ],
+    }
+  }
+
+  // An assistant turn with ONE pending tool that opened `ms` before "now".
+  function staleToolConv(ms: number): PresentedConversation {
+    return {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [{ kind: "tool", id: "t1", toolName: "read", isError: false, status: "pending", ts: new Date(Date.now() - ms).toISOString() }],
+        },
+      ],
+    }
+  }
+
+  it("defaults to the book view for a structured session — book shown, transcript hidden, Book segment active", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
+
+    expect(panel.book.hidden).toBe(false)
+    expect(panel.transcript.hidden).toBe(true)
+    const toggle = el(panel, "view-toggle")
+    expect(toggle.hidden).toBe(false)
+    // Segmented control shows WHERE YOU ARE: the Book segment is active.
+    expect(toggle.querySelector('[data-view="book"]')!.classList.contains("on")).toBe(true)
+    expect(toggle.querySelector('[data-view="transcript"]')!.classList.contains("on")).toBe(false)
+    // The composer placeholder switches to the book's invitation.
+    expect((el(panel, "input") as unknown as { placeholder: string }).placeholder).toContain("opens the next chapter")
+  })
+
+  it("shows a session-identity hero (not 'No messages yet') for a blank conversation", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({
+        adapterSlug: "claude-code",
+        model: "claude-opus-4-8",
+        accessProfile: { profileRef: "p1", label: "Claude Subs Agentik", vendor: "anthropic", method: "oauth-bearer" },
+      }),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+    const hero = panel.book.querySelector(".book-hero")
+    expect(hero).not.toBeNull()
+    expect(panel.book.querySelector("#book-empty")).toBeNull()
+    const text = hero!.textContent ?? ""
+    expect(text).not.toContain("No messages yet")
+    // The facts a fresh tab needs: who answers, on which model, on whose dime.
+    expect(text).toContain("claude-code")
+    expect(text).toContain("claude-opus-4-8")
+    expect(text).toContain("Claude Subs Agentik")
+  })
+
+  it("removes the hero once the first real turns arrive — 'Ready when you are' must not outlive the blank state", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+    expect(panel.book.querySelector(".book-hero")).not.toBeNull()
+
+    panel.send({ type: "patch", upsertTurns: askConv().turns, removeTurnIds: [] })
+    expect(chapters(panel)).toHaveLength(1)
+    expect(panel.book.querySelector(".book-hero")).toBeNull()
+  })
+
+  it("hides the book and its toggle for a raw (non-structured) session", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "raw", initialHtml: "<div>raw</div>" })
+    expect(panel.book.hidden).toBe(true)
+    expect(el(panel, "view-toggle").hidden).toBe(true)
+  })
+
+  it("renders a user-opened chapter with an ask card, origin mark, narration, and a serif title", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
+
+    const ch = chapters(panel)
+    expect(ch).toHaveLength(1)
+    expect(ch[0]!.dataset.chapterId).toBe("turn-1")
+    // Title = first narration sentence, trailing period dropped.
+    expect(ch[0]!.querySelector(".fold h2")?.textContent).toBe("The shell was lying")
+    expect(ch[0]!.querySelector(".fold .who")?.textContent).toBe("◈ you")
+    expect(ch[0]!.querySelector(".ask .atext")?.textContent).toContain("Fix the boot")
+    expect(ch[0]!.querySelector(".narration .story")?.textContent).toContain("The shell was lying")
+  })
+
+  it("attributes a supervisor-injected ask (promptSource agent:<id>) — SUPERVISOR ASKED label + supervisor origin mark", () => {
+    const panel = renderPanel()
+    const conv = askConv()
+    conv.turns[0]! = { ...conv.turns[0]!, promptSource: "agent:sess_boss1" }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const ch = chapters(panel)[0]!
+    expect(ch.querySelector(".fold .who")?.textContent).toBe("◈ supervisor")
+    const alabel = ch.querySelector(".ask .alabel")
+    expect(alabel?.textContent).toBe("SUPERVISOR ASKED")
+    // The injecting session's id stays reachable (hover title), not lost.
+    expect(alabel?.getAttribute("title")).toBe("sess_boss1")
+  })
+
+  it("preserves markdown block structure (line breaks, lists, code fences) in narration", () => {
+    const panel = renderPanel()
+    // The html the host ships is renderMarkdown output — real <p>/<br>/<ul>/<pre>.
+    // The book must inject it intact, not flatten it into a run-on paragraph.
+    const md = "<p>Line A<br>Line B</p>\n<ul><li>one</li><li>two</li></ul>\n<pre><code>x=1\ny=2</code></pre>"
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "Do it" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: md }] },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: false }), nonce: "n", mode: "structured", conversation: conv })
+
+    const story = chapters(panel)[0]!.querySelector(".narration .story")
+    expect(story?.querySelector("br")).not.toBeNull() // single newline honoured
+    expect(story?.querySelectorAll("ul li")).toHaveLength(2) // list not collapsed
+    expect(story?.querySelector("pre code")?.textContent).toBe("x=1\ny=2") // fence intact
+  })
+
+  it("wraps wide narration blocks (table, code) with a pop-out that opens them in an editor", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    const md =
+      "<p>Here:</p>\n" +
+      "<table><thead><tr><th>Col</th></tr></thead><tbody><tr><td>Val</td></tr></tbody></table>\n" +
+      "<pre><code>const x = 1</code></pre>"
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "go" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: md }] },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: false }), nonce: "n", mode: "structured", conversation: conv })
+
+    const story = chapters(panel)[0]!.querySelector(".narration .story")
+    const blocks = [...(story?.querySelectorAll(".book-block") ?? [])]
+    expect(blocks).toHaveLength(2) // both the table and the code fence are wrapped
+    expect([...(story?.querySelectorAll(".block-popout") ?? [])]).toHaveLength(2)
+
+    // Clicking the table's pop-out posts openBlock with tab-separated cell text.
+    const tableWrap = blocks.find(b => b.querySelector("table"))
+    tableWrap?.querySelector(".block-popout")?.dispatchEvent(new panel.window.Event("click"))
+    const msg = posted.find(m => (m as { type?: string }).type === "openBlock") as
+      | { text: string; name: string }
+      | undefined
+    expect(msg).toBeTruthy()
+    expect(msg?.text).toContain("Col")
+    expect(msg?.text).toContain("Val")
+  })
+
+  it("pins the ask as its own block above the fold — not inside the foldable body, and never as the title", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "Please fix the boot sequence now" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: "The shell was lying." }] },
+        { id: "turn-3", role: "user", segments: [{ kind: "user", id: "u2", html: "Second ask" }] },
+        { id: "turn-4", role: "assistant", segments: [{ kind: "assistant-text", id: "a2", html: "Removed the dead servers." }] },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: false }), nonce: "n", mode: "structured", conversation: conv })
+
+    const first = chapters(panel)[0]!
+    // The ask is a direct child of the chapter, ABOVE the fold — never in .cbody.
+    const ask = first.querySelector(":scope > .ask")
+    expect(ask).not.toBeNull()
+    expect(first.querySelector(":scope > .cbody .ask")).toBeNull()
+    const kids = [...first.querySelectorAll(":scope > *")].map(n => n.className)
+    expect(kids.indexOf("ask")).toBeLessThan(kids.indexOf("fold"))
+    // The past chapter is folded, yet its ask block stays displayed (pinned).
+    expect(first.className).not.toContain("openc")
+    expect((ask as DomElement).hidden).toBe(false)
+    // The fold title is the agent's narration — NOT the user's words.
+    const title = first.querySelector(".fold h2")?.textContent
+    expect(title).toBe("The shell was lying")
+    expect(title).not.toContain("fix the boot sequence")
+  })
+
+  it("folds past chapters and keeps the newest open; a fold click toggles a past chapter", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "First" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: "First answer." }] },
+        { id: "turn-3", role: "user", segments: [{ kind: "user", id: "u2", html: "Second" }] },
+        { id: "turn-4", role: "assistant", segments: [{ kind: "assistant-text", id: "a2", html: "Second answer." }] },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: false }), nonce: "n", mode: "structured", conversation: conv })
+
+    const ch = chapters(panel)
+    expect(ch).toHaveLength(2)
+    expect(ch[0]!.className).not.toContain("openc") // past chapter folded
+    expect(ch[1]!.className).toContain("openc") // newest open
+    const fold = ch[0]!.querySelector(".fold") as DomElement
+    fold.dispatchEvent(new panel.window.Event("click"))
+    expect(ch[0]!.className).toContain("openc")
+    expect(fold.getAttribute("aria-expanded")).toBe("true")
+    fold.dispatchEvent(new panel.window.Event("click"))
+    expect(ch[0]!.className).not.toContain("openc")
+  })
+
+  it("aggregates working steps behind a '$ show N steps' drawer that expands on click", () => {
+    const panel = renderPanel()
+    const activity: PresentedActivitySegment = {
+      kind: "activity",
+      id: "act-1",
+      children: [
+        { kind: "tool", id: "t1", toolName: "bash", isError: false, status: "ok" },
+        { kind: "tool", id: "t2", toolName: "read", isError: true, status: "error" },
+      ],
+      summary: "2 steps · 1 failed",
+      count: 2,
+      status: "ok",
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "go" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: "Did it." }, activity] },
+      ],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const ch = chapters(panel)[0]!
+    const details = ch.querySelector(".chapter-steps .details") as DomElement
+    expect(details.textContent).toBe("show 2 steps · 1 failed")
+    const stepsBody = ch.querySelector(".chapter-steps .steps-body") as DomElement
+    expect(stepsBody.hidden).toBe(true)
+    details.dispatchEvent(new panel.window.Event("click"))
+    expect(stepsBody.hidden).toBe(false)
+    // The reused segment renderer built the activity card.
+    expect(stepsBody.querySelector("[data-seg-id='act-1']")).not.toBeNull()
+  })
+
+  it("switches to the transcript escape hatch and persists the choice", () => {
+    const state = { value: undefined as Record<string, unknown> | undefined }
+    const panel = renderPanel({ state })
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
+
+    const toggle = el(panel, "view-toggle")
+    toggle.querySelector('[data-view="transcript"]')!.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+    expect(panel.book.hidden).toBe(true)
+    expect(panel.transcript.hidden).toBe(false)
+    expect(toggle.querySelector('[data-view="transcript"]')!.classList.contains("on")).toBe(true)
+    expect(state.value?.bookView).toBe(false)
+  })
+
+  it("honors a persisted transcript-view choice on init", () => {
+    const state = { value: { bookView: false } as Record<string, unknown> | undefined }
+    const panel = renderPanel({ state })
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: askConv() })
+    expect(panel.book.hidden).toBe(true)
+    expect(panel.transcript.hidden).toBe(false)
+    expect(el(panel, "view-toggle").querySelector('[data-view="transcript"]')!.classList.contains("on")).toBe(true)
+  })
+
+  it("renders the pause card with the agent's question when the session is awaiting input", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ awaitingInput: true }),
+      nonce: "n",
+      mode: "structured",
+      conversation: askConv(),
+    })
+    const pause = panel.book.querySelector(".pause")
+    expect(pause).not.toBeNull()
+    expect(pause?.querySelector(".pquestion")?.textContent).toContain("More detail")
+    // The composer is focused so the user can answer immediately.
+    expect(panel.document.activeElement).toBe(el(panel, "input"))
+  })
+
+  it("preserves rendered Markdown in the pause card", () => {
+    const panel = renderPanel()
+    const questionHtml =
+      "<p><strong>Package:</strong> <code>@agentproto/cli</code></p>" +
+      '<ul><li><a class="tlink" data-open="external" data-target="https://github.com/agentproto/ts/pull/935">Pull request</a></li></ul>'
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "go" }] },
+        { id: "turn-2", role: "assistant", segments: [{ kind: "assistant-text", id: "a1", html: questionHtml }] },
+      ],
+    }
+    panel.send({
+      type: "init",
+      session: session({ awaitingInput: true }),
+      nonce: "n",
+      mode: "structured",
+      conversation: conv,
+    })
+
+    const question = panel.book.querySelector(".pause .pquestion")
+    expect(question?.querySelector("strong")?.textContent).toBe("Package:")
+    expect(question?.querySelector("code")?.textContent).toBe("@agentproto/cli")
+    expect(question?.querySelectorAll("ul li")).toHaveLength(1)
+    expect(question?.querySelector("a.tlink")?.getAttribute("data-target")).toBe(
+      "https://github.com/agentproto/ts/pull/935",
+    )
+  })
+
+  it("does NOT render the pause card while the agent is actively working, even if awaitingInput lingers", () => {
+    const panel = renderPanel()
+    // A stale awaitingInput racing with a resumed turn (busy=true) must not
+    // flash the 'PAUSED TO ASK' card during active work.
+    panel.send({
+      type: "init",
+      session: session({ awaitingInput: true, busy: true }),
+      nonce: "n",
+      mode: "structured",
+      conversation: askConv(),
+    })
+    expect(panel.book.querySelector(".pause")).toBeNull()
+  })
+
+  it("marks the newest chapter live with a blinking cursor and a '$ now:' line while busy", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "go" }] },
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [
+            { kind: "assistant-text", id: "a1", html: "Working on it." },
+            { kind: "tool", id: "t1", toolName: "bash", isError: false, status: "pending", ts: new Date(Date.now() - 3000).toISOString() },
+          ],
+        },
+      ],
+    }
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: conv })
+
+    const ch = chapters(panel)[0]!
+    expect(ch.className).toContain("live")
+    expect(ch.querySelector(".narration .cursor")).not.toBeNull()
+    const under = ch.querySelector(".under") as DomElement
+    expect(under.hidden).toBe(false)
+    expect(under.textContent).toContain("now:")
+    expect(under.textContent).toContain("bash")
+  })
+
+  it("labels a >30s-old unresolved step 'Watching executor' when supervising a child", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true, blockedOn: "subagent" }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.hidden).toBe(false)
+    expect(under.textContent).toContain("Watching executor")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("uses the daemon activitySummary for a >30s-old step that isn't supervising", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true, activitySummary: { text: "Refactored the context provider hook", state: "au travail", at: "" } }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("Refactored the context provider hook")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("falls back to 'Working' for a >30s-old step with neither supervision nor a summary", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(35_000)
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("Working")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  it("keeps the real tool name for a fresh (<30s) pending step even while supervising", () => {
+    const panel = renderPanel()
+    const conv = staleToolConv(3_000)
+    panel.send({ type: "init", session: session({ busy: true, blockedOn: "subagent" }), nonce: "n", mode: "structured", conversation: conv })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toContain("read")
+    expect(under.textContent).not.toContain("Watching executor")
+  })
+
+  it("omits the elapsed suffix for a step under 5s ('now' is current — '· 0s' is noise)", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(2_000) })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toBe("now: read")
+  })
+
+  it("shows seconds for a 5–60s step, minutes for a 60–90s step", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(12_000) })
+    const seconds = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(seconds.textContent).toMatch(/^now: read · \d+s$/)
+
+    const panel2 = renderPanel()
+    // 70s is past the staleness cutoff too, so the label flips to the
+    // supervision/Working fallback — assert the MINUTES suffix regardless.
+    panel2.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(70_000) })
+    const minutes = chapters(panel2)[0]!.querySelector(".under") as DomElement
+    expect(minutes.textContent).toMatch(/^now: .* · 1 min$/)
+  })
+
+  it("replaces the whole line with an animated 'Still working…' past 90s — no counter", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: staleToolConv(120_000) })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    expect(under.textContent).toMatch(/^Still working\.{1,3}$/)
+    expect(under.textContent).not.toContain("now:")
+    expect(under.textContent).not.toContain("read")
+  })
+
+  // The fade/debounce below runs on the webview's real setTimeout, so these
+  // tests wait out the windows in real time (see renderPanel's fakeTimers ->
+  // the shipped script's setTimeout is not vetted, only its setInterval).
+  const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+  it("ticks seconds on the same label WITHOUT re-fading", async () => {
+    const panel = renderPanel()
+    const seg = { kind: "tool", id: "t1", toolName: "bash", isError: false, status: "pending", ts: new Date(Date.now() - 6_000).toISOString() } as PresentedToolSegment
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [seg] }] } })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    await sleep(350) // first label paints synchronously — no fade classes
+    expect(under.textContent).toMatch(/^now: bash · \d+s$/)
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+    // Let the 1s quiet-poll tick — the counter moves, the label is unchanged,
+    // so no fade classes may appear.
+    await sleep(1100)
+    expect(under.textContent).toMatch(/^now: bash · \d+s$/)
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+  })
+
+  it("fades a label change old -> new and clears the fade classes", async () => {
+    const panel = renderPanel()
+    const seg = (name: string, id: string) => ({ kind: "tool", id, toolName: name, isError: false, status: "pending", ts: new Date(Date.now() - 2_000).toISOString() }) as PresentedToolSegment
+    panel.send({ type: "init", session: session({ busy: true }), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [{ id: "turn-2", role: "assistant", segments: [seg("bash", "t1")] }] } })
+    const under = chapters(panel)[0]!.querySelector(".under") as DomElement
+    await sleep(350)
+    expect(under.textContent).toBe("now: bash")
+
+    // Change the pending step's tool. The target label is set synchronously;
+    // the swap lands async (min-display debounce + 220ms fade).
+    panel.send({ type: "patch", upsertTurns: [{ id: "turn-2", role: "assistant", segments: [seg("read", "t2")] }], removeTurnIds: [] })
+    expect(under.dataset.label).toBe("read")
+    await sleep(900) // past min-display (500ms) + fade (220ms)
+    expect(under.textContent).toBe("now: read")
+    expect(under.classList.contains("fading-out")).toBe(false)
+    expect(under.classList.contains("fading-in")).toBe(false)
+    expect(under.textContent).not.toContain("bash")
+  })
+
+  it("renders the minimalist plan: done collapses to a summary, failed stay visible, current + next up (#conversation-chrome)", () => {
+    const panel = renderPanel()
+    const plan: PresentedPlanSegment = {
+      kind: "plan",
+      id: "seg-plan-1",
+      done: 2,
+      total: 8,
+      entries: [
+        { content: "done a", priority: "high", status: "completed" },
+        { content: "done b", priority: "high", status: "completed" },
+        { content: "broken step", priority: "high", status: "failed" },
+        { content: "current step", priority: "high", status: "in_progress" },
+        { content: "p1", priority: "medium", status: "pending" },
+        { content: "p2", priority: "medium", status: "pending" },
+        { content: "p3", priority: "medium", status: "pending" },
+        { content: "p4", priority: "medium", status: "pending" },
+      ],
+    }
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "u1", html: "Plan it" }] },
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [{ kind: "assistant-text", id: "a1", html: "<p>Working.</p>" }, plan],
+        },
+      ],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const planNode = panel.book.querySelector(".notices .seg.plan")!
+    expect(planNode.querySelector(".plan-head")?.textContent).toBe("Plan 2/8")
+    const fill = planNode.querySelector(".plan-progress-fill") as unknown as { style: { width: string } }
+    expect(fill.style.width).toBe("25%")
+
+    // Collapsed: one "✓ 2 done" summary + failed + current + next 3 pending + "+1 more".
+    let lis = [...planNode.querySelectorAll(".plan-list li")]
+    expect(lis.map(l => l.className.replace("plan-", ""))).toEqual([
+      "donesum", "failed", "in_progress", "pending", "pending", "pending", "more",
+    ])
+    expect(lis[0]?.querySelector(".plan-text")?.textContent).toBe("2 done")
+    expect(lis[0]?.querySelector(".plan-chev")).not.toBeNull()
+    expect(lis[1]?.querySelector(".plan-text")?.textContent).toBe("broken step")
+    expect(lis[2]?.querySelector(".plan-text")?.textContent).toBe("current step")
+    expect(lis[6]?.querySelector(".plan-text")?.textContent).toBe("+1 more")
+    // No strikethrough anywhere.
+    expect(planNode.querySelector('[style*="line-through"]')).toBeNull()
+
+    // Expanding the summary reveals the completed steps as sub-rows.
+    ;(lis[0] as unknown as { dispatchEvent(e: unknown): void }).dispatchEvent(new panel.window.Event("click"))
+    lis = [...planNode.querySelectorAll(".plan-list li")]
+    const subTexts = lis.filter(l => l.className.includes("plan-sub")).map(l => l.querySelector(".plan-text")?.textContent)
+    expect(subTexts).toEqual(["done a", "done b"])
+
+    // Expanding "+N more" shows the rest of the queue.
+    const more = [...planNode.querySelectorAll(".plan-more")].pop()!
+    ;(more as unknown as { dispatchEvent(e: unknown): void }).dispatchEvent(new panel.window.Event("click"))
+    const pendingTexts = [...planNode.querySelectorAll(".plan-pending .plan-text")].map(n => n.textContent)
+    expect(pendingTexts).toContain("p4")
+  })
+})
+
+describe("transcriptPanel webview — cross-session visibility (E2/E3/E4)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}, turns: PresentedTurn[] = []): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns },
+    })
+  }
+  const click = (panel: Panel, id: string): void => {
+    el(panel, id).dispatchEvent(new panel.window.Event("click"))
+  }
+
+  it("badges an agent-injected user turn with its source and the accent class (E2)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running" }, [
+      {
+        id: "turn-1",
+        role: "user",
+        promptSource: "agent:sess_b0b0b0",
+        segments: [{ kind: "user", id: "seg-1", html: "do the thing" }],
+      },
+      { id: "turn-2", role: "user", segments: [{ kind: "user", id: "seg-2", html: "typed by me" }] },
+    ])
+
+    const nodes = turnNodes(panel).filter(n => n.classList.contains("turn-user"))
+    expect(nodes).toHaveLength(2)
+    const [injected, human] = nodes as [DomElement, DomElement]
+    expect(injected.classList.contains("turn-agent-sourced")).toBe(true)
+    const badge = injected.querySelector(".prompt-source-badge")
+    // The label carries the id's discriminating TAIL (shortSessionId rule);
+    // the full id rides the tooltip.
+    expect(badge?.textContent).toBe("⇄ from b0b0b0")
+    expect((badge as DomElement | null)?.title).toBe("Injected by session sess_b0b0b0 via agent_prompt")
+    // The human's own turn carries neither the class nor the badge.
+    expect(human.classList.contains("turn-agent-sourced")).toBe(false)
+    expect(human.querySelector(".prompt-source-badge")).toBeNull()
+  })
+
+  it("shows an info banner, and its ✕ dismisses by user choice (E3)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running" })
+    panel.send({ type: "infoBanner", id: "watcher", text: "A watcher attached — 1 waiting on this session" })
+
+    const banner = el(panel, "info-banner")
+    expect(banner.hidden).toBe(false)
+    expect(el(panel, "ib-text").textContent).toBe("A watcher attached — 1 waiting on this session")
+
+    click(panel, "ib-dismiss")
+    expect(banner.hidden).toBe(true)
+    // A same-id re-post respects the user's dismissal…
+    panel.send({ type: "infoBanner", id: "watcher", text: "A watcher attached — 1 waiting on this session" })
+    expect(banner.hidden).toBe(true)
+    // …while a NEW id (a new occurrence) shows again.
+    panel.send({ type: "infoBanner", id: "agent-msg:7", text: "Message from sess_boss" })
+    expect(banner.hidden).toBe(false)
+  })
+
+  it("hides the info banner on a matching dismissInfoBanner (auto-dismiss path)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running" })
+    panel.send({ type: "infoBanner", id: "agent-msg:9", text: "Message from sess_boss" })
+    expect(el(panel, "info-banner").hidden).toBe(false)
+
+    // A non-matching id is a stale timer for a banner already replaced — no-op.
+    panel.send({ type: "dismissInfoBanner", id: "agent-msg:8" })
+    expect(el(panel, "info-banner").hidden).toBe(false)
+
+    panel.send({ type: "dismissInfoBanner", id: "agent-msg:9" })
+    expect(el(panel, "info-banner").hidden).toBe(true)
+  })
+
+  it("blocked-note ✕ dismisses THIS block only — a new toolCallId shows the note again (E4)", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    init(panel, { status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    vi.advanceTimersByTime(20_000)
+    expect(el(panel, "blocked-note").hidden).toBe(false)
+
+    click(panel, "blocked-note-dismiss")
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+    // Same block re-announced → stays dismissed.
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" }) })
+    vi.advanceTimersByTime(1_000)
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+
+    // A DIFFERENT tool call is a new block worth showing — the 20s patience
+    // window already elapsed for this turn, so it appears on the next repaint.
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_99ZZZZZZ" }) })
+    vi.advanceTimersByTime(21_000)
+    expect(el(panel, "blocked-note").hidden).toBe(false)
+    expect(el(panel, "blocked-note-text").textContent).toBe("blocked on command · toolu_99")
+  })
+})
+
+describe("transcriptPanel webview — dimmed harness watermark (bottom-left)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("mirrors the baked adapter-icon SVG into the watermark, same source as the crisp header icon", () => {
+    const panel = renderPanel({ headerIconSvg: '<svg viewBox="0 0 16 16"><path d="M0 0"/></svg>' })
+    init(panel, { adapterSlug: "claude-code" })
+    const watermark = el(panel, "harness-watermark")
+    expect(watermark.innerHTML).toContain("<svg")
+    expect(watermark.title).toBe("claude-code")
+    expect(watermark.innerHTML).toBe(el(panel, "header-icon").innerHTML)
+    // Text-free image mark — no glyph fallback text sitting inside it.
+    expect(watermark.querySelector("svg")).not.toBeNull()
+  })
+
+  it("stays empty (and so CSS-hidden) when no icon asset was baked in for this adapter", () => {
+    const panel = renderPanel({ headerIconSvg: "" })
+    init(panel, { adapterSlug: "some-lettermark-only-adapter" })
+    expect(el(panel, "harness-watermark").innerHTML).toBe("")
+  })
+})
+
+describe("transcriptPanel webview — background task chips (#background-tasks-ux)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+
+  function bgToolSeg(over: Partial<PresentedToolSegment> = {}): PresentedToolSegment {
+    return {
+      kind: "tool",
+      id: "tool-bg1",
+      toolName: "bash",
+      argsText: "pnpm dev",
+      isError: false,
+      status: "pending",
+      ts: new Date().toISOString(),
+      background: true,
+      ...over,
+    }
+  }
+
+  it("shows one clickable text chip per still-running background tool call", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [bgToolSeg()] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const strip = el(panel, "bg-chips")
+    expect(strip.hidden).toBe(false)
+    const chips = [...strip.querySelectorAll(".bgchip")]
+    expect(chips).toHaveLength(1)
+    expect(chips[0]!.textContent).toBe("bash")
+    // Text only — never an image/icon for a bg-task indicator.
+    expect(chips[0]!.querySelector("img, svg")).toBeNull()
+  })
+
+  it("clicking a chip scrolls to (and flashes) its segment's card", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [bgToolSeg()] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+
+    const target = segNode(panel, "tool-bg1")
+    if (!target) throw new Error("unreachable")
+    const scrollSpy = vi.fn()
+    ;(target as unknown as { scrollIntoView: () => void }).scrollIntoView = scrollSpy
+
+    const chip = el(panel, "bg-chips").querySelector(".bgchip")
+    if (!chip) throw new Error("chip missing")
+    chip.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+
+    expect(scrollSpy).toHaveBeenCalled()
+    expect(target.className).toContain("seg-flash")
+  })
+
+  it("hides the strip once the background call settles, and omits it entirely for a plain (non-background) pending call", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [bgToolSeg()] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+    expect(el(panel, "bg-chips").hidden).toBe(false)
+
+    const settledTurn: PresentedTurn = {
+      id: "turn-1",
+      role: "assistant",
+      segments: [{ ...bgToolSeg(), status: "ok", resultText: "done", background: undefined }],
+    }
+    panel.send({ type: "patch", upsertTurns: [settledTurn], removeTurnIds: [] })
+    expect(el(panel, "bg-chips").hidden).toBe(true)
+    expect(el(panel, "bg-chips").querySelectorAll(".bgchip")).toHaveLength(0)
+
+    // A never-backgrounded pending call never lit the strip in the first place.
+    const panel2 = renderPanel()
+    const fgConv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [{ ...bgToolSeg(), background: undefined }] }],
+    }
+    panel2.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: fgConv })
+    expect(el(panel2, "bg-chips").hidden).toBe(true)
+  })
+
+  it("disambiguates same-named concurrent background tasks with a #N suffix", () => {
+    const panel = renderPanel()
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [
+        {
+          id: "turn-1",
+          role: "assistant",
+          segments: [bgToolSeg({ id: "tool-bg1" }), bgToolSeg({ id: "tool-bg2" })],
+        },
+      ],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+    const labels = [...el(panel, "bg-chips").querySelectorAll(".bgchip")].map(c => c.textContent)
+    expect(labels.sort()).toEqual(["bash #1", "bash #2"])
   })
 })

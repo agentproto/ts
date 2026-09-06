@@ -19,17 +19,58 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { z } from "zod"
+import { z, type ZodRawShape } from "zod"
 
 import { gateInputSchema } from "./orchestration-tools.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { withToolSubset } from "./tool-subset.js"
+import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
+import { catchErrors, type ToolTransformer } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { TASK_STATUSES } from "./task-ledger.js"
 import type {
   TaskCaller,
   TaskLedger,
+  TaskRecord,
   TaskWriteResult,
 } from "./task-ledger.js"
+
+type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
+
+/**
+ * Local companion to the shared `paginated()` transformer for tools whose
+ * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
+ * wrapper — here `{boardId, tasks}`. Same cursor/limit/compact/fields
+ * pipeline via the shared primitives, but the default branch emits
+ * `defaultBody(projectedRows)`, and any non-array handler output (this
+ * file's guard replies: no-ledger, unbound-scope) passes through
+ * untouched.
+ */
+function paginatedLegacyList<TItem extends object>(opts: {
+  project: (item: TItem) => object
+  keyOf: (item: TItem) => string | number | null
+  defaultBody: (rows: object[], input: unknown) => unknown
+}): ToolTransformer<unknown, unknown, McpTextResult> {
+  return {
+    name: "paginatedLegacyList",
+    wrapShape: (shape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
+    wrapHandler: inner => async input => {
+      const params = (input ?? {}) as PageParams
+      const out = (await inner(input)) as unknown
+      if (!Array.isArray(out)) return out as McpTextResult
+      const items = out as readonly TItem[]
+      const full = params.full === true
+      const compact = full ? false : params.compact !== false
+      if (params.limit !== undefined || params.cursor !== undefined) {
+        const page = paginate(items, params, { maxLimit: 200, keyOf: opts.keyOf })
+        const rows = compact ? page.items.map(opts.project) : page.items
+        return { content: [{ type: "text", text: toolText({ ...page, items: [...rows] }, params) }] }
+      }
+      const rows = compact ? items.map(opts.project) : [...items]
+      return { content: [{ type: "text", text: JSON.stringify(opts.defaultBody(rows as object[], input)) }] }
+    },
+  }
+}
 
 export interface RegisterTaskToolsOptions {
   /** The ledger. Absent → the tools register but answer a structured
@@ -46,7 +87,7 @@ export interface RegisterTaskToolsOptions {
 function jsonContent(payload: unknown): {
   content: Array<{ type: "text"; text: string }>
 } {
-  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] }
+  return { content: [{ type: "text", text: JSON.stringify(payload) }] }
 }
 
 /** Render a ledger write result onto the tool reply. A rev-CAS conflict is
@@ -157,30 +198,51 @@ export function registerTaskTools(
   )
 
   // ── task_list ─────────────────────────────────────────────────────
-  server.tool(
-    "task_list",
-    "List tasks on a board. Defaults to the caller's own board (a session's " +
+  const compactTaskItem = (t: TaskRecord) => ({
+    taskId: t.taskId,
+    rev: t.rev,
+    title: t.title,
+    status: t.status,
+    owner: t.owner,
+    boardId: t.boardId,
+    blockedBy: t.blockedBy,
+    hasVerify: t.verify !== undefined,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    closedAt: t.closedAt,
+  })
+
+  const taskListSchema = z.object({
+    boardId: z
+      .string()
+      .optional()
+      .describe("Board to list. Omit → the caller's default board."),
+    status: z.enum(TASK_STATUSES).optional().describe("Filter to one status."),
+    includeClosed: z
+      .boolean()
+      .optional()
+      .describe("Include done/failed/cancelled. Default false."),
+  })
+  type TaskListInput = z.infer<typeof taskListSchema>
+
+  registerBuiltinTool<TaskListInput, TaskRecord[] | McpTextResult>(server, {
+    id: "task_list",
+    description: "List tasks on a board. Defaults to the caller's own board (a session's " +
       "lineage `tree:<root>`; the operator's `ws:<slug>`) and to OPEN tasks — " +
       "pass `includeClosed` (or a closed `status` filter) for " +
       "done/failed/cancelled. Every record carries its `rev` (needed by " +
       "task_claim/task_update) and, on done, a `verification` stamp saying " +
-      "HOW it was closed (self-report vs gate vs human) — read it verbatim.",
-    {
-      boardId: z
-        .string()
-        .optional()
-        .describe("Board to list. Omit → the caller's default board."),
-      status: z.enum(TASK_STATUSES).optional().describe("Filter to one status."),
-      includeClosed: z
-        .boolean()
-        .optional()
-        .describe("Include done/failed/cancelled. Default false."),
-    },
-    async input => {
+      "HOW it was closed (self-report vs gate vs human) — read it verbatim. " +
+      "COMPACT BY DEFAULT: each task is a slim projection (taskId/rev/title/" +
+      "status/owner/boardId/blockedBy/hasVerify/createdAt/updatedAt/closedAt); " +
+      "pass `full: true` (or `compact: false`) for the complete record " +
+      "(description, verify spec, meta, sessions, verification, …).",
+    inputSchema: taskListSchema,
+    handler: async (input) => {
       if (!ledger) return notAvailable
       const caller = resolveCaller()
       if ("error" in caller) return jsonContent({ error: caller.error })
-      const tasks = ledger.list(
+      return ledger.list(
         {
           ...(input.boardId !== undefined ? { boardId: input.boardId } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
@@ -190,12 +252,23 @@ export function registerTaskTools(
         },
         caller,
       )
-      return jsonContent({
-        boardId: ledger.resolveBoardId(caller, input.boardId),
-        tasks,
-      })
     },
-  )
+    transformers: [
+      catchErrors(),
+      paginatedLegacyList({
+        project: compactTaskItem,
+        keyOf: t => t.taskId,
+        defaultBody: (rows, taskListCall) => {
+          const caller = resolveCaller() as TaskCaller
+          const boardFilter = (taskListCall ?? {}) as { boardId?: string }
+          return {
+            boardId: (ledger as TaskLedger).resolveBoardId(caller, boardFilter.boardId),
+            tasks: rows,
+          }
+        },
+      }),
+    ],
+  })
 
   // ── task_claim ────────────────────────────────────────────────────
   server.tool(

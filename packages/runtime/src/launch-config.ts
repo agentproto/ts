@@ -14,10 +14,7 @@
  * endpoint URL.
  */
 
-import {
-  stripFixedNativeVendor,
-  stripRouteSuffix,
-} from "@agentproto/model-catalog/route-identity"
+import { normalizeModelForWire } from "./model-wire.js"
 import type { RouteSpec } from "./session-config.js"
 import {
   normalizeSkillsOption,
@@ -46,6 +43,10 @@ export interface RouteAwareLaunchConfigInput {
   routeSelection?: "free" | "derived-from-model"
   /** Fixed provider for this adapter (e.g. `"anthropic"`), used for wire-model prefix stripping. */
   adapterProvider?: string
+  /** `AdapterAuthDescriptor.modelDerivedApiKey` — see `normalizeModelForWire`'s
+   *  `ModelWireOptions.modelDerivedApiKey` doc for why this changes the wire
+   *  shape on a gateway-routed `derived-from-model` adapter. */
+  modelDerivedApiKey?: boolean
   /** Skills list folded into `options.skills` per the manifest's declared shape. */
   skills?: string[]
   /**
@@ -151,14 +152,13 @@ export function buildRouteAwareLaunchConfig(
   // `route.gateway` → base_url above, and providers reject the suffixed literal.
   // For a fixed-provider, non-derived-from-model adapter, also strip the native
   // vendor prefix so the id matches what that adapter's own selector expects.
-  const nativeVendor =
-    input.routeSelection !== "derived-from-model"
-      ? input.route?.gateway ?? input.adapterProvider
-      : undefined
   const wireModel = input.model
-    ? nativeVendor
-      ? stripFixedNativeVendor(input.model, nativeVendor)
-      : stripRouteSuffix(input.model)
+    ? normalizeModelForWire(input.model, {
+        routeSelection: input.routeSelection,
+        gateway: input.route?.gateway,
+        fixedProvider: input.adapterProvider,
+        modelDerivedApiKey: input.modelDerivedApiKey,
+      })
     : undefined
 
   const out: RouteAwareLaunchConfig = {}

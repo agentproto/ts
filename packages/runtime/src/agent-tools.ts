@@ -21,7 +21,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { AcpMcpServer } from "@agentproto/acp"
-import type { SessionsRegistry } from "./sessions.js"
+import { catchErrors, pageParamsShape, paginated } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
+import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import {
   exportAgentSession,
   type ExportAgentSessionInput,
@@ -33,6 +35,7 @@ import type {
   AgentAdapterInstaller,
   CatalogModelsLister,
   AdapterCapabilitiesLister,
+  AdapterListEntry,
 } from "./http-server.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -45,37 +48,44 @@ import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import { buildCatalogProviderModels } from "./catalog-provider-models.js"
-import { SandboxSpecSchema } from "@agentproto/sandbox"
+import type { CatalogProviderModel } from "./catalog-provider-models.js"
+import type { CatalogRoute } from "./catalog-models.js"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import type {
   WorktreeIsolationMode,
   WorktreeProvisioner,
 } from "./worktree-isolation.js"
 
-/** `SandboxSpecSchema` plus the PR3 reuse field — `{ provider, reuse: "<sandboxId>" }`
- *  reconnects to an existing box (via `SandboxProvider.connect`) instead of
- *  booting a fresh one. Built from the same shape (rather than `.extend()`)
- *  so it stays a plain `.strict()` object independent of that schema's own
- *  extend semantics. */
-const sandboxSpecWithReuseSchema = z
-  .object({
-    ...SandboxSpecSchema.shape,
-    reuse: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "Existing sandbox id (a prior session's `sandboxId`) to reconnect to instead of " +
-          "booting a new box. Requires the provider to support reconnect (e.g. e2b); " +
-          "omit to boot fresh (default)."
-      ),
-  })
-  .strict()
-
-/** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
+/** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
+ *
+ * Removes:
+ * - CSI/SGR sequences (\x1b[...): cursor movement, colors, etc.
+ * - Bare \r (carriage return not followed by \n): within each line, keeps only text after the last \r
+ *   This handles the case where bash echoes pasted content with \r as line separator,
+ *   which would otherwise create visible duplication when the \r is rendered (moves cursor to column 0).
+ *
+ * Exported for test access. */
 export function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+  // First remove CSI sequences
+  let result = s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+
+  // Then handle bare \r (carriage return) characters:
+  // Normalize line endings: \r\n becomes just \n (so CRLF is treated as a single line ending)
+  result = result.replace(/\r\n/g, "\n")
+
+  // Now for any remaining bare \r within lines (between \n), keep only text after the last \r.
+  // This simulates terminal behavior where \r resets to column 0.
+  const lines = result.split("\n")
+  result = lines
+    .map(line => {
+      const parts = line.split("\r")
+      return parts[parts.length - 1]
+    })
+    .join("\n")
+
+  return result
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
@@ -159,13 +169,17 @@ export interface RegisterAgentToolsOptions {
    *  clear "not configured" error pointing at the host wiring. */
   listCatalogModels?: CatalogModelsLister
   /** The daemon's own plain `/mcp` gateway URL (e.g.
-   *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` for a
-   *  `hermes` adapter with no caller-supplied `mcpServers` defaults to
-   *  mounting this gateway — unlike claude-code, hermes has zero
-   *  built-in tools, so omitting `mcpServers` silently produces a
-   *  chat-only session with no error. An explicit `mcpServers: []` is
-   *  still respected as a deliberate opt-out. Omitted → no default
-   *  (today's behaviour). */
+   *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` with no
+   *  caller-supplied `mcpServers` defaults to mounting this gateway for
+   *  the adapters in `shouldInjectDaemonSelfMount` (session-spawn.ts):
+   *  hermes (capability — it has zero built-in tools, so omitting
+   *  `mcpServers` silently produced a chat-only session) and on-host
+   *  claude-code (identity — the injected entry carries
+   *  `callerSessionId=<own id>` and shadows the ambient unstamped
+   *  project/global mount of the same name, so the session's spawns
+   *  auto-attach instead of landing as anonymous orphans). An explicit
+   *  `mcpServers: []` is still respected as a deliberate opt-out.
+   *  Omitted → no default. */
   daemonMcpUrl?: string
   /** Optional orchestrator-injection builder (WP3). When wired, the
    *  `orchestrator` field on `agent_start` mints a scoped
@@ -211,6 +225,14 @@ export interface RegisterAgentToolsOptions {
    *  instead of orphaning. Absent → no auto-parent (attribution falls back to
    *  an explicit `parentSessionId` hint, if any). */
   callerSessionId?: string
+  /** The connecting client's source label from this `/mcp` request's `?origin=`
+   *  query (#session-visibility) — cowork/vscode/codex/cron. Used as the
+   *  DEFAULT `origin` for an `agent_start` that doesn't pass its own, so a
+   *  spawn made by a non-session bridge client is attributed to its channel
+   *  instead of landing as a bare top-level root. An explicit `input.origin`
+   *  always wins. This is the daemon side of the auto-stamp the `agent_start`
+   *  schema advertises. */
+  mcpBridgeOrigin?: string
   /** Optional webhook notifier — when provided, per-session `notifyUrl`
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
@@ -260,6 +282,7 @@ export function registerAgentTools(
     buildOrchestratorMcp,
     callerScope,
     callerSessionId,
+    mcpBridgeOrigin,
     webhookNotifier,
     daemonMcpUrl,
     loadRoleRegistry,
@@ -270,9 +293,11 @@ export function registerAgentTools(
   } = opts
 
   // ── agent_start ────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "agent_start",
-    "Spawn a long-running agent CLI (claude-code, hermes, …) on the host. " +
+    {
+      description:
+        "Spawn a long-running agent CLI (claude-code, hermes, …) on the host. " +
       "The session stays alive across multiple turns — call `agent_prompt` " +
       "to continue the conversation. Returns the session id + initial descriptor. " +
       "When `workspaceSlug` is set, resolves the cwd via " +
@@ -280,7 +305,7 @@ export function registerAgentTools(
       "fall back to the active workspace. " +
       "If you have shell access, `agentproto sessions start ...` is the CLI " +
       "equivalent. (No shell? Keep using this tool.)",
-    {
+      inputSchema: {
       adapter: z
         .string()
         .min(1)
@@ -402,16 +427,33 @@ export function registerAgentTools(
         .min(1)
         .optional()
         .describe(
-          "Caller-declared 'this is the same logical spawn' token. A retried " +
-            "agent_start call (e.g. after a slow/lost response) that repeats the " +
-            "same `idempotencyKey` for the same `adapter`+`cwd` within ~30s of a " +
-            "successful spawn gets that SAME session's descriptor back instead of " +
-            "forking a second process — set `deduped: true` on the response so " +
-            "you can tell. Omit to spawn unconditionally (today's behaviour, and " +
-            "still required for deliberate concurrent spawns into the same cwd — " +
-            "this field can't distinguish a retry from an intentional duplicate " +
-            "spawn, only your own declared key can). Recommended for any caller " +
-            "that might retry a spawn it can't otherwise confirm succeeded."
+          "Caller-declared 'this is the same logical spawn' token — a PROMISE, " +
+            "not a guess. A retried agent_start call (e.g. after a slow/lost " +
+            "response) that repeats the same `idempotencyKey` for the same " +
+            "`adapter`+`cwd` within ~10min of a successful spawn gets that SAME " +
+            "session's descriptor back instead of forking a second process — the " +
+            "response carries `deduped: true` and `dedupeSource: \"explicit\"` so " +
+            "you can tell. Always wins over the daemon's own derived key (see " +
+            "`dedupe` below) when both would apply. Omitting this does NOT mean " +
+            "'spawn unconditionally' — see `dedupe`."
+        ),
+      dedupe: mcpBool
+        .optional()
+        .describe(
+          "Per-call override for the daemon's `spawn.dedupe` policy — what " +
+            "happens when NO `idempotencyKey` is supplied. By DEFAULT " +
+            "(`spawn.dedupe: \"always\"`) a spawn that carries a `label` gets an " +
+            "IMPLICIT key derived from that label plus a hash of `prompt`, and " +
+            "dedupes against it exactly like an explicit key — set " +
+            "`dedupeSource: \"implicit\"` on the response (alongside `deduped: " +
+            "true`) so you can tell it wasn't your own promise that matched. A " +
+            "spawn with no `label` is never touched by this — deliberate " +
+            "parallel fan-out into one cwd (a real, exercised pattern here) needs " +
+            "no label and stays exactly as many sessions as you asked for. Pass " +
+            "`dedupe: false` to opt this ONE spawn out of implicit derivation " +
+            "regardless of policy — the escape hatch, mirroring `attach: false` / " +
+            "`worktree: false`. `dedupe: true` forces derivation even under an " +
+            "`\"on-request\"` daemon policy, mirroring `attach: true`."
         ),
       permissionHold: mcpBool
         .optional()
@@ -636,7 +678,13 @@ export function registerAgentTools(
       wait: mcpBool
         .optional()
         .describe(
-          "Block until the spawned session's first turn completes and include the cleaned output in the response. Default false = return the descriptor immediately."
+          "Block until the spawned session's first turn completes and include the cleaned output in the response. Default false = return the descriptor immediately. " +
+            "Note this blocks for the child's ENTIRE first turn (~40-90s+), not just the spawn. " +
+            "Batching several `wait: true` calls in one turn does NOT run them in parallel: harnesses that execute " +
+            "tool calls sequentially serialize them, each wait blocking its slot until its child's turn ends. " +
+            "For parallel fan-out spawn with `wait: false` (all spawns return in seconds), then wait on completion " +
+            "separately via `agentproto sessions wait <id> --until turn-end` (detached/background) or a completion " +
+            "policy via `policy_attach`."
         ),
       maxCostUsd: mcpPositiveNumber
         .optional()
@@ -809,6 +857,33 @@ export function registerAgentTools(
             "The two are independent and combine (or not) freely; `commandSandbox` is " +
             "ignored for a `sandbox` spawn (the box's own daemon would need to apply it)."
         ),
+      appServe: jsonTolerant(
+        z
+          .object({
+            dir: z
+              .string()
+              .min(1)
+              .describe("Absolute path to the app's directory INSIDE the sandbox box (e.g. '/home/user/apps/<slug>')."),
+            port: z
+              .number()
+              .int()
+              .min(1)
+              .max(65535)
+              .optional()
+              .describe("Port the UI binds inside the box (default 3210). The port is exposed by the sandbox provider and its public URL returned."),
+          })
+          .strict(),
+      )
+        .optional()
+        .describe(
+          "WP3 — serve an agentproto app's UI from INSIDE the sandbox box and return its public " +
+            "URL. Requires `sandbox` (rejected otherwise). The box daemon installs the app " +
+            "(`app_install` on the in-box `dir`), launches `agentproto app serve --host 0.0.0.0 " +
+            "--port <port>` detached through the box's `command_execute`, and the spawn result " +
+            "+ descriptor carry `appServe: { appId, dir, port, url, ready }` — `url` is the " +
+            "provider-resolved public URL for the served UI (the port is also added to the " +
+            "spec's `extraPorts` and echoed in `sandboxPorts`)."
+        ),
       commandSandbox: z
         .enum(["off", "workspace", "strict"])
         .optional()
@@ -854,6 +929,22 @@ export function registerAgentTools(
                 .min(1)
                 .optional()
                 .describe("Git ref the worktree branch is cut from. Default 'origin/main'."),
+              async: z
+                .boolean()
+                .optional()
+                .describe(
+                  "Return a real, registered session as soon as it's minted " +
+                    "(status \"starting\") instead of blocking `agent_start`'s response " +
+                    "on `git worktree add` + the repo's setup hooks, which can run " +
+                    "minutes. Provisioning + the driver spawn continue in the " +
+                    "background; poll the session's `status` (flips to \"running\" on " +
+                    "success, \"error\" with a readable `lastError` on failure — it never " +
+                    "sits in \"starting\" forever). Any `prompt` is held and dispatched " +
+                    "only once the tree and the driver session both exist. Incompatible " +
+                    "with `wait` (there is no first-turn output to block on yet) — " +
+                    "combining the two is rejected. Default false (synchronous, today's " +
+                    "behaviour)."
+                ),
             })
             .strict(),
         ])
@@ -863,14 +954,15 @@ export function registerAgentTools(
           "Isolate this session in its OWN git worktree instead of spawning " +
             "directly in `cwd` — so a parallel agent can't collide on the working " +
             "tree. `true` provisions a worktree on a fresh branch `wt/<slug>` cut " +
-            "from origin/main (slug auto-minted from `label`); pass `{ slug, base }` " +
-            "to pin either. The daemon boots the worktree (git worktree add + the " +
-            "repo's agentproto.json setup hooks) and spawns `adapter` THERE; the " +
-            "session's cwd, and every path it edits, live inside the worktree. " +
-            "Honoured only for a ROOT spawn (a spawn made THROUGH an orchestrator " +
-            "inherits its parent's tree — no second worktree; an EXPLICIT `worktree` " +
-            "on such a nested spawn is REJECTED, not silently ignored — use " +
-            "`sandbox` to isolate a child) and only when `cwd` " +
+            "from origin/main (slug auto-minted from `label`); pass `{ slug, base, " +
+            "async }` to pin either, or opt into an early return (`async`, see that " +
+            "field's own description). The daemon boots the worktree (git worktree " +
+            "add + the repo's agentproto.json setup hooks) and spawns `adapter` " +
+            "THERE; the session's cwd, and every path it edits, live inside the " +
+            "worktree. Honoured only for a ROOT spawn (a spawn made THROUGH an " +
+            "orchestrator inherits its parent's tree — no second worktree; an " +
+            "EXPLICIT `worktree` on such a nested spawn is REJECTED, not silently " +
+            "ignored — use `sandbox` to isolate a child) and only when `cwd` " +
             "is inside a git repo (nothing to isolate otherwise ⇒ spawns plain, no " +
             "error). The daemon's `worktrees.isolation` policy may force this ON " +
             "for every root spawn (`always`) or OFF (`never`, which REJECTS an " +
@@ -879,6 +971,18 @@ export function registerAgentTools(
             "holds the agent's work; tear it down with `agentproto worktree " +
             "rm|archive|gc`."
         ),
+      },
+      // Live-session widget: rendering agent_start's result auto-mounts the
+      // live widget for the new session (ext-apps `_meta.ui.resourceUri` at
+      // the tool-definition level — same mechanism as the panel apps in
+      // mcp-apps-adapter.ts). `visibility:["model","app"]` keeps agent_start
+      // fully usable by the model AND lets the widget re-call it if needed.
+      _meta: {
+        ui: {
+          resourceUri: "ui://live_session/view",
+          visibility: ["model", "app"],
+        },
+      },
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -922,10 +1026,17 @@ export function registerAgentTools(
           resolveSandboxProvider,
           ...(provisionWorktree ? { provisionWorktree } : {}),
           ...(resolveWorktreeIsolation ? { resolveWorktreeIsolation } : {}),
+          ...(listCatalogModels ? { listCatalogModels } : {}),
         },
         {
           ...spawnInput,
           adapter,
+          // Auto-stamp the source channel (#session-visibility): when the
+          // caller didn't pass an explicit `origin`, fall back to the connecting
+          // client's `?origin=` label so a bridge-client spawn (cowork/vscode/
+          // codex) is attributed instead of landing as a bare root. An explicit
+          // `input.origin` (already in `spawnInput`) always wins.
+          ...(!spawnInput.origin && mcpBridgeOrigin ? { origin: mcpBridgeOrigin } : {}),
           // The trusted caller id (from `?callerSessionId=`) becomes the
           // implicit auto-parent — attach-by-default without the caller
           // passing its own id. An explicit `parentSessionId` still outranks
@@ -966,10 +1077,11 @@ export function registerAgentTools(
           ...(result.output ? { output: result.output } : {}),
           ...(warnings.length > 0 ? { warnings } : {}),
           ...(result.deduped ? { deduped: true } : {}),
+          ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
           ...(costBudgetPolicyId ? { costBudgetPolicyId } : {}),
         }
         return {
-          content: [{ type: "text", text: JSON.stringify(body, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(body) }],
         }
       }
       // The orchestrator guardrail errors + the role-spawn gate have
@@ -1034,8 +1146,16 @@ export function registerAgentTools(
         // instead of a lying `{queued: true}` for a prompt that goes
         // nowhere. The caller polls agent_output for the turn's actual
         // progress/completion.
+        // Prompt provenance: when this call is attributed to a session (the
+        // scoped orchestrator gateway's verified scope, else the trusted
+        // `?callerSessionId=` self-ref query), record the injected turn as
+        // that agent's — a transcript view then shows the supervisor as the
+        // author instead of "you". An unattributed call (a human operator
+        // driving the MCP surface directly) stays source-less.
+        const promptSource = callerScope?.ownerSessionId ?? callerSessionId
         await registry.enqueuePrompt(sessionId, input.prompt, {
           interrupt: input.interrupt,
+          ...(promptSource ? { source: `agent:${promptSource}` } : {}),
         })
         return {
           content: [
@@ -1060,6 +1180,107 @@ export function registerAgentTools(
           isError: true,
         }
       }
+    }
+  )
+
+  // ── message_parent ─────────────────────────────────────
+  // The child→parent half of the supervision channel. `agent_prompt` is a
+  // delegation tool (drive ANY session by id, stripped from executor
+  // children); this one is deliberately not: it takes no session id, the
+  // daemon resolves the caller's own recorded `parentSessionId`, and it can
+  // reach nothing else — which is why it stays out of
+  // `DELEGATION_TOOL_NAMES` and is granted role-independently. Delivery
+  // mirrors `supervisor-notify.ts` (the crash-notice path): enqueue as a
+  // normal prompt on an idle parent, stamp onto the parent's pending-notice
+  // queue when it's mid-turn — a child's report never interrupts the
+  // parent's in-flight turn.
+  server.tool(
+    "message_parent",
+    "Report a message UP to the session that spawned you (your parent/" +
+      "supervisor) — a result, a progress update, or a blocker. No session " +
+      "id needed: the daemon resolves your recorded parent from your own " +
+      "session identity (also visible as the AGENTPROTO_PARENT_SESSION_ID " +
+      "env var). Delivered as a prompt when the parent is idle, or queued " +
+      "onto its next turn when it's mid-turn (never interrupts). Errors if " +
+      "this session has no recorded parent or the parent is gone.",
+    {
+      message: z
+        .string()
+        .min(1)
+        .describe("The message to deliver to your parent session (plain text)."),
+    },
+    async input => {
+      const fail = (text: string) => ({
+        content: [{ type: "text" as const, text }],
+        isError: true,
+      })
+      // The scoped gateway's token is the caller's identity; on the plain
+      // `/mcp` path the trusted `?callerSessionId=` self-ref query is —
+      // same precedence as spawn attribution (spawn-attach.ts).
+      const selfId = callerScope?.ownerSessionId ?? callerSessionId
+      if (!selfId) {
+        return fail(
+          "message_parent: cannot identify the calling session — this tool " +
+            "needs gateway access attributed to a session (a scoped " +
+            "orchestrator gateway, or a daemon `/mcp` URL carrying " +
+            "`?callerSessionId=`). A human/root caller has no parent to message."
+        )
+      }
+      const self = registry.get(selfId)
+      if (!self) {
+        return fail(`message_parent: calling session "${selfId}" is not in the registry.`)
+      }
+      const parentId = self.parentSessionId
+      if (!parentId || parentId === selfId) {
+        return fail(
+          "message_parent: this session has no recorded parent — it was " +
+            "spawned at the root, so there is no one to report up to."
+        )
+      }
+      const parent = registry.get(parentId)
+      if (!parent) {
+        return fail(`message_parent: parent session "${parentId}" no longer exists.`)
+      }
+      if (parent.status !== "running" && parent.status !== "starting") {
+        return fail(
+          `message_parent: parent session "${parentId}" is not running ` +
+            `(status: ${parent.status}) — the message cannot be delivered.`
+        )
+      }
+      const who = self.label ?? selfId
+      const notice = `[child-message] ${who} (${selfId}): ${input.message}`
+      const done = (delivery: "enqueued" | "queued-next-turn") => ({
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ok: true, parentSessionId: parentId, delivery }),
+          },
+        ],
+      })
+      if (!parent.busy) {
+        try {
+          // `origin: "child:…"` (not a `source`) labels a queued item's
+          // after-the-fact origin as a child's report — distinct from a
+          // human operator ("user") and another session's `agent_prompt`
+          // ("agent:…"). Provenance-agnostic: transcript `source` stays
+          // unset, as before.
+          await registry.enqueuePrompt(parentId, notice, { origin: `child:${who}` })
+          return done("enqueued")
+        } catch {
+          // Raced into busy/admission-rejected between the check and the
+          // enqueue — fall through to the pending-notice stamp below.
+        }
+      }
+      // Same mechanism the crash notice uses: stamped notices are flushed
+      // ahead of the parent's next outgoing message (see
+      // `pendingChildCrashNotices` in sessions.ts — generic despite the
+      // crash-flavored name).
+      if (!registry.stampPendingChildCrashNotice(parentId, notice)) {
+        return fail(
+          `message_parent: parent session "${parentId}" vanished mid-delivery.`
+        )
+      }
+      return done("queued-next-turn")
     }
   )
 
@@ -1131,6 +1352,8 @@ export function registerAgentTools(
               {
                 sessionId,
                 status: desc.status,
+                currentPhase: desc.currentPhase,
+                toolCallsThisTurn: desc.toolCallsThisTurn,
                 lastOutputAt: desc.lastOutputAt,
                 // Distinct liveness heartbeat: advances on ANY adapter-process
                 // activity (streamed thinking/text deltas, tool traffic), even
@@ -1139,6 +1362,9 @@ export function registerAgentTools(
                 // `lastActivityAt` moving while `lastOutputAt` is stale means
                 // "alive and working", not "stalled". See SessionDescriptor.
                 ...(desc.lastActivityAt ? { lastActivityAt: desc.lastActivityAt } : {}),
+                ...(desc.secondsSinceLastActivity !== undefined
+                  ? { secondsSinceLastActivity: desc.secondsSinceLastActivity }
+                  : {}),
                 // processAlive is a live OS query stamped by registry.get().
                 ...(desc.processAlive !== undefined ? { processAlive: desc.processAlive } : {}),
                 // Surfaced so a caller can distinguish "idle" from "mid tool
@@ -1208,7 +1434,7 @@ export function registerAgentTools(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok, sessionId }, null, 2),
+            text: JSON.stringify({ ok, sessionId }),
           },
         ],
       }
@@ -1237,7 +1463,7 @@ export function registerAgentTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ ok: true, sessionId, wasBusy }, null, 2),
+              text: JSON.stringify({ ok: true, sessionId, wasBusy }),
             },
           ],
         }
@@ -1280,7 +1506,7 @@ export function registerAgentTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+              text: JSON.stringify({ ok: true, sessionId, ...result }),
             },
           ],
         }
@@ -1327,7 +1553,7 @@ export function registerAgentTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+              text: JSON.stringify({ ok: true, sessionId, ...result }),
             },
           ],
         }
@@ -1375,7 +1601,7 @@ export function registerAgentTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+              text: JSON.stringify({ ok: true, sessionId, ...result }),
             },
           ],
         }
@@ -1394,28 +1620,66 @@ export function registerAgentTools(
   )
 
   // ── agent_sessions_list ───────────────────────────────────────
-  server.tool(
-    "agent_sessions_list",
-    "List agent-CLI sessions tracked by the daemon. Equivalent to `session_list({kind: 'agent-cli'})`. " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer — the same
+  // pattern as session_list (#1201). COMPACT BY DEFAULT: each row is a
+  // slim projection mirroring session_list's compact view; `full: true`
+  // (or `compact: false`) returns the complete, unprojected descriptor.
+  const compactAgentSessionItem = (s: SessionDescriptor) => ({
+    id: s.id,
+    kind: s.kind,
+    name: s.name,
+    label: s.label,
+    status: s.status,
+    pty: s.pty,
+    command: s.command,
+    cwd: s.cwd,
+    adapterSlug: s.adapterSlug,
+    model: s.model,
+    busy: s.busy,
+    awaitingInput: s.awaitingInput,
+    blockedOn: s.blockedOn,
+    lastActivityAt: s.lastActivityAt,
+    startedAt: s.startedAt,
+    exitCode: s.exitCode,
+    depth: s.depth,
+    parentSessionId: s.parentSessionId,
+    usageSource: s.usageSource,
+    costUsd: s.costUsd,
+    tokensIn: s.tokensIn,
+    tokensOut: s.tokensOut,
+    contextSize: s.contextSize,
+    contextUsed: s.contextUsed,
+  })
+  const agentSessionsListSchema = z.object({
+    kind: z
+      .enum(["terminal", "agent-cli", "command", "all"])
+      .optional()
+      .describe(
+        "Optional override of the default `agent-cli` filter. `all` returns every kind."
+      ),
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe("When true, only running/starting sessions. Default false."),
+    status: z
+      .enum(["starting", "running", "exited", "killed", "error"])
+      .optional()
+      .describe("Filter by exact status (overrides onlyAlive)."),
+    ...pageParamsShape,
+  })
+  type AgentSessionsListInput = z.infer<typeof agentSessionsListSchema>
+
+  registerBuiltinTool<AgentSessionsListInput, SessionDescriptor[]>(server, {
+    id: "agent_sessions_list",
+    description: "List agent-CLI sessions tracked by the daemon. Equivalent to `session_list({kind: 'agent-cli'})`. " +
       "Each entry includes `kind`, `status`, age, etc. Use this when you only want " +
-      "the agent-CLI subset.",
-    {
-      kind: z
-        .enum(["terminal", "agent-cli", "command", "all"])
-        .optional()
-        .describe(
-          "Optional override of the default `agent-cli` filter. `all` returns every kind."
-        ),
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("When true, only running/starting sessions. Default false."),
-      status: z
-        .enum(["starting", "running", "exited", "killed", "error"])
-        .optional()
-        .describe("Filter by exact status (overrides onlyAlive)."),
-    },
-    async input => {
+      "the agent-CLI subset. COMPACT BY DEFAULT: each entry is a slim projection " +
+      "(id/kind/name/label/status/command/cwd/model/busy/awaitingInput/blockedOn/" +
+      "lastActivityAt/startedAt/exitCode/depth/parentSessionId); pass `full: true` " +
+      "(or `compact: false`) for the complete, unprojected per-session record.",
+    inputSchema: agentSessionsListSchema,
+    handler: async (input) => {
       // Full list (includeArchived) for subtree correctness — see
       // session_list's docblock; archived rows are hidden below,
       // unconditionally (this tool has no includeArchived opt-in).
@@ -1436,56 +1700,69 @@ export function registerAgentTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return {
-        content: [
-          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
-        ],
-      }
+      return rows
     },
-  )
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactAgentSessionItem,
+        keyOf: s => s.id,
+        maxLimit: 200,
+        itemKey: "sessions",
+      }),
+    ],
+  })
 
   // ── adapter_list ──────────────────────────────────────────────
-  server.tool(
-    "adapter_list",
-    "Enumerate every agent CLI adapter installed on the host (claude-code, " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer. COMPACT BY
+  // DEFAULT: the former `summary: true` projection (slug/name/version/
+  // protocol/models — all a UI picker needs) is now the default view;
+  // the full manifest echo (commands/modes/model details — can run to
+  // hundreds of KB) is the `full: true` / `compact: false` opt-out.
+  const compactAdapterItem = (a: AdapterListEntry) => ({
+    slug: a.slug,
+    name: a.name,
+    version: a.version,
+    protocol: a.protocol,
+    models: a.models ?? [],
+  })
+  const adapterListSchema = z.object({
+    ...pageParamsShape,
+  })
+  type AdapterListInput = z.infer<typeof adapterListSchema>
+
+  registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
+    id: "adapter_list",
+    description: "Enumerate every agent CLI adapter installed on the host (claude-code, " +
       "hermes, aider, …). Returns slug + display name + version + protocol so " +
       "callers can let users pick from the installed set instead of guessing. " +
       "Use before `agent_start` when the model doesn't already know " +
-      "what's available.",
-    {},
-    async () => {
+      "what's available. COMPACT BY DEFAULT: each entry carries only `slug`, " +
+      "`name`, `version`, `protocol`, `models` — pass `full: true` (or " +
+      "`compact: false`) for the full manifest projection (commands/modes/" +
+      "model details, hundreds of KB).",
+    inputSchema: adapterListSchema,
+    handler: async () => {
       if (!listAgentAdapters) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "adapter_list is not enabled — the daemon was started without " +
-                "an adapter lister. Wire `@agentproto/cli`'s " +
-                "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          "adapter_list is not enabled — the daemon was started without " +
+            "an adapter lister. Wire `@agentproto/cli`'s " +
+            "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+        )
       }
-      try {
-        const adapters = await listAgentAdapters()
-        return {
-          content: [{ type: "text", text: JSON.stringify({ adapters }, null, 2) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `adapter_list failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+      return listAgentAdapters()
+    },
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactAdapterItem,
+        keyOf: a => a.slug,
+        maxLimit: 200,
+        itemKey: "adapters",
+      }),
+    ],
+  })
 
   // ── harness_capabilities ────────────────────────────────────────
   server.tool(
@@ -1523,7 +1800,7 @@ export function registerAgentTools(
       try {
         const capabilities = await listHarnessCapabilities(adapter ? { adapter } : undefined)
         return {
-          content: [{ type: "text", text: JSON.stringify({ capabilities }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ capabilities }) }],
         }
       } catch (err) {
         return {
@@ -1577,7 +1854,7 @@ export function registerAgentTools(
         // string, discarding the payload). isError is reserved for the
         // "not enabled" / thrown-exception faults, below.
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(result) }],
         }
       } catch (err) {
         return {
@@ -1594,138 +1871,187 @@ export function registerAgentTools(
   )
 
   // ── catalog_models ────────────────────────────────────────────
-  server.tool(
-    "catalog_models",
-    "Read-only vendor/product/route catalog (SPEC §5) — every model this " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer. Rows are the
+  // per-route FLATTENING the paginated branch always used (vendor +
+  // product carried on each, every CatalogRoute field intact), COMPACT
+  // BY DEFAULT: routing fields + small booleans only. `full: true` (or
+  // `compact: false`) returns the complete per-route record (baseUrl/
+  // pricing/contextWindow/maxOutput/eligibleProfiles/adapterModes/
+  // adapters).
+  const compactCatalogRouteItem = (
+    e: { vendor: string; product: string } & CatalogRoute,
+  ) => ({
+    vendor: e.vendor,
+    product: e.product,
+    route: e.route,
+    ref: e.ref,
+    runnable: e.runnable,
+    curated: e.curated,
+    multiModel: e.multiModel,
+  })
+  const catalogModelsSchema = z.object({
+    adapter: z.string().optional().describe("Keep only routes reachable via this adapter slug."),
+    vendor: z.string().optional().describe("Keep only this vendor's entry."),
+    route: z.string().optional().describe("Keep only routes with this route id."),
+    runnableOnly: mcpBool.optional().describe("Drop every route with runnable:false."),
+    ...pageParamsShape,
+  })
+  type CatalogModelsInput = z.infer<typeof catalogModelsSchema>
+
+  registerBuiltinTool<CatalogModelsInput, Array<{ vendor: string; product: string } & CatalogRoute>>(server, {
+    id: "catalog_models",
+    description: "Read-only vendor/product/route catalog (SPEC §5) — every model this " +
       "host can reach, widened beyond any one adapter's model list via " +
       "OpenRouter/Requesty/HuggingFace routing, with a profile-aware " +
       "`runnable` flag per route. Use before `agent_start` to see what's " +
-      "actually spawnable given the auth profiles configured on this host.",
-    {
-      adapter: z.string().optional().describe("Keep only routes reachable via this adapter slug."),
-      vendor: z.string().optional().describe("Keep only this vendor's entry."),
-      route: z.string().optional().describe("Keep only routes with this route id."),
-      runnableOnly: mcpBool.optional().describe("Drop every route with runnable:false."),
-    },
-    async ({ adapter, vendor, route, runnableOnly }) => {
+      "actually spawnable given the auth profiles configured on this host. " +
+      "Returns one FLATTENED row per route (vendor/product carried on each), " +
+      "COMPACT BY DEFAULT: vendor/product/route/ref/runnable/curated/" +
+      "multiModel only — pass `full: true` (or `compact: false`) for the " +
+      "complete per-route record (pricing, contextWindow, maxOutput, " +
+      "eligibleProfiles, adapterModes, adapters, baseUrl).",
+    inputSchema: catalogModelsSchema,
+    handler: async (input) => {
       if (!listCatalogModels) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "catalog_models is not enabled — the daemon was started without " +
-                "a catalog lister. Wire `buildCatalogModels` via " +
-                "`createGateway({ listCatalogModels })`.",
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          "catalog_models is not enabled — the daemon was started without " +
+            "a catalog lister. Wire `buildCatalogModels` via " +
+            "`createGateway({ listCatalogModels })`.",
+        )
       }
-      try {
-        const catalog = await listCatalogModels({
-          ...(adapter ? { adapter } : {}),
-          ...(vendor ? { vendor } : {}),
-          ...(route ? { route } : {}),
-          ...(runnableOnly ? { runnableOnly: true } : {}),
-        })
-        return {
-          content: [{ type: "text", text: JSON.stringify(catalog, null, 2) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `catalog_models failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+      const catalog = await listCatalogModels({
+        ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...(input.vendor ? { vendor: input.vendor } : {}),
+        ...(input.route ? { route: input.route } : {}),
+        ...(input.runnableOnly ? { runnableOnly: true } : {}),
+      })
+      // Flatten the nested vendor/product tree to per-route entries — the
+      // cursor's decoded `i` is the offset over this filtered array (no
+      // stable keyset in the catalog; same semantics as PR-3).
+      return catalog.vendors.flatMap(v =>
+        v.products.flatMap(p =>
+          p.routes.map(r => ({ vendor: v.vendor, product: p.product, ...r })),
+        ),
+      )
+    },
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactCatalogRouteItem,
+        maxLimit: 200,
+        itemKey: "routes",
+      }),
+    ],
+  })
 
   // ── catalog_provider_models ───────────────────────────────────
-  server.tool(
-    "catalog_provider_models",
-    "Read-only EXHAUSTIVE model list for ONE provider (AIP-45 launch-menu " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer. COMPACT BY
+  // DEFAULT: id/kind/label/route per row (all a picker renders);
+  // pricing/addedAt stay behind `full: true`.
+  const compactProviderModelItem = (m: CatalogProviderModel) => ({
+    id: m.id,
+    kind: m.kind,
+    label: m.label,
+    route: m.route,
+  })
+  const catalogProviderModelsSchema = z.object({
+    endpoint: z
+      .string()
+      .optional()
+      .describe("Provider / billing endpoint to enumerate (anthropic, openai, openrouter, replicate, …)."),
+    route: z
+      .string()
+      .optional()
+      .describe("Synonym for endpoint (takes precedence when both are given)."),
+    ...pageParamsShape,
+  })
+  type CatalogProviderModelsInput = z.infer<typeof catalogProviderModelsSchema>
+
+  registerBuiltinTool<CatalogProviderModelsInput, CatalogProviderModel[]>(server, {
+    id: "catalog_provider_models",
+    description: "Read-only EXHAUSTIVE model list for ONE provider (AIP-45 launch-menu " +
       '"+" picker) — every model `endpoint`/`route` can serve, straight from ' +
       "the static catalog. Deliberately separate from `catalog_models`: that " +
       "tool is the lean spawn catalog (curated pairs widened through routers, " +
       "profile-aware `runnable`); THIS is the full provider surface the picker " +
       "browses before any adapter/profile is chosen, so it takes no host " +
-      "state. An unknown/empty provider returns `models: []`, never an error. " +
-      "Large providers (openrouter is thousands) come back whole — paginate " +
-      "client-side.",
-    {
-      endpoint: z
-        .string()
-        .optional()
-        .describe("Provider / billing endpoint to enumerate (anthropic, openai, openrouter, replicate, …)."),
-      route: z
-        .string()
-        .optional()
-        .describe("Synonym for endpoint (takes precedence when both are given)."),
+      "state. An unknown/empty provider returns an empty list, never an error. " +
+      "Large providers (openrouter is thousands) — paginate with `limit`/" +
+      "`cursor`. COMPACT BY DEFAULT: id/kind/label/route per row; `full: true` " +
+      "(or `compact: false`) adds pricing/addedAt.",
+    inputSchema: catalogProviderModelsSchema,
+    handler: async (input) => {
+      // Never throws: an unknown provider is a valid empty answer
+      // (buildCatalogProviderModels guarantees `{ models: [] }`); any
+      // residual throw is defence-in-depth handled by `catchErrors()`.
+      const result = buildCatalogProviderModels({
+        ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+        ...(input.route ? { route: input.route } : {}),
+      })
+      return result.models
     },
-    async ({ endpoint, route }) => {
-      // Never throws: an unknown provider is a valid empty answer, and the
-      // catch is defence-in-depth so a malformed overlay can't 500 the picker.
-      try {
-        const result = buildCatalogProviderModels({
-          ...(endpoint ? { endpoint } : {}),
-          ...(route ? { route } : {}),
-        })
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        }
-      } catch {
-        const provider = (route ?? endpoint ?? "").trim()
-        return {
-          content: [
-            { type: "text", text: JSON.stringify({ provider, models: [] }, null, 2) },
-          ],
-        }
-      }
-    },
-  )
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactProviderModelItem,
+        keyOf: m => m.id,
+        maxLimit: 200,
+        itemKey: "models",
+      }),
+    ],
+  })
 
   // ── role_list ─────────────────────────────────────────────────
-  server.tool(
-    "role_list",
-    "Enumerate every spawn-time role known to the daemon — the two " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool) with the shared `paginated()` transformer. The handler
+  // already projects each role to the compact row this tool exists to
+  // surface (name/level/delegation/spawnable — spawnable is the point
+  // of the tool), so the compact projection is that row verbatim and
+  // `full: true` is a no-op.
+  interface RoleListRow {
+    name: string
+    level: number
+    delegation: string
+    spawnable: string[]
+  }
+  const compactRoleItem = (r: RoleListRow): RoleListRow => r
+  const roleListSchema = z.object({
+    ...pageParamsShape,
+  })
+  type RoleListInput = z.infer<typeof roleListSchema>
+
+  registerBuiltinTool<RoleListInput, RoleListRow[]>(server, {
+    id: "role_list",
+    description: "Enumerate every spawn-time role known to the daemon — the two " +
       "built-ins (executor, supervisor) plus any custom role installed as " +
       "a role pack. Read-only: pure visibility into the same registry " +
       "`agent_start`'s `role` field and privilege-lattice spawn gate use — " +
       "this tool never itself grants or denies a spawn. Use before " +
       "`agent_start` with `orchestrator` to discover which roles this " +
-      "session may in turn spawn.",
-    {},
-    async () => {
-      try {
-        const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
-        const roles = listRoles(registry).map(role => ({
-          name: role.name,
-          level: role.level,
-          delegation: role.toolPolicy.delegation,
-          spawnable: spawnableRolesFor(role, registry).map(child => child.name),
-        }))
-        return {
-          content: [{ type: "text", text: JSON.stringify({ roles }, null, 2) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `role_list failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+      "session may in turn spawn. Each row is already the compact view " +
+      "(name/level/delegation/spawnable).",
+    inputSchema: roleListSchema,
+    handler: async () => {
+      const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
+      return listRoles(registry).map<RoleListRow>(role => ({
+        name: role.name,
+        level: role.level,
+        delegation: role.toolPolicy.delegation,
+        spawnable: spawnableRolesFor(role, registry).map(child => child.name),
+      }))
+    },
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactRoleItem,
+        keyOf: r => r.name,
+        maxLimit: 200,
+        itemKey: "roles",
+      }),
+    ],
+  })
 }
 
 export interface ExportSessionOps {

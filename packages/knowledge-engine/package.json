@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/knowledge-engine",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pure, backend-agnostic knowledge (retrieval) contract (IKnowledgeProvider) + the AIP-14 `kb_query` / `kb_ingest` tools, their AIP-30 builtin provider, and AIP-29/31/32 surface projections. Names no retrieval engine — a backend is injected via the tool context.",
   "keywords": [
     "agentproto",
@@ -84,12 +84,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/tool": "workspace:*",
     "@agentproto/driver": "workspace:*",
-    "@agentproto/driver-mcp": "workspace:*",
-    "@agentproto/driver-http": "workspace:*",
     "@agentproto/driver-cli": "workspace:*",
-    "zod": "^4.4.3"
+    "@agentproto/driver-http": "workspace:*",
+    "@agentproto/driver-mcp": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

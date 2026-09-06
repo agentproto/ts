@@ -3,7 +3,8 @@
  * maintained ACP wrapper @agentclientprotocol/codex-acp.
  *
  * The wrapper bundles its own Codex runtime (Rust binary delivered via
- * npm dependency) so a single `npx -y @agentclientprotocol/codex-acp`
+ * npm dependency) so a single
+ * `npx -y @agentclientprotocol/codex-acp@1.1.14`
  * invocation is enough — no separate @openai/codex install needed.
  *
  *   import { codex, codexRuntime } from "@agentproto/adapter-codex"
@@ -27,21 +28,24 @@ export const codex: AgentCliHandle = defineAgentCli({
   name: "codex",
   id: "codex",
   description:
-    "OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via `npx -y @agentclientprotocol/codex-acp` and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.",
+    "OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via a version-pinned npx package and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.",
   version: "0.1.0",
   bin: "npx",
-  bin_args: ["-y", "@agentclientprotocol/codex-acp"],
+  // Keep spawn deterministic. An unversioned npx target performs registry
+  // resolution at session startup and can silently replace both the bridge
+  // and its bundled Codex runtime exactly when either publishes an update.
+  bin_args: ["-y", "@agentclientprotocol/codex-acp@1.1.14"],
   install: [
     {
       method: "npm",
-      package: "@agentclientprotocol/codex-acp",
+      package: "@agentclientprotocol/codex-acp@1.1.14",
       global: true,
     },
   ],
   version_check: {
-    cmd: "npm view @agentclientprotocol/codex-acp version",
+    cmd: "npm view @agentclientprotocol/codex-acp@1.1.14 version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
-    range: ">=1.1.7",
+    range: "=1.1.14",
     timeout_ms: 15_000,
   },
   auth: {
@@ -87,14 +91,49 @@ export const codex: AgentCliHandle = defineAgentCli({
     // existing CLI discovery contract. It is not a default or an allow-list:
     // explicit model IDs are still validated dynamically by Codex.
     allowed: [
+      // Codex-specialized (coding) models.
       "gpt-5-codex",
       "gpt-5.1-codex",
       "gpt-5.1-codex-mini",
       "gpt-5.1-codex-max",
       "gpt-5.2-codex",
+      // GPT-5 generalist family.
       "gpt-5",
       "gpt-5-mini",
+      "gpt-5-nano",
       "gpt-5-pro",
+      "gpt-5.1",
+      "gpt-5.2",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.4-nano",
+      "gpt-5.4-pro",
+      "gpt-5.5",
+      "gpt-5.5-pro",
+      // GPT-5.6 family.
+      "gpt-5.6-luna",
+      "gpt-5.6-luna-pro",
+      "gpt-5.6-sol",
+      "gpt-5.6-sol-pro",
+      "gpt-5.6-terra",
+      "gpt-5.6-terra-pro",
+      // GPT-4.1 / 4o generation.
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "gpt-4.1-nano",
+      "gpt-4o",
+      "gpt-4o-mini",
+      // o-series reasoning models.
+      "o3",
+      "o3-pro",
+      "o3-mini",
+      "o3-deep-research",
+      "o4-mini",
+      "o4-mini-high",
+      "o4-mini-deep-research",
+      "o1",
+      "o1-mini",
+      "o1-pro",
     ],
     env: { openai: "OPENAI_API_KEY", codex: "CODEX_API_KEY" },
     // The maintained ACP bridge exposes `session/set_config_option`, so the

@@ -257,7 +257,44 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
           AUTH_MODE: ${{ steps.compose.outputs.auth_mode }}
           PROVENANCE: ${{ steps.sandbox-verb.outputs.provenance }}
+          # Artifact ledger (PR id/number at creation time) — the stamp keys off
+          # this; empty ⇒ it falls back to placeholder discovery with a ::warning::.
+          ARTIFACTS: ${{ steps.sandbox-verb.outputs.artifacts }}
         run: node scripts/stamp-pr-footer.mjs
+
+      # The `/review` verb posts a PR REVIEW, not a PR — a distinct GitHub
+      # object the step above never touches (it only patches a PR body). This
+      # command lane had no equivalent stamp at all: ci.yml's push-triggered
+      # pr-review job stamps its review via `stamp-review-footer.mjs`, but a
+      # human running `/review` in a comment got a review with no
+      # `@agentproto-bot` footer — same script, same marker, just never wired
+      # here.
+      - name: Stamp review provenance footer
+        if: >
+          steps.parse.outputs.sandboxable == 'true' &&
+          steps.sandbox-verb.outputs.status == 'done' &&
+          steps.parse.outputs.verb == 'review'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.ctx.outputs.number }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+          AUTH_MODE: ${{ steps.compose.outputs.auth_mode }}
+          PROVENANCE: ${{ steps.sandbox-verb.outputs.provenance }}
+          # Artifact ledger (review id at creation time) — the stamp keys off
+          # this; empty ⇒ it falls back to sha discovery with a ::warning::.
+          ARTIFACTS: ${{ steps.sandbox-verb.outputs.artifacts }}
+        run: |
+          # SHA feeds the script's sha-discovery fallback (used only when the
+          # artifact ledger is empty, e.g. a non-sandboxed host placement) —
+          # a failed resolve just leaves it empty, which the script already
+          # treats as "nothing to discover against" with a ::warning::.
+          SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid || echo "")
+          export SHA
+          node scripts/stamp-review-footer.mjs
 
       - name: React result (✅ / ❌)
         if: always()

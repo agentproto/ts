@@ -93,6 +93,12 @@ final message against it, **re-prompting on mismatch** up to `maxRetries`
 (default 2). The step's bound output is `{ sessionId, output }` where `output`
 is the parsed, schema-valid value.
 
+Without `outputSchema`, an agent step whose host implements `readFinalMessage`
+binds `{ sessionId, text }`, where `text` is the session's final assistant
+message. The runtime uses that `text` to thread prior agent-step output into
+later agent prompts automatically, so multi-step workflows can share context
+without manual selector plumbing.
+
 ```ts
 const Verdict = z.object({
   verdict: z.enum(["real", "false-positive"]),
@@ -218,6 +224,21 @@ await runWorkflow({ workflow: wf, cache, cacheKey: "nightly-review" }) // run 2:
 Both `cache` and `cacheKey` must be set for any caching to happen. Supply your
 own `StepCache` (`{ get, set }`) for an in-memory or custom-backed journal.
 
+### Step lifecycle callbacks
+
+Pass `onStepStart` and `onStepComplete` to `runWorkflow` to observe progress in
+real time. The callbacks fire for every step kind; for `agent` steps, start fires
+before spawn and complete fires after the turn (and any output-schema retry loop)
+finishes.
+
+```ts
+await runWorkflow({
+  workflow: wf,
+  onStepStart: (stepId) => console.log("starting", stepId),
+  onStepComplete: (stepId, output) => console.log("done", stepId, output),
+})
+```
+
 ## AgentSessionHost — the host seam
 
 The runtime has **no** knowledge of concrete session registries or event buses.
@@ -225,11 +246,22 @@ The runtime has **no** knowledge of concrete session registries or event buses.
 
 ```ts
 interface AgentSessionHost {
-  spawn(adapter: string, opts: { cwd?; workspaceSlug?; stepId? }): Promise<string>
+  spawn(
+    adapter: string,
+    opts: {
+      cwd?
+      workspaceSlug?
+      stepId?
+      /** AIP-36 sandbox ref (provider slug or inline spec). */
+      sandbox?
+      /** Adapter option id → value, e.g. for an app-scoped agent resolution. */
+      options?: Record<string, boolean | number | string>
+    },
+  ): Promise<string>
   sendPromptAndWait(sessionId: string, prompt: string): Promise<void>
   resolveByLabel(stepId: string): string | undefined  // for sessionRef reuse
   onAwaitingInput?(sessionId, policy): Promise<void>
-  readFinalMessage?(sessionId): Promise<string>        // required for outputSchema
+  readFinalMessage?(sessionId): Promise<string>        // required for outputSchema; also supplies `text` output
   readCostUsd?(sessionId): Promise<number>             // required for maxTotalCostUsd
 }
 ```

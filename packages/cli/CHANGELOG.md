@@ -1,5 +1,451 @@
 # @agentproto/cli
 
+## 0.18.0
+
+### Minor Changes
+
+- 3e30df8: `agentproto app init <template> [dir]` — scaffold an app from a template
+  (react-ts | vanilla | book | trame) by wrapping `create-agentproto-app`'s
+  `scaffoldApp`; the new `trame` template emits the minimal AIP app trame
+  (one agent, one workflow with a harness-pinned agent step + gate, a
+  single-file UI stage board, an example gate, the verify umbrella, the
+  data-plane key dictionary, and a node:test suite).
+
+  `agentproto app validate [dir] [--json]` — check an app against the
+  loaders: `loadAppHandle`, every declared workflow via `loadWorkflow`,
+  `ui.tools` entries against the known daemon tool surface (plus `app_*`),
+  `data/DATA.md` presence when `data.dir` is declared, and the APP.md
+  `verify.command` run argv-split (no shell) from the app dir with its exit
+  code propagated.
+
+- 4d01e5c: Add the "book contract" — optional `category` + `library.books` fields to app definitions, allowing apps to self-identify as book bundles for catalog/library substrates. Includes validation, round-trip support, and a new `--template book` option in create-agentproto-app, bundled with an `install-agentproto-app` skill for tier-1 installs.
+- 0012980: feat(permissions): thread plan \_meta through the hold path and add free-text feedback on the respond path
+
+  Adds `feedback?: string` to permission resolutions, enabling users to attach contextual information when approving or denying held tool-permission requests. The feature threads through all layers: types export `ACP_META_FEEDBACK` constant for the `_meta` key convention, ACP client carries `_meta` through to agent-prompt events, runtime forwards feedback on outcomes, and mastra-agent adapter folds feedback into suspension resumeData. CLI gains `--feedback` flag on approve/deny commands and renders plan text from suspension payloads. All changes are backward compatible.
+
+- 2f51af5: Add support for PORT environment variable in app port resolution. New exported `resolveRequestedPort()` function enables launchers (like Claude Code's autoPort) to assign ports dynamically. Port resolution priority: explicit `--port` > `PORT` env > declared `ui.port` > auto-assign.
+- 7331731: Add remote MCP server support to `app serve`: new `--remote-mcp-url`, `--remote-mcp-auth`, and `--remote-app-id` flags (with env-var fallbacks) allow serving MCP-Apps dashboards from a remote MCP server instead of a local directory. Export new public APIs: `resolveRemoteMcpTarget`, `resolveRemoteAppResourceUri`, `readRemoteAppHtml`. Extend `createDaemonMcpClientGetter` with an optional `authToken` parameter for bearer-token authentication (backward compatible).
+- 0e2b30e: Add stage board feature: a dependency-free ES module served at `GET /agentproto/stageboard.js` from `app serve` and `app dev` that renders an app's state ledger as an interactive UI component. Exports `toRows(snapshot, events)` for pure fold logic (snapshot + ledger events → board rows), `unwrapToolResult(result)` for unwrapping nested MCP response shells, and `mountStageBoard(el, opts)` for mounting a live board into an element with auto-refresh, approval flow, and CSS variable theming.
+- aff7794: Add `@agentproto/app-client/runner-select` — a shared harness+model selector for app UIs that discovers installed harnesses via `adapter_list` + `harness_preset_list`, eliminating per-app picker implementations. Automatically injected into every app UI alongside the McpApp bridge. Supporting changes: `adapter_list` summary mode for lightweight UI projections, harness preset profile status enrichment (disabled/missing flags), early validation of default preset profiles during spawn, and discovery tool allowlisting for all app UIs.
+
+### Patch Changes
+
+- d66ffe3: app-kit: Remove typed support for the book/library contract (AppLibraryDefinition, AppLibraryBook). The library.books convention now lives as untyped APP.md frontmatter — apps that need the book contract hand-write it directly without type validation.
+
+  cli: Update comments to reflect that app-kit has no typed support for the library.books convention; CLI continues to read it directly from frontmatter.
+
+- a16541b: Fix allowlist validation for app_tool_call meta-calls: unwrap the inner tool name before checking against ui.tools allowlist, matching the daemon's behavior.
+- 7c12c00: Add workflow approval tools (workflow_escalation_resolve, workflow_status) to ui.tools allowlist for stage board support.
+- f75ef5d: Add token usage tracking for OpenCode adapter sessions via readOpenCodeUsage hook. OpenCode's live ACP usage_update event only carries cost (no token fields), so the new function reads token data from OpenCode's sqlite store and is wired into the registry's turn-end path to fill in missing tokensIn/tokensOut fields, mirroring the existing hermes adapter pattern.
+- Updated dependencies [3e30df8]
+- Updated dependencies [692d659]
+- Updated dependencies [f9e21fd]
+- Updated dependencies [c4ebbd3]
+- Updated dependencies [4d01e5c]
+- Updated dependencies [d66ffe3]
+- Updated dependencies [0012980]
+- Updated dependencies [5328e9b]
+- Updated dependencies [80c837e]
+- Updated dependencies [1817079]
+- Updated dependencies [a48dc03]
+- Updated dependencies [3c6ca11]
+- Updated dependencies [db90fb3]
+- Updated dependencies [b1b569c]
+- Updated dependencies [49a89ba]
+- Updated dependencies [aff7794]
+- Updated dependencies [0deea71]
+- Updated dependencies [6bfb633]
+- Updated dependencies [ece3cae]
+- Updated dependencies [e7e9261]
+  - create-agentproto-app@0.3.0
+  - @agentproto/model-catalog@0.9.2
+  - @agentproto/workflow-loader@0.2.0
+  - @agentproto/app-kit@1.0.0
+  - @agentproto/acp@0.8.0
+  - @agentproto/sandbox-e2b@0.4.0
+  - @agentproto/worktree@0.6.0
+  - @agentproto/app-client@0.3.0
+  - @agentproto/driver-agent-cli@2.4.1
+  - @agentproto/sandbox-box@0.2.7
+  - @agentproto/adapter-browser@0.1.1
+  - @agentproto/auth@1.0.1
+  - @agentproto/driver@0.2.1
+  - @agentproto/provider-kit@0.4.2
+  - @agentproto/rendezvous@0.2.2
+  - @agentproto/runtime-profile-standard@0.1.2
+  - @agentproto/secrets@0.2.4
+
+## 0.17.0
+
+### Minor Changes
+
+- 8215419: Give installed apps a data directory distinct from their source directory. The `app_data_*` plane now anchors to `InstalledApp.dataDir` (default `<dir>/data`) rather than the app's `dir`. Custom data directories are set with `app_install {dataDir}` / `agentproto app install --data-dir`, or hinted by APP.md `data: { dir }`. Full backward compatibility: pre-dataDir files under `<appDir>` are still found via fallback; under the default layout the legacy `data/` spelling is collapsed so existing paths continue to work.
+
+### Patch Changes
+
+- Updated dependencies [2fc4c69]
+  - @agentproto/worktree@0.5.5
+  - @agentproto/sandbox-box@0.2.6
+  - @agentproto/sandbox-e2b@0.3.7
+
+## 0.16.1
+
+### Patch Changes
+
+- 0259d5f: Update test fixtures and CLI help text to reference skills from the new 3-layer agentproto pack structure. Changes legacy skill names (e.g., `agent-session-orchestration-agentproto`, `nested-orchestration`) to their new equivalents (`ap-spawn-agent`, `drive-agents`, `pb-supervise-parallel-mission`), ensuring examples and tests reflect the current skill-pack API.
+- Updated dependencies [139c198]
+  - @agentproto/model-catalog@0.9.1
+
+## 0.16.0
+
+### Minor Changes
+
+- 9f584c4: Rename "plugins" to "adapters" in the CLI to free up "plugin" for Agent Plugins v1.0.0 standard. This is a breaking change: `agentproto plugins` → `agentproto adapters`, config key `plugins[]` → `adapters[]`, manifest schema `agentproto/plugin/v1` → `agentproto/adapter/v1`.
+
+  Introduce `@agentproto/pack` (AIP-52 PACK.md reference implementation) and `@agentproto/plugin` (Agent Plugins v1.0.0 reference implementation) packages.
+
+- 4c44c61: Add app install/list commands and --app flag to app serve
+
+### Patch Changes
+
+- 7a96351: Fix curation drift on `mode: "allow"` auth profiles: an allowlist generated once at create/import time was a frozen snapshot of the catalog that day — new models the catalog picked up later never became usable through the profile, and retired ones lingered forever, with nothing surfacing the mismatch. Adds an explicit, opt-in re-sync: `refreshAuthProfileModels` (`@agentproto/auth`) recomputes a profile's `ids` against a caller-supplied current-catalog snapshot, exposed as the `auth_profile_refresh_models` MCP tool and the `agentproto auth profile refresh-models <id>` CLI verb. Nothing calls this automatically — a profile is only touched when refreshed by name — and it rejects a `mode: "all"` profile outright, since that mode already tracks the live catalog on every read.
+- f5b462a: Add test coverage for `auth profile refresh-models` CLI command and `auth_profile_refresh_models` MCP tool. Both test suites verify the happy path (successful refresh against the current model catalog) and error handling (unknown profile id).
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [7a96351]
+- Updated dependencies [4b924c9]
+- Updated dependencies [008a483]
+- Updated dependencies [3496977]
+- Updated dependencies [008a483]
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+- Updated dependencies [001a2a0]
+- Updated dependencies [5dcc733]
+  - @agentproto/auth@1.0.1
+  - @agentproto/model-catalog@0.9.0
+  - @agentproto/driver-agent-cli@2.4.0
+  - @agentproto/acp@0.7.3
+  - @agentproto/driver@0.2.1
+  - @agentproto/provider-kit@0.4.2
+  - @agentproto/sandbox-e2b@0.3.6
+  - @agentproto/secrets@0.2.4
+  - @agentproto/worktree@0.5.4
+  - @agentproto/runtime-profile-standard@0.1.2
+  - @agentproto/sandbox-box@0.2.5
+
+## 0.15.0
+
+### Minor Changes
+
+- fbdc28b: Centralize session watch keypress handling and add a `s` key to view a session's Story/conversation. Exposes new public helpers `isTerminalSession`, `sessionRowLabel`, `terminalKindMark`, `attachMode`, `decodeWatchKey`, and the `WatchKeyAction` type.
+- 34bbf65: Extract release-check logic from VS Code into `@agentproto/runtime` for code sharing with the CLI. Add `daemon status` release indicator and VS Code update-prompt command with tarball/workspace-specific behaviors.
+- d9aada2: Add CLI flags for agent spawn configuration: `--access-profile` (named billing profile), `--worktree`/`--no-worktree` (git worktree isolation), `--mode` (manifest-declared mode), and `--effort` (reasoning effort). Mirrors MCP agent_start tool fields. Includes actionable error handling for access profile failures.
+- f90a383: Add queue management commands and MCP tools for prompt FIFO inspection and control.
+
+  Introduces `agentproto sessions queue <id>` CLI command with flags `--force`, `--deliver`, `--drop` to inspect and manipulate queued prompts after enqueue. Adds four new MCP tools (`session_queue_list`, `session_queue_promote`, `session_queue_deliver`, `session_queue_drop`) with the same semantics. HTTP routes mirror the MCP surface.
+
+  New public exports: `previewPrompt()`, `promptOriginLabel()`, `QueuedPromptView` interface from @agentproto/runtime for after-the-fact queue UI. Origin tracking distinguishes user-initiated queuing from agent/child-sourced prompts. Queue badge ("N queued") shown in CLI and VS Code session listings.
+
+  All three operations are deliberately distinct: promote reorders without interrupting; deliver interrupts and dispatches immediately; drop removes without delivering.
+
+- 85c0ad7: Add `--host` option and `ui.tools` allowlist enforcement to `agentproto app serve`. The `--host` option allows binding to addresses beyond loopback (default `127.0.0.1`), with a stderr warning when used. The `ui.tools` allowlist is read from APP.md frontmatter, providing a second layer of defense: when absent, all tools are allowed (backward compatible); when explicitly empty, all tools are blocked; otherwise, only listed tools are forwarded. The distinction between absent and empty allows apps to opt into explicit allowlisting while maintaining backward compatibility with apps predating this feature.
+
+### Patch Changes
+
+- 4ac9d37: Documentation sync: Update MCP tool naming conventions (resource_action pattern), version bumps (0.12.0 → 0.14.0), and add docs for new features (daemon status build identity, pack build subcommand, workspace-brain transcript chunking, ops-panel app).
+- 11982fd: Introduce shared dashboard presence classifier (`presenceFor`) to unify session-status rendering across CLI and VS Code. Previously, the CLI sessions table and VS Code tree/webview each derived their own inconsistent status readings. The new four-state model (running/tending/attention/quiet) is driven by a pure, config-aware classifier in @agentproto/runtime, consumed identically by both clients. Fixes status divergence and adds grace-window config (`sessions.attentionDelaySec`, default 60s).
+- e2314b3: Weekly dependency update: minor/patch-range bumps across the workspace.
+  - @mastra/core 1.57.0 → 1.59.0
+  - @mastra/memory 1.26.0 → 1.26.2
+  - @mastra/libsql 1.19.0 → 1.20.0
+  - turbo 2.10.9 → 2.10.10
+  - unpdf 1.8.0 → 1.8.1
+  - e2b 2.38.2 → 2.39.0
+  - @anthropic-ai/claude-agent-sdk 0.3.226/0.3.232 → 0.3.233
+  - @earendil-works/pi-tui 0.84.1 → 0.84.2
+  - mastracode 0.32.6 → 0.33.1
+
+- 7220068: Fix "restart starts a terminal but it doesn't work" bug: add origin-gate that prevents agent-cli/ACP-origin sessions from defaulting to provider-native terminal restart. ACP-origin sessions now default to agent-level resume, with explicit opt-in via `preferNativeTerminal` flag. Implement billing-auth re-resolution for pty-native path to prevent ambient credential leaks, closing #824/#490 for this codepath.
+- 6372c19: Implement exit-time auto-reclaim for policy-provisioned (implicit) worktrees. When a session spawned under the `"always"` isolation policy without an explicit `worktree` request exits cleanly (merged/fresh, no uncommitted work), its worktree is automatically reclaimed using the same safety-layered classify→re-verify→remove pipeline as `worktree gc`. Caller-explicit worktrees (today's manual-cleanup behavior) are never auto-reclaimed. The feature is fire-and-forget, best-effort only, and never interrupts session teardown.
+- 8a3d53d: Fix two critical bugs in `monitorSessionWait`:
+  1. **Stale fast-path**: The synchronous already-in-target-state check for `turn-end` now requires `opts.since !== undefined` to fire. Without a cursor anchor, there is no way to distinguish "the turn this wait is waiting for already finished" from "some turn finished hours ago". Fresh `agentproto sessions wait` CLI processes (which have no persisted cursor) now correctly fall through to the real bus-subscribe long-poll instead of instantly succeeding against stale history.
+  2. **Dropped empty/reason fields**: `SessionTurnEndEvent.empty` (zero assistant output, zero tool calls) and `.reason` (e.g. `"error"`) are now propagated through all three branches of the wait monitor (ring-replay, sync fast-path, bus long-poll) so callers can distinguish productive turns from silent no-ops (bad auth/model config) or adapter-reported errors. CLI exit code 4 is added for these cases.
+
+  Includes a new `currentEventsCursor()` method to capture race-free cursors for prompt+wait patterns that cannot otherwise subscribe before a turn completes.
+
+- c5016ed: Fix critical production incident (2026-08-22) where running daemon sessions' own working directories were incorrectly deleted by worktree GC. Root cause: `computeLiveness` was defaulting to the frozen legacy sessions file instead of reading per-workspace bucket files (AIP-46). Also adds `protectedPaths` mechanism as belt-and-suspenders protection, wiring the daemon's live in-memory session registry to prevent TOCTOU races between plan and apply.
+- b95e23b: Weekly dependency update: bump external dependencies to latest minor/patch versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.233 → 0.3.241
+  - @ast-grep/napi 0.45.1 → 0.45.2
+  - @mastra/core 1.59.0 → 1.61.0
+  - @mastra/libsql 1.20.0 → 1.21.1
+  - @mastra/memory 1.26.2 → 1.27.0
+  - @tanstack/react-query 5.66.0 → 5.102.2
+  - @types/react-dom 19.2.4 → 19.2.5
+  - @types/vscode 1.90.0 → 1.134.0
+  - e2b 2.39.0 → 2.45.0
+  - mastracode 0.33.1 → 0.35.0
+  - turbo 2.10.10 → 2.10.11
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [95f7b5e]
+- Updated dependencies [e826a4a]
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+- Updated dependencies [e2314b3]
+- Updated dependencies [baf8570]
+- Updated dependencies [6372c19]
+- Updated dependencies [8a3d53d]
+- Updated dependencies [c5016ed]
+- Updated dependencies [b95e23b]
+- Updated dependencies [1fd4a15]
+  - @agentproto/model-catalog@0.8.5
+  - @agentproto/driver-agent-cli@2.3.1
+  - @agentproto/secrets@0.2.3
+  - @agentproto/acp@0.7.2
+  - @agentproto/sandbox-e2b@0.3.5
+  - @agentproto/worktree@0.5.3
+  - @agentproto/sandbox-box@0.2.4
+
+## 0.14.0
+
+### Minor Changes
+
+- 7c1d7f5: Add `agentproto pack build [dir]` command to centralize skill-pack build logic, eliminating per-package duplicate scripts. The command builds both a flat npm layout and a versioned bundle for the Anthropic consumer, with version sourced from the package's own package.json (aligned with changesets).
+- da57681: Add build identity tracking to CLI and runtime. Captures git SHA and build timestamp at build time, and judges source (workspace vs published) at runtime. This enables operators to distinguish between workspace distributions and published tarballs of the same version via `daemon start`/`status` output and `/health` endpoint.
+
+  New exports:
+  - `renderBuild()` from `@agentproto/cli/commands/daemon`
+
+  New optional fields:
+  - `DaemonHealthInfo.build`
+  - `CreateGatewayOptions.build`
+  - `RuntimeHttpServerOptions.build`
+  - `DaemonHealth.build` (VS Code)
+
+### Patch Changes
+
+- 8b75d61: Declare a model list on the kimi-cli generic-ACP spec (default kimi-k3 plus
+  the moonshot allow-list) so its launch picker offers real models instead of
+  only "custom".
+- 7b28edf: Refresh the Mistral model catalog from the live /v1/models list (adds the
+  medium tier, codestral, devstral, ministral, magistral; drops retired ids)
+  and declare a model list on the mistral-vibe generic-ACP spec so its launch
+  picker offers real models instead of only "custom".
+- 99fb2fb: Accuracy pass on skill documentation and AGENTS.md. Fixes ~20 tool names in skill documentation to match current runtime API (agent*output, command_log_tail, file*\_, terminal\_\_, etc.). Corrects permissions_respond schema documentation. Removes diverged duplicate SKILL.md file from packages/cli/skill/ (never imported by code but shipped in npm tarball). Updates reference documentation paths and line numbers.
+- 132ffe5: Documentation updates for CLI enhancements, adapter protocol changes, and provider preset expansion.
+  - **@agentproto/adapter-jcode**: Updated protocol documentation to reflect NDJSON streaming support and added exit code semantics for setup requiring TTY (code 78).
+  - **@agentproto/cli**: Documented new session commands (`prompt`, `pin`, `unpin`), daemon capabilities (PATH self-healing, version reporting in `/health`), file upload endpoint for `app serve`, and added grok-cli adapter reference.
+  - **@agentproto/provider-presets**: Added documentation for new provider presets: OpenAI, Mistral, Groq, Nebius, Hugging Face, and DeepInfra.
+
+- d1b4aa4: Fix phantom-PR regression where sessions at the repo root would incorrectly attribute open PRs that happen to be on the default branch. Add default-branch guard to `makeOpenPrResolver` and only record PRs when actually stamped for the first time, preventing misattribution on idempotent re-reads.
+- Updated dependencies [7b28edf]
+- Updated dependencies [e8d39e8]
+  - @agentproto/model-catalog@0.8.4
+
+## 0.13.0
+
+### Minor Changes
+
+- 2e24a7e: Enhance daemon lifecycle management with health reporting and shutdown statistics.
+
+  **@agentproto/cli changes:**
+  - New `runStop()` function exported for daemon stop command with pre-shutdown stats gathering
+  - `runStart()` and `runRestart()` now accept optional `health: HealthFetchFn` and `probeAttempts` parameters for testability
+  - New `DaemonHealthInfo` and `DaemonStopStats` interfaces enable rich metadata tracking
+  - Lifecycle info blocks report daemon version, uptime, workspace, binary path, and activity metrics (sessions, token counts, spend estimates)
+  - Enhanced `humaniseUptime()` to show nested units (e.g., `3h12m` instead of `3h`)
+  - Added `formatDuration()` helper for shutdown messages
+
+  **@agentproto/runtime changes:**
+  - `/health` endpoint now reports daemon version, process ID, node executable path, and entry point
+  - Added `startedAt` ISO timestamp to `/health` for debugging
+  - These metadata fields enable lifecycle tooling to accurately report "what is actually running"
+
+- c33e432: Add `@agentproto/app-client` — a typed client for the `window.McpApp` bridge with TanStack Query React hooks supporting host/bridge/standalone mode fallback.
+
+  Add `create-agentproto-app` — a CLI scaffolder for new agentproto agent apps with Vite + React + TanStack Router/Query UI.
+
+  Add `app build`, `app dev`, `app pack`, `app serve` CLI verbs to build, develop, package, and serve agent apps. Refactor `app-serve.ts` exports to share bridge logic with `app dev`.
+
+- 6e9b67b: Add file upload endpoint (`/__agentproto/upload`) to `agentproto app serve`, enabling browser UIs to upload files to an `inbox/` directory. Exports new utility functions: `sanitizeUploadName()` for security-focused filename validation, `resolveInboxTarget()` for collision-resistant path resolution, and `UploadSizeTracker` class for enforcing 200 MB size limits.
+- f3fa4e6: Add --template vanilla, stamp app-client version, honour ui.port in app dev
+- 7083baa: Implement PATH self-healing for daemon start/restart. The daemon's plist now automatically refreshes its `EnvironmentVariables.PATH` on every `kickstart` by probing a login shell and rewriting the plist if the PATH changed, eliminating the need to manually re-run `daemon install` after installing new CLI tools (e.g., via `uv tool install`).
+- cbe11c2: Fix jcode print arm: add `--ndjson` output format and move `run` subcommand to `bin_args` so composed flags land after it (not before). Add comprehensive jcode NDJSON event mapper with full test coverage. Implement fail-fast TTY handling for interactive setup steps: refuse pre-spawn when stdin is not a TTY, return distinct `EXIT_SETUP_NEEDS_TTY (78)` to surface the condition separately from real failures. Add `needsInteractiveSetup` flag to `AdapterInstallResult` and VS Code install action to offer "Open Setup Terminal" for TTY-blocked installs.
+- d69e120: Add `agentproto sessions prompt` subcommand to message already-running sessions via the daemon's `POST /sessions/:id/prompt` endpoint. Supports fire-and-forget queuing (default), blocking mode (`--wait`), interrupt (`--interrupt`), and queue-jumping (`--force`).
+- a0558d4: Add session pinning — a server-persisted, list-visibility-only favorite flag. Pinned sessions sort to the top of `agentproto sessions` table and the VS Code webview's dedicated "Pinned" group. Includes new CLI `pin`/`unpin` subcommands, the `session_set_pinned` MCP verb, HTTP route `POST /sessions/:id/pin`, and dedicated UI in VS Code. Deliberately orthogonal to `keepAlive`, reaper eligibility, and notifications — pin is a quiet, structural sort/display flag with zero operational side effects.
+- 140874a: Add optional `provider` field to ACP agent specifications. This allows generic ACP adapters (Mistral Vibe, Google Gemini CLI, Moonshot Kimi CLI) to declare their billing endpoints, enabling clients to link the harness to that provider's wallets even when no model list is declared. The provider is projected through AdapterInfo and integrated into VSCode wallet linking logic.
+
+### Patch Changes
+
+- e418ec7: Documentation updates for new jcode adapter, MCP tool families, configuration enhancements, and Mastra adapter API changes.
+- 8a05833: Add CORS header support to the app-serve tool-call bridge, enabling cross-origin requests from embedded viewers to reach the server.
+- 27a22ca: Persistent per-session isolated adapter config directories to enable native resume after adapter respawns.
+
+  Previously, the isolated `CLAUDE_CONFIG_DIR` was a throwaway mkdtemp recreated on every spawn. This meant the SDK's conversation store (projects/<cwd-slug>/<uuid>.jsonl) was lost on respawn, causing resumeSessionId to degrade to a digest fallback every time an adapter process was reaped and restarted.
+
+  The fix introduces `SessionDescriptor.adapterConfigDir` to persist the config location across respawns, keyed by the first session id in a lineage (`~/.agentproto/adapter-config/<sessionId>`). The runtime threads this through all spawn paths (agent_start, session_restart, lazy resume, cron, judges, webhooks, workflow steps), and the driver preserves the SDK's own state when reusing a persistent dir while always re-asserting `mcpServers: {}` to prevent ambient leaks from mid-session `claude mcp add` commands.
+
+  Backward compatible: legacy rows without the new field keep today's digest-fallback behavior.
+
+- 446d313: Fix semantic accuracy of generic ACP agent status: report installed agents as 'ready' (bin on PATH, no setup/auth pending) instead of 'available' (which implies pending setup/auth). Eliminates UX bug where VS Code offered "Install" forever on already-installed CLIs.
+- 100d074: Wire grok-cli adapter into the CLI package's static CATALOG and VS Code extension's icon mappings. The adapter was previously installable via `agentproto install` but invisible to adapter discovery UI (MCP adapter_list, VS Code Harnesses panel) because it was only found via workspace scan, not the bundled catalog. Adds catalog entry with xAI branding metadata, SVG icon, and adapter icon → file mapping for VS Code.
+- a001a4f: Increase test timeout for all-adapters harness-capabilities test from vitest's 5s default to 30s. The test imports all installed adapters including heavy @mastra/core graph modules on a cold worker, causing it to exceed the default timeout under parallel test runs on loaded machines.
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
+## 0.12.0
+
+### Minor Changes
+
+- b51b58e: **Support shell-based package managers (uv, pip, brew, cargo, go, pipx)** — expand adapter installation beyond npm to handle package managers commonly used in AI/ML workflows. New `parseShellHint` function parses and validates non-npm install commands; only recognized package managers are executed to prevent blind shell injection.
+
+  **ACP adapters can now use `uv tool install`, `pip install`, etc.** — planner detects hint type (npm → shell → unsupported) and adapter install routes handle shell commands with the same safety/timeout guards as npm-global installs.
+
+- 6fba2b9: Feature-flag the LLM Endpoint proxy sidecar behind `features.llmEndpoint` (default false). When disabled, the route is not registered, the registry is not created, and MCP tools are not exposed.
+- 3d193b5: **`agentproto app pack/unpack`**: bundle and unbundle agentproto apps as self-contained `.agentapp` tar.gz archives with SHA-256 integrity verification.
+
+  New subcommands:
+  - `agentproto app pack <appDir> [--out <path.agentapp>] [--json]` — walks an app folder (must have `.agentproto/APP.md`), computes an aggregate SHA-256 over every file, writes a manifest.json, and tars the contents into a `.agentapp` bundle.
+  - `agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]` — extracts and verifies the bundle's SHA-256 before restoring, fails if corrupted.
+
+  Bundles include the entire app tree (agents, workflows, optional UI, loose files). Extraction yields `manifest.json`, `.agentproto/`, and relative paths identical to the original—round-trip stable for `readAppRefs` / `app_install`.
+
+- 3d54f15: Add `agentproto app serve` command for serving app UIs as standalone webapps with MCP connectivity. Introduces optional `ui.port` field to AppUiDefinition, implements a static HTTP server with bridge script injection, and establishes MCP client proxying through a reserved `/__agentproto/tool-call` endpoint.
+
+### Patch Changes
+
+- bf3407e: Fix unhandled ChildProcess 'error' events that crash the daemon on spawn failures (e.g., bad binary, missing PATH entry). Resolve "node" binary to process.execPath to sidestep PATH lookup issues in minimal launchd environments. Convert spawn errors to rejected promises instead of unhandled exceptions.
+- 82ca9e6: Fix daemon crash from unhandled spawn errors and PATH-based node resolution issues:
+  - Add error event listeners to spawn processes to prevent unhandled exceptions from crashing the daemon
+  - Resolve `bin: "node"` in agent CLI definitions to `process.execPath` instead of relying on PATH lookup, preventing failures in launchd environments with minimal PATH
+  - Fix auth method availability detection for models with `modelDerivedApiKey` by checking both `authSubscription` and `modelDerivedApiKey` for oauth-bearer eligibility
+  - Improve test mocks to properly emit spawn events, enabling proper coverage of spawn failure scenarios
+
+- 5798b49: Add AIP-45 adapter for 1jehuang/jcode — a RAM-efficient Rust coding agent with semantic memory, multi-agent swarm coordination, and multi-provider support (Claude, OpenAI, Gemini, OpenRouter, DeepSeek, Groq, Mistral, Ollama).
+
+  Adapter uses `print` protocol (headless mode): spawns `jcode run "<prompt>"` per turn and captures stdout. No ACP mode is currently documented; swarm coordination not yet wired.
+
+- a6b06b2: Three adapter infrastructure fixes:
+  1. Codex model list expanded from 8 to ~40 models — covers GPT-5 family
+     (5/5.1/5.2/5.4/5.5), GPT-5.6 (luna/sol/terra), GPT-4.1/4o, and
+     o-series reasoning models (o1/o3/o4-mini).
+  2. CLI `agentproto install <slug>` now drives a generic ACP agent's
+     `install_hint` through the shared hint parser (new `install-hint.ts`
+     module, extracted from `install-driver.ts` to break a circular dep).
+     The `vendored` install step checks if the binary is already on PATH,
+     runs npm/uv/pip/brew/cargo/go hints when recognized, and fails loud
+     with an actionable message otherwise.
+  3. `binOnPath` in `acp-generic.ts` now checks well-known package-manager
+     install directories (`~/.local/bin`, `~/.cargo/bin`, `~/go/bin`,
+     `/opt/homebrew/bin`, `/usr/local/bin`) as a fallback when PATH hasn't
+     picked them up yet — fixes adapters installed via `uv tool install`
+     not showing as "available" until the daemon restarts.
+
+  Also: modelDerivedApiKey provider resolution for adapters like mastra-agent.
+
+- 54d9620: Add workspace-local adapter resolution as a fallback when npm/node_modules resolution fails. Enables adapters under active development to resolve from `adapters/<slug>/dist/index.mjs` before they're added as dependencies or published to npm, improving the adapter authoring workflow.
+- 873e10a: Reload newly installed CLI adapters during first-run bootstrap instead of requiring a second invocation.
+- Updated dependencies [415044d]
+- Updated dependencies [5f5b1bc]
+- Updated dependencies [6e403f8]
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+- Updated dependencies [c4ca23a]
+- Updated dependencies [b5ec52b]
+  - @agentproto/model-catalog@0.8.3
+  - @agentproto/worktree@0.5.2
+  - @agentproto/sandbox-e2b@0.3.4
+  - @agentproto/driver-agent-cli@2.2.2
+  - @agentproto/acp@0.7.1
+  - @agentproto/sandbox-box@0.2.3
+
+## 0.11.5
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+- 69e97d9: Documentation sync: version bumps, turn-liveness watchdog config details, UI surfaces/artifacts/dev-launch config examples, and agentproto-apps-sync binary documentation.
+- Updated dependencies [2b58616]
+- Updated dependencies [e68c999]
+- Updated dependencies [6e1fcf3]
+  - @agentproto/model-catalog@0.8.2
+  - @agentproto/rendezvous@0.2.2
+  - @agentproto/sandbox-e2b@0.3.3
+
+## 0.11.4
+
+### Patch Changes
+
+- c58b9fe: Implement turn-liveness watchdog: detect mid-turn agent-cli sessions with dead adapter streams.
+
+  The daemon periodically sweeps every BUSY agent-cli session and, for one that is mid-turn, NOT legitimately blockedOn a subagent/command, and has had no adapter activity for longer than the configured threshold (default: 5 minutes), stamps `stalledSinceMs` on the descriptor and emits `session:stalled` — surfacing a dead adapter stream (network drop, hung child) that would otherwise sit indistinguishable from healthy long work. Detection and observability only; never auto-kills or restarts. Threshold configurable via `daemon.turnStallAfterMs` config or `AGENTPROTO_TURN_STALL_AFTER_MS` env var (DEFAULT ON, opt-in-to-disable). VS Code displays the stall flag (⚠ badge) when the daemon confirms, with a tooltip showing the silent duration.
+
+## 0.11.3
+
+### Patch Changes
+
+- 671b628: Fix daemon adapter installs: strip the "install" verb before passing args to runInstall, and add --allow-unverified flag to allow TTY-less daemon/UI installs of catalog adapters.
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 0.11.2
+
+### Patch Changes
+
+- 4b6bbe6: Documentation sync: update version to 0.11.1-alpha and document new spawn policies (dedupe/attach), judge gate structured verdicts, implicit session deduplication, and worktree async provisioning.
+- 63b97e5: Enhance CLI daemon discovery documentation with comprehensive explanation of the layered fallback strategy (env override → home runtime.json → central registry → workspace runtime.json), PID liveness checks for stale file detection, and known limitation regarding restart handoff windows. Updates help text in `browser`, `presets`, `sessions`, and `tunnel` commands to reference the full discovery order.
+- 3e187e5: Add Google Antigravity adapter and extend print-arm event mapper.
+  - **New adapter: @agentproto/adapter-antigravity** — AIP-45 print/headless adapter for Google Antigravity's `agy` CLI (a multi-model coding agent supporting Gemini, Claude, GPT-OSS). Includes auth documentation (OS keyring + Google Sign-In), sandbox policy, and model/option configuration.
+  - **Print-arm event mapper extension** — Added `antigravity-stream-json` event schema handler to support `agy`'s custom wire-event taxonomy (discriminated by `event` field, nested `conversation_id`, incremental `text_delta` fragments). The mapper handles text streaming, tool calls, tool errors, usage tracking, and session resumption via `--conversation <id>`. Supports single wire lines that fan out to multiple StreamEvents (e.g., a tool step's terminal DONE carries both call and result).
+  - **Type safety** — Introduced `PrintEventSchema` type to union all supported event taxonomies; updated Zod schema validation to include `antigravity-stream-json`.
+  - **Catalog entries** — Added antigravity to the CLI adapter catalog; also included two new ACP generic agents (Mistral Vibe, Kimi CLI) with their VS Code lettermark overrides.
+
+- 865e84a: Add @ast-grep/napi native dependency and externalize it from the tsup bundle to prevent platform-specific .node binding resolution conflicts.
+- Updated dependencies [4b6bbe6]
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/model-catalog@0.8.1
+  - @agentproto/worktree@0.5.1
+  - @agentproto/driver-agent-cli@2.2.0
+  - @agentproto/sandbox-box@0.2.2
+  - @agentproto/sandbox-e2b@0.3.2
+
+## 0.11.1
+
+### Patch Changes
+
+- 832870d: Documentation sync: daemon restart command, sessions gc garbage collection, install --allow-unverified flag, Gemini adapter shipped, pi adapter support, xai-anthropic and llm-endpoint provider presets, and launchd crash-only KeepAlive behavior.
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+- 8228d88: Add dep-bump reclaim exemption for worktree GC: safely promote clean, unpushed worktrees from `hold` to `reclaim` when all commits are mechanical dependency bumps (subject and cumulative diff validation). Addresses storage bloat from recurring automated dependency-bump worktrees piling up as permanent holds. Includes comprehensive test coverage and applies re-validation at apply time (layer 2).
+- 678bc1a: Session identity environment variables: inject `AGENTPROTO_SESSION_ID` and `AGENTPROTO_WORKSPACE_SLUG` into every process spawned by the daemon on a session's behalf (agent adapters, terminals, commands, cron jobs). Each spawn gets its own freshly minted id; the variables are set last to prevent caller forgery. This enables spawned processes to report back session context, tag telemetry, and nest child sessions under parent sessions via `parentSessionId`.
+- Updated dependencies [c825a12]
+- Updated dependencies [c1399f3]
+- Updated dependencies [8228d88]
+- Updated dependencies [980276e]
+- Updated dependencies [fd3e287]
+  - @agentproto/model-catalog@0.8.0
+  - @agentproto/provider-kit@0.4.1
+  - @agentproto/sandbox-e2b@0.3.1
+  - @agentproto/worktree@0.5.0
+  - @agentproto/sandbox-box@0.2.1
+
 ## 0.11.0
 
 ### Minor Changes

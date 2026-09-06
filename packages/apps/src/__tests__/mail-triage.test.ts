@@ -1,0 +1,127 @@
+import { describe, it, expect, afterAll } from "vitest"
+import { loadAppHandle } from "@agentproto/app-kit"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { mailTriage } from "../mail-triage/index.js"
+import { MAIL_TRIAGE_MCP_ALIASES } from "../mail-triage/ui.js"
+
+const fakeModel = { provider: "test", id: "test-model" }
+
+describe("mail-triage app", () => {
+  it("exposes stable app identity fields", () => {
+    expect(mailTriage.id).toBe("@agentproto/mail-triage")
+    expect(mailTriage.name).toBe("Mail Triage")
+    expect(mailTriage.version).toBe("0.1.0")
+  })
+
+  it("bundles the single triager agent bound to the triage-inbox workflow", () => {
+    expect(mailTriage.agents.map((a) => a.agent.id)).toEqual(["@agentproto/triager"])
+    expect(mailTriage.workflows.map((w) => w.id)).toEqual(["triage-inbox"])
+    for (const { agent } of mailTriage.agents) {
+      expect(agent.workflows).toContainEqual({ ref: "triage-inbox" })
+    }
+  })
+
+  it("builds the agent, its body becoming real Mastra instructions", async () => {
+    const built = await mailTriage.toMastraAgents({ resolveModel: () => fakeModel })
+    expect(Object.keys(built)).toEqual(["@agentproto/triager"])
+    expect(built["@agentproto/triager"]!.instructions).toContain("triage plan")
+  })
+
+  it("gives the triager the mailbox tools it needs to act", () => {
+    const triager = mailTriage.agents[0]!.agent
+    expect(triager.tools).toEqual([
+      "mailbox_list",
+      "mailbox_search",
+      "mailbox_list_threads",
+      "mailbox_get_thread",
+      "mailbox_labels_list",
+      "mailbox_label_create",
+      "mailbox_triage_plan",
+      "mailbox_triage_apply",
+    ])
+  })
+
+  it("triages the inbox through a single agent step (WP mail-triage)", () => {
+    const wf = mailTriage.workflows[0]!
+    expect(wf.steps.map((s) => `${s.id}:${s.kind}`)).toEqual(["triage:agent"])
+    const refs = wf.steps.map((s) => (s as { agent?: { ref: string } }).agent?.ref)
+    expect(refs).toEqual(["@agentproto/triager"])
+  })
+
+  it("ships a triage dashboard UI panel with the daemon tools it calls", () => {
+    expect(mailTriage.ui).toBeDefined()
+    expect(mailTriage.ui!.title).toBe("Mail Triage")
+    expect(mailTriage.ui!.tools).toEqual([
+      ...MAIL_TRIAGE_MCP_ALIASES.flatMap((alias) => [
+        `imported:${alias}/mailbox_list`,
+        `imported:${alias}/mailbox_search`,
+        `imported:${alias}/mailbox_triage_plan`,
+        `imported:${alias}/mailbox_triage_apply`,
+      ]),
+      "app_run",
+      "app_status",
+      "agent_output",
+      "app_list",
+    ])
+    expect(mailTriage.ui!.html.length).toBeGreaterThan(0)
+  })
+
+  it("allowlists the mailbox tools on every candidate agentpush alias (prod first)", () => {
+    expect(MAIL_TRIAGE_MCP_ALIASES).toEqual(["agentpush-prod", "agentpush"])
+    for (const alias of MAIL_TRIAGE_MCP_ALIASES) {
+      expect(mailTriage.ui!.tools).toContain(`imported:${alias}/mailbox_list`)
+      expect(mailTriage.ui!.tools).toContain(`imported:${alias}/mailbox_triage_apply`)
+    }
+    // The panel embeds the candidate list so it can probe at runtime.
+    expect(mailTriage.ui!.html).toContain(JSON.stringify([...MAIL_TRIAGE_MCP_ALIASES]))
+  })
+
+  it("propagates app_tool_call errors instead of swallowing them", () => {
+    const html = mailTriage.ui!.html
+    expect(html).toContain("throw new Error(value.error)")
+    expect(html).toContain("Not connected to host bridge")
+  })
+
+  it("shows a dedicated empty-state panel when no alias is reachable", () => {
+    const html = mailTriage.ui!.html
+    expect(html).toContain("connect-hint")
+    expect(html).toContain("connect-retry-btn")
+    expect(html).toContain("mailbox_request_elevation")
+  })
+
+  it("guards double-submit with a busy-button helper", () => {
+    expect(mailTriage.ui!.html).toContain("function setBusy(")
+  })
+
+  it("arms and clears a plan-expiry timer off the plan's expires_at", () => {
+    const html = mailTriage.ui!.html
+    expect(html).toContain("function armPlanExpiry(")
+    expect(html).toContain("function clearPlanExpiry(")
+    expect(html).toContain("Plan expired")
+  })
+
+  it("caps agent-run polling and stops without duplicating the log tail", () => {
+    const html = mailTriage.ui!.html
+    expect(html).toContain("POLL_TIMEOUT_MS")
+    expect(html).toContain("Still running")
+    expect(html).toContain("function renderLogTail(")
+  })
+
+  it("round-trips emit → loadAppHandle preserving identity", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mail-triage-roundtrip-"))
+    try {
+      await mailTriage.emit(dir)
+      const loaded = await loadAppHandle(dir)
+      expect(loaded.id).toBe(mailTriage.id)
+      expect(loaded.name).toBe(mailTriage.name)
+      expect(loaded.version).toBe(mailTriage.version)
+      expect(loaded.agents.map((a) => a.agent.id)).toEqual(
+        mailTriage.agents.map((a) => a.agent.id),
+      )
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})

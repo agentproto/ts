@@ -1,0 +1,45 @@
+{
+  "$schema": "./versions.schema.json",
+  "baseImage": "e2bdev/code-interpreter:latest",
+  "cli": "0.17.0",
+  "adapters": {
+    "@agentproto/adapter-opencode": "1.1.10",
+    "@agentproto/adapter-hermes": "0.4.10",
+    "@agentproto/adapter-mastra-agent": "0.6.0"
+  },
+  "runtime": {
+    "opencode-ai": "1.18.28"
+  },
+  "resources": {
+    "cpuCount": 2,
+    "memoryMb": 2048
+  },
+  "templates": {
+    "stable": {
+      "id": "53ybr99wdfgoebi9nee8",
+      "alias": "agentproto-workstation",
+      "baked": {
+        "cli": "0.17.0",
+        "adapters": {
+          "@agentproto/adapter-hermes": "0.4.10",
+          "@agentproto/adapter-mastra-agent": "0.6.0",
+          "@agentproto/adapter-opencode": "1.1.10"
+        },
+        "builtAt": "2026-09-05T20:39:40Z"
+      }
+    },
+    "dev": {
+      "id": "tnqtmeims5q9ex7j9k06",
+      "alias": "agentproto-workstation-dev",
+      "baked": {
+        "cli": "0.17.0",
+        "adapters": {
+          "@agentproto/adapter-hermes": "0.4.10",
+          "@agentproto/adapter-mastra-agent": "0.6.0",
+          "@agentproto/adapter-opencode": "1.1.10"
+        },
+        "builtAt": "2026-09-05T16:08:13Z"
+      }
+    }
+  }
+}

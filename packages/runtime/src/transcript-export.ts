@@ -30,7 +30,7 @@ import { createInterface } from "node:readline"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import { formatToolCall } from "./tool-presenter.js"
 import { sessionEventsPath } from "./transcript-writer.js"
-import { claudeProjectSlug } from "./conversation-store.js"
+import { claudeCodeProjectDir } from "./conversation-store.js"
 import type { ConversationCandidate } from "./conversation-store.js"
 
 // ── Common model ──────────────────────────────────────────────────────
@@ -188,7 +188,10 @@ export function renderJson(session: ExportedSession): string {
 // ── Exporter interface ────────────────────────────────────────────────
 
 interface ExportStrategy {
-  exportSession(adapterSessionId: string, cwd?: string): Promise<ExportedSession>
+  /** `configDir` = the session's isolated provider config dir
+   *  (`SessionDescriptor.adapterConfigDir`) — only claude-code keys its
+   *  store off it; the other strategies ignore it. */
+  exportSession(adapterSessionId: string, cwd?: string, configDir?: string): Promise<ExportedSession>
 }
 
 // ── claude-code exporter (JSONL) ──────────────────────────────────────
@@ -237,6 +240,7 @@ const IGNORED_CLAUDE_TYPES = new Set([
 export async function exportClaudeCodeSession(
   adapterSessionId: string,
   cwd?: string,
+  configDir?: string,
 ): Promise<ExportedSession> {
   if (!cwd) {
     throw new Error(
@@ -244,8 +248,9 @@ export async function exportClaudeCodeSession(
         "Pass cwd explicitly or use a session id that is in the registry.",
     )
   }
-  const encoded = claudeProjectSlug(cwd)
-  const filePath = join(homedir(), ".claude", "projects", encoded, `${adapterSessionId}.jsonl`)
+  // A config-dir-isolated session (#824) writes its transcripts under its
+  // own CLAUDE_CONFIG_DIR, same projects/<slug> layout as ~/.claude.
+  const filePath = join(claudeCodeProjectDir(cwd, configDir), `${adapterSessionId}.jsonl`)
 
   let stream: ReturnType<typeof createReadStream>
   try {
@@ -356,6 +361,15 @@ export async function exportClaudeCodeSession(
 // node:sqlite is experimental in Node 22.x but functional.
 // Isolated here so a future stable import replaces only this function.
 
+// esbuild (via tsup) strips the `node:` prefix from builtin imports. Most
+// builtins work without it, but `node:sqlite` has NO unprefixed name —
+// `import('sqlite')` fails at runtime. A computed specifier dodges the
+// static analysis so the prefix survives bundling.
+const NODE_SQLITE = "node:" + "sqlite"
+async function importNodeSqlite(): Promise<typeof import("node:sqlite")> {
+  return import(/* @vite-ignore */ NODE_SQLITE)
+}
+
 interface HermesSessionRow {
   id: string
   title?: string
@@ -394,11 +408,9 @@ interface HermesMessageRow {
 type HermesDb = InstanceType<(typeof import("node:sqlite"))["DatabaseSync"]>
 
 async function openHermesDb(dbPath: string): Promise<HermesDb> {
-  // Dynamic import isolates the experimental module warning and lets
-  // callers on older Node get a clear error instead of a crash at load time.
   let DatabaseSync: (typeof import("node:sqlite"))["DatabaseSync"]
   try {
-    const sqlite = await import("node:sqlite")
+    const sqlite = await importNodeSqlite()
     DatabaseSync = sqlite.DatabaseSync
   } catch {
     throw new Error("hermes: node:sqlite unavailable. Requires Node.js ≥22.5.0.")
@@ -454,7 +466,7 @@ function withRetryOnBusy<T>(fn: () => T): T {
 async function openReadonlySqlite(dbPath: string, label: string): Promise<HermesDb> {
   let DatabaseSync: (typeof import("node:sqlite"))["DatabaseSync"]
   try {
-    const sqlite = await import("node:sqlite")
+    const sqlite = await importNodeSqlite()
     DatabaseSync = sqlite.DatabaseSync
   } catch {
     throw new Error(`${label}: node:sqlite unavailable. Requires Node.js ≥22.5.0.`)
@@ -806,6 +818,19 @@ interface TranscriptRecord {
   size?: number
   used?: number
   cost?: { amount: number; currency: string }
+  // Kind-less CommandLogEntry fields (written by recordCommand — the line
+  // has NO `kind` of its own). All optional so every other record shape
+  // keeps parsing cleanly; unknown fields are ignored, never throw.
+  command?: string
+  args?: string[]
+  cwd?: string
+  exitCode?: number
+  signal?: string | null
+  durationMs?: number
+  stdout?: string
+  stderr?: string
+  truncated?: boolean
+  timedOut?: boolean
 }
 
 export async function exportDaemonEventsSession(
@@ -873,10 +898,57 @@ export async function exportDaemonEventsSession(
     const ts = Date.parse(rec.ts)
     const tsOrUndefined = Number.isNaN(ts) ? undefined : ts
 
+    // A command session (`command_execute` → recordCommand) writes a
+    // kind-less CommandLogEntry line as its FIRST line: no `kind` field,
+    // just {command, args, cwd, exitCode, signal, durationMs, stdout,
+    // stderr, ...}. Detect it structurally and render it as one
+    // assistant tool-call + one tool-result pair, so a command session's
+    // transcript isn't empty.
+    if (rec.kind === undefined && typeof rec.command === "string" && typeof rec.exitCode === "number") {
+      flushAssistant()
+      const toolName = "command_execute"
+      const argsJson = JSON.stringify({
+        command: rec.command,
+        args: Array.isArray(rec.args) ? rec.args : [],
+        ...(rec.cwd !== undefined ? { cwd: rec.cwd } : {}),
+      })
+      messages.push({
+        role: "assistant",
+        toolCalls: [{ name: toolName, args: argsJson }],
+        ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
+      })
+      const header =
+        `exit code ${rec.exitCode}` +
+        (rec.signal ? `, signal ${rec.signal}` : "") +
+        (typeof rec.durationMs === "number" ? `, ${rec.durationMs}ms` : "")
+      const sections: string[] = [header]
+      if (rec.stdout) sections.push(`stdout:\n${rec.stdout}`)
+      if (rec.stderr) sections.push(`stderr:\n${rec.stderr}`)
+      if (rec.truncated) sections.push("(output truncated)")
+      if (rec.timedOut) sections.push("(timed out)")
+      const text = sections.join("\n")
+      messages.push({
+        role: "tool",
+        text: rec.exitCode !== 0 ? `[error] ${text}` : text,
+        toolName,
+        ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
+      })
+      toolCallCount += 1
+      continue
+    }
+
     switch (rec.kind) {
       case "user-prompt":
         flushAssistant()
         messages.push({ role: "user", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
+        break
+      case "system-prompt":
+        // The daemon-composed SYSTEM slice of a spawned child's initial
+        // prompt (role disposition + AGENTS.md + lineage). Recorded apart
+        // from the caller's ask so viewers fold it; rendered as a system
+        // message (never a user bubble).
+        flushAssistant()
+        messages.push({ role: "system", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
         break
       case "text-delta":
         // Terminated lines already carry their own trailing "\n" (see
@@ -941,13 +1013,28 @@ export async function exportDaemonEventsSession(
         messages.push({ role: "system", text: rec.text ?? "" })
         break
       default:
+        // Deliberately NOT handling `kind: "tool-call-record"` here: an
+        // agent-cli session's events.jsonl contains BOTH the real
+        // `tool-call`/`tool-result` events AND a trailing normalized
+        // `tool-call-record` line for the SAME call (see
+        // tool-call-log.ts) — rendering or counting it would double-count
+        // every agent session's tool calls. A command session's
+        // `tool-call-record` line is intentionally dropped too; its
+        // CommandLogEntry line above already rendered the call.
         break
     }
   }
   flushAssistant()
 
   const meta: ExportedSessionMeta = { source: "daemon-events" }
+  // Title chain: spawner label, else the command itself (a command session
+  // never gets a label from command_execute, but its descriptor carries the
+  // quoted argv) — truncated so a giant argv doesn't become an H1.
+  // renderMarkdown's `(untitled)` remains the final fallback.
   if (desc?.label) meta.title = desc.label
+  else if (desc?.command) {
+    meta.title = desc.command.length > 120 ? `${desc.command.slice(0, 120)}…` : desc.command
+  }
   if (desc?.model) meta.model = desc.model
   if (desc?.startedAt) meta.startedAt = desc.startedAt
   if (desc?.endedAt) meta.endedAt = desc.endedAt
@@ -1906,6 +1993,7 @@ export async function exportAgentSession(
   let adapterSlug = input.adapter
   let cwd = input.cwd
   let adapterSessionId = sessionId
+  let configDir: string | undefined
 
   const err = (msg: string): ExportAgentSessionResult => ({
     sessionId,
@@ -1922,6 +2010,9 @@ export async function exportAgentSession(
   if (desc) {
     adapterSlug = adapterSlug ?? desc.adapterSlug
     cwd = cwd ?? desc.cwd
+    // A config-dir-isolated session's transcripts live under its own
+    // CLAUDE_CONFIG_DIR, not ~/.claude (#824) — thread it to the exporter.
+    configDir = desc.adapterConfigDir
     // prefer the adapter-native id over the agentproto id
     if (desc.adapterSessionId) adapterSessionId = desc.adapterSessionId
   }
@@ -1941,7 +2032,7 @@ export async function exportAgentSession(
           `Only sessions spawned via claude-code or hermes can be exported.`,
       )
     }
-    return exporter.exportSession(adapterSessionId, cwd)
+    return exporter.exportSession(adapterSessionId, cwd, configDir)
   }
 
   const tryDaemon = (): Promise<ExportedSession> => exportDaemonEventsSession(daemonSessionId, desc)

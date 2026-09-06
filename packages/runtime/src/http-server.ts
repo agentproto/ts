@@ -20,16 +20,19 @@
  * tool calls become a real use case.
  */
 
+import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
-import { mkdir, stat, writeFile } from "node:fs/promises"
-import { basename, isAbsolute, join, resolve as resolvePath } from "node:path"
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
+import { basename, extname, isAbsolute, join, resolve as resolvePath } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { WebSocketServer, type WebSocket } from "ws"
 import { ZodError } from "zod"
+import type { UIMessageChunk } from "ai"
+import type { AgentprotoRawTranscriptRecord } from "@agentproto/transcript-fixtures"
 import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
@@ -37,7 +40,18 @@ import type { SessionsRegistry, AgentSessionLike, RestartPolicy } from "./sessio
 import { SessionNotAliveError } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { PairingRegistry } from "./pairing-registry.js"
+import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
+import type { AppRegistry } from "./app-registry.js"
+import { performAppToolCall, type AppToolCallDeps } from "./app-tools.js"
+import { injectStandaloneAppBridge } from "./app-ui-apps.js"
+import {
+  assertExternalPathRealInside,
+  isExternalRootGranted,
+  realpathExternalRoot,
+  resolveExternalPath,
+} from "./app-external.js"
+import { mimeTypeFor } from "./outbound-adapters.js"
 import {
   loadWorkspacesConfig,
   saveWorkspacesConfig,
@@ -79,6 +93,7 @@ import { readConversation } from "./conversation-read.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import { createReadStream } from "node:fs"
 import { createInterface } from "node:readline"
+import { createTranscriptToUiMapper } from "./chat-stream.js"
 import {
   monitorSessionWait,
   monitorPolicyWait,
@@ -113,7 +128,7 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
-import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
+import { spawnAgentSession, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
   restartAgentSession,
   RestartOverrideError,
@@ -129,12 +144,14 @@ import {
 } from "./user-presets.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
+import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
+import { parseJsonRecordText, DEFAULT_APP_SERVE_PORT, type SandboxAppServeSpec } from "./sandbox-app-serve.js"
 import { listPresets } from "./preset-tools.js"
 import {
   resolveWorktreeQueryRoot,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
-import type { WorktreeGcRunner } from "./worktree-gc.js"
+import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
@@ -208,6 +225,14 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   startSession(opts: {
     cwd: string
     resumeSessionId?: string
+    /** Persistent isolated-config location for the adapter (claude-code's
+     *  `CLAUDE_CONFIG_DIR`) — forwarded to the driver's
+     *  `start({ configDir })`. The daemon keys it per session lineage
+     *  (`SessionDescriptor.adapterConfigDir`) so the provider's own
+     *  conversation store survives adapter respawns and `resumeSessionId`
+     *  can restore full context instead of falling back to a digest.
+     *  Adapters that don't isolate a config dir ignore it. */
+    configDir?: string
     /**
      * Manifest-declared mode id forwarded from `agent_start` (AIP-45
      * `AgentCliHandle.modes` — e.g. claude-code's `plan` /
@@ -282,6 +307,26 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  command-sandbox`'s `loadAdapterSpawnSandboxConfig`), or stays
      *  unconfined if that's unset too. */
     commandSandbox?: SandboxMode
+    /** Extra env for the spawned adapter process — forwarded verbatim to the
+     *  driver's `runtime.start({ env })`, which the AIP-45 driver already
+     *  applies LAST (after manifest/mode/option env and billing-auth), so
+     *  these keys always win. `spawnAgentSession` (session-spawn.ts) uses
+     *  this to inject the daemon's own session-identity vars
+     *  (`SESSION_ID_ENV`/`WORKSPACE_SLUG_ENV`, see sessions.ts) — there is
+     *  no caller-facing `env` passthrough on `agent_start` today, so this is
+     *  daemon-authored only, not a general escape hatch. */
+    env?: Record<string, string>
+    /** Absolute paths OUTSIDE the session cwd the adapter's workspace
+     *  toolset may READ (never write). Daemon-authored only — used for the
+     *  exact AGENTS.md file an inherited (pointer-mode) prompt names, so a
+     *  cwd below the repo root can actually read the contract file its
+     *  prompt points at instead of erroring
+     *  (`path … escapes the workspace`). NOT a general escape hatch: the
+     *  driver forwards these to its confinement layer as extra READ paths
+     *  and (for the mastra-agent adapter) to `makeWorkspaceTools` as a
+     *  read-only grant; writes and sibling reads stay denied. Adapters
+     *  that can't model the grant ignore it. */
+    additionalReadPaths?: string[]
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
@@ -383,6 +428,11 @@ export interface AdapterListEntry {
    * cli`'s `AdapterInfo.routeSelection` without importing it.
    */
   routeSelection?: "free" | "derived-from-model"
+  /** Known-valid model identifiers for this adapter (`@agentproto/cli`'s
+   *  `AdapterInfo.models`, forwarded verbatim). Undefined when the lister
+   *  behind `AgentAdapterLister` doesn't populate it — `adapter_list`'s
+   *  `summary` projection depends on this being present. */
+  models?: string[]
 }
 
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>
@@ -426,6 +476,7 @@ export interface AdapterInstallResult {
   ok: boolean
   method:
     | "npm-global"
+    | "shell-hint"
     | "agentproto-install"
     | "already-installed"
     | "unsupported"
@@ -440,6 +491,12 @@ export interface AdapterInstallResult {
    *  post-install re-list failed (the install itself may still have
    *  succeeded — read `ok`). */
   status?: "supported" | "available" | "ready" | "unresolvable"
+  /** True when the install failed ONLY because a manifest setup step
+   *  declares `interactive: true` and this process has no TTY to run it
+   *  in (e.g. openclaw's `onboard --install-daemon` TUI). The remedy is a
+   *  real terminal — `agentproto setup <slug>` — which a UI can offer
+   *  directly as a PTY terminal session. */
+  needsInteractiveSetup?: boolean
 }
 
 /**
@@ -513,9 +570,18 @@ export interface RuntimeHttpServerOptions {
    * be attributed to the session that made it (see `command-tools.ts`'s
    * `RegisterCommandToolsOptions.callerSessionId`).
    */
+  /**
+   * `origin`, when present, is parsed from the request's `?origin=<label>`
+   * query string (#session-visibility) — the connecting client's source label
+   * (cowork/vscode/codex/cron). It becomes the DEFAULT origin for a spawn made
+   * through this one-shot server when the tool input doesn't carry its own,
+   * so a bridge client's spawn is attributed to its channel instead of landing
+   * as a bare top-level root.
+   */
   mcpServerFactory: (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
+    origin?: string,
   ) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
@@ -557,6 +623,12 @@ export interface RuntimeHttpServerOptions {
    *  no caller-supplied `mcpServers` defaults to mounting this gateway
    *  (same hermes safety net as the MCP tool). */
   daemonMcpUrl?: string
+  /** Optional — mirrors `RegisterAgentToolsOptions.resolveSandboxProvider`
+   *  (session-spawn.ts). When wired, `POST /sessions/agent`'s `sandbox`
+   *  field can boot or reconnect a sandbox session, exactly as the MCP
+   *  `agent_start` tool does (both share `spawnAgentSession`). Omitted →
+   *  a sandbox spawn fails with `sandbox_provider_not_found`. */
+  resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"]
   /** Optional — mirrors `RegisterAgentToolsOptions.provisionWorktree`. When
    *  wired, a `POST /sessions/agent` spawn honours `agent_start.worktree` and
    *  the daemon's `worktrees.isolation` policy, exactly as the MCP tool does
@@ -697,6 +769,31 @@ export interface RuntimeHttpServerOptions {
    *  Same service the MCP `workflow_start/status/cancel/
    *  escalation_resolve/list` tools call. Without it the routes 404. */
   workflowRunner?: WorkflowRunner
+  /** Optional — when wired, exposes /apps/:appId/apply, DELETE /apps/:appId/apply,
+   *  and GET /scopes/:scopeId/apps routes for applying apps to scopes. Same
+   *  service the MCP `app_apply/app_unapply/app_list_applied` tools use. */
+  appRegistry?: AppRegistry
+  /** Optional — mirrors the install logic from app-tools.ts, threaded through
+   *  so both the MCP verb and the HTTP route can call it. Required when
+   *  `appRegistry` is wired. */
+  performAppInstall?: (
+    dir: string,
+    appRegistry: AppRegistry,
+    listRegisteredToolIds: () => Promise<string[]>,
+    resolveAgentAdapter?: AgentAdapterResolver,
+    opts?: { dataDir?: string },
+  ) => Promise<{ ok: true; record: any } | { ok: false; error: string }>
+  /** Optional — required when `appRegistry` is wired, for tool validation during install. */
+  listRegisteredToolIds?: () => Promise<string[]>
+  /** Optional — when wired alongside `appRegistry`, backs the standalone app
+   *  host routes: `GET /apps/:appId/ui` (an installed app's html with a REST
+   *  `window.McpApp` bridge injected, so the same UI runs in a plain browser
+   *  tab) and `POST /apps/:appId/tool-call` (the REST twin of the MCP
+   *  `app_tool_call` gateway — same `ui.tools` allowlist, same dispatch
+   *  chain, via `performAppToolCall`). `dispatchTool`/`callImportedTool` are
+   *  the same functions index.ts hands `registerAppTools`; omitted ⇒
+   *  tool-call dispatch reports "not enabled", the UI route still serves. */
+  appToolCallDeps?: AppToolCallDeps
   /** Optional — when wired, enables `POST /inbound`, the push-ingress
    *  counterpart to `inbound-watcher.ts`'s poll loop. A human reply
    *  (e.g. from agentpush's Telegram webhook) routes into the session
@@ -720,6 +817,16 @@ export interface RuntimeHttpServerOptions {
     registered: readonly string[]
     /** Daemon start timestamp. Defaults to `Date.now()` at server start. */
     startedAt?: number
+    /** Daemon build version (the CLI's `__CLI_VERSION__` when served by
+     *  `agentproto serve`). Surfaced via `/health` so lifecycle tooling can
+     *  report what is actually RUNNING, not what is installed on disk. */
+    version?: string
+    /** Build identity of the binary actually serving — sha + builtAt are
+     *  stamped into the CLI at build time, `source` is the serve command's
+     *  runtime judgement ("workspace" | "published" | "unknown"). Version
+     *  alone can't distinguish a workspace dist from the published tarball
+     *  of the same release; this can. */
+    build?: { sha?: string; builtAt?: string; source?: string }
     /** Effective `daemon.resumeSessionsOnBoot` knob (§5, PR-4). Kept in sync
      *  with the `daemon_health` MCP tool's field of the same name. */
     resumeSessionsOnBoot?: boolean
@@ -737,6 +844,13 @@ export interface RuntimeHttpServerOptions {
      *  restart, or 0 when off. Kept in sync with the `daemon_health` MCP
      *  tool's field of the same name. */
     restartSweepIntervalMs?: number
+    /** Effective `daemon.turnStallAfterMs` knob (turn-liveness-watchdog
+     *  chantier) — the silence threshold (ms) past which a busy, unblocked
+     *  agent-cli session's turn is flagged stalled; DEFAULT ON (a sane
+     *  default applies even when unset), 0 only when explicitly disabled.
+     *  Kept in sync with the `daemon_health` MCP tool's field of the same
+     *  name. */
+    turnStallAfterMs?: number
   }
 }
 
@@ -1004,6 +1118,14 @@ export async function startHttpServer(
     return false
   }
 
+  // stderr is a launchd-redirected regular file, so every console.error is
+  // a SYNCHRONOUS disk write on the event loop. An ungated line per failed
+  // probe (clients retry precisely when they're already failing) is both a
+  // log flood and a genuine stall risk under ~dozens of concurrent
+  // sessions — first failure logs immediately, then ≤1 line/min with a
+  // suppressed count.
+  const mcpErrorLogGate = createReconnectLogGate()
+
   /**
    * Drive one MCP request over a fresh server+transport pair, per the
    * SDK's stateless pattern. Sharing either across requests breaks after
@@ -1023,7 +1145,11 @@ export async function startHttpServer(
     const transportInternal = transport as unknown as Record<string, unknown>
     if ("onerror" in (transport as object)) {
       transportInternal["onerror"] = (err: unknown) => {
-        console.error("[mcp transport.onerror]", err)
+        const line = mcpErrorLogGate.onFailure(
+          "mcp:transport.onerror",
+          `[mcp transport.onerror] ${err instanceof Error ? err.message : String(err)}`,
+        )
+        if (line) console.error(line)
       }
     }
 
@@ -1036,7 +1162,11 @@ export async function startHttpServer(
       await server.connect(transport)
       await transport.handleRequest(req, res)
     } catch (err) {
-      console.error("[mcp] handleRequest threw:", err)
+      const line = mcpErrorLogGate.onFailure(
+        "mcp:handleRequest",
+        `[mcp] handleRequest threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+      )
+      if (line) console.error(line)
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" })
         res.end(
@@ -1067,11 +1197,25 @@ export async function startHttpServer(
     return raw && raw.length > 0 ? raw : undefined
   }
 
+  /** Mirrors `parseCallerSessionIdQuery` for the `origin` query param
+   *  (#session-visibility) — the connecting client's source label
+   *  (cowork/vscode/codex/cron). A non-session bridge client that omits a
+   *  `?callerSessionId=` still names itself here, so a spawn it makes is
+   *  stamped with an origin instead of landing as a bare root. See
+   *  `mcpServerFactory`'s doc for the wire contract. */
+  function parseOriginQuery(url: string): string | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("origin")
+    return raw && raw.length > 0 ? raw : undefined
+  }
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
     const denyTools = parseDenyToolsQuery(req.url ?? "")
     const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId)
+    const origin = parseOriginQuery(req.url ?? "")
+    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin)
     await serveMcp(req, res, server)
   }
 
@@ -1138,10 +1282,20 @@ export async function startHttpServer(
         workspace: opts.meta.workspace,
         registered: opts.meta.registered,
         uptimeMs: Date.now() - startedAt,
+        startedAt: new Date(startedAt).toISOString(),
+        // What is actually running — version, process, and the exact
+        // node+entry pair launchd (or the shell) exec'd. Lifecycle tooling
+        // (`agentproto daemon start/stop/status`) reports these.
+        version: opts.meta.version ?? null,
+        build: opts.meta.build ?? null,
+        pid: process.pid,
+        node: process.execPath,
+        entry: process.argv[1] ?? null,
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
+        turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
       }),
     )
   }
@@ -1525,6 +1679,8 @@ export async function startHttpServer(
             opts.buildOrchestratorMcp,
             opts.daemonMcpUrl,
             opts.provisionWorktree,
+            opts.listCatalogModels,
+            opts.resolveSandboxProvider,
           )
           if (handled) return
         }
@@ -1665,6 +1821,11 @@ export async function startHttpServer(
               apply,
               salvageDirty,
               includeDetached,
+              // The daemon's own live in-memory registry — fresher than
+              // whatever's on disk, and always available here since this
+              // route is only reachable when a SessionsRegistry is wired
+              // (`opts.sessions`, e.g. the /sessions family above).
+              protectedPaths: opts.sessions ? livingSessionCwds(opts.sessions) : undefined,
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))
@@ -2478,6 +2639,72 @@ export async function startHttpServer(
           if (handled) return
         }
 
+        // Standalone app UI host — GET /apps/:appId/ui serves an installed
+        // app's html with a REST `window.McpApp` bridge injected (the same
+        // UI that renders in an MCP-Apps iframe works in a plain browser
+        // tab), POST /apps/:appId/tool-call is the REST twin of the MCP
+        // app_tool_call gateway. `(.+)` (not `[^/]+`): appIds are
+        // `@scope/name`, so both the literal-slash and the %2F-encoded
+        // spelling of the id must route. Gated like the other browser-
+        // reachable routes: guardBrowserOrigin blocks a non-allowlisted
+        // page's drive-by (the served UI itself is same-origin ⇒ loopback
+        // ⇒ allowlisted), authorize() gates the tunnel path by bearer.
+        if (opts.appRegistry && path.startsWith("/apps/")) {
+          const uiMatch = path.match(/^\/apps\/(.+)\/ui$/)
+          if (uiMatch && req.method === "GET") {
+            if (guardBrowserOrigin(req, res)) return
+            if (!authorize(req, res)) return
+            await handleAppUiPage(res, decodeURIComponent(uiMatch[1]!), opts.appRegistry)
+            return
+          }
+          const toolCallMatch = path.match(/^\/apps\/(.+)\/tool-call$/)
+          if (toolCallMatch && req.method === "POST") {
+            if (guardBrowserOrigin(req, res)) return
+            if (!authorize(req, res)) return
+            await handleAppUiToolCall(
+              req,
+              res,
+              decodeURIComponent(toolCallMatch[1]!),
+              opts.appRegistry,
+              opts.appToolCallDeps ?? {},
+            )
+            return
+          }
+          // Binary sibling of the app_external_read MCP tool — streams a
+          // file's raw bytes from a granted externalReadRoots entry instead
+          // of returning them in a JSON tool response. Same gating as
+          // /ui and /tool-call: guardBrowserOrigin blocks a non-allowlisted
+          // page's drive-by, authorize() gates the tunnel path by bearer.
+          const blobMatch = path.match(/^\/apps\/(.+)\/external-blob$/)
+          if (blobMatch && req.method === "GET") {
+            if (guardBrowserOrigin(req, res)) return
+            if (!authorize(req, res)) return
+            await handleAppExternalBlob(req, res, decodeURIComponent(blobMatch[1]!), opts.appRegistry)
+            return
+          }
+        }
+
+        // App routes — POST /apps/:appId/apply, DELETE /apps/:appId/apply,
+        // GET /scopes/:scopeId/apps. Mirrors the MCP app_apply/app_unapply/
+        // app_list_applied tools. Only mounted when appRegistry is wired.
+        if (
+          opts.appRegistry &&
+          opts.performAppInstall &&
+          opts.listRegisteredToolIds &&
+          (path.startsWith("/apps/") || path.startsWith("/scopes/"))
+        ) {
+          const handled = await handleApps(
+            req,
+            res,
+            path,
+            opts.appRegistry,
+            opts.performAppInstall,
+            opts.listRegisteredToolIds,
+            opts.resolveAgentAdapter,
+          )
+          if (handled) return
+        }
+
         res.writeHead(404, { "content-type": "application/json" })
         res.end(JSON.stringify({ error: "not_found", path }))
       } catch (err) {
@@ -2828,6 +3055,385 @@ export function deliverRecordsExactlyOnce(opts: {
 }
 
 /**
+ * AI-SDK v6 "UI message stream" writer — the wire protocol the
+ * `/sessions/:id/chat` and `/sessions/chat` routes speak. Same SSE framing
+ * `createUIMessageStreamResponse` / `JsonToSseTransformStream` emit
+ * (`data: <JSON UIMessageChunk>\n\n`, `x-vercel-ai-ui-message-stream: v1`),
+ * but driven here by the daemon's RAW transcript records instead of a model
+ * stream. Backlog + live are merged via `deliverRecordsExactlyOnce` (no dupe,
+ * no hole); each record is mapped to chunk(s) and written as its own `data:`
+ * frame. On a `turn-end` record the stream finalizes (`data: [DONE]\n\n`).
+ */
+function startAiUiMessageStream(opts: {
+  res: ServerResponse
+  since: number
+  diskRecords: AsyncIterable<Record<string, unknown>>
+  subscribe: (onRecord: (record: Record<string, unknown>) => void) => () => void
+  map: (record: AgentprotoRawTranscriptRecord) => UIMessageChunk[]
+}): { finalize: () => void; disconnect: () => void; done: Promise<void> } {
+  const { res } = opts
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    "x-vercel-ai-ui-message-stream": "v1",
+    "x-accel-buffering": "no",
+  })
+  // Unblocks `writeHead` (Node buffers it until the first write) so a session
+  // with nothing new to replay doesn't hang the client — same `: connected`
+  // convention `/events/stream` uses.
+  res.write(`: connected\n\n`)
+  let finalized = false
+  let unsubscribeFn: (() => void) | null = null
+  const ping = setInterval(() => {
+    try {
+      res.write(`: keep-alive\n\n`)
+    } catch {
+      finalize()
+    }
+  }, 25_000)
+  const unwind = (): void => {
+    clearInterval(ping)
+    if (unsubscribeFn) {
+      unsubscribeFn()
+      unsubscribeFn = null
+    }
+  }
+  const finalize = (): void => {
+    if (finalized) return
+    finalized = true
+    try {
+      res.write(`data: [DONE]\n\n`)
+      res.end()
+    } catch {
+      // Socket already gone — nothing left to flush.
+    }
+    unwind()
+  }
+  const writeChunk = (chunk: UIMessageChunk): void => {
+    try {
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+    } catch {
+      finalize()
+    }
+  }
+  const { unsubscribe, done } = deliverRecordsExactlyOnce({
+    since: opts.since,
+    diskRecords: opts.diskRecords,
+    subscribe: opts.subscribe,
+    send: record => {
+      // The `turn-end` record finalized the response (`res.end()`). The
+      // transcript writer can still emit POST-terminal records after it —
+      // `runAgentTurn` writes the durable `usage_snapshot` (and possibly a
+      // `usage_update`) in its finally block AFTER recording the turn-end
+      // (sessions.ts). Those are turn bookkeeping, not part of the assistant
+      // message stream, and writing them to the now-ended response would
+      // raise ERR_STREAM_WRITE_AFTER_END. Drop them entirely — no map, no
+      // write — once the stream is finalized.
+      if (finalized) return
+      for (const chunk of opts.map(record as unknown as AgentprotoRawTranscriptRecord))
+        writeChunk(chunk)
+      if (record.kind === "turn-end") finalize()
+    },
+  })
+  unsubscribeFn = unsubscribe
+  return { finalize, disconnect: unwind, done }
+}
+
+/** Highest `seq` currently on disk for a session's events.jsonl (0 if absent).
+ *  Used as the chat stream's `since` edge so a continuation only replays the
+ *  records that land AFTER the caller's prompt — never the session's prior
+ *  turn history. */
+async function currentTranscriptSeq(id: string): Promise<number> {
+  const filePath = sessionEventsPath(id)
+  let stream: ReturnType<typeof createReadStream>
+  try {
+    stream = createReadStream(filePath, { encoding: "utf8" })
+    await new Promise<void>((resolve, reject) => {
+      stream.once("error", reject)
+      stream.once("open", resolve)
+    })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0
+    throw err
+  }
+  let last = 0
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  for await (const line of rl) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const rec = JSON.parse(trimmed) as Record<string, unknown>
+      if (typeof rec.seq === "number") last = rec.seq
+    } catch {
+      continue
+    }
+  }
+  return last
+}
+
+/** Async-iterable of a session's on-disk events.jsonl records. Tolerates a
+ *  missing file (yields nothing) — unlike /events/stream's 404-on-ENOENT, a
+ *  chat against a session with no transcript yet is a live-only stream. */
+async function* transcriptDiskRecords(id: string): AsyncGenerator<Record<string, unknown>> {
+  const filePath = sessionEventsPath(id)
+  let stream: ReturnType<typeof createReadStream>
+  try {
+    stream = createReadStream(filePath, { encoding: "utf8" })
+    await new Promise<void>((resolve, reject) => {
+      stream.once("error", reject)
+      stream.once("open", resolve)
+    })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return
+    throw err
+  }
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  for await (const line of rl) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      yield JSON.parse(trimmed) as Record<string, unknown>
+    } catch {
+      continue
+    }
+  }
+}
+
+/**
+ * Shared body → `spawnAgentSession` input mapper used by BOTH
+ * `POST /sessions/agent` and the create-variant `POST /sessions/chat`, so the
+ * two surfaces can't drift from each other (or from the MCP `agent_start` core
+ * they both delegate to).
+ */
+/** Map a `POST /sessions/agent` JSON body onto `SpawnAgentSessionInput` — the
+ *  HTTP twin of the MCP `agent_start` arg mapping. Exported for unit tests
+ *  (`session-http-agent-spawn.test.ts`) that assert field-forwarding parity —
+ *  notably that the inline `sandbox` spec's `extraPorts`/`env` survive the map
+ *  (the #1150 drop this guards against). */
+export function buildSpawnSessionHttpArgs(
+  b: Record<string, unknown>,
+  adapter: string,
+  preset?: UserPreset,
+): SpawnAgentSessionInput {
+  return {
+    adapter,
+    ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
+    ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
+    ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
+    ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0
+      ? { workspaceSlug: b.workspaceSlug }
+      : {}),
+    ...(typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
+      ? { resumeSessionId: b.resumeSessionId }
+      : {}),
+    ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
+    ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
+    ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
+    ...(b.route !== undefined
+      ? (() => {
+          const parsed = parseRouteField(b.route)
+          return parsed !== undefined ? { route: parsed } : {}
+        })()
+      : {}),
+    ...(b.access !== undefined
+      ? (() => {
+          const parsed = parseAccessField(b.access)
+          return parsed !== undefined ? { access: parsed } : {}
+        })()
+      : {}),
+    ...(typeof b.posture === "string" && b.posture.length > 0
+      ? { posture: parsePostureInput(b.posture) }
+      : {}),
+    ...(typeof b.contextProfile === "string" && b.contextProfile.length > 0
+      ? { contextProfile: b.contextProfile }
+      : {}),
+    ...(preset ? { preset } : {}),
+    ...(b.options !== undefined
+      ? (() => {
+          const parsed = parseOptionsField(b.options)
+          return parsed !== undefined ? { options: parsed } : {}
+        })()
+      : {}),
+    ...(b.auth !== undefined
+      ? (() => {
+          const parsed = parseAuthField(b.auth)
+          return parsed !== undefined ? { auth: parsed } : {}
+        })()
+      : {}),
+    ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
+    ...(typeof b.label === "string" ? { label: b.label } : {}),
+    // Explicit title override (SPEC-3 FIX C, `--title`) — wins over the
+    // first-sentence derivation from the prompt (see session-spawn.ts).
+    ...(typeof b.title === "string" ? { title: b.title } : {}),
+    ...(typeof b.idempotencyKey === "string" && b.idempotencyKey.length > 0
+      ? { idempotencyKey: b.idempotencyKey }
+      : {}),
+    // Per-call escape hatch for the daemon's `spawn.dedupe` policy — the
+    // HTTP twin of the MCP `agent_start` tool's `dedupe` field. Tolerate
+    // a stringified boolean like `trace`/`permissionHold`.
+    ...(b.dedupe !== undefined
+      ? (() => {
+          const d =
+            typeof b.dedupe === "boolean"
+              ? b.dedupe
+              : b.dedupe === "true"
+                ? true
+                : b.dedupe === "false"
+                  ? false
+                  : undefined
+          return d !== undefined ? { dedupe: d } : {}
+        })()
+      : {}),
+    // Parent-lineage hint (WP-R1) — the HTTP twin of the MCP `agent_start`
+    // tool's `parentSessionId` field. This route carries no `callerScope`
+    // (it's the anonymous root trust boundary), so the hint is honoured and
+    // the child's depth is derived from the parent — see spawnAgentSession.
+    ...(typeof b.parentSessionId === "string" && b.parentSessionId.length > 0
+      ? { parentSessionId: b.parentSessionId }
+      : {}),
+    // Task-board pin — the HTTP twin of the MCP `agent_start` tool's
+    // `boardId` field. Stamped onto the child's `meta.boardId`; the task
+    // ledger prefers it over the lineage walk — see session-spawn.ts.
+    ...(typeof b.boardId === "string" && b.boardId.length > 0
+      ? { boardId: b.boardId }
+      : {}),
+    ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
+    ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
+    ...(b.orchestrator !== undefined
+      ? (() => {
+          const parsed = parseOrchestratorField(b.orchestrator)
+          return parsed !== undefined ? { orchestrator: parsed } : {}
+        })()
+      : {}),
+    ...(b.mcpServers !== undefined
+      ? (() => {
+          const parsed = parseMcpServersField(b.mcpServers)
+          return parsed !== undefined ? { mcpServers: parsed } : {}
+        })()
+      : {}),
+    // Opt this session into Langfuse tracing — the HTTP twin of the
+    // MCP `agent_start` tool's `trace` field. Tolerate a stringified
+    // boolean (JSON `true`, or `"true"`/`"false"` from form-ish callers)
+    // so the REST driver reaches the same registry gate the MCP tool does.
+    ...(b.trace !== undefined
+      ? (() => {
+          const t =
+            typeof b.trace === "boolean"
+              ? b.trace
+              : b.trace === "true"
+                ? true
+                : b.trace === "false"
+                  ? false
+                  : undefined
+          return t !== undefined ? { trace: t } : {}
+        })()
+      : {}),
+    // Permission-hold mode — the HTTP twin of the MCP `agent_start` tool's
+    // `permissionHold` field (and `agentproto sessions start
+    // --hold-permissions`). Tolerate a stringified boolean like `trace`.
+    ...(b.permissionHold !== undefined
+      ? (() => {
+          const h =
+            typeof b.permissionHold === "boolean"
+              ? b.permissionHold
+              : b.permissionHold === "true"
+                ? true
+                : b.permissionHold === "false"
+                  ? false
+                  : undefined
+          return h ? { permissionHold: true } : {}
+        })()
+      : {}),
+    // Opt into direct in-band crash notification — the HTTP twin of the
+    // MCP `agent_start` tool's `notifyParentOnCrash` field. Tolerate a
+    // stringified boolean like `permissionHold`/`trace`.
+    ...(b.notifyParentOnCrash !== undefined
+      ? (() => {
+          const n =
+            typeof b.notifyParentOnCrash === "boolean"
+              ? b.notifyParentOnCrash
+              : b.notifyParentOnCrash === "true"
+                ? true
+                : b.notifyParentOnCrash === "false"
+                  ? false
+                  : undefined
+          return n ? { notifyParentOnCrash: true } : {}
+        })()
+      : {}),
+    // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
+    // `worktree` field. Same `spawnAgentSession` core resolves the
+    // `worktrees.isolation` policy, so `always` bites here too and there's
+    // no policy-bypassing spawn path.
+    ...(b.worktree !== undefined
+      ? (() => {
+          const parsed = parseWorktreeField(b.worktree)
+          return parsed !== undefined ? { worktree: parsed } : {}
+        })()
+      : {}),
+    // Opt-in auto-restart policy — the HTTP twin of the MCP `agent_start`
+    // tool's `restartPolicy` field (restart-scheduler PR-2).
+    ...(b.restartPolicy !== undefined
+      ? (() => {
+          const parsed = parseRestartPolicyField(b.restartPolicy)
+          return parsed !== undefined ? { restartPolicy: parsed } : {}
+        })()
+      : {}),
+    // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP
+    // twin of the MCP `agent_start` tool's `allowSharedCwd` field. Tolerate
+    // a stringified boolean like `permissionHold`/`trace`.
+    ...(b.allowSharedCwd !== undefined
+      ? (() => {
+          const a =
+            typeof b.allowSharedCwd === "boolean"
+              ? b.allowSharedCwd
+              : b.allowSharedCwd === "true"
+                ? true
+                : b.allowSharedCwd === "false"
+                  ? false
+                  : undefined
+          return a ? { allowSharedCwd: true } : {}
+        })()
+      : {}),
+    // Idle-reaper exemption — the HTTP twin of the MCP `agent_start` tool's
+    // `keepAlive` field. Tolerate a stringified boolean like
+    // `permissionHold`/`trace`/`allowSharedCwd`.
+    ...(b.keepAlive !== undefined
+      ? (() => {
+          const k =
+            typeof b.keepAlive === "boolean"
+              ? b.keepAlive
+              : b.keepAlive === "true"
+                ? true
+                : b.keepAlive === "false"
+                  ? false
+                  : undefined
+          return k ? { keepAlive: true } : {}
+        })()
+      : {}),
+    // Sandbox spawn — the HTTP twin of the MCP `agent_start` tool's `sandbox`
+    // field. Accepts a provider slug string or an inline SandboxSpec object
+    // (optionally carrying `reuse` for the reconnect path). Provider-specific
+    // config is validated by the sandbox provider at boot time.
+    ...(b.sandbox !== undefined
+      ? (() => {
+          const parsed = parseSandboxField(b.sandbox)
+          return parsed !== undefined ? { sandbox: parsed } : {}
+        })()
+      : {}),
+    // WP3 in-box app serve — the HTTP twin of the MCP `agent_start` tool's
+    // `appServe` field. Accepts an object or a JSON-stringified one; requires
+    // `dir` (and an integer `port` when given).
+    ...(b.appServe !== undefined
+      ? (() => {
+          const parsed = parseAppServeField(b.appServe)
+          return parsed !== undefined ? { appServe: parsed } : {}
+        })()
+      : {}),
+  }
+}
+
+/**
  * /sessions routes — split out of the main switch so the surface
  * stays scannable. Returns `true` when it handled the request, so
  * the dispatcher knows to skip the 404 path.
@@ -2842,6 +3448,10 @@ export function deliverRecordsExactlyOnce(opts: {
  *                                    max 2000). Returns {sessionId, events, nextSeq, complete};
  *                                    404 {error:"no_transcript"} when the file doesn't exist.
  *                                    Read-only GET, no auth gate (same policy as /export).
+ *   POST   /sessions/:id/chat → enqueue a prompt + stream the turn as `ai` v6
+ *                                    UI-message-stream `UIMessageChunk`s.
+ *   POST   /sessions/chat      → create-and-chat: spawn (reusing /sessions/agent's
+ *                                    spawnAgentSession) and stream the first turn.
  *   GET    /sessions/:id/events/stream → SSE live-push sibling of /events: replays every
  *                                    record after since=<seq> (default 0) from disk, then
  *                                    switches to live push as new records are written — one
@@ -2853,6 +3463,11 @@ export function deliverRecordsExactlyOnce(opts: {
  *                                    event=turn-end|awaiting-input|exited|any (default any),
  *                                    since=<cursor>, timeoutMs=<n> (default 25000, cap 55000).
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
+ *   POST   /sessions/:id/pin      → set/clear the list-visibility pin, body
+ *                                    {pinned: boolean}; returns {ok, sessionId,
+ *                                    pinned}. Pure sort/display state — the
+ *                                    HTTP twin of the `session_set_pinned`
+ *                                    MCP verb, never touches keepAlive/reaper.
  *   POST   /sessions/:id/interrupt → cancel the in-flight turn, leave the
  *                                    session alive and idle; returns
  *                                    {ok, id, wasBusy}. No-op (wasBusy:
@@ -2914,9 +3529,11 @@ function parseWorktreeField(raw: unknown): WorktreeField | undefined {
     const obj = value as Record<string, unknown>
     const slug = typeof obj.slug === "string" ? obj.slug : undefined
     const base = typeof obj.base === "string" ? obj.base : undefined
+    const async = typeof obj.async === "boolean" ? obj.async : undefined
     return {
       ...(slug !== undefined ? { slug } : {}),
       ...(base !== undefined ? { base } : {}),
+      ...(async !== undefined ? { async } : {}),
     }
   }
   return undefined
@@ -3043,6 +3660,48 @@ function parseRestartPolicyField(raw: unknown): RestartPolicy | undefined {
   }
 }
 
+/** Parse the `sandbox` body field — a provider slug string (e.g. `"e2b"`) or
+ *  an inline `SandboxSpecInput` object, optionally carrying `reuse:
+ *  "<sandboxId>"` for the reconnect path. Tolerates a JSON-stringified value.
+ *
+ *  The inline object is validated against the SAME `sandboxSpecWithReuseSchema`
+ *  the MCP `agent_start` tool uses, and the WHOLE validated spec is forwarded.
+ *  The previous hand-rolled version pulled out only `provider`/`config`/`reuse`
+ *  and silently dropped `extraPorts`, `env` (passthrough/auth), `lifecycle`,
+ *  and everything else — so a box booted via HTTP came up with no ports and no
+ *  secrets while the identical MCP call worked (the #1150 regression). An
+ *  object that fails validation yields `undefined` (the caller then spawns
+ *  with no sandbox) rather than a half-populated spec. */
+function parseSandboxField(raw: unknown): string | SandboxSpecInput | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) ?? raw : raw
+  if (typeof value === "string" && value.length > 0) return value
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  // `config` is required by the schema; default it so a minimal `{provider}`
+  // spec still validates (matching the prior tolerant behaviour) while every
+  // other field flows through the schema untouched.
+  const candidate = { config: {}, ...(value as Record<string, unknown>) }
+  const parsed = sandboxSpecWithReuseSchema.safeParse(candidate)
+  if (!parsed.success) return undefined
+  return parsed.data as SandboxSpecInput
+}
+
+/** Parse the `appServe` body field (WP3) — `{ dir, port? }`, tolerant of a
+ *  JSON-stringified value (same lenient shape as `parseSandboxField`).
+ *  `port` defaults to `DEFAULT_APP_SERVE_PORT`; anything without a non-empty
+ *  string `dir` ⇒ undefined (dropped, matching this route's body parsing). */
+function parseAppServeField(raw: unknown): SandboxAppServeSpec | undefined {
+  const text = typeof raw === "string" ? raw : JSON.stringify(raw)
+  const record = parseJsonRecordText(text)
+  if (!record) return undefined
+  const dir = record.dir
+  const port = record.port
+  if (typeof dir !== "string" || dir.length === 0) return undefined
+  if (port !== undefined && (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)) {
+    return undefined
+  }
+  return { dir, port: typeof port === "number" ? port : DEFAULT_APP_SERVE_PORT }
+}
+
 /**
  * Reverse-map a cwd onto a registered workspace slug — the same rule
  * spawnAgentSession applies (session-spawn.ts), hoisted here so the terminal
@@ -3081,6 +3740,8 @@ async function handleSessions(
   buildOrchestratorMcp?: BuildOrchestratorMcp,
   daemonMcpUrl?: string,
   provisionWorktree?: WorktreeProvisioner,
+  listCatalogModels?: CatalogModelsLister,
+  resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -3207,187 +3868,10 @@ async function handleSessions(
         buildOrchestratorMcp,
         daemonMcpUrl,
         ...(provisionWorktree ? { provisionWorktree } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
       },
-      {
-        adapter,
-        ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
-        ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
-        ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
-        ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0
-          ? { workspaceSlug: b.workspaceSlug }
-          : {}),
-        ...(typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
-          ? { resumeSessionId: b.resumeSessionId }
-          : {}),
-        ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
-        ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
-        ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
-        ...(b.route !== undefined
-          ? (() => {
-              const parsed = parseRouteField(b.route)
-              return parsed !== undefined ? { route: parsed } : {}
-            })()
-          : {}),
-        ...(b.access !== undefined
-          ? (() => {
-              const parsed = parseAccessField(b.access)
-              return parsed !== undefined ? { access: parsed } : {}
-            })()
-          : {}),
-        ...(typeof b.posture === "string" && b.posture.length > 0
-          ? { posture: parsePostureInput(b.posture) }
-          : {}),
-        ...(typeof b.contextProfile === "string" && b.contextProfile.length > 0
-          ? { contextProfile: b.contextProfile }
-          : {}),
-        ...(preset ? { preset } : {}),
-        ...(b.options !== undefined
-          ? (() => {
-              const parsed = parseOptionsField(b.options)
-              return parsed !== undefined ? { options: parsed } : {}
-            })()
-          : {}),
-        ...(b.auth !== undefined
-          ? (() => {
-              const parsed = parseAuthField(b.auth)
-              return parsed !== undefined ? { auth: parsed } : {}
-            })()
-          : {}),
-        ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
-        ...(typeof b.label === "string" ? { label: b.label } : {}),
-        // Explicit title override (SPEC-3 FIX C, `--title`) — wins over the
-        // first-sentence derivation from the prompt (see session-spawn.ts).
-        ...(typeof b.title === "string" ? { title: b.title } : {}),
-        ...(typeof b.idempotencyKey === "string" && b.idempotencyKey.length > 0
-          ? { idempotencyKey: b.idempotencyKey }
-          : {}),
-        // Parent-lineage hint (WP-R1) — the HTTP twin of the MCP `agent_start`
-        // tool's `parentSessionId` field. This route carries no `callerScope`
-        // (it's the anonymous root trust boundary), so the hint is honoured and
-        // the child's depth is derived from the parent — see spawnAgentSession.
-        ...(typeof b.parentSessionId === "string" && b.parentSessionId.length > 0
-          ? { parentSessionId: b.parentSessionId }
-          : {}),
-        // Task-board pin — the HTTP twin of the MCP `agent_start` tool's
-        // `boardId` field. Stamped onto the child's `meta.boardId`; the task
-        // ledger prefers it over the lineage walk — see session-spawn.ts.
-        ...(typeof b.boardId === "string" && b.boardId.length > 0
-          ? { boardId: b.boardId }
-          : {}),
-        ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
-        ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
-        ...(b.orchestrator !== undefined
-          ? (() => {
-              const parsed = parseOrchestratorField(b.orchestrator)
-              return parsed !== undefined ? { orchestrator: parsed } : {}
-            })()
-          : {}),
-        ...(b.mcpServers !== undefined
-          ? (() => {
-              const parsed = parseMcpServersField(b.mcpServers)
-              return parsed !== undefined ? { mcpServers: parsed } : {}
-            })()
-          : {}),
-        // Opt this session into Langfuse tracing — the HTTP twin of the
-        // MCP `agent_start` tool's `trace` field. Tolerate a stringified
-        // boolean (JSON `true`, or `"true"`/`"false"` from form-ish callers)
-        // so the REST driver reaches the same registry gate the MCP tool does.
-        ...(b.trace !== undefined
-          ? (() => {
-              const t =
-                typeof b.trace === "boolean"
-                  ? b.trace
-                  : b.trace === "true"
-                    ? true
-                    : b.trace === "false"
-                      ? false
-                      : undefined
-              return t !== undefined ? { trace: t } : {}
-            })()
-          : {}),
-        // Permission-hold mode — the HTTP twin of the MCP `agent_start` tool's
-        // `permissionHold` field (and `agentproto sessions start
-        // --hold-permissions`). Tolerate a stringified boolean like `trace`.
-        ...(b.permissionHold !== undefined
-          ? (() => {
-              const h =
-                typeof b.permissionHold === "boolean"
-                  ? b.permissionHold
-                  : b.permissionHold === "true"
-                    ? true
-                    : b.permissionHold === "false"
-                      ? false
-                      : undefined
-              return h ? { permissionHold: true } : {}
-            })()
-          : {}),
-        // Opt into direct in-band crash notification — the HTTP twin of the
-        // MCP `agent_start` tool's `notifyParentOnCrash` field. Tolerate a
-        // stringified boolean like `permissionHold`/`trace`.
-        ...(b.notifyParentOnCrash !== undefined
-          ? (() => {
-              const n =
-                typeof b.notifyParentOnCrash === "boolean"
-                  ? b.notifyParentOnCrash
-                  : b.notifyParentOnCrash === "true"
-                    ? true
-                    : b.notifyParentOnCrash === "false"
-                      ? false
-                      : undefined
-              return n ? { notifyParentOnCrash: true } : {}
-            })()
-          : {}),
-        // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
-        // `worktree` field. Same `spawnAgentSession` core resolves the
-        // `worktrees.isolation` policy, so `always` bites here too and there's
-        // no policy-bypassing spawn path.
-        ...(b.worktree !== undefined
-          ? (() => {
-              const parsed = parseWorktreeField(b.worktree)
-              return parsed !== undefined ? { worktree: parsed } : {}
-            })()
-          : {}),
-        // Opt-in auto-restart policy — the HTTP twin of the MCP `agent_start`
-        // tool's `restartPolicy` field (restart-scheduler PR-2).
-        ...(b.restartPolicy !== undefined
-          ? (() => {
-              const parsed = parseRestartPolicyField(b.restartPolicy)
-              return parsed !== undefined ? { restartPolicy: parsed } : {}
-            })()
-          : {}),
-        // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP
-        // twin of the MCP `agent_start` tool's `allowSharedCwd` field. Tolerate
-        // a stringified boolean like `permissionHold`/`trace`.
-        ...(b.allowSharedCwd !== undefined
-          ? (() => {
-              const a =
-                typeof b.allowSharedCwd === "boolean"
-                  ? b.allowSharedCwd
-                  : b.allowSharedCwd === "true"
-                    ? true
-                    : b.allowSharedCwd === "false"
-                      ? false
-                      : undefined
-              return a ? { allowSharedCwd: true } : {}
-            })()
-          : {}),
-        // Idle-reaper exemption — the HTTP twin of the MCP `agent_start` tool's
-        // `keepAlive` field. Tolerate a stringified boolean like
-        // `permissionHold`/`trace`/`allowSharedCwd`.
-        ...(b.keepAlive !== undefined
-          ? (() => {
-              const k =
-                typeof b.keepAlive === "boolean"
-                  ? b.keepAlive
-                  : b.keepAlive === "true"
-                    ? true
-                    : b.keepAlive === "false"
-                      ? false
-                      : undefined
-              return k ? { keepAlive: true } : {}
-            })()
-          : {}),
-      },
+      buildSpawnSessionHttpArgs(b, adapter, preset),
     )
     if (!result.ok) {
       const status =
@@ -3416,7 +3900,104 @@ async function handleSessions(
       ...result.descriptor,
       ...(result.warnings ? { warnings: result.warnings } : {}),
       ...(result.deduped ? { deduped: true } : {}),
+      ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
     })
+    return true
+  }
+
+  // POST /sessions/chat — create-style sibling of POST /sessions/:id/chat.
+  // Spawns a fresh agent session via the SAME core `/sessions/agent` feeds
+  // (`spawnAgentSession`, shared body→args mapper `buildSpawnSessionHttpArgs`)
+  // and, unlike /sessions/agent, REQUIRES a `prompt` and immediately bleeds
+  // the new session's first turn into the `ai` UI message stream instead of
+  // returning a JSON descriptor. Body = the /sessions/agent spawn fields
+  // PLUS `prompt` (the opening user message). On success the response is the
+  // /sessions/:id/chat SSE stream (first turn), not a 201 descriptor.
+  if (path === "/sessions/chat" && req.method === "POST") {
+    if (!resolveAgentAdapter) {
+      json(501, {
+        error: "agent_resolver_not_configured",
+        message:
+          "POST /sessions/chat needs the host to inject `resolveAgentAdapter` " +
+          "(e.g. via @agentproto/cli's resolveAdapter shim).",
+      })
+      return true
+    }
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const chatPrompt = typeof b.prompt === "string" ? b.prompt.trim() : ""
+    if (!chatPrompt) {
+      json(400, { error: "missing_prompt", message: "body.prompt (non-empty string) is required" })
+      return true
+    }
+    const presetId = typeof b.presetId === "string" && b.presetId.length > 0 ? b.presetId : undefined
+    const preset = presetId ? await getUserPreset(presetId) : undefined
+    if (presetId && !preset) {
+      json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
+      return true
+    }
+    const adapter =
+      typeof b.adapter === "string"
+        ? b.adapter
+        : typeof b.harness === "string"
+          ? b.harness
+          : preset?.adapter ?? preset?.harness ?? ""
+    if (!adapter) {
+      json(400, { error: "missing_adapter" })
+      return true
+    }
+    const result = await spawnAgentSession(
+      {
+        registry,
+        resolveAgentAdapter,
+        buildOrchestratorMcp,
+        daemonMcpUrl,
+        ...(provisionWorktree ? { provisionWorktree } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+      },
+      buildSpawnSessionHttpArgs(b, adapter, preset),
+    )
+    if (!result.ok) {
+      const status =
+        result.code === "adapter_not_found" || result.code === "no_cwd"
+          ? 404
+          : result.code === "orchestrator_not_enabled"
+            ? 501
+            : result.code === "orchestrator_max_depth_exceeded" ||
+                result.code === "orchestrator_child_quota_exceeded" ||
+                result.code === "role_spawn_denied"
+              ? 409
+              : result.code === "invalid_role" ||
+                  result.code === "worktree_requires_explicit_repo" ||
+                  result.code === "access_profile_not_found" ||
+                  result.code === "access_profile_ineligible"
+                ? 400
+                : 500
+      json(status, {
+        error: result.code,
+        message: result.message,
+        ...result.details,
+      })
+      return true
+    }
+    const id = result.descriptor.id
+    // `since` edge is 0 (a fresh session has no prior turn history), but the
+    // replay must tolerate the spawn already having flushed early records.
+    const since = await currentTranscriptSeq(id)
+    const stream = startAiUiMessageStream({
+      res,
+      since,
+      diskRecords: transcriptDiskRecords(id),
+      subscribe: onRecord => registry.subscribeToRecords(id, onRecord),
+      map: createTranscriptToUiMapper(id),
+    })
+    req.once("close", () => stream.disconnect())
+    await stream.done
     return true
   }
 
@@ -3611,7 +4192,7 @@ async function handleSessions(
   }
 
   // Send a follow-up turn to a live agent session.
-  // Body: { prompt: string | ContentBlock | ContentBlock[], interrupt?: boolean }
+  // Body: { prompt: string | ContentBlock | ContentBlock[], interrupt?: boolean, queue?: boolean, force?: boolean }
   //   - string                → auto-wrapped to a single text block by
   //                             the registry (legacy / convenience).
   //   - ContentBlock          → e.g. `{type:"image", source:{...}}`
@@ -3624,6 +4205,20 @@ async function handleSessions(
   //                             this prompt on the same session instead
   //                             of the usual mid-turn rejection. No-op
   //                             on an idle session. Default false.
+  //   - queue                 → when true and the session is mid-turn
+  //                             (and `interrupt` didn't already settle
+  //                             it), append this prompt to the
+  //                             session's FIFO instead of the usual
+  //                             mid-turn rejection — dispatched once
+  //                             the current (and any earlier-queued)
+  //                             turns finish. No-op on an idle session.
+  //                             Default false — omitted reproduces the
+  //                             busy rejection byte-for-byte.
+  //   - force                 → only meaningful alongside `queue`:
+  //                             insert at the FRONT of the FIFO instead
+  //                             of the back, jumping everything already
+  //                             waiting WITHOUT touching the live turn
+  //                             (that's `interrupt`'s job). Default false.
   //
   // Validation is intentionally loose — we accept anything object-
   // shaped + non-empty arrays + non-empty strings. The adapter will
@@ -3633,9 +4228,9 @@ async function handleSessions(
   // Query: ?wait=false → fire-and-forget (return 202 after sync
   //   validation; output streams via /sessions/:id/stream). Default
   //   wait=true keeps the call blocking until the turn drains, which
-  //   is what curl scripts + the MCP bridge expect. `interrupt` only
-  //   takes effect on this fire-and-forget arm (mirroring MCP
-  //   `agent_prompt`, which always calls `enqueuePrompt`).
+  //   is what curl scripts + the MCP bridge expect. `interrupt` /
+  //   `queue` / `force` only take effect on this fire-and-forget arm
+  //   (mirroring MCP `agent_prompt`, which always calls `enqueuePrompt`).
   const promptMatch = path.match(/^\/sessions\/([^/]+)\/prompt$/)
   if (promptMatch && req.method === "POST") {
     const id = promptMatch[1]
@@ -3643,6 +4238,8 @@ async function handleSessions(
     const body = await readJsonBody(req)
     const prompt = (body as { prompt?: unknown } | null)?.prompt
     const interrupt = (body as { interrupt?: unknown } | null)?.interrupt === true
+    const queue = (body as { queue?: unknown } | null)?.queue === true
+    const force = (body as { force?: unknown } | null)?.force === true
     const validPrompt =
       (typeof prompt === "string" && prompt.length > 0) ||
       (Array.isArray(prompt) &&
@@ -3671,13 +4268,36 @@ async function handleSessions(
         // reporting `queued: true` for a prompt nothing will dispatch.
         // `interrupt: true` lets a mid-turn session redirect instead of
         // rejecting — see `SessionsRegistry.enqueuePrompt`'s doc comment.
-        await registry.enqueuePrompt(id, prompt, { interrupt })
-        json(202, { ok: true, id, queued: true })
+        // `queueId` is minted here (not by the registry) so it can be
+        // echoed straight back in the response below without a second
+        // round-trip to read the descriptor back for it.
+        const queueId = queue ? `q_${randomUUID().slice(0, 8)}` : undefined
+        // `origin: "user"` labels a queued item as coming from the human/
+        // operator surface (POST /sessions/:id/prompt — the CLI, the VS Code
+        // panel, curl). It only affects the after-the-fact queue origin
+        // badge; transcript provenance is untouched (`source` is not set).
+        await registry.enqueuePrompt(id, prompt, { interrupt, queue, force, queueId, origin: "user" })
+        const promptQueue = queueId ? registry.get(id)?.promptQueue : undefined
+        const queuePosition = promptQueue?.findIndex(p => p.id === queueId) ?? -1
+        json(202, {
+          ok: true,
+          id,
+          queued: true,
+          // Present only when this prompt actually landed in the FIFO
+          // (busy + `queue: true`) rather than dispatching immediately —
+          // an idle session's `queueId` never appears in `promptQueue`,
+          // so `queuePosition` stays -1 and this is omitted.
+          ...(queuePosition >= 0
+            ? { pending: true, queueId, queuePosition: queuePosition + 1 }
+            : {}),
+        })
       } else {
         // `interrupt` used to be parsed and then silently DROPPED on this
         // arm — it only took effect under ?wait=false. A caller asking to
         // redirect a mid-turn session got the busy 409 it explicitly asked
-        // not to get. Both arms now honour it identically.
+        // not to get. Both arms now honour it identically. `queue`/`force`
+        // are NOT supported here — a blocking caller can't be told "your
+        // prompt is waiting" without a second read; use ?wait=false.
         await registry.sendPrompt(id, prompt, { interrupt })
         json(200, { ok: true, id })
       }
@@ -3698,6 +4318,71 @@ async function handleSessions(
             : 500
       json(status, { error: "send_prompt_failed", message: msg })
     }
+    return true
+  }
+
+  // Cancel one not-yet-dispatched item in a session's prompt FIFO before
+  // it fires — the composer's per-item "remove" action. Idempotent: an
+  // id that's already gone (dispatched, already removed, or never
+  // existed) still returns 200 with `removed: false` rather than 404 —
+  // same no-op-is-not-an-error shape as `POST /sessions/:id/interrupt`.
+  const queueItemMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)$/)
+  if (queueItemMatch && req.method === "DELETE") {
+    const id = queueItemMatch[1]
+    const queueId = queueItemMatch[2]
+    if (!id || !queueId) return false
+    const { removed } = registry.removeQueuedPrompt(id, queueId)
+    json(200, { ok: true, id, queueId, removed })
+    return true
+  }
+  // Promote an already-queued item to the FRONT without touching the
+  // in-flight turn — the reorder-only force (`session_queue_promote`). The
+  // after-the-fact counterpart of the enqueue-time `force` opt.
+  const queuePromoteMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)\/promote$/)
+  if (queuePromoteMatch && req.method === "POST") {
+    const id = queuePromoteMatch[1]
+    const queueId = queuePromoteMatch[2]
+    if (!id || !queueId) return false
+    const result = registry.promoteQueuedPrompt(id, queueId)
+    if (!result.promoted) {
+      json(404, { error: "queued_item_not_found", id, queueId })
+      return true
+    }
+    json(200, { ok: true, id, queueId, position: result.position })
+    return true
+  }
+  // Deliver-now: interrupt whatever's mid-flight and dispatch THIS item as
+  // the new turn (`session_queue_deliver`). The "I need this NOW" op.
+  const queueDeliverMatch = path.match(/^\/sessions\/([^/]+)\/queue\/([^/]+)\/deliver$/)
+  if (queueDeliverMatch && req.method === "POST") {
+    const id = queueDeliverMatch[1]
+    const queueId = queueDeliverMatch[2]
+    if (!id || !queueId) return false
+    try {
+      const result = await registry.deliverQueuedPrompt(id, queueId)
+      if (!result.delivered) {
+        json(404, { error: "queued_item_not_found", id, queueId })
+        return true
+      }
+      json(200, { ok: true, id, queueId, interrupted: result.interrupted })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(msg.includes("no session") ? 404 : 409, { error: "deliver_queued_failed", message: msg })
+    }
+    return true
+  }
+  // Inspect the queue after the fact — GET /sessions/:id/queue returns the
+  // ordered list (origin, preview, queuedAt, position). 0 = next to dispatch.
+  const queueListMatch = path.match(/^\/sessions\/([^/]+)\/queue$/)
+  if (queueListMatch && req.method === "GET") {
+    const id = queueListMatch[1]
+    if (!id) return false
+    const queue = registry.listQueuedPrompts(id)
+    if (queue === null) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    json(200, { ok: true, id, queue })
     return true
   }
 
@@ -3878,6 +4563,7 @@ async function handleSessions(
       const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
         forceAgentResume: true,
         overrides,
+        ...(listCatalogModels ? { listCatalogModels } : {}),
       })
       json(200, {
         ...restarted.desc,
@@ -4090,7 +4776,7 @@ async function handleSessions(
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/preview|\/export|\/conversation|\/events|\/wait)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -4332,6 +5018,62 @@ async function handleSessions(
     return true
   }
 
+  if (suffix === "/chat" && req.method === "POST") {
+    // POST /sessions/:id/chat — enqueue a follow-up prompt on an EXISTING
+    // /sessions/:id session and fan the daemon's RAW transcript records
+    // (events.jsonl) into the `ai` v6 UI message stream as `UIMessageChunk`s
+    // (same SSE framing + `x-vercel-ai-ui-message-stream` header the ai SDK
+    // emits). Body: { prompt, interrupt?, source? }.
+    //
+    // Two-phase so a rejected prompt (dead session, or busy without
+    // `interrupt`) surfaces as a clean HTTP error instead of a half-open
+    // stream: we snapshot the current disk edge, await `enqueuePrompt`'s
+    // admission gate (which is the only phase that can reject), then open the
+    // stream. Turn records land either via the live subscribe or the disk
+    // replay (deduped exactly-once by `deliverRecordsExactlyOnce`) — the
+    // `since` edge is the pre-prompt seq so the session's PRIOR turn history
+    // is never replayed into the chat wire.
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const prompt = typeof b.prompt === "string" ? b.prompt.trim() : ""
+    if (!prompt) {
+      json(400, { error: "missing_prompt", message: "body.prompt (non-empty string) is required" })
+      return true
+    }
+    const interrupt = b.interrupt === true
+    const source =
+      typeof b.source === "string" && b.source.length > 0 ? b.source : "http:chat"
+    const since = await currentTranscriptSeq(id)
+    try {
+      await registry.enqueuePrompt(id, prompt, {
+        interrupt,
+        ...(source ? { source } : {}),
+      })
+    } catch (err) {
+      if (err instanceof SessionNotAliveError) {
+        json(409, { error: "session_not_alive", message: `session "${id}" not alive` })
+        return true
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      json(409, { error: "prompt_rejected", message })
+      return true
+    }
+    const stream = startAiUiMessageStream({
+      res,
+      since,
+      diskRecords: transcriptDiskRecords(id),
+      subscribe: onRecord => registry.subscribeToRecords(id, onRecord),
+      map: createTranscriptToUiMapper(id),
+    })
+    req.once("close", () => stream.disconnect())
+    await stream.done
+    return true
+  }
+
   if (suffix === "/preview" && req.method === "GET") {
     // Read-only snapshot of the recent ring buffer — used by the
     // dashboard's detail pane so the user sees what the session was
@@ -4468,6 +5210,41 @@ async function handleSessions(
   if (suffix === "/kill" && req.method === "POST") {
     const ok = registry.kill(id)
     json(ok ? 200 : 404, { ok, sessionId: id })
+    return true
+  }
+
+  // Pin/unpin — the HTTP twin of the `session_set_pinned` MCP verb, so the
+  // CLI's `agentproto sessions pin`/`unpin` doesn't need to go through the
+  // MCP JSON-RPC path for a simple toggle. Body: `{ pinned: boolean }`
+  // (tolerates a stringified boolean, same convention as `keepAlive` on the
+  // spawn route). Purely a sort/display flag — never touches the idle-reaper
+  // or emits any notification.
+  if (suffix === "/pin" && req.method === "POST") {
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const pinned =
+      typeof b.pinned === "boolean"
+        ? b.pinned
+        : b.pinned === "true"
+          ? true
+          : b.pinned === "false"
+            ? false
+            : undefined
+    if (pinned === undefined) {
+      json(400, { error: "invalid_body", message: "`pinned` must be a boolean" })
+      return true
+    }
+    try {
+      registry.setPinned(id, pinned)
+      json(200, { ok: true, sessionId: id, pinned })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(msg.includes("no session") ? 404 : 500, { error: "set_pinned_failed", message: msg })
+    }
     return true
   }
 
@@ -5165,7 +5942,7 @@ async function handleTasks(
  * /permissions routes — the cross-session permission inbox:
  *   GET  /permissions            → { permissions: [...] } across all sessions
  *                                  (optional ?sessionId=<id> filter)
- *   POST /permissions/:id        → { decision, optionId?, scope? } approve/deny
+ *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny
  *
  * Mirrors the MCP `permissions_list` / `permissions_respond` tools over the
  * same SessionsRegistry inbox. Each list entry is enriched with the owning
@@ -5211,10 +5988,12 @@ async function handlePermissions(
     }
     const optionId = typeof b.optionId === "string" ? b.optionId : undefined
     const scope = b.scope === "always" || b.scope === "once" ? b.scope : undefined
+    const feedback = typeof b.feedback === "string" ? b.feedback : undefined
     const result = await registry.respondPermission(id, {
       decision,
       ...(optionId ? { optionId } : {}),
       ...(scope ? { scope } : {}),
+      ...(feedback ? { feedback } : {}),
     })
     if (!result.ok) {
       const status = result.error === "not_found" || result.error === "session_gone" ? 404 : 409
@@ -5735,6 +6514,328 @@ async function handleProviderInbound(
   })
   res.writeHead(200, { "content-type": "application/json" })
   res.end(JSON.stringify(result))
+}
+
+/** `GET /apps/:appId/ui` — an installed app's `ui.path` html, with the
+ *  standalone REST bridge injected so `window.McpApp.connect()` works with
+ *  no host iframe (callTool POSTs to the sibling `./tool-call` route —
+ *  `./` resolves against the document URL, so the appId segment carries
+ *  over whichever spelling it used). `frame-ancestors 'none'`: standalone
+ *  means a top-level tab — refusing embedding closes the drive-by where a
+ *  hostile page iframes the UI and lets the app's own boot sequence fire
+ *  allowlisted tools. */
+async function handleAppUiPage(
+  res: ServerResponse,
+  appId: string,
+  appRegistry: AppRegistry,
+): Promise<void> {
+  const app = appRegistry.getApp(appId)
+  if (!app?.ui) {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
+    return
+  }
+  let raw: string
+  try {
+    raw = await readFile(app.ui.path, "utf8")
+  } catch (err) {
+    res.writeHead(500, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        error: `could not read app "${appId}"'s ui html at "${app.ui.path}": ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    )
+    return
+  }
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "x-frame-options": "DENY",
+    "content-security-policy": "frame-ancestors 'none'",
+  })
+  res.end(injectStandaloneAppBridge(raw))
+}
+
+/** Map a file extension to the `OutboundAttachment["type"]` bucket
+ *  `mimeTypeFor` (outbound-adapters.ts) expects, so `/external-blob` can
+ *  reuse that lookup instead of hand-rolling a second MIME table. Any
+ *  extension not recognized here still resolves through `mimeTypeFor`'s
+ *  "document" branch, which falls back to `application/octet-stream`. */
+function outboundKindForExt(ext: string): "photo" | "document" | "video" | "audio" {
+  const e = ext.toLowerCase()
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(e)) return "photo"
+  if ([".mp4", ".mov", ".webm"].includes(e)) return "video"
+  if ([".mp3", ".ogg", ".wav", ".m4a"].includes(e)) return "audio"
+  return "document"
+}
+
+/** `GET /apps/:appId/external-blob?root=<exact-granted-root>&path=<relative>`
+ *  — streams a file's raw bytes from one of an installed app's granted
+ *  `InstalledApp.externalReadRoots`, the binary-content sibling of the
+ *  `app_external_read` MCP tool (app-external.ts), which only serves an
+ *  allowlist of text-ish extensions into a tool's JSON response. `root`
+ *  must be an exact string match to a granted entry (same boundary as the
+ *  MCP tools — no prefix/fuzzy match); `path` is resolved against it with
+ *  `resolveExternalPath` + a symlink-escape recheck, the exact same guard
+ *  `app_external_list`/`app_external_read` use, not a re-derived one. GET
+ *  only, read-only: this route never writes/deletes, and there is no size
+ *  cap — PDFs/images are meant to flow through here unlike the text tool. */
+async function handleAppExternalBlob(
+  req: IncomingMessage,
+  res: ServerResponse,
+  appId: string,
+  appRegistry: AppRegistry,
+): Promise<void> {
+  const reply = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+  const app = appRegistry.getApp(appId)
+  if (!app) {
+    reply(404, { error: `app "${appId}" is not installed.` })
+    return
+  }
+  const reqUrl = req.url ?? ""
+  const qs = new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "")
+  const root = qs.get("root")
+  const relPath = qs.get("path") ?? ""
+  if (!root) {
+    reply(400, { error: "missing_root" })
+    return
+  }
+  if (!isExternalRootGranted(app, root)) {
+    reply(403, { error: `root "${root}" is not granted to app "${appId}".` })
+    return
+  }
+  const safeRoot = await realpathExternalRoot(root)
+  if (!safeRoot) {
+    reply(404, { error: `root "${root}" is not accessible.` })
+    return
+  }
+  let target: string
+  try {
+    target = resolveExternalPath(safeRoot, relPath)
+    await assertExternalPathRealInside(safeRoot, target)
+  } catch (err) {
+    reply(400, { error: err instanceof Error ? err.message : String(err) })
+    return
+  }
+  let st: Awaited<ReturnType<typeof stat>>
+  try {
+    st = await stat(target)
+  } catch {
+    reply(404, { error: `"${relPath}" not found under root "${root}".` })
+    return
+  }
+  if (st.isDirectory()) {
+    reply(400, { error: `"${relPath}" is a directory, not a file.` })
+    return
+  }
+  const ext = extname(target)
+  res.writeHead(200, {
+    "content-type": mimeTypeFor(ext, outboundKindForExt(ext)),
+    "content-disposition": "inline",
+    "cache-control": "no-store",
+  })
+  const stream = createReadStream(target)
+  stream.on("error", () => res.destroy())
+  stream.pipe(res)
+}
+
+/** `POST /apps/:appId/tool-call` `{ tool, args? }` — the REST twin of the
+ *  MCP `app_tool_call` gateway, sharing its exact allowlist + dispatch via
+ *  `performAppToolCall`. Replies 200 with the MCP result envelope (isError
+ *  ones included — a postMessage host's `tools/call` reply RESOLVES with
+ *  those, so the REST bridge must too); only a malformed body is a 400.
+ *
+ *  The bundled UIs address the daemon-level gateway through their bridge
+ *  (`callTool("app_tool_call", { appId, tool, args })` — see media-viewer's
+ *  `callApp`), so that meta-call is unwrapped here: the inner tool runs
+ *  against THIS route's app, and an inner appId naming a different app is
+ *  refused rather than silently re-scoped. */
+async function handleAppUiToolCall(
+  req: IncomingMessage,
+  res: ServerResponse,
+  appId: string,
+  appRegistry: AppRegistry,
+  deps: AppToolCallDeps,
+): Promise<void> {
+  const body = (await readJsonBody(req)) as { tool?: unknown; args?: unknown } | null
+  const badRequest = (message: string): void => {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "bad_request", message }))
+  }
+  if (!body || typeof body.tool !== "string") {
+    badRequest('body must be `{ "tool": string, "args"?: object }`.')
+    return
+  }
+  let tool = body.tool
+  let args =
+    body.args && typeof body.args === "object" && !Array.isArray(body.args)
+      ? (body.args as Record<string, unknown>)
+      : {}
+  if (tool === "app_tool_call") {
+    const inner = args as { appId?: unknown; tool?: unknown; args?: unknown }
+    if (typeof inner.tool !== "string") {
+      badRequest('an "app_tool_call" meta-call needs `args.tool` (string).')
+      return
+    }
+    if (typeof inner.appId === "string" && inner.appId !== appId) {
+      badRequest(
+        `an "app_tool_call" meta-call must target this route's app ("${appId}"), got "${inner.appId}".`,
+      )
+      return
+    }
+    tool = inner.tool
+    args =
+      inner.args && typeof inner.args === "object" && !Array.isArray(inner.args)
+        ? (inner.args as Record<string, unknown>)
+        : {}
+  }
+  const result = await performAppToolCall(appRegistry, { appId, tool, args }, deps)
+  res.writeHead(200, { "content-type": "application/json" })
+  res.end(JSON.stringify(result))
+}
+
+async function handleApps(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  appRegistry: AppRegistry,
+  performInstall: (
+    dir: string,
+    appRegistry: AppRegistry,
+    listRegisteredToolIds: () => Promise<string[]>,
+    resolveAgentAdapter?: AgentAdapterResolver,
+    opts?: { dataDir?: string },
+  ) => Promise<{ ok: true; record: any } | { ok: false; error: string }>,
+  listRegisteredToolIds: () => Promise<string[]>,
+  resolveAgentAdapter?: AgentAdapterResolver,
+): Promise<boolean> {
+  const method = req.method ?? "GET"
+
+  const applyMatch = path.match(/^\/apps\/([^/]+)\/apply$/)
+  if (applyMatch && method === "POST") {
+    const appId = decodeURIComponent(applyMatch[1]!)
+    const body = (await readJsonBody(req)) as { scopeId?: string; dir?: string; dataDir?: string } | null
+    const scopeId = body?.scopeId ?? "root"
+
+    let installed = appRegistry.getApp(appId)
+    if (!installed && body?.dir) {
+      const installResult = await performInstall(body.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+        ...(body.dataDir !== undefined ? { dataDir: body.dataDir } : {}),
+      })
+      if (!installResult.ok) {
+        res.writeHead(400, { "content-type": "application/json" })
+        res.end(JSON.stringify({ error: installResult.error }))
+        return true
+      }
+      installed = installResult.record
+    }
+
+    if (!installed) {
+      res.writeHead(400, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: `app "${appId}" is not installed. Either call app_install first or provide a 'dir' parameter.`,
+        }),
+      )
+      return true
+    }
+
+    if (installed.requires && installed.requires.length > 0) {
+      const applied = appRegistry.listApplied(scopeId)
+      const appliedIds = new Set(applied.map(m => m.appId))
+      const missing = installed.requires.filter(reqId => !appliedIds.has(reqId))
+      if (missing.length > 0) {
+        res.writeHead(400, { "content-type": "application/json" })
+        res.end(
+          JSON.stringify({
+            error: `app "${appId}" requires the following apps to be applied to scope "${scopeId}" first: ${missing.join(", ")}`,
+          }),
+        )
+        return true
+      }
+    }
+
+    const mount = appRegistry.applyApp({ scopeId, appId })
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        scopeId: mount.scopeId,
+        appId: mount.appId,
+        appliedAt: mount.appliedAt,
+        agents: installed.agents,
+        workflows: installed.workflows,
+        unvalidatedAgentTools: installed.unvalidatedAgentTools,
+      }),
+    )
+    return true
+  }
+
+  if (applyMatch && method === "DELETE") {
+    const appId = decodeURIComponent(applyMatch[1]!)
+    const body = (await readJsonBody(req)) as { scopeId?: string } | null
+    const url = new URL(req.url ?? "", `http://${req.headers.host}`)
+    const scopeId = body?.scopeId ?? url.searchParams.get("scopeId") ?? "root"
+
+    const applied = appRegistry.listApplied(scopeId)
+    const dependents: string[] = []
+    for (const mount of applied) {
+      if (mount.appId === appId) continue
+      const app = appRegistry.getApp(mount.appId)
+      if (app?.requires?.includes(appId)) {
+        dependents.push(mount.appId)
+      }
+    }
+
+    if (dependents.length > 0) {
+      res.writeHead(400, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: `cannot unapply app "${appId}" from scope "${scopeId}" — the following apps in this scope require it: ${dependents.join(", ")}`,
+        }),
+      )
+      return true
+    }
+
+    const removed = appRegistry.unapplyApp({ scopeId, appId })
+    if (!removed) {
+      res.writeHead(404, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: `app "${appId}" is not applied to scope "${scopeId}".` }))
+      return true
+    }
+
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify({ scopeId: removed.scopeId, appId: removed.appId, appliedAt: removed.appliedAt }))
+    return true
+  }
+
+  const scopesMatch = path.match(/^\/scopes\/([^/]+)\/apps$/)
+  if (scopesMatch && method === "GET") {
+    const scopeId = decodeURIComponent(scopesMatch[1]!)
+    const mounts = appRegistry.listApplied(scopeId)
+    const result = mounts.map(mount => {
+      const app = appRegistry.getApp(mount.appId)
+      return {
+        scopeId: mount.scopeId,
+        appId: mount.appId,
+        appliedAt: mount.appliedAt,
+        ...(app
+          ? {
+              agents: app.agents,
+              workflows: app.workflows,
+              unvalidatedAgentTools: app.unvalidatedAgentTools,
+            }
+          : {}),
+      }
+    })
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify(result))
+    return true
+  }
+
+  return false
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

@@ -5,11 +5,13 @@
  * agent's pre-colored streamed output for agent-cli sessions (which have no
  * PTY anywhere — see terminalSwitch.logic.ts's `notPtyMessage`). One
  * terminal per session id; re-invoking reveals the existing one rather than
- * opening a duplicate. The tree's single-click still opens the CONVERSATION
- * webview (agentproto.openTranscript, unchanged) — this command is reached
- * from the tree's inline context menu and the transcript panel's editor
- * title bar instead, so it reads as a switch between two views of one
- * session rather than a second, unrelated feature.
+ * opening a duplicate. The tree's single-click now routes by session kind
+ * (agentproto.openSession, sessionOpen.logic.ts's `defaultOpenTarget`) and
+ * already opens this same terminal directly for a plain terminal PTY — this
+ * command is additionally reached from the tree's inline context menu and
+ * the transcript panel's editor title bar, so for everything else (agent-cli,
+ * a native-conversation PTY) it still reads as a switch between two views of
+ * one session rather than a second, unrelated feature.
  */
 
 import * as vscode from "vscode"
@@ -170,6 +172,8 @@ export function registerTerminalSwitch(
           vscode.window.showWarningMessage(
             `agentproto: restart of ${describeSession(session)} did not become a terminal — the daemon fell back to ACP resume because the provider transcript could not be recovered.`,
           )
+          await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
+          return
         }
         await vscode.commands.executeCommand("agentproto.openTerminal", result.id)
       } catch (err) {
@@ -179,6 +183,32 @@ export function registerTerminalSwitch(
       }
     }),
     vscode.commands.registerCommand("agentproto.moveTerminalLocation", () => terminalSwitch.moveLocation()),
+    vscode.commands.registerCommand(
+      "agentproto.spawnHarnessTerminal",
+      async (slug: unknown, argv: unknown) => {
+        if (typeof slug !== "string" || !Array.isArray(argv) || argv.length === 0) return
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+        if (!cwd) {
+          void vscode.window.showWarningMessage(
+            "agentproto: open a workspace folder before starting a terminal session.",
+          )
+          return
+        }
+        try {
+          const session = await client.spawnTerminal({
+            argv: argv as string[],
+            cwd,
+            label: slug,
+          })
+          await store.refreshAll()
+          terminalSwitch.open(session)
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `agentproto: could not start a terminal session for '${slug}' — ${describeError(err)}`,
+          )
+        }
+      },
+    ),
   )
 
   return terminalSwitch

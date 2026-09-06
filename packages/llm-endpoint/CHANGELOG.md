@@ -1,5 +1,93 @@
 # @agentproto/llm-endpoint
 
+## 0.5.11
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.11
+- @agentproto/auth@1.0.1
+- @agentproto/batch@0.2.0
+
+## 0.5.10
+
+### Patch Changes
+
+- Updated dependencies [4fb28be]
+  - @agentproto/batch@0.2.0
+
+## 0.5.9
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.10
+
+## 0.5.8
+
+### Patch Changes
+
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [7a96351]
+- Updated dependencies [f0c51a7]
+  - @agentproto/auth@1.0.1
+  - @agentproto/providers-store@0.3.9
+
+## 0.5.7
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.8
+
+## 0.5.6
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.7
+
+## 0.5.5
+
+### Patch Changes
+
+- cbe05f9: Fix credential shape detection for Anthropic OAuth Access Tokens (OATs). When resolving env-key credentials without a mapped auth profile, the resolver now classifies tokens by shape — Anthropic OATs (`sk-ant-oat*`) get method:"oauth-bearer" instead of the hardcoded "api-key" — so `buildUpstreamAuthHeaders` emits `Authorization: Bearer` instead of `x-api-key`. Anthropic hard-rejects OATs sent as x-api-key ("invalid x-api-key"), and the runtime's billing-auth resolver injects subscription OATs into ANTHROPIC_API_KEY for certain adapters (e.g. pi) with no authSubscription override.
+
+## 0.5.4
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.6
+
+## 0.5.3
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+  - @agentproto/providers-store@0.3.5
+
+## 0.5.2
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.4
+
+## 0.5.1
+
+### Patch Changes
+
+- e7ab81a: Expose Kimi K3 model across adapters and llm-endpoint library. Adds direct moonshot routes and llm-endpoint proxy variants for unified model routing.
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+  - @agentproto/providers-store@0.3.3
+
 ## 0.5.0
 
 ### Minor Changes

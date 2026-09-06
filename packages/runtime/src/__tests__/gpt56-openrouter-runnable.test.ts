@@ -44,17 +44,20 @@ import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 
-// The three base products + their `-pro` variants, with the input/output
-// per-1M prices committed in openrouter-routes.generated.ts. Asserting the
-// numbers proves the row is genuinely priced (a launchable wallet needs it),
-// not merely present.
+// The three base products + their `-pro` variants. No prices pinned here —
+// OpenRouter's live numbers for this series have drifted (and broken a
+// hardcoded pin) more than once. This file only proves each row is
+// genuinely priced and that the buildCatalogModels join carries the SAME
+// price the picker enumeration shows — not what OpenRouter charges this
+// week. For the actual numbers, see the snapshot in
+// packages/model-catalog/src/__tests__/catalog.test.ts.
 const GPT56 = [
-  { product: "gpt-5.6-luna", inPer1M: 1, outPer1M: 6 },
-  { product: "gpt-5.6-luna-pro", inPer1M: 1, outPer1M: 6 },
-  { product: "gpt-5.6-sol", inPer1M: 5, outPer1M: 30 },
-  { product: "gpt-5.6-sol-pro", inPer1M: 5, outPer1M: 30 },
-  { product: "gpt-5.6-terra", inPer1M: 2.5, outPer1M: 15 },
-  { product: "gpt-5.6-terra-pro", inPer1M: 2.5, outPer1M: 15 },
+  "gpt-5.6-luna",
+  "gpt-5.6-luna-pro",
+  "gpt-5.6-sol",
+  "gpt-5.6-sol-pro",
+  "gpt-5.6-terra",
+  "gpt-5.6-terra-pro",
 ] as const
 
 const openrouterKey: AuthProfile = {
@@ -79,19 +82,19 @@ describe("gpt-5.6 series — picker visibility (buildCatalogProviderModels)", ()
   it("the OpenRouter provider enumeration lists every gpt-5.6 product with pricing", () => {
     const res = buildCatalogProviderModels({ endpoint: "openrouter" })
     expect(res.provider).toBe("openrouter")
-    for (const { product, inPer1M, outPer1M } of GPT56) {
+    for (const product of GPT56) {
       const row = res.models.find(m => m.id === `openai/${product}`)
       expect(row, `openai/${product} must appear in the "+" picker`).toBeDefined()
       expect(row?.route).toBe("openrouter")
-      expect(row?.pricing?.inPer1M).toBe(inPer1M)
-      expect(row?.pricing?.outPer1M).toBe(outPer1M)
+      expect(row?.pricing?.inPer1M).toBeGreaterThan(0)
+      expect(row?.pricing?.outPer1M).toBeGreaterThan(0)
     }
   })
 })
 
 describe("gpt-5.6 series — wallet/route eligibility (the launch gate)", () => {
   it("serviceableModelRoutes resolves the series to the openrouter route (bare AND @openrouter forms)", () => {
-    for (const { product } of GPT56) {
+    for (const product of GPT56) {
       const bare = serviceableModelRoutes(`openai/${product}`)
       expect(bare, `openai/${product}`).toContain("openrouter")
       const pinned = serviceableModelRoutes(`openai/${product}@openrouter`)
@@ -104,7 +107,7 @@ describe("gpt-5.6 series — wallet/route eligibility (the launch gate)", () => 
   })
 
   it("checkModelWalletEligibility ACCEPTS the series on an openrouter wallet (and the native openai wallet), REJECTS an unrelated vendor wallet", () => {
-    for (const { product } of GPT56) {
+    for (const product of GPT56) {
       // The deliverable's focus: launchable through an OpenRouter api-key wallet.
       expect(checkModelWalletEligibility(`openai/${product}`, "openrouter").ok).toBe(true)
       // Also billable on its native OpenAI wallet (first-party catalog row).
@@ -126,7 +129,7 @@ describe("gpt-5.6 series — runnable through the buildCatalogModels join", () =
   // the full tree join marks it runnable with the openrouter api-key profile.
   const GATEWAY_ADAPTER: CatalogAdapterInput = {
     slug: "openrouter-gateway",
-    models: GPT56.map(({ product }) => ({ id: `openai/${product}@openrouter` })),
+    models: GPT56.map(product => ({ id: `openai/${product}@openrouter` })),
     authDescriptor: { provider: "openrouter" },
   }
 
@@ -135,13 +138,20 @@ describe("gpt-5.6 series — runnable through the buildCatalogModels join", () =
       adapters: [GATEWAY_ADAPTER],
       profiles: [openrouterKey],
     })
-    for (const { product, inPer1M, outPer1M } of GPT56) {
+    // Independent second lookup path — the join must carry the SAME price
+    // the picker enumeration shows, whatever that price is this week.
+    const enumerated = buildCatalogProviderModels({ endpoint: "openrouter" })
+    for (const product of GPT56) {
       const route = findRoute(response, "openai", product, "openrouter")
       expect(route, `openai/${product}@openrouter`).toBeDefined()
       expect(route?.runnable).toBe(true)
       expect(route?.eligibleProfiles).toEqual(["personal-openrouter"])
       expect(route?.ref).toBe(`openai/${product}@openrouter`)
-      expect(route?.pricing).toEqual({ inPer1M, outPer1M })
+      const enumeratedRow = enumerated.models.find(m => m.id === `openai/${product}`)
+      expect(route?.pricing).toEqual({
+        inPer1M: enumeratedRow?.pricing?.inPer1M,
+        outPer1M: enumeratedRow?.pricing?.outPer1M,
+      })
     }
   })
 

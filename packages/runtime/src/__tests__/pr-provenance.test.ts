@@ -1,3 +1,4 @@
+import { footerHasCost, replaceProvenanceFooter, MARKER as FOOTER_MARKER, buildFooter as buildFooterForRefresh } from "../pr-provenance.js"
 /**
  * Unit tests for the pure PR-provenance footer core (pr-provenance.ts):
  *   - buildFooter stays BYTE-IDENTICAL to the runner-lane format that
@@ -18,6 +19,10 @@ import {
   buildSessionPrFooter,
   MARKER,
   parseGhPrCreate,
+  detectShellPrCreate,
+  hasProvenanceFooter,
+  footerSessionId,
+  footerIsRicherThan,
   pickExecutorSession,
   sessionFooterProvenance,
   type FooterSession,
@@ -48,7 +53,7 @@ describe("buildFooter — format parity with the runner lanes", () => {
         "<sub>🤖 **@agentproto-bot** — PR · session `sess_abc123` (`fix-foo`) · " +
         "claude-code / subscription · model `kimi-k2.7-code` · 12.3k in / 67.9k out · $0.1234 · " +
         "run [123456789](https://github.com/agentproto/ts/actions/runs/123456789) · " +
-        "sha `abcdef1`</sub>",
+        "sha `abcdef1234567890`</sub>",
     )
   })
 
@@ -59,6 +64,7 @@ describe("buildFooter — format parity with the runner lanes", () => {
         source: "local",
         host: "jeremy-mac-studio",
         cwd: "/Volumes/SSDExternalMacStudio/Code/_agentproto-worktrees/ts/local-pr-provenance-audit",
+        workspaceSlug: "ts",
       },
       authMode: "subscription",
       sha: "abcdef1234567890",
@@ -68,9 +74,33 @@ describe("buildFooter — format parity with the runner lanes", () => {
       "\n\n---\n" +
         "<sub>🤖 **@agentproto-bot** — PR · session `sess_abc123` (`fix-foo`) · " +
         "claude-code / subscription · model `kimi-k2.7-code` · 12.3k in / 67.9k out · $0.1234 (local) · " +
-        "host `jeremy-mac-studio` · cwd `local-pr-provenance-audit` · " +
-        "sha `abcdef1`</sub>",
+        "host `jeremy-mac-studio` · cwd `ts/local-pr-provenance-audit` · " +
+        "sha `abcdef1234567890`</sub>",
     )
+  })
+
+  it("cwd without a workspaceSlug falls back to the bare leaf (back-compat)", () => {
+    const footer = buildFooter({
+      prov: { ...baseProv, source: "local", cwd: "/work/some-worktree" },
+      authMode: "subscription",
+      kind: "PR",
+    })
+    expect(footer).toContain("cwd `some-worktree`")
+  })
+
+  it("cwd at the workspace root (leaf == slug) renders the slug once, not doubled", () => {
+    const footer = buildFooter({
+      prov: {
+        ...baseProv,
+        source: "local",
+        cwd: "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts",
+        workspaceSlug: "ts",
+      },
+      authMode: "subscription",
+      kind: "PR",
+    })
+    expect(footer).toContain("cwd `ts`")
+    expect(footer).not.toContain("cwd `ts/ts`")
   })
 
   it("omits the auth-profile part when absent (back-compat with runner lanes)", () => {
@@ -130,6 +160,7 @@ describe("sessionFooterProvenance", () => {
     startedAt: "2026-07-21T10:00:00.000Z",
     label: "open-pr",
     cwd: "/work/wt",
+    workspaceSlug: "ts",
     adapterSlug: "claude-code",
     harness: "claude-code",
     model: "opus-4.8",
@@ -155,6 +186,7 @@ describe("sessionFooterProvenance", () => {
       source: "daemon",
       host: "build-box",
       cwd: "/work/wt",
+      workspaceSlug: "ts",
       costUsd: 0.5,
       tokensIn: 100,
       tokensOut: 200,
@@ -177,6 +209,32 @@ describe("sessionFooterProvenance", () => {
     expect(footer).toContain("auth-profile `Jeremy Max`")
     expect(footer).toContain("supervisor `sess_super`")
     expect(footer).not.toContain("legacy fallback")
+  })
+
+  it("renders cost/tokens for a non-claude-code harness with adapter-sourced usage (opencode/openrouter)", () => {
+    // The footer builder itself is adapter-agnostic — it only reads
+    // `session.costUsd`/tokensIn/tokensOut, regardless of `usageSource`. This
+    // pins that an opencode session with adapter-reported spend (not
+    // claude-code, not "computed" from the pricing catalog) renders its cost
+    // segment exactly like a claude-code session does.
+    const opencodeSession: FooterSession = {
+      id: "sess_33eb9dfc",
+      kind: "agent-cli",
+      status: "exited",
+      startedAt: "2026-09-04T21:00:00.000Z",
+      cwd: "/Users/dev/agentproto/e2b-template-baked",
+      adapterSlug: "opencode",
+      harness: "opencode",
+      model: "openrouter/z-ai/glm-5.3-flash",
+      costUsd: 0.0971799,
+      tokensIn: 4200,
+      tokensOut: 1800,
+    }
+    const footer = buildSessionPrFooter(opencodeSession, { host: "mac.home" })
+    expect(footer).toContain("opencode")
+    expect(footer).toContain("model `openrouter/z-ai/glm-5.3-flash`")
+    expect(footer).toContain("$0.0972")
+    expect(footer).toContain("4.2k in / 1.8k out")
   })
 })
 
@@ -246,5 +304,130 @@ describe("appendFooterOnce", () => {
     const once = appendFooterOnce("Body text.", footer)
     expect(once).toBe("Body text." + footer)
     expect(appendFooterOnce(once, footer)).toBe(once)
+  })
+})
+
+describe("detectShellPrCreate", () => {
+  it("detects a plain and a compound shell create, taking the LAST pull url", () => {
+    expect(
+      detectShellPrCreate("gh pr create --title t --body b", "https://github.com/o/r/pull/7"),
+    ).toEqual({ url: "https://github.com/o/r/pull/7", number: 7 })
+    expect(
+      detectShellPrCreate(
+        'git push -u origin fix/x && gh pr create --title "t" | tail -1 && git checkout main',
+        "Warning: see https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/998\nSwitched to branch 'main'",
+      ),
+    ).toEqual({ url: "https://github.com/o/r/pull/998", number: 998 })
+  })
+
+  it("ignores commands that only QUOTE the phrase (grep/echo) or aren't a create", () => {
+    expect(
+      detectShellPrCreate('grep -rn "gh pr create" src/', "src/x.ts: https://github.com/o/r/pull/42"),
+    ).toBeNull()
+    expect(
+      detectShellPrCreate("echo 'gh pr create'", "https://github.com/o/r/pull/42"),
+    ).toBeNull()
+    expect(
+      detectShellPrCreate("gh pr view 42", "https://github.com/o/r/pull/42"),
+    ).toBeNull()
+    expect(detectShellPrCreate("gh pr createx", "https://github.com/o/r/pull/42")).toBeNull()
+  })
+
+  it("returns null without a command, a result, or a pull url in the result", () => {
+    expect(detectShellPrCreate(undefined, "https://github.com/o/r/pull/1")).toBeNull()
+    expect(detectShellPrCreate("gh pr create", undefined)).toBeNull()
+    expect(detectShellPrCreate("gh pr create", "no url printed")).toBeNull()
+  })
+})
+
+describe("hasProvenanceFooter", () => {
+  it("detects only a RENDERED footer, not a prose mention of the marker", () => {
+    const footer = buildFooter({ prov: { sessionId: "sess_x" }, kind: "PR" })
+    expect(hasProvenanceFooter(`Body.${footer}`)).toBe(true)
+    // A PR body DISCUSSING the provenance machinery (e.g. #999) quotes the
+    // marker without carrying a footer — it must still be stampable.
+    expect(hasProvenanceFooter("This PR fixes the `@agentproto-bot` footer stamper.")).toBe(false)
+    expect(hasProvenanceFooter("Plain body.")).toBe(false)
+  })
+
+  it("appendFooterOnce appends to a body that only mentions the marker in prose", () => {
+    const footer = buildFooter({ prov: { sessionId: "sess_x" }, kind: "PR" })
+    const prose = "Explains the @agentproto-bot marker."
+    expect(appendFooterOnce(prose, footer)).toBe(prose + footer)
+    expect(appendFooterOnce(prose + footer, footer)).toBe(prose + footer)
+  })
+})
+
+describe("footer cost refresh", () => {
+  const render = (prov: Record<string, unknown>) =>
+    buildFooterForRefresh({ prov, authMode: "subscription", sha: undefined, kind: "PR" })
+
+  it("footerHasCost only sees a spend inside the footer line", () => {
+    const body = `Costs $5 to run.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · session \`s\`</sub>`
+    expect(footerHasCost(body)).toBe(false)
+    const withCost = `Body.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · $0.4200 · host \`h\`</sub>`
+    expect(footerHasCost(withCost)).toBe(true)
+  })
+
+  it("replaceProvenanceFooter swaps only the footer block and keeps the body", () => {
+    const first = render({ sessionId: "sess_a", adapter: "claude-code", host: "mac", cwd: "/x" })
+    const body = `# Title\n\nProse mentioning ${FOOTER_MARKER} in passing.${first}`
+    const fresh = render({ sessionId: "sess_a", adapter: "claude-code", costUsd: 1.5, host: "mac", cwd: "/x" })
+    const out = replaceProvenanceFooter(body, fresh)
+    expect(out.startsWith(`# Title\n\nProse mentioning ${FOOTER_MARKER} in passing.`)).toBe(true)
+    expect(out.endsWith(fresh)).toBe(true)
+    expect(out.match(new RegExp(`<sub>[^\\n]*${FOOTER_MARKER}`, "g"))?.length).toBe(1)
+    expect(footerHasCost(out)).toBe(true)
+  })
+
+  it("replaceProvenanceFooter appends when the body has no footer yet", () => {
+    const fresh = render({ sessionId: "sess_a", adapter: "claude-code", costUsd: 1.5, host: "mac", cwd: "/x" })
+    expect(replaceProvenanceFooter("Body.", fresh)).toBe(`Body.${fresh}`)
+  })
+})
+
+describe("footerSessionId", () => {
+  it("extracts the session id a rendered footer names", () => {
+    const body = `Body.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · session \`sess_33eb9dfc\` · opencode · host \`mac.home\`</sub>`
+    expect(footerSessionId(body)).toBe("sess_33eb9dfc")
+  })
+
+  it("recognizes the gh PATH shim's own thin footer shape too — same 'session `<id>`' segment", () => {
+    // gh-provenance-shim.ts's inlined buildFooter() renders this exact shape:
+    // session + adapter + model + host + cwd, nothing else.
+    const shimFooter = `Body.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · session \`sess_exec\` · opencode · model \`openrouter/z-ai/glm-5.3-flash\` · host \`mac.home\` · cwd \`e2b-template-baked\`</sub>`
+    expect(footerSessionId(shimFooter)).toBe("sess_exec")
+  })
+
+  it("returns undefined for a footer that names no session (legacy fallback) or no footer at all", () => {
+    expect(footerSessionId(`Body.\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · legacy fallback (api-key)</sub>`)).toBeUndefined()
+    expect(footerSessionId("Body with no footer at all.")).toBeUndefined()
+  })
+})
+
+describe("footerIsRicherThan", () => {
+  const render = (prov: Record<string, unknown>) =>
+    buildFooterForRefresh({ prov, authMode: "subscription", sha: undefined, kind: "PR" })
+  const thinShimFooter = (sessionId: string) =>
+    `\n\n---\n<sub>🤖 **${FOOTER_MARKER}** — PR · session \`${sessionId}\` · opencode · model \`openrouter/z-ai/glm-5.3-flash\` · host \`mac.home\` · cwd \`e2b-template-baked\`</sub>`
+
+  it("a full daemon render is richer than the shim's thin footer once cost is known", () => {
+    const fresh = render({ sessionId: "sess_exec", adapter: "opencode", model: "openrouter/z-ai/glm-5.3-flash", costUsd: 0.0971799, host: "mac.home", cwd: "e2b-template-baked" })
+    expect(footerIsRicherThan(fresh, thinShimFooter("sess_exec"))).toBe(true)
+  })
+
+  it("an auth-profile gain alone counts as richer, even with no cost yet", () => {
+    const fresh = render({ sessionId: "sess_exec", adapter: "claude-code", authProfile: "Jeremy Max", host: "h", cwd: "/x" })
+    expect(footerIsRicherThan(fresh, thinShimFooter("sess_exec"))).toBe(true)
+  })
+
+  it("re-rendering the identical thin footer is NOT richer (no-op guard)", () => {
+    const same = thinShimFooter("sess_exec")
+    expect(footerIsRicherThan(same, same)).toBe(false)
+  })
+
+  it("a footer that only reformats without adding cost/auth-profile/tokens is not richer", () => {
+    const fresh = render({ sessionId: "sess_exec", adapter: "opencode", model: "openrouter/z-ai/glm-5.3-flash", host: "different-host", cwd: "e2b-template-baked" })
+    expect(footerIsRicherThan(fresh, thinShimFooter("sess_exec"))).toBe(false)
   })
 })

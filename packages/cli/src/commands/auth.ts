@@ -40,9 +40,17 @@ import {
   runAuthFlow,
   KeychainStore,
   resolveStoreRef,
+  addAuthProfile,
+  getAuthProfile,
+  listAuthProfiles,
+  refreshAuthProfileModels,
+  removeAuthProfile,
+  AuthProfileValidationError,
   type AuthProviderHandle,
   type CredentialStore,
+  type ProfileProvisionDeps,
 } from "@agentproto/auth"
+import { getModelsByProvider } from "@agentproto/model-catalog"
 import {
   authProvidersPath,
   buildBrokerProvider,
@@ -80,6 +88,8 @@ export async function runAuth(args: readonly string[]): Promise<number> {
       return runAuthProvider(rest)
     case "cred":
       return runAuthCred(rest)
+    case "profile":
+      return runAuthProfile(rest)
     case undefined:
     case "--help":
     case "-h":
@@ -101,6 +111,10 @@ Usage:
   agentproto auth logout  [--host <url>]
   agentproto auth provider <set|list|rm> …   — LLM provider API keys
   agentproto auth cred     <set|list|rm> …   — broker creds for child-MCP auth
+  agentproto auth profile refresh-models <id> [--json]
+                                              — re-sync a named auth profile's
+                                                curated model ids against the
+                                                current catalog
 
 The default host is the one most recently logged into; on first use,
 \`--host\` is required. Examples:
@@ -480,6 +494,124 @@ async function runCredRm(args: readonly string[]): Promise<number> {
       : `agentproto auth: no broker credential for ${id}\n`,
   )
   return 0
+}
+
+// ── named auth profiles: curation refresh ──────────────────────────────
+
+const PROFILE_USAGE = `agentproto auth profile — named auth-profile maintenance
+
+Named auth profiles (~/.agentproto/auth-profiles.json + OS keychain) are
+otherwise created/curated through the daemon's MCP tools (auth_profile_create,
+auth_profile_set_models, …) or the VS Code auth explorer — this is the one
+maintenance verb that's useful straight from the CLI.
+
+Usage:
+  agentproto auth profile refresh-models <id> [--json]
+
+A profile curated with mode:"allow" pins its \`ids\` to whatever the model
+catalog looked like when it was created/imported — new models the catalog
+adds later never become usable through it, and retired ones linger. This
+re-syncs \`ids\` against the CURRENT catalog for the profile's endpoint.
+Explicit and opt-in only: nothing runs this automatically, and it refuses a
+mode:"all" profile (nothing to refresh — that mode already tracks the live
+catalog on every read).
+`
+
+/** Local, filesystem/keychain-only provisioning deps — mirrors
+ *  `defaultProfileProvisionDeps()` in `packages/runtime/src/auth-profile-tools.ts`,
+ *  duplicated here (rather than importing `@agentproto/runtime`, a devDependency
+ *  not meant to ship in the published CLI) so this command works standalone,
+ *  with no daemon required — same as `auth provider`/`auth cred` above. */
+function localProfileProvisionDeps(): ProfileProvisionDeps {
+  return {
+    store: new KeychainStore(),
+    getProfile: getAuthProfile,
+    listProfiles: () => listAuthProfiles(),
+    addProfile: addAuthProfile,
+    removeProfile: removeAuthProfile,
+  }
+}
+
+async function runAuthProfile(args: readonly string[]): Promise<number> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case "refresh-models":
+      return runProfileRefreshModels(rest)
+    case undefined:
+    case "--help":
+    case "-h":
+      process.stdout.write(PROFILE_USAGE)
+      return 0
+    default:
+      process.stderr.write(
+        `agentproto auth profile: unknown subcommand '${sub}'.\n\n${PROFILE_USAGE}`,
+      )
+      return 2
+  }
+}
+
+async function runProfileRefreshModels(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    strict: true,
+    allowPositionals: true,
+    options: { json: { type: "boolean" } },
+  })
+  const [id] = positionals
+  if (!id) {
+    process.stderr.write(
+      `agentproto auth profile refresh-models: usage: refresh-models <id> [--json]\n`,
+    )
+    return 2
+  }
+
+  const deps = localProfileProvisionDeps()
+  // Not just a defensive fast-fail: we need `profile.endpoint` to build the
+  // current-catalog snapshot below, so this fetch+check is unavoidable here
+  // regardless of the below call. `refreshAuthProfileModels` re-checks
+  // existence itself (an extra, cheap local-file read) because it must stay
+  // safe to call directly (e.g. from the MCP tool) without a caller having
+  // pre-fetched the profile first — deliberate double-validation, not an
+  // oversight.
+  const profile = await deps.getProfile(id)
+  if (!profile) {
+    process.stderr.write(`agentproto auth profile refresh-models: no profile with id "${id}"\n`)
+    return 1
+  }
+
+  const currentIds = getModelsByProvider(profile.endpoint).map(m => m.id)
+
+  try {
+    const result = await refreshAuthProfileModels(id, currentIds, deps)
+    if (values.json) {
+      process.stdout.write(
+        JSON.stringify(
+          { profile: result.profile, added: result.added, removed: result.removed },
+          null,
+          2,
+        ) + "\n",
+      )
+      return 0
+    }
+    const count = result.profile.models?.ids.length ?? 0
+    const deltas = [
+      result.added.length ? `+${result.added.length} added` : null,
+      result.removed.length ? `-${result.removed.length} removed` : null,
+    ].filter(Boolean)
+    process.stdout.write(
+      `agentproto auth: ✓ refreshed "${id}" against the current ${profile.endpoint} catalog\n` +
+        `  ${count} model id${count === 1 ? "" : "s"} now allowed` +
+        (deltas.length ? ` (${deltas.join(", ")})\n` : " (no change)\n"),
+    )
+    return 0
+  } catch (err) {
+    if (err instanceof AuthProfileValidationError) {
+      process.stderr.write(`agentproto auth profile refresh-models: ${err.message}\n`)
+      return 2
+    }
+    throw err
+  }
 }
 
 // ── login ────────────────────────────────────────────────────────────

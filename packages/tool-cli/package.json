@@ -1,8 +1,17 @@
 {
   "name": "@agentproto/tool-cli",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Generic CLI projection for AIP-14 tool contracts.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/tool-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "homepage": "https://github.com/agentproto/ts/tree/main/packages/tool-cli#readme",
   "type": "module",
   "main": "dist/index.mjs",
   "module": "dist/index.mjs",
@@ -33,7 +42,7 @@
   "dependencies": {
     "@agentproto/driver": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

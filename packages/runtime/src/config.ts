@@ -108,6 +108,26 @@ export interface DaemonConfig {
    *  `agentproto config set daemon.restartSweepIntervalMs <ms>`. Surfaced in
    *  `daemon_health` / `GET /health`. */
   restartSweepIntervalMs?: number
+  /** Turn-liveness watchdog threshold in ms (turn-liveness-watchdog
+   *  chantier). Same shape as `crashDetectIntervalMs`: DEFAULT ON
+   *  (non-destructive observability). The daemon periodically sweeps every
+   *  BUSY agent-cli session and, for one that is mid-turn, NOT legitimately
+   *  `blockedOn` a subagent/command, and has had no adapter activity
+   *  (`lastActivityAt`) for longer than this threshold, stamps
+   *  `stalledSinceMs` on the descriptor and emits `session:stalled` —
+   *  surfacing a dead adapter stream (network drop, hung child — zero
+   *  frames mid-turn) that would otherwise sit indistinguishable from
+   *  healthy long work: `status:"running"`, `lastError:null`, no other
+   *  signal. Conservative by design: a session legitimately blocked on a
+   *  long tool call is NEVER a candidate, no matter how long it's silent —
+   *  see `stall-watchdog.ts`'s docblock for why. Detects only; never kills
+   *  or restarts (this is a later concern, if ever). Set to a non-positive
+   *  value to disable the sweep entirely. Resolution order mirrors
+   *  `idleReapAfterMs`: `AGENTPROTO_TURN_STALL_AFTER_MS` env > this field >
+   *  the hardcoded default (5 min). Set via `agentproto config set
+   *  daemon.turnStallAfterMs <ms>`. Surfaced in `daemon_health` /
+   *  `GET /health`. */
+  turnStallAfterMs?: number
 }
 
 export interface TunnelConfig {
@@ -139,6 +159,11 @@ export interface FeaturesConfig {
   /** Hint that PTY is desired — informational; the daemon still
    *  detects node-pty's presence at runtime. */
   pty?: boolean
+  /** Enable the local LLM Endpoint proxy sidecar (route registration,
+   *  MCP tools, child-process lifecycle). Default false — the endpoint is
+   *  an opt-in feature; when off, the `llm-endpoint` custom route is not
+   *  registered and the `llm_endpoint_*` MCP tools are not exposed. */
+  llmEndpoint?: boolean
 }
 
 /**
@@ -203,6 +228,36 @@ export interface WorktreesConfig {
  */
 export type SpawnAttachMode = "always" | "on-request"
 
+/**
+ * Policy for `agent_start`'s IMPLICIT dedupe — what happens when a caller
+ * spawns with NO `idempotencyKey` at all (see `spawn-dedupe.ts`):
+ *   - `"always"`      — the daemon DERIVES an implicit key from the spawn's
+ *                       `label` (required — see below) plus a hash of the
+ *                       initial `prompt`, and dedupes a same-adapter/cwd
+ *                       repeat against it exactly as an explicit key would.
+ *                       This is the default, mirroring `attach`'s own
+ *                       "opt-in-only guard is not a guard" precedent above.
+ *                       Deriving needs a `label` to produce anything at all
+ *                       — an unlabelled spawn is untouched, which is what
+ *                       keeps this safe for the fan-out pattern this repo
+ *                       exercises (several agents into one cwd with no
+ *                       shared label): see `spawn-dedupe.ts`'s docblock for
+ *                       the full false-dedup analysis, and PR #803's own
+ *                       no-opt-in label+cwd warning backstop in
+ *                       `session-spawn.ts`, which independently landed on
+ *                       the same label-is-the-signal boundary.
+ *   - `"on-request"`  — no implicit derivation; only an explicit
+ *                       `idempotencyKey` dedupes (today's behaviour,
+ *                       unchanged). A per-call `dedupe: true` still opts in
+ *                       under this policy, mirroring `attach: true`.
+ * Either way a per-call `dedupe: false` disables implicit derivation for
+ * that one spawn regardless of policy — the escape hatch, mirroring
+ * `attach: false` / `worktree: false`. An explicit `idempotencyKey` always
+ * wins over a derived one (derivation is only attempted when the caller
+ * supplied none).
+ */
+export type SpawnDedupeMode = "always" | "on-request"
+
 export interface SpawnConfig {
   /**
    * Attach policy for `agent_start`. Resolution order mirrors the module
@@ -214,6 +269,76 @@ export interface SpawnConfig {
    * that never relaxes a privilege gate.
    */
   attach?: SpawnAttachMode
+  /**
+   * Implicit-dedupe policy for `agent_start`. Resolution order mirrors
+   * `attach` above (no CLI flag — a daemon-side policy read at spawn):
+   * `AGENTPROTO_SPAWN_DEDUPE` env > this field > the hardcoded default
+   * `"always"`. See {@link SpawnDedupeMode} and `spawn-dedupe.ts` for the
+   * full reasoning: a retry-safety guard that only works when a caller
+   * remembers to ask for it (`idempotencyKey`) is not a guard — the same
+   * argument `attach` already settled for parent lineage.
+   */
+  dedupe?: SpawnDedupeMode
+}
+
+/**
+ * Provenance policy — the opt-in `gh` PATH shim (`gh-provenance-shim.ts`).
+ * Off by default. When `wrapGh` is on, every agent session the daemon spawns
+ * gets a shim directory prepended to its PATH so that any `gh pr create` the
+ * session (or an adapter subprocess shelling out — claude-code, codex, …) runs
+ * has a deterministic `@agentproto-bot` provenance footer appended to the
+ * created PR's BODY, matching the footer the cloud runner stamps. The TOOL
+ * stamps, never the model; commit messages are never touched (the repo's
+ * hygiene-check forbids attribution there). Resolution order mirrors
+ * `spawn.attach`: `AGENTPROTO_PROVENANCE_WRAP_GH` env > this field > default
+ * `false`.
+ */
+export interface ProvenanceConfig {
+  /** Enable the opt-in `gh` provenance PATH shim for spawned sessions. */
+  wrapGh?: boolean
+}
+
+/**
+ * Session-presence policy — how the dashboard triages a session into its
+ * `running` / `tending` / `attention` / `quiet` presence state (see
+ * `session-presence.ts`). Optional block on `AgentprotoConfig.sessions`.
+ */
+export interface SessionsConfig {
+  /**
+   * How long (seconds) a session stays shown as `running` after its last
+   * turn ends, before it settles into `attention`/`quiet`. The grace window
+   * is measured from the session's most recent `lastActivityAt` — ANY new
+   * event resets it — so a session that just answered does not read as
+   * "quiet" the instant its turn finishes, but something that went idle long
+   * ago, with nothing waiting on it, settles grey. Resolution order mirrors
+   * every other knob in this file (module docblock): env var
+   * `AGENTPROTO_SESSIONS_ATTENTION_DELAY_SEC` > this field > the hardcoded
+   * default `60`. Absent ⇒ 60s.
+   */
+  attentionDelaySec?: number
+}
+
+/**
+ * Policy for the daemon's own AGENTS.md resolution + injection (WP-R2) —
+ * how a spawned session's initial prompt carries the repo's `AGENTS.md`
+ * (see `agents-md.ts`). The daemon resolves the nearest `AGENTS.md` walking
+ * up from the session's `cwd`, bounded by that repo's git toplevel, and
+ * injects one AGENTS.md block after the role disposition whenever the spawn
+ * carries a prompt.
+ */
+export interface AgentsMdConfig {
+  /**
+   * Inline-vs-pointer threshold in KiB. A resolved AGENTS.md whose byte size
+   * is STRICTLY LESS than `inlineMaxKb` KiB is inlined in full into the
+   * spawn's initial prompt, clearly delimited; `>=` the threshold is injected
+   * as a short pointer telling the agent to read the file before its first
+   * tool call instead. An absent AGENTS.md (nothing found up the walk) injects
+   * nothing but is still reported on the descriptor via
+   * `SessionDescriptor.agentsMdMode === "absent"`. Resolution order mirrors
+   * the module docblock (no CLI flag, and no env override — not part of the
+   * approved design): this field > the hardcoded default `8` (KiB).
+   */
+  inlineMaxKb?: number
 }
 
 export interface PairingConfig {
@@ -257,6 +382,12 @@ export interface AcpAgentConfigEntry {
   resumable?: boolean
   /** Known model ids for the agent (informational + validation hints). */
   models?: { default?: string; allowed?: string[] }
+  /** Billing endpoint this CLI's own auth bills (e.g. "mistral",
+   *  "moonshot", "google") — the provider whose wallet/auth-profile the
+   *  agent consumes. Lets clients link the harness to that provider's
+   *  wallets even when no model list is declared. Unset when the CLI's
+   *  billing target isn't a single known endpoint. */
+  provider?: string
   /** Shown when `bin` is missing from PATH (how to install the CLI). */
   install_hint?: string
 }
@@ -329,6 +460,12 @@ export interface AgentprotoConfig {
   worktrees?: WorktreesConfig
   /** Spawn-time policy (`agent_start`). See {@link SpawnConfig}. */
   spawn?: SpawnConfig
+  /** Session-presence policy for the dashboard. See {@link SessionsConfig}. */
+  sessions?: SessionsConfig
+  /** Provenance policy — the opt-in `gh` PATH shim. See {@link ProvenanceConfig}. */
+  provenance?: ProvenanceConfig
+  /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
+  agentsMd?: AgentsMdConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */

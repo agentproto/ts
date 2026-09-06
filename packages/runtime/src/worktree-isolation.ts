@@ -36,16 +36,27 @@ export const DEFAULT_WORKTREE_ISOLATION: WorktreeIsolationMode = "on-request"
 
 /**
  * The `agent_start.worktree` field. `true` isolates with an auto-minted slug;
- * an object additionally pins the slug and/or base ref; `false` (or omitted)
- * is "no explicit request" — the policy mode decides.
+ * an object additionally pins the slug and/or base ref, and can opt into
+ * async provisioning (`async: true` — see `WorktreeRequest.async`); `false`
+ * (or omitted) is "no explicit request" — the policy mode decides.
  */
-export type WorktreeField = boolean | { slug?: string; base?: string }
+export type WorktreeField = boolean | { slug?: string; base?: string; async?: boolean }
 
 /** The caller's explicit request, normalized — `undefined` when the field is
  *  absent or `false`, otherwise the (possibly empty) slug/base overrides. */
 export interface WorktreeRequest {
   slug?: string
   base?: string
+  /** Opt-in: return a real, registered session as soon as it's minted,
+   *  provisioning the worktree in the BACKGROUND instead of blocking
+   *  `agent_start`'s response on `git worktree add` + the repo's setup
+   *  hooks (which can run minutes — see `session-spawn.ts`'s async-provision
+   *  branch). Deliberately opt-in, not the default: existing callers that
+   *  built on a synchronous ok/fail result (this package's own
+   *  `worktree_provision_failed` test coverage among them) keep exactly
+   *  today's behaviour unless they ask for the early return. Default
+   *  false. */
+  async?: boolean
 }
 
 /** What the runtime hands the provisioner. `cwd` is where the session would
@@ -79,14 +90,41 @@ export type WorktreeProvisioner = (
   req: WorktreeProvisionRequest,
 ) => Promise<WorktreeProvisionOutcome>
 
+/**
+ * Injected port: best-effort attempt to reclaim ONE worktree by path, called
+ * when its session reaches a terminal state (see
+ * `SessionDescriptor.worktreeAutoProvisioned` and `createSessionsRegistry`'s
+ * `runWorktreeAutoReclaim` option in `sessions.ts`). Deliberately scoped to
+ * exactly the one path a session's own exit is allowed to touch — never a
+ * repo-wide sweep. The implementation (wired by the CLI over
+ * `@agentproto/worktree`'s `reclaimOneWorktree`) re-classifies fresh and only
+ * ever removes the worktree when that comes back `reclaim` (merged-or-fresh,
+ * clean, idle) — a dirty or held worktree is simply left alone. Must never
+ * reject in a way the caller can't safely ignore; `sessions.ts` treats any
+ * rejection as "couldn't reclaim this time, leave it for a manual or
+ * scheduled `gc` sweep" and logs rather than lets it interrupt session
+ * teardown. Absent on a bare runtime — auto-reclaim is simply skipped, and a
+ * caller-explicit worktree request is never routed through this port at all
+ * (see `WorktreeDecision.provision.implicit`).
+ */
+export type WorktreeAutoReclaimer = (worktreePath: string) => Promise<void>
+
 /** The pure decision's three outcomes. `spawn-in-place` may carry a `warn`:
  *  a non-fatal notice the caller should surface (the child is about to run in
  *  a shared, dirty checkout it doesn't own). A `warn` never blocks the spawn —
  *  it's the loud-but-legitimate middle ground between silently spawning into a
- *  shared tree and hard-rejecting an in-place spawn that's normal at depth. */
+ *  shared tree and hard-rejecting an in-place spawn that's normal at depth.
+ *  `provision.implicit` is `true` exactly when the caller made no explicit
+ *  `worktree` request and the `"always"` policy provisioned one anyway (the
+ *  worktree the caller never asked to keep) — `false` whenever the request
+ *  came from the caller itself (`on-request`'s only path here, or `"always"`
+ *  with an explicit field). This is the signal `session-spawn.ts` threads
+ *  onto the session descriptor so exit-time auto-reclaim (`sessions.ts`)
+ *  only ever touches a worktree the daemon minted on its own — a worktree a
+ *  caller explicitly asked to keep is never auto-removed. */
 export type WorktreeDecision =
   | { action: "spawn-in-place"; warn?: string }
-  | { action: "provision"; request: WorktreeRequest }
+  | { action: "provision"; request: WorktreeRequest; implicit: boolean }
   | { action: "reject"; message: string }
 
 /**
@@ -102,6 +140,7 @@ export function normalizeWorktreeField(
   const request: WorktreeRequest = {}
   if (field.slug !== undefined) request.slug = field.slug
   if (field.base !== undefined) request.base = field.base
+  if (field.async !== undefined) request.async = field.async
   return request
 }
 
@@ -199,13 +238,18 @@ export function decideWorktreeIsolation(input: {
       }
       return { action: "spawn-in-place" }
     case "on-request":
+      // Reaching "provision" here requires `request !== undefined` — the
+      // caller always asked for this one, so `implicit` is always false.
       return request !== undefined
-        ? { action: "provision", request }
+        ? { action: "provision", request, implicit: false }
         : { action: "spawn-in-place" }
     case "always":
       // Forced daemon-side — no opt-out. An explicit `false` normalized to
-      // `undefined` above still provisions here (with a minted slug).
-      return { action: "provision", request: request ?? {} }
+      // `undefined` above still provisions here (with a minted slug); that
+      // case — and the true absent-field case — is exactly `implicit: true`.
+      // An explicit request under `always` still contributes its pins, and
+      // is `implicit: false` like any other caller-driven request.
+      return { action: "provision", request: request ?? {}, implicit: request === undefined }
   }
 }
 

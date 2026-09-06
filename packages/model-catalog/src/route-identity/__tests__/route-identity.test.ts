@@ -26,6 +26,7 @@ import {
   registerCustomRoute,
   clearCustomRoutes,
   diagnoseModelRef,
+  listRouterLlmRoutes,
   OPENROUTER_VARIANTS,
   type ModelRef,
   type CustomRouteConfig,
@@ -545,8 +546,12 @@ describe("resolveLlmModelRoute", () => {
     })
 
     it("falls back to default pricing and no context limit for a pinned sparse provider", () => {
-      // cerebras is live but carries no pricing/context_length for this model.
-      const route = resolveLlmModelRoute("google/gemma-4-31B-it:cerebras@huggingface")
+      // featherless-ai is live but carries no pricing/context_length for this
+      // model. (Was cerebras until it started reporting both — repointed rather
+      // than relaxed, so the fallback path stays covered.)
+      const route = resolveLlmModelRoute(
+        "google/gemma-4-31B-it:featherless-ai@huggingface"
+      )
       expect(route).toBeDefined()
       expect(route!.pricing.provider).toBe("huggingface")
       expect(route!.limits.contextWindow).toBeUndefined()
@@ -563,6 +568,53 @@ describe("resolveLlmModelRoute", () => {
       )
       expect(route).toBeUndefined()
     })
+  })
+})
+
+describe("listRouterLlmRoutes", () => {
+  it("resolves every OpenRouter route table entry that round-trips through the ref grammar", () => {
+    const routes = listRouterLlmRoutes("openrouter")
+    expect(routes.length).toBeGreaterThan(100)
+    expect(routes.every(r => r.route === "openrouter")).toBe(true)
+    // Every resolved id parses back cleanly to the same route.
+    for (const r of routes.slice(0, 20)) {
+      expect(formatModelRef(r.ref)).toContain("@openrouter")
+    }
+  })
+
+  it("resolves Requesty routes that round-trip, skipping keys the ref grammar can't express", () => {
+    const routes = listRouterLlmRoutes("requesty")
+    expect(routes.length).toBeGreaterThan(0)
+    expect(routes.every(r => r.route === "requesty")).toBe(true)
+    // A region-qualified azure key (`azure/gpt-4.1-mini@eastus2`) packs a
+    // second `@` into the product, which collides with the `@route` suffix
+    // and can't round-trip through parseModelRef's single-`@` grammar — it's
+    // skipped rather than crashing enumeration. The unqualified sibling
+    // (`azure/gpt-4.1`, no region) has no such collision and DOES resolve.
+    expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1-mini")).toBe(false)
+    expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1")).toBe(true)
+    // `deepinfra/<upstream>/<model>` nests an upstream provider ahead of
+    // vendor/product (e.g. `deepinfra/Qwen/Qwen3-235B-A22B`) — that
+    // triple-segment shape doesn't round-trip, since its "product" would
+    // still contain a `/`. Not every `deepinfra/…` key has this shape
+    // though: some list a model directly under the vendor
+    // (`deepinfra/glm-5.3-flash`), which resolves cleanly as
+    // vendor="deepinfra", product="glm-5.3-flash".
+    expect(routes.some(r => r.vendor === "deepinfra" && r.product === "Qwen/Qwen3-235B-A22B")).toBe(
+      false
+    )
+    expect(routes.some(r => r.vendor === "deepinfra" && r.product === "glm-5.3-flash")).toBe(true)
+  })
+
+  it("resolves every HuggingFace route table entry", () => {
+    const routes = listRouterLlmRoutes("huggingface")
+    expect(routes.length).toBeGreaterThan(0)
+    expect(routes.every(r => r.route === "huggingface")).toBe(true)
+  })
+
+  it("returns an empty list for a non-router provider", () => {
+    expect(listRouterLlmRoutes("anthropic")).toEqual([])
+    expect(listRouterLlmRoutes("no-such-router")).toEqual([])
   })
 })
 

@@ -1,5 +1,48 @@
 # @agentproto/mcp-server
 
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [89f6662]
+  - @agentproto/extension@0.2.0
+  - @agentproto/agent@0.2.2
+  - @agentproto/define-doctype@0.1.1
+  - @agentproto/driver@0.2.1
+  - @agentproto/manifest@0.2.1
+  - @agentproto/routine@0.2.1
+  - @agentproto/tool@0.2.2
+
+## 0.2.6
+
+### Patch Changes
+
+- f0c51a7: Weekly dependency bump: update 9 minor/patch dependencies to latest versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.241 → 0.3.251
+  - @ast-grep/napi 0.45.2 → 0.45.3
+  - @earendil-works/pi-tui 0.84.2 → 0.84.4
+  - @tanstack/react-query 5.102.2 → 5.102.8
+  - @testing-library/react 16.3.2 → 16.3.3
+  - e2b 2.45.0 → 2.46.1
+  - tsx 4.23.12 → 4.23.13
+  - turbo 2.10.11 → 2.10.12
+  - zod 4.4.3 → 4.5.4
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/agent@0.2.2
+  - @agentproto/driver@0.2.1
+  - @agentproto/extension@0.1.3
+  - @agentproto/routine@0.2.1
+  - @agentproto/tool@0.2.2
+
+## 0.2.5
+
+### Patch Changes
+
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+
 ## 0.2.4
 
 ### Patch Changes

@@ -169,6 +169,11 @@ export interface ApprovalStep {
   id: string
   prompt: Selector<string>
   approvers?: readonly string[]
+  /** Artifacts attached to the approval request (e.g. paths to review). */
+  artifacts?: readonly string[]
+  /** Give up waiting after this long — the step resolves as REJECTED with
+   *  `who: "timeout"` (the host decides; the runtime enforces it). */
+  timeoutMs?: number
   onApprove?: readonly RunStep[]
   onReject?: readonly RunStep[]
 }
@@ -200,6 +205,76 @@ export interface SubworkflowStep {
   workflow: RuntimeWorkflow
   /** Input for the child (default: the parent's workflow input). */
   input?: Selector<unknown>
+}
+
+/**
+ * Harness pinning for an {@link AgentStep}'s spawn (AIP-15 P2) — mirrors
+ * `@agentproto/workflow`'s manifest `Harness` block, compiled onto the
+ * runtime step. Precedence when a field is also set elsewhere: this block
+ * (highest) > the resolved AGENT.md's own frontmatter > `app_run` caller
+ * args > the adapter's own default (lowest).
+ */
+export interface AgentHarness {
+  /** Model id override for this spawn. */
+  model?: string
+  /** Reasoning-effort override for this spawn (adapter-defined vocabulary). */
+  effort?: string
+  /** Spawn-time role — governs the child's tool-policy disposition. */
+  role?: string
+  /** Per-spawn tool allowlist. Applied where the resolved adapter supports a
+   *  generic per-spawn allowlist mechanism; where it doesn't, the host MUST
+   *  record `toolsApplied: false` on the step's output and emit a warning
+   *  rather than silently ignoring the field. */
+  tools?: readonly string[]
+  /** Skill ids auto-mounted into the spawn. */
+  skills?: readonly string[]
+  /** Working directory override for this step's spawn — takes precedence
+   *  over {@link AgentStep.cwd} and the run-level `ctx.cwd`. */
+  cwd?: string
+  /** sha256 (hex) of the `harness.promptFile` this step's prompt was read
+   *  from, computed by `@agentproto/workflow-loader` at load time. Absent
+   *  when the step's prompt was authored inline. */
+  promptSha?: string
+  /** AIP-10 corpus knowledge materialized into the step's cwd (under
+   *  `.knowledge/`) before the session runs. See
+   *  {@link HarnessKnowledgeSelector}. */
+  knowledge?: readonly HarnessKnowledgeSelector[]
+}
+
+/**
+ * One AIP-10 corpus workspace attachment on an {@link AgentStep}'s
+ * `harness.knowledge[]` — mirrors `@agentproto/workflow`'s manifest
+ * `KnowledgeSelector`, with the `workspace` path already resolved to an
+ * absolute path by `@agentproto/workflow-loader` (or authored absolute).
+ */
+export interface HarnessKnowledgeSelector {
+  /** Absolute path to an AIP-10 corpus workspace root. */
+  workspace: string
+  /** Tags with OR semantics (maps to `resolveKnowledge`'s `query.tags`). */
+  anyOf?: readonly string[]
+  /** Tags that must ALL be present (post-filter after `anyOf`). */
+  allOf?: readonly string[]
+  /** Refined-kind filter. */
+  kinds?: readonly string[]
+  /** Cap on materialized entries after slug-ascending sort. Default 50. */
+  maxEntries?: number
+  /** Materialization mode — v1 supports only `"files"`. */
+  mode?: "files"
+  /** Internal — set by `@agentproto/workflow-loader` when a selector string
+   *  carries `$…` run-time references that must be resolved against the run
+   *  bindings before materialization. Not user-authored; the loader rejects
+   *  an authored `deferred`, and resolution strips the flag. */
+  deferred?: boolean
+}
+
+/** Per-selector materialization record on an agent step's run output. */
+export interface KnowledgeAppliedRecord {
+  /** The (absolute) corpus workspace root the selector resolved against. */
+  workspace: string
+  /** Entries matching the selector after allOf + kind filtering. */
+  matched: number
+  /** Entries actually written (≤ matched, after the `maxEntries` cap). */
+  written: number
 }
 
 /**
@@ -246,6 +321,102 @@ export interface AgentStep {
    *  adapter + sessionRef are hashed. Default false — most agent steps have
    *  side effects. */
   cacheable?: boolean
+  /** Manifest-declared adapter option id → value, forwarded to a NEW spawn's
+   *  `startSession({ options })` — e.g. mastra-agent's `agent` option, set by
+   *  {@link CompileWorkflowOptions.agentRefs} resolution when this step's
+   *  declarative `agent.ref` names an app-scoped agent. Only meaningful with
+   *  `adapter`; ignored on a `sessionRef` reuse. */
+  options?: Record<string, boolean | number | string>
+  /** Harness pinning for this step's spawn. See {@link AgentHarness}. */
+  harness?: AgentHarness
+}
+
+/**
+ * `kind: "gate"` — run a shell command through the host's subprocess runner
+ * as a deterministic pass/fail check (AIP-15 P3 / AIP-17). Exit code 0 is a
+ * pass; any other code is a failure. Bound output is `{ ok, exitCode, report
+ * }`; `report` is the process' stdout (if it parses as JSON) or the file at
+ * `reportPath` (relative to `cwd`), parsed as JSON.
+ */
+export interface GateStep {
+  kind: "gate"
+  id: string
+  command: string
+  /** Command arguments. Each element (selector or string) resolves per-run
+   *  against the bindings: a LEADING `$input|$item|$steps.<id>|$index` token
+   *  (AIP-16 prefix grammar) resolves and any trailing text is appended
+   *  verbatim (`"$input.bookDir/knowledge"` → `"<resolved>/knowledge"`); a
+   *  string that is exactly a ref resolves to that value's string form;
+   *  `$$…` stays a literal `$`; a ref that resolves to nothing (or a `$…`
+   *  string that opens no known ref token) throws naming the step and the
+   *  arg index. */
+  args?: readonly (Selector<string> | string)[]
+  /** Working directory. Selector form resolves per-run. A string may carry
+   *  the same leading-`$…` ref rule as `args` (leading token + trailing
+   *  text, `$$` escape, unresolvable ref throws). The RESOLVED cwd is made
+   *  absolute: absolute stays absolute; relative (incl. `.`) resolves
+   *  against the run's own `ctx.cwd` — never the daemon process cwd.
+   *  Omit for the run's `ctx.cwd`. */
+  cwd?: Selector<string> | string
+  /** Path (relative to `cwd`), of a JSON report file, consulted when stdout
+   *  doesn't itself parse as JSON. */
+  reportPath?: string
+  /** Hard wall-clock cap for a single command invocation, in ms. */
+  timeoutMs?: number
+  /** Re-run on a failing exit code, up to `maxAttempts` (default 1 = no
+   *  retry — a single attempt, fail immediately on a non-zero exit). */
+  retry?: {
+    maxAttempts: number
+    backoff: "fixed" | "exponential"
+    initialMs?: number
+  }
+  /** Re-prompt-and-rerun on a failing attempt, BEFORE each retry after the
+   *  first: send the named prior {@link AgentStep}'s session (resolved via
+   *  {@link AgentSessionHost.resolveByLabel}, the same lookup a `sessionRef`
+   *  reuse uses) a prompt with this gate's last report injected, wait for
+   *  its turn, then re-run the gate command. */
+  onFail?: {
+    reprompt: string
+    with?: Record<string, unknown>
+  }
+}
+
+/** One gate command invocation's raw result — before report resolution. */
+export interface GateCommandResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+  timedOut?: boolean
+}
+
+/** Host-injectable subprocess runner for {@link GateStep}. Undefined ⇒ the
+ *  runtime's own `node:child_process`-backed default. */
+export type GateCommandRunner = (spec: {
+  command: string
+  args: readonly string[]
+  cwd: string
+  timeoutMs?: number
+}) => Promise<GateCommandResult>
+
+/** One `kind: "gate"` command attempt's outcome, reported as it happens
+ *  (every attempt, not just the last) — the `gate-report` lifecycle event. */
+export interface GateReportEvent {
+  stepId: string
+  ok: boolean
+  exitCode: number
+  report: unknown
+  attempt: number
+}
+
+/** What a declarative agent-step's `agent.ref` resolves to — the adapter to
+ *  spawn under plus any adapter options that pick which concrete agent runs
+ *  (e.g. mastra-agent's `agent` option, an emitted AGENT.md path). Built by
+ *  the host from its own app-install state; the compiler only consumes it. */
+export interface AgentRefResolution {
+  /** Adapter slug to spawn (e.g. "mastra-agent"). */
+  adapter: string
+  /** Adapter option id → value merged onto the compiled step's `options`. */
+  options?: Record<string, boolean | number | string>
 }
 
 /**
@@ -271,6 +442,7 @@ export type RunStep =
   | GroupStep
   | SubworkflowStep
   | AgentStep
+  | GateStep
 
 export interface RuntimeWorkflow {
   id: string
@@ -280,10 +452,22 @@ export interface RuntimeWorkflow {
   output?: Selector<unknown>
 }
 
+/** A human/host decision on one approval request. `who` records WHO decided
+ *  ("human", "timeout", "cancelled", …); `note` is optional free text. */
+export interface ApprovalDecision {
+  approved: boolean
+  who: string
+  note?: string
+}
+
 export interface ApprovalRequest {
   stepId: string
   prompt: string
   approvers: readonly string[]
+  artifacts?: readonly string[]
+  /** The step's `timeoutMs` when set — the host may enforce it itself; the
+   *  runtime's default when the host doesn't is to wait forever. */
+  timeoutMs?: number
 }
 
 export interface ResumeRequest {
@@ -298,7 +482,16 @@ export interface AgentSessionHost {
    *  host. */
   spawn(
     adapter: string,
-    opts: { cwd?: string; workspaceSlug?: string; stepId?: string; sandbox?: AgentSandboxRef },
+    opts: {
+      cwd?: string
+      workspaceSlug?: string
+      stepId?: string
+      sandbox?: AgentSandboxRef
+      /** Adapter option id → value for this spawn (see {@link AgentStep.options}). */
+      options?: Record<string, boolean | number | string>
+      /** Harness pinning for this spawn (see {@link AgentStep.harness}). */
+      harness?: AgentHarness
+    },
   ): Promise<string>
   /** Send a prompt to an existing session and wait for its turn to end. */
   sendPromptAndWait(sessionId: string, prompt: string): Promise<void>
@@ -310,6 +503,16 @@ export interface AgentSessionHost {
   readFinalMessage?(sessionId: string): Promise<string>
   /** Current cumulative cost (USD) of a session, for run-level budgeting. */
   readCostUsd?(sessionId: string): Promise<number>
+  /** Emit a harness-warning for a session — the pass-through channel behind
+   *  the AIP-15 "never silently ignore" `session:harness-warning` event (used
+   *  by the runtime for `harness.knowledge` empty matches, reason
+   *  `knowledge-empty`). Optional: hosts without an event bus omit it and
+   *  the runtime degrades to the run-record entry alone. */
+  emitHarnessWarning?(input: {
+    sessionId: string
+    warnings: readonly string[]
+    label?: string
+  }): void
 }
 
 /** One journal entry: a cached step output plus the hash of the inputs that produced it. */
@@ -330,8 +533,10 @@ export interface RunWorkflowArgs {
   workflow: RuntimeWorkflow
   input?: unknown
   signal?: AbortSignal
-  /** Decide an {@link ApprovalStep}. Default: auto-approve. */
-  approve?: (req: ApprovalRequest) => boolean | Promise<boolean>
+  /** Decide an {@link ApprovalStep}. Default: auto-approve. May return a bare
+   *  boolean (equivalent to `{approved, who: "host"}`) or a full
+   *  {@link ApprovalDecision} recording who decided. */
+  approve?: (req: ApprovalRequest) => boolean | ApprovalDecision | Promise<boolean | ApprovalDecision>
   /** Supply a {@link SuspendStep}'s resume payload. Default: throw + suspend. */
   resume?: (req: ResumeRequest) => unknown | Promise<unknown>
   /** Host-injected agent session runtime. Undefined ⇒ {@link AgentStep} throws. */
@@ -348,6 +553,16 @@ export interface RunWorkflowArgs {
   /** Namespacing label for this run's cache lookups (the workflow_start cacheKey).
    *  Both `cache` and `cacheKey` must be set for any caching to happen. */
   cacheKey?: string
+  /** Called when a step begins execution (before spawn/prompt). */
+  onStepStart?: (stepId: string) => void
+  /** Called when a step completes execution, with its output. */
+  onStepComplete?: (stepId: string, output: unknown) => void
+  /** Host-injectable subprocess runner for `kind: "gate"` steps. Undefined ⇒
+   *  the runtime's own `node:child_process`-backed default. */
+  runGateCommand?: GateCommandRunner
+  /** Called once per `kind: "gate"` command attempt (every attempt, not just
+   *  the last) — the `gate-report` lifecycle event. */
+  onGateReport?: (ev: GateReportEvent) => void
 }
 
 export interface WorkflowRunResult {

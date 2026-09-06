@@ -88,9 +88,10 @@ describe("browser_adapter_list — manifest fields", () => {
 
     const result = await client.callTool({ name: "browser_adapter_list", arguments: {} })
     expect(result.isError).toBeFalsy()
-    const adapters = JSON.parse(
+    const parsed = JSON.parse(
       (result.content as Array<{ type: string; text: string }>)[0]!.text
-    ) as Array<{ id: string; location?: string }>
+    ) as { adapters: Array<{ id: string; location?: string }> };
+    const adapters = parsed.adapters
 
     expect(adapters.find(a => a.id === "camofox")?.location).toBe("local")
     expect(adapters.find(a => a.id === "bureau")?.location).toBe("cloud")
@@ -98,13 +99,14 @@ describe("browser_adapter_list — manifest fields", () => {
     await cleanup()
   })
 
-  it("surfaces install and config arrays on camofox", async () => {
+  it("surfaces install and config arrays on camofox (full: true — compact drops them)", async () => {
     const { client, cleanup } = await makeSetup({ listBrowserAdapters: mockLister })
 
-    const result = await client.callTool({ name: "browser_adapter_list", arguments: {} })
-    const adapters = JSON.parse(
+    const result = await client.callTool({ name: "browser_adapter_list", arguments: { full: true } })
+    const parsed = JSON.parse(
       (result.content as Array<{ type: string; text: string }>)[0]!.text
-    ) as Array<{ id: string; install?: unknown[]; config?: unknown[] }>
+    ) as { adapters: Array<{ id: string; install?: unknown[]; config?: unknown[] }> };
+    const adapters = parsed.adapters
 
     const camofox = adapters.find(a => a.id === "camofox")
     expect(camofox?.install).toHaveLength(1)
@@ -113,13 +115,14 @@ describe("browser_adapter_list — manifest fields", () => {
     await cleanup()
   })
 
-  it("omits install/config when not declared (bureau)", async () => {
+  it("omits install/config when not declared (bureau, full: true)", async () => {
     const { client, cleanup } = await makeSetup({ listBrowserAdapters: mockLister })
 
-    const result = await client.callTool({ name: "browser_adapter_list", arguments: {} })
-    const adapters = JSON.parse(
+    const result = await client.callTool({ name: "browser_adapter_list", arguments: { full: true } })
+    const parsed = JSON.parse(
       (result.content as Array<{ type: string; text: string }>)[0]!.text
-    ) as Array<{ id: string; install?: unknown[]; config?: unknown[] }>
+    ) as { adapters: Array<{ id: string; install?: unknown[]; config?: unknown[] }> };
+    const adapters = parsed.adapters
 
     const bureau = adapters.find(a => a.id === "bureau")
     expect(bureau?.install).toBeUndefined()
@@ -561,6 +564,210 @@ describe("browser_screenshot — abort timer cleanup", () => {
 
     // Network path must clear exactly one more timer than the guard baseline
     expect(netCalls).toBe(baseline + 1)
+    await cleanup()
+  })
+})
+
+// ── (PR-8) additive limit/cursor pagination + compact projection ─────────────
+
+describe("list tools pagination (PR-8) + compact projection (tool-transformer migration)", () => {
+  it("browser_adapter_list: page-walk with limit=1 covers exactly the unpaginated list; default is compact", async () => {
+    const mockLister: BrowserAdapterLister = () => [
+      { id: "camofox", name: "Camofox", description: "Headless Chrome adapter", defaultPort: 9377 },
+      { id: "bureau", name: "Bureau", description: "Cloud browser service", defaultPort: 9178 },
+    ]
+    const { client, cleanup } = await makeSetup({ listBrowserAdapters: mockLister })
+
+    // Default call: the { adapters } envelope with COMPACT rows — no prose
+    // description, no page fields.
+    const unpaginated = JSON.parse(
+      (
+        (await client.callTool({ name: "browser_adapter_list", arguments: {} })) as {
+          content: Array<{ type: string; text: string }>
+        }
+      ).content[0]!.text,
+    ) as { adapters: Array<{ id: string; description?: string }> }
+    expect(unpaginated.adapters.map(a => a.id)).toEqual(["camofox", "bureau"])
+    expect(unpaginated.adapters[0]).toMatchObject({ id: "camofox", name: "Camofox", defaultPort: 9377 })
+    expect(unpaginated.adapters[0]!.description).toBeUndefined()
+
+    // full:true restores the old verbose shape (description present).
+    const full = JSON.parse(
+      (
+        (await client.callTool({ name: "browser_adapter_list", arguments: { full: true } })) as {
+          content: Array<{ type: string; text: string }>
+        }
+      ).content[0]!.text,
+    ) as { adapters: Array<{ id: string; description?: string }> }
+    expect(full.adapters[0]!.description).toBe("Headless Chrome adapter")
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = JSON.parse(
+        (
+          (await client.callTool({
+            name: "browser_adapter_list",
+            arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
+          })) as { content: Array<{ type: string; text: string }> }
+        ).content[0]!.text,
+      ) as { items: Array<{ id: string }>; total: number; nextCursor?: string }
+      expect(page.total).toBe(2)
+      union.push(...page.items.map(a => a.id))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(["camofox", "bureau"])
+
+    await cleanup()
+  })
+
+  it("browser_adapter_list without a lister stays a not-enabled error", async () => {
+    const { client, cleanup } = await makeSetup({})
+    const result = await client.callTool({ name: "browser_adapter_list", arguments: {} })
+    expect(result.isError).toBe(true)
+    const text = (result.content as Array<{ type: string; text: string }>)[0]!.text
+    expect(text).toContain("browser_adapter_list is not enabled")
+    await cleanup()
+  })
+
+  it("list_browsers: page-walk with limit=1 covers exactly the unpaginated list; default is compact", async () => {
+    const registry = createSessionsRegistry({ persistPath: join(tmp, "sessions-page.json") })
+    const server = new McpServer({ name: "test-browser-page", version: "0.0.1" })
+    registerBrowserTools(server, { registry })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "test-client-page", version: "0.0.1" })
+    await client.connect(clientTransport)
+    const cleanup = async () => {
+      await client.close()
+      registry.shutdown()
+    }
+
+    registry.registerBrowser({
+      adapterId: "camofox",
+      port: 9377,
+      baseUrl: "http://127.0.0.1:9377",
+      wasAlreadyRunning: false,
+      status: "running",
+      stop: async () => {},
+    })
+    registry.registerBrowser({
+      adapterId: "bureau",
+      port: 9178,
+      baseUrl: "http://127.0.0.1:9178",
+      wasAlreadyRunning: false,
+      status: "running",
+      stop: async () => {},
+    })
+
+    // Default call: the { browsers } envelope with COMPACT rows — the
+    // identity/browser coordinates only, no page fields.
+    const unpaginated = JSON.parse(
+      (
+        (await client.callTool({ name: "list_browsers", arguments: {} })) as {
+          content: Array<{ type: string; text: string }>
+        }
+      ).content[0]!.text,
+    ) as { browsers: Array<Record<string, unknown>> }
+    expect(unpaginated.browsers).toHaveLength(2)
+    expect(unpaginated.browsers[0]).toMatchObject({
+      status: "running",
+      browserAdapterId: "camofox",
+      browserPort: 9377,
+      browserBaseUrl: "http://127.0.0.1:9377",
+    })
+    // Compact rows drop the descriptor bulk (e.g. command)…
+    expect((unpaginated.browsers[0] as { command?: unknown }).command).toBeUndefined()
+
+    // full:true restores the complete descriptors.
+    const full = JSON.parse(
+      (
+        (await client.callTool({ name: "list_browsers", arguments: { full: true } })) as {
+          content: Array<{ type: string; text: string }>
+        }
+      ).content[0]!.text,
+    ) as { browsers: Array<Record<string, unknown>> }
+    expect((full.browsers[0] as { browserAdapterId?: string }).browserAdapterId).toBe("camofox")
+    // (full rows carry the descriptor's full field set — strictly more than compact)
+    expect(Object.keys(full.browsers[0]!).length).toBeGreaterThan(
+      Object.keys(unpaginated.browsers[0]!).length,
+    )
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = JSON.parse(
+        (
+          (await client.callTool({
+            name: "list_browsers",
+            arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
+          })) as { content: Array<{ type: string; text: string }> }
+        ).content[0]!.text,
+      ) as { items: Array<{ id: string }>; total: number; nextCursor?: string }
+      expect(page.total).toBe(2)
+      union.push(...page.items.map(d => d.id))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(unpaginated.browsers.map(d => d.id as string))
+
+    await cleanup()
+  })
+
+  it("list_browsers: onlyAlive filter still applies; fields is a per-item allowlist on the envelope", async () => {
+    const registry = createSessionsRegistry({ persistPath: join(tmp, "sessions-fields.json") })
+    const server = new McpServer({ name: "test-browser-fields", version: "0.0.1" })
+    registerBrowserTools(server, { registry })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "test-client-fields", version: "0.0.1" })
+    await client.connect(clientTransport)
+    const cleanup = async () => {
+      await client.close()
+      registry.shutdown()
+    }
+
+    registry.registerBrowser({
+      adapterId: "camofox",
+      port: 9377,
+      baseUrl: "http://127.0.0.1:9377",
+      wasAlreadyRunning: false,
+      status: "running",
+      stop: async () => {},
+    })
+    registry.registerBrowser({
+      adapterId: "bureau",
+      port: 9178,
+      baseUrl: "http://127.0.0.1:9178",
+      wasAlreadyRunning: false,
+      status: "starting",
+      stop: async () => {},
+    })
+
+    const alive = JSON.parse(
+      (
+        (await client.callTool({ name: "list_browsers", arguments: { onlyAlive: true } })) as {
+          content: Array<{ type: string; text: string }>
+        }
+      ).content[0]!.text,
+    ) as { browsers: Array<{ id: string; status: string }> }
+    expect(alive.browsers).toHaveLength(1)
+    expect(alive.browsers[0]!.status).toBe("running")
+
+    const page = JSON.parse(
+      (
+        (await client.callTool({
+          name: "list_browsers",
+          arguments: { limit: 10, fields: ["id", "status"] },
+        })) as { content: Array<{ type: string; text: string }> }
+      ).content[0]!.text,
+    ) as { items: Array<Record<string, unknown>>; total: number }
+    expect(page.total).toBe(2)
+    for (const row of page.items) {
+      expect(Object.keys(row).sort()).toEqual(["id", "status"])
+    }
+
     await cleanup()
   })
 })

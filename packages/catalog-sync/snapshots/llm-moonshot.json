@@ -2,66 +2,7 @@
   "object": "list",
   "data": [
     {
-      "created": 1784873995,
-      "id": "moonshot-v1-128k-vision-preview",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "supports_image_in": true,
-      "context_length": 131072
-    },
-    {
-      "created": 1784873995,
-      "id": "moonshot-v1-32k",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "context_length": 32768
-    },
-    {
-      "created": 1784873995,
-      "id": "moonshot-v1-8k-vision-preview",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "supports_image_in": true,
-      "context_length": 8192
-    },
-    {
-      "created": 1784873995,
+      "created": 1788143653,
       "id": "kimi-k2.7-code",
       "object": "model",
       "owned_by": "moonshot",
@@ -83,8 +24,8 @@
       "context_length": 262144
     },
     {
-      "created": 1784873995,
-      "id": "kimi-k2.6",
+      "created": 1788143653,
+      "id": "kimi-k2.7-code-highspeed",
       "object": "model",
       "owned_by": "moonshot",
       "permission": [
@@ -105,27 +46,7 @@
       "context_length": 262144
     },
     {
-      "created": 1784873995,
-      "id": "moonshot-v1-32k-vision-preview",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "supports_image_in": true,
-      "context_length": 32768
-    },
-    {
-      "created": 1784873995,
+      "created": 1788143653,
       "id": "kimi-k3",
       "object": "model",
       "owned_by": "moonshot",
@@ -167,27 +88,8 @@
       "context_length": 1048576
     },
     {
-      "created": 1784873995,
-      "id": "moonshot-v1-128k",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "context_length": 131072
-    },
-    {
-      "created": 1784873995,
-      "id": "kimi-k2.5",
+      "created": 1788143653,
+      "id": "kimi-k2.6",
       "object": "model",
       "owned_by": "moonshot",
       "permission": [
@@ -206,66 +108,6 @@
       "supports_video_in": true,
       "supports_reasoning": true,
       "context_length": 262144
-    },
-    {
-      "created": 1784873995,
-      "id": "kimi-k2.7-code-highspeed",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "supports_image_in": true,
-      "supports_video_in": true,
-      "supports_reasoning": true,
-      "context_length": 262144
-    },
-    {
-      "created": 1784873995,
-      "id": "moonshot-v1-8k",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "context_length": 8192
-    },
-    {
-      "created": 1784873995,
-      "id": "moonshot-v1-auto",
-      "object": "model",
-      "owned_by": "moonshot",
-      "permission": [
-        {
-          "created": 0,
-          "id": "",
-          "object": "",
-          "organization": "moonshot",
-          "group": "moonshot",
-          "is_blocking": false
-        }
-      ],
-      "root": "",
-      "parent": "",
-      "context_length": 131072
     }
   ]
 }

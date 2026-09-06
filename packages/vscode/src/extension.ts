@@ -4,13 +4,17 @@
  * Wires config → DaemonClient → SessionStore, then the views (sessions tree,
  * permissions inbox, harnesses, auth profiles, status bar) and commands
  * (spawn / prompt / interrupt / kill / permissions / transcript / harness /
- * auth profile). `agentproto.openTranscript` opens the webview chat panel;
- * `agentproto.openTranscriptChannel` is the raw output-channel variant.
+ * auth profile). `agentproto.openSession` is the sessions list's single-click
+ * command — it routes to the terminal, the browser live view, or the webview
+ * chat panel by session kind (sessionOpen.logic.ts). `agentproto.openTranscript`
+ * opens the webview chat panel unconditionally; `agentproto.openTranscriptChannel`
+ * is the raw output-channel variant.
  */
 
 import * as vscode from "vscode"
 
 import { createDaemonClient, type DaemonClient } from "./client/daemonClient.js"
+import { registerAppCommands } from "./commands/apps.js"
 import { registerHarnessCommands } from "./commands/harnesses.js"
 import { registerAuthProfileCommands } from "./commands/authProfiles.js"
 import { registerLocalRouterCommands } from "./commands/localRouter.js"
@@ -39,24 +43,33 @@ import { registerSessionContinuityCommands } from "./commands/sessionContinuity.
 import { registerDaemonConfig } from "./commands/daemonConfig.js"
 import { registerSpawnCommand } from "./commands/spawn.js"
 import { registerTranscript } from "./commands/transcript.js"
+import { registerWatchSessionCommands } from "./commands/watchSession.js"
 import { getConfig, onDidChangeConfig } from "./config.js"
 import { SeenTracker } from "./services/seen.js"
 import { SessionStore } from "./services/sessionStore.js"
+import { WatchedSessions } from "./services/watchedSessions.js"
 import { WorkspacePinStore } from "./services/workspacePin.js"
+import { registerAppsView } from "./views/appsTree.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
 import { registerHarnessesView } from "./views/harnessesTree.js"
 import { registerAuthProfilesView } from "./views/authProfilesTree.js"
 import { registerAuthSettingsPanel } from "./webview/authSettingsPanel.js"
 import { registerStatusBar } from "./views/statusBar.js"
+import { registerReleaseStatusBar } from "./views/statusBarRelease.js"
 import { registerHarnessesWebview } from "./webview/harnessesWebviewPanel.js"
 import { registerAuthProfilesWebview } from "./webview/authProfilesWebviewPanel.js"
 import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
+import { registerAppPanels } from "./webview/appPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
+import { registerBrowserPanels } from "./webview/browserPanel.js"
 import { registerConfigurationLabWebview } from "./webview/configurationLabPanel.js"
+import { registerAuthModelMindmap, type AuthModelFocusTarget } from "./webview/authModelMindmapPanel.js"
+import { registerAuthExplorer } from "./webview/authExplorerPanel.js"
+import { defaultOpenTarget } from "./commands/sessionOpen.logic.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -83,11 +96,18 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // have looked at is a property of your working context, not of the daemon.
   const seen = new SeenTracker(ctx.workspaceState)
   ctx.subscriptions.push(seen)
-  registerSessionsView(ctx, store, filter, seen)
+  // Watched sessions — same per-workspace persistence: which sessions you
+  // pinned an eye on is a property of your working context. attach() raises
+  // the transition toasts off the store's onDidChange.
+  const watched = new WatchedSessions(ctx.workspaceState)
+  ctx.subscriptions.push(watched, watched.attach(store))
+  registerSessionsView(ctx, store, filter, seen, watched)
   registerPermissionsView(ctx, store)
   const harnessesProvider = registerHarnessesView(ctx, client)
   const authProfilesProvider = registerAuthProfilesView(ctx, client)
+  const appsProvider = registerAppsView(ctx, client)
   registerStatusBar(ctx, store)
+  registerReleaseStatusBar(ctx, client, store)
 
   // Per-window "target workspace" pin — client-side only, never the daemon's
   // global `active` workspace. See services/workspacePin.ts.
@@ -113,13 +133,14 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerWorktreeCleanup(ctx, client) // agentproto.cleanWorktrees
   registerSessionRename(ctx, client, store) // agentproto.renameSession
   registerSaveFavorite(ctx, client, store) // agentproto.saveFavorite
+  registerWatchSessionCommands(ctx, store, watched) // agentproto.watchSession / unwatchSession
   registerImportConversationCommand(ctx, client, store) // agentproto.importConversation
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
   registerHarnessCommands(ctx, client, harnessesProvider)
   registerAuthProfileCommands(ctx, client, authProfilesProvider)
   registerLocalRouterCommands(ctx, client, authProfilesProvider) // agentproto.start/stopLlmEndpoint
   registerOnboardingCommand(ctx, client, authProfilesProvider) // agentproto.runOnboarding
-  registerAuthSettingsPanel(ctx, client, authProfilesProvider) // agentproto.openAuthSettings
+  registerAuthSettingsPanel(ctx) // agentproto.openAuthSettings — redirector to Wallets / Auth & Model Map
 
   // One-time auto-adopt of a local Claude Code login (agentproto.autoAdoptLocalLogin).
   // Fire-and-forget: it never throws into activation and self-gates on the setting.
@@ -130,14 +151,19 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // package.json's `when` clauses make the two mutually exclusive in the
   // sidebar). Uses its own lightweight summary endpoint for progressive loading
   // while sharing the store's live-update signal and the transcriptPanels path.
-  registerSessionsWebview(ctx, client, store, filter, transcriptPanels, seen)
+  registerSessionsWebview(ctx, client, store, filter, transcriptPanels, seen, watched)
   // Opt-in webview alternatives for Harnesses and Auth Profiles, gated by
   // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
   registerHarnessesWebview(ctx, client, harnessesProvider)
   registerAuthProfilesWebview(ctx, client, authProfilesProvider)
   registerConfigurationLabWebview(ctx, client)
   const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
-  registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
+  const browserPanels = registerBrowserPanels(ctx, client) // agentproto.openBrowser (live browser session view)
+  const appPanels = registerAppPanels(ctx, client) // agentproto.openAppPanel (installed app UI panels)
+  registerAppCommands(ctx, client, appPanels, appsProvider) // agentproto.openAppPanel / refreshApps
+  const authModelMindmap = registerAuthModelMindmap(ctx, client) // agentproto.openAuthModel (auth/model config map)
+  const authExplorer = registerAuthExplorer(ctx, client, authProfilesProvider) // agentproto.openAuthExplorer (editable auth & models)
+  const terminalSwitch = registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSessionConfig(ctx, client, store, authProfilesProvider, () => transcriptPanels.activeSessionId()) // agentproto.configureSession
   registerSessionContinuityCommands(ctx, client, store, () => transcriptPanels.activeSessionId()) // agentproto.compactSession / agentproto.continueSessionFresh
@@ -151,6 +177,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     ),
     vscode.commands.registerCommand("agentproto.openConfigurationLab", () =>
       vscode.commands.executeCommand("agentproto.configurationLab.focus"),
+    ),
+    vscode.commands.registerCommand("agentproto.openAuthModel", (arg?: unknown) =>
+      authModelMindmap.open(isAuthModelFocusTarget(arg) ? arg : undefined),
+    ),
+    vscode.commands.registerCommand("agentproto.openAuthExplorer", () =>
+      authExplorer.open(),
     ),
     // Simple toggle, not full filter-infra integration (SessionFilterState's
     // shape is frozen — see sessionFilter.logic.ts) — flips the store's
@@ -177,6 +209,46 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         if (session) transcriptPanels.open(session)
       },
     ),
+    // The sessions list's single click — routes to the view that matches the
+    // session's kind (terminal / browser / transcript). `agentproto.openTranscript`
+    // above stays as the explicit "always open the transcript" action.
+    vscode.commands.registerCommand(
+      "agentproto.openSession",
+      async (arg: unknown) => {
+        const session = await resolveSessionArg(
+          arg,
+          store,
+          "Select a session to open",
+          () => true,
+          client,
+        )
+        if (!session) return
+        switch (defaultOpenTarget(session)) {
+          case "terminal":
+            terminalSwitch.open(session)
+            return
+          case "browser":
+            browserPanels.open(session)
+            return
+          case "transcript":
+            transcriptPanels.open(session)
+            return
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      "agentproto.openBrowser",
+      async (arg: unknown) => {
+        const session = await resolveSessionArg(
+          arg,
+          store,
+          "Select a browser session to open",
+          s => s.kind === "browser",
+          client,
+        )
+        if (session) browserPanels.open(session)
+      },
+    ),
     vscode.commands.registerCommand(
       "agentproto.openStory",
       async (arg: unknown) => {
@@ -193,6 +265,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   )
 }
 
+function isAuthModelFocusTarget(value: unknown): value is AuthModelFocusTarget {
+  if (typeof value !== "object" || value === null) return false
+  const v = value as { kind?: unknown; key?: unknown }
+  return (v.kind === "harness" || v.kind === "provider") && typeof v.key === "string"
+}
+
 async function showHealth(client: DaemonClient): Promise<void> {
   try {
     const health = await client.health()
@@ -200,8 +278,13 @@ async function showHealth(client: DaemonClient): Promise<void> {
       typeof health.uptimeMs === "number"
         ? `${Math.round(health.uptimeMs / 1000)}s`
         : "—"
+    const build = health.build
+      ? ` · ${[health.build.source, health.build.sha, health.build.builtAt ? `built ${health.build.builtAt}` : undefined]
+          .filter((p): p is string => typeof p === "string" && p.length > 0)
+          .join(" ")}`
+      : ""
     vscode.window.showInformationMessage(
-      `agentproto daemon: ${health.status} · workspace ${health.workspace} · uptime ${uptime}`,
+      `agentproto daemon: ${health.status}${health.version ? ` · v${health.version}` : ""}${build} · workspace ${health.workspace} · uptime ${uptime}`,
     )
   } catch (err) {
     vscode.window.showErrorMessage(

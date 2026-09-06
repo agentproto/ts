@@ -12,6 +12,9 @@ import {
   LLM_PRICING_CATALOG,
   resolveAlias as resolveLlmAlias,
   resolvePricing,
+  isKnownLlmId,
+  listUnpricedKnownLlmIds,
+  getModelProvider,
   type LLMPricing,
 } from "../llm/index.js"
 import {
@@ -29,6 +32,7 @@ import {
 import { VOICE_CATALOG, type CatalogVoice } from "../voice/index.js"
 import { modelHasTag } from "../enrichment/index.js"
 import { getMergedOverlay, type MergedOverlay } from "../overlay/index.js"
+import { listRouterLlmRoutes, formatModelRef } from "../route-identity/index.js"
 
 /** Follow consumer-overlay alias hops to a concrete id (cycle-guarded).
  *  Ids with no overlay alias pass through unchanged. */
@@ -61,7 +65,20 @@ function overlayVoice(ov: MergedOverlay, key: string): CatalogVoice | undefined 
  * share the resolver but discriminate on the inner payload.
  */
 export type ResolvedModel =
-  | { kind: "llm"; id: string; canonicalId: string; pricing: LLMPricing }
+  | {
+      kind: "llm"
+      id: string
+      canonicalId: string
+      /** Undefined for a real, known id with no pricing row yet — existence
+       *  and pricing are independent, see `LlmModelId`'s doc comment in
+       *  `llm/catalog.ts`. Every reader MUST handle the absent case; never
+       *  assume a `kind: "llm"` result is priced. */
+      pricing: LLMPricing | undefined
+      /** Best-effort provider even when `pricing` is absent (falls back to
+       *  `CONTEXT_WINDOWS`'s own provider field — see `getModelProvider`).
+       *  Prefer this over `pricing?.provider` when you only need routing. */
+      provider: string | undefined
+    }
   | { kind: "image"; id: string; def: ImageModelDefinition }
   | { kind: "video"; id: string; def: VideoModelDefinition }
   | { kind: "audio"; id: string; def: AudioModelDefinition }
@@ -109,7 +126,10 @@ export function getModel(id: string): ResolvedModel | undefined {
   if (ov.audio[key]) return { kind: "audio", id, def: ov.audio[key]! }
   const ovVoice = overlayVoice(ov, key)
   if (ovVoice) return { kind: "voice", id, voice: ovVoice }
-  if (ov.llm[key]) return { kind: "llm", id, canonicalId: key, pricing: ov.llm[key]! }
+  if (ov.llm[key]) {
+    const pricing = ov.llm[key]!
+    return { kind: "llm", id, canonicalId: key, pricing, provider: pricing.provider }
+  }
 
   const imageDef = IMAGE_MODEL_CATALOG[key]
   if (imageDef) return { kind: "image", id, def: imageDef }
@@ -128,7 +148,15 @@ export function getModel(id: string): ResolvedModel | undefined {
   const llmPricing = resolvePricing(key)
   if (llmPricing) {
     const canonicalId = resolveLlmAlias(key)
-    return { kind: "llm", id, canonicalId, pricing: llmPricing }
+    return { kind: "llm", id, canonicalId, pricing: llmPricing, provider: llmPricing.provider }
+  }
+  // Known id, no pricing row yet (see `LlmModelId`'s doc comment in
+  // llm/catalog.ts) — still resolves, just unpriced. This is the case that
+  // used to make a real, live, provider-published model (e.g. a brand-new
+  // Anthropic release the day it ships, before the next pricing sync)
+  // disappear from every downstream surface instead of showing up unpriced.
+  if (isKnownLlmId(key)) {
+    return { kind: "llm", id, canonicalId: key, pricing: undefined, provider: getModelProvider(key) }
   }
 
   return undefined
@@ -260,11 +288,18 @@ export function listModels(filter: ListModelsFilter = {}): ResolvedModel[] {
     for (const [id, pricing] of Object.entries(ov.llm)) {
       if (!providerMatches(pricing.provider)) continue
       seen.llm.add(id)
-      out.push({ kind: "llm", id, canonicalId: id, pricing })
+      out.push({ kind: "llm", id, canonicalId: id, pricing, provider: pricing.provider })
     }
     for (const [id, pricing] of Object.entries(LLM_PRICING_CATALOG)) {
       if (seen.llm.has(id) || !providerMatches(pricing.provider)) continue
-      out.push({ kind: "llm", id, canonicalId: id, pricing })
+      seen.llm.add(id)
+      out.push({ kind: "llm", id, canonicalId: id, pricing, provider: pricing.provider })
+    }
+    // Known ids with no pricing row yet (see `LlmModelId`'s doc comment in
+    // llm/catalog.ts) — surfaced unpriced rather than silently dropped.
+    for (const { id, provider } of listUnpricedKnownLlmIds()) {
+      if (seen.llm.has(id) || !providerMatches(provider)) continue
+      out.push({ kind: "llm", id, canonicalId: id, pricing: undefined, provider })
     }
   }
 
@@ -281,9 +316,34 @@ export function listModels(filter: ListModelsFilter = {}): ResolvedModel[] {
  * (llm / image / video / audio incl. tts/stt/s2s). This is the "provider
  * catalog" (openai, google, anthropic, replicate, openrouter, …): a
  * derived query over the kind-organized catalogs, NOT a parallel store.
+ *
+ * When `provider` names a router (openrouter, requesty, huggingface),
+ * this also folds in that router's generated route table
+ * (`listRouterLlmRoutes`), emitting `vendor/product@router` ids — the
+ * router's full surface, not just what happens to be curated into
+ * `LLM_PRICING_CATALOG`. OpenRouter's routes are already spread into that
+ * catalog (bare `vendor/product` ids, `llm/catalog.ts`), so its router-table
+ * entries are deduped against the bare ids `listModels` already returned;
+ * Requesty and HuggingFace have no such overlap today, so their route table
+ * entries are added in full. Deliberately NOT achieved by spreading
+ * `REQUESTY_ROUTES`/`HUGGINGFACE_ROUTES` into `LLM_PRICING_CATALOG` itself —
+ * that catalog is the legacy bare-id path, and a bare id must keep meaning
+ * direct-vendor pricing (`route-identity/index.ts`).
  */
 export function getModelsByProvider(provider: string): ResolvedModel[] {
-  return listModels({ provider })
+  const models = listModels({ provider })
+  const routerRoutes = listRouterLlmRoutes(provider)
+  if (routerRoutes.length === 0) return models
+
+  const existingIds = new Set(models.map(m => m.id))
+  const routed: ResolvedModel[] = []
+  for (const route of routerRoutes) {
+    const bareId = `${route.vendor}/${route.product}`
+    if (existingIds.has(bareId)) continue
+    const id = formatModelRef(route.ref)
+    routed.push({ kind: "llm", id, canonicalId: id, pricing: route.pricing, provider: route.pricing.provider })
+  }
+  return [...models, ...routed]
 }
 
 /**

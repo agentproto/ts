@@ -37,6 +37,45 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { listModels } from "@agentproto/model-catalog"
+
+/**
+ * Build pi's model menu from the shared provider catalog. Pi routes by the
+ * model id's own `<provider>/<id>` prefix, so every entry carries the billing
+ * provider.
+ *
+ * Providers: Anthropic, OpenAI, Google, Moonshot — matching models.env.
+ * Moonshot ids use the `moonshotai/` wire prefix pi's model resolver expects,
+ * with the canonical `moonshot` billing provider.
+ */
+function buildPiModelMenu(): Array<{ id: string; provider: string }> {
+  const supported = [
+    { provider: "anthropic", prefix: "anthropic", wirePrefix: "anthropic" },
+    { provider: "openai", prefix: "openai", wirePrefix: "openai" },
+    { provider: "google", prefix: "google", wirePrefix: "google" },
+    { provider: "moonshot", prefix: "moonshot", wirePrefix: "moonshotai" },
+  ] as const
+
+  const seen = new Set<string>()
+  const out: Array<{ id: string; provider: string }> = []
+
+  for (const { provider, prefix, wirePrefix } of supported) {
+    for (const model of listModels({ kind: "llm", provider })) {
+      const bareId = model.id
+      // Strip any existing vendor prefix so we can re-prefix with the wire form.
+      const product = bareId.includes("/") ? bareId.split("/").pop()! : bareId
+      const id = `${wirePrefix}/${product}`
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push({ id, provider })
+    }
+  }
+
+  return out.sort((a, b) => {
+    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider)
+    return a.id.localeCompare(b.id)
+  })
+}
 
 export const pi: AgentCliHandle = defineAgentCli({
   name: "Pi",
@@ -67,8 +106,34 @@ export const pi: AgentCliHandle = defineAgentCli({
   auth: {
     ref: "./SECRETS.md",
     state: {
-      env: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "MOONSHOT_API_KEY"],
+      env: [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "MOONSHOT_API_KEY",
+      ],
     },
+  },
+  // Pi's model router reads the provider straight off each id's own
+  // `<provider>/<id>` prefix and consults the matching provider env var
+  // (ANTHROPIC_API_KEY, OPENAI_API_KEY, MOONSHOT_API_KEY, …). Declaring this
+  // lets the runtime's billing-auth resolver and catalog eligibility manifest
+  // include api-key profiles for the model-derived direct endpoint — without
+  // it, no profile is eligible and pi models show "needs a profile".
+  modelDerivedApiKey: true,
+  // Pi's own bearer door: `ANTHROPIC_OAUTH_TOKEN — Anthropic OAuth token
+  // (alternative to API key)` (verified against pi 0.80.x `--help`). A
+  // Claude subscription token (`sk-ant-oat…`, minted by `claude
+  // setup-token`) is VALID there — pi presents it on the Authorization
+  // bearer path — while the same token on ANTHROPIC_API_KEY is rejected
+  // upstream as an invalid key. `provider: "anthropic"` scopes the surface:
+  // subscription mode (and oauth-bearer profile eligibility) lights up only
+  // for pi's anthropic-derived models, never its openai/google/moonshot
+  // ones.
+  authSubscription: {
+    setEnv: "ANTHROPIC_OAUTH_TOKEN",
+    provider: "anthropic",
   },
   sandbox: "./SANDBOX.md",
   protocol: "proprietary",
@@ -88,32 +153,19 @@ export const pi: AgentCliHandle = defineAgentCli({
   routeSelection: "derived-from-model",
   models: {
     // Pi's `--model <pattern>` accepts `provider/id` (verified against pi
-    // 0.80.x cli/args.ts + core/model-resolver.ts). `provider` below is
-    // read straight off that same prefix — pi routes on it directly, no
-    // adapter mode needed.
+    // 0.80.x cli/args.ts + core/model-resolver.ts).
     default: "anthropic/claude-sonnet-4-5",
-    allowed: [
-      { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
-      { id: "openai/gpt-5.1", provider: "openai" },
-      { id: "google/gemini-2.5-flash", provider: "google" },
-      // Model-id PREFIX stays `moonshotai/` — that's what pi's own `--model`
-      // resolver expects (see the comment above). The `provider` field is a
-      // BILLING endpoint, not a wire-format echo, and must be the CANONICAL
-      // catalog slug `moonshot` (base.ts:48) — `moonshotai` is the upstream/
-      // wire slug, already documented to drift from ours (base.ts:113-121).
-      // Conflating the two is D3: it made the runtime's model→provider
-      // eligibility projection compute an unrecognized "moonshotai" endpoint,
-      // which doesn't match any real wallet, so a genuinely-eligible moonshot
-      // profile was rejected.
-      { id: "moonshotai/kimi-k2.7-code", provider: "moonshot" },
-    ],
+    // Generated from the shared provider catalog. Moonshot ids use the
+    // `moonshotai/` wire prefix pi's model resolver expects, with the
+    // canonical `moonshot` billing provider (not the wire-format
+    // `moonshotai` — see base.ts:113-121).
+    allowed: buildPiModelMenu(),
     env: {
       anthropic: "ANTHROPIC_API_KEY",
       openai: "OPENAI_API_KEY",
       google: "GOOGLE_GENERATIVE_AI_API_KEY",
-      // Keyed by the canonical provider slug (matches `provider` above), not
-      // the wire-format `moonshotai` prefix — see the comment on the
-      // `allowed` entry.
+      // Keyed by the canonical provider slug, not the wire-format
+      // `moonshotai` prefix.
       moonshot: "MOONSHOT_API_KEY",
     },
   },

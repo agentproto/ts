@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, dirname, join } from "node:path"
 import { createDoctype } from "@agentproto/define-doctype"
 import { agentCliFrontmatterSchema } from "./schema.js"
 import { createAcpProtocolArm } from "./protocol/acp-client.js"
@@ -83,6 +83,63 @@ export const defineAgentCli = createDoctype<AgentCliDefinition, AgentCliHandle>(
   },
 )
 
+/**
+ * A manifest `bin: "node"` means "run with the node that's driving THIS
+ * process" (the daemon's own `process.execPath`), not "look up `node` on
+ * the child's PATH". A bare `spawn("node", ...)` depends on PATH containing
+ * a `node` entry — true in an interactive shell (nvm etc.) but NOT
+ * guaranteed under launchd, which starts the daemon with a minimal PATH.
+ * Resolving to `process.execPath` sidesteps PATH entirely for the one bin
+ * value that always means "this runtime".
+ *
+ * `npx` / `npm` get the same treatment when possible: every Node install
+ * layout (nvm, fnm, homebrew, system, Volta) ships them as siblings of the
+ * `node` binary, so a daemon whose PATH lacks that dir (launchd again —
+ * observed live 2026-08-30 as `spawn npx ENOENT` on a codex `agent_start`)
+ * can still resolve them relative to its own `process.execPath`. Falls back
+ * to the bare name (PATH lookup, prior behavior) when no sibling exists —
+ * e.g. a trimmed container image exposing npx elsewhere on PATH.
+ *
+ * Every other bin (hermes, gemini, …) is left untouched — those are meant
+ * to be resolved off PATH.
+ */
+export function resolveSpawnBin(
+  bin: string,
+  deps?: { execPath?: string; exists?: (p: string) => boolean },
+): string {
+  const execPath = deps?.execPath ?? process.execPath
+  if (bin === "node") return execPath
+  if (bin === "npx" || bin === "npm") {
+    const exists = deps?.exists ?? existsSync
+    const sibling = join(
+      dirname(execPath),
+      process.platform === "win32" ? `${bin}.cmd` : bin,
+    )
+    if (exists(sibling)) return sibling
+  }
+  return bin
+}
+
+/**
+ * Ensure the running node binary's directory is on the child env's PATH.
+ * Resolving `npx` to an absolute sibling path (above) is necessary but not
+ * sufficient: npx is a `#!/usr/bin/env node` script, so its shebang — and
+ * the `node` its target package's own bin shim execs — still resolve off
+ * the CHILD's PATH. Under a launchd daemon whose PATH lacks the nvm bin
+ * dir, an absolute-path npx would otherwise die right after spawn.
+ * APPENDED, not prepended, so an operator-supplied PATH (opts.env) keeps
+ * picking its own toolchain first; this only adds a fallback.
+ */
+function ensureExecDirOnPath(
+  env: Record<string, string>,
+  execPath: string = process.execPath,
+): void {
+  const execDir = dirname(execPath)
+  const parts = (env.PATH ?? "").split(delimiter).filter(Boolean)
+  if (parts.includes(execDir)) return
+  env.PATH = [...parts, execDir].join(delimiter)
+}
+
 export function createAgentCliRuntime(
   definition: AgentCliHandle,
 ): AgentCliRuntime {
@@ -90,6 +147,7 @@ export function createAgentCliRuntime(
     definition,
     async start(opts?: AgentCliStartOptions): Promise<AgentCliRuntimeSession> {
       const cwd = opts?.cwd ?? process.cwd()
+      const resolvedBin = resolveSpawnBin(definition.bin)
       // Compose final argv + env from the manifest + per-call config.
       // Mode patches and option patches land BEFORE the host-provided
       // env so an operator-set option can be observed by the CLI even
@@ -245,6 +303,21 @@ export function createAgentCliRuntime(
       }
 
       Object.assign(env, opts?.env ?? {})
+      // After ALL env layers (ambient, mode/option patches, billing-auth,
+      // opts.env) so the append lands on the final PATH — see the helper's
+      // doc for why even an absolute-path npx needs this.
+      ensureExecDirOnPath(env)
+
+      // Exact-file read grant (`AgentCliStartOptions.additionalReadPaths`):
+      // the runtime hands down the exact AGENTS.md path(s) an inherited
+      // pointer prompt names (see `session-spawn.ts`'s
+      // `additionalReadPathsForAgentsMd`). Derive the child env var adapters
+      // read (`AGENTPROTO_ADDITIONAL_READ_PATHS`, a JSON array) HERE, from
+      // this one option as the single authority, so BOTH arms — ACP and
+      // print — carry it. Read-only by contract; nothing here widens writes.
+      if (opts?.additionalReadPaths?.length) {
+        env.AGENTPROTO_ADDITIONAL_READ_PATHS = JSON.stringify(opts.additionalReadPaths)
+      }
 
       // claude-code's ACP wrapper never reads `--permission-mode` from argv
       // (the `bin_args_append` above is a no-op against it) — it resolves
@@ -262,19 +335,102 @@ export function createAgentCliRuntime(
         opts?.posture,
         config?.mode,
       )
+      // Isolation from ambient config must NOT be conditional on a
+      // requested posture/mode — a caller that never passes `posture` (the
+      // common case: `agent_start` / `spawnAgentSession` with no opinion on
+      // permission posture) used to get NO `CLAUDE_CONFIG_DIR` override at
+      // all, so the child inherited the DAEMON's own `process.env` and,
+      // through it, the operator's real `~/.claude.json` — including every
+      // globally-registered MCP server (e.g. an `agentproto` MCP entry
+      // pointing right back at this same daemon's `agent_start`, letting an
+      // unscoped one-shot worker spawn further unscoped children on its
+      // own). Confirmed in production 2026-08-07: a batch worker
+      // (`pmlawhub/tools/fiches/run-lane.sh`) self-spawned dozens of
+      // uncontrolled child sessions this way. Verified by reading
+      // `@anthropic-ai/claude-agent-sdk`'s bundled `sdk.mjs` directly: the
+      // SDK resolves its GLOBAL config file (the one carrying `mcpServers`)
+      // as `$CLAUDE_CONFIG_DIR/.claude.json` (falling back to
+      // `$CLAUDE_CONFIG_DIR/.config.json` if present) — never the real
+      // `~/.claude.json` once `CLAUDE_CONFIG_DIR` is set to anything else.
+      // So isolating every claude-code spawn through this path, regardless
+      // of whether a posture/mode was requested, closes the leak; only the
+      // settings.json CONTENT (permissions.defaultMode) stays conditional
+      // on `permissionMode` actually resolving to something.
+      const isolateClaudeCodeConfig = definition.id === "claude-code"
       // Hoisted out of the `if` below so it's visible to the commandSandbox
       // wrap further down: bwrap's `--tmpfs /tmp` (`command-sandbox.ts`)
       // would otherwise HIDE this dir on Linux since it's mkdtemp'd under
       // `os.tmpdir()` BEFORE the confined spawn — it must ride along as an
       // extraWritePaths entry, not rely on the workspace bind.
       let claudeConfigDir: string | undefined
-      if (permissionMode) {
-        claudeConfigDir = mkdtempSync(
-          join(tmpdir(), "agentproto-claude-config-"),
+      if (isolateClaudeCodeConfig) {
+        // `opts.configDir` (AgentCliStartOptions.configDir) makes the
+        // isolated dir PERSISTENT instead of throwaway: the caller picks a
+        // stable path (the daemon keys it per session lineage) so the SDK's
+        // own conversation store — `projects/<cwd-slug>/<uuid>.jsonl`, the
+        // thing `resumeSessionId` needs to find — survives adapter respawns.
+        // A fresh mkdtemp per spawn is why a reaped-then-resumed session
+        // used to lose native resume: the transcript sat in the previous
+        // process's temp dir, and the new one minted an empty dir. The
+        // isolation content below is written either way — the ISOLATION
+        // invariant lives in the files, not in the dir being temporary.
+        if (opts?.configDir) {
+          claudeConfigDir = opts.configDir
+          mkdirSync(claudeConfigDir, { recursive: true })
+        } else {
+          claudeConfigDir = mkdtempSync(
+            join(tmpdir(), "agentproto-claude-config-"),
+          )
+        }
+        // Explicit empty `mcpServers` rather than just leaving the global
+        // config file absent — an absent file falls back to whatever the
+        // SDK treats as "fresh install" defaults, which is unspecified and
+        // could change; writing it makes the isolation load-bearing on our
+        // own content, not on unverified fallback behavior. On a REUSED
+        // persistent dir, preserve the SDK's own accumulated state (project
+        // trust, onboarding flags — it rewrites this file itself) but
+        // RE-ASSERT `mcpServers: {}` every spawn: a session that ran
+        // `claude mcp add` mid-conversation must not smuggle that server
+        // back into its next respawn — same ambient-leak surface the
+        // temp-dir isolation closed (#824).
+        const globalConfigPath = join(claudeConfigDir, ".claude.json")
+        let priorGlobalConfig: Record<string, unknown> = {}
+        try {
+          const parsed: unknown = JSON.parse(readFileSync(globalConfigPath, "utf8"))
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            priorGlobalConfig = parsed as Record<string, unknown>
+          }
+        } catch {
+          // absent or unparseable — start from the empty baseline
+        }
+        writeFileSync(
+          globalConfigPath,
+          JSON.stringify({ ...priorGlobalConfig, mcpServers: {} }),
         )
+        // Isolating CLAUDE_CONFIG_DIR also shadows the operator's real
+        // `~/.claude/settings.json` — including `attribution`, the key an
+        // operator sets to suppress Claude Code's own default "🤖 Generated
+        // with Claude Code" PR-body footer / `Co-authored-by: Claude` commit
+        // trailer. A spawned session has no ambient settings.json to fall
+        // back to at all once isolated, so it reverts to those CLI defaults
+        // regardless of what's configured globally — confirmed on
+        // agentproto/ts PR #837, opened after this isolation went
+        // unconditional (#824), which carried the footer despite the
+        // spawning operator's global settings disabling it. Bake the
+        // suppression into every isolated settings.json unconditionally
+        // rather than reading the real file back in: that would reopen
+        // exactly the ambient-leak surface this isolation exists to close,
+        // and make spawn output depend on whatever happens to be in the
+        // runner's home dir.
+        const isolatedSettings: Record<string, unknown> = {
+          attribution: { commit: "", pr: "", sessionUrl: false },
+        }
+        if (permissionMode) {
+          isolatedSettings.permissions = { defaultMode: permissionMode }
+        }
         writeFileSync(
           join(claudeConfigDir, "settings.json"),
-          JSON.stringify({ permissions: { defaultMode: permissionMode } }),
+          JSON.stringify(isolatedSettings),
         )
         env.CLAUDE_CONFIG_DIR = claudeConfigDir
       }
@@ -283,8 +439,16 @@ export function createAgentCliRuntime(
       // long-lived child, no AgentCliClient connect/events cycle.
       // Short-circuit here so buildProtocolArm is never called for it.
       if (definition.protocol === "print") {
+        // Derived-from-model guard, print flavor: hand the arm the
+        // explicitly requested model so it can abort a turn whose wire
+        // `start` event names a DIFFERENT model — jcode's CLI silently
+        // falls back to its own default on an unknown `--model` id, which
+        // for a derived-from-model adapter is a different provider on a
+        // different bill (same contract as the ACP-arm guard below; see
+        // PrintArmOptions.expectedModel).
+        const printModel = config?.options?.model
         return createPrintSession({
-          bin: definition.bin,
+          bin: resolvedBin,
           baseArgs: composed.binArgs,
           cwd,
           env,
@@ -295,6 +459,13 @@ export function createAgentCliRuntime(
           printConfig: definition.print,
           commandSandbox: opts?.commandSandbox,
           ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+          // Exact-file read grant — see the ACP arm's wrapAgentCliSpawn call.
+          ...(opts?.additionalReadPaths?.length
+            ? { extraReadPaths: opts.additionalReadPaths }
+            : {}),
+          ...(definition.routeSelection === "derived-from-model" && printModel
+            ? { expectedModel: String(printModel) }
+            : {}),
         })
       }
 
@@ -312,20 +483,73 @@ export function createAgentCliRuntime(
         // calls — is denied out-of-workspace reads/writes. Off by default;
         // see `wrapAgentCliSpawn`'s doc for the fail-closed contract.
         const [execBin, execArgs] = await wrapAgentCliSpawn(
-          definition.bin,
+          resolvedBin,
           composed.binArgs,
           {
             mode: opts?.commandSandbox,
             cwd,
             ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+            // Exact-file read grant (see additionalReadPaths above):
+            // READ-only exceptions to the confinement boundary, never writes.
+            ...(opts?.additionalReadPaths?.length
+              ? { extraReadPaths: opts.additionalReadPaths }
+              : {}),
             label: definition.id,
           },
         )
-        child = spawn(execBin, execArgs, {
+        const spawned = spawn(execBin, execArgs, {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
           signal: opts?.signal,
+        })
+        child = spawned
+
+        // Attached synchronously, before any `await` below, so a spawn
+        // failure (bad binary, PATH missing the target under a minimal
+        // launchd env, …) is always observed by a listener. Node throws
+        // an UNHANDLED exception — crashing this ENTIRE process, every
+        // session on the box, not just this spawn — when a ChildProcess
+        // emits 'error' with nobody listening. Confirmed live 2026-08-11:
+        // a launchd-started daemon (PATH without the interactive shell's
+        // nvm setup) hit `spawn('node') ENOENT` from an `app_run` →
+        // mastra-agent spawn with no 'error' listener anywhere on the
+        // chain, taking down every running session. Race 'spawn' vs
+        // 'error' and turn a failure into a normal rejection instead —
+        // the caller (`session-spawn.ts` / `app_run`) already turns a
+        // rejected `start()` into a clean `{ok:false, message}` result.
+        let spawnFailure: Error | undefined
+        await new Promise<void>(resolve => {
+          spawned.once("spawn", () => resolve())
+          spawned.once("error", err => {
+            spawnFailure = err
+            resolve()
+          })
+        })
+        if (spawnFailure) {
+          const isEnoent =
+            (spawnFailure as NodeJS.ErrnoException).code === "ENOENT"
+          // Node reports a nonexistent WORKING DIRECTORY as the byte-identical
+          // `spawn <bin> ENOENT` it uses for a missing binary — a stale
+          // workspace path masquerades as "npx is not installed" and sends
+          // whoever reads the error down the wrong trail. Disambiguate here,
+          // where the failure is in hand, rather than preflighting every
+          // start: the cwd probe only runs on the already-failed path.
+          const cwdMissing = isEnoent && !existsSync(cwd)
+          const enoentHint = !isEnoent
+            ? ""
+            : cwdMissing
+              ? `\ncwd '${cwd}' does not exist — Node reports a missing working directory with this same ENOENT. Recreate the directory, or pass a valid cwd/workspace (is the workspace path stale, or its worktree removed?).`
+              : `\n'${execBin}' was not found on the daemon's PATH. If it works in your own terminal, the daemon's environment may be stale — restart the daemon from a shell where \`which ${definition.bin}\` resolves (\`agentproto daemon restart\`).`
+          throw new Error(
+            `agent-cli '${definition.id}': failed to spawn '${execBin} ${execArgs.join(" ")}': ${spawnFailure.message}${enoentHint}`,
+          )
+        }
+        // The spawn itself succeeded — keep a listener attached for the
+        // rest of the child's life so a LATER 'error' (e.g. a broken
+        // pipe) never goes unhandled either.
+        spawned.on("error", err => {
+          stderrBuf.push(`[spawn error] ${err.message}`)
         })
 
         // Drain child.stderr — without this the kernel pipe buffer
@@ -418,11 +642,51 @@ export function createAgentCliRuntime(
         ...(opts?.permissionHold ? { permissionHold: true } : {}),
       })
 
+      // Derived-from-model guard: when the ACP server REJECTED the
+      // connect-time model apply, the session is alive but on the agent's
+      // own default model. For a free/fixed-routing adapter that's a
+      // tolerable degradation (the route and bill don't change — keep
+      // agentproto#186's warn-and-continue). For a
+      // routeSelection:"derived-from-model" adapter (opencode, mastracode,
+      // hermes, jcode) the model id IS the route: "kept the default" means
+      // a DIFFERENT provider on a DIFFERENT bill than the operator named
+      // (observed live: opencode spawned with a claude-code-style
+      // `…@openrouter` id silently ran anthropic/claude-sonnet-4-5).
+      // That's a misroute, not a preference — refuse the spawn loudly,
+      // with the server's own reason and the id shape this adapter needs.
+      if (
+        configModel &&
+        definition.routeSelection === "derived-from-model" &&
+        arm.modelApplyRejection
+      ) {
+        const { requested, reason } = arm.modelApplyRejection
+        await arm.close().catch(() => {})
+        if (child && !child.killed) child.kill("SIGTERM")
+        throw derivedModelRefusalError(definition, requested, reason)
+      }
+
       // "command" model strategy: switch the model via a drained `/model
-      // <id>` control turn. Best-effort — a failure is warned, never fatal,
-      // so the session still starts (on the agent's default model).
+      // <id>` control turn. Best-effort for free/fixed-routing adapters — a
+      // failure is warned, never fatal, so the session still starts (on the
+      // agent's default model). For a derived-from-model adapter (hermes is
+      // the command-apply case today) the SAME guard as the config path
+      // above applies: an unacknowledged/failed switch means the session is
+      // on a model — and a bill — the operator didn't name, so refuse the
+      // spawn instead of continuing silently.
       if (optModel && modelApply === "command") {
-        await applyModelCommand(arm, String(optModel))
+        const commandResult = await applyModelCommand(arm, String(optModel))
+        if (
+          !commandResult.applied &&
+          definition.routeSelection === "derived-from-model"
+        ) {
+          await arm.close().catch(() => {})
+          if (child && !child.killed) child.kill("SIGTERM")
+          throw derivedModelRefusalError(
+            definition,
+            String(optModel),
+            commandResult.reason ?? "model switch not acknowledged",
+          )
+        }
       }
 
       // Prefer the protocol-layer session id (ACP, etc.) so the host
@@ -548,8 +812,14 @@ async function buildProtocolArm(
  * is specific to that adapter's ACP wrapper; every other adapter's
  * `bin_args_append` is applied to argv as normal and this returns
  * `undefined` for them. Also `undefined` for an unrequested mode, or a
- * mode (like "default") that has no `--permission-mode` patch —
- * callers use that to skip the `CLAUDE_CONFIG_DIR` override entirely.
+ * mode (like "default") that has no `--permission-mode` patch — the
+ * caller (`start()` above) uses that to skip writing
+ * `permissions.defaultMode` into the isolated `CLAUDE_CONFIG_DIR`'s
+ * `settings.json`, NOT to skip the `CLAUDE_CONFIG_DIR` override itself:
+ * that override is unconditional for every claude-code spawn (see
+ * `isolateClaudeCodeConfig` in `start()`) so ambient global config
+ * (`~/.claude.json`, including registered `mcpServers`) never leaks into a
+ * spawn that never requested a posture.
  */
 function resolveClaudeCodePermissionMode(
   definition: AgentCliHandle,
@@ -588,4 +858,29 @@ function filterStringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     if (typeof v === "string") out[k] = v
   }
   return out
+}
+
+/**
+ * The spawn-refusal error for a derived-from-model adapter whose explicitly
+ * requested model did not take — shared by the "config" (ACP rejection) and
+ * "command" (`/model` control turn, unacknowledged/failed) apply paths so
+ * the two guards can never drift. Names the requested id, the concrete
+ * reason, and the adapter's own expected id shape (first menu entry).
+ */
+function derivedModelRefusalError(
+  definition: AgentCliDefinition,
+  requested: string,
+  reason: string,
+): Error {
+  const first = definition.models?.allowed?.[0]
+  const example =
+    (typeof first === "string" ? first : first?.id) ??
+    "openrouter/anthropic/claude-sonnet-4-6"
+  return new Error(
+    `${definition.bin}: refusing to start on the default model — the requested model ` +
+      `"${requested}" was not applied (${reason}). This adapter routes AND ` +
+      `bills by the model id's own provider prefix, so continuing would silently run ` +
+      `(and bill) a model you didn't ask for. Use the adapter's ` +
+      `"<provider>/<model>" form (e.g. "${example}"), or pick an id from its model menu.`,
+  )
 }

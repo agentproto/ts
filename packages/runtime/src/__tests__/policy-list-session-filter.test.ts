@@ -278,6 +278,82 @@ describe("policy_list — sessionId filter composes with subtree scoping", () =>
   })
 })
 
+// ── policy_list pagination (PR-7) ─────────────────────────────────────
+
+/** Paginated envelope — only returned when `limit`/`cursor` is supplied. */
+interface PolicyPage {
+  items: PolicyRunState[]
+  nextCursor?: string
+  total?: number
+}
+
+function parseToolPage(result: CallToolResult): PolicyPage {
+  const blocks = "content" in result ? result.content : undefined
+  if (!Array.isArray(blocks)) throw new Error("tool result has no content array")
+  for (const block of blocks) {
+    const text = blockText(block)
+    if (text === undefined) continue
+    const parsed: PolicyPage = JSON.parse(text)
+    if (!Array.isArray(parsed.items)) throw new Error(`policy_list page has no items array: ${text}`)
+    return parsed
+  }
+  throw new Error("tool returned no text content")
+}
+
+async function listPolicyPage(
+  client: Client,
+  args: { limit: number; cursor?: string; sessionId?: string },
+): Promise<PolicyPage> {
+  return parseToolPage(await client.callTool({ name: "policy_list", arguments: args }))
+}
+
+describe("policy_list — limit/cursor pagination (additive)", () => {
+  it("page-walk with limit=2 covers exactly the unpaginated list", async () => {
+    const client = await mcpClient({ supervisor: stubSupervisor(POLICIES) })
+    const unpaginated = ids(await listPolicies(client))
+    expect(unpaginated).toHaveLength(3)
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = await listPolicyPage(client, { limit: 2, ...(cursor ? { cursor } : {}) })
+      expect(page.total).toBe(3)
+      union.push(...ids(page.items))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(unpaginated)
+    await client.close()
+  })
+
+  it("a scoped caller's page total reflects subtree scoping — paginate runs AFTER scoping", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const owner = spawnNode(registry)
+    const child = spawnNode(registry, owner.id, 1)
+    const stranger = spawnNode(registry)
+    const policies = [
+      makePolicy("pol_child", [child.id]),
+      makePolicy("pol_stranger", [stranger.id]),
+    ]
+    const client = await mcpClient({
+      supervisor: stubSupervisor(policies),
+      registry,
+      callerScope: { ownerSessionId: owner.id },
+    })
+    // Scoped view = pol_child only; the stranger's policy is removed by
+    // scoping BEFORE pagination ever sees the rows.
+    const unpaginated = ids(await listPolicies(client))
+    const union: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = await listPolicyPage(client, { limit: 1, ...(cursor ? { cursor } : {}) })
+      expect(page.total).toBe(1)
+      union.push(...ids(page.items))
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union).toEqual(unpaginated)
+    await client.close()
+  })
+})
+
 // ── GET /policies?sessionId= (REST) ───────────────────────────────────
 
 function freePort(): Promise<number> {

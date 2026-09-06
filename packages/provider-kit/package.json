@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/provider-kit",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "description": "@agentproto/provider-kit — generic provider/backend catalog, status, creds, setup-ledger, and MCP tool primitives shared by the agent-CLI, browser, tunnel, and eval-reporter families.",
   "keywords": [
     "agentproto",
@@ -89,12 +89,12 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "engines": {
     "node": ">=20.9.0"

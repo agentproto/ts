@@ -7,6 +7,7 @@ import {
   computeTreeState,
   reconcileIntegration,
   computeWorktreeStatus,
+  computeLiveness,
   listGitWorktrees,
   classify,
   InMemoryVerdictMemoStore,
@@ -706,5 +707,100 @@ describe("ForgeUnavailableError propagation shape", () => {
   it("is a typed error distinguishable from a legitimate empty result", async () => {
     const forge: ForgeClient = new UnreachableForgeClient("no gh, no token")
     await expect(forge.pullRequestsForBranch("x")).rejects.toBeInstanceOf(ForgeUnavailableError)
+  })
+})
+
+// ── computeLiveness — must join over buckets, not just the legacy file ────
+//
+// Regression coverage for the 2026-08-22 incident: `computeLiveness`
+// defaulted its registry read to `SESSIONS_FILE_PATH()` (the frozen,
+// no-longer-written pre-AIP-46 global file) instead of leaving it undefined
+// like `computeProvenance` does — so it never saw a single session recorded
+// in a per-workspace bucket (`~/.agentproto/workspaces/<slug>/sessions.json`),
+// which is where every session has lived since AIP-46 shipped (#414). In
+// production this meant `computeLiveness` reported `idle` for essentially
+// every worktree regardless of what was actually running, which is how a
+// live daemon session's own cwd got classified `reclaim` by `gc`.
+describe("computeLiveness — joins over buckets, not just the legacy file (AIP-46)", () => {
+  const realHome = process.env.HOME
+  const dirs: string[] = []
+
+  afterEach(async () => {
+    if (realHome === undefined) delete process.env.HOME
+    else process.env.HOME = realHome
+    while (dirs.length) await rm(dirs.pop()!, { recursive: true, force: true })
+  })
+
+  it("sees a running session recorded only in a workspace bucket — no sessionsPath passed (the production call shape)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agentproto-live-home-"))
+    dirs.push(home)
+    process.env.HOME = home
+
+    const worktree = await realpath(await mkdtemp(join(tmpdir(), "agentproto-live-wt-")))
+    dirs.push(worktree)
+
+    const dir = join(home, ".agentproto", "workspaces", "alpha")
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, "sessions.json"),
+      JSON.stringify({
+        sessions: [
+          { id: "live-in-bucket", startedAt: "2026-08-22T00:00:00.000Z", status: "running", cwd: worktree },
+        ],
+      }),
+    )
+
+    // No `sessionsPath` — before the fix this fell back to the legacy file
+    // (empty here) and reported `idle` even though a running session's cwd
+    // is right there in the bucket.
+    const liveness = await computeLiveness(worktree)
+    expect(liveness.state).toBe("sessions")
+    expect(liveness.sessions.map((s) => s.id)).toEqual(["live-in-bucket"])
+  })
+
+  it("still reports idle when the only bucketed session for this cwd has already exited", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agentproto-live-home-"))
+    dirs.push(home)
+    process.env.HOME = home
+
+    const worktree = await realpath(await mkdtemp(join(tmpdir(), "agentproto-live-wt-")))
+    dirs.push(worktree)
+
+    const dir = join(home, ".agentproto", "workspaces", "alpha")
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, "sessions.json"),
+      JSON.stringify({
+        sessions: [
+          { id: "exited-in-bucket", startedAt: "2026-08-22T00:00:00.000Z", status: "exited", cwd: worktree },
+        ],
+      }),
+    )
+
+    const liveness = await computeLiveness(worktree)
+    expect(liveness.state).toBe("idle")
+  })
+
+  it("an explicit sessionsPath still means that one file, nothing else — bucket rows don't bleed into a pinned read", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agentproto-live-home-"))
+    dirs.push(home)
+    process.env.HOME = home
+
+    const worktree = await realpath(await mkdtemp(join(tmpdir(), "agentproto-live-wt-")))
+    dirs.push(worktree)
+
+    const dir = join(home, ".agentproto", "workspaces", "alpha")
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, "sessions.json"),
+      JSON.stringify({
+        sessions: [{ id: "in-bucket", startedAt: "2026-08-22T00:00:00.000Z", status: "running", cwd: worktree }],
+      }),
+    )
+    const pinnedPath = join(home, "pinned-sessions.json")
+    await writeFile(pinnedPath, JSON.stringify({ sessions: [] }))
+
+    const liveness = await computeLiveness(worktree, { sessionsPath: pinnedPath })
+    expect(liveness.state).toBe("idle")
   })
 })

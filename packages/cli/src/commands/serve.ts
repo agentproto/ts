@@ -51,6 +51,7 @@ import {
   makeWorktreeProvisioner,
   makeWorktreeStatusLister,
   makeWorktreeGcRunner,
+  makeWorktreeAutoReclaimer,
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
@@ -107,6 +108,7 @@ import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
+import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
 import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
@@ -247,6 +249,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   const cfgDaemon = { ...(cfg.daemon ?? {}), ...(profile?.daemon ?? {}) }
   const cfgTunnel = { ...(cfg.tunnel ?? {}), ...(profile?.tunnel ?? {}) }
+  const cfgFeatures = { ...(cfg.features ?? {}), ...(profile?.features ?? {}) }
 
   // Workspace defaults: --workspace > config.json > cwd. Validated
   // below — must exist + be a directory.
@@ -453,7 +456,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
       return {
-        async startSession({ cwd, resumeSessionId, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, env }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -480,6 +483,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
           return runtime.start({
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
+            ...(configDir ? { configDir } : {}),
             ...(Object.keys(config).length > 0 ? { config } : {}),
             ...(mcpServers ? { mcpServers } : {}),
             ...(onActivity ? { onActivity } : {}),
@@ -488,11 +492,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
             ...(typeof posture === "string" ? { posture } : {}),
             ...(contextProfile ? { contextProfile } : {}),
             ...(commandSandbox ? { commandSandbox } : {}),
+            ...(env ? { env } : {}),
           })
         },
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
+        ...(slug === "opencode" ? { readUsage: (sid: string) => readOpenCodeUsage(sid) } : {}),
         declaredOptions: (adapter.handle.options ?? []).map(o => ({
           id: o.id,
           type: o.type,
@@ -664,6 +670,23 @@ export async function runServe(args: readonly string[]): Promise<number> {
         bind: opts.bind,
         specs: [driverSpec],
         name: "agentproto-serve",
+        // Surfaced over MCP and `/health` — what is actually running.
+        version: __CLI_VERSION__,
+        // Build identity: sha + builtAt were stamped into this bundle at
+        // build time; `source` is judged here from where the entry actually
+        // lives, because the version string alone cannot distinguish a
+        // workspace dist from the published tarball of the same release.
+        build: {
+          sha: __CLI_BUILD_SHA__,
+          builtAt: __CLI_BUILT_AT__,
+          source: (() => {
+            const entry = process.argv[1] ?? ""
+            if (!entry) return "unknown"
+            return entry.includes("/node_modules/") || entry.includes("/.npm/")
+              ? "published"
+              : "workspace"
+          })(),
+        },
         // BOOT.md is silly for a tunnel daemon — skip it.
         boot: false,
         // Opt-in eager resume-on-boot (§5, PR-4). Resolved from
@@ -684,6 +707,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // resolution order mirrors idleReapAfterMs's comment above (env >
         // config field > off).
         restartSweepIntervalMs: resolveRestartSweepIntervalMs(cfgDaemon.restartSweepIntervalMs),
+        // Turn-liveness watchdog (turn-liveness-watchdog chantier). DEFAULT
+        // ON: resolution order mirrors crashDetectIntervalMs's comment above
+        // — an unset value here passes `undefined` through so createGateway
+        // applies its own sane default rather than reading "unset" as off.
+        turnStallAfterMs: resolveTurnStallAfterMs(cfgDaemon.turnStallAfterMs),
+        llmEndpoint: cfgFeatures.llmEndpoint === true,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
@@ -698,6 +727,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // `planGc` / `applyGc` engine over @agentproto/worktree (defaults to a
         // dry run), same dep reasoning as above.
         runWorktreeGc: makeWorktreeGcRunner(),
+        // Injected port behind `sessions.ts`'s exit-time worktree auto-reclaim
+        // (`SessionDescriptor.worktreeAutoProvisioned`): a policy-provisioned
+        // (implicit) session's own worktree is reclaimed the moment it exits,
+        // if — and only if — it classifies clean/idle/merged-or-fresh. Same
+        // dep reasoning as above; a worktree the caller explicitly requested
+        // is never routed through this port at all.
+        runWorktreeAutoReclaim: makeWorktreeAutoReclaimer(),
         // Injected port behind the daemon PR-provenance reconciler: resolves the
         // open PR for a session's branch (branch→PR over @agentproto/worktree),
         // so an executor's PR gets the provenance footer even though it opened it
@@ -864,12 +900,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   // ── shutdown wiring (covers both local-only and tunnel modes) ──
   const aborter = new AbortController()
+  const bootedAt = Date.now()
   let shuttingDown = false
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
     process.stderr.write(
-      `\n${color.dim}── shutting down (${signal}) ──${color.reset}\n`,
+      `\n${color.dim}── shutting down (${signal}) · v${__CLI_VERSION__} · up ${formatDuration(Date.now() - bootedAt)} ──${color.reset}\n`,
     )
     aborter.abort()
     await gateway.stop().catch(() => undefined)
@@ -1274,6 +1311,26 @@ function resolveCrashDetectIntervalMs(configured: number | undefined): number | 
 }
 
 /**
+ * Resolve the effective turn-liveness watchdog threshold (turn-liveness-
+ * watchdog chantier): `AGENTPROTO_TURN_STALL_AFTER_MS` env > the
+ * `daemon.turnStallAfterMs` config field > `undefined` (letting
+ * `createGateway` apply its own DEFAULT-ON fallback). Same shape as
+ * `resolveCrashDetectIntervalMs`: an unset/malformed value does NOT mean
+ * "off" — detection is non-destructive observability, opt-in-to-DISABLE
+ * rather than opt-in-to-enable. An explicit non-positive value at either
+ * layer DOES disable it.
+ */
+function resolveTurnStallAfterMs(configured: number | undefined): number | undefined {
+  const raw = process.env.AGENTPROTO_TURN_STALL_AFTER_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed)) return parsed > 0 ? parsed : 0
+    return undefined
+  }
+  return configured
+}
+
+/**
  * Resolve the effective restart-sweep interval (restart-scheduler PR-2):
  * `AGENTPROTO_RESTART_SWEEP_INTERVAL_MS` env > the
  * `daemon.restartSweepIntervalMs` config field > off. Returns a positive ms
@@ -1397,8 +1454,13 @@ function printBootBanner(opts: {
     ? `${c.amber}bearer${c.reset} ${c.dim}(daemon.authToken)${c.reset}`
     : `${c.dim}open (no token set)${c.reset}`
   const line = `${c.dim}─${c.reset}`
+  const entry = process.argv[1] ?? "?"
+  const bin =
+    home && entry.startsWith(home) ? "~" + entry.slice(home.length) : entry
   process.stderr.write(
     `\n${line} ${c.bold}agentproto${c.reset} ${c.dim}·${c.reset} gateway up ${c.dim}·${c.reset} ${c.cyan}${opts.url}${c.reset} ${line}\n` +
+      `  ${c.dim}version${c.reset}      ${__CLI_VERSION__} ${c.dim}· pid ${process.pid} · node ${process.version}${c.reset}\n` +
+      `  ${c.dim}bin${c.reset}          ${bin}\n` +
       `  ${c.dim}workspace${c.reset}    ${workspace}\n` +
       `  ${c.dim}pty${c.reset}          ${ptyState}\n` +
       `  ${c.dim}origins${c.reset}      ${origins}\n` +
@@ -1407,6 +1469,18 @@ function printBootBanner(opts: {
       `  ${c.dim}mode${c.reset}         ${mode}\n` +
       `\n`,
   )
+}
+
+/** `3h12m`, `47m`, `12s` — compact elapsed-time tag for the lifecycle lines. */
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h${m % 60 ? `${m % 60}m` : ""}`
+  const d = Math.floor(h / 24)
+  return `${d}d${h % 24 ? `${h % 24}h` : ""}`
 }
 
 /**

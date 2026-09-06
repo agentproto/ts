@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/agencies-mastra",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Mastra adapter for agentagencies/v1 — PROCEDURE.md → Mastra workflow.ts codegen, engagement orchestrator, Mastra-flavored agencies tools.",
   "keywords": [
     "agentagencies",
@@ -56,7 +56,7 @@
   "dependencies": {
     "@agentproto/agencies": "workspace:*",
     "@agentproto/governance": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "peerDependencies": {
     "@mastra/core": "*"

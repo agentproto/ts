@@ -16,7 +16,11 @@
  *   - `handle.emit(dir)` writes `.agentproto/agents/<id>/AGENT.md` + shared
  *     `.agentproto/workflows/<id>/WORKFLOW.md` manifests under an
  *     agentproto-owned base (not the shared root `.agents/`), plus a root
- *     `WORKSPACE.md` when the app has a `workspace`.
+ *     `.agentproto/APP.md` index (always) and a root `WORKSPACE.md` when the
+ *     app has a `workspace`.
+ *   - `loadAppHandle(dir)` reads that `APP.md` back — plus every AGENT.md /
+ *     WORKFLOW.md / WORKSPACE.md it references — and re-runs `defineApp` so
+ *     the attachment invariant re-validates. The inverse of `emit`.
  *
  * An app may declare a home `workspace` (AIP-34 `defineWorkspace`, or a
  * `{ id, name, owner, storage? }` shorthand). Its `owner` is the tenant
@@ -35,6 +39,7 @@
 
 export { defineApp, AppDefinitionError } from "./define-app.js"
 export { emitApp } from "./emit.js"
+export { loadAppHandle, AppLoadError } from "./load-app.js"
 export { refKey, stripOwner } from "./refs.js"
 export type {
   AppDefinition,
@@ -43,6 +48,13 @@ export type {
   DoctypeHandle,
   WorkspaceShorthand,
   WorkspaceInput,
+  AppUiDefinition,
+  AppArtifactSurface,
+  AppSkillSurface,
+  AppArtifactDecl,
+  AppDevLaunchConfig,
+  AppDataDefinition,
+  AppDevDefinition,
   ToMastraAgentOptions,
   EmittedApp,
 } from "./types.js"

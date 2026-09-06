@@ -71,11 +71,98 @@ export interface WorkspaceShorthand {
 export type WorkspaceInput = WorkspaceHandle | WorkspaceShorthand
 
 /**
+ * A single HTML surface an app ships alongside its agents — the artifact a
+ * host renders (e.g. an embedded panel). `html` is the full document; `emit`
+ * writes it to `.agentproto/ui/index.html` rather than inlining it into the
+ * APP.md frontmatter.
+ */
+export interface AppUiDefinition {
+  readonly html: string
+  readonly title?: string
+  readonly description?: string
+  readonly tools?: readonly string[]
+  /**
+   * Preferred local port when this app's UI is served standalone
+   * (`agentproto app serve`). A declared port is a hint only — it falls
+   * back to auto-assignment when taken or when no port is given.
+   */
+  readonly port?: number
+  readonly csp?: {
+    readonly connectDomains?: readonly string[]
+    readonly resourceDomains?: readonly string[]
+  }
+}
+
+/**
+ * A persistent HTML dashboard (Cowork artifact) the app ships alongside its
+ * agents. `path` is the absolute path to the HTML file; `emit` copies it to
+ * `.agentproto/artifact/index.html`. The daemon exposes the content via
+ * `app_artifact_get` — the host agent (Cowork) calls `create_artifact` with
+ * it, never writes the host manifest directly.
+ */
+export interface AppArtifactSurface {
+  readonly path: string
+  readonly title?: string
+  readonly description?: string
+}
+
+/** A kind of artifact the app's agents may produce, declared for discovery. */
+export interface AppArtifactDecl {
+  readonly type: string
+  readonly description?: string
+}
+
+/**
+ * A Cowork skill the app ships — a directory containing `SKILL.md` (AIP-42)
+ * plus optional assets (scripts, templates). `path` is the absolute path to
+ * the directory; `emit` copies it to `.agentproto/skill/`. The daemon exposes
+ * the content via `app_skill_get` — the host agent (Cowork) calls `save_skill`
+ * to register it, never writes the host manifest directly.
+ */
+export interface AppSkillSurface {
+  readonly path: string
+  readonly title?: string
+  readonly description?: string
+}
+
+/** One way to launch the app for local development. */
+export interface AppDevLaunchConfig {
+  readonly name: string
+  readonly runtimeExecutable: string
+  readonly runtimeArgs?: readonly string[]
+  readonly port?: number
+  readonly url?: string
+}
+
+/** Dev-launch configuration for the app, carried verbatim in APP.md frontmatter. */
+export interface AppDevDefinition {
+  readonly launch: readonly AppDevLaunchConfig[]
+}
+
+/**
+ * Where the app's durable data lives (the `app_data_*` plane). `dir` is a
+ * path RELATIVE to the app dir — `"data"` means `<appDir>/data`, which is
+ * also what the daemon uses when the hint is absent. It is a hint: an
+ * explicit `dataDir` passed to `app_install` / `agentproto app install
+ * --data-dir` overrides it, and the resolved absolute path is persisted on
+ * the `InstalledApp` record. Reserved for later: a `store.sqlite` inside
+ * that dir, exposed through an `app_data_query` tool.
+ */
+export interface AppDataDefinition {
+  readonly dir?: string
+}
+
+/**
  * Input to `defineApp`. Each `agents[]` entry is an already-validated
  * `AgentHandle` (bare, no body) or an `AgentEntry` (handle + body).
+ *
+ * `agents` may be empty or omitted for a UI-only app — one that ships a
+ * `ui` block and no agent behavior. In that case `ui` is required; an app
+ * with neither agents nor a `ui` block has nothing to do and `defineApp`
+ * rejects it.
  */
 export interface AppDefinition {
-  readonly agents: readonly (AgentEntry | AgentHandle)[]
+  readonly agents?: readonly (AgentEntry | AgentHandle)[]
   readonly workflows?: readonly WorkflowHandle[]
   /** Any other AIP handles to carry with the app (AIP-6/25/47/…). */
   readonly attach?: readonly DoctypeHandle[]
@@ -86,6 +173,55 @@ export interface AppDefinition {
    * alongside the agents. Omit for a workspace-less bundle.
    */
   readonly workspace?: WorkspaceInput
+  /**
+   * Machine identifier for the app itself (distinct from its agents' ids).
+   * Must be non-empty when present. Setting it is what makes the app
+   * discoverable — `emit` writes it into the root `APP.md` identity block.
+   */
+  readonly id?: string
+  /** Human-readable app name. */
+  readonly name?: string
+  /** App version. Defaults to `"0.1.0"` when `id` is set. */
+  readonly version?: string
+  /** App description. Becomes the `APP.md` body. */
+  readonly description?: string
+  /** APP ids this app depends on. */
+  readonly requires?: readonly string[]
+  /** An HTML surface the app ships alongside its agents. */
+  readonly ui?: AppUiDefinition
+  /** A persistent HTML dashboard (Cowork artifact) the app ships. `path`
+   *  must be an absolute path to an HTML file on disk — `emit` copies it into
+   *  the bundle. */
+  readonly artifact?: AppArtifactSurface
+  /** A Cowork skill directory the app ships. `path` must be an absolute path
+   *  to a directory containing `SKILL.md` — `emit` copies it into the bundle. */
+  readonly skill?: AppSkillSurface
+  /** Artifact types this app's agents may produce, declared for discovery. */
+  readonly artifacts?: readonly AppArtifactDecl[]
+  /** Dev-launch configuration for running the app locally. */
+  readonly dev?: AppDevDefinition
+  /** Default data directory hint for the `app_data_*` plane (relative to
+   *  the app dir; see {@link AppDataDefinition}). */
+  readonly data?: AppDataDefinition
+  /**
+   * Absolute or `~`-relative host directories the app is granted READ-ONLY
+   * access to outside its own sandboxed `dir` (e.g. a user's real
+   * `~/Downloads/applications` folder). Each entry is normalized (`~`
+   * expanded, resolved absolute) and validated to exist as a real directory
+   * at install time — `app_install`/`app_apply` fail fast on a missing or
+   * invalid root rather than storing it. Backs the `app_external_list` /
+   * `app_external_read` MCP tools (app-external.ts) and the
+   * `GET /apps/:appId/external-blob` HTTP route; there is no write/delete
+   * path for these roots anywhere in the daemon.
+   */
+  readonly externalReadRoots?: readonly string[]
+  /**
+   * Coarse grouping surfaced in catalogs/trees — e.g. `"book"` groups the
+   * VS Code Apps tree's "Books" section. Freeform: app-kit does not
+   * validate against a fixed enum, since new categories may appear without
+   * an app-kit release.
+   */
+  readonly category?: string
 }
 
 /** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
@@ -99,6 +235,14 @@ export interface EmittedApp {
   readonly workflowPaths: readonly string[]
   /** Absolute path to the root `WORKSPACE.md`, when the app has a workspace. */
   readonly workspacePath?: string
+  /** Absolute path to the root `APP.md` index, always written. */
+  readonly appPath: string
+  /** Absolute path to the written `.agentproto/ui/index.html`, when the app has a `ui`. */
+  readonly uiPath?: string
+  /** Absolute path to the written `.agentproto/artifact/index.html`, when the app has an `artifact`. */
+  readonly artifactPath?: string
+  /** Absolute path to the written `.agentproto/skill/` directory, when the app has a `skill`. */
+  readonly skillPath?: string
 }
 
 /**
@@ -111,6 +255,35 @@ export interface AppHandle {
   readonly attachments: readonly DoctypeHandle[]
   /** The app's home workspace (AIP-34), normalized to a handle. Absent if none. */
   readonly workspace?: WorkspaceHandle
+  /** Machine identifier for the app itself. Absent for an anonymous bundle. */
+  readonly id?: string
+  /** Human-readable app name. */
+  readonly name?: string
+  /** App version. Defaulted to `"0.1.0"` when `id` is set. */
+  readonly version?: string
+  /** App description. */
+  readonly description?: string
+  /** APP ids this app depends on. */
+  readonly requires?: readonly string[]
+  /** An HTML surface the app ships alongside its agents. */
+  readonly ui?: AppUiDefinition
+  /** A persistent HTML dashboard (Cowork artifact) the app ships. */
+  readonly artifact?: AppArtifactSurface
+  /** A Cowork skill directory the app ships. */
+  readonly skill?: AppSkillSurface
+  /** Artifact types this app's agents may produce, declared for discovery. */
+  readonly artifacts?: readonly AppArtifactDecl[]
+  /** Dev-launch configuration for running the app locally. */
+  readonly dev?: AppDevDefinition
+  /** Default data directory hint (see {@link AppDataDefinition}). Resolved
+   *  against the app dir at install time in `performInstall`. */
+  readonly data?: AppDataDefinition
+  /** Read-only external filesystem roots this app declares (see
+   *  {@link AppDefinition.externalReadRoots}). Not yet normalized/validated —
+   *  that happens at install time in `performInstall`. */
+  readonly externalReadRoots?: readonly string[]
+  /** Coarse grouping surfaced in catalogs/trees (see {@link AppDefinition.category}). */
+  readonly category?: string
 
   /**
    * Build agents into runnable Mastra agents whose `instructions` field is

@@ -5,12 +5,15 @@
  *
  *   node scripts/agentflow/review.mjs            # engine from config
  *   node scripts/agentflow/review.mjs --engine cloud
+ *   node scripts/agentflow/review.mjs --engine daemon  # full agentic review via the local daemon
  *   node scripts/agentflow/review.mjs --stamp    # also write the CI-bypass marker
  *
- * This is the lightweight sibling of the CI reviewer (scripts/review-pr.mjs,
- * which is a full agentic tool-loop). Here we do a single-shot diff review
- * via the shared engine router, so it runs locally on the Claude Code CLI
- * (subscription, no API key) — or `cloud` for the API.
+ * `local` / `cloud` do a single-shot diff review via the shared engine router
+ * (scripts/agentflow/primitives/review.mjs#reviewDiff) — the lightweight
+ * sibling of the CI reviewer. `daemon` instead runs the SAME agentic review
+ * CI runs (.github/agentproto-workflows/pr-review/WORKFLOW.md, placement:
+ * "local") through your already-running `agentproto serve` daemon over MCP —
+ * full tool access, no diff cap; needs `agentproto serve` running locally.
  *
  * Exit code: 0 on approve (or non-blocking), 1 when the review requests
  * changes and review.blocking is true.
@@ -25,8 +28,9 @@
 import { execSync } from 'node:child_process'
 import { openSync, readSync, closeSync } from 'node:fs'
 import { loadAgentflowConfig, resolveEngine } from './config.mjs'
-import { gatherDiff, reviewDiff, DIFF_CAP } from './primitives/review.mjs'
+import { gatherChangedFiles, gatherDiff, reviewDiff, reviewViaDaemon, DIFF_CAP } from './primitives/review.mjs'
 import { runCode } from './primitives/code.mjs'
+import { connectDaemon, readDaemonToken } from '../lib/daemon-mcp.mjs'
 
 const ROOT = new URL('../..', import.meta.url).pathname.replace(/\/$/, '')
 const AGENTFLOW = loadAgentflowConfig(ROOT)
@@ -60,14 +64,22 @@ function run(cmd) {
 
 const engine = resolveEngine(AGENTFLOW.review, { flag: ENGINE_FLAG })
 
-let diffInfo
+// engine "daemon" never needs the full diff body — the agent reads the live
+// checkout itself over the daemon's own tools — so skip the (possibly
+// hundreds-of-MB) `git diff` read entirely for that engine.
+let changedFiles, fileCount, rawDiff, truncated
 try {
-  diffInfo = gatherDiff(ROOT)
+  if (engine === 'daemon') {
+    ;({ changedFiles, fileCount } = gatherChangedFiles(ROOT))
+    rawDiff = ''
+    truncated = false
+  } else {
+    ;({ changedFiles, fileCount, diff: rawDiff, truncated } = gatherDiff(ROOT))
+  }
 } catch {
   console.error('[agentflow] review: cannot diff against origin/main (fetch it first?).')
   process.exit(0) // non-fatal for a hook
 }
-const { changedFiles, fileCount, diff: rawDiff, truncated } = diffInfo
 if (!changedFiles) {
   console.log('[agentflow] review: no changes vs origin/main — nothing to review.')
   process.exit(0)
@@ -105,17 +117,55 @@ if (
 console.log(`[agentflow] reviewing ${fileCount} file(s) vs origin/main (engine: ${engine})…`)
 
 let verdict
-try {
-  verdict = await reviewDiff({
-    changedFiles,
-    diff: rawDiff,
-    engine,
-    model: AGENTFLOW.review.model ?? undefined,
-    claudeBin: AGENTFLOW.review.command ?? 'claude',
-  })
-} catch (err) {
-  console.error('[agentflow] review:', err.message)
-  process.exit(0) // a flaky review must not wedge a push
+if (engine === 'daemon') {
+  const port = AGENTFLOW.review.daemonPort ?? 18790
+  // Connect BEFORE calling reviewViaDaemon so an unreachable daemon (no
+  // metadata file, connection refused) gets its own single clear warning
+  // instead of being indistinguishable from "the review itself failed." A
+  // weaker review pretending to be the full one is worse than an honest
+  // skip, so this never falls back to a single-shot review.
+  let daemonClient
+  try {
+    const token = readDaemonToken({ port })
+    daemonClient = await connectDaemon({ port, token })
+  } catch (err) {
+    console.error(`[agentflow] review: daemon unreachable on port ${port} (${err.message}).`)
+    if (FROM_HOOK) process.exit(0) // non-blocking, same policy as a flaky review
+    console.error('  Start it with `agentproto serve`, or run with `--engine local`.')
+    process.exit(1)
+  }
+  const timeoutMs = (AGENTFLOW.review.daemonTimeoutMinutes ?? 15) * 60_000
+  const pollStart = Date.now()
+  try {
+    verdict = await reviewViaDaemon({
+      root: ROOT,
+      baseRef: 'main',
+      port,
+      timeoutMs,
+      adapter: AGENTFLOW.review.adapter ?? undefined,
+      client: daemonClient,
+      onStatus: (run, runId) => {
+        const secs = Math.round((Date.now() - pollStart) / 1000)
+        console.log(`[agentflow] daemon run ${runId} … status=${run.status} (${secs}s)`)
+      },
+    })
+  } catch (err) {
+    console.error('[agentflow] review:', err.message)
+    process.exit(0) // a flaky review must not wedge a push
+  }
+} else {
+  try {
+    verdict = await reviewDiff({
+      changedFiles,
+      diff: rawDiff,
+      engine,
+      model: AGENTFLOW.review.model ?? undefined,
+      claudeBin: AGENTFLOW.review.command ?? 'claude',
+    })
+  } catch (err) {
+    console.error('[agentflow] review:', err.message)
+    process.exit(0) // a flaky review must not wedge a push
+  }
 }
 
 // ── report ────────────────────────────────────────────────────────────────────

@@ -52,6 +52,51 @@ function scriptedAgentSession(
   }
 }
 
+/** Read a session's `events.jsonl` once the turn has durably landed.
+ *
+ *  `sendPrompt` resolving does NOT mean the transcript is on disk: the
+ *  writer appends through a `fs.WriteStream` (created lazily, flushed
+ *  asynchronously) and the registry closes it fire-and-forget, so a fixed
+ *  sleep raced the stream open on slower CI runners and read ENOENT.
+ *  Poll instead, bounded, until the file exists AND carries the terminal
+ *  `turn-end` record this suite asserts on. */
+async function readEventsAfterTurnEnd(
+  sessionId: string,
+  baseDir: string,
+  timeoutMs = 2000,
+): Promise<AgentStreamEvent[]> {
+  const path = sessionEventsPath(sessionId, baseDir)
+  const deadline = Date.now() + timeoutMs
+  let last: AgentStreamEvent[] = []
+  for (;;) {
+    let raw = ""
+    try {
+      raw = readFileSync(path, "utf-8")
+    } catch {
+      raw = ""
+    }
+    last = raw
+      .trim()
+      .split("\n")
+      .filter(line => line.length > 0)
+      .flatMap(line => {
+        try {
+          return [JSON.parse(line) as AgentStreamEvent]
+        } catch {
+          // A torn final line — the next poll sees it whole.
+          return []
+        }
+      })
+    if (last.some(event => event.kind === "turn-end")) return last
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `no turn-end record in ${path} after ${timeoutMs}ms (${last.length} records read)`,
+      )
+    }
+    await new Promise(r => setTimeout(r, 10))
+  }
+}
+
 describe("SessionDescriptor.blockedOn", () => {
   let tmp: string
   let transcriptDir: string
@@ -235,15 +280,8 @@ describe("SessionDescriptor.blockedOn", () => {
     // The descriptor is clean.
     expect(registry.get(desc.id)?.blockedOn).toBeUndefined()
 
-    // Allow the write stream buffer to flush before reading the file.
-    await new Promise(r => setTimeout(r, 50))
-
     // The transcript carries a synthetic tool-result BEFORE the synthetic turn-end.
-    const eventsPath = sessionEventsPath(desc.id, transcriptDir)
-    const lines = readFileSync(eventsPath, "utf-8")
-      .trim()
-      .split("\n")
-      .map(l => JSON.parse(l) as AgentStreamEvent)
+    const lines = await readEventsAfterTurnEnd(desc.id, transcriptDir)
     const toolResults = lines.filter(
       (r): r is AgentStreamEvent & { kind: "tool-result" } => r.kind === "tool-result"
     )
@@ -261,6 +299,46 @@ describe("SessionDescriptor.blockedOn", () => {
     const resultIdx = lines.findIndex(r => r.kind === "tool-result")
     const turnEndIdx = lines.findIndex(r => r.kind === "turn-end")
     expect(resultIdx).toBeLessThan(turnEndIdx)
+
+    registry.shutdown()
+  })
+
+  it("settles each nested orphan before an adapter-supplied turn-end", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: scriptedAgentSession([
+        { kind: "tool-call", toolName: "View Image", toolCallId: "outer", arguments: { path: "one.png" } },
+        { kind: "tool-call", toolName: "View Image", toolCallId: "inner", arguments: { path: "two.png" } },
+        { kind: "tool-result", toolName: "View Image", toolCallId: "inner", result: "rendered" },
+        // Hermes can finish a turn here without a completion for `outer`.
+        { kind: "turn-end", reason: "completed" },
+      ]),
+      adapterSlug: "hermes",
+    })
+
+    await registry.sendPrompt(desc.id, "go")
+    const lines = await readEventsAfterTurnEnd(desc.id, transcriptDir)
+    const results = lines.filter(
+      (event): event is AgentStreamEvent & { kind: "tool-result" } => event.kind === "tool-result",
+    )
+    expect(results).toMatchObject([
+      { toolCallId: "inner", result: "rendered" },
+      { toolCallId: "outer", result: null, isError: false },
+    ])
+    expect(results).toHaveLength(2)
+
+    // Settlement precedes the real adapter terminal record, so any replay
+    // (including a client that has not yet gained the legacy safety net) sees
+    // a closed outer call before it closes the turn.
+    const outerResultIndex = lines.findIndex(
+      event => event.kind === "tool-result" && event.toolCallId === "outer",
+    )
+    const turnEndIndex = lines.findIndex(event => event.kind === "turn-end")
+    expect(outerResultIndex).toBeGreaterThan(-1)
+    expect(outerResultIndex).toBeLessThan(turnEndIndex)
+    expect(lines.filter(event => event.kind === "turn-end")).toHaveLength(1)
 
     registry.shutdown()
   })

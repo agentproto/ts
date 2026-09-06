@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/routine",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "@agentproto/routine — AIP-41 ROUTINE.md reference implementation. A markdown + frontmatter format for declaring a recurring or event-driven invocation of an action, workflow, or tool. Decouples \"when\" (the schedule) from \"what\" (the target). Supports cron / interval / calendar / manual / event-driven schedules, with retry, jitter, catchup policy, identity attribution, and failure routing.",
   "keywords": [
     "agentproto",
@@ -57,7 +57,7 @@
     "@agentproto/define-doctype": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

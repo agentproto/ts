@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/relay",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "@agentproto/relay — a standalone companion service that lets one external HTTP webhook wake up exactly one pre-configured agentproto session. Generic inbound-only primitive: fixed target session baked into startup config, mandatory bearer token, basic rate limiting.",
   "keywords": [
     "agentproto",
@@ -52,7 +52,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "ws": "^8.21.1"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
