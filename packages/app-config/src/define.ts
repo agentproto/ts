@@ -173,6 +173,28 @@ export interface JsonSchemaPair {
   item: z.core.JSONSchema.BaseSchema
 }
 
+/**
+ * Consumer-owned JSON-Schema conversion for `jsonSchemas(opts)`.
+ *
+ * By default the kit converts with ITS OWN zod copy (`z.toJSONSchema`), whose
+ * output shifts between zod minors (e.g. a nullable field emits
+ * `type: ["string","null"]` on one minor, `anyOf` on another). A consumer that
+ * commits its generated schemas to git cannot delegate the emit — every
+ * regeneration would diff against its pinned zod. Supplying `toJSONSchema`
+ * hands the conversion to the consumer, so the emitted JSON Schema is exactly
+ * what the consumer's own zod produces. Same principle as the kit-owned
+ * `SchemaLike` type: the kit must not own what the consumer pins.
+ */
+export interface JsonSchemasOptions {
+  /**
+   * Convert one schema to JSON Schema. Called once for `"app"` and once for
+   * `"item"`, with the exact `SchemaLike` the kit definition carries.
+   * When supplied, it replaces the kit's own conversion entirely (including
+   * for non-zod schemas, which otherwise throw a clear `AppConfigError`).
+   */
+  toJSONSchema?(schema: SchemaLike<unknown>, label: "app" | "item"): JsonSchemaPair["app"]
+}
+
 export interface GateFinding {
   message: string
   item?: string
@@ -312,7 +334,7 @@ export type AppKit<
 > = {
   readonly def: AppKitDefinition<AOut, IOut>
   load(rootDir: string, opts?: LoadOptions): Resolved<AOut, IOut>
-  jsonSchemas(): JsonSchemaPair
+  jsonSchemas(opts?: JsonSchemasOptions): JsonSchemaPair
   writeSchemas(dir: string): void
   contracts(input: {
     resolved: Resolved<AOut, IOut>
@@ -336,7 +358,7 @@ export type AppKit<
  */
 export type AnyKit = {
   load(rootDir: string, opts?: LoadOptions): Resolved
-  jsonSchemas(): JsonSchemaPair
+  jsonSchemas(opts?: JsonSchemasOptions): JsonSchemaPair
   writeSchemas(dir: string): void
   contracts(input: {
     resolved: Resolved
@@ -469,10 +491,11 @@ export function defineAppConfig<
     }
   }
 
-  function jsonSchemas(): JsonSchemaPair {
+  function jsonSchemas(opts?: JsonSchemasOptions): JsonSchemaPair {
+    const consumer = opts?.toJSONSchema
     return {
-      app: schemaToJsonSchema(def.app, "app"),
-      item: schemaToJsonSchema(def.item, "item"),
+      app: consumer ? consumer(def.app, "app") : schemaToJsonSchema(def.app, "app"),
+      item: consumer ? consumer(def.item, "item") : schemaToJsonSchema(def.item, "item"),
     }
   }
 

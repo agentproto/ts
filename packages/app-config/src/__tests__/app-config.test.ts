@@ -12,6 +12,8 @@ import {
   resolveItemFileInfos,
   sha256Hex,
   type GateRule,
+  type JsonSchemaPair,
+  type SchemaLike,
   type VerifyFinding,
 } from "../index.js"
 
@@ -266,6 +268,90 @@ describe("jsonSchemas", () => {
     const written: unknown = JSON.parse(readFileSync(join(root, "schemas", "item.schema.json"), "utf8"))
     expect(requiredOf(written)).toEqual(["id", "title"])
     expect(readFileSync(join(root, "schemas", "app.schema.json"), "utf8")).toContain("$schema")
+  })
+})
+
+describe("jsonSchemas: consumer-owned conversion", () => {
+  const NullableAppSchema = z.object({ id: z.string(), note: z.string().nullable() })
+  const NullableItemSchema = z.object({ id: z.string(), lang: z.string().nullable().default("en") })
+  const nullableKit = defineAppConfig({
+    app: NullableAppSchema,
+    item: NullableItemSchema,
+    itemsKey: "items",
+  })
+
+  function noteOf(schema: unknown): unknown {
+    if (!isPlainObject(schema)) return undefined
+    const props = pick(schema, "properties")
+    if (!isPlainObject(props.value)) return undefined
+    return pick(props.value, "note").value
+  }
+
+  /**
+   * Mimics the JSON-Schema output of a consumer pinned to an older zod minor:
+   * a nullable field emits `anyOf: [{type:"string"},{type:"null"}]` instead of
+   * the kit tree's zod emitting `type: ["string","null"]`.
+   */
+  function nullableToAnyOf(node: unknown): unknown {
+    if (Array.isArray(node)) return node.map(nullableToAnyOf)
+    if (!isPlainObject(node)) return node
+    const out: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(node)) out[key] = nullableToAnyOf(value)
+    const t = out["type"]
+    if (Array.isArray(t) && t.includes("null")) {
+      const rest = t.filter((x): x is string => typeof x === "string" && x !== "null")
+      if (rest.length === 1) {
+        delete out["type"]
+        out["anyOf"] = [{ type: rest[0]! }, { type: "null" }]
+      }
+    }
+    return out
+  }
+
+  it("without opts, a nullable field emits the kit's own zod form (type: [\"string\",\"null\"])", () => {
+    const { app } = nullableKit.jsonSchemas()
+    expect(noteOf(app)).toMatchObject({ type: ["string", "null"] })
+  })
+
+  it("with a consumer-supplied toJSONSchema, a nullable field emits what the CONSUMER's converter emits (anyOf form)", () => {
+    const consumerToJSONSchema = (
+      schema: SchemaLike<unknown>,
+      label: "app" | "item",
+    ): JsonSchemaPair["app"] => {
+      const source = label === "app" ? NullableAppSchema : NullableItemSchema
+      const converted: unknown = nullableToAnyOf(z.toJSONSchema(source, { io: "input" }))
+      if (!isPlainObject(converted)) throw new Error("consumer converter must emit an object")
+      return converted
+    }
+    const { app, item } = nullableKit.jsonSchemas({ toJSONSchema: consumerToJSONSchema })
+    expect(noteOf(app)).toMatchObject({ anyOf: [{ type: "string" }, { type: "null" }] })
+    expect(noteOf(app)).not.toHaveProperty("type")
+    const langOf = (schema: unknown): unknown => {
+      if (!isPlainObject(schema)) return undefined
+      const props = pick(schema, "properties")
+      if (!isPlainObject(props.value)) return undefined
+      return pick(props.value, "lang").value
+    }
+    expect(langOf(item)).toMatchObject({ anyOf: [{ type: "string" }, { type: "null" }] })
+  })
+
+  it("a consumer conversion replaces the kit's conversion entirely — a non-zod SchemaLike no longer throws", () => {
+    const handKit = defineAppConfig({
+      app: {
+        parse: (value: unknown) => {
+          if (!isPlainObject(value)) throw new Error("app must be an object")
+          return value
+        },
+      },
+      item: ItemSchema,
+      itemsKey: "items",
+    })
+    expect(() => handKit.jsonSchemas()).toThrow(/not a zod schema/)
+    const consumer: JsonSchemaPair["app"] = { type: "object", properties: {} }
+    expect(handKit.jsonSchemas({ toJSONSchema: () => consumer })).toEqual({
+      app: consumer,
+      item: consumer,
+    })
   })
 })
 

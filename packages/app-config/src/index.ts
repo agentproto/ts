@@ -17,6 +17,7 @@ export {
   type GateRule,
   type ItemFileInfo,
   type JsonSchemaPair,
+  type JsonSchemasOptions,
   type LoadOptions,
   type MatchKey,
   type ProjectContext,
