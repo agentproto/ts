@@ -32,10 +32,50 @@
 
 import { readFile, readdir, realpath, stat } from "node:fs/promises"
 import { extname, isAbsolute, join, resolve, sep } from "node:path"
-import { z } from "zod"
+import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
-import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
+import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
+import { catchErrors, defineTool, type ToolTransformer } from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
+
+type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
+
+/**
+ * Local companion to the shared `paginated()` transformer for tools whose
+ * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
+ * wrapper — here `{appId, root, path, entries}`. Same cursor/limit/
+ * compact/fields pipeline via the shared primitives, but the default
+ * branch emits `defaultBody(projectedRows)`, and any non-array handler
+ * output (this file's `errorResult(...)` replies) passes through
+ * untouched.
+ */
+function paginatedLegacyList<TItem extends object>(opts: {
+  project: (item: TItem) => object
+  keyOf: (item: TItem) => string | number | null
+  defaultBody: (rows: object[], input: unknown) => unknown
+}): ToolTransformer<unknown, unknown, McpTextResult> {
+  return {
+    name: "paginatedLegacyList",
+    wrapShape: (shape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
+    wrapHandler: inner => async input => {
+      const params = (input ?? {}) as PageParams
+      const out = (await inner(input)) as unknown
+      if (!Array.isArray(out)) return out as McpTextResult
+      const items = out as readonly TItem[]
+      const full = params.full === true
+      const compact = full ? false : params.compact !== false
+      if (params.limit !== undefined || params.cursor !== undefined) {
+        const page = paginate(items, params, { maxLimit: 200, keyOf: opts.keyOf })
+        const rows = compact ? page.items.map(opts.project) : page.items
+        return { content: [{ type: "text", text: toolText({ ...page, items: [...rows] }, params) }] }
+      }
+      const rows = compact ? items.map(opts.project) : [...items]
+      return { content: [{ type: "text", text: JSON.stringify(opts.defaultBody(rows as object[], input)) }] }
+    },
+  }
+}
 
 /** Thrown when a relative external path resolves outside the granted root. */
 export class ExternalPathTraversalError extends Error {
@@ -150,72 +190,100 @@ export function registerAppExternalTools(
 ): void {
   const { appRegistry } = opts
 
-  server.tool(
-    "app_external_list",
-    "List directory entries (name, isDirectory, size for files) under one of " +
+  type AppExternalListInput = {
+    appId: string
+    root: string
+    path?: string
+  }
+
+  type AppExternalListEntry = { name: string; isDirectory: boolean; size?: number }
+
+  const appExternalListTool = defineTool<AppExternalListInput, AppExternalListEntry[] | McpTextResult>({
+    id: "app_external_list",
+    description:
+      "List directory entries (name, isDirectory, size for files) under one of " +
       "an installed app's granted `externalReadRoots`. `root` must exactly " +
       "match one of the app's granted roots; `path` (optional, default the " +
       "root itself) is resolved relative to it with the same traversal + " +
       "symlink-escape guard as app_data_list. Read-only — there is no " +
       "corresponding write/delete tool.",
-    {
+    inputSchema: z.object({
       appId: z.string(),
       root: z.string().describe("Must exactly match one of the app's granted externalReadRoots entries."),
       path: z.string().optional().describe("Path relative to `root`. Defaults to the root itself."),
-      ...pageParamsShape,
-    },
-    async input => {
-      const installed = appRegistry.getApp(input.appId)
-      if (!installed) return errorResult(`app_external_list: no installed app "${input.appId}".`)
+    }),
+  })
+
+  const appExternalListImpl = implementTool(appExternalListTool, async ({ input }) => {
+    const installed = appRegistry.getApp(input.appId)
+    if (!installed) return errorResult(`app_external_list: no installed app "${input.appId}".`)
+    try {
+      assertRootGranted(installed, input.root)
+    } catch (err) {
+      return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    const root = await realpathExternalRoot(input.root)
+    if (!root) return errorResult(`app_external_list: root "${input.root}" is not accessible.`)
+    const relPath = input.path ?? ""
+    let target: string
+    try {
+      target = resolveExternalPath(root, relPath)
+      await assertExternalPathRealInside(root, target)
+    } catch (err) {
+      return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    let dirents: { name: string; isDirectory(): boolean }[]
+    try {
+      dirents = await readdir(target, { withFileTypes: true })
+    } catch (err) {
+      return errorResult(
+        `app_external_list: cannot list "${relPath || "."}": ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    const entries: { name: string; isDirectory: boolean; size?: number }[] = []
+    for (const d of dirents) {
+      const isDirectory = d.isDirectory()
+      if (isDirectory) {
+        entries.push({ name: d.name, isDirectory })
+        continue
+      }
+      let size = 0
       try {
-        assertRootGranted(installed, input.root)
-      } catch (err) {
-        return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
+        size = (await stat(join(target, d.name))).size
+      } catch {
+        size = 0
       }
-      const root = await realpathExternalRoot(input.root)
-      if (!root) return errorResult(`app_external_list: root "${input.root}" is not accessible.`)
-      const relPath = input.path ?? ""
-      let target: string
-      try {
-        target = resolveExternalPath(root, relPath)
-        await assertExternalPathRealInside(root, target)
-      } catch (err) {
-        return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
-      }
-      let dirents: { name: string; isDirectory(): boolean }[]
-      try {
-        dirents = await readdir(target, { withFileTypes: true })
-      } catch (err) {
-        return errorResult(
-          `app_external_list: cannot list "${relPath || "."}": ${err instanceof Error ? err.message : String(err)}`,
-        )
-      }
-      const entries: { name: string; isDirectory: boolean; size?: number }[] = []
-      for (const d of dirents) {
-        const isDirectory = d.isDirectory()
-        if (isDirectory) {
-          entries.push({ name: d.name, isDirectory })
-          continue
-        }
-        let size = 0
-        try {
-          size = (await stat(join(target, d.name))).size
-        } catch {
-          size = 0
-        }
-        entries.push({ name: d.name, isDirectory, size })
-      }
-      entries.sort((a, b) => a.name.localeCompare(b.name))
-      // Pagination LAST — after the traversal guards + sort. Without
-      // limit/cursor the output is byte-identical to the pre-pagination
-      // handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(entries, input, { maxLimit: 200, keyOf: e => e.name })
-        return { content: [{ type: "text", text: toolText(page, input) }] }
-      }
-      return textResult({ appId: input.appId, root: input.root, path: relPath, entries })
-    },
-  )
+      entries.push({ name: d.name, isDirectory, size })
+    }
+    return entries.sort((a, b) => a.name.localeCompare(b.name))
+  })
+
+  const appExternalListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: appExternalListTool.id, version: "*" }],
+    implementations: [appExternalListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: appExternalListTool,
+    candidates: [appExternalListDriver],
+    transformers: [
+      catchErrors(),
+      paginatedLegacyList({
+        project: (entry: AppExternalListEntry) => entry,
+        keyOf: e => e.name,
+        defaultBody: (rows, listInput) => {
+          const args = (listInput ?? {}) as { appId?: string; root?: string; path?: string }
+          return { appId: args.appId, root: args.root, path: args.path ?? "", entries: rows }
+        },
+      }),
+    ],
+  })
 
   server.tool(
     "app_external_read",

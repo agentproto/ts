@@ -23,7 +23,7 @@ import { readFile, readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
-import { z } from "zod"
+import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { loadAppHandle } from "@agentproto/app-kit"
 import { loadAgent } from "@agentproto/agent"
@@ -35,12 +35,53 @@ import { spawnAgentSession } from "./session-spawn.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
-import { createAppRegistry, type AppRegistry, type InstalledAppRef } from "./app-registry.js"
+import { createAppRegistry, type AppRegistry, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
 import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
 import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
 import { loadAppCatalogFile } from "./app-catalog.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
-import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
+import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
+import { catchErrors, defineTool, type ToolTransformer } from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { toMcpTool } from "@agentproto/mcp-server"
+
+type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
+
+/**
+ * Local companion to the shared `paginated()` transformer for tools whose
+ * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
+ * wrapper — here, a bare top-level array. Composed INSIDE `catchErrors()`
+ * and OUTSIDE `paginated()` semantics-wise, it re-implements the same
+ * cursor/limit/compact/fields pipeline via the shared primitives, but the
+ * default branch (no limit/cursor) emits `defaultBody(projectedRows)`
+ * instead of the `{items: ...}` envelope, and any non-array handler output
+ * (this file's `errorResult(...)` replies) passes through untouched.
+ */
+function paginatedLegacyList<TItem extends object>(opts: {
+  project: (item: TItem) => object
+  keyOf: (item: TItem) => string | number | null
+  defaultBody: (rows: object[], input: unknown) => unknown
+}): ToolTransformer<unknown, unknown, McpTextResult> {
+  return {
+    name: "paginatedLegacyList",
+    wrapShape: (shape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
+    wrapHandler: inner => async input => {
+      const params = (input ?? {}) as PageParams
+      const out = (await inner(input)) as unknown
+      if (!Array.isArray(out)) return out as McpTextResult
+      const items = out as readonly TItem[]
+      const full = params.full === true
+      const compact = full ? false : params.compact !== false
+      if (params.limit !== undefined || params.cursor !== undefined) {
+        const page = paginate(items, params, { maxLimit: 200, keyOf: opts.keyOf })
+        const rows = compact ? page.items.map(opts.project) : page.items
+        return { content: [{ type: "text", text: toolText({ ...page, items: [...rows] }, params) }] }
+      }
+      const rows = compact ? items.map(opts.project) : [...items]
+      return { content: [{ type: "text", text: JSON.stringify(opts.defaultBody(rows as object[], input)) }] }
+    },
+  }
+}
 
 /** The only agent adapter this WP knows how to run an emitted AGENT.md
  *  under — see `adapters/mastra-agent`'s `agent` option (`--agent <path>`). */
@@ -601,37 +642,92 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     },
   )
 
-  server.tool(
-    "app_list",
-    "List installed apps, each with a summary of its app_run history.",
-    { ...pageParamsShape },
-    async input => {
-      const runs = appRegistry.listRuns()
-      const apps = appRegistry.listApps().map(app => ({
-        ...app,
-        dataDir: appDataDir(app),
-        runs: runs
-          .filter(r => r.appId === app.appId)
-          .map(r => ({
-            appRunId: r.appRunId,
-            status: r.status,
-            startedAt: r.startedAt,
-            ...(r.endedAt ? { endedAt: r.endedAt } : {}),
-            ...(r.adapter !== undefined ? { adapter: r.adapter } : {}),
-            ...(r.harness !== undefined ? { harness: r.harness } : {}),
-            ...(r.model !== undefined ? { model: r.model } : {}),
-            sessions: r.sessions.length,
-          })),
-      }))
-      // Pagination LAST — after the runs join. Without limit/cursor the
-      // output is byte-identical to the pre-pagination handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(apps, input, { maxLimit: 200, keyOf: a => a.appId })
-        return { content: [{ type: "text", text: toolText(page, input) }] }
-      }
-      return textResult(apps)
+  const compactAppListItem = (
+    app: InstalledApp & {
+      dataDir: string
+      runs: {
+        appRunId: string
+        status: string
+        startedAt: string
+        endedAt?: string
+        adapter?: string
+        harness?: string
+        model?: string
+        sessions: number
+      }[]
     },
-  )
+  ) => ({
+    appId: app.appId,
+    name: app.name,
+    version: app.version,
+    description: app.description,
+    dir: app.dir,
+    dataDir: app.dataDir,
+    agents: app.agents.map(a => a.id),
+    workflows: app.workflows.map(w => w.id),
+    requires: app.requires,
+    runs: app.runs,
+  })
+
+  const appListSchema = z.object({})
+  type AppListInput = z.infer<typeof appListSchema>
+
+  const appListTool = defineTool<AppListInput, (InstalledApp & { dataDir: string })[]>({
+    id: "app_list",
+    description:
+      "List installed apps, each with a summary of its app_run history. " +
+      "COMPACT BY DEFAULT: each entry keeps appId/name/version/description/" +
+      "dir/dataDir plus slim agent/workflow id lists and the per-run " +
+      "summary (appRunId/status/timing/adapter/harness/model/session " +
+      "count); pass `full: true` (or `compact: false`) for the complete " +
+      "installed record including ui/artifact/skill/dev details and the " +
+      "full agent/workflow refs.",
+    inputSchema: appListSchema,
+  })
+
+  const appListImpl = implementTool(appListTool, async () => {
+    const runs = appRegistry.listRuns()
+    return appRegistry.listApps().map(app => ({
+      ...app,
+      dataDir: appDataDir(app),
+      runs: runs
+        .filter(r => r.appId === app.appId)
+        .map(r => ({
+          appRunId: r.appRunId,
+          status: r.status,
+          startedAt: r.startedAt,
+          ...(r.endedAt ? { endedAt: r.endedAt } : {}),
+          ...(r.adapter !== undefined ? { adapter: r.adapter } : {}),
+          ...(r.harness !== undefined ? { harness: r.harness } : {}),
+          ...(r.model !== undefined ? { model: r.model } : {}),
+          sessions: r.sessions.length,
+        })),
+    }))
+  })
+
+  const appListDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: appListTool.id, version: "*" }],
+    implementations: [appListImpl],
+  })
+
+  toMcpTool(server, {
+    tool: appListTool,
+    candidates: [appListDriver],
+    transformers: [
+      catchErrors(),
+      paginatedLegacyList({
+        project: compactAppListItem,
+        keyOf: a => a.appId,
+        defaultBody: rows => rows,
+      }),
+    ],
+  })
 
   server.tool(
     "app_run",
@@ -1149,40 +1245,89 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     },
   )
 
-  server.tool(
-    "app_list_applied",
-    "List applied mounts, optionally filtered by scope. Each mount is joined with its installed app summary.",
-    {
-      scopeId: z.string().optional().describe("Filter by scope. Omit to list all scopes."),
-      ...pageParamsShape,
+  const compactAppliedMount = (
+    m: {
+      scopeId: string
+      appId: string
+      appliedAt: string
+      agents?: readonly InstalledAppRef[]
+      workflows?: readonly InstalledAppRef[]
     },
-    async input => {
-      const mounts = appRegistry.listApplied(input.scopeId)
-      const result = mounts.map(mount => {
-        const app = appRegistry.getApp(mount.appId)
-        return {
-          scopeId: mount.scopeId,
-          appId: mount.appId,
-          appliedAt: mount.appliedAt,
-          ...(app
-            ? {
-                agents: app.agents,
-                workflows: app.workflows,
-                unvalidatedAgentTools: app.unvalidatedAgentTools,
-              }
-            : {}),
-        }
-      })
-      // Pagination LAST — after the scope filter + app join. Without
-      // limit/cursor the output is byte-identical to the pre-pagination
-      // handler.
-      if (input.limit !== undefined || input.cursor !== undefined) {
-        const page = paginate(result, input, { maxLimit: 200, keyOf: m => `${m.scopeId}/${m.appId}` })
-        return { content: [{ type: "text", text: toolText(page, input) }] }
+  ) => ({
+    scopeId: m.scopeId,
+    appId: m.appId,
+    appliedAt: m.appliedAt,
+    ...(m.agents ? { agents: m.agents.map(a => a.id) } : {}),
+    ...(m.workflows ? { workflows: m.workflows.map(w => w.id) } : {}),
+  })
+
+  const appListAppliedSchema = z.object({
+    scopeId: z.string().optional().describe("Filter by scope. Omit to list all scopes."),
+  })
+  type AppListAppliedInput = z.infer<typeof appListAppliedSchema>
+
+  type AppliedMountItem = {
+    scopeId: string
+    appId: string
+    appliedAt: string
+    agents?: readonly InstalledAppRef[]
+    workflows?: readonly InstalledAppRef[]
+    unvalidatedAgentTools?: readonly string[]
+  }
+
+  const appListAppliedTool = defineTool<AppListAppliedInput, AppliedMountItem[]>({
+    id: "app_list_applied",
+    description:
+      "List applied mounts, optionally filtered by scope. Each mount is " +
+      "joined with its installed app summary. COMPACT BY DEFAULT: each " +
+      "entry keeps scopeId/appId/appliedAt plus slim agent/workflow id " +
+      "lists; pass `full: true` (or `compact: false`) for the complete " +
+      "join including `unvalidatedAgentTools` as full refs.",
+    inputSchema: appListAppliedSchema,
+  })
+
+  const appListAppliedImpl = implementTool(appListAppliedTool, async ({ input }) => {
+    const mounts = appRegistry.listApplied(input.scopeId)
+    return mounts.map(mount => {
+      const app = appRegistry.getApp(mount.appId)
+      return {
+        scopeId: mount.scopeId,
+        appId: mount.appId,
+        appliedAt: mount.appliedAt,
+        ...(app
+          ? {
+              agents: app.agents,
+              workflows: app.workflows,
+              unvalidatedAgentTools: app.unvalidatedAgentTools,
+            }
+          : {}),
       }
-      return textResult(result)
-    },
-  )
+    })
+  })
+
+  const appListAppliedDriver = defineDriver({
+    id: "agentproto-runtime-builtin",
+    name: "agentproto runtime builtin",
+    description:
+      "Single-implementation builtin driver for daemon tools migrated " +
+      "onto the AIP contract layer.",
+    kind: "builtin",
+    implements: [{ tool: appListAppliedTool.id, version: "*" }],
+    implementations: [appListAppliedImpl],
+  })
+
+  toMcpTool(server, {
+    tool: appListAppliedTool,
+    candidates: [appListAppliedDriver],
+    transformers: [
+      catchErrors(),
+      paginatedLegacyList({
+        project: compactAppliedMount,
+        keyOf: m => `${m.scopeId}/${m.appId}`,
+        defaultBody: rows => rows,
+      }),
+    ],
+  })
 
   server.tool(
     "app_tool_call",
