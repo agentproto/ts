@@ -1665,7 +1665,7 @@ export function registerAgentTools(
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(rows, input, { maxLimit: 200, keyOf: s => s.id })
         return {
-          content: [{ type: "text", text: toolText(page) }],
+          content: [{ type: "text", text: toolText(page, input) }],
         }
       }
       return {
@@ -1736,7 +1736,7 @@ export function registerAgentTools(
             maxLimit: 200,
             keyOf: a => a.slug,
           })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return {
           content: [{ type: "text", text: JSON.stringify({ adapters: projected }) }],
@@ -2014,7 +2014,7 @@ export function registerAgentTools(
         // byte-identical to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(roles, input, { maxLimit: 200, keyOf: r => r.name })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return {
           content: [{ type: "text", text: JSON.stringify({ roles }) }],

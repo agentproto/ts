@@ -457,12 +457,11 @@ export function registerCommandTools(
     },
   )
 
-  // --- tool_calls_list shaping helpers (additive, PR-4) -------------------
-  // Both helpers are no-ops for the default call (no `fields`, no explicit
-  // `full: false`), so default output stays byte-identical to the
-  // pre-pagination tool. The `result`-text preview is DISABLED by default
-  // and only arms when a caller explicitly passes `full: false`; the
-  // default flips in the PR-10 posture change.
+  // --- tool_calls_list shaping helpers (PR-4, default flipped PR-10) ------
+  // `full: true` is the escape hatch to unfiltered records. With `full`
+  // absent OR explicitly false, the `result`-text preview is ON: long
+  // result strings are truncated to ~500 chars. `fields` keeps only the
+  // requested keys per record (no `fields` → every key).
 
   /** Enriched record shape `tool_calls_list` returns (ToolCallRecord joined
    *  with the owning session's descriptor provenance). */
@@ -480,10 +479,11 @@ export function registerCommandTools(
       : text
 
   /**
-   * Project/preview records for `tool_calls_list` output. With neither
-   * param supplied this is the identity map (same key order, same JSON);
-   * `fields` keeps only the requested keys per record; `full: false`
-   * additionally truncates any long string `result` field (~500 chars).
+   * Project/preview records for `tool_calls_list` output. `full: true` is
+   * the identity map (same key order, same JSON — the escape hatch);
+   * anything else (absent or `false`) additionally truncates any long
+   * string `result` field (~500 chars); `fields` keeps only the requested
+   * keys per record.
    */
   const shapeToolCallRecords = (
     records: readonly EnrichedToolCallRecord[],
@@ -495,7 +495,7 @@ export function registerCommandTools(
       if (fields !== undefined) {
         entries = entries.filter(([key]) => fields.includes(key))
       }
-      if (full === false) {
+      if (full !== true) {
         entries = entries.map(([key, value]) =>
           key === "result" && typeof value === "string"
             ? [key, previewResultText(value)]
@@ -530,16 +530,15 @@ export function registerCommandTools(
         .optional()
         .describe(
           "Explicit field projection — keep only these keys per record. " +
-            "Absent: full records (current default).",
+            "Absent: every key (subject to the result preview).",
         ),
       full: z
         .boolean()
         .optional()
         .describe(
-          "Legacy escape hatch. `full: true` is today's behaviour (full " +
-            "records, no preview). `full: false` opts into the future " +
-            "`result`-preview posture early — long result text truncated " +
-            "to ~500 chars. Default (absent): full records.",
+          "Escape hatch to full records. Default (absent): result-preview " +
+            "posture — long `result` text truncated to ~500 chars. " +
+            "`full: true` returns today's unfiltered records.",
         ),
     },
     async ({ sessionId, lastN, fields, full }) => {

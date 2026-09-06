@@ -72,16 +72,43 @@ export function paginate<T>(items: readonly T[], params: PageParams, opts: Pagin
   }
 }
 
-/** Compact serializer — replaces every `JSON.stringify(x, null, 2)` in list handlers. */
-export function toolText<T>(page: Page<T>): string {
-  return JSON.stringify(page)
+/**
+ * Compact serializer — replaces every `JSON.stringify(x, null, 2)` in list handlers.
+ *
+ * When `params.fields` is supplied, an explicit allowlist is applied to every
+ * item (mechanically, across all call sites): items keep only the named keys.
+ * Absent `fields`, the output is byte-identical to `JSON.stringify(page)`.
+ */
+export function toolText<T extends object>(page: Page<T>, params?: Pick<PageParams, "fields">): string {
+  const fields = params?.fields
+  const items =
+    fields === undefined
+      ? page.items
+      : page.items.map(item =>
+          Object.fromEntries(
+            Object.entries(item).filter(([key]) => fields.includes(key)),
+          ),
+        )
+  return JSON.stringify({ ...page, items })
 }
 
 /** Zod fragment to spread into each list tool's input schema. */
 export const pageParamsShape = {
   limit: z.number().int().min(1).max(200).optional().describe("Max items per page. Default 50."),
   cursor: z.string().optional().describe("Opaque token from a prior call's `nextCursor`."),
-  compact: z.boolean().optional().describe("Compact projection (fewer fields per item). Default false."),
-  full: z.boolean().optional().describe("Legacy full-record payload (opts out of compact). Default false."),
+  compact: z
+    .boolean()
+    .optional()
+    .describe(
+      "Compact projection (fewer fields per item). Default true on tools " +
+        "that define a compact projection (session_list); a no-op elsewhere.",
+    ),
+  full: z
+    .boolean()
+    .optional()
+    .describe(
+      "Escape hatch — full, unprojected records (opts out of compact). " +
+        "Default false.",
+    ),
   fields: z.array(z.string()).optional().describe("Keep only these fields per item."),
 } as const

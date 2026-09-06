@@ -162,7 +162,7 @@ export function registerAuthProfileTools(server: McpServer): void {
         // pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(enriched, input, { maxLimit: 200, keyOf: p => p.id })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return text({ profiles: enriched })
       } catch (err) {

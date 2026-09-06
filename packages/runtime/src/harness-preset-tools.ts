@@ -93,7 +93,7 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
         // handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(withStatus, input, { maxLimit: 200, keyOf: p => p.id })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return text({ presets: withStatus })
       } catch (err) {

@@ -481,7 +481,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       // output is byte-identical to the pre-pagination handler.
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(entries, input, { maxLimit: 200, keyOf: e => e.name })
-        return { content: [{ type: "text", text: toolText(page) }] }
+        return { content: [{ type: "text", text: toolText(page, input) }] }
       }
       return textResult({ appId: input.appId, dir: relDir, entries })
     },

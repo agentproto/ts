@@ -247,7 +247,7 @@ export function registerLlmEndpointTools(
         // cursor the output is byte-identical to the pre-pagination handler.
         if (input.limit !== undefined || input.cursor !== undefined) {
           const page = paginate(upstreams, input, { maxLimit: 200, keyOf: u => u.provider })
-          return { content: [{ type: "text", text: toolText(page) }] }
+          return { content: [{ type: "text", text: toolText(page, input) }] }
         }
         return text({ links, upstreams })
       } catch (err) {

@@ -183,7 +183,7 @@ export function registerTunnelTools(
       // the output is byte-identical to the pre-pagination handler.
       if (input.limit !== undefined || input.cursor !== undefined) {
         const page = paginate(tunnels, input, { maxLimit: 200, keyOf: t => t.id })
-        return { content: [{ type: "text", text: toolText(page) }] }
+        return { content: [{ type: "text", text: toolText(page, input) }] }
       }
       return text({ tunnels })
     },

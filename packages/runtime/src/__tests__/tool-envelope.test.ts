@@ -117,6 +117,33 @@ describe("toolText", () => {
     expect(text).toBe(JSON.stringify({ items: [{ id: 1 }], total: 1 }))
     expect(text).not.toContain("\n")
   })
+
+  it("fields: absent → byte-identical to the plain serialization", () => {
+    const page: Page<{ id: number; name: string }> = {
+      items: [{ id: 1, name: "a" }],
+      total: 1,
+    }
+    expect(toolText(page)).toBe(toolText(page, {}))
+  })
+
+  it("fields: allowlist keeps only the named keys on every item", () => {
+    const page: Page<{ id: number; name: string; extra: string }> = {
+      items: [
+        { id: 1, name: "a", extra: "x" },
+        { id: 2, name: "b", extra: "y" },
+      ],
+      total: 2,
+    }
+    const parsed = JSON.parse(toolText(page, { fields: ["id", "name"] })) as Page<{
+      id: number
+      name: string
+      extra: string
+    }>
+    expect(parsed.items).toEqual([
+      { id: 1, name: "a" },
+      { id: 2, name: "b" },
+    ])
+  })
 })
 
 describe("pageParamsShape", () => {

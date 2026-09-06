@@ -3,9 +3,11 @@
  *
  * When `limit`/`cursor` are supplied, the response becomes the shared
  * paginated envelope `{ items, nextCursor?, total }` (via `paginate` +
- * `toolText`). Without either param the output must be byte-identical to
- * the pre-pagination handler — `{ sessions: [...] }`, same rows. `full:true`
- * is accepted but a no-op until the projection flip (PR-10).
+ * `toolText`). Without either param the output keeps the legacy
+ * `{ sessions: [...] }` wrapper. PR-10: rows are COMPACT by default
+ * (both branches); `full: true` / `compact: false` is the escape hatch
+ * to the unprojected SessionDescriptor, and `fields` is a generic
+ * per-item allowlist.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
@@ -230,7 +232,7 @@ describe("session list pagination (PR-2, additive)", () => {
     }
   })
 
-  it("without limit/cursor the output is byte-identical to the legacy {sessions:[...]} shape", async () => {
+  it("without limit/cursor the output keeps the legacy {sessions:[...]} wrapper, rows COMPACT by default (PR-10)", async () => {
     const { client, registry, close } = await buildHarness()
     registry.spawnAgent({
       workspaceSlug: "default",
@@ -241,17 +243,124 @@ describe("session list pagination (PR-2, additive)", () => {
     try {
       const result = await client.callTool({ name: "session_list", arguments: {} })
       const parsed = JSON.parse(textOf(result)) as {
-        sessions?: unknown[]
+        sessions?: Array<Record<string, unknown>>
         items?: unknown[]
       }
       expect(parsed.sessions).toBeDefined()
       expect(parsed.items).toBeUndefined()
 
-      // Byte-identical: compact legacy shape, no pagination fields.
+      // Compact projection: identity fields present, bulky echo dropped.
+      const row = parsed.sessions?.[0]
+      expect(row).toBeDefined()
+      expect(row?.id).toBeDefined()
+      expect(row?.status).toBeDefined()
+      expect(row?.kind).toBe("agent-cli")
+      expect(row?.adapterSlug).toBe("fake")
+      expect(row?.cwd).toBe(workspace)
+      expect(row).not.toHaveProperty("workspaceSlug")
+      expect(row).not.toHaveProperty("pid")
+      expect(row).not.toHaveProperty("argv")
+      expect(row).not.toHaveProperty("contextContinuity")
+      expect(row).not.toHaveProperty("availableCommands")
+      expect(row).not.toHaveProperty("watcherDetails")
+      expect(row).not.toHaveProperty("agentsMd")
+      expect(row).not.toHaveProperty("auth")
+      expect(row).not.toHaveProperty("accessProfile")
+      expect(row).not.toHaveProperty("adapterConfigDir")
+
+      // No pagination fields in the wrapper.
       const text = textOf(result)
       expect(text).not.toContain("\n")
       expect(text).not.toContain('"nextCursor"')
       expect(text).not.toContain('"total"')
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
+  it("full:true (and compact:false) is the escape hatch to the unprojected descriptor", async () => {
+    const { client, registry, close } = await buildHarness()
+    registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+    })
+    try {
+      for (const extra of [{ full: true }, { compact: false }]) {
+        const result = await client.callTool({
+          name: "session_list",
+          arguments: { ...extra },
+        })
+        const parsed = JSON.parse(textOf(result)) as {
+          sessions?: Array<Record<string, unknown>>
+        }
+        const row = parsed.sessions?.[0]
+        expect(row?.workspaceSlug).toBe("default")
+        expect(row?.startedAt).toBeDefined()
+        expect(row).not.toHaveProperty("$$compact")
+      }
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
+  it("paginated rows are compact by default (PR-10); full:true restores the full record", async () => {
+    const { client, registry, close } = await buildHarness()
+    for (let i = 0; i < 2; i++) {
+      registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: workspace,
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+      })
+    }
+    try {
+      const compactPage = JSON.parse(
+        textOf(await client.callTool({ name: "session_list", arguments: { limit: 2 } })),
+      ) as Page
+      expect(compactPage.items).toHaveLength(2)
+      for (const item of compactPage.items) {
+        expect(item.workspaceSlug).toBeUndefined()
+        expect(item.id).toBeDefined()
+      }
+
+      const fullPage = JSON.parse(
+        textOf(
+          await client.callTool({
+            name: "session_list",
+            arguments: { limit: 2, full: true },
+          }),
+        ),
+      ) as Page
+      for (const item of fullPage.items) {
+        expect(item.workspaceSlug).toBe("default")
+      }
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
+  it("fields is a generic per-item allowlist on the paginated envelope", async () => {
+    const { client, registry, close } = await buildHarness()
+    registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+    })
+    try {
+      const result = await client.callTool({
+        name: "session_list",
+        arguments: { limit: 1, full: true, fields: ["id", "status"] },
+      })
+      const page = JSON.parse(textOf(result)) as {
+        items: Array<Record<string, unknown>>
+      }
+      expect(Object.keys(page.items[0] ?? {}).sort()).toEqual(["id", "status"])
     } finally {
       await close()
       registry.shutdown()

@@ -225,7 +225,7 @@ describe("terminal_output — truncated companion flag (PR-4, additive)", () => 
     await close()
   })
 
-  it("default (no lastBytes) carries no truncated flag — output shape unchanged", async () => {
+  it("default (no lastBytes) applies the 4096-byte PR-10 window and carries truncated", async () => {
     const { client, sink, close } = await buildHarness()
     const desc = await callTool(client, "terminal_start", {
       argv: ["bash"],
@@ -235,8 +235,44 @@ describe("terminal_output — truncated companion flag (PR-4, additive)", () => 
     const out = await callTool(client, "terminal_output", {
       sessionId: desc.id as string,
     })
-    expect(out.truncated).toBeUndefined()
+    expect(out.truncated).toBe(false)
+    expect(out.bytes).toBe("plain-chunk".length)
     expect(typeof out.b64).toBe("string")
+    await close()
+  })
+
+  it("default window caps output at 4096 bytes (PR-10)", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("x".repeat(5000) + "tail-marker")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+      clean: true,
+    })
+    // Only the LAST 4096 bytes survive: the 5000 x's overflow the window,
+    // so the tail marker is fully inside it.
+    expect(out.text).toBe("x".repeat(4085) + "tail-marker")
+    expect(out.truncated).toBe(true)
+    await close()
+  })
+
+  it("lastBytes: 65536 is the escape hatch to the full ring", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("x".repeat(5000) + "tail-marker")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+      clean: true,
+      lastBytes: 65536,
+    })
+    expect(out.text).toBe("x".repeat(5000) + "tail-marker")
+    expect(out.truncated).toBe(false)
     await close()
   })
 })
