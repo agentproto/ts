@@ -83,7 +83,7 @@ browser tab with full MCP connectivity.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `appDir` | current directory | Directory holding `.agentproto/APP.md` + `.agentproto/ui/`. Ignored in remote mode (see below). |
-| `--port <n>` | declared `ui.port` in `APP.md`, else OS-assigned | Port to bind. A declared `ui.port` that is already taken falls back to auto-assign; an explicit `--port` that is taken is a hard error. Not read in remote mode (no `APP.md`) — there `--port` or auto-assign applies. |
+| `--port <n>` | `PORT` env, then `ui.port` in `APP.md`, else OS-assigned | Port to bind. Resolution order: explicit `--port` > `PORT` env var > `APP.md` `ui.port` > OS-assigned. A declared `ui.port` that is already taken falls back to auto-assign; an explicit `--port` that is taken is a hard error. Not read in remote mode (no `APP.md`) — there `--port` or `PORT` env or auto-assign applies. |
 | `--remote-mcp-url <url>` | unset | Streamable-HTTP MCP endpoint of a remote server (e.g. `https://api.example.com/mcp`). Setting this enables **remote mode** (see below). Env: `AGENTPROTO_REMOTE_MCP_URL`. |
 | `--remote-mcp-auth <token>` | unset | Bearer token sent as the `Authorization` header on every MCP request to the remote server. Env: `AGENTPROTO_REMOTE_MCP_AUTH`. |
 | `--remote-app-id <appId>` | unset | The MCP-Apps app id to render in remote mode, or a full `ui://…` resource URI. A bare id is fetched as `ui://<appId>`. Env: `AGENTPROTO_REMOTE_APP_ID`. |
@@ -139,7 +139,7 @@ artifact, not part of the app) into the destination.
 Serves `<appDir>/.agentproto/ui/` as a standalone webapp with a working
 `window.McpApp` bridge, so the same UI that renders inside an MCP-Apps panel
 runs in a plain browser tab with full MCP connectivity. Port resolution:
-`--port` > the app's declared `ui.port` (APP.md frontmatter) > an
+`--port` > `PORT` env var > the app's declared `ui.port` (APP.md frontmatter) > an
 OS-assigned free port. Requires the daemon (`agentproto serve`) to be
 running — the bridge forwards tool calls to its `/mcp` endpoint.
 
