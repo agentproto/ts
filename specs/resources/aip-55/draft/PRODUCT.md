@@ -60,7 +60,7 @@ billingRail:
 |---|---|---|
 | `schema` | MUST | `product/v1` |
 | `id` | MUST | kebab-case |
-| `on` | MUST | AIP-54 `ref/v1`. The target AIP needs zero pricing awareness. Hosts MUST refuse unresolvable refs. |
+| `on` | MUST | AIP-54 `ref/v1`. May also be given as the `aip://<aip>/<id>[@version]` string form, which implementations MUST normalize (parse + validate) into `ref/v1` before storing. The target AIP needs zero pricing awareness. Hosts MUST refuse unresolvable refs. |
 | `price` | MUST | Discriminated on `model`: `one-time` \| `prepaid-pool` \| `pay-per-call`. **Minor units are normative.** |
 | `billingRail` | MAY | Projection config, never the price's source of truth. See § Billing rails. |
 | `kind` | MUST | `pricing` (fixed — this AIP defines the pricing capability; future capability kinds may share the pattern). |
@@ -126,7 +126,10 @@ const cap = attachPricing(refFor(appSpec, appHandle, "1.2.0"), {
 ```
 
 "a collection of priced things" = `collectPriced(products, ref =>
-catalog.resolve(ref))` — one list, one shape, any target AIP.
+catalog.resolve(ref))` — returns `{resolved, dangling}`: `resolved` pairs
+each product with its resolved target, and `dangling` lists the products
+whose `on` ref did not resolve, so a host can surface them instead of
+having them silently dropped from the collection.
 
 ## Residual risks (from dogfooding)
 
