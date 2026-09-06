@@ -52,6 +52,12 @@
       "items": { "$ref": "#/$defs/trigger" },
       "default": []
     },
+    "routines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/routineRef" },
+      "default": [],
+      "description": "AIP-41 ROUTINE.md routines that fire this workflow (see AIP-15, `Routines`) — the preferred, decoupled form of a `kind: schedule` trigger: one schedule can drive N workflows, one workflow can be driven by N schedules. Each entry follows the `inline | ref | file` pattern. Legacy inline `triggers: [{ kind: schedule }]` remains valid."
+    },
     "requires": {
       "type": "object",
       "additionalProperties": false,
@@ -154,6 +160,45 @@
           "properties": {
             "kind": { "const": "manual" },
             "label": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "routineRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": false,
+          "properties": {
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Ref to a published or local ROUTINE.md (AIP-41), e.g. \"@agentik/routines-standard/daily-9am-utc\"."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "File path to a ROUTINE.md (AIP-41), relative to this WORKFLOW.md."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["inline"],
+          "additionalProperties": false,
+          "properties": {
+            "inline": {
+              "type": "object",
+              "description": "Equivalent to a one-shot ROUTINE.md (AIP-41) declared inside this workflow: `schedule` (required), `target` (required — typically `{ workflow: { ref: \"./\" } }`), optional `identity`, `retry`, `on_failure`, `history`. Shape SHOULD satisfy the AIP-41 ROUTINE.schema.json `$defs`."
+            }
           }
         }
       ]

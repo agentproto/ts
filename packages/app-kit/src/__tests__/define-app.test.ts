@@ -358,3 +358,33 @@ describe("defineApp — category", () => {
     expect(() => defineApp({ agents: [agent("solo", [])], category: "   " })).toThrow(/category/)
   })
 })
+
+describe("defineApp — absolute artifact.path / skill.path (AIP-53 rule 7)", () => {
+  it("accepts absolute paths on both fields", () => {
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        artifact: { path: "/abs/artifact/index.html" },
+        skill: { path: "/abs/skills/my-skill" },
+      }),
+    ).not.toThrow()
+  })
+
+  it("rejects a relative artifact.path, naming the field and the value", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], artifact: { path: "artifact/index.html" } }),
+    ).toThrow(AppDefinitionError)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], artifact: { path: "artifact/index.html" } }),
+    ).toThrow(/`artifact\.path`.*absolute.*artifact\/index\.html/)
+  })
+
+  it("rejects a relative skill.path, naming the field and the value", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], skill: { path: "skills/my-skill" } }),
+    ).toThrow(AppDefinitionError)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], skill: { path: "skills/my-skill" } }),
+    ).toThrow(/`skill\.path`.*absolute.*skills\/my-skill/)
+  })
+})

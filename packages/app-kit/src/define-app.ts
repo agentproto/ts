@@ -18,6 +18,7 @@
  * agent attached to its workflows" means, made checkable.
  */
 
+import { isAbsolute } from "node:path"
 import { defineWorkspace } from "@agentproto/workspace"
 import type { AgentHandle, AnyRef } from "@agentproto/agent"
 import type { BuildMastraAgentResult } from "@agentproto/mastra"
@@ -62,8 +63,21 @@ export function defineApp(def: AppDefinition): AppHandle {
 if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.artifact.path.trim() === "")) {
     throw new AppDefinitionError("`artifact.path` must be a non-empty string when `artifact` is present.")
   }
+  // AIP-53 rule 7: `artifact.path` / `skill.path` MUST be absolute —
+  // `emit` copies from them at write time and a relative path has no
+  // defined base to resolve against.
+  if (def.artifact !== undefined && !isAbsolute(def.artifact.path)) {
+    throw new AppDefinitionError(
+      `\`artifact.path\` must be an absolute filesystem path, got '${def.artifact.path}' — a relative path has no defined base to resolve against (AIP-53 rule 7).`,
+    )
+  }
   if (def.skill !== undefined && (typeof def.skill.path !== "string" || def.skill.path.trim() === "")) {
     throw new AppDefinitionError("`skill.path` must be a non-empty string when `skill` is present.")
+  }
+  if (def.skill !== undefined && !isAbsolute(def.skill.path)) {
+    throw new AppDefinitionError(
+      `\`skill.path\` must be an absolute filesystem path, got '${def.skill.path}' — a relative path has no defined base to resolve against (AIP-53 rule 7).`,
+    )
   }
   if (def.category !== undefined && def.category.trim() === "") {
     throw new AppDefinitionError("`category` must be a non-empty string when present.")

@@ -17,10 +17,16 @@
  * APP.md that drifted from its AGENT.md/WORKFLOW.md refs fails the same
  * way a bad `defineApp({...})` call would.
  *
- * The frontmatter shape intentionally has no generated zod schema (unlike
- * AGENT.md/WORKFLOW.md, there's no AIP number for "app" yet) and validation
- * here stays loose on purpose — a future key (e.g. WP-B3's `requires.tools`)
- * should round-trip without this loader rejecting it.
+ * Frontmatter validation here is deliberately minimal, and that is now an
+ * AIP-53 conformance decision, not an accident of app having "no AIP yet":
+ * AIP-53 (Draft) freezes the loader contract at the checks below — schema
+ * MUST be exactly `app/v1`, `agents`/`workflows` MUST be `{ id, path }`
+ * ref arrays, every ref MUST resolve, and the bundle MUST re-run through
+ * `defineApp` — and it does NOT require rejecting unknown frontmatter
+ * keys. Staying permissive past the frozen checks lets a future frontmatter
+ * key (e.g. a later WP's addition) round-trip through this loader without
+ * hosts that haven't upgraded rejecting the whole app; tightening beyond
+ * the spec would break that forward compatibility for no conformance gain.
  */
 
 import { readFile } from "node:fs/promises"

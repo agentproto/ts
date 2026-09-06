@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { defineWorkflow } from "../define-workflow.js"
 import type { StepAgent } from "../types.js"
+import type { WorkflowDefinition } from "../types.js"
 
 describe("defineWorkflow (AIP-15)", () => {
   // The AIP-15 doctype uses 'id' + 'description' instead of the cross-AIP
@@ -190,5 +191,44 @@ describe("defineWorkflow — StepAgent.harness.knowledge (AIP-15 P2)", () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any),
     ).toThrow(/invalid harness block/)
+  })
+})
+
+describe("defineWorkflow — routines (AIP-15 × AIP-41)", () => {
+  const base = (): WorkflowDefinition => ({
+    name: "Routines",
+    id: "routines-ok",
+    description: "A workflow driven by routines.",
+    version: "0.1.0",
+    inputs: {},
+    outputs: {},
+    steps: [{ id: "s", kind: "tool", tool: "noop" }],
+  })
+
+  it("accepts the preferred routines: field (ref, file, inline)", () => {
+    expect(() =>
+      defineWorkflow({
+        ...base(),
+        routines: [
+          { ref: "@agentik/routines-standard/daily-9am-utc" },
+          { file: "./.routines/quarterly-rotation/ROUTINE.md" },
+          {
+            inline: {
+              schedule: { kind: "cron", cron: "0 9 * * MON", timezone: "Europe/Paris" },
+              target: { workflow: { ref: "./" } },
+              identity: "bot://acme-routines",
+            },
+          },
+        ],
+      }),
+    ).not.toThrow()
+  })
+
+  it("rejects an unknown top-level field alongside routines (schema stays strict)", () => {
+    // Built as a variable so the object literal's excess-property check
+    // doesn't flag `notAField` at compile time — the zod schema must be
+    // the thing that rejects it at runtime.
+    const bad = { ...base(), routines: [{ ref: "@agentik/daily" }], notAField: true }
+    expect(() => defineWorkflow(bad)).toThrow(/notAField/)
   })
 })
