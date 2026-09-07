@@ -69,7 +69,7 @@
     "@agentproto/registry": "workspace:*",
     "@agentproto/routine": "workspace:*",
     "@agentproto/workflow": "workspace:*",
-    "ajv": "^8.17.1",
+    "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "gray-matter": "^4.0.3",
     "yaml": "^2.9.0",
@@ -77,9 +77,9 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

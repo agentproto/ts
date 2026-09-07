@@ -42,15 +42,15 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "gray-matter": "^4.0.3",
-    "@agentproto/app-client": "workspace:*"
+    "@agentproto/app-client": "workspace:*",
+    "gray-matter": "^4.0.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "main": "dist/index.mjs",
   "types": "dist/index.d.ts",

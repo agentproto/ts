@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "@agentproto/cli": "workspace:*",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"
