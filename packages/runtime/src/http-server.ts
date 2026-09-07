@@ -158,7 +158,7 @@ import type {
   CatalogModelsResponse,
 } from "./catalog-models.js"
 import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
-import { readRegisteredSlugs } from "./workspace-buckets.js"
+import { readRegisteredSlugs, DEFAULT_BUCKET } from "./workspace-buckets.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
@@ -1718,16 +1718,24 @@ export async function startHttpServer(
           return
         }
 
-        // GET /brain/query?q=<query>&topK=<n>&workspace=<slug> — fuzzy
-        // keyword (BM25) search over a workspace's ingested session
-        // transcripts, over HTTP. Same engine + resolution rule as the
-        // `workspace_brain_query` MCP tool (brain-tools.ts): an explicit
-        // `workspace` wins, else the CALLING SESSION's own workspace —
-        // except this surface has no caller session (a bare HTTP GET,
-        // not an MCP tool call attributed to a session id), so that half
-        // of the fallback never applies here and resolution degrades
-        // straight to `resolveWorkspaceSlug`'s own `DEFAULT_BUCKET`
-        // fallback, exactly as it does for any other unresolved caller.
+        // GET /brain/query?q=<query>&topK=<n>&workspace=<slug|all> — fuzzy
+        // keyword (BM25) search over ingested session transcripts, over
+        // HTTP. Same engine as the `workspace_brain_query` MCP tool
+        // (brain-tools.ts), but the daemon splits its corpus across
+        // MULTIPLE per-workspace brains (default / agentproto /
+        // agentik-studio / …) — a single-workspace query misses every
+        // other bucket's sessions. `workspace` therefore defaults to
+        // `all`: enumerate the SAME workspace list `GET /workspaces`
+        // reads (`loadWorkspacesConfig`, plus the implicit `default`
+        // bucket every daemon has even unregistered), query each one's
+        // provider in parallel, tag every hit with the bucket it came
+        // from, merge, sort by score desc, and take `topK` overall. A
+        // per-bucket provider throw in federated mode is swallowed and
+        // that slug listed in `workspacesErrored` — one bad brain must
+        // never blank out every other bucket's hits. A single NAMED
+        // `workspace` slug keeps today's single-brain behavior: unknown
+        // slug -> 404, provider throw -> 500 (no swallowing — the
+        // caller asked for exactly that bucket).
         if (path === "/brain/query" && req.method === "GET") {
           if (guardBrowserOrigin(req, res)) return
           if (!opts.brains) {
@@ -1761,52 +1769,101 @@ export async function startHttpServer(
           }
           const topK = clampInt(qs.get("topK"), 10, 1, 50)
           const explicitWorkspace = qs.get("workspace") ?? undefined
-          if (explicitWorkspace && !readRegisteredSlugs().has(explicitWorkspace)) {
-            res.writeHead(404, { "content-type": "application/json" })
-            res.end(
-              JSON.stringify({
-                error: "unknown_workspace",
-                message: `Workspace "${explicitWorkspace}" is not registered.`,
-              }),
-            )
+          const federated = !explicitWorkspace || explicitWorkspace === "all"
+
+          const mapHit = (
+            hit: { sourceId: string; text: string; score: number; metadata?: unknown },
+            workspaceSlug: string,
+          ) => {
+            const meta = (hit.metadata ?? {}) as Record<string, unknown>
+            const sessionId =
+              typeof meta.sessionId === "string"
+                ? meta.sessionId
+                // Fallback for a source with no `sessionId` in its
+                // metadata (e.g. a knowledge-file source, not a
+                // conversation) — parse the `sess-<id>` id form off
+                // the raw sourceId instead of inventing one.
+                : (hit.sourceId.match(/^(sess-[^#]+)/)?.[1] ?? undefined)
+            return {
+              sourceId: hit.sourceId,
+              workspace: workspaceSlug,
+              ...(sessionId ? { sessionId } : {}),
+              ...(typeof meta.title === "string" ? { title: meta.title } : {}),
+              score: hit.score,
+              snippet: hit.text,
+            }
+          }
+
+          if (!federated) {
+            if (explicitWorkspace !== DEFAULT_BUCKET && !readRegisteredSlugs().has(explicitWorkspace!)) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "unknown_workspace",
+                  message: `Workspace "${explicitWorkspace}" is not registered.`,
+                }),
+              )
+              return
+            }
+            // No caller session on this surface — resolution is just the
+            // explicit slug (already verified above), else the registry's
+            // own default-bucket fallback.
+            const workspace = opts.brains.resolveWorkspaceSlug(explicitWorkspace, undefined)
+            try {
+              const brain = opts.brains.getBrain(workspace)
+              const result = await brain.getProvider().query({ query: q, topK })
+              const hits = result.hits.map(hit => mapHit(hit, workspace))
+              res.writeHead(200, { "content-type": "application/json" })
+              res.end(JSON.stringify({ workspace, hits }))
+            } catch (err) {
+              res.writeHead(500, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "brain_query_failed",
+                  message: err instanceof Error ? err.message : String(err),
+                }),
+              )
+            }
             return
           }
-          // No caller session on this surface — resolution is just the
-          // explicit slug (already verified above), else the registry's
-          // own default-bucket fallback.
-          const workspace = opts.brains.resolveWorkspaceSlug(explicitWorkspace, undefined)
+
+          // Federated: every registered workspace slug, plus the
+          // implicit `default` bucket (every daemon has one even when
+          // unregistered — same fallback `resolveWorkspaceSlug` uses).
+          let slugs: string[]
           try {
-            const brain = opts.brains.getBrain(workspace)
-            const result = await brain.getProvider().query({ query: q, topK })
-            const hits = result.hits.map(hit => {
-              const meta = (hit.metadata ?? {}) as Record<string, unknown>
-              const sessionId =
-                typeof meta.sessionId === "string"
-                  ? meta.sessionId
-                  // Fallback for a source with no `sessionId` in its
-                  // metadata (e.g. a knowledge-file source, not a
-                  // conversation) — parse the `sess-<id>` id form off
-                  // the raw sourceId instead of inventing one.
-                  : (hit.sourceId.match(/^(sess-[^#]+)/)?.[1] ?? undefined)
-              return {
-                sourceId: hit.sourceId,
-                ...(sessionId ? { sessionId } : {}),
-                ...(typeof meta.title === "string" ? { title: meta.title } : {}),
-                score: hit.score,
-                snippet: hit.text,
-              }
-            })
-            res.writeHead(200, { "content-type": "application/json" })
-            res.end(JSON.stringify({ workspace, hits }))
-          } catch (err) {
-            res.writeHead(500, { "content-type": "application/json" })
-            res.end(
-              JSON.stringify({
-                error: "brain_query_failed",
-                message: err instanceof Error ? err.message : String(err),
-              }),
-            )
+            const config = await loadWorkspacesConfig()
+            slugs = Array.from(new Set([DEFAULT_BUCKET, ...config.workspaces.map(w => w.slug)]))
+          } catch {
+            slugs = [DEFAULT_BUCKET]
           }
+
+          const workspacesErrored: string[] = []
+          const perBrain = await Promise.all(
+            slugs.map(async slug => {
+              try {
+                const brain = opts.brains!.getBrain(slug)
+                const result = await brain.getProvider().query({ query: q, topK })
+                return result.hits.map(hit => mapHit(hit, slug))
+              } catch {
+                workspacesErrored.push(slug)
+                return []
+              }
+            }),
+          )
+          const hits = perBrain
+            .flat()
+            .sort((a, b) => b.score - a.score)
+            .slice(0, topK)
+
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(
+            JSON.stringify({
+              workspace: "all",
+              hits,
+              ...(workspacesErrored.length > 0 ? { workspacesErrored } : {}),
+            }),
+          )
           return
         }
 

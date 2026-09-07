@@ -1,13 +1,16 @@
 /**
- * `GET /brain/query` — HTTP-reachable fuzzy (BM25) search over a workspace's
- * ingested session transcripts, the same engine the `workspace_brain_query`
- * MCP tool calls (brain-tools.ts). Exercises the real REST layer via
- * `startHttpServer` against a fake `WorkspaceBrains` registry, same pattern
- * as workspaces-http-routes.test.ts.
+ * `GET /brain/query` — HTTP-reachable fuzzy (BM25) search over ingested
+ * session transcripts, the same engine the `workspace_brain_query` MCP
+ * tool calls (brain-tools.ts). The daemon splits its corpus across
+ * MULTIPLE per-workspace brains, so the default mode (`workspace=all` or
+ * omitted) federates every registered workspace + the implicit `default`
+ * bucket; a NAMED `workspace` slug keeps single-brain behavior. Exercises
+ * the real REST layer via `startHttpServer` against a fake `WorkspaceBrains`
+ * registry, same pattern as workspaces-http-routes.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:http"
@@ -21,9 +24,9 @@ import type { HeartbeatRunner } from "../heartbeat.js"
 import type { WorkspaceBrains } from "../workspace-brains.js"
 
 describe("GET /brain/query", () => {
-  // GET /brain/query's "unknown workspace" check reads
-  // `~/.agentproto/workspaces.json` via `readRegisteredSlugs` — point
-  // `HOME` at a throwaway tmp dir so it's a deterministic empty set,
+  // GET /brain/query's federated enumeration + "unknown workspace" check
+  // both read `~/.agentproto/workspaces.json` — point `HOME` at a
+  // throwaway tmp dir so the registered-workspace set is deterministic,
   // same isolation as workspaces-http-routes.test.ts.
   let realHome: string | undefined
   let fakeHome: string
@@ -38,6 +41,27 @@ describe("GET /brain/query", () => {
     process.env.HOME = realHome
     rmSync(fakeHome, { recursive: true, force: true })
   })
+
+  /** Register extra workspace slugs in the fake `~/.agentproto/workspaces.json`
+   *  so federated enumeration sees them (`default` is always implicit and
+   *  never needs registering). */
+  function registerWorkspaces(...slugs: string[]): void {
+    const dir = join(fakeHome, ".agentproto")
+    mkdirSync(dir, { recursive: true })
+    const now = new Date().toISOString()
+    writeFileSync(
+      join(dir, "workspaces.json"),
+      JSON.stringify({
+        version: 1,
+        workspaces: slugs.map(slug => ({
+          slug,
+          path: join(fakeHome, slug),
+          addedAt: now,
+          updatedAt: now,
+        })),
+      }),
+    )
+  }
 
   async function withServer(
     fn: (base: string) => Promise<void>,
@@ -72,7 +96,7 @@ describe("GET /brain/query", () => {
     })
   })
 
-  it("happy path: maps provider hits to the lean shape", async () => {
+  it("named workspace: maps provider hits to the lean shape", async () => {
     const brains = fakeBrains({
       default: [
         {
@@ -85,7 +109,7 @@ describe("GET /brain/query", () => {
       ],
     })
     await withServer(async base => {
-      const res = await fetch(`${base}/brain/query?q=bm25`)
+      const res = await fetch(`${base}/brain/query?q=bm25&workspace=default`)
       expect(res.status).toBe(200)
       const body = (await res.json()) as {
         workspace: string
@@ -95,6 +119,7 @@ describe("GET /brain/query", () => {
       expect(body.hits).toEqual([
         {
           sourceId: "sess-abc123",
+          workspace: "default",
           sessionId: "sess-abc123",
           title: "Brain search design",
           score: 4.2,
@@ -104,7 +129,7 @@ describe("GET /brain/query", () => {
     }, brains)
   })
 
-  it("falls back to parsing sessionId from sourceId when metadata carries none", async () => {
+  it("named workspace: falls back to parsing sessionId from sourceId when metadata carries none", async () => {
     const brains = fakeBrains({
       default: [
         {
@@ -117,7 +142,7 @@ describe("GET /brain/query", () => {
       ],
     })
     await withServer(async base => {
-      const res = await fetch(`${base}/brain/query?q=chunk`)
+      const res = await fetch(`${base}/brain/query?q=chunk&workspace=default`)
       expect(res.status).toBe(200)
       const body = (await res.json()) as { hits: Array<{ sessionId?: string }> }
       expect(body.hits[0]?.sessionId).toBe("sess-xyz789")
@@ -135,7 +160,7 @@ describe("GET /brain/query", () => {
     }, brains)
   })
 
-  it("404s on an unknown explicit workspace", async () => {
+  it("404s on an unknown NAMED workspace", async () => {
     const brains = fakeBrains({ default: [] })
     await withServer(async base => {
       const res = await fetch(`${base}/brain/query?q=hi&workspace=ghost-ws`)
@@ -146,7 +171,8 @@ describe("GET /brain/query", () => {
     }, brains)
   })
 
-  it("500s when the provider throws", async () => {
+  it("500s when a NAMED workspace's provider throws", async () => {
+    registerWorkspaces("default")
     const brains: WorkspaceBrains = {
       getBrain: () =>
         stubBrainManager(() =>
@@ -158,11 +184,114 @@ describe("GET /brain/query", () => {
       resolveWorkspaceSlug: (workspace, callerSlug) => workspace ?? callerSlug ?? "default",
     }
     await withServer(async base => {
-      const res = await fetch(`${base}/brain/query?q=hi`)
+      const res = await fetch(`${base}/brain/query?q=hi&workspace=default`)
       expect(res.status).toBe(500)
       expect((await res.json()) as { error: string }).toMatchObject({
         error: "brain_query_failed",
       })
+    }, brains)
+  })
+
+  it("federated (default `workspace=all`): merges hits across every registered brain, tags each with its workspace, sorts by score desc, and truncates to topK", async () => {
+    registerWorkspaces("agentik-studio", "agentproto")
+    const brains = fakeBrains({
+      default: [
+        {
+          sourceId: "sess-d1",
+          chunkId: "sess-d1",
+          text: "default hit",
+          score: 2,
+          metadata: { sessionId: "sess-d1", title: "Default session" },
+        },
+      ],
+      "agentik-studio": [
+        {
+          sourceId: "sess-s1",
+          chunkId: "sess-s1",
+          text: "studio hit — highest score",
+          score: 9,
+          metadata: { sessionId: "sess-s1", title: "Studio session" },
+        },
+      ],
+      agentproto: [
+        {
+          sourceId: "sess-p1",
+          chunkId: "sess-p1",
+          text: "agentproto hit",
+          score: 5,
+          metadata: { sessionId: "sess-p1", title: "Agentproto session" },
+        },
+      ],
+    })
+    await withServer(async base => {
+      const res = await fetch(`${base}/brain/query?q=hit&topK=2`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        workspace: string
+        hits: Array<{ sessionId?: string; workspace: string; score: number }>
+        workspacesErrored?: string[]
+      }
+      expect(body.workspace).toBe("all")
+      expect(body.workspacesErrored).toBeUndefined()
+      // Sorted by score desc, truncated to topK=2 across ALL three brains.
+      expect(body.hits).toHaveLength(2)
+      expect(body.hits[0]).toMatchObject({ sessionId: "sess-s1", workspace: "agentik-studio", score: 9 })
+      expect(body.hits[1]).toMatchObject({ sessionId: "sess-p1", workspace: "agentproto", score: 5 })
+    }, brains)
+  })
+
+  it("federated: a per-brain provider throw is swallowed and listed in workspacesErrored, other brains' hits still return", async () => {
+    registerWorkspaces("agentik-studio")
+    const brains: WorkspaceBrains = {
+      getBrain: (workspace: string) => {
+        if (workspace === "agentik-studio") {
+          return stubBrainManager(() =>
+            stubProvider(async () => {
+              throw new Error("studio brain is down")
+            }),
+          )
+        }
+        return stubBrainManager(() =>
+          stubProvider(async () => ({
+            hits: [
+              {
+                sourceId: "sess-ok",
+                chunkId: "sess-ok",
+                text: "still works",
+                score: 1,
+                metadata: { sessionId: "sess-ok", title: "OK session" },
+              },
+            ],
+            tookMs: 0,
+            engine: "fake",
+            modeUsed: "hybrid" as const,
+          })),
+        )
+      },
+      resolveWorkspace: async () => undefined,
+      resolveWorkspaceSlug: (workspace, callerSlug) => workspace ?? callerSlug ?? "default",
+    }
+    await withServer(async base => {
+      const res = await fetch(`${base}/brain/query?q=hit`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        workspace: string
+        hits: Array<{ sessionId?: string; workspace: string }>
+        workspacesErrored?: string[]
+      }
+      expect(body.workspace).toBe("all")
+      expect(body.workspacesErrored).toEqual(["agentik-studio"])
+      expect(body.hits.every(h => h.sessionId === "sess-ok")).toBe(true)
+    }, brains)
+  })
+
+  it('explicit workspace=all is equivalent to the default federated mode', async () => {
+    const brains = fakeBrains({ default: [] })
+    await withServer(async base => {
+      const res = await fetch(`${base}/brain/query?q=hi&workspace=all`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { workspace: string }
+      expect(body.workspace).toBe("all")
     }, brains)
   })
 })
