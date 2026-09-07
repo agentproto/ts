@@ -20,7 +20,7 @@ import type {
   SessionDescriptor,
   SessionsRegistry,
 } from "./sessions.js"
-import { shouldWrapBracketedPaste, wrapBracketedPaste } from "./sessions.js"
+import { applyBracketedPasteWrap } from "./sessions.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
@@ -3661,15 +3661,14 @@ export function registerSessionTools(
       // (`\x1b[200~`…`\x1b[201~`) when the session's PTY has last announced
       // paste mode ON (`\x1b[?2004h`) — otherwise a paste-detecting TUI's
       // readline interprets each embedded `\n` as an Enter keystroke and
-      // re-echoes/garbles the input. `shouldWrapBracketedPaste` treats an
+      // re-echoes/garbles the input. `applyBracketedPasteWrap` treats an
       // unseen/`"unknown"` mode the same as off, so sessions that never
-      // toggle bracketed paste see byte-identical behavior to before.
+      // toggle bracketed paste see byte-identical behavior to before. This
+      // is the SAME helper used by the HTTP `terminal/input` route and the
+      // PTY WebSocket `input` frame — see sessions.ts's doc.
       let ok = true
       if (content.length > 0) {
-        const mode = registry.getBracketedPasteMode(desc.id)
-        const toWrite = shouldWrapBracketedPaste(mode, content)
-          ? wrapBracketedPaste(content)
-          : content
+        const toWrite = applyBracketedPasteWrap(registry, desc.id, content)
         ok = registry.writeTerminalInput(desc.id, toWrite) && ok
       }
       if (input.enter) {

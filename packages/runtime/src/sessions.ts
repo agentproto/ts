@@ -2010,6 +2010,22 @@ export function wrapBracketedPaste(text: string): string {
   return `\x1b[200~${text}\x1b[201~`
 }
 
+/** One-stop call for every terminal-input entry point (MCP `terminal_input`,
+ *  `POST /sessions/:id/terminal/input`, and the PTY WebSocket `{kind:
+ *  "input"}` frame) — reads the session's tracked bracketed-paste mode off
+ *  `registry` and returns `text` wrapped in `\x1b[200~`…`\x1b[201~` when
+ *  (and only when) that's warranted (`shouldWrapBracketedPaste`'s rule).
+ *  Centralizing this here means the three call sites can never drift out
+ *  of sync on the wrap decision. */
+export function applyBracketedPasteWrap(
+  registry: { getBracketedPasteMode(id: string): BracketedPasteMode },
+  sessionId: string,
+  text: string
+): string {
+  const mode = registry.getBracketedPasteMode(sessionId)
+  return shouldWrapBracketedPaste(mode, text) ? wrapBracketedPaste(text) : text
+}
+
 const RECENT_LINES_CAP = 500
 const RECENT_BYTES_CAP = 64 * 1024
 const PERSIST_DEBOUNCE_MS = 1_500
