@@ -1,5 +1,13 @@
 # @agentproto/egress
 
+## 0.1.6
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/secrets@0.2.5
+
 ## 0.1.5
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/driver-sdk",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "agentproto/sdk-runtime — AIP-33 SDK provider specialisation. Sugar over @agentproto/driver for in-process npm/pip/cargo packages: module loading, function ref resolution, args templating.",
   "keywords": [
     "agentproto",

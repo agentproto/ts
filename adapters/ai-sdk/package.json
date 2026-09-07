@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-ai-sdk",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "AI SDK adapter for AIP-30 ToolImplementations. Wraps any `@agentproto/driver` ToolImplementation into a Vercel AI SDK Tool ready to drop into `streamText({ tools })`, `generateText`, or any downstream consumer that speaks the AI SDK tool surface.",
   "keywords": [
     "agentproto",

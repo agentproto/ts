@@ -1,5 +1,14 @@
 # @agentproto/adapter-knowledge-qdrant
 
+## 0.2.3
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/knowledge-engine@0.2.2
+  - @agentproto/provider-kit@0.4.3
+
 ## 0.2.2
 
 ### Patch Changes

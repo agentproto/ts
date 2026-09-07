@@ -1,5 +1,14 @@
 # @agentproto/role-catalog
 
+## 0.1.2
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/policy@0.1.2
+  - @agentproto/role@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes

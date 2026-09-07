@@ -1,5 +1,17 @@
 # @agentproto/workflow-mastra
 
+## 0.1.8
+
+### Patch Changes
+
+- 81752fa: Update upstream dependencies for improved compatibility and stability: @anthropic-ai/claude-agent-sdk (0.3.263), @mastra/core (1.64.0), @mastra/memory (1.28.2), @types/react-dom (19.2.7), and @tauri-apps/plugin-opener (2.5.5).
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+- Updated dependencies [20ef731]
+  - @agentproto/driver@0.2.2
+  - @agentproto/tool@0.3.0
+  - @agentproto/workflow-runtime@0.10.1
+
 ## 0.1.7
 
 ### Patch Changes

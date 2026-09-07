@@ -1,5 +1,17 @@
 # @agentproto/adapter-code-brain-gbrain
 
+## 0.2.4
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+- Updated dependencies [20ef731]
+  - @agentproto/code-brain@0.3.2
+  - @agentproto/driver@0.2.2
+  - @agentproto/provider-kit@0.4.3
+  - @agentproto/tool@0.3.0
+
 ## 0.2.3
 
 ### Patch Changes

@@ -1,5 +1,0 @@
----
-"@agentproto/runtime": minor
----
-
-Migrate the five `pageParamsShape` tools in `agent-tools.ts` onto the AIP contract layer (`defineTool` + `implementTool` + `toMcpTool`) with the shared `paginated()`/`catchErrors()` transformers (ToolTransformer mission, PR-2 batch): `agent_sessions_list`, `adapter_list`, `catalog_models`, `catalog_provider_models`, `role_list`. All five are now COMPACT BY DEFAULT with a real per-item compact projection; `full: true` (or `compact: false`) returns the old verbose shape. Behavior changes: `adapter_list`'s former `summary: true` projection is the new default (param removed — `full: true` is the opt-out); `catalog_models`' default view is now the flattened per-route rows the paginated branch always used (compact fields only), not the nested vendor/product tree; `catalog_provider_models` drops the redundant `provider` echo (it equals the queried `endpoint`) and its default rows are compact (id/kind/label/route). Errors return the single canonical `{content, isError}` shape via `catchErrors()`.

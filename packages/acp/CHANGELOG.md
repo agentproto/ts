@@ -1,5 +1,13 @@
 # @agentproto/acp
 
+## 0.8.1
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/define-doctype@0.1.2
+
 ## 0.8.0
 
 ### Minor Changes

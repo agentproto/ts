@@ -1,5 +1,36 @@
 # @agentproto/cli
 
+## 0.19.0
+
+### Minor Changes
+
+- cfe6b83: Add --sandbox flag to sessions start for spawning inside a sandbox
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [b70149b]
+- Updated dependencies [66f73d9]
+- Updated dependencies [81752fa]
+- Updated dependencies [2f37e7b]
+  - @agentproto/model-catalog@0.9.3
+  - @agentproto/app-kit@1.1.0
+  - @agentproto/app-client@0.3.1
+  - @agentproto/adapter-browser@0.1.2
+  - @agentproto/acp@0.8.1
+  - @agentproto/auth@1.0.2
+  - @agentproto/driver-agent-cli@2.4.2
+  - @agentproto/driver@0.2.2
+  - @agentproto/provider-kit@0.4.3
+  - @agentproto/rendezvous@0.2.3
+  - @agentproto/runtime-profile-standard@0.1.3
+  - @agentproto/sandbox-box@0.2.8
+  - @agentproto/sandbox-e2b@0.4.1
+  - @agentproto/secrets@0.2.5
+  - @agentproto/workflow-loader@0.2.1
+  - @agentproto/worktree@0.6.1
+  - create-agentproto-app@0.3.1
+
 ## 0.18.0
 
 ### Minor Changes

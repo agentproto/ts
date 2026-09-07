@@ -1,5 +1,14 @@
 # @agentproto/providers-store
 
+## 0.3.12
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [b70149b]
+- Updated dependencies [2f37e7b]
+  - @agentproto/model-catalog@0.9.3
+
 ## 0.3.11
 
 ### Patch Changes

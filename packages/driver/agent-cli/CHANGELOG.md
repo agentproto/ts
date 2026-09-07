@@ -1,5 +1,15 @@
 # @agentproto/driver-agent-cli
 
+## 2.4.2
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/acp@0.8.1
+  - @agentproto/command-sandbox@0.2.1
+  - @agentproto/define-doctype@0.1.2
+
 ## 2.4.1
 
 ### Patch Changes

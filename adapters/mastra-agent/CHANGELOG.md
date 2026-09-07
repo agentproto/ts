@@ -1,5 +1,38 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.1
+
+### Patch Changes
+
+- 81752fa: Update upstream dependencies for improved compatibility and stability: @anthropic-ai/claude-agent-sdk (0.3.263), @mastra/core (1.64.0), @mastra/memory (1.28.2), @types/react-dom (19.2.7), and @tauri-apps/plugin-opener (2.5.5).
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [3baa9b8]
+- Updated dependencies [be91d9e]
+- Updated dependencies [543c35f]
+- Updated dependencies [de87f67]
+- Updated dependencies [61415c2]
+- Updated dependencies [eb85117]
+- Updated dependencies [f500b2d]
+- Updated dependencies [54c7c76]
+- Updated dependencies [2340e23]
+- Updated dependencies [7bb3079]
+- Updated dependencies [4829b7a]
+- Updated dependencies [f500b2d]
+- Updated dependencies [bf5cef3]
+- Updated dependencies [1f12336]
+- Updated dependencies [81752fa]
+- Updated dependencies [2f37e7b]
+- Updated dependencies [e30094e]
+- Updated dependencies [cfb9790]
+- Updated dependencies [f597d0b]
+- Updated dependencies [7801cfe]
+- Updated dependencies [e6b77a1]
+- Updated dependencies [20ef731]
+  - @agentproto/runtime@3.0.0
+  - @agentproto/mastra@0.2.12
+  - @agentproto/agent@0.2.3
+  - @agentproto/driver-agent-cli@2.4.2
+
 ## 0.7.0
 
 ### Minor Changes

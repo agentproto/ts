@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/driver-mcp",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "agentproto/mcp-runtime — AIP-32 MCP provider specialisation. Sugar over @agentproto/driver for Model Context Protocol servers (stdio/SSE/HTTP transports). v0.1 ships frontmatter-driven dispatch; full MCP client wraps @modelcontextprotocol/sdk in v0.2.",
   "keywords": [
     "agentproto",

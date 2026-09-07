@@ -1,5 +1,17 @@
 # @agentproto/eval
 
+## 0.2.9
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+- Updated dependencies [20ef731]
+  - @agentproto/driver@0.2.2
+  - @agentproto/telemetry@0.2.3
+  - @agentproto/tool@0.3.0
+  - @agentproto/workflow-runtime@0.10.1
+
 ## 0.2.8
 
 ### Patch Changes

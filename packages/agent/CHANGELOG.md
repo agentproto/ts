@@ -1,5 +1,14 @@
 # @agentproto/agent
 
+## 0.2.3
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/define-doctype@0.1.2
+  - @agentproto/manifest@0.2.2
+
 ## 0.2.2
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/sandbox-e2b
 
+## 0.4.1
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/sandbox@0.3.1
+
 ## 0.4.0
 
 ### Minor Changes

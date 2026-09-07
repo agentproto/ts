@@ -1,5 +1,21 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.6.0
+
+### Minor Changes
+
+- 0430a17: Expose idle timeout override for slow-but-healthy gateway models, and add GLM 5.3 Flash routing through @llm-endpoint.
+
+### Patch Changes
+
+- 81752fa: Update upstream dependencies for improved compatibility and stability: @anthropic-ai/claude-agent-sdk (0.3.263), @mastra/core (1.64.0), @mastra/memory (1.28.2), @types/react-dom (19.2.7), and @tauri-apps/plugin-opener (2.5.5).
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [b70149b]
+- Updated dependencies [2f37e7b]
+  - @agentproto/model-catalog@0.9.3
+  - @agentproto/driver-agent-cli@2.4.2
+  - @agentproto/provider-presets@0.6.2
+
 ## 0.5.11
 
 ### Patch Changes

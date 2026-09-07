@@ -1,5 +1,13 @@
 # @agentproto/adapter-openclaw
 
+## 0.1.16
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/driver-agent-cli@2.4.2
+
 ## 0.1.15
 
 ### Patch Changes
