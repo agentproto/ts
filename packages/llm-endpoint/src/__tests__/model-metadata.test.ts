@@ -92,7 +92,7 @@ async function loadPackWithMixedRoutes(port: number) {
 }
 
 describe('GET /v1/models with verified route limits', () => {
-  it('surfaces context_window/max_output_tokens in Anthropic-style lists only for annotated routes', async () => {
+  it('surfaces max_input_tokens/max_tokens in Anthropic-style lists only for annotated routes', async () => {
     const srv = server.listen(0);
     const port = (srv.address() as { port: number }).port;
     try {
@@ -108,10 +108,11 @@ describe('GET /v1/models with verified route limits', () => {
       const bare = models.find((m) => m.id === 'claude-sonnet-5-bare');
       expect(annotated).toBeDefined();
       expect(bare).toBeDefined();
-      expect(annotated!.context_window).toBe(1310720);
-      expect(annotated!.max_output_tokens).toBe(131072);
-      expect(bare!.context_window).toBeUndefined();
-      expect(bare!.max_output_tokens).toBeUndefined();
+      // Official Anthropic ModelInfo field names (docs /en/api/models-list).
+      expect(annotated!.max_input_tokens).toBe(1310720);
+      expect(annotated!.max_tokens).toBe(131072);
+      expect(bare!.max_input_tokens).toBeUndefined();
+      expect(bare!.max_tokens).toBeUndefined();
     } finally {
       srv.close();
     }

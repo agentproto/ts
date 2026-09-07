@@ -2056,9 +2056,11 @@ const server = createServer((req, res) => {
             created_at: '2026-02-04T00:00:00Z',
             type: 'model',
             capabilities: {},
-            // Verified per-route limits only — fields are absent when unknown.
-            ...(target.contextWindow !== undefined ? { context_window: target.contextWindow } : {}),
-            ...(target.maxOutputTokens !== undefined ? { max_output_tokens: target.maxOutputTokens } : {}),
+            // Champs officiels du schéma Anthropic ModelInfo (docs
+            // /en/api/models-list) : max_input_tokens = fenêtre de contexte,
+            // max_tokens = budget de sortie max. Absents si non vérifiés.
+            ...(target.contextWindow !== undefined ? { max_input_tokens: target.contextWindow } : {}),
+            ...(target.maxOutputTokens !== undefined ? { max_tokens: target.maxOutputTokens } : {}),
           };
         }),
         has_more: false,
