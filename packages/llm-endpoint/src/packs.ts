@@ -349,14 +349,22 @@ function validateModelRoute(route: unknown, where: string, errors: string[]): Mo
     errors.push(`${where}.tier: must be one of extra-high|high|medium|small when present`);
     ok = false;
   }
+  if (contextWindow !== undefined && !(typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0)) {
+    errors.push(`${where}.contextWindow: must be a positive finite number when present`);
+    ok = false;
+  }
+  if (maxOutputTokens !== undefined && !(typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0)) {
+    errors.push(`${where}.maxOutputTokens: must be a positive finite number when present`);
+    ok = false;
+  }
   if (!ok || typeof provider !== 'string' || typeof model !== 'string') return null;
   const built: ModelRoute = { provider, model };
   if (typeof equivalentClaudeName === 'string') built.equivalentClaudeName = equivalentClaudeName;
   if (typeof tier === 'string' && isModelTier(tier)) built.tier = tier;
-  if (contextWindow !== undefined && typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0) {
+  if (typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0) {
     built.contextWindow = contextWindow;
   }
-  if (maxOutputTokens !== undefined && typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0) {
+  if (typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0) {
     built.maxOutputTokens = maxOutputTokens;
   }
   return built;
