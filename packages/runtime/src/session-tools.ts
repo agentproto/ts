@@ -20,6 +20,7 @@ import type {
   SessionDescriptor,
   SessionsRegistry,
 } from "./sessions.js"
+import { shouldWrapBracketedPaste, wrapBracketedPaste } from "./sessions.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
@@ -3656,15 +3657,20 @@ export function registerSessionTools(
       // CR as the Enter key (submit) rather than a trailing pasted newline.
       // See the tool description for the paste-detection rationale.
       //
-      // TODO(follow-up): for multi-line `text` + `enter`, when the session is
-      // in bracketed-paste mode (PTY emitted `\x1b[?2004h`), wrap the content
-      // in `\x1b[200~`…`\x1b[201~` before the isolated CR. Skipped here: it
-      // needs per-session 2004h/2004l tracking in sessions.ts onData (with
-      // escape-sequence-split handling across chunk boundaries) plus a new
-      // registry method — more than the isolated-CR fix warrants on its own.
+      // Multi-line `content` gets wrapped in the bracketed-paste markers
+      // (`\x1b[200~`…`\x1b[201~`) when the session's PTY has last announced
+      // paste mode ON (`\x1b[?2004h`) — otherwise a paste-detecting TUI's
+      // readline interprets each embedded `\n` as an Enter keystroke and
+      // re-echoes/garbles the input. `shouldWrapBracketedPaste` treats an
+      // unseen/`"unknown"` mode the same as off, so sessions that never
+      // toggle bracketed paste see byte-identical behavior to before.
       let ok = true
       if (content.length > 0) {
-        ok = registry.writeTerminalInput(desc.id, content) && ok
+        const mode = registry.getBracketedPasteMode(desc.id)
+        const toWrite = shouldWrapBracketedPaste(mode, content)
+          ? wrapBracketedPaste(content)
+          : content
+        ok = registry.writeTerminalInput(desc.id, toWrite) && ok
       }
       if (input.enter) {
         ok = registry.writeTerminalInput(desc.id, "\r") && ok

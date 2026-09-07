@@ -1908,6 +1908,106 @@ interface SessionRuntime {
    *  `agent-prompt` events carry respondable permission requests that get
    *  registered in the pending-permissions inbox. Default false. */
   permissionHold?: boolean
+  /** Bracketed-paste mode tracker for PTY sessions — see
+   *  `scanBracketedPaste`'s doc. Updated on every `pty.onData` chunk;
+   *  read by `writeTerminalInput`'s caller (the `terminal_input` tool)
+   *  to decide whether multi-line input needs the `\x1b[200~`…`\x1b[201~`
+   *  wrapper. Undefined until the first chunk arrives — treated the
+   *  same as `{ mode: "unknown", carry: "" }`. */
+  bracketedPaste?: BracketedPasteScanState
+}
+
+/** Bracketed-paste mode as last observed in a PTY's OUTPUT stream.
+ *  `"unknown"` means neither `\x1b[?2004h` nor `\x1b[?2004l` has been seen
+ *  yet for this session — callers must treat unknown the same as "off"
+ *  (i.e. never wrap) to avoid a regression for sessions/shells that don't
+ *  use bracketed paste at all. */
+export type BracketedPasteMode = "on" | "off" | "unknown"
+
+/** Scanner state threaded across `pty.onData` chunks. `carry` holds a
+ *  trailing partial escape sequence (starting at the last unmatched
+ *  `\x1b` in the chunk) that MIGHT be completed by the next chunk — PTY
+ *  output is not guaranteed to deliver a full `\x1b[?2004h`/`\x1b[?2004l`
+ *  sequence in one `onData` callback. */
+export interface BracketedPasteScanState {
+  mode: BracketedPasteMode
+  carry: string
+}
+
+const BRACKETED_PASTE_ON = "\x1b[?2004h"
+const BRACKETED_PASTE_OFF = "\x1b[?2004l"
+
+/** True iff `candidate` is a non-empty, strict prefix of `full` — used to
+ *  decide whether a chunk's unmatched tail could be the START of one of
+ *  the two bracketed-paste sequences split across an `onData` boundary. */
+function isStrictPrefixOf(candidate: string, full: string): boolean {
+  return candidate.length > 0 && candidate.length < full.length && full.startsWith(candidate)
+}
+
+/** Update bracketed-paste scan state with one more chunk of PTY OUTPUT
+ *  bytes (decoded latin1 so escape bytes round-trip 1-to-1). Scans left to
+ *  right for `\x1b[?2004h` (paste mode ON) / `\x1b[?2004l` (paste mode
+ *  OFF) — the LAST one seen wins, matching how a real terminal's mode
+ *  flag works. Any trailing bytes that could still be the start of one of
+ *  those two sequences (i.e. begin at the last unmatched `\x1b` and are a
+ *  strict prefix of either) are carried forward into the next call rather
+ *  than discarded, so a sequence split across two chunks is still
+ *  detected. Pure function — no session/registry access — so it's
+ *  directly unit-testable. */
+export function scanBracketedPaste(
+  state: BracketedPasteScanState,
+  chunk: Buffer
+): BracketedPasteScanState {
+  const text = state.carry + chunk.toString("latin1")
+  let mode = state.mode
+  let matchEnd = 0
+  let i = 0
+  while (i < text.length) {
+    if (text.startsWith(BRACKETED_PASTE_ON, i)) {
+      mode = "on"
+      i += BRACKETED_PASTE_ON.length
+      matchEnd = i
+      continue
+    }
+    if (text.startsWith(BRACKETED_PASTE_OFF, i)) {
+      mode = "off"
+      i += BRACKETED_PASTE_OFF.length
+      matchEnd = i
+      continue
+    }
+    i++
+  }
+  const tail = text.slice(matchEnd)
+  const escIdx = tail.lastIndexOf("\x1b")
+  let carry = ""
+  if (escIdx !== -1) {
+    const candidate = tail.slice(escIdx)
+    if (
+      isStrictPrefixOf(candidate, BRACKETED_PASTE_ON) ||
+      isStrictPrefixOf(candidate, BRACKETED_PASTE_OFF)
+    ) {
+      carry = candidate
+    }
+  }
+  return { mode, carry }
+}
+
+/** Decide whether `terminal_input`'s `text` needs the bracketed-paste
+ *  wrapper (`\x1b[200~`…`\x1b[201~`) before the isolated Enter CR. Only
+ *  wraps when BOTH the text is multi-line (a lone `\n` in single-line text
+ *  is not what bracketed paste guards against) AND the session's last
+ *  observed mode is `"on"` — `"unknown"` (never seen either sequence) and
+ *  `"off"` both take the no-wrap path, so a shell/TUI that never emits
+ *  `2004h` at all sees byte-for-byte the same behavior as before this
+ *  fix. */
+export function shouldWrapBracketedPaste(mode: BracketedPasteMode, text: string): boolean {
+  return mode === "on" && text.includes("\n")
+}
+
+/** Wrap `text` in the bracketed-paste markers. Callers should gate this
+ *  with `shouldWrapBracketedPaste` first. */
+export function wrapBracketedPaste(text: string): string {
+  return `\x1b[200~${text}\x1b[201~`
 }
 
 const RECENT_LINES_CAP = 500
@@ -2843,6 +2943,11 @@ export interface SessionsRegistry {
    *  Single-shot variant of attachPty().write — useful for MCP
    *  tools that drive a session through tool calls. */
   writeTerminalInput(id: string, data: string): boolean
+  /** Last observed bracketed-paste mode for a PTY session, tracked from
+   *  the PTY's OUTPUT stream (see `scanBracketedPaste`). `"unknown"` for
+   *  a missing/non-PTY session or one that hasn't emitted either
+   *  `\x1b[?2004h`/`\x1b[?2004l` sequence yet. */
+  getBracketedPasteMode(id: string): BracketedPasteMode
   /** Snapshot the recent PTY byte buffer as one Buffer. Newest
    *  bytes at the end; `lastBytes` caps the returned size from the
    *  tail. Returns null when the session is missing or not a PTY. */
@@ -6453,7 +6558,16 @@ export function createSessionsRegistry(opts?: {
       pty.onData((chunk: string) => {
         // node-pty emits utf-8 strings. Convert once at the boundary
         // so the ring buffer + emitter consumers all see Buffer.
-        appendBytes(rt, Buffer.from(chunk, "utf8"))
+        const buf = Buffer.from(chunk, "utf8")
+        // Track bracketed-paste mode (\x1b[?2004h/l) from the PTY's own
+        // OUTPUT stream — see scanBracketedPaste's doc. Read back by
+        // writeTerminalInput's caller (terminal_input) to decide whether
+        // multi-line `text` needs the \x1b[200~…\x1b[201~ wrapper.
+        rt.bracketedPaste = scanBracketedPaste(
+          rt.bracketedPaste ?? { mode: "unknown", carry: "" },
+          buf
+        )
+        appendBytes(rt, buf)
       })
       pty.onExit(evt => {
         // An operator-targeted kill() already flipped status to "killed"
@@ -7267,6 +7381,11 @@ export function createSessionsRegistry(opts?: {
       } catch {
         return false
       }
+    },
+    getBracketedPasteMode(id) {
+      const rt = sessions.get(id)
+      if (!rt || !rt.pty) return "unknown"
+      return rt.bracketedPaste?.mode ?? "unknown"
     },
     readTerminalOutput(id, lastBytes) {
       const rt = sessions.get(id)
