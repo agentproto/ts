@@ -1,5 +1,11 @@
 # @agentproto/provider-presets
 
+## 0.6.2
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+
 ## 0.6.1
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/storage-github
 
+## 0.1.3
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/storage@0.1.2
+
 ## 0.1.2
 
 ### Patch Changes

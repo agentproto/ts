@@ -1,5 +1,14 @@
 # @agentproto/catalog-sync
 
+## 0.5.12
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [b70149b]
+- Updated dependencies [2f37e7b]
+  - @agentproto/model-catalog@0.9.3
+
 ## 0.5.11
 
 ### Patch Changes

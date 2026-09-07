@@ -1,5 +1,17 @@
 # @agentproto/workspace-brain
 
+## 0.4.4
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/adapter-knowledge-files@0.2.7
+  - @agentproto/adapter-knowledge-gbrain-doc@0.2.3
+  - @agentproto/adapter-knowledge-qdrant@0.2.3
+  - @agentproto/corpus@0.7.2
+  - @agentproto/knowledge-engine@0.2.2
+
 ## 0.4.3
 
 ### Patch Changes

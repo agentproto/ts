@@ -1,5 +1,19 @@
 # @agentproto/llm-endpoint
 
+## 0.6.0
+
+### Minor Changes
+
+- d91fc8d: Surface verified context window and max output token limits in model list responses
+
+### Patch Changes
+
+- 0430a17: Expose idle timeout override for slow-but-healthy gateway models, and add GLM 5.3 Flash routing through @llm-endpoint.
+- Updated dependencies [2f37e7b]
+  - @agentproto/auth@1.0.2
+  - @agentproto/batch@0.2.1
+  - @agentproto/providers-store@0.3.12
+
 ## 0.5.11
 
 ### Patch Changes

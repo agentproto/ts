@@ -1,5 +1,15 @@
 # @agentproto/adapter-opencode
 
+## 1.2.1
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [b70149b]
+- Updated dependencies [2f37e7b]
+  - @agentproto/model-catalog@0.9.3
+  - @agentproto/driver-agent-cli@2.4.2
+
 ## 1.2.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @agentproto/agencies
 
+## 0.1.3
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/governance@0.1.3
+
 ## 0.1.2
 
 ### Patch Changes

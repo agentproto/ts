@@ -1,5 +1,15 @@
 # @agentproto/tool-cli
 
+## 0.2.3
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+- Updated dependencies [20ef731]
+  - @agentproto/driver@0.2.2
+  - @agentproto/tool@0.3.0
+
 ## 0.2.2
 
 ### Patch Changes

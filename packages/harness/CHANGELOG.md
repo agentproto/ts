@@ -1,5 +1,11 @@
 # @agentproto/harness
 
+## 0.4.5
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+
 ## 0.4.4
 
 ### Patch Changes
@@ -95,7 +101,7 @@
 
 ### Patch Changes
 
-- 8d1191e: Rename all MCP tool verbs to family-first taxonomy (agent*\*, session*\_, terminal\__, command*\*, file*_, directory\__, browser*\*, policy*_, routine\_\_, tunnel\_\*), split agent tools into a dedicated `agent-tools.ts` module, and fix harness call-sites.
+- 8d1191e: Rename all MCP tool verbs to family-first taxonomy (agent*\*, session*\_, terminal\__, command\*\*, file*_, directory\__, browser\*\*, policy*_, routine\_\_, tunnel\_\*), split agent tools into a dedicated `agent-tools.ts` module, and fix harness call-sites.
 
 ## 0.1.0
 

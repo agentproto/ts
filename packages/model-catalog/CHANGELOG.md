@@ -1,5 +1,12 @@
 # @agentproto/model-catalog
 
+## 0.9.3
+
+### Patch Changes
+
+- b70149b: Sync generated catalog data from the pinned provider sources.
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+
 ## 0.9.2
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @agentproto/telemetry-langfuse
 
+## 0.2.9
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/eval@0.2.9
+  - @agentproto/telemetry@0.2.3
+
 ## 0.2.8
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/workflow-ai-sdk
 
+## 0.1.6
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/workflow-runtime@0.10.1
+
 ## 0.1.5
 
 ### Patch Changes

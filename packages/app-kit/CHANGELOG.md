@@ -1,5 +1,26 @@
 # @agentproto/app-kit
 
+## 1.1.0
+
+### Minor Changes
+
+- 66f73d9: **AIP-53 rule 7**: Enforce absolute filesystem paths for `artifact.path` and `skill.path` in `defineApp`. Relative paths have no defined base at emit time and are now rejected with descriptive error messages.
+
+  **AIP-15 × AIP-41**: Add optional `routines` field to WorkflowDefinition for declaring ROUTINE.md-driven schedules (preferred form) alongside legacy `triggers: [{ kind: schedule }]` support. Introduces new `RoutineRef` type supporting `ref`, `file`, and `inline` variants.
+
+### Patch Changes
+
+- 81752fa: Update upstream dependencies for improved compatibility and stability: @anthropic-ai/claude-agent-sdk (0.3.263), @mastra/core (1.64.0), @mastra/memory (1.28.2), @types/react-dom (19.2.7), and @tauri-apps/plugin-opener (2.5.5).
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [66f73d9]
+- Updated dependencies [81752fa]
+- Updated dependencies [2f37e7b]
+  - @agentproto/workflow@0.5.0
+  - @agentproto/mastra@0.2.12
+  - @agentproto/agent@0.2.3
+  - @agentproto/workflow-loader@0.2.1
+  - @agentproto/workspace@0.1.2
+
 ## 1.0.0
 
 ### Major Changes

@@ -1,5 +1,16 @@
 # @agentproto/adapter-claude-code
 
+## 2.1.11
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [b70149b]
+- Updated dependencies [2f37e7b]
+  - @agentproto/model-catalog@0.9.3
+  - @agentproto/driver-agent-cli@2.4.2
+  - @agentproto/provider-presets@0.6.2
+
 ## 2.1.10
 
 ### Patch Changes

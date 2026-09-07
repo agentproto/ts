@@ -1,5 +1,14 @@
 # @agentproto/connector
 
+## 0.1.9
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/provider-kit@0.4.3
+  - @agentproto/secrets@0.2.5
+
 ## 0.1.8
 
 ### Patch Changes

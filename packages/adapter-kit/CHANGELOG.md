@@ -1,5 +1,13 @@
 # @agentproto/adapter-kit
 
+## 0.3.6
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/provider-kit@0.4.3
+
 ## 0.3.5
 
 ### Patch Changes

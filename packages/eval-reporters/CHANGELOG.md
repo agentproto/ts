@@ -1,5 +1,16 @@
 # @agentproto/eval-reporters
 
+## 0.2.11
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/eval@0.2.9
+  - @agentproto/provider-kit@0.4.3
+  - @agentproto/telemetry-langfuse@0.2.9
+  - @agentproto/telemetry@0.2.3
+
 ## 0.2.10
 
 ### Patch Changes

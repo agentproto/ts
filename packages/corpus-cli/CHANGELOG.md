@@ -1,5 +1,16 @@
 # @agentproto/corpus-cli
 
+## 0.9.2
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/batch@0.2.1
+  - @agentproto/cli-exec@0.1.1
+  - @agentproto/corpus-presets@0.2.10
+  - @agentproto/corpus@0.7.2
+
 ## 0.9.1
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @agentproto/adapter-antigravity
 
+## 0.2.7
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/driver-agent-cli@2.4.2
+  - @agentproto/provider-kit@0.4.3
+
 ## 0.2.6
 
 ### Patch Changes

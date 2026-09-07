@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-bureau
 
+## 0.3.2
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+
 ## 0.3.1
 
 ### Patch Changes

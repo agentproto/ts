@@ -1,5 +1,13 @@
 # @agentproto/auth
 
+## 1.0.2
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/define-doctype@0.1.2
+
 ## 1.0.1
 
 ### Patch Changes

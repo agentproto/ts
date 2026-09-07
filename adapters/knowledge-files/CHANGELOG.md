@@ -1,5 +1,15 @@
 # @agentproto/adapter-knowledge-files
 
+## 0.2.7
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/corpus@0.7.2
+  - @agentproto/knowledge-engine@0.2.2
+  - @agentproto/provider-kit@0.4.3
+
 ## 0.2.6
 
 ### Patch Changes

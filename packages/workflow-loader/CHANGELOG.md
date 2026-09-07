@@ -1,5 +1,14 @@
 # @agentproto/workflow-loader
 
+## 0.2.1
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [66f73d9]
+- Updated dependencies [2f37e7b]
+  - @agentproto/workflow@0.5.0
+
 ## 0.2.0
 
 ### Minor Changes

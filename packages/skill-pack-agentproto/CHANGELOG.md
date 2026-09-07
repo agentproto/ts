@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.8.2
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+
 ## 0.8.1
 
 ### Patch Changes

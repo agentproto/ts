@@ -1,5 +1,20 @@
 # @agentproto/corpus
 
+## 0.7.2
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [66f73d9]
+- Updated dependencies [2f37e7b]
+  - @agentproto/workflow@0.5.0
+  - @agentproto/collection@0.1.2
+  - @agentproto/knowledge@0.1.2
+  - @agentproto/operator@0.1.2
+  - @agentproto/playbook@0.1.2
+  - @agentproto/registry@0.1.1
+  - @agentproto/routine@0.2.2
+
 ## 0.7.1
 
 ### Patch Changes
