@@ -37,7 +37,7 @@ import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy } from "./sessions.js"
-import { SessionNotAliveError } from "./sessions.js"
+import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
@@ -2934,9 +2934,14 @@ function handlePtyWebSocket(
     switch (f.kind) {
       case "input": {
         // Accept either {text} (UTF-8) or {b64} (arbitrary bytes,
-        // useful for clients sending raw key sequences).
+        // useful for clients sending raw key sequences). Same
+        // bracketed-paste wrap as terminal_input/POST .../terminal/input
+        // — see applyBracketedPasteWrap's doc in sessions.ts. `b64`
+        // frames are typically control-key sequences, not pasted text,
+        // so only `text` is wrap-checked here (matching the other two
+        // call sites' `text`-only wrap scope).
         if (typeof f.text === "string") {
-          handle.write(f.text)
+          handle.write(applyBracketedPasteWrap(registry, sessionId, f.text))
         } else if (typeof f.b64 === "string") {
           try {
             handle.write(Buffer.from(f.b64, "base64").toString("utf8"))
@@ -4454,7 +4459,15 @@ async function handleSessions(
     }
     const enter = (body as { enter?: unknown } | null)?.enter !== false
     let ok = true
-    if (text.length > 0) ok = registry.writeTerminalInput(id, text) && ok
+    // Multi-line `text` gets the same \x1b[200~…\x1b[201~ bracketed-paste
+    // wrap as the MCP `terminal_input` tool when the session's PTY has
+    // last announced paste mode ON — see applyBracketedPasteWrap's doc in
+    // sessions.ts. Shared helper so this route can't drift from the MCP
+    // tool's wrap decision.
+    if (text.length > 0) {
+      const toWrite = applyBracketedPasteWrap(registry, id, text)
+      ok = registry.writeTerminalInput(id, toWrite) && ok
+    }
     if (enter) ok = registry.writeTerminalInput(id, "\r") && ok
     if (!ok) {
       json(400, {
