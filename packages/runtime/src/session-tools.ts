@@ -3656,15 +3656,22 @@ export function registerSessionTools(
       // CR as the Enter key (submit) rather than a trailing pasted newline.
       // See the tool description for the paste-detection rationale.
       //
-      // TODO(follow-up): for multi-line `text` + `enter`, when the session is
-      // in bracketed-paste mode (PTY emitted `\x1b[?2004h`), wrap the content
-      // in `\x1b[200~`…`\x1b[201~` before the isolated CR. Skipped here: it
-      // needs per-session 2004h/2004l tracking in sessions.ts onData (with
-      // escape-sequence-split handling across chunk boundaries) plus a new
-      // registry method — more than the isolated-CR fix warrants on its own.
+      // Multi-line `text` needs the bracketed-paste envelope
+      // (`\x1b[200~`…`\x1b[201~`) when the session is KNOWN to be in
+      // bracketed-paste mode — otherwise bash/readline reads each `\n` in
+      // the raw write as an Enter keypress and mangles the input. Only wrap
+      // when the PTY has actually emitted `\x1b[?2004h` (mode === true);
+      // "unknown" (mode === undefined, never seen a 2004h/l marker) and
+      // "off" (mode === false) both write raw, so shells that never enable
+      // bracketed paste see no behaviour change.
+      const bracketedPasteMode = registry.getBracketedPasteMode(desc.id)
+      const wrappedContent =
+        content.includes("\n") && bracketedPasteMode === true
+          ? `\x1b[200~${content}\x1b[201~`
+          : content
       let ok = true
       if (content.length > 0) {
-        ok = registry.writeTerminalInput(desc.id, content) && ok
+        ok = registry.writeTerminalInput(desc.id, wrappedContent) && ok
       }
       if (input.enter) {
         ok = registry.writeTerminalInput(desc.id, "\r") && ok

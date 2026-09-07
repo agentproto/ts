@@ -1908,6 +1908,15 @@ interface SessionRuntime {
    *  `agent-prompt` events carry respondable permission requests that get
    *  registered in the pending-permissions inbox. Default false. */
   permissionHold?: boolean
+  /** Last-observed bracketed-paste (DEC 2004) mode, tracked from PTY output
+   *  by `scanBracketedPasteChunk` in the `pty.onData` handler. `undefined`
+   *  means no `\x1b[?2004h`/`l` marker has been seen yet — `terminal_input`
+   *  treats that as "unknown" and does NOT wrap multi-line text, so shells
+   *  that never enable bracketed paste see no behaviour change. */
+  bracketedPasteMode?: boolean
+  /** Carry buffer for a `\x1b[?2004h`/`l` marker split across two PTY
+   *  `onData` chunks — see `scanBracketedPasteChunk`. */
+  bracketedPasteTail?: string
 }
 
 const RECENT_LINES_CAP = 500
@@ -2043,6 +2052,66 @@ function stampInterrupted(desc: SessionDescriptor): void {
  * (§5). Keeping the base predicate free of the reason check is what lets PR-4
  * add the stricter gate without changing lazy behaviour.
  */
+/** Bracketed-paste mode markers (DEC private mode 2004) — a well-behaved
+ *  readline/bash emits `\x1b[?2004h` on start-up (enabling paste mode) and
+ *  `\x1b[?2004l` on exit/suspend. Tracking these per-session is what lets
+ *  `terminal_input` decide whether it's safe to wrap multi-line `text` in
+ *  the paste envelope (`\x1b[200~`…`\x1b[201~`) before writing it — without
+ *  it, a shell in paste mode reads each `\n` in the raw write as an Enter
+ *  keypress and re-echoes/misinterprets the pasted lines. */
+export const BRACKETED_PASTE_ON = "\x1b[?2004h"
+export const BRACKETED_PASTE_OFF = "\x1b[?2004l"
+/** Common prefix of both markers (all but the final on/off byte) — used to
+ *  detect a marker that got split across two PTY `onData` chunks. */
+const BRACKETED_PASTE_PREFIX = BRACKETED_PASTE_ON.slice(0, -1)
+
+/** Pure scan step for bracketed-paste state tracking, called once per PTY
+ *  `onData` chunk. `priorTail` is the previous call's returned `tail` —
+ *  the suffix of the previous chunk that could be the START of a marker
+ *  split across the chunk boundary (empty string when nothing is pending).
+ *  `priorMode` is the previously known mode (`undefined` = never seen a
+ *  marker yet — the "unknown" state `terminal_input` must not wrap under).
+ *
+ *  Returns the updated `mode` (whichever marker occurred LAST in this
+ *  chunk wins, matching real terminal semantics) and the new `tail` to
+ *  carry into the next call. */
+export function scanBracketedPasteChunk(
+  priorTail: string,
+  chunk: string,
+  priorMode: boolean | undefined
+): { mode: boolean | undefined; tail: string } {
+  const combined = priorTail + chunk
+  let mode = priorMode
+  let i = 0
+  while (i < combined.length) {
+    const onIdx = combined.indexOf(BRACKETED_PASTE_ON, i)
+    const offIdx = combined.indexOf(BRACKETED_PASTE_OFF, i)
+    if (onIdx === -1 && offIdx === -1) break
+    if (onIdx !== -1 && (offIdx === -1 || onIdx < offIdx)) {
+      mode = true
+      i = onIdx + BRACKETED_PASTE_ON.length
+    } else {
+      mode = false
+      i = offIdx + BRACKETED_PASTE_OFF.length
+    }
+  }
+  // Carry the longest suffix of `combined` that is a proper prefix of the
+  // shared marker prefix — the start of a marker that got cut off by the
+  // chunk boundary. A completed match's trailing 'h'/'l' always breaks the
+  // prefix comparison, so this never mis-carries a marker already consumed
+  // above.
+  let tail = ""
+  for (let len = BRACKETED_PASTE_PREFIX.length; len >= 1; len--) {
+    if (combined.length < len) continue
+    const candidate = combined.slice(-len)
+    if (candidate === BRACKETED_PASTE_PREFIX.slice(0, len)) {
+      tail = candidate
+      break
+    }
+  }
+  return { mode, tail }
+}
+
 export function isResumable(desc: SessionDescriptor): boolean {
   return (
     desc.kind === "agent-cli" &&
@@ -2843,6 +2912,12 @@ export interface SessionsRegistry {
    *  Single-shot variant of attachPty().write — useful for MCP
    *  tools that drive a session through tool calls. */
   writeTerminalInput(id: string, data: string): boolean
+  /** Last-observed bracketed-paste (DEC 2004) mode for a PTY session, as
+   *  tracked from its output by `scanBracketedPasteChunk`. `undefined`
+   *  when the session is missing, not a PTY, or no `\x1b[?2004h`/`l`
+   *  marker has been seen yet ("unknown" — callers must not assume paste
+   *  mode is safe to wrap under). */
+  getBracketedPasteMode(id: string): boolean | undefined
   /** Snapshot the recent PTY byte buffer as one Buffer. Newest
    *  bytes at the end; `lastBytes` caps the returned size from the
    *  tail. Returns null when the session is missing or not a PTY. */
@@ -6454,6 +6529,13 @@ export function createSessionsRegistry(opts?: {
         // node-pty emits utf-8 strings. Convert once at the boundary
         // so the ring buffer + emitter consumers all see Buffer.
         appendBytes(rt, Buffer.from(chunk, "utf8"))
+        const scanned = scanBracketedPasteChunk(
+          rt.bracketedPasteTail ?? "",
+          chunk,
+          rt.bracketedPasteMode
+        )
+        rt.bracketedPasteMode = scanned.mode
+        rt.bracketedPasteTail = scanned.tail
       })
       pty.onExit(evt => {
         // An operator-targeted kill() already flipped status to "killed"
@@ -7267,6 +7349,11 @@ export function createSessionsRegistry(opts?: {
       } catch {
         return false
       }
+    },
+    getBracketedPasteMode(id) {
+      const rt = sessions.get(id)
+      if (!rt || !rt.pty) return undefined
+      return rt.bracketedPasteMode
     },
     readTerminalOutput(id, lastBytes) {
       const rt = sessions.get(id)
