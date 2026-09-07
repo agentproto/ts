@@ -1,12 +1,44 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { tmpdir, homedir } from "node:os"
 import { join } from "node:path"
 import {
   createTranscriptWriter,
   sessionEventsPath,
   sessionTranscriptDir,
+  setDefaultSessionsBaseDir,
+  defaultTranscriptBaseDir,
 } from "../transcript-writer.js"
+
+describe("default sessions base dir (sessions.eventsDir)", () => {
+  let tmp: string
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "transcript-basedir-"))
+  })
+
+  afterEach(() => {
+    // Always restore the hardcoded default — this is process-global state.
+    setDefaultSessionsBaseDir(undefined)
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it("defaults to ~/.agentproto/sessions when unset", () => {
+    expect(defaultTranscriptBaseDir()).toBe(join(homedir(), ".agentproto", "sessions"))
+  })
+
+  it("sessionEventsPath without baseDir follows the configured root, explicit baseDir still wins", () => {
+    setDefaultSessionsBaseDir(tmp)
+    expect(sessionTranscriptDir("sess_x")).toBe(join(tmp, "sess_x"))
+    expect(sessionEventsPath("sess_x")).toBe(join(tmp, "sess_x", "events.jsonl"))
+    expect(sessionEventsPath("sess_x", join(tmp, "other"))).toBe(join(tmp, "other", "sess_x", "events.jsonl"))
+  })
+
+  it("resolves a relative configured root against the home directory", () => {
+    setDefaultSessionsBaseDir("ap-sessions-root")
+    expect(defaultTranscriptBaseDir()).toBe(join(homedir(), "ap-sessions-root"))
+  })
+})
 
 describe("createTranscriptWriter", () => {
   let tmp: string

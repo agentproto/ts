@@ -83,6 +83,7 @@ import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { loadConfig } from "./config.js"
+import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
@@ -1170,7 +1171,15 @@ export async function createGateway(
   // writes to. Absent creds ⇒ undefined, and the registry never gates
   // anything on a tracer that doesn't exist — tracing-off behaviour is
   // unchanged from before this existed.
-  const configDefaults = (await loadConfig()).defaults
+  const daemonConfig = await loadConfig()
+  const configDefaults = daemonConfig.defaults
+  // Per-session transcript root from config (`sessions.eventsDir`). Applied
+  // BEFORE the registry is built so the writers AND every no-`baseDir`
+  // reader (http-server routes, exports, tool-call/usage logs) resolve off
+  // the same configured root. Unset ⇒ no-op (hardcoded default stands).
+  if (daemonConfig.sessions?.eventsDir) {
+    setDefaultSessionsBaseDir(daemonConfig.sessions.eventsDir)
+  }
   const lfCreds = await makeEvalReporterCredsStore().read("langfuse").catch(() => null)
   const langfuseTracer = lfCreds
     ? langfuseSessionTracer({
@@ -1196,6 +1205,9 @@ export async function createGateway(
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
+    ...(daemonConfig.sessions?.eventsDir
+      ? { transcriptDir: defaultTranscriptBaseDir() }
+      : {}),
     ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),

@@ -125,6 +125,12 @@ agentproto config set daemon.port 18791
     "terra": { "argv": ["bash", "-l"], "env": { "TERM": "xterm-256color" } }
   },
 
+  // Session-presence + transcript-storage policy. See "sessions" below.
+  "sessions": {
+    "attentionDelaySec": 60,
+    "eventsDir": "~/.agentproto/sessions"
+  },
+
   // Feature toggles. See "features" below.
   "features": {
     "pty": true,
@@ -271,6 +277,15 @@ manifests or `defaults`.
 | `workspace` | `string`                  | Workspace slug used for `cwd` fallback when `cwd` is omitted.           |
 | `name`      | `string`                  | Stable session name passed to the registry.                            |
 | `label`     | `string`                  | Human-readable label surfaced in session listings.                     |
+
+### `sessions: object`
+
+Session-presence and transcript-storage policy.
+
+| Field              | Type     | Meaning |
+| ------------------ | -------- | ------- |
+| `attentionDelaySec`| `number` | How long (seconds) a session stays shown as `running` after its last turn ends before the dashboard settles it into `attention`/`quiet`. Absent ⇒ `60`. Env override: `AGENTPROTO_SESSIONS_ATTENTION_DELAY_SEC`. |
+| `eventsDir`        | `string` | Root directory the daemon stores per-session transcripts under: each session's `events.jsonl` (and a terminal session's `terminal.jsonl`) lives at `<eventsDir>/<sessionId>/events.jsonl`. Every writer and reader (the transcript writer, `GET /sessions/:id/events`, `sessions export`, tool-call/usage logs) resolves through this single key. Relative paths resolve against the home directory. Absent ⇒ the hardcoded default `~/.agentproto/sessions` — zero behaviour change out of the box. Takes effect on daemon restart; existing transcripts are not moved. Spawn responses (`agent_start` descriptor) carry the resolved absolute path of the current session's `events.jsonl` as `descriptor.eventsPath`. |
 
 ### `features: object`
 

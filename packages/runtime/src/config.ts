@@ -316,6 +316,19 @@ export interface SessionsConfig {
    * default `60`. Absent ⇒ 60s.
    */
   attentionDelaySec?: number
+  /**
+   * Root directory the daemon stores per-session transcripts under — each
+   * session's `events.jsonl` lands at `<eventsDir>/<sessionId>/events.jsonl`
+   * (and a terminal session's `terminal.jsonl` alongside it). Every
+   * reader/writer (transcript writer, `/sessions/:id/events` HTTP routes,
+   * exports, tool-call/usage logs) resolves through this single knob.
+   * Resolution order mirrors every other knob in this file: relative paths
+   * resolve against the home directory. Absent ⇒ the hardcoded default
+   * `~/.agentproto/sessions` — zero behaviour change out of the box. A
+   * change requires a daemon restart to take effect (and existing sessions'
+   * transcripts do NOT move).
+   */
+  eventsDir?: string
 }
 
 /**

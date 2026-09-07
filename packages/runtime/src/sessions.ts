@@ -855,6 +855,15 @@ export interface SessionDescriptor {
    *  completed) turn. Reset when the next turn starts. Tool-call enrichment
    *  events sharing an id count only once. Ephemeral and never persisted. */
   toolCallsThisTurn?: number
+  /** Absolute path of this session's durable structured transcript
+   *  (`events.jsonl`), resolved from the SAME base dir the transcript
+   *  writer actually writes to (`sessions.eventsDir` config > the
+   *  hardcoded `~/.agentproto/sessions`) — never re-derived by the
+   *  caller. Ephemeral, stamped at read time (list/get) and at spawn;
+   *  never persisted. Lets an external client (`agent_start`'s spawn
+   *  response, Claude desktop sandbox, wait loops) discover WHERE the
+   *  transcript lives without guessing. */
+  eventsPath?: string
   /** Whether the underlying OS process is still alive. Computed via
    *  `process.kill(pid, 0)` at read time (list()/get()) — cheap,
    *  zero-overhead, standard POSIX check. Absent when `pid` is null
@@ -3508,6 +3517,7 @@ export function createSessionsRegistry(opts?: {
   const stampCurrentStatus = (rt: SessionRuntime): void => {
     const desc = rt.desc
     desc.toolCallsThisTurn = rt.toolCallsThisTurn ?? 0
+    desc.eventsPath = sessionEventsPath(desc.id, transcriptBaseDir)
 
     if (desc.lastActivityAt) {
       const lastActivityMs = Date.parse(desc.lastActivityAt)
@@ -4091,6 +4101,7 @@ export function createSessionsRegistry(opts?: {
         currentPhase: _currentPhase,
         secondsSinceLastActivity: _secondsSinceLastActivity,
         toolCallsThisTurn: _toolCallsThisTurn,
+        eventsPath: _eventsPath,
         ...rest
       } = s.desc
       return rest
@@ -6138,6 +6149,10 @@ export function createSessionsRegistry(opts?: {
       // Write point 1/3: cwd/adapterSlug/adapterSessionId are all known
       // at spawn — record the link before the first turn even runs.
       recordConversationLink(rt)
+      // Stamp the transcript path on the spawn response itself — the
+      // caller shouldn't have to wait for a get() to learn WHERE the
+      // durable transcript lands (same base dir the writer uses).
+      desc.eventsPath = sessionEventsPath(desc.id, transcriptBaseDir)
       // Fire-and-forget the initial prompt (if any). Errors land in
       // the ring buffer + bump status to "error" but don't reject
       // the spawn — the descriptor was already returned.
@@ -6253,6 +6268,7 @@ export function createSessionsRegistry(opts?: {
         "stdout"
       )
       schedulePersist()
+      desc.eventsPath = sessionEventsPath(desc.id, transcriptBaseDir)
       return desc
     },
     settlePendingAgent(id, outcome) {
