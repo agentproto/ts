@@ -55,3 +55,12 @@ for that.
 
 ### image:replicate
 - Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
+
+## 2026-09-07
+
+### llm:huggingface
+- Added: Qwen/Qwen2.5-7B-Instruct, alpindale/WizardLM-2-8x22B
+- Removed: zai-org/GLM-5.1
+
+### image:replicate
+- Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
