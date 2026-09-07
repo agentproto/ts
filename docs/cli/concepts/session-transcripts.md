@@ -14,6 +14,12 @@ tool calls, plans, usage) instead of replaying raw stream bytes.
 ~/.agentproto/sessions/<sessionId>/events.jsonl
 ```
 
+The root is configurable via the daemon config's `sessions.eventsDir`
+key (see [`reference/config-schema.md`](../reference/config-schema.md));
+the default above is unchanged when the key is absent. A spawn response
+(`agent_start`'s descriptor) carries the resolved absolute path of the
+session's own transcript as `descriptor.eventsPath`.
+
 One JSON object per line, written at the same tap point that flattens
 `StreamEvent`s into the ring buffer — but *before* that flattening, so
 no structure is lost. Every line has:

@@ -8,8 +8,9 @@
  * not just the two adapters `transcript-export.ts` knows how to re-read
  * from their own native stores.
  *
- * File layout: `~/.agentproto/sessions/<sessionId>/events.jsonl`, one
- * JSON object per line: `{seq, ts, kind, ...fields}`.
+ * File layout: `~/.agentproto/sessions/<sessionId>/events.jsonl` (the
+ * root is overridable via the daemon config's `sessions.eventsDir` — see
+ * `setDefaultSessionsBaseDir`), one JSON object per line: `{seq, ts, kind, ...fields}`.
  *
  * PTY (`terminal`) and `command` sessions never call into this writer —
  * they have no structured event source (see report-transcript-
@@ -19,7 +20,7 @@
 
 import { createWriteStream, mkdirSync, readFileSync, type WriteStream } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import type { SessionObserver } from "./session-observer.js"
 import type { AgentStreamEvent } from "./sessions.js"
 import { extractCommandArgs } from "./tool-call-record.js"
@@ -34,11 +35,33 @@ import type { SessionUsage } from "./usage.js"
  *  angle added. */
 const DEBOUNCE_MS = 250
 
-/** `baseDir` defaults to `~/.agentproto/sessions` — overridable so tests
- *  (and a future `--home` style daemon flag) can redirect writes away from
- *  the real home directory instead of mocking `node:os`. */
+/** The one default root every per-session transcript directory resolves
+ *  against. Overridable so tests (and the daemon's `sessions.eventsDir`
+ *  config key) can redirect writes away from the real home directory
+ *  instead of mocking `node:os`. Explicit `baseDir` arguments (tests,
+ *  the registry's `transcriptDir` option) always win over this. */
+let defaultSessionsBaseDir: string | undefined
+
+/** Point the no-`baseDir` path resolution at `dir`. Called once at daemon
+ *  boot from the loaded config (`sessions.eventsDir`); `undefined` restores
+ *  the hardcoded `~/.agentproto/sessions` default. Relative paths are
+ *  resolved against the home directory. */
+export function setDefaultSessionsBaseDir(dir: string | undefined): void {
+  if (!dir) {
+    defaultSessionsBaseDir = undefined
+    return
+  }
+  defaultSessionsBaseDir = isAbsolute(dir) ? dir : join(homedir(), dir)
+}
+
+/** The effective default base dir — the configured one, or the hardcoded
+ *  `~/.agentproto/sessions`. */
+export function defaultTranscriptBaseDir(): string {
+  return defaultSessionsBaseDir ?? join(homedir(), ".agentproto", "sessions")
+}
+
 export function sessionTranscriptDir(sessionId: string, baseDir?: string): string {
-  return join(baseDir ?? join(homedir(), ".agentproto", "sessions"), sessionId)
+  return join(baseDir ?? defaultTranscriptBaseDir(), sessionId)
 }
 
 export function sessionEventsPath(sessionId: string, baseDir?: string): string {
