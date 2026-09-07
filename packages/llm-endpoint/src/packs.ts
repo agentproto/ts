@@ -54,6 +54,20 @@ export interface ModelPack {
   label: string;
   description: string;
   models: Record<string, ModelRoute>;
+  /**
+   * Exclude-list of tool-name patterns applied to every request routed through
+   * this pack (wildcards allowed, e.g. "mcp__*"). Cuts upstream prefill cost
+   * when a client (e.g. Claude Desktop) sends hundreds of tool definitions.
+   * Applied after per-request header/query trims so an explicit client
+   * X-Proxy-Tools allow-list still wins.
+   */
+  toolsExclude?: string[];
+  /**
+   * Allow-list of tool-name patterns applied to every request routed through
+   * this pack (wildcards allowed). Kept only when no toolsAllow is set on the
+   * request itself; a request-level ?tools=/X-Proxy-Tools always wins.
+   */
+  toolsAllow?: string[];
 }
 
 // ── Official packs (committed) ─────────────────────────────────────────────
@@ -386,10 +400,19 @@ export function validateModelPack(pack: unknown, label = 'pack'): ModelPackValid
   if (!isRecord(pack)) {
     return { ok: false, errors: [`${label}: expected an object, got ${pack === null ? 'null' : typeof pack}`] };
   }
-  const { id, label: packLabel, description, models } = pack;
+  const { id, label: packLabel, description, models, toolsExclude, toolsAllow } = pack;
   if (typeof id !== 'string' || id.length === 0) errors.push(`${label}.id: required non-empty string`);
   if (typeof packLabel !== 'string') errors.push(`${label}.label: required string`);
   if (typeof description !== 'string') errors.push(`${label}.description: required string`);
+  /** Validates an optional string[] of non-empty tool-name patterns. */
+  const validPatternList = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((p) => typeof p === 'string' && p.length > 0);
+  if (toolsExclude !== undefined && !validPatternList(toolsExclude)) {
+    errors.push(`${label}.toolsExclude: must be an array of non-empty strings when present`);
+  }
+  if (toolsAllow !== undefined && !validPatternList(toolsAllow)) {
+    errors.push(`${label}.toolsAllow: must be an array of non-empty strings when present`);
+  }
   const builtModels: Record<string, ModelRoute> = {};
   if (!isRecord(models)) {
     errors.push(`${label}.models: required object mapping code → route`);
@@ -403,7 +426,17 @@ export function validateModelPack(pack: unknown, label = 'pack'): ModelPackValid
   // Re-narrow the primitives (the imperative checks above don't flow through) to
   // rebuild a typed ModelPack with no cast. Unreachable else — errors would be set.
   if (typeof id === 'string' && typeof packLabel === 'string' && typeof description === 'string') {
-    return { ok: true, pack: { id, label: packLabel, description, models: builtModels } };
+    return {
+      ok: true,
+      pack: {
+        id,
+        label: packLabel,
+        description,
+        models: builtModels,
+        ...(validPatternList(toolsExclude) ? { toolsExclude } : {}),
+        ...(validPatternList(toolsAllow) ? { toolsAllow } : {}),
+      },
+    };
   }
   return { ok: false, errors: [`${label}: failed final type narrowing`] };
 }

@@ -147,6 +147,10 @@ export interface ToolTrimOptions {
   headerTools: string | null;
   headerNoTools: string | null;
   headerExcludeTools: string | null;
+  /** Pack-level exclude patterns (pack.toolsExclude) — applied last. */
+  packToolsExclude?: string[];
+  /** Pack-level allow patterns (pack.toolsAllow) — applied last. */
+  packToolsAllow?: string[];
 }
 
 // Trimme/strip les outils du payload selon :
@@ -158,7 +162,7 @@ export interface ToolTrimOptions {
 // OpenAI function: .function.name). Doit tourner AVANT la transformation de forme
 // propre à chaque provider (ZAI/Groq mappent input_schema → function.parameters).
 export function trimTools(payload: any, opts: ToolTrimOptions): void {
-  const { provider, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools } = opts;
+  const { provider, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools, packToolsExclude, packToolsAllow } = opts;
   if (!payload || !Array.isArray(payload.tools) || payload.tools.length === 0) return;
 
   // 1. Strip total demandé explicite (?notools=1 ou ?tools=none ou header X-Proxy-No-Tools: 1)
@@ -196,6 +200,29 @@ export function trimTools(payload: any, opts: ToolTrimOptions): void {
     if (payload.tools.length === 0) { delete payload.tools; delete payload.tool_choice; }
     return;
   }
+
+  // 2c. Filtres déclarés au niveau du pack (toolsExclude / toolsAllow dans le
+  // pack, typically packs.local.json) — s'appliquent à TOUTE requête routée via
+  // ce pack, après les overrides explicites du client (headers/query ci-dessus).
+  // Cas d'usage : un client type Claude Desktop envoie des centaines de
+  // définitions d'outils que le prefill upstream paie à chaque tour ; le pack
+  // rogne sans que le client ait à changer.
+  if (packToolsExclude && packToolsExclude.length > 0) {
+    const before = payload.tools.length;
+    payload.tools = payload.tools.filter((t: any) => {
+      const name = (t && (t.name || (t.function && t.function.name))) || '';
+      return !packToolsExclude!.some((p) => matchesPattern(name, p));
+    });
+    console.log(`[Proxy][tools] pack exclude-list {${packToolsExclude.join(',')}} → ${before}→${payload.tools.length}`);
+  } else if (packToolsAllow && packToolsAllow.length > 0) {
+    const before = payload.tools.length;
+    payload.tools = payload.tools.filter((t: any) => {
+      const name = (t && (t.name || (t.function && t.function.name))) || '';
+      return packToolsAllow.some((p) => matchesPattern(name, p));
+    });
+    console.log(`[Proxy][tools] pack allow-list {${packToolsAllow.join(',')}} → ${before}→${payload.tools.length}`);
+  }
+  if (payload.tools.length === 0) { delete payload.tools; delete payload.tool_choice; }
 
   // 3. Troncation au cap du provider (?tools absent)
   const cap = PROVIDER_MAX_TOOLS[provider];
@@ -2154,6 +2181,33 @@ const server = createServer((req, res) => {
       // Détail de la requête : modèle résolu + budget de sortie demandé. Rend
       // visibles les tours "warm-up" (max_tokens:1) et les appels coûteux dans
       // les logs sans capture de corps.
+      //
+      // Short-circuit warm-up (LLM_ENDPOINT_SHORTCIRCUIT_WARMUP=1) : les clients
+      // type Claude Desktop sondent chaque modèle du pack avec des pings
+      // max_tokens<=1 non-streaming avant/autour du vrai message — chaque ping
+      // paie un aller-retour upstream complet (1-6 s mesurés). Quand le flag est
+      // actif, le proxy répond localement sans upstream : disponibilité du
+      // modèle toujours "OK", rafale quasi gratuite.
+      if (
+        process.env.LLM_ENDPOINT_SHORTCIRCUIT_WARMUP === '1' &&
+        payload.stream !== true &&
+        typeof payload.max_tokens === 'number' && payload.max_tokens <= 1 &&
+        Array.isArray(payload.messages) && payload.messages.length <= 2
+      ) {
+        console.log(`[Proxy] warm-up short-circuit: model=${resolvedTarget.provider}:${resolvedTarget.model} max_tokens=${payload.max_tokens} (no upstream call)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id: `msg_warmup_${Date.now().toString(36)}`,
+          type: 'message',
+          role: 'assistant',
+          model: payload.model,
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }));
+        return;
+      }
       {
         const mt = payload.max_tokens;
         const mtNote = (typeof mt === 'number' && mt <= 4) ? '  <== warm-up/1-token' : '';
@@ -2185,6 +2239,8 @@ const server = createServer((req, res) => {
         headerTools,
         headerNoTools,
         headerExcludeTools,
+        packToolsExclude: activePack.toolsExclude,
+        packToolsAllow: activePack.toolsAllow,
       });
 
       switch (resolvedTarget.provider) {
@@ -2395,8 +2451,23 @@ const server = createServer((req, res) => {
           : 0;
 
       const sendUpstream = (): void => {
+      // Chronométrage du tour upstream : ttfb = premier octet de réponse,
+      // total = fin du corps. Gate LLM_ENDPOINT_DEBUG_TIMING=1 — diagnostic,
+      // pas du bruit de production.
+      const upstreamStart = Date.now();
+      let upstreamTtfbMs: number | null = null;
       const proxyReq = request(options, (proxyRes) => {
         const status = proxyRes.statusCode || 200;
+        if (upstreamTtfbMs === null) upstreamTtfbMs = Date.now() - upstreamStart;
+        proxyRes.on('end', () => {
+          if (process.env.LLM_ENDPOINT_DEBUG_TIMING === '1') {
+            console.log(
+              `[Proxy] upstream done: ${resolvedTarget.provider}:${resolvedTarget.model}` +
+                ` status=${status} ttfb=${upstreamTtfbMs}ms total=${Date.now() - upstreamStart}ms` +
+                ` stream=${payload.stream === true ? 'true' : 'false'}`
+            );
+          }
+        });
         const contentType = proxyRes.headers['content-type'] as string || '';
         const isStreaming = (payload.stream === true) && /text\/event-stream/i.test(contentType);
         /** Rejoue le tour. Retourne false si le budget est épuisé. */
