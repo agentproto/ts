@@ -140,6 +140,7 @@
     "@agentproto/command-sandbox": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/driver-http": "workspace:*",
     "@agentproto/eval-reporters": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",

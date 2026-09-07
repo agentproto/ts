@@ -3186,6 +3186,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../driver/agent-cli
+      '@agentproto/driver-http':
+        specifier: workspace:*
+        version: link:../driver/http
       '@agentproto/eval-reporters':
         specifier: workspace:*
         version: link:../eval-reporters
