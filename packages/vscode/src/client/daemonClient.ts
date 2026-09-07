@@ -194,6 +194,26 @@ export interface RespondPermissionInput {
   scope?: "once" | "always"
 }
 
+/** One `GET /brain/query` hit — the lean shape the daemon route maps
+ *  provider hits to (http-server.ts). `workspace` is always present
+ *  (which brain the hit came from); `sessionId`/`title` are absent for
+ *  a knowledge-file source that isn't a conversation. */
+export interface BrainQueryHit {
+  readonly sourceId: string
+  readonly workspace: string
+  readonly sessionId?: string
+  readonly title?: string
+  readonly score: number
+  readonly snippet: string
+}
+
+export interface BrainQueryResult {
+  readonly workspace: string
+  readonly hits: readonly BrainQueryHit[]
+  /** Slugs skipped in federated mode after their provider threw. */
+  readonly workspacesErrored?: readonly string[]
+}
+
 export class DaemonClient {
   private readonly config: DaemonConfig
   private readonly fetchImpl: typeof fetch
@@ -258,6 +278,25 @@ export class DaemonClient {
 
   async getSession(id: string): Promise<SessionDescriptor> {
     return this.getJson<SessionDescriptor>(`/sessions/${encodeURIComponent(id)}`)
+  }
+
+  /**
+   * GET /brain/query — fuzzy (BM25) search over ingested session
+   * transcripts. The daemon splits its corpus across multiple
+   * per-workspace brains, so `workspace` is left unset here on purpose:
+   * the route's own default (`workspace=all`) federates every registered
+   * brain and tags each hit with the workspace it came from — exactly
+   * what "search all session transcripts" (the command this backs) means.
+   */
+  async searchTranscripts(
+    q: string,
+    opts?: { topK?: number; workspace?: string },
+  ): Promise<BrainQueryResult> {
+    const params = new URLSearchParams()
+    params.set("q", q)
+    if (typeof opts?.topK === "number") params.set("topK", String(opts.topK))
+    if (opts?.workspace) params.set("workspace", opts.workspace)
+    return this.getJson<BrainQueryResult>(`/brain/query?${params.toString()}`)
   }
 
   /**
