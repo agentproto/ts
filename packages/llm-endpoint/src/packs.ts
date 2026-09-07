@@ -64,6 +64,11 @@ export const defaultPack: ModelPack = {
     'gpt-4.1': { provider: 'openai', model: 'gpt-4.1' },
     'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
     'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
+    // OpenRouter-hosted GLM. Also reachable via the transparent
+    // "openrouter/z-ai/glm-5.3-flash" reference, but a plain code is needed
+    // for the `@llm-endpoint` daemon route, which forwards a bare
+    // "<vendor>/<model>" string (one slash only) as the model field.
+    'z-ai/glm-5.3-flash': { provider: 'openrouter', model: 'z-ai/glm-5.3-flash' },
   },
 };
 
