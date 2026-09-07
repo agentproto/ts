@@ -671,28 +671,39 @@ describe("list tools pagination (PR-8) + compact projection (tool-transformer mi
       ).content[0]!.text,
     ) as { browsers: Array<Record<string, unknown>> }
     expect(unpaginated.browsers).toHaveLength(2)
-    expect(unpaginated.browsers[0]).toMatchObject({
+    // Order-sensitivity: registry.list() sorts by startedAt DESCENDING, and two
+    // registrations inside the same millisecond tie (stable sort → insertion
+    // order) — but if the clock ticks between the two sync calls the newer one
+    // legitimately sorts first. Select rows by adapterId, not index.
+    const compactByAdapter = new Map(
+      unpaginated.browsers.map(d => [d.browserAdapterId as string, d]),
+    )
+    const camofoxRow = compactByAdapter.get("camofox")!
+    expect(camofoxRow).toMatchObject({
       status: "running",
       browserAdapterId: "camofox",
       browserPort: 9377,
       browserBaseUrl: "http://127.0.0.1:9377",
     })
     // Compact rows drop the descriptor bulk (e.g. command)…
-    expect((unpaginated.browsers[0] as { command?: unknown }).command).toBeUndefined()
+    expect((camofoxRow as { command?: unknown }).command).toBeUndefined()
 
     // full:true restores the complete descriptors.
     const full = JSON.parse(
       (
-        (await client.callTool({ name: "list_browsers", arguments: { full: true } })) as {
+        (await client.callTool({ name: "list_browsers", arguments: { full: true } })) as unknown as {
           content: Array<{ type: string; text: string }>
         }
       ).content[0]!.text,
     ) as { browsers: Array<Record<string, unknown>> }
-    expect((full.browsers[0] as { browserAdapterId?: string }).browserAdapterId).toBe("camofox")
+    expect(
+      full.browsers.some(d => (d as { browserAdapterId?: string }).browserAdapterId === "camofox"),
+    ).toBe(true)
+    const fullCamofox = full.browsers.find(
+      d => (d as { browserAdapterId?: string }).browserAdapterId === "camofox",
+    )!
     // (full rows carry the descriptor's full field set — strictly more than compact)
-    expect(Object.keys(full.browsers[0]!).length).toBeGreaterThan(
-      Object.keys(unpaginated.browsers[0]!).length,
-    )
+    expect(Object.keys(fullCamofox).length).toBeGreaterThan(Object.keys(camofoxRow).length)
 
     // Page-walk: the union of pages equals the unpaginated list exactly.
     const union: string[] = []
