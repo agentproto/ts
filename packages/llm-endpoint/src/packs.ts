@@ -23,6 +23,17 @@ export interface ModelRoute {
    * a Claude family for the generated alias; ignored on every routing path.
    */
   tier?: ModelTier;
+  /**
+   * Verified context window of the upstream route, in tokens. Surfaced in the
+   * /v1/models metadata when present; never guessed — leave absent when the
+   * limit for this specific route is not verified.
+   */
+  contextWindow?: number;
+  /**
+   * Verified max output tokens for the upstream route, in tokens. Same
+   * honesty rule as {@link ModelRoute.contextWindow}.
+   */
+  maxOutputTokens?: number;
 }
 
 /**
@@ -320,7 +331,7 @@ function validateModelRoute(route: unknown, where: string, errors: string[]): Mo
     errors.push(`${where}: expected an object, got ${route === null ? 'null' : typeof route}`);
     return null;
   }
-  const { provider, model, equivalentClaudeName, tier } = route;
+  const { provider, model, equivalentClaudeName, tier, contextWindow, maxOutputTokens } = route;
   let ok = true;
   if (typeof provider !== 'string' || provider.length === 0) {
     errors.push(`${where}.provider: required non-empty string`);
@@ -338,10 +349,24 @@ function validateModelRoute(route: unknown, where: string, errors: string[]): Mo
     errors.push(`${where}.tier: must be one of extra-high|high|medium|small when present`);
     ok = false;
   }
+  if (contextWindow !== undefined && !(typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0)) {
+    errors.push(`${where}.contextWindow: must be a positive finite number when present`);
+    ok = false;
+  }
+  if (maxOutputTokens !== undefined && !(typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0)) {
+    errors.push(`${where}.maxOutputTokens: must be a positive finite number when present`);
+    ok = false;
+  }
   if (!ok || typeof provider !== 'string' || typeof model !== 'string') return null;
   const built: ModelRoute = { provider, model };
   if (typeof equivalentClaudeName === 'string') built.equivalentClaudeName = equivalentClaudeName;
   if (typeof tier === 'string' && isModelTier(tier)) built.tier = tier;
+  if (typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0) {
+    built.contextWindow = contextWindow;
+  }
+  if (typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0) {
+    built.maxOutputTokens = maxOutputTokens;
+  }
   return built;
 }
 
