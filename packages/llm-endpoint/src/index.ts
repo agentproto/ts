@@ -2056,6 +2056,9 @@ const server = createServer((req, res) => {
             created_at: '2026-02-04T00:00:00Z',
             type: 'model',
             capabilities: {},
+            // Verified per-route limits only — fields are absent when unknown.
+            ...(target.contextWindow !== undefined ? { context_window: target.contextWindow } : {}),
+            ...(target.maxOutputTokens !== undefined ? { max_output_tokens: target.maxOutputTokens } : {}),
           };
         }),
         has_more: false,
@@ -2075,6 +2078,9 @@ const server = createServer((req, res) => {
           object: 'model',
           created: 1718841600,
           owned_by: target.provider,
+          // Verified per-route limits only — fields are absent when unknown.
+          ...(target.contextWindow !== undefined ? { context_length: target.contextWindow } : {}),
+          ...(target.maxOutputTokens !== undefined ? { max_completion_tokens: target.maxOutputTokens } : {}),
         }))
       };
       console.log(`[Proxy] Returning standard OpenAI-formatted model list.`);
@@ -2141,6 +2147,22 @@ const server = createServer((req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: e.message } }));
         return;
+      }
+
+      // Détail de la requête : modèle résolu + budget de sortie demandé. Rend
+      // visibles les tours "warm-up" (max_tokens:1) et les appels coûteux dans
+      // les logs sans capture de corps.
+      {
+        const mt = payload.max_tokens;
+        const mtNote = (typeof mt === 'number' && mt <= 4) ? '  <== warm-up/1-token' : '';
+        console.log(
+          `[Proxy] req: model=${resolvedTarget.provider}:${resolvedTarget.model}` +
+            ` max_tokens=${typeof mt === 'number' ? mt : 'unset'}` +
+            ` stream=${payload.stream === true ? 'true' : 'false'}` +
+            ` msgs=${Array.isArray(payload.messages) ? payload.messages.length : '?'}` +
+            ` tools=${Array.isArray(payload.tools) ? payload.tools.length : 0}` +
+            mtNote
+        );
       }
 
       // Configuration de la requête sortante selon le provider résolu
