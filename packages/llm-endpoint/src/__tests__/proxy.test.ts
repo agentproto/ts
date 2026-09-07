@@ -189,6 +189,43 @@ describe('trimTools', () => {
     expect(payload.tools).toHaveLength(1);
     expect((payload.tools as any[])[0].name).toBe('Bash');
   });
+
+  it('pack toolsExclude strips matching tools (wildcards) and keeps the rest', () => {
+    const payload = {
+      tools: [{ name: 'Bash' }, { name: 'mcp__github__create_pr' }, { name: 'web_search' }],
+    };
+    trimTools(payload, { ...baseOpts, packToolsExclude: ['mcp__*', 'web_*'] });
+    expect(payload.tools).toHaveLength(1);
+    expect((payload.tools as any[])[0].name).toBe('Bash');
+  });
+
+  it('pack toolsAllow keeps only matching tools', () => {
+    const payload = {
+      tools: [{ name: 'Bash' }, { name: 'Read' }, { name: 'mcp__github__create_pr' }],
+    };
+    trimTools(payload, { ...baseOpts, packToolsAllow: ['Bash', 'Read'] });
+    expect(payload.tools).toHaveLength(2);
+  });
+
+  it('request-level header allow-list wins over pack-level filters (exclude not applied after return)', () => {
+    const payload = {
+      tools: [{ name: 'Bash' }, { name: 'mcp__github__create_pr' }],
+    };
+    trimTools(payload, { ...baseOpts, headerTools: 'Bash', packToolsExclude: ['mcp__*'] });
+    // headerTools returns early — pack filters never run on this request.
+    expect(payload.tools).toHaveLength(1);
+    expect((payload.tools as any[])[0].name).toBe('Bash');
+  });
+
+  it('pack filters empty the list → tools + tool_choice dropped entirely', () => {
+    const payload = {
+      tools: [{ name: 'mcp__x' }],
+      tool_choice: 'auto',
+    };
+    trimTools(payload, { ...baseOpts, packToolsExclude: ['mcp__*'] });
+    expect(payload.tools).toBeUndefined();
+    expect(payload.tool_choice).toBeUndefined();
+  });
 });
 
 // ── ToolTrimOptions interface ─────────────────────────────────────────────
