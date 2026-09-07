@@ -1,5 +1,9 @@
 /**
- * Sandbox proxy — transient-failure tolerance in the turn poll loop.
+ * Sandbox proxy — transient-failure tolerance in the FALLBACK turn poll
+ * loop (`pollAgentOutputFallback`), exercised here by making the box's
+ * structured `/events/stream` route unreachable (`fetch` always rejects) so
+ * every turn in this file degrades to the legacy poll path on purpose —
+ * see `sandbox-agent-session-proxy.test.ts` for the SSE-primary path.
  *
  * A single failed poll request must NOT kill a healthy turn: a long review
  * turn saturates a small box (monorepo clone + model generation), stalling
@@ -24,6 +28,7 @@ function makeHost(overrides: Partial<FakeHost> = {}): FakeHost {
     waitForAny: vi.fn(async () => ({ timedOut: false, event: "turn-end" as const, sessionIds: [] })),
     currentEventsCursor: vi.fn(async () => 0),
     stop: vi.fn(async () => {}),
+    mcpUrl: "http://127.0.0.1:1/mcp",
     ...overrides,
   }
 }
@@ -37,9 +42,18 @@ async function collect(iter: AsyncIterable<AgentStreamEvent>): Promise<AgentStre
 describe("sandbox proxy — poll resilience", () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    // The structured stream is unreachable in this file on purpose — every
+    // test here is about the FALLBACK loop's own resilience.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("connect refused")
+      }),
+    )
   })
   afterEach(() => {
     vi.useRealTimers()
+    vi.unstubAllGlobals()
   })
 
   it("survives transient poll failures (MCP -32001) and completes the turn", async () => {
