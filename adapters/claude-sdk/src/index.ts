@@ -271,6 +271,21 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
         "native Claude models choose their own thinking behaviour.",
       bin_args_append_when_true: ["--thinking"],
     },
+    {
+      id: "idle_timeout_ms",
+      // Injected into the child env as CLAUDE_SDK_IDLE_TIMEOUT_MS — overrides
+      // the generation-stall watchdog (default 90s, see options.ts). Some
+      // gateway models (heavy hidden "thinking" before the visible reply, a
+      // slower upstream, or a large system-prompt/tool-result context) can
+      // legitimately need longer than the default before their first
+      // generation chunk after a tool round-trip.
+      type: "string" as const,
+      description:
+        "Override the generation-stall watchdog in ms (default 90000). Raise " +
+        "for a gateway model that is slow but healthy, not wedged. Injected " +
+        "as CLAUDE_SDK_IDLE_TIMEOUT_MS in the child env.",
+      env: { CLAUDE_SDK_IDLE_TIMEOUT_MS: "{value}" },
+    },
   ],
   tags: ["anthropic", "claude", "claude-agent-sdk", "agentproto", "acp", "first-party"],
 })
