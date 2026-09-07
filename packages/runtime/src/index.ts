@@ -45,6 +45,7 @@ import {
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
+import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeBuiltinPanelApps } from "./builtin-apps.js"
 import { registerSummarizeSessionTool } from "./summarize-session-tool.js"
@@ -189,6 +190,18 @@ export type {
   PrStateResolver,
 } from "./activities.js"
 export { registerBrainTools } from "./brain-tools.js"
+export {
+  registerWebSearchTools,
+  defineBraveSearchHttpDriver,
+  defineSerperHttpDriver,
+  webSearchTool,
+} from "./web-search-tools.js"
+export type {
+  RegisterWebSearchToolsOptions,
+  WebSearchInput,
+  WebSearchOutput,
+  WebSearchResult,
+} from "./web-search-tools.js"
 export type { RegisterBrainToolsOptions } from "./brain-tools.js"
 export { createWorkspaceBrains, readSessionForBrain } from "./workspace-brains.js"
 export type { WorkspaceBrains } from "./workspace-brains.js"
@@ -1819,6 +1832,10 @@ export async function createGateway(
     // Codex / Gemini logins, ~/.hermes/config.yaml, provider env keys) with
     // provenance, so onboarding can offer an import. Never returns a value.
     registerCredentialDiscoveryTools(server)
+    // Multi-candidate AIP-30 tool: Brave (free tier) + Serper HTTP drivers,
+    // resolved by the 6-phase resolver. Key-gated — registers nothing when
+    // neither BRAVE_SEARCH_API_KEY nor SERPER_API_KEY is set.
+    registerWebSearchTools(server)
     registerBrowserTools(server, {
       registry: sessions,
       ...(opts.resolveBrowserAdapter
