@@ -39,6 +39,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto acp`](./verbs/acp.md) — manage generic ACP agents (zero-code ACP CLIs)
 - [`agentproto adapters`](./verbs/adapters.md) — manage runtime adapters (swarm-kernel substrates/dispatchers/executors)
 - [`agentproto auth`](./verbs/auth.md) — log in to a host (RFC 8628 device flow)
+- [`agentproto brain`](./verbs/brain.md) — fuzzy (BM25) search over a workspace's ingested session transcripts
 - [`agentproto browser`](./verbs/browser.md) — manage browser service sessions (Camofox, Bureau, Chromium)
 - [`agentproto chat` / `chat-tui`](./verbs/chat.md) — interactive REPL on a daemon agent session
 - [`agentproto config`](./verbs/config.md) — read/write `~/.agentproto/config.json`
