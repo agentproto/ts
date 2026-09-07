@@ -158,8 +158,8 @@
     "@agentproto/workflow-runtime": "workspace:*",
     "@agentproto/workspace-brain": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "ai": "^6.0.204",
-    "croner": "^9.0.0",
+    "ai": "^6.0.277",
+    "croner": "^9.1.0",
     "gray-matter": "^4.0.3",
     "ws": "^8.21.3",
     "zod": "^4.5.4"
@@ -171,11 +171,11 @@
     "@agentproto/rendezvous": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@agentproto/transcript-fixtures": "workspace:*",
-    "@types/node": "^25.6.2",
-    "@types/ws": "^8.5.13",
+    "@types/node": "^25.9.5",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vite-node": "^3.2.4",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

@@ -80,6 +80,7 @@
     "@agentproto/acp": "workspace:*",
     "@agentproto/adapter-browser": "workspace:*",
     "@agentproto/app-client": "workspace:*",
+    "@agentproto/app-kit": "workspace:*",
     "@agentproto/auth": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
@@ -90,24 +91,23 @@
     "@agentproto/sandbox-box": "workspace:*",
     "@agentproto/sandbox-e2b": "workspace:*",
     "@agentproto/secrets": "workspace:*",
+    "@agentproto/workflow-loader": "workspace:*",
     "@agentproto/worktree": "workspace:*",
     "@ast-grep/napi": "^0.45.3",
     "@clack/prompts": "^1.7.0",
     "@earendil-works/pi-tui": "^0.84.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ajv": "^8.20.0",
-    "chalk": "^5.0.0",
+    "chalk": "^5.6.2",
     "cli-highlight": "^2.1.11",
+    "create-agentproto-app": "workspace:*",
     "gray-matter": "^4.0.3",
     "qrcode-terminal": "^0.12.0",
     "ws": "^8.21.3",
-    "zod": "^4.5.4",
-    "@agentproto/app-kit": "workspace:*",
-    "@agentproto/workflow-loader": "workspace:*",
-    "create-agentproto-app": "workspace:*"
+    "zod": "^4.5.4"
   },
   "optionalDependencies": {
-    "node-pty": "^1.0.0"
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "@agentproto/adapter-antigravity": "workspace:*",
@@ -126,11 +126,11 @@
     "@agentproto/agent-runtime": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "@types/ws": "^8.18.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"
