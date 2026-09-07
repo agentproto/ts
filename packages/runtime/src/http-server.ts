@@ -38,6 +38,7 @@ import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy } from "./sessions.js"
 import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
+import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
@@ -157,6 +158,7 @@ import type {
   CatalogModelsResponse,
 } from "./catalog-models.js"
 import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
+import { readRegisteredSlugs } from "./workspace-buckets.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
@@ -607,6 +609,12 @@ export interface RuntimeHttpServerOptions {
    *  processes. Daemons that don't spawn anything (pure MCP servers)
    *  can omit this and the routes 404. */
   sessions?: SessionsRegistry
+  /** Optional — when wired, exposes `GET /brain/query` for fuzzy
+   *  keyword search over a workspace's ingested session transcripts
+   *  (same engine the `workspace_brain_query` MCP tool calls). Hosts
+   *  that never build a `WorkspaceBrains` registry can omit this and
+   *  the route 404s. */
+  brains?: WorkspaceBrains
   /** Optional — when wired alongside `sessions`, enables
    *  `POST /sessions/agent` and `POST /sessions/:id/prompt` routes.
    *  Hosts that ship adapters (`agentproto serve`, playground)
@@ -1705,6 +1713,98 @@ export async function startHttpServer(
                 error: "workspaces_load_failed",
                 message: err instanceof Error ? err.message : String(err),
               })
+            )
+          }
+          return
+        }
+
+        // GET /brain/query?q=<query>&topK=<n>&workspace=<slug> — fuzzy
+        // keyword (BM25) search over a workspace's ingested session
+        // transcripts, over HTTP. Same engine + resolution rule as the
+        // `workspace_brain_query` MCP tool (brain-tools.ts): an explicit
+        // `workspace` wins, else the CALLING SESSION's own workspace —
+        // except this surface has no caller session (a bare HTTP GET,
+        // not an MCP tool call attributed to a session id), so that half
+        // of the fallback never applies here and resolution degrades
+        // straight to `resolveWorkspaceSlug`'s own `DEFAULT_BUCKET`
+        // fallback, exactly as it does for any other unresolved caller.
+        if (path === "/brain/query" && req.method === "GET") {
+          if (guardBrowserOrigin(req, res)) return
+          if (!opts.brains) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "brain_not_configured",
+                message:
+                  "GET /brain/query is not enabled — the daemon was started " +
+                  "without a workspace brain registry. The host must wire " +
+                  "`brains` in createGateway.",
+              }),
+            )
+            return
+          }
+          const reqUrl = req.url ?? ""
+          const queryString = reqUrl.includes("?")
+            ? reqUrl.slice(reqUrl.indexOf("?") + 1)
+            : ""
+          const qs = new URLSearchParams(queryString)
+          const q = qs.get("q") ?? ""
+          if (q.length < 1) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "missing_query",
+                message: "GET /brain/query requires a non-empty `q` query param.",
+              }),
+            )
+            return
+          }
+          const topK = clampInt(qs.get("topK"), 10, 1, 50)
+          const explicitWorkspace = qs.get("workspace") ?? undefined
+          if (explicitWorkspace && !readRegisteredSlugs().has(explicitWorkspace)) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "unknown_workspace",
+                message: `Workspace "${explicitWorkspace}" is not registered.`,
+              }),
+            )
+            return
+          }
+          // No caller session on this surface — resolution is just the
+          // explicit slug (already verified above), else the registry's
+          // own default-bucket fallback.
+          const workspace = opts.brains.resolveWorkspaceSlug(explicitWorkspace, undefined)
+          try {
+            const brain = opts.brains.getBrain(workspace)
+            const result = await brain.getProvider().query({ query: q, topK })
+            const hits = result.hits.map(hit => {
+              const meta = (hit.metadata ?? {}) as Record<string, unknown>
+              const sessionId =
+                typeof meta.sessionId === "string"
+                  ? meta.sessionId
+                  // Fallback for a source with no `sessionId` in its
+                  // metadata (e.g. a knowledge-file source, not a
+                  // conversation) — parse the `sess-<id>` id form off
+                  // the raw sourceId instead of inventing one.
+                  : (hit.sourceId.match(/^(sess-[^#]+)/)?.[1] ?? undefined)
+              return {
+                sourceId: hit.sourceId,
+                ...(sessionId ? { sessionId } : {}),
+                ...(typeof meta.title === "string" ? { title: meta.title } : {}),
+                score: hit.score,
+                snippet: hit.text,
+              }
+            })
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ workspace, hits }))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "brain_query_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
             )
           }
           return

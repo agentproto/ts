@@ -2115,6 +2115,7 @@ export async function createGateway(
     events,
     heartbeat,
     sessions,
+    brains: workspaceBrains,
     mcpProxy,
     token,
     ptyEnabled: opts.spawnPty != null,
