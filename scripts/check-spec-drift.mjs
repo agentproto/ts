@@ -52,9 +52,9 @@ export const KNOWN_CODEGEN_MISSING = []
  * Strip the known-drift top-level properties from a generated schema.ts
  * body so tracked (warned-elsewhere) drift doesn't mask new drift.
  */
-export function normalizeSchemaSrc(src, slug = DEFAULTS.slug) {
+export function normalizeSchemaSrc(src, slug = DEFAULTS.slug, fields = KNOWN_CODEGEN_MISSING) {
   let out = src
-  for (const field of KNOWN_CODEGEN_MISSING) {
+  for (const field of fields) {
     out = out.replace(
       new RegExp(
         `"${field}":\\s*z\\.any\\(\\)\\.describe\\("[^"]*"\\)\\.optional\\(\\),\\s*`,

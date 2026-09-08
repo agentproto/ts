@@ -13,15 +13,15 @@ import { join, resolve } from "node:path"
 
 const ROOT = resolve(import.meta.dirname, "..")
 
-test("normalizeSchemaSrc strips known-drift fields", () => {
-  const withPolicy =
-    'export const x = z.object({ "a": z.string(), "policy": z.any().describe("AIP-38 POLICY block — access grants on sandbox actions.").optional(), "b": z.number() })'
-  const out = normalizeSchemaSrc(withPolicy)
-  assert.ok(!out.includes('"policy"'))
-  assert.ok(out.includes('"a"') && out.includes('"b"'))
-  for (const field of KNOWN_CODEGEN_MISSING) {
-    assert.equal(normalizeSchemaSrc(`z.object({ "${field}": z.any().describe("x").optional(), })`).includes(`"${field}"`), false)
-  }
+test("normalizeSchemaSrc strips exactly the known-drift fields", () => {
+  // The real list is currently empty (every declared field is codegen-derivable),
+  // so exercise the stripper with a synthetic field injected via `fields`.
+  const src = 'z.object({ "__synthetic__": z.any().describe("x").optional(), "b": z.number() })'
+  const stripped = normalizeSchemaSrc(src, DEFAULTS.slug, ["__synthetic__"])
+  assert.ok(!stripped.includes('"__synthetic__"'))
+  assert.ok(stripped.includes('"b"'))
+  assert.deepEqual(KNOWN_CODEGEN_MISSING, [])
+  assert.equal(normalizeSchemaSrc(src), src)
 })
 
 test("normalizeSchemaSrc leaves other fields untouched", () => {
