@@ -288,6 +288,12 @@
         "icon": "$(search)"
       },
       {
+        "command": "agentproto.searchTranscripts",
+        "title": "Agentproto: Search Session Transcripts",
+        "category": "agentproto",
+        "icon": "$(search-fuzzy)"
+      },
+      {
         "command": "agentproto.openTranscript",
         "title": "agentproto: Open Transcript",
         "category": "agentproto",

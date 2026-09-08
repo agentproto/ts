@@ -32,6 +32,7 @@ import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
 import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
+import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
 import { runProviderPresets } from "./commands/presets.js"
 import { runPreset } from "./commands/preset.js"
@@ -90,6 +91,8 @@ Usage:
                                            session ↔ native transcript, either direction
   agentproto usage    rollup --window <5h|7d|P7D> [--profile <ref>] [--json]
                                            local spend estimate over a rolling window
+  agentproto brain    query "<query>" [--workspace <slug>] [--topk <n>] [--json]
+                                           fuzzy search over session transcripts
   agentproto browser   install <adapter> [--force] [--dry-run]
   agentproto browser   start <adapter> [--port N] [--camofox-port N] [--label L]
   agentproto browser   list  [--alive] [--json]
@@ -186,6 +189,7 @@ const VERBS = new Set([
   "sessions",
   "conversation",
   "usage",
+  "brain",
   "tunnel",
   "presets",
   "provider-preset",
@@ -272,6 +276,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runConversation(rest)
     case "usage":
       return runUsage(rest)
+    case "brain":
+      return runBrain(rest)
     case "tunnel":
       return runTunnel(rest)
     case "presets":

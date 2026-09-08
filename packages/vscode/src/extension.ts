@@ -36,6 +36,7 @@ import { registerSessionRestart } from "./commands/sessionRestart.js"
 import { registerSessionResume } from "./commands/sessionResume.js"
 import { registerSessionAccessProfile } from "./commands/sessionAccessProfile.js"
 import { registerImportConversationCommand } from "./commands/importConversation.js"
+import { registerSearchTranscriptsCommand } from "./commands/searchTranscripts.js"
 import { registerSelectWorkspaceCommand } from "./commands/selectWorkspace.js"
 import { registerSwitchHarness } from "./commands/switchHarness.js"
 import { registerSessionConfig } from "./commands/sessionConfig.js"
@@ -135,6 +136,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSaveFavorite(ctx, client, store) // agentproto.saveFavorite
   registerWatchSessionCommands(ctx, store, watched) // agentproto.watchSession / unwatchSession
   registerImportConversationCommand(ctx, client, store) // agentproto.importConversation
+  registerSearchTranscriptsCommand(ctx, client, workspacePin) // agentproto.searchTranscripts
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
   registerHarnessCommands(ctx, client, harnessesProvider)
   registerAuthProfileCommands(ctx, client, authProfilesProvider)
