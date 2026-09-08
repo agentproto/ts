@@ -23,14 +23,9 @@
  * (both the TS and .md authoring paths validate through it), which makes
  * it the load-bearing generated artifact.
  *
- * Known pre-existing drift (warned, not failed): the JSON draft carries a
- * top-level `policy` property (`$ref` → policyRefBlock, AIP-38) that the
- * checked-in schema.ts has never contained — schema.ts predates the
- * property's arrival in the vendored JSON and no regen has picked it up
- * since (regen would ADD it, i.e. a behavior change, not a flag erasure).
- * It is stripped from both sides before diffing so the check fails only on
- * NEW drift. Fixing it (a real regen + code change) is tracked separately;
- * when that lands, remove `KNOWN_CODEGEN_MISSING` below.
+ * No known drift is currently suppressed: `KNOWN_CODEGEN_MISSING` is kept
+ * as an empty escape hatch in case a future draft/codegen gap needs the
+ * same warn-and-strip treatment while it is fixed separately.
  *
  * Usage: node scripts/check-spec-drift.mjs
  *   --aip 36 --slug sandbox --doctype SANDBOX  (these defaults)
@@ -48,16 +43,18 @@ const ROOT = resolve(HERE, "..")
 export const DEFAULTS = { aip: 36, slug: "sandbox", doctype: "SANDBOX" }
 
 // Top-level schema properties present in the JSON draft but (known)
-// missing from the checked-in generated schema.ts. See file header.
-export const KNOWN_CODEGEN_MISSING = ["policy"]
+// missing from the checked-in generated schema.ts. Empty today — the
+// historical `policy` drift was closed by a real regen; this remains as
+// an escape hatch for any future known gap (see file header).
+export const KNOWN_CODEGEN_MISSING = []
 
 /**
  * Strip the known-drift top-level properties from a generated schema.ts
- * body so pre-existing (tracked-separately) drift doesn't mask new drift.
+ * body so tracked (warned-elsewhere) drift doesn't mask new drift.
  */
-export function normalizeSchemaSrc(src, slug = DEFAULTS.slug) {
+export function normalizeSchemaSrc(src, slug = DEFAULTS.slug, fields = KNOWN_CODEGEN_MISSING) {
   let out = src
-  for (const field of KNOWN_CODEGEN_MISSING) {
+  for (const field of fields) {
     out = out.replace(
       new RegExp(
         `"${field}":\\s*z\\.any\\(\\)\\.describe\\("[^"]*"\\)\\.optional\\(\\),\\s*`,
