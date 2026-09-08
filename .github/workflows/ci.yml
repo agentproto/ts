@@ -1088,6 +1088,37 @@ jobs:
             echo "posted=unknown" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # A zero count is only trusted after the listing settles. A review
+          # can post SECONDS before this step runs and still be invisible to
+          # the reviews listing for a while (GitHub eventual consistency);
+          # concluding false on the first read arms the fallback tiers for a
+          # genuine duplicate. Live on PR #1241: the primary lane posted
+          # APPROVE, this recount read 0 within ~1s, and the legacy API-key
+          # tier fired a second review against the same head. Same failure
+          # class as the head-drift case above (PR #1137) — there the head
+          # moves under the recount, here the read lags the write.
+          settle_recount() {
+            SHA=""
+            COUNT=""
+            local attempt
+            for attempt in 1 2 3; do
+              if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then return 0; fi
+              COUNT=""
+              [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+            done
+            return 1
+          }
+          SETTLE_PASSES=0
+          while [ "$COUNT" -eq 0 ] 2>/dev/null && [ "$SETTLE_PASSES" -lt 2 ]; do
+            SETTLE_PASSES=$((SETTLE_PASSES + 1))
+            echo "Zero reviews against head $SHA so far — settle pass $SETTLE_PASSES/2 (the listing may lag a just-posted review)…"
+            sleep 10
+            if ! settle_recount; then
+              echo "::warning::postcheck: GitHub API unreachable during a settle pass — posted=unknown (fallback tiers stays disarmed; verify decides)."
+              echo "posted=unknown" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
           echo "Reviews already posted against live head $SHA: $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
@@ -1238,6 +1269,37 @@ jobs:
             echo "posted=unknown" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # A zero count is only trusted after the listing settles. A review
+          # can post SECONDS before this step runs and still be invisible to
+          # the reviews listing for a while (GitHub eventual consistency);
+          # concluding false on the first read arms the fallback tiers for a
+          # genuine duplicate. Live on PR #1241: the primary lane posted
+          # APPROVE, this recount read 0 within ~1s, and the legacy API-key
+          # tier fired a second review against the same head. Same failure
+          # class as the head-drift case above (PR #1137) — there the head
+          # moves under the recount, here the read lags the write.
+          settle_recount() {
+            SHA=""
+            COUNT=""
+            local attempt
+            for attempt in 1 2 3; do
+              if SHA=$(resolve_sha) && COUNT=$(count_reviews "$SHA"); then return 0; fi
+              COUNT=""
+              [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+            done
+            return 1
+          }
+          SETTLE_PASSES=0
+          while [ "$COUNT" -eq 0 ] 2>/dev/null && [ "$SETTLE_PASSES" -lt 2 ]; do
+            SETTLE_PASSES=$((SETTLE_PASSES + 1))
+            echo "Zero reviews against head $SHA so far — settle pass $SETTLE_PASSES/2 (post-fallback-account check)…"
+            sleep 10
+            if ! settle_recount; then
+              echo "::warning::postcheck-fallback: GitHub API unreachable during a settle pass — posted=unknown (legacy tier stays disarmed; verify decides)."
+              echo "posted=unknown" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
           echo "Reviews already posted against live head $SHA (post-fallback-account check): $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
