@@ -143,6 +143,15 @@ ran and read a local review, not something to reach for on your own.
 enforces this on every PR (`.github/workflows/ci.yml:369-437`, pattern at
 `:396`) and fails the check if one rides in.
 
+**Spec change = edit the JSON draft first, then regen.** For scaffolded
+doctypes (e.g. `packages/sandbox`), the source of truth is
+`specs/resources/aip-<N>/draft/<DOCTYPE>.schema.json` — never hand-edit the
+GENERATED files (`src/schema.ts`; `src/types.ts` only for the documented
+hand-tuned parts). A spec change means: edit the JSON draft, then re-run
+`pnpm scaffold-aip -- --aip <N> --slug <slug> --doctype <DOCTYPE>
+--schema-only` and paste the result. CI fails on drift
+(`pnpm check:spec-drift`, `scripts/check-spec-drift.mjs`).
+
 ## Recipes: gates you can declare today
 
 These are already possible through the supervisor's completion-policy engine

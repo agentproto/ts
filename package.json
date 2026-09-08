@@ -20,6 +20,7 @@
     "check-types": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" check-types",
     "clean": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" clean",
     "scaffold-aip": "node scripts/scaffold-aip.mjs",
+    "check:spec-drift": "node scripts/check-spec-drift.mjs",
     "sync-specs": "node scripts/sync-specs.mjs",
     "sync-specs:check": "node scripts/sync-specs.mjs --check",
     "templates:refresh": "node scripts/refresh-template.mjs",
