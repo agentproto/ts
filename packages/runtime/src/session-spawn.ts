@@ -2729,6 +2729,10 @@ export async function spawnAgentSession(
         // Forward the already-resolved credential when the caller selected a
         // profile; raw explicit auth remains supported for existing callers.
         ...(authSpec ? { auth: sandboxAuthFromResolved(authSpec) } : input.auth ? { auth: input.auth } : {}),
+        // PLAN-C — the resolved spec rides along so `env.autoPassthrough`
+        // can inject the credential's env-var NAME into `env.passthrough`
+        // (never the value) before the box boots.
+        ...(authSpec ? { authSpec } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
       })
@@ -3203,7 +3207,62 @@ function sandboxDeclaredInstallPackages(spec: SandboxSpec): string[] {
 }
 
 /**
- * Sandbox boxes lose their template-baked `@agentproto/adapter-*` packages
+ * PLAN-C — `env.autoPassthrough` (opt-in). When the spec sets the flag AND the
+ * spawn's own billing-credential resolution produced a credential (the same
+ * `ResolvedAuthSpec` the driver applies), the credential's env-var NAME
+ * (`setEnv`) is added to `spec.env.passthrough` so the value reaches the box
+ * through the EXISTING passthrough mechanism (host secrets broker → box env).
+ * Names only: the value itself is never read into this module — the broker is
+ * probed for RESOLVABILITY only so a credential the host process cannot
+ * actually supply degrades to a warning (the flag is a convenience, not a
+ * contract — it must not turn an otherwise-working spawn into a boot
+ * failure). Billing credential only: GITHUB_TOKEN and other business vars
+ * stay the job of an explicit `env.passthrough` (union, deduped — the
+ * caller's explicit entries are kept verbatim, never dropped). File-based
+ * (`externalCredential`) logins inject no bearer anywhere, so they are
+ * skipped: the box's CLI reads its OWN login file.
+ *
+ * The slug is probed here AND resolved again by `@agentproto/sandbox`'s
+ * `resolveSandboxSecretsEnv` (via the same `secrets.resolver` below) — two
+ * broker round-trips per auto-passthrough spawn. Deliberate: the probe must
+ * run BEFORE the spec is finalized (injection is a spec edit, not an env
+ * edit), while the second resolution is the sandbox package's own env build;
+ * sharing the resolved value would mean caching a credential VALUE in this
+ * module, which the name-only contract forbids. Acceptable while the broker
+ * is a local/env read; revisit with a cache only if the broker ever becomes
+ * network-backed.
+ */
+async function withSandboxAuthAutoPassthrough(
+  spec: SandboxSpec,
+  authSpec: ResolvedAuthSpec | undefined,
+): Promise<SandboxSpec> {
+  if (!spec.env?.autoPassthrough) return spec
+  const declared = spec.env.passthrough ?? []
+  const eligible =
+    authSpec !== undefined &&
+    authSpec.credential !== undefined &&
+    authSpec.setEnv !== "" &&
+    !authSpec.externalCredential
+  if (!eligible) return spec
+  const name = authSpec.setEnv
+  if (declared.includes(name)) return spec
+  const resolvable = (await resolveSandboxSecret(name)) !== null
+  if (!resolvable) {
+    console.warn(
+      `[agent_start] sandbox env.autoPassthrough: the resolved billing credential env var ` +
+        `"${name}" is not resolvable in the host process — not injecting it ` +
+        "(the flag is a convenience, not a contract).",
+    )
+    return spec
+  }
+  return {
+    ...spec,
+    env: { ...spec.env, passthrough: [name, ...declared] },
+  }
+}
+
+/**
+ * `Sandbox boxes lose their template-baked `@agentproto/adapter-*` packages
  * the moment the boot-time CLI update replaces the global npm install. The
  * e2b/box providers already install `config.installPackages` in the SAME
  * `npm i -g` as the CLI update (and declaring a non-empty list re-enables the
@@ -3250,6 +3309,11 @@ async function bootSandboxAgentSession(opts: {
    *  the call-site comment (fresh boxes have no config and claude-code never
    *  inherits shell-env subscription auth). */
   auth?: DefaultsAdapterAuthConfig
+  /** The HOST-side resolved billing auth (`ResolvedAuthSpec`) for this spawn,
+   *  when one was resolved (config-default wallet / access profile). Consulted
+   *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
+   *  never its value. */
+  authSpec?: ResolvedAuthSpec
   /** WP3 — serve an app UI from inside the box; see
    *  `SpawnAgentSessionInput.appServe`. */
   appServe?: SandboxAppServeSpec
@@ -3274,9 +3338,12 @@ async function bootSandboxAgentSession(opts: {
         "`list_sandbox_providers`, then `setup_sandbox_provider` if it needs credentials.",
     }
   }
-  const spec: SandboxSpec = withSandboxAdapterPackages(
-    typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
-    opts.adapter,
+  const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
+    withSandboxAdapterPackages(
+      typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
+      opts.adapter,
+    ),
+    opts.authSpec,
   )
   // WP3 — the serve port must be publicly reachable: append it to the spec's
   // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)

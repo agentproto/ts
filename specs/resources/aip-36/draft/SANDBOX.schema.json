@@ -50,6 +50,10 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Static host env-var names to forward into the sandbox."
+        },
+        "autoPassthrough": {
+          "type": "boolean",
+          "description": "Opt-in: forward the spawn's resolved billing-credential env-var NAME (e.g. ANTHROPIC_API_KEY) into passthrough so a fresh box inherits host auth without the caller naming vars. Only the name is injected — the value travels via the normal passthrough mechanism."
         }
       }
     },

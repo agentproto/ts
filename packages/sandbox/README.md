@@ -55,6 +55,18 @@ npm invocation as the CLI update; when spawning through the runtime
 automatically (a caller-declared pin always wins, nothing is injected for
 non-sandbox spawns).
 
+## Billing-auth auto-passthrough (opt-in)
+
+Set `env.autoPassthrough: true` on a sandbox spec and the runtime adds the
+spawn's RESOLVED billing-credential env-var NAME (e.g. `ANTHROPIC_API_KEY`) to
+`env.passthrough` before the box boots — so a fresh box inherits host auth
+without the caller naming vars. Only the NAME is injected; the value travels
+via the normal passthrough mechanism (host secrets broker → box env) and is
+never read by the flag. Billing credential only (no `GITHUB_TOKEN`); the
+caller's explicit `env.passthrough` entries are kept and deduped. When no
+credential resolved — or the host cannot resolve the var — nothing is
+injected and the spawn proceeds: the flag is a convenience, not a contract.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
