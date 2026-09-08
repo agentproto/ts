@@ -2524,6 +2524,7 @@ export function registerSessionTools(
             forceAgentResume: true,
             overrides,
             ...(listCatalogModels ? { listCatalogModels } : {}),
+            ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
           })
           return {
             content: [
@@ -2765,7 +2766,9 @@ export function registerSessionTools(
         // Shared with the cron scheduler's `prompt-session` action —
         // see session-restart-core.ts. Overrides take the forced-agent path
         // handled earlier, so a restart reaching HERE never carries any.
-        const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev)
+        const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
+          ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+        })
         return {
           content: [
             {
