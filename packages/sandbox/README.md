@@ -75,6 +75,14 @@ caller's explicit `env.passthrough` entries are kept and deduped. When no
 credential resolved — or the host cannot resolve the var — nothing is
 injected and the spawn proceeds: the flag is a convenience, not a contract.
 
+## Lifecycle: pause is the default teardown
+
+Closing a session PAUSES its box by default (`pause({ keepMemory: true })`)
+rather than killing it — any closed box stays reattachable via
+`sandbox.reuse` / `agentproto sandbox attach`. A paused box still dies at its
+own `timeoutMs` (45 min by default), so paused boxes don't accumulate
+indefinitely; declare `lifecycle.destroy_on` for a hard kill on close.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

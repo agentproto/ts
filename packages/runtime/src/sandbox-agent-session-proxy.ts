@@ -89,7 +89,8 @@ export interface SandboxAgentSessionProxyOpts {
   remoteSessionId: string
   /** PR3 AIP-36 lifecycle policy (`resolveLifecyclePolicy`) — decides
    *  whether `close()` pauses the box (reuse-friendly) or kills it
-   *  (ephemeral, the default). Omitted ⇒ always kill, matching PR2. */
+   *  (explicit `destroy_on`). Pause is the default teardown; an omitted
+   *  policy ⇒ always kill, matching PR2. */
   lifecyclePolicy?: SandboxLifecyclePolicy
   /** PLAN-D1 — ledger coordinates for this box. When present, `close()`
    *  stamps the teardown outcome ("paused" vs "stopped") into
