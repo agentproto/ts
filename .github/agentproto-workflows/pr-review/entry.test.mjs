@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import workflow from './entry.mjs'
-import { sandboxRefFor, workspaceCwdFor } from '../lib/sandbox-agent.mjs'
+import { reviewerModelFor, sandboxRefFor, workspaceCwdFor } from '../lib/sandbox-agent.mjs'
 
 const prompt = (input) => workflow.steps[0].prompt({ input })
 
@@ -101,16 +101,56 @@ test('placement input defaults to "host" and prNumber defaults to 0', () => {
 
 const ATTRIBUTION_HOOK = /Strip AI-attribution trailers/
 
-test('string form is unchanged: derived spec with adapter install + hook + fallback passthrough', () => {
+test('string form is unchanged: derived spec with hook + fallback passthrough (no adapter install — runtime auto-injects it)', () => {
   const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
   assert.equal(spec.provider, 'e2b')
-  assert.deepEqual(spec.config.installPackages, [
-    '@agentproto/adapter-claude-code@latest',
-    '@anthropic-ai/claude-code@latest',
-  ])
+  assert.equal(spec.config.installPackages, undefined)
   assert.match(spec.config.setupCommands[0], ATTRIBUTION_HOOK)
   assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
   assert.equal(spec.reuse, undefined)
+})
+
+// ── reviewerModel (step `model` selector) ────────────────────────────────────
+
+test('reviewerModelFor resolves reviewerModel from the config (global and per-verb)', () => {
+  assert.equal(reviewerModelFor({ reviewerModel: 'openrouter/z-ai/glm-5.3-flash' }, 'review'), 'openrouter/z-ai/glm-5.3-flash')
+  assert.equal(
+    reviewerModelFor(
+      { reviewerModel: 'global', commands: { review: { reviewerModel: 'per-verb' } } },
+      'review',
+    ),
+    'per-verb',
+  )
+})
+
+test('reviewerModelFor returns undefined for absent/blank reviewerModel (adapter default)', () => {
+  for (const cfg of [{}, { reviewerModel: '' }, { reviewerModel: '   ' }, { reviewerModel: 42 }]) {
+    assert.equal(reviewerModelFor(cfg, 'review'), undefined)
+  }
+})
+
+test('the review step declares a model selector resolving reviewerModel from reviewConfig', () => {
+  assert.equal(typeof workflow.steps[0].model, 'function')
+  assert.equal(
+    workflow.steps[0].model({ input: { reviewConfig: { reviewerModel: 'openrouter/z-ai/glm-5.3-flash' } } }),
+    'openrouter/z-ai/glm-5.3-flash',
+  )
+  assert.equal(workflow.steps[0].model({ input: { reviewConfig: {} } }), undefined)
+})
+
+test('the opencode reviewer config resolves adapter + model + env end to end', () => {
+  const cfg = {
+    reviewerAdapter: 'opencode',
+    reviewerModel: 'openrouter/z-ai/glm-5.3-flash',
+    reviewerSandbox: 'e2b',
+    reviewerSandboxEnv: ['OPENROUTER_API_KEY', 'GITHUB_TOKEN'],
+  }
+  const bindings = { input: { prNumber: 7, repo: 'agentproto/ts', reviewConfig: cfg } }
+  assert.equal(workflow.steps[0].adapter(bindings), 'opencode')
+  assert.equal(workflow.steps[0].model(bindings), 'openrouter/z-ai/glm-5.3-flash')
+  const spec = workflow.steps[0].sandbox(bindings)
+  assert.deepEqual(spec.env.passthrough, ['OPENROUTER_API_KEY', 'GITHUB_TOKEN'])
+  assert.equal(workflow.steps[0].cwd(bindings), '/home/user')
 })
 
 test('native object spec is used verbatim as the base, with defaults merged under it', () => {
@@ -129,12 +169,9 @@ test('native object spec is used verbatim as the base, with defaults merged unde
   assert.equal(spec.provider, 'e2b')
   // object config keys win over derived defaults…
   assert.equal(spec.config.machine, '4vcpu-8gb')
-  // …but derived install + hook are still merged in (product does not auto-inject yet)
+  // …but the derived hook is still merged in
   assert.match(spec.config.setupCommands[0], ATTRIBUTION_HOOK)
-  assert.deepEqual(spec.config.installPackages, [
-    '@agentproto/adapter-claude-code@latest',
-    '@anthropic-ai/claude-code@latest',
-  ])
+  assert.equal(spec.config.installPackages, undefined)
   // other top-level keys carried through untouched — nothing invented
   assert.deepEqual(spec.lifecycle, { onStop: 'snapshot' })
   assert.equal(spec.reuse, true)
