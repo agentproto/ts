@@ -28,6 +28,7 @@
     },
     "config": {
       "type": "object",
+      "additionalProperties": true,
       "properties": {
         "installAdapters": {
           "type": "array",
