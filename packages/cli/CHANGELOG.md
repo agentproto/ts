@@ -1,5 +1,26 @@
 # @agentproto/cli
 
+## 0.20.0
+
+### Minor Changes
+
+- d0cd06e: Add federated GET /brain/query HTTP route and agentproto brain query CLI command
+- 2d87474: Add sandbox ledger + list/rm CLI and label/prefix reuse resolution
+
+### Patch Changes
+
+- Updated dependencies [bb3342f]
+- Updated dependencies [b51f116]
+- Updated dependencies [b51f116]
+  - @agentproto/model-catalog@0.9.4
+  - @agentproto/app-client@0.3.2
+  - create-agentproto-app@0.3.2
+  - @agentproto/sandbox-box@0.2.9
+  - @agentproto/sandbox-e2b@0.4.2
+  - @agentproto/worktree@0.6.2
+  - @agentproto/app-kit@1.1.1
+  - @agentproto/workflow-loader@0.2.2
+
 ## 0.19.0
 
 ### Minor Changes

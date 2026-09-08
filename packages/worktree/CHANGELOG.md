@@ -1,5 +1,12 @@
 # @agentproto/worktree
 
+## 0.6.2
+
+### Patch Changes
+
+- Updated dependencies [c809f12]
+  - @agentproto/workflow-runtime@0.11.0
+
 ## 0.6.1
 
 ### Patch Changes

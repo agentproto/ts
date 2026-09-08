@@ -1,5 +1,11 @@
 # @agentproto/mastra
 
+## 0.2.13
+
+### Patch Changes
+
+- @agentproto/corpus@0.7.3
+
 ## 0.2.12
 
 ### Patch Changes

@@ -1,5 +1,23 @@
 # agentproto-vscode
 
+## 0.14.2
+
+### Patch Changes
+
+- Updated dependencies [32b58b1]
+- Updated dependencies [2e1f93c]
+- Updated dependencies [84a451d]
+- Updated dependencies [d0cd06e]
+- Updated dependencies [d034471]
+- Updated dependencies [c809f12]
+- Updated dependencies [648e789]
+- Updated dependencies [2d87474]
+- Updated dependencies [834bfb8]
+- Updated dependencies [87a2814]
+- Updated dependencies [f6561a5]
+  - @agentproto/runtime@3.1.0
+  - @agentproto/apps@0.9.3
+
 ## 0.14.1
 
 ### Patch Changes

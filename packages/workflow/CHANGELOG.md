@@ -1,5 +1,11 @@
 # @agentproto/workflow
 
+## 0.6.0
+
+### Minor Changes
+
+- c809f12: Add optional model field to kind:agent workflow steps (same semantics as agent_start.model)
+
 ## 0.5.0
 
 ### Minor Changes
