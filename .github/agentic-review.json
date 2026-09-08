@@ -10,7 +10,10 @@
   "reviewerAdapter": "opencode",
   "reviewerAuthMode": "api-key",
   "reviewerModel": "openrouter/z-ai/glm-5.3-flash",
-  "reviewerSandbox": "e2b",
+  "reviewerSandbox": {
+    "provider": "e2b",
+    "lifecycle": { "destroy_on": "workspace-close" }
+  },
   "reviewerSandboxEnv": ["OPENROUTER_API_KEY", "GITHUB_TOKEN"],
   "describe": {
     "auto": true,
