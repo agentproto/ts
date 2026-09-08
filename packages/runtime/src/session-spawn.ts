@@ -133,6 +133,7 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { readSandboxLedger, recordSandboxBoot, recordSandboxOrigin, resolveReuseFromLedger } from "./sandbox-ledger.js"
 import {
   DEFAULT_APP_SERVE_PORT,
   startSandboxAppServe,
@@ -1111,6 +1112,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_boot_failed"
         | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
+        | "sandbox_reuse_ambiguous"
         | "sandbox_app_serve_failed"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
@@ -2967,6 +2969,10 @@ export async function spawnAgentSession(
     // found — present-or-absent, so an undefined field already means absent.
     if (workspaceRulesResolution.path) desc.rulesMd = workspaceRulesResolution.path
     liveSessionId = desc.id
+    // PLAN-D1 §1 — the boot-time ledger stamp ran before this id existed;
+    // backfill it now so `sandbox list` can point at the spawning session.
+    // Best-effort.
+    if (sandboxId) recordSandboxOrigin(sandboxId, desc.id)
     // No-key backstop for the same incident `idempotencyKey` guards: every
     // duplicate pair observed in production shared BOTH `label` AND `cwd`,
     // and both members were still alive when found. This needs no caller
@@ -3162,6 +3168,7 @@ type SandboxBootResult =
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
         | "sandbox_reconnect_failed"
+        | "sandbox_reuse_ambiguous"
         | "sandbox_proxy_failed"
         | "sandbox_app_serve_failed"
       message: string
@@ -3392,7 +3399,29 @@ async function bootSandboxAgentSession(opts: {
   // fresh box, exactly as PR2. Also feeds `resolveLifecyclePolicy` below:
   // a reused box defaults to PAUSE (not kill) on close, since it would be
   // pointless to reconnect to a box that's about to be killed anyway.
-  const reuseSandboxId = typeof opts.sandbox === "object" ? opts.sandbox.reuse : undefined
+  let reuseSandboxId = typeof opts.sandbox === "object" ? opts.sandbox.reuse : undefined
+  // PLAN-D1 §3 — a `reuse` token that isn't a raw sandboxId may name a box
+  // via the ledger: an exact row label, or a unique sandboxId prefix.
+  // Ambiguity is a hard error listing the candidates; no ledger match
+  // passes the token through unchanged so the provider's own connect
+  // failure surfaces exactly as before this resolution existed.
+  if (reuseSandboxId !== undefined) {
+    const reuseResolution = resolveReuseFromLedger(reuseSandboxId, readSandboxLedger())
+    if (reuseResolution.kind === "ambiguous") {
+      return {
+        ok: false,
+        code: "sandbox_reuse_ambiguous",
+        message:
+          `agent_start: sandbox reuse token "${reuseSandboxId}" is ambiguous — it matches ` +
+          `${reuseResolution.candidates.length} ledger entries: ` +
+          reuseResolution.candidates
+            .map(c => `${c.sandboxId}${c.label ? ` (label "${c.label}")` : ""}`)
+            .join(", ") +
+          ". Use a longer id prefix or the full sandboxId.",
+      }
+    }
+    if (reuseResolution.kind === "resolved") reuseSandboxId = reuseResolution.sandboxId
+  }
   const lifecyclePolicy = resolveLifecyclePolicy(spec, reuseSandboxId !== undefined)
 
   // AIP-36 `env.passthrough` / `env.auth.state.env` — the only env-var
@@ -3434,6 +3463,22 @@ async function bootSandboxAgentSession(opts: {
             `${err instanceof Error ? err.message : String(err)}`,
         }
   }
+
+  // PLAN-D1 §1 — stamp the box into the sandbox ledger. "connected" for a
+  // reuse (the box already existed), "booted" for a fresh boot. `expiresAt`
+  // rides the one expiry the daemon actually knows at boot: the spec's
+  // `lifecycle.pause_after_idle` window. Best-effort — `recordSandboxBoot`
+  // never throws.
+  recordSandboxBoot({
+    sandboxId: host.sandboxId,
+    provider: providerSlug,
+    state: reuseSandboxId !== undefined ? "connected" : "booted",
+    ...(opts.label ? { label: opts.label } : {}),
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
+      ? { expiresAt: new Date(Date.now() + lifecyclePolicy.pauseAfterIdleMs).toISOString() }
+      : {}),
+  })
 
   let remoteSessionId: string
   try {
@@ -3477,7 +3522,12 @@ async function bootSandboxAgentSession(opts: {
 
   return {
     ok: true,
-    agentSession: createSandboxAgentSessionProxy({ host, remoteSessionId, lifecyclePolicy }),
+    agentSession: createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId,
+      lifecyclePolicy,
+      ledger: { sandboxId: host.sandboxId, provider: providerSlug },
+    }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
     sandboxTeardown: lifecyclePolicy.teardown,

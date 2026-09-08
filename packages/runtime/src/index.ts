@@ -323,6 +323,19 @@ export {
   type AttachSandboxResult,
   type SandboxConnectionDescriptor,
 } from "./sandbox-attach.js"
+export {
+  makeSandboxResolver,
+  makeSandboxCredsStore,
+} from "./sandbox-adapters.js"
+export {
+  readSandboxLedger,
+  removeSandboxLedgerEntry,
+  resolveReuseFromLedger,
+  sandboxLedgerPath,
+  type ReuseResolution,
+  type SandboxLedgerEntry,
+  type SandboxLedgerState,
+} from "./sandbox-ledger.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,

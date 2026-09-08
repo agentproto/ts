@@ -24,9 +24,13 @@ export const sandboxSpecWithReuseSchema = z
       .min(1)
       .optional()
       .describe(
-        "Existing sandbox id (a prior session's `sandboxId`) to reconnect to instead of " +
-          "booting a new box. Requires the provider to support reconnect (e.g. e2b); " +
-          "omit to boot fresh (default)."
+        "Reconnect to an existing box instead of booting a new one. Accepts a prior " +
+          "session's exact `sandboxId`, a ledger `label` (exact match), or an " +
+          "unambiguous prefix of a ledger sandboxId — resolved against the local " +
+          "sandbox ledger (`~/.agentproto/sandboxes.json`, see `agentproto sandbox list`). " +
+          "A prefix matching more than one ledger entry fails with " +
+          "`sandbox_reuse_ambiguous` listing the candidates. Requires the provider to " +
+          "support reconnect (e.g. e2b); omit to boot fresh (default)."
       ),
   })
   .strict()

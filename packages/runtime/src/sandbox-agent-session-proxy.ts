@@ -28,6 +28,7 @@
 
 import type { SandboxAgentSessionHost, SandboxLifecyclePolicy } from "@agentproto/sandbox"
 import type { AgentSessionLike, AgentStreamEvent } from "./sessions.js"
+import { recordSandboxState } from "./sandbox-ledger.js"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */
 const MAX_POLL_MS = 49_000
@@ -90,6 +91,11 @@ export interface SandboxAgentSessionProxyOpts {
    *  whether `close()` pauses the box (reuse-friendly) or kills it
    *  (ephemeral, the default). Omitted ⇒ always kill, matching PR2. */
   lifecyclePolicy?: SandboxLifecyclePolicy
+  /** PLAN-D1 — ledger coordinates for this box. When present, `close()`
+   *  stamps the teardown outcome ("paused" vs "stopped") into
+   *  `~/.agentproto/sandboxes.json`. Best-effort: a ledger failure never
+   *  blocks or fails the teardown. */
+  ledger?: { sandboxId: string; provider: string }
 }
 
 /**
@@ -451,18 +457,32 @@ export function createSandboxAgentSessionProxy(
     async close(): Promise<void> {
       if (closed) return
       closed = true
+      // PAUSE (not kill) when the lifecycle policy says this box is
+      // meant to be reused later — falls back to `stop()` when the
+      // provider never exposed a `pause()` (e.g. `local`, or a policy
+      // that resolved to "pause" against a non-pausable provider): a
+      // teardown must never silently no-op and leak the box.
+      const pauseFn = lifecyclePolicy?.teardown === "pause" ? host.pause : undefined
+      const pauseTeardown = pauseFn !== undefined
       try {
         await host.kill(remoteSessionId)
       } finally {
-        // PAUSE (not kill) when the lifecycle policy says this box is
-        // meant to be reused later — falls back to `stop()` when the
-        // provider never exposed a `pause()` (e.g. `local`, or a policy
-        // that resolved to "pause" against a non-pausable provider): a
-        // teardown must never silently no-op and leak the box.
-        if (lifecyclePolicy?.teardown === "pause" && host.pause) {
-          await host.pause()
-        } else {
-          await host.stop()
+        try {
+          if (pauseFn) {
+            await pauseFn()
+          } else {
+            await host.stop()
+          }
+        } finally {
+          // PLAN-D1 — stamp the teardown outcome into the sandbox ledger.
+          // Inside the finally chain so even a failing teardown records
+          // (best-effort: `recordSandboxState` itself never throws).
+          if (opts.ledger) {
+            recordSandboxState(
+              opts.ledger.sandboxId,
+              pauseTeardown ? "paused" : "stopped",
+            )
+          }
         }
       }
     },
