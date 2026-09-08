@@ -34,6 +34,18 @@ export const adapterFor = (config, verb) =>
   String(resolveCommandConfig(config, verb).reviewerAdapter || "claude-code")
 
 /**
+ * Model id override for the lane (per-verb override allowed via
+ * commands.<verb>.reviewerModel) — resolved per run by the step's `model`
+ * selector (same semantics as `agent_start.model`; supported on workflow
+ * agent steps since #1236). Empty/absent ⇒ undefined ⇒ the adapter keeps its
+ * default model.
+ */
+export const reviewerModelFor = (config, verb) => {
+  const m = resolveCommandConfig(config, verb).reviewerModel
+  return typeof m === "string" && m.trim() ? m.trim() : undefined
+}
+
+/**
  * Provision-time setup command (e2b `setupCommands`) that installs a git
  * `commit-msg` hook STRIPPING AI-attribution trailer lines, so a sandboxed
  * model's native-shell commits can't deadlock the PR against the repo's own
@@ -84,7 +96,7 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
  *     lifecycle?: {...}, reuse?: … }`. Defaults are merged under it, never
  *     over it: if the object's `env.passthrough` is absent it falls back to
  *     `reviewerSandboxEnv`, then to `["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]`;
- *     the adapter install + setup hook + `cliVersion` pin are merged into
+ *     the setup hook + `cliVersion` pin are merged into
  *     `config` (object-provided config keys win); any other top-level keys of
  *     the object are carried through untouched — nothing is invented.
  *
@@ -95,10 +107,9 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
  * inside a fresh box; claude-sdk reads ANTHROPIC_API_KEY /
  * ANTHROPIC_AUTH_TOKEN from env — proven headless in a live e2b box).
  *
- * `installPackages` (e2b): the boot-time CLI update replaces the box's global
- * npm install and LOSES the template-baked adapters (verified live), so the
- * verb's adapter must be reinstalled in the same `npm i -g` — plus the
- * Claude Code CLI itself when the adapter is claude-code.
+ * `installPackages` (e2b): the verb's adapter package is NOT installed here —
+ * the runtime auto-injects it at spawn time (#1232,
+ * `sandboxAdapterBootPackages`).
  */
 export const sandboxRefFor = (config, verb) => {
   const cfg = resolveCommandConfig(config, verb)
@@ -109,7 +120,6 @@ export const sandboxRefFor = (config, verb) => {
       ? raw.provider.trim()
       : ""
   if (!slug && !nativeProvider) return undefined
-  const adapter = adapterFor(config, verb)
   const nativeEnv = raw !== null && typeof raw === "object" && raw.env !== null && typeof raw.env === "object" ? raw.env : undefined
   const nativePassthrough =
     nativeEnv && Array.isArray(nativeEnv.passthrough) && nativeEnv.passthrough.length > 0
@@ -120,10 +130,11 @@ export const sandboxRefFor = (config, verb) => {
     (Array.isArray(cfg.reviewerSandboxEnv) && cfg.reviewerSandboxEnv.length > 0
       ? cfg.reviewerSandboxEnv
       : ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"])
-  const installPackages = [
-    `@agentproto/adapter-${adapter}@latest`,
-    ...(adapter === "claude-code" ? ["@anthropic-ai/claude-code@latest"] : []),
-  ]
+  // The verb's adapter is NOT installed here anymore: the runtime
+  // auto-injects the adapter boot package since #1232
+  // (`sandboxAdapterBootPackages` in session-spawn.ts), so a CI-side
+  // `@agentproto/adapter-<slug>@latest` install would only risk racing the
+  // boot CLI update that loses it anyway.
   // Pin the boot CLI install to a known-good version so a broken
   // `@agentproto/cli@latest` publish can't silently kill the box. Only pass
   // the key when configured — the provider defaults to `@latest` otherwise.
@@ -131,7 +142,6 @@ export const sandboxRefFor = (config, verb) => {
   // Provision-time commit-msg hook that strips AI-attribution trailers, so a
   // sandboxed model's native commits can't deadlock the PR against Hygiene (#589).
   const sandboxConfig = {
-    installPackages,
     setupCommands: [ATTRIBUTION_STRIP_SETUP_COMMAND],
     ...(cliVersion ? { cliVersion } : {}),
   }

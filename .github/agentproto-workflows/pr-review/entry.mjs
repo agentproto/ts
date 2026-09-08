@@ -13,6 +13,7 @@ import {
   changesetRulesBlock,
   hardRulesBlock,
   restPostReviewBlock,
+  reviewerModelFor,
   sandboxRefFor,
   workspaceCwdFor,
 } from "../lib/sandbox-agent.mjs"
@@ -240,7 +241,7 @@ export default {
   name: "Agentproto PR Review",
   id: "agentproto-pr-review",
   description:
-    "Agentic PR reviewer that reads the diff, writes an accurate changeset, and posts a structured review (APPROVE / REQUEST_CHANGES / COMMENT). Driven by claude-code over the agentproto daemon.",
+    "Agentic PR reviewer that reads the diff, writes an accurate changeset, and posts a structured review (APPROVE / REQUEST_CHANGES / COMMENT). Driven by the configured reviewerAdapter over the agentproto daemon.",
   version: "0.1.0",
   inputs: {
     placement: {
@@ -277,6 +278,9 @@ export default {
       // Claude Code CLI, which no-ops headless in CI ("Authentication
       // required" / empty turn) — claude-sdk (SDK-based) authenticates headless.
       adapter: (b) => adapterFor(b?.input?.reviewConfig, "review"),
+      // Model id override (reviewerModel in .github/agentic-review.json) —
+      // same selector semantics as `adapter`; undefined ⇒ adapter default.
+      model: (b) => reviewerModelFor(b?.input?.reviewConfig, "review"),
       // Sandbox placement (reviewerSandbox, e.g. "e2b"): the daemon-internal
       // spawn failure on the CI runner does not reproduce inside a sandbox —
       // the box's OWN daemon spawns the adapter (proven via agent_start

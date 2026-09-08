@@ -834,10 +834,18 @@ jobs:
           # .github/agentic-review.json): subscription rides the OAuth token,
           # api-key rides ANTHROPIC_API_KEY (also what the e2b sandbox
           # passthrough injects). Either credential qualifies the lane;
-          # legacy only when BOTH are absent.
+          # legacy only when BOTH are absent. When the lane's adapter is a
+          # non-Anthropic provider (e.g. reviewerAdapter=opencode billed by
+          # OPENROUTER_API_KEY), that provider's key qualifies the lane too —
+          # the adapter resolves its own provider env var, so the Anthropic
+          # credentials are irrelevant to it.
+          ADAPTER_CFG=$(node -p "String((require('./.github/agentic-review.json').reviewerAdapter) || 'claude-code')" 2>/dev/null || echo "claude-code")
           if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ] || [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
             echo "Using agentproto lane"
+          elif [ "$ADAPTER_CFG" = "opencode" ] && [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then
+            echo "mode=agentproto" >> "$GITHUB_OUTPUT"
+            echo "Using agentproto lane (opencode reviewer, OPENROUTER_API_KEY credential)"
           else
             echo "mode=legacy" >> "$GITHUB_OUTPUT"
             echo "No reviewer credential — falling back to legacy API-key reviewer"
@@ -877,11 +885,16 @@ jobs:
           # no-ops headless in CI; claude-sdk is SDK-based and authenticates
           # headless (and can front Moonshot/Kimi via ANTHROPIC_BASE_URL).
           ADAPTER=$(node -p "String((require('./.github/agentic-review.json').reviewerAdapter) || 'claude-code')" 2>/dev/null || echo "claude-code")
+          # Model id override for the reviewer (reviewerModel) — forwarded to
+          # the workflow step's `model` selector and (for opencode-style
+          # adapters that route by model id) the provider key env.
+          REVIEWER_MODEL=$(node -p "String((require('./.github/agentic-review.json').reviewerModel) || '')" 2>/dev/null || echo "")
           echo "cli-source=$CLI_SOURCE" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_VERSION" >> "$GITHUB_OUTPUT"
           echo "auth-mode=$AUTH_MODE" >> "$GITHUB_OUTPUT"
           echo "adapter=$ADAPTER" >> "$GITHUB_OUTPUT"
-          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION) adapter=$ADAPTER auth-mode=$AUTH_MODE"
+          echo "model=$REVIEWER_MODEL" >> "$GITHUB_OUTPUT"
+          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION) adapter=$ADAPTER auth-mode=$AUTH_MODE model=$REVIEWER_MODEL"
 
       - name: Build local agentproto CLI
         if: |
@@ -937,8 +950,17 @@ jobs:
           # the one matching auth-mode. api-key authenticates headless in CI
           # (subscription/OAuth silently no-ops without an interactive login).
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
+          # Non-Anthropic reviewer lane (reviewerAdapter=opencode): bill via
+          # OPENROUTER_API_KEY, injected onto the daemon process env under its
+          # own name (provider-key-env) so the e2b sandbox passthrough
+          # (reviewerSandboxEnv) and the adapter's provider-env auth state both
+          # resolve it. api-key below is switched to the same key so
+          # write-config.mjs always has a credential for auth-mode=api-key and
+          # never hard-errors on an opencode lane.
+          provider-key: ${{ steps.cliver.outputs.adapter == 'opencode' && secrets.OPENROUTER_API_KEY || '' }}
+          provider-key-env: ${{ steps.cliver.outputs.adapter == 'opencode' && 'OPENROUTER_API_KEY' || '' }}
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          api-key: ${{ steps.cliver.outputs.adapter == 'opencode' && secrets.OPENROUTER_API_KEY || secrets.ANTHROPIC_API_KEY }}
           # e2b microVM sandbox for the reviewer session (reviewerSandbox in
           # .github/agentic-review.json) — the daemon-internal spawn failure on
           # the runner does not reproduce inside a sandbox, whose own daemon
