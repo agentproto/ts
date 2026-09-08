@@ -75,8 +75,21 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
 ].join("\n")
 
 /**
- * Sandbox placement: `reviewerSandbox` selects a provider slug (e.g. "e2b");
- * absent/empty ⇒ host spawn. The inline spec's `env.passthrough` names the
+ * Sandbox placement. `reviewerSandbox` accepts two shapes:
+ *
+ *   · **string** (e.g. "e2b") — a provider slug; the spec is fully derived
+ *     here (adapter install + attribution-strip hook + env passthrough).
+ *   · **object** — a NATIVE SandboxSpec used verbatim as the base:
+ *     `{ provider: "e2b", config?: {...}, env?: { passthrough?: [...] },
+ *     lifecycle?: {...}, reuse?: … }`. Defaults are merged under it, never
+ *     over it: if the object's `env.passthrough` is absent it falls back to
+ *     `reviewerSandboxEnv`, then to `["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]`;
+ *     the adapter install + setup hook + `cliVersion` pin are merged into
+ *     `config` (object-provided config keys win); any other top-level keys of
+ *     the object are carried through untouched — nothing is invented.
+ *
+ * In both shapes, absent/empty ⇒ host spawn. The spec's `env.passthrough`
+ * names the
  * daemon-process env vars injected into the box — the box's own daemon +
  * adapters resolve auth from that env (there is no ~/.agentproto/config.json
  * inside a fresh box; claude-sdk reads ANTHROPIC_API_KEY /
@@ -89,12 +102,24 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
  */
 export const sandboxRefFor = (config, verb) => {
   const cfg = resolveCommandConfig(config, verb)
-  const slug = typeof cfg.reviewerSandbox === "string" ? cfg.reviewerSandbox.trim() : ""
-  if (!slug) return undefined
+  const raw = cfg.reviewerSandbox
+  const slug = typeof raw === "string" ? raw.trim() : ""
+  const nativeProvider =
+    raw !== null && typeof raw === "object" && typeof raw.provider === "string"
+      ? raw.provider.trim()
+      : ""
+  if (!slug && !nativeProvider) return undefined
   const adapter = adapterFor(config, verb)
-  const passthrough = Array.isArray(cfg.reviewerSandboxEnv) && cfg.reviewerSandboxEnv.length > 0
-    ? cfg.reviewerSandboxEnv
-    : ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]
+  const nativeEnv = raw !== null && typeof raw === "object" && raw.env !== null && typeof raw.env === "object" ? raw.env : undefined
+  const nativePassthrough =
+    nativeEnv && Array.isArray(nativeEnv.passthrough) && nativeEnv.passthrough.length > 0
+      ? nativeEnv.passthrough
+      : undefined
+  const passthrough =
+    nativePassthrough ??
+    (Array.isArray(cfg.reviewerSandboxEnv) && cfg.reviewerSandboxEnv.length > 0
+      ? cfg.reviewerSandboxEnv
+      : ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"])
   const installPackages = [
     `@agentproto/adapter-${adapter}@latest`,
     ...(adapter === "claude-code" ? ["@anthropic-ai/claude-code@latest"] : []),
@@ -109,6 +134,18 @@ export const sandboxRefFor = (config, verb) => {
     installPackages,
     setupCommands: [ATTRIBUTION_STRIP_SETUP_COMMAND],
     ...(cliVersion ? { cliVersion } : {}),
+  }
+  if (!slug) {
+    // Native object form: the object is the verbatim base of the spec; our
+    // derived defaults merge UNDER it (its own config/env keys win).
+    const nativeConfig =
+      raw.config !== null && typeof raw.config === "object" ? raw.config : {}
+    return {
+      ...raw,
+      provider: nativeProvider,
+      config: { ...sandboxConfig, ...nativeConfig },
+      env: { ...(nativeEnv ?? {}), passthrough },
+    }
   }
   return { provider: slug, config: sandboxConfig, env: { passthrough } }
 }

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import workflow from './entry.mjs'
+import { sandboxRefFor, workspaceCwdFor } from '../lib/sandbox-agent.mjs'
 
 const prompt = (input) => workflow.steps[0].prompt({ input })
 
@@ -94,4 +95,100 @@ test('non-local placement still resolves sandbox/cwd from reviewConfig (unchange
 test('placement input defaults to "host" and prNumber defaults to 0', () => {
   assert.equal(workflow.inputs.placement.default, 'host')
   assert.equal(workflow.inputs.prNumber.default, 0)
+})
+
+// ── sandboxRefFor: native object spec (reviewerSandbox as a SandboxSpec) ────
+
+const ATTRIBUTION_HOOK = /Strip AI-attribution trailers/
+
+test('string form is unchanged: derived spec with adapter install + hook + fallback passthrough', () => {
+  const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+  assert.equal(spec.provider, 'e2b')
+  assert.deepEqual(spec.config.installPackages, [
+    '@agentproto/adapter-claude-code@latest',
+    '@anthropic-ai/claude-code@latest',
+  ])
+  assert.match(spec.config.setupCommands[0], ATTRIBUTION_HOOK)
+  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+  assert.equal(spec.reuse, undefined)
+})
+
+test('native object spec is used verbatim as the base, with defaults merged under it', () => {
+  const spec = sandboxRefFor(
+    {
+      reviewerSandbox: {
+        provider: 'e2b',
+        config: { machine: '4vcpu-8gb' },
+        env: { passthrough: ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'], EXTRA: 'kept' },
+        lifecycle: { onStop: 'snapshot' },
+        reuse: true,
+      },
+    },
+    'review',
+  )
+  assert.equal(spec.provider, 'e2b')
+  // object config keys win over derived defaults…
+  assert.equal(spec.config.machine, '4vcpu-8gb')
+  // …but derived install + hook are still merged in (product does not auto-inject yet)
+  assert.match(spec.config.setupCommands[0], ATTRIBUTION_HOOK)
+  assert.deepEqual(spec.config.installPackages, [
+    '@agentproto/adapter-claude-code@latest',
+    '@anthropic-ai/claude-code@latest',
+  ])
+  // other top-level keys carried through untouched — nothing invented
+  assert.deepEqual(spec.lifecycle, { onStop: 'snapshot' })
+  assert.equal(spec.reuse, true)
+  // env keys kept, passthrough honored from the object itself
+  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'])
+  assert.equal(spec.env.EXTRA, 'kept')
+})
+
+test('native object without env.passthrough falls back to reviewerSandboxEnv then default', () => {
+  const viaCfg = sandboxRefFor(
+    { reviewerSandbox: { provider: 'e2b' }, reviewerSandboxEnv: ['MY_TOKEN'] },
+    'review',
+  )
+  assert.deepEqual(viaCfg.env.passthrough, ['MY_TOKEN'])
+  const viaDefault = sandboxRefFor({ reviewerSandbox: { provider: 'e2b' } }, 'review')
+  assert.deepEqual(viaDefault.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+})
+
+test('native object passthrough beats reviewerSandboxEnv', () => {
+  const spec = sandboxRefFor(
+    {
+      reviewerSandbox: { provider: 'e2b', env: { passthrough: ['OBJ_TOKEN'] } },
+      reviewerSandboxEnv: ['CFG_TOKEN'],
+    },
+    'review',
+  )
+  assert.deepEqual(spec.env.passthrough, ['OBJ_TOKEN'])
+})
+
+test('cliVersion pin applies to the native object form too (unless the object overrides it)', () => {
+  const pinned = sandboxRefFor(
+    { reviewerSandbox: { provider: 'e2b' }, cliVersion: '1.2.3' },
+    'review',
+  )
+  assert.equal(pinned.config.cliVersion, '1.2.3')
+  const overridden = sandboxRefFor(
+    { reviewerSandbox: { provider: 'e2b', config: { cliVersion: '9.9.9' } }, cliVersion: '1.2.3' },
+    'review',
+  )
+  assert.equal(overridden.config.cliVersion, '9.9.9')
+})
+
+test('empty/invalid reviewerSandbox still resolves to host (no spec, no cwd)', () => {
+  for (const reviewerSandbox of [undefined, '', '   ', {}, { provider: '  ' }, [], null]) {
+    assert.equal(sandboxRefFor({ reviewerSandbox }, 'review'), undefined)
+    assert.equal(workspaceCwdFor({ reviewerSandbox }, 'review'), undefined)
+  }
+})
+
+test('native object spec still selects /home/user as the workspace cwd', () => {
+  assert.equal(workspaceCwdFor({ reviewerSandbox: { provider: 'e2b' } }, 'review'), '/home/user')
+  const bindings = {
+    input: { prNumber: 7, repo: 'agentproto/ts', reviewConfig: { reviewerSandbox: { provider: 'e2b' } } },
+  }
+  assert.notEqual(workflow.steps[0].sandbox(bindings), undefined)
+  assert.equal(workflow.steps[0].cwd(bindings), '/home/user')
 })
