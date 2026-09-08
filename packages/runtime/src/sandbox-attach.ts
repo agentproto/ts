@@ -26,6 +26,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { SandboxSpec } from "@agentproto/sandbox"
 import { makeSandboxResolver, makeSandboxCredsStore } from "./sandbox-adapters.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import { recordSandboxBoot } from "./sandbox-ledger.js"
 
 /**
  * Durable connection descriptor for an attached sandbox — everything a
@@ -149,6 +150,16 @@ export async function attachSandbox(opts: AttachSandboxOpts): Promise<AttachSand
         `sandbox "${opts.sandboxId}" — refusing to emit an ungated persistent daemon URL.`,
     }
   }
+
+  // PLAN-D1 §1 — the connect itself is the ledger's "connected" state
+  // change: stamp it (best-effort — `recordSandboxBoot` never throws, and
+  // an attach that reconnected a paused box is exactly the navigation row
+  // the ledger exists for).
+  recordSandboxBoot({
+    sandboxId: booted.sandboxId,
+    provider: opts.provider,
+    state: "connected",
+  })
 
   return {
     ok: true,

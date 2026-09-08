@@ -142,7 +142,7 @@ Usage:
   agentproto pair      revoke <fingerprint|name>
   agentproto pair      exec   <fingerprint|name> -- <verb> [args…]
   agentproto rendezvous serve [--port <n>] [--host <ip>]
-  agentproto sandbox   attach <provider> <sandboxId> [--config-json <json>] [--json]
+  agentproto sandbox   list [--json] | attach <provider> <sandboxId> | rm <id|label> [--box]
   agentproto app       pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app       unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app       install <appDir>
