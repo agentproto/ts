@@ -66,6 +66,17 @@ export interface SandboxDefinition {
      * Static host env-var names to forward into the sandbox.
      */
     passthrough?: string[]
+    /**
+     * Opt-in: forward the spawn's RESOLVED billing-credential env-var NAME
+     * (e.g. `ANTHROPIC_API_KEY`) into `passthrough` so a fresh box inherits
+     * host auth without the caller naming vars. Only the name is injected —
+     * the value travels via the normal passthrough mechanism (host secrets
+     * broker → box env) and is never read by this flag. Billing credential
+     * only: other vars (GITHUB_TOKEN, …) stay the job of an explicit
+     * `passthrough`. A convenience, not a contract: when no credential
+     * resolved, nothing is injected and the spawn proceeds.
+     */
+    autoPassthrough?: boolean
   }
   network?: {
     /**
