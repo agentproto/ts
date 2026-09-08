@@ -435,6 +435,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     prompt: (b: Bindings) => String(resolveValue(prompt, b)),
     ...(adapter !== undefined ? { adapter } : {}),
     ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
+    ...(step.model !== undefined ? { model: step.model } : {}),
     ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
     ...(step.cacheable ? { cacheable: true } : {}),
     ...(options !== undefined ? { options } : {}),

@@ -298,6 +298,13 @@ export interface AgentStep {
   adapter?: Selector<string> | string
   /** Reuse an earlier AgentStep's spawned session, by that step's id. */
   sessionRef?: string
+  /** Model id override for this spawn — same semantics as `agent_start.model`
+   *  (a literal string or a per-run selector resolving to one; `undefined` ⇒
+   *  unchanged behaviour, the adapter keeps its default). Forwarded to the
+   *  spawn through the harness slot; an explicit `harness.model` pinning
+   *  (AIP-15 P2) still wins. Only meaningful with `adapter`; ignored on a
+   *  `sessionRef` reuse. */
+  model?: Selector<string> | string
   /** Working directory for this spawn. Omit to fall back to the run-level `ctx.cwd`. */
   cwd?: Selector<string>
   /** Run this step's session inside a sandbox instead of on the host — a
@@ -318,7 +325,7 @@ export interface AgentStep {
   /** Re-prompt-and-retry attempts on schema mismatch before failing. Default 2. */
   maxRetries?: number
   /** Cache this step's output under the run's cacheKey; the resolved prompt +
-   *  adapter + sessionRef are hashed. Default false — most agent steps have
+   *  adapter + model + sessionRef are hashed. Default false — most agent steps have
    *  side effects. */
   cacheable?: boolean
   /** Manifest-declared adapter option id → value, forwarded to a NEW spawn's

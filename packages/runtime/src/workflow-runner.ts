@@ -52,6 +52,10 @@ export interface WorkflowStep {
   prompt?: string
   /** Adapter slug for spawning a NEW session. Omit to reuse a prior session. */
   adapter?: string
+  /** Model id override forwarded to the spawn — same semantics as
+   *  `agent_start.model`. Omitted ⇒ unchanged behaviour (the adapter keeps
+   *  its default). Only meaningful with `adapter`. */
+  model?: string
   /** Reuse the session spawned by an earlier step (any prior stage),
    *  identified by that step's `label`. Ignored if `adapter` is set. */
   sessionRef?: string
@@ -244,6 +248,7 @@ function translateStages(
             return base
           },
           ...(step.adapter !== undefined ? { adapter: step.adapter } : {}),
+          ...(step.model !== undefined ? { model: step.model } : {}),
           ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
           ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
           ...(step.cacheable ? { cacheable: true } : {}),

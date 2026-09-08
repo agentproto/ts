@@ -60,6 +60,11 @@ export const defineWorkflow = createDoctype<WorkflowDefinition, WorkflowHandle>(
           )
         }
       }
+      if (step.kind === "agent" && step.model !== undefined && typeof step.model !== "string") {
+        throw new Error(
+          `defineWorkflow (AIP-15): agent step '${typeof step.id === "string" ? step.id : "(unid)"}' model must be a string (a run-time selector is only available on the TS-authored runtime step)`,
+        )
+      }
       // AIP-15 P2: validate the agent-step `harness` block (incl. the
       // `knowledge[]` selectors — bad `mode`, missing `workspace`, unknown
       // fields) with the strict hand-tuned zod from ./schema.ts.

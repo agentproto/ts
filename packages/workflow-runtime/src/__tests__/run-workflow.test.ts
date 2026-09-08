@@ -1419,6 +1419,83 @@ describe("runWorkflow — pipeline onError", () => {
   })
 })
 
+// ── Agent step `model` (PR-G1) ───────────────────────────────────────
+
+describe("runWorkflow — agent step model", () => {
+  it("threads a literal model onto host.spawn's harness (same semantics as agent_start.model)", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-model",
+      steps: [
+        { kind: "agent", id: "s1", adapter: "mock-adapter", model: "glm-5.3-flash", prompt: () => "p" },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledWith(
+      "mock-adapter",
+      expect.objectContaining({ harness: { model: "glm-5.3-flash" } }),
+    )
+  })
+
+  it("resolves a model selector per run against the bindings", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-model-selector",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          model: (b) => `m-${String((b.input as { n: string }).n)}`,
+          prompt: () => "p",
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, input: { n: "1" } })
+    expect(host.spawn).toHaveBeenLastCalledWith(
+      "mock-adapter",
+      expect.objectContaining({ harness: { model: "m-1" } }),
+    )
+    await runWorkflow({ workflow: wf, agents: host, input: { n: "2" } })
+    expect(host.spawn).toHaveBeenLastCalledWith(
+      "mock-adapter",
+      expect.objectContaining({ harness: { model: "m-2" } }),
+    )
+  })
+
+  it("an explicit harness.model pinning wins over step.model", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-model-pinning",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          model: "step-model",
+          harness: { model: "harness-model" },
+          prompt: () => "p",
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledWith(
+      "mock-adapter",
+      expect.objectContaining({ harness: { model: "harness-model" } }),
+    )
+  })
+
+  it("no model and no harness ⇒ spawn opts untouched (zero-diff default)", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-no-model",
+      steps: [{ kind: "agent", id: "s1", adapter: "mock-adapter", prompt: () => "p" }],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledWith("mock-adapter", { cwd: undefined, workspaceSlug: undefined, stepId: "s1" })
+  })
+})
+
 // ── Step cache tests ─────────────────────────────────────────────────
 
 function memCache(): { cache: StepCache; store: Map<string, { output: unknown; resolvedInputHash: string }> } {
@@ -1543,6 +1620,39 @@ describe("step cache", () => {
     const { cache } = memCache()
     await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1" })
     await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1" })
+    expect(spawns.length).toBe(2)
+  })
+
+  it("model changed — hash miss re-executes (model is part of the cache key)", async () => {
+    const spawns: string[] = []
+    const host = fakeHost({
+      spawn: vi.fn(async () => {
+        const id = `sess_${spawns.length}`
+        spawns.push(id)
+        return id
+      }),
+      readFinalMessage: vi.fn(async () => JSON.stringify({ ok: true })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-model-changed",
+      steps: [
+        {
+          kind: "agent",
+          id: "research",
+          adapter: "claude",
+          model: (b) => `m-${String(b.input)}`,
+          cacheable: true,
+          prompt: () => "do research",
+          outputSchema: z.object({ ok: z.boolean() }),
+        },
+      ],
+    }
+    const { cache } = memCache()
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1", input: "alpha" })
+    // same model → cache hit
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1", input: "alpha" })
+    // different model → cache miss
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1", input: "beta" })
     expect(spawns.length).toBe(2)
   })
 
