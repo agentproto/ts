@@ -68,6 +68,45 @@ describe("defineWorkflow — kind: gate cross-field rule (AIP-15 P3)", () => {
   })
 })
 
+describe("defineWorkflow — StepAgent.model cross-field rule (AIP-15 P2)", () => {
+  it("accepts an agent step with a string model", () => {
+    expect(() =>
+      defineWorkflow({
+        name: "Model",
+        id: "model-ok",
+        description: "An agent step with a string model.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [{ id: "s1", kind: "agent", adapter: "claude-code", prompt: "hi", model: "opus" }],
+      }),
+    ).not.toThrow()
+  })
+
+  it("rejects an agent step with a non-string model", () => {
+    expect(() =>
+      defineWorkflow({
+        name: "Model",
+        id: "model-bad",
+        description: "An agent step with a non-string model.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          {
+            id: "s1",
+            kind: "agent",
+            adapter: "claude-code",
+            prompt: "hi",
+            model: { $select: "cheapest" },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        ],
+      }),
+    ).toThrow(/agent step 's1' model must be a string/)
+  })
+})
+
 describe("defineWorkflow — StepAgent.harness pinning (AIP-15 P2)", () => {
   it("passes a harness block through build() unchanged", () => {
     const harness: StepAgent["harness"] = {

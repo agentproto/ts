@@ -293,6 +293,9 @@ export interface StepAgent {
   /** Adapter slug for spawning a NEW session. Ignored (and unnecessary) when
    *  `agent.ref` resolves one for you. Omit both to reuse via `sessionRef`. */
   adapter?: string
+  /** Model id override forwarded to the spawn (same semantics as
+   *  `agent_start.model`). An explicit `harness.model` pinning still wins. */
+  model?: string
   /** Reuse an earlier agent step's spawned session, by that step's id. */
   sessionRef?: string
   sandbox?: string | { provider: string; [k: string]: unknown }

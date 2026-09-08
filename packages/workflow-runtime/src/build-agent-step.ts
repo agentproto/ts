@@ -14,6 +14,7 @@ export interface AgentStepFields {
    *  steps resolve `$steps.*` refs into one before calling this). */
   prompt: string | Selector<string>
   adapter?: string
+  model?: Selector<string> | string
   sessionRef?: string
   sandbox?: AgentSandboxRef
   cacheable?: boolean
@@ -32,6 +33,7 @@ export function buildAgentStep(id: string, fields: AgentStepFields): AgentStep {
     kind: "agent",
     id,
     ...(fields.adapter !== undefined ? { adapter: fields.adapter } : {}),
+    ...(fields.model !== undefined ? { model: fields.model } : {}),
     ...(fields.sessionRef !== undefined ? { sessionRef: fields.sessionRef } : {}),
     ...(fields.sandbox !== undefined ? { sandbox: fields.sandbox } : {}),
     ...(fields.cacheable ? { cacheable: true } : {}),

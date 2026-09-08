@@ -944,3 +944,75 @@ steps:
   })
 })
 
+// ── Agent step `model` field (PR-G1) ─────────────────────────────────
+
+describe("WorkflowRunner agent step model", () => {
+  const terminal = new Set(["done", "failed", "cancelled"])
+
+  async function runToTerminal(
+    runner: ReturnType<typeof createWorkflowRunner>,
+    runId: string,
+  ) {
+    let final = runner.status(runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(runId)
+    }
+    return final
+  }
+
+  function makeModelCapturingSetup(started: Array<{ adapter: string; args: Record<string, unknown> }>) {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry({
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+    })
+    const resolveAgentAdapter: AgentAdapterResolver = vi.fn(async (slug: string) => ({
+      startSession: async (args: Record<string, unknown>) => {
+        started.push({ adapter: slug, args })
+        return {
+          sessionId: `sess_adapter_${started.length}`,
+          send: async function* () {},
+          cancel: async () => {},
+          close: async () => {},
+        }
+      },
+      commandPreview: "mock-adapter",
+    }))
+    const runner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter })
+    return { runner }
+  }
+
+  it("threads a step's model onto the adapter startSession (same semantics as agent_start.model)", async () => {
+    const started: Array<{ adapter: string; args: Record<string, unknown> }> = []
+    const { runner } = makeModelCapturingSetup(started)
+
+    const run = await runner.start({
+      workflowId: "step-model",
+      stages: [{ steps: [{ label: "review", adapter: "mock", model: "openrouter/z-ai/glm-5.3-flash", prompt: "go" }] }],
+    })
+    const final = await runToTerminal(runner, run.runId)
+
+    expect(final?.status).toBe("done")
+    expect(started).toHaveLength(1)
+    expect(started[0]?.adapter).toBe("mock")
+    expect(started[0]?.args.model).toBe("openrouter/z-ai/glm-5.3-flash")
+  })
+
+  it("an omitted model leaves the spawn untouched (zero-diff default)", async () => {
+    const started: Array<{ adapter: string; args: Record<string, unknown> }> = []
+    const { runner } = makeModelCapturingSetup(started)
+
+    const run = await runner.start({
+      workflowId: "no-model",
+      stages: [{ steps: [{ label: "review", adapter: "mock", prompt: "go" }] }],
+    })
+    const final = await runToTerminal(runner, run.runId)
+
+    expect(final?.status).toBe("done")
+    expect(started).toHaveLength(1)
+    expect(started[0]?.args.model).toBeUndefined()
+  })
+})
+

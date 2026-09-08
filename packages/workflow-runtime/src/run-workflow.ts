@@ -224,6 +224,19 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   // literal (slug string or inline spec object) passes through as-is.
   const sandbox =
     typeof step.sandbox === "function" ? step.sandbox(b) : step.sandbox
+  // Step-level `model` (same semantics as `agent_start.model`): a selector
+  // resolves per-run against the bindings. It is folded into the spawn's
+  // harness slot — the channel both spawn paths already forward as the
+  // session's model — but an explicit `harness.model` pinning (AIP-15 P2)
+  // still wins: the block is the more specific pinning layer.
+  const model = step.model !== undefined ? resolveSel(step.model, b) : undefined
+  const harness =
+    step.harness !== undefined || model !== undefined
+      ? {
+          ...(step.harness ?? {}),
+          ...(model !== undefined && step.harness?.model === undefined ? { model } : {}),
+        }
+      : undefined
   const sessionId = step.adapter
     ? await ctx.agents!.spawn(resolveSel(step.adapter, b), {
         cwd,
@@ -231,7 +244,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         stepId: step.id,
         ...(sandbox !== undefined ? { sandbox } : {}),
         ...(step.options !== undefined ? { options: step.options } : {}),
-        ...(step.harness !== undefined ? { harness: step.harness } : {}),
+        ...(harness !== undefined ? { harness } : {}),
       })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
@@ -246,10 +259,10 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   // this runtime today (see `AgentHarness.tools`'s doc) — record that
   // honestly on the run record rather than silently dropping the field.
   const harnessOut =
-    step.harness !== undefined
+    harness !== undefined
       ? {
-          ...step.harness,
-          ...(step.harness.tools && step.harness.tools.length > 0
+          ...harness,
+          ...(harness.tools && harness.tools.length > 0
             ? { toolsApplied: false as const }
             : {}),
         }
@@ -656,6 +669,7 @@ async function execStep(
       const resolved = {
         prompt: step.prompt(b),
         adapter: step.adapter ? resolveSel(step.adapter, b) : undefined,
+        model: step.model ? resolveSel(step.model, b) : undefined,
         sessionRef: step.sessionRef,
       }
       const c = await readStepCache(ctx, step, resolved)
