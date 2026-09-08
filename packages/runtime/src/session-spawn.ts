@@ -139,7 +139,10 @@ import {
   type SandboxAppServeSpec,
   type SessionAppServeInfo,
 } from "./sandbox-app-serve.js"
-import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import {
+  sandboxAdapterBootPackages,
+  type SandboxProviderResolver,
+} from "./sandbox-adapters.js"
 import {
   decideWorktreeIsolation,
   loadWorktreeIsolation,
@@ -3184,6 +3187,45 @@ function toMcpServerMounts(entries: readonly AcpMcpServer[]): Array<{
 }
 
 /**
+ * `installPackages` a sandbox spec already declares, normalized to non-empty
+ * strings. `SandboxDefinition.config` is provider-opaque (`{}`) — the e2b/box
+ * providers read `installPackages` defensively at boot, so the runtime reads
+ * it defensively here too (no shape guarantee to lean on).
+ */
+function sandboxDeclaredInstallPackages(spec: SandboxSpec): string[] {
+  const cfg = spec.config
+  if (!("installPackages" in cfg) || !Array.isArray(cfg.installPackages)) return []
+  const declared: string[] = []
+  for (const entry of cfg.installPackages) {
+    if (typeof entry === "string" && entry.length > 0) declared.push(entry)
+  }
+  return declared
+}
+
+/**
+ * Sandbox boxes lose their template-baked `@agentproto/adapter-*` packages
+ * the moment the boot-time CLI update replaces the global npm install. The
+ * e2b/box providers already install `config.installPackages` in the SAME
+ * `npm i -g` as the CLI update (and declaring a non-empty list re-enables the
+ * boot install), but nothing on the runtime side ever declared them — so an
+ * interactive `--sandbox e2b` spawn with a non-baked adapter failed with
+ * "adapter could not be resolved". Inject the spawned adapter's own package
+ * (plus `SANDBOX_ADAPTER_BOOT_PACKAGES` extras) ahead of boot. Purely
+ * additive: a caller-declared pin for the adapter suppresses the `@latest`
+ * injection (the caller's version wins), and a no-sandbox spawn never
+ * reaches this path at all.
+ */
+function withSandboxAdapterPackages(spec: SandboxSpec, adapter: string): SandboxSpec {
+  const declared = sandboxDeclaredInstallPackages(spec)
+  const injected = sandboxAdapterBootPackages(adapter, declared)
+  if (injected.length === 0) return spec
+  return {
+    ...spec,
+    config: { ...spec.config, installPackages: [...injected, ...declared] },
+  }
+}
+
+/**
  * Resolve `opts.sandbox`, boot the box, spawn `adapter` on the box's OWN
  * `agent_start`, and wrap the result in a `SandboxAgentSessionProxy`. Called
  * from inside `spawnAgentSession`'s try block, AFTER the role/depth/quota
@@ -3232,8 +3274,10 @@ async function bootSandboxAgentSession(opts: {
         "`list_sandbox_providers`, then `setup_sandbox_provider` if it needs credentials.",
     }
   }
-  const spec: SandboxSpec =
-    typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox
+  const spec: SandboxSpec = withSandboxAdapterPackages(
+    typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
+    opts.adapter,
+  )
   // WP3 — the serve port must be publicly reachable: append it to the spec's
   // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
   // hands back its URL in `BootedSandbox.ports` (which also stamps the

@@ -123,6 +123,45 @@ export function toSandboxInfo(handle: SandboxProviderHandle): SandboxAdapterInfo
   return { capabilities: handle.capabilities }
 }
 
+/**
+ * Adapter slug → EXTRA npm packages the adapter needs installed inside a
+ * sandbox box, on top of `@agentproto/adapter-<slug>` itself. Mirrors the
+ * CI-side `sandboxRefFor` (`.github/agentproto-workflows/lib/sandbox-agent.mjs`)
+ * so the runtime injects the same set the CI harness does.
+ */
+export const SANDBOX_ADAPTER_BOOT_PACKAGES: Readonly<Record<string, readonly string[]>> = {
+  "claude-code": ["@anthropic-ai/claude-code"],
+}
+
+/** Package-name part of an npm spec: `@org/pkg@1.2.3` → `@org/pkg`, `pkg` → `pkg`. */
+export function npmPackageName(npmSpec: string): string {
+  const at = npmSpec.lastIndexOf("@")
+  return at > 0 ? npmSpec.slice(0, at) : npmSpec
+}
+
+/**
+ * Packages to PREPEND to a sandbox spec's `config.installPackages` so the
+ * adapter about to be spawned survives the box's boot-time CLI update (the
+ * `npm i -g @agentproto/cli` that replaces the global install and loses the
+ * template-baked adapters — see `@agentproto/sandbox-e2b`'s provider doc for
+ * `installPackages`). `adapter` is injected as `@agentproto/adapter-<slug>@latest`
+ * plus this module's `SANDBOX_ADAPTER_BOOT_PACKAGES` extras. Purely additive:
+ * a caller who already declared an entry for a wanted package (any version —
+ * a pin wins) suppresses the `@latest` injection for it, and the result is
+ * deduped.
+ */
+export function sandboxAdapterBootPackages(
+  adapter: string,
+  declared: readonly string[],
+): string[] {
+  const declaredNames = new Set(declared.map(npmPackageName))
+  const wanted = [`@agentproto/adapter-${adapter}`]
+  for (const extra of SANDBOX_ADAPTER_BOOT_PACKAGES[adapter] ?? []) wanted.push(extra)
+  return wanted
+    .filter(name => !declaredNames.has(name))
+    .map(name => `${name}@latest`)
+}
+
 /** Build the sandbox-family creds store (per-slug, 0600). */
 export function makeSandboxCredsStore(home?: string): CredsStore<SandboxCreds> {
   return makeCredsStore<SandboxCreds>({
