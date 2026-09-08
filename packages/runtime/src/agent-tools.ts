@@ -836,7 +836,8 @@ export function registerAgentTools(
             .describe("Sandbox provider slug from `list_sandbox_providers` (e.g. 'local', 'e2b')."),
           sandboxSpecWithReuseSchema.describe(
             "Inline AIP-36 SandboxDefinition — boots this exact spec instead of a catalog slug. " +
-              "Set `reuse` to reconnect to an existing sandbox id instead of booting fresh."
+              "Set `reuse` (sandboxId, ledger label, or unique sandboxId prefix — see " +
+              "`agentproto sandbox list`) to reconnect to an existing sandbox instead of booting fresh."
           ),
         ])
       )
