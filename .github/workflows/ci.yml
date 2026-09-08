@@ -239,6 +239,16 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs
 
+      # Spec↔codegen drift check (see scripts/check-spec-drift.mjs): the
+      # sandbox package's GENERATED schema.ts must stay in sync with the
+      # vendored JSON-Schema draft — a hand-edit of the generated file
+      # without updating the draft would otherwise be silently erased by
+      # the next `scaffold-aip` regen (PR #1235 incident class).
+      - name: Check spec/codegen drift
+        run: |
+          node --test scripts/check-spec-drift.test.mjs
+          node scripts/check-spec-drift.mjs
+
       # Guard the e2b workstation template's derived artifacts: the generated
       # TS module, e2b.template.toml build args, marked doc blocks, and the
       # sandbox-e2b package.json description must all match
