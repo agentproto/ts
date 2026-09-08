@@ -141,6 +141,7 @@ import {
 } from "./sandbox-app-serve.js"
 import {
   sandboxAdapterBootPackages,
+  sandboxInstallAdapterPackages,
   type SandboxProviderResolver,
 } from "./sandbox-adapters.js"
 import {
@@ -3285,6 +3286,33 @@ function withSandboxAdapterPackages(spec: SandboxSpec, adapter: string): Sandbox
 }
 
 /**
+ * PLAN-F — semantic `config.installAdapters` slugs. Harness slugs the caller
+ * wants pre-installed in the box BEYOND the spawned adapter #1232 already
+ * auto-injects — the "spawn a second agent in this box without reinstalling"
+ * case. Each slug expands to `@agentproto/adapter-<slug>@latest` plus its
+ * `SANDBOX_ADAPTER_BOOT_PACKAGES` extras (see `sandboxInstallAdapterPackages`)
+ * and merges into `config.installPackages` with dedupe, so caller-declared
+ * pins keep winning. Order: the #1232 auto-injection, the caller's existing
+ * `installPackages` pins (verbatim, relative order preserved), then the
+ * `installAdapters` expansions. Purely additive — a spec without the field
+ * passes through unchanged.
+ */
+function withSandboxInstallAdapters(spec: SandboxSpec): SandboxSpec {
+  const slugs: string[] = []
+  for (const slug of spec.config.installAdapters ?? []) {
+    if (typeof slug === "string" && slug.length > 0) slugs.push(slug)
+  }
+  if (slugs.length === 0) return spec
+  const current = sandboxDeclaredInstallPackages(spec)
+  const expanded = sandboxInstallAdapterPackages(slugs, current)
+  if (expanded.length === 0) return spec
+  return {
+    ...spec,
+    config: { ...spec.config, installPackages: [...current, ...expanded] },
+  }
+}
+
+/**
  * Resolve `opts.sandbox`, boot the box, spawn `adapter` on the box's OWN
  * `agent_start`, and wrap the result in a `SandboxAgentSessionProxy`. Called
  * from inside `spawnAgentSession`'s try block, AFTER the role/depth/quota
@@ -3339,9 +3367,11 @@ async function bootSandboxAgentSession(opts: {
     }
   }
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
-    withSandboxAdapterPackages(
-      typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
-      opts.adapter,
+    withSandboxInstallAdapters(
+      withSandboxAdapterPackages(
+        typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
+        opts.adapter,
+      ),
     ),
     opts.authSpec,
   )
