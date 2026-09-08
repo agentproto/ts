@@ -64,3 +64,15 @@ for that.
 
 ### image:replicate
 - Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
+
+## 2026-09-08
+
+### llm:openrouter
+- Added: deepseek/deepseek-v4-flash-vision-exp:batch, inception/mercury-2.5, z-ai/glm-5.2:batch, z-ai/glm-5.3:batch
+- Removed: inception/mercury-2.5-preview, nex-agi/nex-n2-mini, nex-agi/nex-n2-pro
+
+### llm:huggingface
+- Added: zai-org/GLM-5.1
+
+### image:replicate
+- Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
