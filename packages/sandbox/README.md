@@ -44,6 +44,17 @@ try {
 }
 ```
 
+## Adapter auto-install on boot
+
+A box's boot-time `npm i -g @agentproto/cli` replaces the global install and
+loses the template-baked `@agentproto/adapter-*` packages. Providers that
+accept `config.installPackages` (e2b, box) install those entries in the SAME
+npm invocation as the CLI update; when spawning through the runtime
+(`spawnAgentSession`), the adapter about to be launched — plus
+`@anthropic-ai/claude-code` for the `claude-code` adapter — is injected there
+automatically (a caller-declared pin always wins, nothing is injected for
+non-sandbox spawns).
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
