@@ -51,7 +51,16 @@ export interface SandboxDefinition {
   /**
    * Provider-specific connection fields. Shape varies per provider (see AIP-36 §Provider config shapes).
    */
-  config: {}
+  config: {
+    /**
+     * Semantic harness slugs to pre-install in the box at boot (e.g. `["hermes", "claude-code"]`).
+     * Each expands to `@agentproto/adapter-<slug>@latest` plus that adapter's declared boot extras;
+     * a `config.installPackages` pin for the same package always wins. Additive — absent means no
+     * extra install.
+     */
+    installAdapters?: string[]
+    [k: string]: unknown
+  }
   /**
    * Resource caps per command.
    */

@@ -55,6 +55,14 @@ npm invocation as the CLI update; when spawning through the runtime
 automatically (a caller-declared pin always wins, nothing is injected for
 non-sandbox spawns).
 
+For harnesses BEYOND the spawned adapter, declare semantic slugs instead of
+raw npm specs: `config.installAdapters: ["hermes", "claude-code"]`. Each slug
+expands to `@agentproto/adapter-<slug>@latest` (plus that adapter's declared
+boot extras, e.g. `@anthropic-ai/claude-code`) and merges into
+`config.installPackages` with dedupe — a caller's explicit pin for the same
+package always wins. An unknown slug still expands (the box's npm install is
+the authority); an absent field changes nothing.
+
 ## Billing-auth auto-passthrough (opt-in)
 
 Set `env.autoPassthrough: true` on a sandbox spec and the runtime adds the

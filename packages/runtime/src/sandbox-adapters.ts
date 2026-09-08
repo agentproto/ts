@@ -162,6 +162,36 @@ export function sandboxAdapterBootPackages(
     .map(name => `${name}@latest`)
 }
 
+/**
+ * Expand semantic `config.installAdapters` slugs into concrete npm specs.
+ * Each slug becomes `@agentproto/adapter-<slug>@latest` plus the
+ * `SANDBOX_ADAPTER_BOOT_PACKAGES` extras that slug declares. A slug unknown
+ * to the catalog still expands (the box's boot-time npm install is the
+ * authority on resolvability) — deliberately no failure mode, per the
+ * field's "semantic convenience, not a contract" shape. Deduped against
+ * `declared` by npm package name, so a caller's `config.installPackages`
+ * pin (any version, or a previously-injected `@latest`) always wins and
+ * nothing is installed twice.
+ */
+export function sandboxInstallAdapterPackages(
+  slugs: readonly string[],
+  declared: readonly string[],
+): string[] {
+  const taken = new Set(declared.map(npmPackageName))
+  const out: string[] = []
+  for (const slug of slugs) {
+    for (const name of [
+      `@agentproto/adapter-${slug}`,
+      ...(SANDBOX_ADAPTER_BOOT_PACKAGES[slug] ?? []),
+    ]) {
+      if (taken.has(name)) continue
+      taken.add(name)
+      out.push(`${name}@latest`)
+    }
+  }
+  return out
+}
+
 /** Build the sandbox-family creds store (per-slug, 0600). */
 export function makeSandboxCredsStore(home?: string): CredsStore<SandboxCreds> {
   return makeCredsStore<SandboxCreds>({
