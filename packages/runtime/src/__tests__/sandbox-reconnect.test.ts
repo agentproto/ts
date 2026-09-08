@@ -242,7 +242,7 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     expect(box.stopSpy).not.toHaveBeenCalled()
   })
 
-  it("a plain ephemeral spawn (no reuse, no lifecycle) still KILLS on close", async () => {
+  it("a plain ephemeral spawn (no reuse, no lifecycle) PAUSES on close (the default)", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "fake-cli",
       cwd: workspace,
@@ -250,11 +250,11 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(registry.get(result.descriptor.id)?.sandboxTeardown).toBe("kill")
+    expect(registry.get(result.descriptor.id)?.sandboxTeardown).toBe("pause")
 
     registry.kill(result.descriptor.id)
-    await vi.waitFor(() => expect(box.stopSpy).toHaveBeenCalledTimes(1))
-    expect(box.pauseSpy).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(box.pauseSpy).toHaveBeenCalledTimes(1))
+    expect(box.stopSpy).not.toHaveBeenCalled()
   })
 
   it("lifecycle.destroy_on always kills, even when reuse is set", async () => {

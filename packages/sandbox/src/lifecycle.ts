@@ -10,9 +10,10 @@
 import type { SandboxHandle } from "./types.js"
 
 export interface SandboxLifecyclePolicy {
-  /** What session close should do to the box: kill it (ephemeral, the
-   *  default) or pause it (keeps it reconnectable via `SandboxProvider.
-   *  connect`). */
+  /** What session close should do to the box: pause it (keeps it
+   *  reconnectable via `SandboxProvider.connect`) or kill it (ephemeral).
+   *  Pause is the default: absent any explicit lifecycle declaration the
+   *  box is paused on close, and dies at its own `timeoutMs` anyway. */
   teardown: "kill" | "pause"
   /** Idle window in milliseconds, parsed from the AIP-37 `idle-<seconds>`
    *  event name. Undefined when the spec doesn't declare
@@ -23,18 +24,19 @@ export interface SandboxLifecyclePolicy {
 const IDLE_EVENT_PATTERN = /^idle-(\d+)$/
 
 /**
- * `reuse` is true when this spawn asked to reconnect to an existing
- * sandbox id (`agent_start.sandbox.reuse`) — such a box defaults to
- * "pause" on close even absent an explicit `lifecycle` block, since
- * killing it would defeat the point of having reconnected. An explicit
- * `destroy_on` always wins over both `reuse` and `pause_after_idle`: the
- * spec is stating outright that this box must not survive session close.
+ * Pause is the default teardown: absent `destroy_on`, `pause_after_idle`
+ * AND `reuse`, a closed box is paused (`SandboxProvider.connect`-able)
+ * rather than killed — it still dies at its own `timeoutMs`, so pausing
+ * never accumulates boxes indefinitely. The explicit declarations stay
+ * authoritative: an `destroy_on` always kills (the spec states outright
+ * the box must not survive session close), and `pause_after_idle` /
+ * `reuse` pause (which the default now agrees with).
  */
 export function resolveLifecyclePolicy(spec: SandboxHandle, reuse: boolean): SandboxLifecyclePolicy {
   if (spec.lifecycle?.destroy_on) return { teardown: "kill" }
 
   const pauseAfterIdleMs = parseIdleAfterMs(spec.lifecycle?.pause_after_idle)
-  const teardown: "kill" | "pause" = reuse || pauseAfterIdleMs !== undefined ? "pause" : "kill"
+  const teardown: "kill" | "pause" = "pause"
   return { teardown, ...(pauseAfterIdleMs !== undefined ? { pauseAfterIdleMs } : {}) }
 }
 
