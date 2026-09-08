@@ -3221,6 +3221,16 @@ function sandboxDeclaredInstallPackages(spec: SandboxSpec): string[] {
  * caller's explicit entries are kept verbatim, never dropped). File-based
  * (`externalCredential`) logins inject no bearer anywhere, so they are
  * skipped: the box's CLI reads its OWN login file.
+ *
+ * The slug is probed here AND resolved again by `@agentproto/sandbox`'s
+ * `resolveSandboxSecretsEnv` (via the same `secrets.resolver` below) — two
+ * broker round-trips per auto-passthrough spawn. Deliberate: the probe must
+ * run BEFORE the spec is finalized (injection is a spec edit, not an env
+ * edit), while the second resolution is the sandbox package's own env build;
+ * sharing the resolved value would mean caching a credential VALUE in this
+ * module, which the name-only contract forbids. Acceptable while the broker
+ * is a local/env read; revisit with a cache only if the broker ever becomes
+ * network-backed.
  */
 async function withSandboxAuthAutoPassthrough(
   spec: SandboxSpec,
