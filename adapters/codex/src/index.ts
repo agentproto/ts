@@ -4,7 +4,7 @@
  *
  * The wrapper bundles its own Codex runtime (Rust binary delivered via
  * npm dependency) so a single
- * `npx -y @agentclientprotocol/codex-acp@1.1.14`
+ * `npx -y @agentclientprotocol/codex-acp@1.10.0`
  * invocation is enough — no separate @openai/codex install needed.
  *
  *   import { codex, codexRuntime } from "@agentproto/adapter-codex"
@@ -34,18 +34,18 @@ export const codex: AgentCliHandle = defineAgentCli({
   // Keep spawn deterministic. An unversioned npx target performs registry
   // resolution at session startup and can silently replace both the bridge
   // and its bundled Codex runtime exactly when either publishes an update.
-  bin_args: ["-y", "@agentclientprotocol/codex-acp@1.1.14"],
+  bin_args: ["-y", "@agentclientprotocol/codex-acp@1.10.0"],
   install: [
     {
       method: "npm",
-      package: "@agentclientprotocol/codex-acp@1.1.14",
+      package: "@agentclientprotocol/codex-acp@1.10.0",
       global: true,
     },
   ],
   version_check: {
-    cmd: "npm view @agentclientprotocol/codex-acp@1.1.14 version",
+    cmd: "npm view @agentclientprotocol/codex-acp@1.10.0 version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
-    range: "=1.1.14",
+    range: "=1.10.0",
     timeout_ms: 15_000,
   },
   auth: {
