@@ -13,6 +13,7 @@ agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                        [--title <text>]
                                        [--orchestrator | --orchestrator-json <json>]
                                        [--mcp-servers-json <json|@file>]
+                                       [--sandbox <provider-or-json|@file>]
                                        [--hold-permissions]
                                        [--attach] [--json] [--no-color]
 agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
@@ -168,6 +169,7 @@ reattached later.
 | `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |
 | `--orchestrator-json <json>` | Object form of the above: `{"tools":[…],"maxDepth":N,"maxChildren":N}`. Wins over `--orchestrator` when both are passed. |
 | `--mcp-servers-json <json\|@file>` | Inject MCP servers (`AcpMcpServer[]`) into the session — inline JSON array, or `@path` to read it from a file. |
+| `--sandbox <provider-or-json\|@file>` | Spawn inside an isolated sandbox box instead of the local host. Pass a provider slug (e.g. `e2b` or `box`, configured via `setup_sandbox_provider`) or an inline AIP-36 `SandboxDefinition` JSON object (optionally with `{"reuse":"<sandboxId>"}` for reconnect). `@file` reads the slug or JSON from a file. Mirrors `agent_start.sandbox`. |
 | `--hold-permissions` | Start in **permission-hold mode**: every tool-permission request the agent raises is parked in the cross-session inbox instead of auto-answered. Approve/deny with [`permissions.md`](./permissions.md). |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
@@ -277,19 +279,21 @@ Same capability over MCP (`agent_start { permissionHold: true }` +
 [`permissions.md`](./permissions.md) for the full inbox verb. ACP adapters
 only (e.g. claude-code); adapters with no permission surface ignore the flag.
 
-#### Sandbox (MCP/HTTP only — no CLI flag yet)
+#### Sandbox
 
-`agent_start` accepts a `sandbox` field that boots the session inside an
-isolated cloud sandbox instead of the local machine, via a pluggable
+`agent_start` (and the `--sandbox` CLI flag above) boot the session inside
+an isolated cloud sandbox instead of the local machine, via a pluggable
 `SandboxProvider` (e2b's Firecracker microVMs ship today —
 `@agentproto/sandbox-e2b`). The daemon boots the box, starts its own
 sub-daemon inside it, and proxies the session's turns back over that box's
 MCP endpoint (`SandboxAgentSessionProxy`) — from the outside it behaves like
-any other session. Supports reconnecting to an existing sandbox id and
-pausing it on close (AIP-36 lifecycle) instead of tearing it down.
+any other session. Closing the session **pauses** the box by default
+(AIP-36 lifecycle) — it stays reattachable via `agentproto sandbox attach`
+or `sandbox.reuse`. An explicit `lifecycle.destroy_on` declaration kills
+the box instead.
 
-Only reachable today via the MCP `start_agent_session` tool or
-`POST /sessions/agent`, not a `sessions start` CLI flag. Companion MCP tools:
+Reachable via the `--sandbox` flag (CLI), the MCP `agent_start` tool's
+`sandbox` field, or `POST /sessions/agent`. Companion MCP tools:
 `list_sandbox_providers` (see what's configured) and
 `setup_sandbox_provider` (register credentials for one).
 
