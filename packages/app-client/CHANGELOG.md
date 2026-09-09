@@ -1,5 +1,12 @@
 # @agentproto/app-client
 
+## 0.3.2
+
+### Patch Changes
+
+- b51f116: Bump happy-dom devDependency to ^20.0.0 for pnpm audit security fix
+- b51f116: Bump `happy-dom` devDependency from `^15.11.7` to `^20.0.0` to pick up security fixes; no export or behavior change.
+
 ## 0.3.1
 
 ### Patch Changes

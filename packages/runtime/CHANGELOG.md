@@ -1,5 +1,45 @@
 # @agentproto/runtime
 
+## 3.1.0
+
+### Minor Changes
+
+- 32b58b1: Add discoverable, configurable session events paths (sessions.eventsDir, descriptor.eventsPath)
+- 2e1f93c: Wrap multi-line terminal_input in bracketed-paste markers when PTY paste mode is on
+- 84a451d: Add web.search AIP-14 tool with Brave/Serper AIP-30 HTTP drivers
+- d0cd06e: Add federated GET /brain/query HTTP route and agentproto brain query CLI command
+- c809f12: Add optional model field to kind:agent workflow steps (same semantics as agent_start.model)
+- 648e789: Add semantic config.installAdapters field to sandbox specs
+- 2d87474: Add sandbox ledger + list/rm CLI and label/prefix reuse resolution
+- 87a2814: feat: opt-in `env.autoPassthrough` on sandbox specs. `@agentproto/sandbox` declares the optional flag on `SandboxDefinition.env` (+ zod schema, default strictly absent); `@agentproto/runtime` implements it: when the flag is set and the spawn's host-side billing-credential resolution produced a credential, the credential's env-var NAME (its `setEnv`, e.g. `ANTHROPIC_API_KEY`) is injected into `spec.env.passthrough` before the sandbox box boots, so a fresh box inherits host auth without the caller naming vars. Only the name is injected — the value travels via the existing passthrough mechanism (host secrets broker → box env) and is never read, logged, or echoed by the flag. Billing credential only; explicit `env.passthrough` entries are unioned (deduped, caller entries kept). When no credential resolved — or the host process cannot resolve the var — nothing is injected and the spawn proceeds unchanged.
+
+### Patch Changes
+
+- d034471: Auto-install the spawned adapter into sandbox boxes' installPackages
+- 834bfb8: Aligns runtime with the new sandbox pause-by-default teardown: updated the sandbox-reconnect regression test to assert that a plain ephemeral spawn (no `lifecycle`, no `reuse`) pauses on close, and refreshed the `lifecyclePolicy` docblock in `sandbox-agent-session-proxy.ts`. No exported surface change.
+- f6561a5: Fix `session_restart` on a sandboxed agent session: re-attach the existing box via its provider `connect()` and re-spawn the adapter inside it, failing loud when the box is expired instead of spawning locally against a box cwd.
+- Updated dependencies [bb3342f]
+- Updated dependencies [b51f116]
+- Updated dependencies [d034471]
+- Updated dependencies [c809f12]
+- Updated dependencies [648e789]
+- Updated dependencies [87a2814]
+- Updated dependencies [834bfb8]
+- Updated dependencies [feffc34]
+- Updated dependencies [b51f116]
+  - @agentproto/model-catalog@0.9.4
+  - @agentproto/app-client@0.3.2
+  - @agentproto/sandbox@0.4.0
+  - @agentproto/workflow-runtime@0.11.0
+  - @agentproto/workflow@0.6.0
+  - @agentproto/providers-store@0.3.13
+  - @agentproto/app-kit@1.1.1
+  - @agentproto/apps@0.9.3
+  - @agentproto/workflow-loader@0.2.2
+  - @agentproto/eval-reporters@0.2.12
+  - @agentproto/telemetry-langfuse@0.2.10
+  - @agentproto/workspace-brain@0.4.5
+
 ## 3.0.0
 
 ### Major Changes

@@ -1,5 +1,26 @@
 # @agentproto/sandbox
 
+## 0.4.0
+
+### Minor Changes
+
+- 648e789: Add semantic config.installAdapters field to sandbox specs
+- 87a2814: feat: opt-in `env.autoPassthrough` on sandbox specs. `@agentproto/sandbox` declares the optional flag on `SandboxDefinition.env` (+ zod schema, default strictly absent); `@agentproto/runtime` implements it: when the flag is set and the spawn's host-side billing-credential resolution produced a credential, the credential's env-var NAME (its `setEnv`, e.g. `ANTHROPIC_API_KEY`) is injected into `spec.env.passthrough` before the sandbox box boots, so a fresh box inherits host auth without the caller naming vars. Only the name is injected — the value travels via the existing passthrough mechanism (host secrets broker → box env) and is never read, logged, or echoed by the flag. Billing credential only; explicit `env.passthrough` entries are unioned (deduped, caller entries kept). When no credential resolved — or the host process cannot resolve the var — nothing is injected and the spawn proceeds unchanged.
+- 834bfb8: Pause is the default sandbox teardown: closing a session with no `lifecycle` declaration now pauses the box (`pause({ keepMemory: true })`) instead of killing it, so every closed box stays reattachable via `sandbox.reuse` / `agentproto sandbox attach`. Explicit declarations stay authoritative — `lifecycle.destroy_on` kills, `pause_after_idle` pauses. Paused boxes still die at their own `timeoutMs` (45 min by default), so pauses don't accumulate indefinitely.
+- feffc34: Accept AIP-38 `policy` blocks in SANDBOX frontmatter schemas: the strict
+  `z.object` now declares the top-level `policy` key that the vendored JSON
+  draft has always advertised, so manifests carrying a policy block no longer
+  fail validation as an unknown key. Note: the block's shape is not yet
+  validated — the scaffolder emits `z.any()` for it until local `$ref`
+  resolution is implemented; accepting the key is the change.
+
+### Patch Changes
+
+- d034471: Auto-install the spawned adapter into sandbox boxes' installPackages
+- Updated dependencies [c809f12]
+  - @agentproto/workflow-runtime@0.11.0
+  - @agentproto/worktree@0.6.2
+
 ## 0.3.1
 
 ### Patch Changes

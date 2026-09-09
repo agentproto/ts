@@ -1,5 +1,17 @@
 # @agentproto/workflow-runtime
 
+## 0.11.0
+
+### Minor Changes
+
+- c809f12: Add optional model field to kind:agent workflow steps (same semantics as agent_start.model)
+
+### Patch Changes
+
+- Updated dependencies [c809f12]
+  - @agentproto/workflow@0.6.0
+  - @agentproto/corpus@0.7.3
+
 ## 0.10.1
 
 ### Patch Changes

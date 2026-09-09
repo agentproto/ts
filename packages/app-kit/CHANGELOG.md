@@ -1,5 +1,14 @@
 # @agentproto/app-kit
 
+## 1.1.1
+
+### Patch Changes
+
+- Updated dependencies [c809f12]
+  - @agentproto/workflow@0.6.0
+  - @agentproto/workflow-loader@0.2.2
+  - @agentproto/mastra@0.2.13
+
 ## 1.1.0
 
 ### Minor Changes
