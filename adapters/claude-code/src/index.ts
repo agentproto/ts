@@ -53,7 +53,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     "Anthropic's Claude Code wrapped as an ACP agent via @agentclientprotocol/claude-agent-acp. Spawned via `npx -y @agentclientprotocol/claude-agent-acp` and driven over stdio JSON-RPC.",
   version: "0.1.0",
   bin: "npx",
-  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.67.0"],
+  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.75.1"],
   install: [
     {
       method: "npm",
