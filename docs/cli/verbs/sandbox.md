@@ -1,25 +1,53 @@
 # `agentproto sandbox`
 
 ```text
+agentproto sandbox list   [--json]
 agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
+agentproto sandbox rm     <sandboxId|label|id-prefix> [--box] [--yes] [--json]
 ```
 
-Connect to an ALREADY-EXISTING sandbox (Box, e2b, …) without tearing it
-down. A pure local shell over `@agentproto/runtime`'s `attachSandbox` — no
-daemon required on this machine, since attach's whole point is reaching a
-REMOTE sandbox's own daemon, not this one's. Provider credentials are read
-the same way `agent_start.sandbox` reads them (`~/.agentproto/sandbox-creds/
-<slug>.json`, written by the `setup_sandbox_provider` MCP tool), and provider
-API keys (e.g. `BOX_API_KEY`, `E2B_API_KEY`) must additionally be set in
-this process's own environment.
+Browse the daemon's **sandbox ledger** (every box the daemon has booted,
+reconnected to, or paused — stored in `~/.agentproto/sandboxes.json`), and
+connect to already-existing boxes without tearing them down.
 
-This is distinct from boot-and-drive (`agent_start.sandbox`, which boots a
-fresh box and spawns an adapter ON it): attach resumes a box that already
-exists, never calls `stop()`/`pause()` on it, and hands back a durable,
-token-gated connection descriptor any MCP client — local Claude, a GitHub
-Action, another ephemeral sandbox — can use to reach it directly.
+Provider credentials are read from `~/.agentproto/sandbox-creds/<slug>.json`
+(written by the `setup_sandbox_provider` MCP tool); provider API keys (e.g.
+`BOX_API_KEY`, `E2B_API_KEY`) must additionally be set in this process's own
+environment.
 
 ## Subverbs
+
+### `list`
+
+```bash
+agentproto sandbox list
+agentproto sandbox list --json
+```
+
+Prints the sandbox ledger — every box the daemon has booted, reconnected
+to, paused, or stopped — with its current state, idle-expiry, and the
+origin session that spawned it.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Print the raw `{ sandboxes: […] }` JSON instead of the human table. |
+
+### `rm <sandboxId|label|id-prefix>`
+
+```bash
+agentproto sandbox rm my-task-label
+agentproto sandbox rm bx_abc123 --box --yes
+```
+
+Removes the ledger entry for the given box (resolved by exact label, full
+`sandboxId`, or unique id prefix). By default the box itself is left
+running/paused on the provider — only the local bookkeeping row is dropped.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--box` | `false` | ALSO stop the box on its provider (destructive — the sandbox and all data inside it is torn down). Without `--yes`, an interactive terminal is asked to confirm. |
+| `--yes` | `false` | Skip the interactive confirmation for `--box`. Required in non-TTY environments. |
+| `--json` | `false` | Print `{ ok, removed, boxStopped }` as JSON. |
 
 ### `attach <provider> <sandboxId>`
 
@@ -52,6 +80,17 @@ concept (e.g. e2b).
 ## Examples
 
 ```bash
+# Browse all boxes the daemon has touched
+agentproto sandbox list
+agentproto sandbox list --json
+
+# Remove a ledger entry (box stays running/paused on the provider)
+agentproto sandbox rm my-task-label
+agentproto sandbox rm bx_abc123
+
+# Remove ledger entry AND stop the box (destructive)
+agentproto sandbox rm bx_abc123 --box --yes
+
 # Attach to a Box sandbox booted by an earlier agent_start sandbox spawn
 agentproto sandbox attach box bx_abc123
 
@@ -93,6 +132,6 @@ a token-only provider falls back to `Authorization: Bearer <token>`.
 
 ## See also
 
-- [`sessions.md`](./sessions.md) — `agent_start.sandbox` boots and drives a
-  fresh sandbox; this verb only attaches to one that already exists
+- [`sessions.md`](./sessions.md) — `agent_start.sandbox` / `sessions start --sandbox` boots and drives a
+  fresh sandbox; `sandbox list`/`attach`/`rm` operate on already-existing boxes
 - [`auth.md`](./auth.md) — credential storage conventions
