@@ -2805,11 +2805,20 @@ export async function startHttpServer(
         // spelling of the id must route. Gated like the other browser-
         // reachable routes: guardBrowserOrigin blocks a non-allowlisted
         // page's drive-by (the served UI itself is same-origin ⇒ loopback
-        // ⇒ allowlisted), authorize() gates the tunnel path by bearer.
+        // ⇒ allowlisted) — except a proven trusted embedder's iframe nav
+        // (vscode-webview://, app csp.frameDomains; see
+        // iframeEmbedOriginAllowed), authorize() gates the tunnel path by
+        // bearer.
         if (opts.appRegistry && path.startsWith("/apps/")) {
           const uiMatch = path.match(/^\/apps\/(.+)\/ui$/)
           if (uiMatch && req.method === "GET") {
-            if (guardBrowserOrigin(req, res)) return
+            const uiApp = opts.appRegistry.getApp(decodeURIComponent(uiMatch[1]!))
+            // Scoped guardBrowserOrigin pass-through for proven trusted
+            // embedders (vscode-webview:// scheme, app-declared
+            // csp.frameDomains — origins a hostile web page cannot hold;
+            // see iframeEmbedOriginAllowed). Every other cross-origin
+            // browser request keeps taking the guard's 403, unchanged.
+            if (!iframeEmbedOriginAllowed(req, uiApp ?? {}) && guardBrowserOrigin(req, res)) return
             if (!authorize(req, res)) return
             await handleAppUiPage(
               req,
@@ -6699,8 +6708,9 @@ async function handleProviderInbound(
  *  'none'` (plus `x-frame-options: DENY` for older browsers): standalone
  *  means a top-level tab — refusing embedding closes the drive-by where a
  *  hostile page iframes the UI and lets the app's own boot sequence fire
- *  allowlisted tools. Opt-out: `?embed=1` drops both headers so trusted
- *  embedders can frame the page — the deep-link spelling the builtin
+ *  allowlisted tools. Opt-out: `?embed=1` drops both headers ONLY for a
+ *  proven trusted embedder (see `iframeEmbedAllowed` below) — the deep-link
+ *  spelling the builtin
  *  `agentproto_session_chat` widget and the VS Code chat-panel webview
  *  both use for the `@agentik/session-chat` app. guardBrowserOrigin and
  *  authorize() still gate the route exactly as for a top-level tab, and
@@ -6730,21 +6740,100 @@ async function handleAppUiPage(
     )
     return
   }
-  // `?embed=1` — the trusted-embedder opt-out (see doc above): the builtin
-  // session-chat widget and the VS Code chat-panel webview iframe this
-  // exact deep-link spelling, and the blanket DENY made both render a
-  // refused frame.
-  const embed = new URL(req.url ?? "/", "http://localhost").searchParams.get("embed") === "1"
+  // `?embed=1` — the trusted-embedder opt-out (see doc above + the
+  // `iframeEmbedAllowed` contract): the flag alone is attacker-controlled,
+  // so the header flip additionally requires proof of a trusted embedder.
+  const embedRequested =
+    new URL(req.url ?? "/", "http://localhost").searchParams.get("embed") === "1"
   const headers: Record<string, string> = {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
   }
-  if (!embed) {
+  if (!(embedRequested && iframeEmbedAllowed(req, app))) {
     headers["x-frame-options"] = "DENY"
     headers["content-security-policy"] = "frame-ancestors 'none'"
   }
   res.writeHead(200, headers)
   res.end(injectStandaloneAppBridge(raw))
+}
+
+/** Trusted-embedder proof for the `?embed=1` header flip on
+ *  `GET /apps/:appId/ui`. The query flag is attacker-controlled, so a bare
+ *  `?embed=1` never relaxes `frame-ancestors 'none'` — the request must
+ *  additionally look like an iframe navigation from an origin a hostile
+ *  web page cannot hold:
+ *
+ *  1. `sec-fetch-dest: iframe` — present and not `iframe` (a top-level
+ *     `document` navigation is not an embed; it never needs the flip) ⇒
+ *     refuse. Absent header (non-Fetch-Metadata user agents) is tolerated,
+ *     but then the Origin/Referer check below is mandatory.
+ *  2. Origin/Referer must be present and resolve to an allowlisted
+ *     embedding origin (see `iframeEmbedOriginAllowed`). ABSENCE of both
+ *     Origin and Referer (no-referrer meta, sandboxed frame) ⇒ refuse; a
+ *     cross-origin hostile origin ⇒ refuse.
+ *
+ *  Purely about who may receive a frame-able response: guardBrowserOrigin
+ *  and authorize() keep gating the route exactly as before. */
+function iframeEmbedAllowed(
+  req: IncomingMessage,
+  app: { ui?: { csp?: { frameDomains?: readonly string[] } } },
+): boolean {
+  const secFetchDest = req.headers["sec-fetch-dest"]
+  if (secFetchDest !== undefined && secFetchDest !== "iframe") return false
+
+  const origin = typeof req.headers.origin === "string" && req.headers.origin.length > 0 ? req.headers.origin : null
+  const referer = typeof req.headers.referer === "string" && req.headers.referer.length > 0 ? req.headers.referer : null
+  if (!origin && !referer) return false
+
+  const candidates = new Set<string>()
+  if (origin) candidates.add(origin)
+  if (referer) {
+    try {
+      candidates.add(new URL(referer).origin)
+    } catch {
+      // Unparseable Referer contributes nothing; Origin alone may still allow.
+    }
+  }
+
+  const host = req.headers.host
+  const daemonOrigins = host ? [`http://${host}`, `https://${host}`] : []
+  for (const candidate of candidates) {
+    if (candidate.startsWith("vscode-webview://")) return true
+    if (daemonOrigins.includes(candidate)) return true
+    if ((app.ui?.csp?.frameDomains ?? []).includes(candidate)) return true
+  }
+  return false
+}
+
+/** The origin half of `iframeEmbedAllowed`, WITHOUT the `sec-fetch-dest`
+ *  / embed-flag requirements — the scoped guardBrowserOrigin pass-through
+ *  for the /ui route. A browser drive-by can never present these origins:
+ *  a web page's Origin is always http(s) (a hostile page cannot hold
+ *  `vscode-webview://<random-id>`), and a `csp.frameDomains` entry is
+ *  explicitly declared as a trusted framer by the app's own bundle. The
+ *  daemon's own origin needs no bypass — it already matches the localhost
+ *  defaults. Everything else keeps taking the guard's 403. */
+function iframeEmbedOriginAllowed(
+  req: IncomingMessage,
+  app: { ui?: { csp?: { frameDomains?: readonly string[] } } },
+): boolean {
+  const origin = typeof req.headers.origin === "string" && req.headers.origin.length > 0 ? req.headers.origin : null
+  const referer = typeof req.headers.referer === "string" && req.headers.referer.length > 0 ? req.headers.referer : null
+  if (!origin && !referer) return false
+  const candidates = new Set<string>()
+  if (origin) candidates.add(origin)
+  if (referer) {
+    try {
+      candidates.add(new URL(referer).origin)
+    } catch {
+      // Unparseable Referer contributes nothing.
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.startsWith("vscode-webview://")) return true
+    if ((app.ui?.csp?.frameDomains ?? []).includes(candidate)) return true
+  }
+  return false
 }
 
 /** Map a file extension to the `OutboundAttachment["type"]` bucket

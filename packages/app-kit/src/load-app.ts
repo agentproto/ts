@@ -59,6 +59,7 @@ interface AppFrontmatterUi {
   readonly csp?: {
     readonly connectDomains?: readonly string[]
     readonly resourceDomains?: readonly string[]
+    readonly frameDomains?: readonly string[]
   }
 }
 

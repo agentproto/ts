@@ -113,13 +113,89 @@ describe("standalone app UI host — REST routes", () => {
     })
   })
 
-  it("GET with ?embed=1 drops the anti-framing headers (trusted-embedder opt-out)", async () => {
+  it("GET with ?embed=1 drops the anti-framing headers for the daemon's own origin (iframe navigation)", async () => {
     await withServer(async base => {
-      const res = await fetch(`${base}/apps/${APP_ID}/ui?session=sess_1&embed=1`)
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?session=sess_1&embed=1`, {
+        headers: { "sec-fetch-dest": "iframe", origin: base },
+      })
       expect(res.status).toBe(200)
       expect(res.headers.get("x-frame-options")).toBeNull()
       expect(res.headers.get("content-security-policy")).toBeNull()
       expect(await res.text()).toContain("media-viewer-marker")
+    })
+  })
+
+  it("GET with ?embed=1 drops the headers for a vscode-webview:// origin", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1`, {
+        headers: { "sec-fetch-dest": "iframe", origin: "vscode-webview://webview-abc123" },
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get("x-frame-options")).toBeNull()
+      expect(res.headers.get("content-security-policy")).toBeNull()
+    })
+  })
+
+  it("GET with ?embed=1 drops the headers for an app-declared csp.frameDomains origin", async () => {
+    appRegistry.upsertApp({
+      appId: APP_ID,
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: {
+        path: uiPath,
+        title: "Media Viewer",
+        tools: ["directory_list", "file_info"],
+        csp: { frameDomains: ["https://panel.example"] },
+      },
+    })
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1`, {
+        headers: { "sec-fetch-dest": "iframe", origin: "https://panel.example" },
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get("x-frame-options")).toBeNull()
+      expect(res.headers.get("content-security-policy")).toBeNull()
+    })
+  })
+
+  it("GET with ?embed=1 and NO Origin/Referer keeps the anti-framing headers (no-referrer refusal)", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?session=sess_1&embed=1`, {
+        headers: { "sec-fetch-dest": "iframe" },
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get("x-frame-options")).toBe("DENY")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'none'")
+    })
+  })
+
+  it("GET with ?embed=1 and a non-iframe sec-fetch-dest keeps the headers (top-level navigation)", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1`, {
+        headers: { "sec-fetch-dest": "document", origin: base },
+      })
+      expect(res.headers.get("x-frame-options")).toBe("DENY")
+    })
+  })
+
+  it("GET with ?embed=1 from a non-embedder origin keeps the headers (Referer-only fallback refused)", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1`, {
+        headers: { "sec-fetch-dest": "iframe", referer: "http://evil.example/page" },
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get("x-frame-options")).toBe("DENY")
+    })
+  })
+
+  it("GET with a cross-origin hostile embed is refused outright by guardBrowserOrigin", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?session=sess_1&embed=1`, {
+        headers: { "sec-fetch-dest": "iframe", origin: "https://evil.com" },
+      })
+      expect(res.status).toBe(403)
     })
   })
 
