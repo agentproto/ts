@@ -1,5 +1,5 @@
 /**
- * Regression guard for the boot-time mount (builtin-apps.ts): the five
+ * Regression guard for the boot-time mount (builtin-apps.ts): the six
  * daemon-builtin panels that moved to @agentproto/apps must register their
  * exact same tool ids + ui:// resourceUris on a fresh McpServer with zero
  * installed apps — no `app_install` step required. This is the contract
@@ -19,6 +19,7 @@ const EXPECTED = [
   { toolId: "agentproto_bureau_sessions", resourceUri: "ui://agentproto_bureau_sessions/view" },
   { toolId: "agentproto_session_story", resourceUri: "ui://agentproto_session_story/view" },
   { toolId: "live_session", resourceUri: "ui://live_session/view" },
+  { toolId: "agentproto_session_chat", resourceUri: "ui://agentproto_session_chat/view" },
 ]
 
 async function setup() {
@@ -28,6 +29,7 @@ async function setup() {
     makeBuiltinPanelApps({
       listSessions: () => [],
       httpBaseUrl: "http://127.0.0.1:18790",
+      isSessionChatInstalled: () => false,
     }),
   )
 
@@ -39,7 +41,7 @@ async function setup() {
 }
 
 describe("builtin-apps.ts — boot-time mount, no app_install required", () => {
-  it("registers all five builtin tool ids with their ui.resourceUri on a fresh server", async () => {
+  it("registers all six builtin tool ids with their ui.resourceUri on a fresh server", async () => {
     const client = await setup()
     const { tools } = await client.listTools()
 

@@ -16,7 +16,7 @@
  * folder (`code-team/`, `content-team/`) with `agents/` + `workflows/`, and is
  * re-exported here + as a subpath (`@agentproto/apps/<team>`).
  *
- * This package also carries five daemon-builtin panels (`sessions-panel`,
+ * This package also carries six daemon-builtin panels (`sessions-panel`,
  * `agents-overview`, `bureau-sessions`, `session-story`, `live-session`) —
  * @agentproto/runtime's house-app-quality UI widgets. Each ships in two
  * forms: a real `AppHandle` (`agents: []`, UI-only — the catalog/emit/
@@ -48,3 +48,16 @@ export { makeSessionStoryPanelApp, sessionStoryApp } from "./session-story/index
 export type { SessionStoryOps, SessionStoryInput, SessionStoryOutput } from "./session-story/index.js"
 export { makeLiveSessionApp, liveSessionApp } from "./live-session/index.js"
 export type { LiveSessionOps, LiveSessionInput, LiveSessionOutput } from "./live-session/index.js"
+export {
+  makeSessionChatApp,
+  sessionChatApp,
+  sessionChatAppUrl,
+  SESSION_CHAT_APP_ID,
+  SESSION_CHAT_FALLBACK_HTML,
+  sessionChatEmbedHtml,
+} from "./session-chat/index.js"
+export type {
+  SessionChatOps,
+  SessionChatInput,
+  SessionChatOutput,
+} from "./session-chat/index.js"

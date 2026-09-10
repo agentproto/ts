@@ -28,5 +28,12 @@ export interface AgnoMcpApp<TInput = unknown, TOutput = unknown> {
    *  WebSocket/fetch from inside the iframe (e.g. live-session's SSE, or
    *  runtime's terminal-panel-app.ts) must declare the exact origin(s) they
    *  connect to here. */
-  csp?: { connectDomains?: string[]; resourceDomains?: string[] }
+  csp?: {
+    connectDomains?: string[]
+    resourceDomains?: string[]
+    /** Origins the panel may iframe (`frame-src` under the ext-apps CSP
+     *  grammar) — e.g. the session-chat widget frames the installed
+     *  `@agentik/session-chat` app's standalone url on the daemon origin. */
+    frameDomains?: string[]
+  }
 }

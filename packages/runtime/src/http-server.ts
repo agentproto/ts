@@ -2811,7 +2811,12 @@ export async function startHttpServer(
           if (uiMatch && req.method === "GET") {
             if (guardBrowserOrigin(req, res)) return
             if (!authorize(req, res)) return
-            await handleAppUiPage(res, decodeURIComponent(uiMatch[1]!), opts.appRegistry)
+            await handleAppUiPage(
+              req,
+              res,
+              decodeURIComponent(uiMatch[1]!),
+              opts.appRegistry,
+            )
             return
           }
           const toolCallMatch = path.match(/^\/apps\/(.+)\/tool-call$/)
@@ -6690,11 +6695,19 @@ async function handleProviderInbound(
  *  standalone REST bridge injected so `window.McpApp.connect()` works with
  *  no host iframe (callTool POSTs to the sibling `./tool-call` route —
  *  `./` resolves against the document URL, so the appId segment carries
- *  over whichever spelling it used). `frame-ancestors 'none'`: standalone
+ *  over whichever spelling it used). Default posture is `frame-ancestors
+ *  'none'` (plus `x-frame-options: DENY` for older browsers): standalone
  *  means a top-level tab — refusing embedding closes the drive-by where a
  *  hostile page iframes the UI and lets the app's own boot sequence fire
- *  allowlisted tools. */
+ *  allowlisted tools. Opt-out: `?embed=1` drops both headers so trusted
+ *  embedders can frame the page — the deep-link spelling the builtin
+ *  `agentproto_session_chat` widget and the VS Code chat-panel webview
+ *  both use for the `@agentik/session-chat` app. guardBrowserOrigin and
+ *  authorize() still gate the route exactly as for a top-level tab, and
+ *  the tool-call route the embedded page POSTs to keeps its own gating,
+ *  so embedding widens who can *display* the UI, not what it can do. */
 async function handleAppUiPage(
+  req: IncomingMessage,
   res: ServerResponse,
   appId: string,
   appRegistry: AppRegistry,
@@ -6717,12 +6730,20 @@ async function handleAppUiPage(
     )
     return
   }
-  res.writeHead(200, {
+  // `?embed=1` — the trusted-embedder opt-out (see doc above): the builtin
+  // session-chat widget and the VS Code chat-panel webview iframe this
+  // exact deep-link spelling, and the blanket DENY made both render a
+  // refused frame.
+  const embed = new URL(req.url ?? "/", "http://localhost").searchParams.get("embed") === "1"
+  const headers: Record<string, string> = {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
-    "x-frame-options": "DENY",
-    "content-security-policy": "frame-ancestors 'none'",
-  })
+  }
+  if (!embed) {
+    headers["x-frame-options"] = "DENY"
+    headers["content-security-policy"] = "frame-ancestors 'none'"
+  }
+  res.writeHead(200, headers)
   res.end(injectStandaloneAppBridge(raw))
 }
 

@@ -113,6 +113,23 @@ describe("standalone app UI host — REST routes", () => {
     })
   })
 
+  it("GET with ?embed=1 drops the anti-framing headers (trusted-embedder opt-out)", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?session=sess_1&embed=1`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("x-frame-options")).toBeNull()
+      expect(res.headers.get("content-security-policy")).toBeNull()
+      expect(await res.text()).toContain("media-viewer-marker")
+    })
+  })
+
+  it("GET with a non-1 embed value keeps the anti-framing headers", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=0`)
+      expect(res.headers.get("x-frame-options")).toBe("DENY")
+    })
+  })
+
   it("GET for an unknown app 404s", async () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/@nope/nothing/ui`)
