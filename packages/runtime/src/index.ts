@@ -48,6 +48,7 @@ import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeBuiltinPanelApps } from "./builtin-apps.js"
+import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 import { registerSummarizeSessionTool } from "./summarize-session-tool.js"
 import { makeTerminalPanelApp } from "./terminal-panel-app.js"
 import { registerAppPullTools } from "./app-pull-tools.js"
@@ -1920,7 +1921,7 @@ export async function createGateway(
     // (tool-subset.ts, now registerTool-aware) can drop them on scoped/child
     // gateways — they belong only on the full /mcp surface a host connects to.
     registerAppPullTools(server, { registry: sessions })
-    // The five daemon-builtin panels — now house-app-quality code in
+    // The six daemon-builtin panels — now house-app-quality code in
     // @agentproto/apps, mounted here without an app_install step (see
     // builtin-apps.ts for why they aren't AppHandles).
     const builtinPanelApps = [
@@ -1929,6 +1930,17 @@ export async function createGateway(
         // httpBaseUrl = this daemon's own origin (SSE stream + bridge
         // fallback for the live-session widget).
         httpBaseUrl: `http://127.0.0.1:${port}`,
+        // The session-chat widget is a thin launcher for the installed
+        // `@agentik/session-chat` studio app — resolve installed-ness from
+        // the AppRegistry at call time (not boot) so `app_install`/
+        // `app_uninstall` of that app is reflected without a daemon restart.
+        isSessionChatInstalled: () => {
+          try {
+            return appRegistry.getApp(SESSION_CHAT_APP_ID)?.ui != null
+          } catch {
+            return false
+          }
+        },
       }),
       // Same ptyEnabled gate as terminal_start/terminal_input/… in
       // session-tools.ts — the panel would be able to open the WS but

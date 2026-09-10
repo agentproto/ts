@@ -1,5 +1,5 @@
 /**
- * Boot-time mount for the five daemon-builtin MCP-Apps panels that live in
+ * Boot-time mount for the six daemon-builtin MCP-Apps panels that live in
  * @agentproto/apps (sessions-panel, agents-overview, bureau-sessions,
  * session-story, live-session).
  *
@@ -37,6 +37,9 @@ import {
   bureauSessionsApp,
   sessionStoryApp,
   liveSessionApp,
+  sessionChatApp,
+  makeSessionChatApp,
+  SESSION_CHAT_APP_ID,
   type AgnoMcpApp,
 } from "@agentproto/apps"
 import type { AppHandle } from "@agentproto/app-kit"
@@ -47,10 +50,14 @@ export interface BuiltinPanelAppsOps {
   /** The daemon's own HTTP origin, e.g. "http://127.0.0.1:18790" — the
    *  live-session widget's SSE stream + bridge fallback connect here. */
   httpBaseUrl: string
+  /** Whether the `@agentik/session-chat` studio app is installed with a
+   *  `ui` block — the session-chat widget is a thin launcher for it and
+   *  degrades to an install notice when this is false. */
+  isSessionChatInstalled: () => boolean
 }
 
 /**
- * Build the five builtin panel apps, ready to pass into `registerMcpApps`
+ * Build the six builtin panel apps, ready to pass into `registerMcpApps`
  * alongside installed apps' UI panels.
  */
 export function makeBuiltinPanelApps(
@@ -66,10 +73,17 @@ export function makeBuiltinPanelApps(
     // `agent_start` via _meta.ui.resourceUri (agent-tools.ts) so a launch
     // auto-renders it.
     makeLiveSessionApp({ httpBaseUrl: ops.httpBaseUrl }),
+    // Session-chat widget — thin launcher for the installed
+    // `@agentik/session-chat` app's standalone UI (deep-linked iframe when
+    // installed, install notice otherwise; see apps/src/session-chat).
+    makeSessionChatApp({
+      httpBaseUrl: ops.httpBaseUrl,
+      isSessionChatInstalled: ops.isSessionChatInstalled,
+    }),
   ]
 }
 
-/** The five panels' `AppHandle`s (catalog identity: `id`/`name`/
+/** The six panels' `AppHandle`s (catalog identity: `id`/`name`/
  *  `description`), in the same order `makeBuiltinPanelApps` mounts their
  *  `AgnoMcpApp` counterparts — zipped together below to pair each handle
  *  with its actual mounted tool id / resource uri. */
@@ -79,6 +93,7 @@ const PANEL_APP_HANDLES: readonly AppHandle[] = [
   bureauSessionsApp,
   sessionStoryApp,
   liveSessionApp,
+  sessionChatApp,
 ]
 
 export interface BuiltinPanelCatalogEntry {
@@ -97,7 +112,7 @@ export interface BuiltinPanelCatalogEntry {
 }
 
 /**
- * Catalog metadata for the five builtin panels — for `app_catalog` / the
+ * Catalog metadata for the six builtin panels — for `app_catalog` / the
  * Apps tree, NOT for mounting them (see `makeBuiltinPanelApps` for that).
  * Always present, independent of `~/.agentproto/apps.json` or the catalog
  * file: these panels need no `app_install` step, so `app_catalog`'s caller
@@ -112,6 +127,7 @@ export function builtinPanelCatalogEntries(): BuiltinPanelCatalogEntry[] {
   const apps = makeBuiltinPanelApps({
     listSessions: () => [],
     httpBaseUrl: "http://127.0.0.1:0",
+    isSessionChatInstalled: () => false,
   })
   return apps.map((app, i) => {
     const handle = PANEL_APP_HANDLES[i]!

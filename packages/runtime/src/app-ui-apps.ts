@@ -278,6 +278,7 @@ export async function makeInstalledAppUiApps(
             csp: {
               ...(ui.csp.connectDomains ? { connectDomains: [...ui.csp.connectDomains] } : {}),
               ...(ui.csp.resourceDomains ? { resourceDomains: [...ui.csp.resourceDomains] } : {}),
+              ...(ui.csp.frameDomains ? { frameDomains: [...ui.csp.frameDomains] } : {}),
             },
           }
         : {}),

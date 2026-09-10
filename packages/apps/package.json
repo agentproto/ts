@@ -114,6 +114,16 @@
       "import": "./dist/live-session/panel.mjs",
       "default": "./dist/live-session/panel.mjs"
     },
+    "./session-chat": {
+      "types": "./dist/session-chat/index.d.ts",
+      "import": "./dist/session-chat.mjs",
+      "default": "./dist/session-chat.mjs"
+    },
+    "./session-chat/panel": {
+      "types": "./dist/session-chat/panel.d.ts",
+      "import": "./dist/session-chat/panel.mjs",
+      "default": "./dist/session-chat/panel.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

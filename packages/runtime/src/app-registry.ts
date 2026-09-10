@@ -46,6 +46,7 @@ export interface InstalledApp {
     readonly csp?: {
       readonly connectDomains?: readonly string[]
       readonly resourceDomains?: readonly string[]
+      readonly frameDomains?: readonly string[]
     }
   }
   /** A persistent HTML dashboard (Cowork artifact) the app ships. `path` is
