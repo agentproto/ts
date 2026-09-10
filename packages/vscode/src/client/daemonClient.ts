@@ -30,6 +30,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 import { type DaemonConfig, buildAuthHeaders } from "../config.js"
+import { renestCatalog } from "./daemonCompat.js"
 import type {
   AdapterInfo,
   AdapterInstallResult,
@@ -761,6 +762,9 @@ export class DaemonClient {
   async listAdapters(): Promise<AdapterInfo[]> {
     const result = await this.mcpCall<{ adapters?: AdapterInfo[] } | AdapterInfo[]>(
       "adapter_list",
+      // Compact-by-default daemon (0.20+) drops modes/modelDetails/status
+      // without this — the Configuration Lab + mind map read them.
+      { full: true },
     )
     if (Array.isArray(result)) return result
     return result.adapters ?? []
@@ -783,7 +787,9 @@ export class DaemonClient {
    * panel).
    */
   async listApps(): Promise<InstalledAppInfo[]> {
-    const result = await this.mcpCall<InstalledAppInfo[]>("app_list")
+    // `full: true` — compact app_list flattens agents/workflows to bare id
+    // strings and drops `ui`, leaving the Apps tree without manifest paths.
+    const result = await this.mcpCall<InstalledAppInfo[]>("app_list", { full: true })
     return Array.isArray(result) ? result : []
   }
 
@@ -848,8 +854,12 @@ export class DaemonClient {
    * vendor/product/route model catalog.
    */
   async catalogModels(): Promise<CatalogModelsResponse> {
-    const result = await this.mcpCall<CatalogModelsResponse>("catalog_models")
-    return result ?? { vendors: [] }
+    // `full: true` — the compact projection returns a flat `{ routes: [...] }`
+    // array the legacy consumers can't walk; renestCatalog regroups it into
+    // the nested { vendors: [...] } tree (and default-fills the fields the
+    // compact rows lack).
+    const result = await this.mcpCall<unknown>("catalog_models", { full: true })
+    return renestCatalog(result) ?? { vendors: [] }
   }
 
   /**
