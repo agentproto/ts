@@ -121,7 +121,12 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
-          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code" }] }) }] } } }
+          // Daemon 0.20+: { full: true } returns the FULL manifest (compact
+          // default would keep only slug/name/version/protocol/models).
+          if (!(rpc.params.arguments as { full?: boolean }).full) {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code" }] }) }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code", name: "Claude Code", protocol: "acp", version: "1.0.0", models: ["claude-opus-4-8"], modes: [{ id: "subscription", status: "active" }], modelDetails: [{ id: "claude-opus-4-8", provider: "anthropic", mode: "subscription" }], status: "ready" }] }) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "harness_capabilities") {
           const args = rpc.params.arguments as { adapter?: string }
@@ -130,7 +135,10 @@ describe("DaemonClient — URL + auth header mapping", () => {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ capabilities: filtered }) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "catalog_models") {
-          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ vendors: [{ vendor: "anthropic", products: [{ product: "claude-opus-4-8", routes: [{ route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["personal"], adapterModes: [], adapters: ["claude-code"], curated: true }] }] }] }) }] } } }
+          // Daemon 0.20+ always answers with flat per-route rows under
+          // `routes`; with { full: true } the rows carry the complete
+          // CatalogRoute fields.
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ routes: [{ vendor: "anthropic", product: "claude-opus-4-8", route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["personal"], adapterModes: [], adapters: ["claude-code"], curated: true }] }) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "list_provider_presets") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ presets: [{ slug: "moonshot", name: "Moonshot", status: "available", info: { schemaFlavor: "anthropic", baseUrl: "https://api.moonshot.ai/anthropic", keyEnv: "MOONSHOT_API_KEY" } }] }) }] } } }
@@ -146,7 +154,12 @@ describe("DaemonClient — URL + auth header mapping", () => {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ ok: true, provider: a.provider, profileId: a.profileId, applied: false, restartRequired: true }) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "app_list") {
-          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", ui: { path: "/apps/mail/ui.html", title: "Mail Triage", tools: ["mail_list"] } }]) }] } } }
+          // Daemon 0.20+: { full: true } returns FULL records (compact would
+          // drop `ui` and flatten agents/workflows to bare id strings).
+          if (!(rpc.params.arguments as { full?: boolean }).full) {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", agents: ["triage"], workflows: ["ship"] }]) }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", dir: "/apps/mail", ui: { path: "/apps/mail/ui.html", title: "Mail Triage", tools: ["mail_list"] }, agents: [{ id: "triage", path: "/apps/mail/.agentproto/AGENT.md" }], workflows: [{ id: "ship", path: "/apps/mail/.agentproto/WORKFLOW.md" }] }]) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "app_tool_call") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ echoed: rpc.params.arguments }) }] } } }
@@ -430,10 +443,31 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(adapters[0]?.slug).toBe("claude-code")
   })
 
+  it("listAdapters() requests { full: true } and keeps the full manifest fields", async () => {
+    const adapters = await client().listAdapters()
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).toEqual({ full: true })
+    expect(adapters[0]?.modes).toEqual([{ id: "subscription", status: "active" }])
+    expect(adapters[0]?.modelDetails?.[0]?.provider).toBe("anthropic")
+    expect(adapters[0]?.status).toBe("ready")
+  })
+
   it("listApps() routes through mcpCall app_list", async () => {
     const apps = await client().listApps()
     expect(apps).toHaveLength(1)
     expect(apps[0]?.appId).toBe("mail-triage")
+    expect(apps[0]?.ui?.title).toBe("Mail Triage")
+  })
+
+  it("listApps() requests { full: true } and keeps the FULL-shaped record (ui, dir, ref paths)", async () => {
+    const apps = await client().listApps()
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).toEqual({ full: true })
+    expect(apps[0]?.dir).toBe("/apps/mail")
+    expect(apps[0]?.agents).toEqual([{ id: "triage", path: "/apps/mail/.agentproto/AGENT.md" }])
+    expect(apps[0]?.workflows).toEqual([{ id: "ship", path: "/apps/mail/.agentproto/WORKFLOW.md" }])
     expect(apps[0]?.ui?.title).toBe("Mail Triage")
   })
 
@@ -523,6 +557,24 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const catalog = await client().catalogModels()
     expect(catalog.vendors[0]?.vendor).toBe("anthropic")
     expect(catalog.vendors[0]?.products[0]?.routes[0]?.eligibleProfiles).toEqual(["personal"])
+  })
+
+  it("catalogModels() requests { full: true } and renests the flat {routes:[...]} payload daemon 0.20 sends", async () => {
+    const catalog = await client().catalogModels()
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).toEqual({ full: true })
+    expect(catalog.vendors).toHaveLength(1)
+    expect(catalog.vendors[0]?.vendor).toBe("anthropic")
+    expect(catalog.vendors[0]?.products[0]?.product).toBe("claude-opus-4-8")
+    expect(catalog.vendors[0]?.products[0]?.routes[0]).toMatchObject({
+      route: "anthropic",
+      ref: "anthropic/claude-opus-4-8",
+      pricing: { inPer1M: 15, outPer1M: 75 },
+      runnable: true,
+      curated: true,
+      adapters: ["claude-code"],
+    })
   })
 
   it("listProviderPresets() routes through mcpCall list_provider_presets", async () => {
