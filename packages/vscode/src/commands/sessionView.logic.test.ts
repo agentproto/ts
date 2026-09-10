@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { InstalledAppInfo, InstalledAppUi } from "../client/types.js"
 import {
   SESSION_CHAT_APP_ID,
+  chatPanelUrl,
   chatUrl,
   installedSessionChatApp,
   resolveSessionOpen,
@@ -37,6 +38,14 @@ describe("chatUrl", () => {
   })
 })
 
+describe("chatPanelUrl", () => {
+  it("appends embed=1 to the chat deep link", () => {
+    expect(chatPanelUrl("http://127.0.0.1:18790", "sess_abc")).toBe(
+      "http://127.0.0.1:18790/apps/%40agentik%2Fsession-chat/ui?session=sess_abc&embed=1",
+    )
+  })
+})
+
 describe("resolveSessionOpen", () => {
   const daemonUrl = "http://127.0.0.1:18790"
 
@@ -61,5 +70,23 @@ describe("resolveSessionOpen", () => {
     expect(resolveSessionOpen([CHAT_APP], "builtin", daemonUrl, "sess_1")).toEqual({
       kind: "builtin",
     })
+  })
+
+  it("routes to chat-panel when the setting is chat-panel and the app is installed", () => {
+    expect(resolveSessionOpen([CHAT_APP], "chat-panel", daemonUrl, "sess_1")).toEqual({
+      kind: "chat-panel",
+      url: chatPanelUrl(daemonUrl, "sess_1"),
+    })
+    expect(resolveSessionOpen([CHAT_APP], "chat-panel", daemonUrl, "sess_1").kind).toBe("chat-panel")
+  })
+
+  it("falls back to builtin when the setting is chat-panel and the app is missing", () => {
+    expect(resolveSessionOpen([], "chat-panel", daemonUrl, "sess_1")).toEqual({ kind: "builtin" })
+    expect(
+      resolveSessionOpen([app(SESSION_CHAT_APP_ID)], "chat-panel", daemonUrl, "sess_1"),
+    ).toEqual({ kind: "builtin" })
+    expect(
+      resolveSessionOpen([app("@agentik/other", { path: "ui" })], "chat-panel", daemonUrl, "sess_1"),
+    ).toEqual({ kind: "builtin" })
   })
 })

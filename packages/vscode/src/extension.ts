@@ -65,13 +65,14 @@ import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
 import { registerAppPanels } from "./webview/appPanel.js"
+import { registerChatPanels } from "./webview/chatPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
 import { registerBrowserPanels } from "./webview/browserPanel.js"
 import { registerConfigurationLabWebview } from "./webview/configurationLabPanel.js"
 import { registerAuthModelMindmap, type AuthModelFocusTarget } from "./webview/authModelMindmapPanel.js"
 import { registerAuthExplorer } from "./webview/authExplorerPanel.js"
 import { defaultOpenTarget } from "./commands/sessionOpen.logic.js"
-import { openSessionInChat, openSessionViaChat } from "./commands/sessionView.js"
+import { openSessionInChat, openSessionInChatPanel, openSessionViaChat } from "./commands/sessionView.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -163,6 +164,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
   const browserPanels = registerBrowserPanels(ctx, client) // agentproto.openBrowser (live browser session view)
   const appPanels = registerAppPanels(ctx, client) // agentproto.openAppPanel (installed app UI panels)
+  const chatPanels = registerChatPanels(ctx) // agentproto.openSessionInChatPanel (session-chat iframe panels)
   registerAppCommands(ctx, client, appPanels, appsProvider) // agentproto.openAppPanel / refreshApps
   const authModelMindmap = registerAuthModelMindmap(ctx, client) // agentproto.openAuthModel (auth/model config map)
   const authExplorer = registerAuthExplorer(ctx, client, authProfilesProvider) // agentproto.openAuthExplorer (editable auth & models)
@@ -228,6 +230,29 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         if (session) await openSessionInChat(client, session, () => transcriptPanels.open(session))
       },
     ),
+    // agentproto.openSessionInChatPanel — always the chat-panel webview panel
+    // (bypasses agentproto.sessionView); same fallback rule as
+    // openSessionInChat: builtin panel with a message when the app isn't
+    // installed — never a dead panel, never a browser tab.
+    vscode.commands.registerCommand(
+      "agentproto.openSessionInChatPanel",
+      async (arg: unknown) => {
+        const session = await resolveSessionArg(
+          arg,
+          store,
+          "Select a session to open in the chat panel",
+          () => true,
+          client,
+        )
+        if (session)
+          await openSessionInChatPanel(
+            client,
+            session,
+            () => transcriptPanels.open(session),
+            () => chatPanels.open(session.id),
+          )
+      },
+    ),
     // The sessions list's single click — routes to the view that matches the
     // session's kind (terminal / browser / transcript). `agentproto.openTranscript`
     // above stays as the explicit "always open the transcript" action.
@@ -250,8 +275,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
             browserPanels.open(session)
             return
           case "transcript":
-            const route = await openSessionViaChat(client, session)
-            if (route === "chat") return
+            const route = await openSessionViaChat(
+              client,
+              session,
+              () => chatPanels.open(session.id),
+            )
+            if (route !== "builtin") return
             transcriptPanels.open(session)
             return
         }

@@ -14,9 +14,9 @@ import { chatUrl, installedSessionChatApp, resolveSessionOpen } from "./sessionV
 
 /** Read the per-open setting — deliberately NOT part of getConfig()/
  *  RELOAD_REQUIRED_KEYS: switching it doesn't invalidate the daemon client. */
-export function getSessionView(): "chat" | "builtin" {
+export function getSessionView(): "chat" | "builtin" | "chat-panel" {
   const v = vscode.workspace.getConfiguration("agentproto").get<string>("sessionView")
-  return v === "builtin" ? "builtin" : "chat"
+  return v === "builtin" || v === "chat-panel" ? v : "chat"
 }
 
 /** The Simple Browser → OS browser ladder (apps.ts openAppInBrowser's
@@ -50,7 +50,8 @@ export async function openChatUrl(url: string, sessionId: string): Promise<void>
 export async function openSessionViaChat(
   client: DaemonClient,
   session: Pick<SessionDescriptor, "id">,
-): Promise<"chat" | "builtin"> {
+  openChatPanel?: () => void,
+): Promise<"chat" | "builtin" | "chat-panel"> {
   let apps: Awaited<ReturnType<DaemonClient["listApps"]>> = []
   try {
     apps = await client.listApps()
@@ -61,6 +62,10 @@ export async function openSessionViaChat(
   if (route.kind === "chat") {
     await openChatUrl(route.url, session.id)
     return "chat"
+  }
+  if (route.kind === "chat-panel") {
+    openChatPanel?.()
+    return "chat-panel"
   }
   return "builtin"
 }
@@ -94,4 +99,36 @@ export async function openSessionInChat(
     return
   }
   await openChatUrl(chatUrl(getConfig().daemonUrl, session.id), session.id)
+}
+
+/**
+ * `agentproto.openSessionInChatPanel` — ALWAYS the chat-panel webview panel,
+ * bypassing the setting. Same fallback rule as openSessionInChat: when the
+ * app isn't installed (or has no ui), say so once and open the builtin panel
+ * instead — never a dead panel, never a browser tab.
+ */
+export async function openSessionInChatPanel(
+  client: DaemonClient,
+  session: Pick<SessionDescriptor, "id">,
+  openBuiltin: () => void,
+  openChatPanel: () => void,
+): Promise<void> {
+  let apps: Awaited<ReturnType<DaemonClient["listApps"]>> = []
+  let listed = true
+  try {
+    apps = await client.listApps()
+  } catch {
+    apps = []
+    listed = false
+  }
+  if (!installedSessionChatApp(apps)) {
+    void vscode.window.showInformationMessage(
+      listed
+        ? "Session Chat app is not installed on the daemon — opening the builtin transcript panel."
+        : "Couldn't list installed apps — opening the builtin transcript panel.",
+    )
+    openBuiltin()
+    return
+  }
+  openChatPanel()
 }
