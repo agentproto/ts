@@ -71,6 +71,7 @@ import { registerConfigurationLabWebview } from "./webview/configurationLabPanel
 import { registerAuthModelMindmap, type AuthModelFocusTarget } from "./webview/authModelMindmapPanel.js"
 import { registerAuthExplorer } from "./webview/authExplorerPanel.js"
 import { defaultOpenTarget } from "./commands/sessionOpen.logic.js"
+import { openSessionInChat, openSessionViaChat } from "./commands/sessionView.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -211,6 +212,22 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         if (session) transcriptPanels.open(session)
       },
     ),
+    // agentproto.openSessionInChat — always the Session Chat app UI
+    // (bypasses agentproto.sessionView); falls back to the builtin panel
+    // with a message when the app isn't installed.
+    vscode.commands.registerCommand(
+      "agentproto.openSessionInChat",
+      async (arg: unknown) => {
+        const session = await resolveSessionArg(
+          arg,
+          store,
+          "Select a session to open in the chat UI",
+          () => true,
+          client,
+        )
+        if (session) await openSessionInChat(client, session, () => transcriptPanels.open(session))
+      },
+    ),
     // The sessions list's single click — routes to the view that matches the
     // session's kind (terminal / browser / transcript). `agentproto.openTranscript`
     // above stays as the explicit "always open the transcript" action.
@@ -233,6 +250,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
             browserPanels.open(session)
             return
           case "transcript":
+            const route = await openSessionViaChat(client, session)
+            if (route === "chat") return
             transcriptPanels.open(session)
             return
         }

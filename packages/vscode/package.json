@@ -306,6 +306,12 @@
         "icon": "$(go-to-file)"
       },
       {
+        "command": "agentproto.openSessionInChat",
+        "title": "agentproto: Open Session in Chat UI",
+        "category": "agentproto",
+        "icon": "$(comment)"
+      },
+      {
         "command": "agentproto.openBrowser",
         "title": "agentproto: Open Browser View",
         "category": "agentproto",
@@ -736,6 +742,11 @@
           "group": "transcript@1"
         },
         {
+          "command": "agentproto.openSessionInChat",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
+          "group": "transcript@2"
+        },
+        {
           "command": "agentproto.approvePermission",
           "when": "view == agentproto.permissions && viewItem == permission-pending",
           "group": "inline@1"
@@ -952,6 +963,19 @@
           "type": "boolean",
           "default": true,
           "description": "Hide machine-origin sessions (e.g. automated push-gate reviews, origin \"gate\") from the Sessions panel by default. The panel always reports how many it hid (view badge/description), and an explicit origin filter you set yourself (agentproto: Filter Sessions…) always wins over this setting."
+        },
+        "agentproto.sessionView": {
+          "type": "string",
+          "enum": [
+            "chat",
+            "builtin"
+          ],
+          "enumDescriptions": [
+            "Open sessions in the Session Chat app UI (@agentik/session-chat) in a browser tab — requires the app to be installed on the daemon; otherwise the builtin panel is used.",
+            "Open sessions in the builtin transcript webview panel."
+          ],
+          "default": "chat",
+          "description": "How opening a session shows its conversation (agentproto: Open Session). Read per open — takes effect immediately, no window reload needed. agentproto: Open Session in Chat UI always uses the chat UI."
         },
         "agentproto.sessionsView": {
           "type": "string",
