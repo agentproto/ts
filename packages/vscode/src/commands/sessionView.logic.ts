@@ -16,13 +16,22 @@ import type { InstalledAppInfo } from "../client/types.js"
 
 export const SESSION_CHAT_APP_ID = "@agentik/session-chat"
 
-export type SessionViewSetting = "chat" | "builtin"
+export type SessionViewSetting = "chat" | "builtin" | "chat-panel"
 
-export type SessionOpenRoute = { kind: "chat"; url: string } | { kind: "builtin" }
+export type SessionOpenRoute =
+  | { kind: "chat"; url: string }
+  | { kind: "chat-panel"; url: string }
+  | { kind: "builtin" }
 
 /** Deep-link into the session-chat UI with the picker pre-resolved. */
 export function chatUrl(daemonUrl: string, sessionId: string): string {
   return `${appStandaloneUrl(daemonUrl, SESSION_CHAT_APP_ID)}?session=${encodeURIComponent(sessionId)}`
+}
+
+/** The chat url for embedding in an iframe (the `embed=1` param asks the app
+ *  to strip its sidebar; it degrades gracefully when the app ignores it). */
+export function chatPanelUrl(daemonUrl: string, sessionId: string): string {
+  return `${chatUrl(daemonUrl, sessionId)}&embed=1`
 }
 
 /** Whether an installed app record is the Session Chat app with a UI. */
@@ -34,6 +43,8 @@ export function installedSessionChatApp(apps: InstalledAppInfo[]): boolean {
  * Resolve how a session opens:
  * - `chat` when the setting is `chat` AND the app is installed with a `ui`
  *   block — url is the standalone app host deep-linked to the session.
+ * - `chat-panel` when the setting is `chat-panel` AND the app is installed —
+ *   url is the same deep link with `&embed=1`, for an iframe webview panel.
  * - otherwise `builtin` (setting is `builtin`, or the app is missing —
  *   silent fallback, no nagging).
  */
@@ -43,8 +54,13 @@ export function resolveSessionOpen(
   daemonUrl: string,
   sessionId: string,
 ): SessionOpenRoute {
-  if (sessionView === "chat" && installedSessionChatApp(apps)) {
-    return { kind: "chat", url: chatUrl(daemonUrl, sessionId) }
+  if (installedSessionChatApp(apps)) {
+    if (sessionView === "chat") {
+      return { kind: "chat", url: chatUrl(daemonUrl, sessionId) }
+    }
+    if (sessionView === "chat-panel") {
+      return { kind: "chat-panel", url: chatPanelUrl(daemonUrl, sessionId) }
+    }
   }
   return { kind: "builtin" }
 }

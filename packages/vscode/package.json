@@ -312,6 +312,12 @@
         "icon": "$(comment)"
       },
       {
+        "command": "agentproto.openSessionInChatPanel",
+        "title": "agentproto: Open Session in Chat Panel",
+        "category": "agentproto",
+        "icon": "$(comment)"
+      },
+      {
         "command": "agentproto.openBrowser",
         "title": "agentproto: Open Browser View",
         "category": "agentproto",
@@ -747,6 +753,11 @@
           "group": "transcript@2"
         },
         {
+          "command": "agentproto.openSessionInChatPanel",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?(-watched)?$/",
+          "group": "transcript@3"
+        },
+        {
           "command": "agentproto.approvePermission",
           "when": "view == agentproto.permissions && viewItem == permission-pending",
           "group": "inline@1"
@@ -968,14 +979,16 @@
           "type": "string",
           "enum": [
             "chat",
-            "builtin"
+            "builtin",
+            "chat-panel"
           ],
           "enumDescriptions": [
             "Open sessions in the Session Chat app UI (@agentik/session-chat) in a browser tab — requires the app to be installed on the daemon; otherwise the builtin panel is used.",
-            "Open sessions in the builtin transcript webview panel."
+            "Open sessions in the builtin transcript webview panel.",
+            "Open sessions in a webview panel embedding the Session Chat UI in an iframe (daemon origin from agentproto.daemonUrl) — requires the app to be installed on the daemon; otherwise the builtin panel is used."
           ],
           "default": "chat",
-          "description": "How opening a session shows its conversation (agentproto: Open Session). Read per open — takes effect immediately, no window reload needed. agentproto: Open Session in Chat UI always uses the chat UI."
+          "description": "How opening a session shows its conversation (agentproto: Open Session). Read per open — takes effect immediately, no window reload needed. agentproto: Open Session in Chat UI always uses the chat UI; agentproto: Open Session in Chat Panel always uses the chat-panel webview."
         },
         "agentproto.sessionsView": {
           "type": "string",
