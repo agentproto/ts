@@ -1792,10 +1792,10 @@ describe("app_catalog", () => {
     const { client } = await setup({ catalogPath: join(catalogDir, "does-not-exist.json") })
     const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
     expect(entries.filter((e: any) => e.category !== "builtin")).toEqual([])
-    expect(entries.filter((e: any) => e.category === "builtin")).toHaveLength(6)
+    expect(entries.filter((e: any) => e.category === "builtin")).toHaveLength(7)
   })
 
-  it("always lists the six builtin panels, installed with no app_install needed", async () => {
+  it("always lists the builtin panels, installed with no app_install needed", async () => {
     const { client } = await setup({ catalogPath: join(catalogDir, "does-not-exist.json") })
     const entries = parseToolJson(await client.callTool({ name: "app_catalog", arguments: {} }))
     const builtins = entries.filter((e: any) => e.category === "builtin")
@@ -1806,6 +1806,7 @@ describe("app_catalog", () => {
         "agentproto_session_story",
         "agentproto_session_chat",
         "agentproto_sessions",
+        "agentproto_work_board",
         "live_session",
       ].sort(),
     )
@@ -1817,6 +1818,7 @@ describe("app_catalog", () => {
         "@agentproto/sessions-panel",
         "@agentproto/live-session",
         "@agentproto/session-chat-widget",
+        "@agentproto/work-board",
       ].sort(),
     )
     for (const entry of builtins) {

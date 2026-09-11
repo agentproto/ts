@@ -16,9 +16,10 @@
  * folder (`code-team/`, `content-team/`) with `agents/` + `workflows/`, and is
  * re-exported here + as a subpath (`@agentproto/apps/<team>`).
  *
- * This package also carries six daemon-builtin panels (`sessions-panel`,
- * `agents-overview`, `bureau-sessions`, `session-story`, `live-session`) —
- * @agentproto/runtime's house-app-quality UI widgets. Each ships in two
+ * This package also carries the daemon-builtin panels (`sessions-panel`,
+ * `agents-overview`, `bureau-sessions`, `session-story`, `live-session`,
+ * `session-chat`, `work-board`) — @agentproto/runtime's house-app-quality UI
+ * widgets. Each ships in two
  * forms: a real `AppHandle` (`agents: []`, UI-only — the catalog/emit/
  * `app_install` path, e.g. `sessionsPanelApp`) AND a separate
  * `make<Name>App(ops)` factory producing the `AgnoMcpApp` shape
@@ -61,3 +62,5 @@ export type {
   SessionChatInput,
   SessionChatOutput,
 } from "./session-chat/index.js"
+export { makeWorkBoardApp, workBoardApp } from "./work-board/index.js"
+export type { WorkBoardOps, WorkBoardInput, WorkBoardOutput } from "./work-board/index.js"

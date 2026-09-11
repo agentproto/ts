@@ -1,7 +1,7 @@
 /**
- * Boot-time mount for the six daemon-builtin MCP-Apps panels that live in
+ * Boot-time mount for the daemon-builtin MCP-Apps panels that live in
  * @agentproto/apps (sessions-panel, agents-overview, bureau-sessions,
- * session-story, live-session).
+ * session-story, live-session, session-chat, work-board).
  *
  * These panels used to be plain files in this package; they moved to
  * @agentproto/apps as house-app-quality code (see that package's README).
@@ -40,10 +40,14 @@ import {
   sessionChatApp,
   makeSessionChatApp,
   SESSION_CHAT_APP_ID,
+  workBoardApp,
+  makeWorkBoardApp,
   type AgnoMcpApp,
+  type WorkBoardOutput,
 } from "@agentproto/apps"
 import type { AppHandle } from "@agentproto/app-kit"
 import type { SessionDescriptor } from "./sessions.js"
+import type { TaskRecord } from "./task-ledger.js"
 
 export interface BuiltinPanelAppsOps {
   listSessions(filter?: "running" | "all"): SessionDescriptor[]
@@ -54,10 +58,14 @@ export interface BuiltinPanelAppsOps {
    *  `ui` block — the session-chat widget is a thin launcher for it and
    *  degrades to an install notice when this is false. */
   isSessionChatInstalled: () => boolean
+  /** Full (unprojected) Task ledger records for a board — the work-board
+   *  widget's read path. Omit `boardId` to resolve the operator's default
+   *  board (`ws:<slug>`). */
+  listTasks(boardId?: string): WorkBoardOutput<TaskRecord>
 }
 
 /**
- * Build the six builtin panel apps, ready to pass into `registerMcpApps`
+ * Build the builtin panel apps, ready to pass into `registerMcpApps`
  * alongside installed apps' UI panels.
  */
 export function makeBuiltinPanelApps(
@@ -80,10 +88,14 @@ export function makeBuiltinPanelApps(
       httpBaseUrl: ops.httpBaseUrl,
       isSessionChatInstalled: ops.isSessionChatInstalled,
     }),
+    // Work-board widget — kanban over the Task ledger (see apps/src/
+    // work-board). Read path only; writes go through task_claim/
+    // task_update/task_create over the bridge, same as every other caller.
+    makeWorkBoardApp<TaskRecord>({ listTasks: ops.listTasks }),
   ]
 }
 
-/** The six panels' `AppHandle`s (catalog identity: `id`/`name`/
+/** The panels' `AppHandle`s (catalog identity: `id`/`name`/
  *  `description`), in the same order `makeBuiltinPanelApps` mounts their
  *  `AgnoMcpApp` counterparts — zipped together below to pair each handle
  *  with its actual mounted tool id / resource uri. */
@@ -94,6 +106,7 @@ const PANEL_APP_HANDLES: readonly AppHandle[] = [
   sessionStoryApp,
   liveSessionApp,
   sessionChatApp,
+  workBoardApp,
 ]
 
 export interface BuiltinPanelCatalogEntry {
@@ -112,7 +125,7 @@ export interface BuiltinPanelCatalogEntry {
 }
 
 /**
- * Catalog metadata for the six builtin panels — for `app_catalog` / the
+ * Catalog metadata for the builtin panels — for `app_catalog` / the
  * Apps tree, NOT for mounting them (see `makeBuiltinPanelApps` for that).
  * Always present, independent of `~/.agentproto/apps.json` or the catalog
  * file: these panels need no `app_install` step, so `app_catalog`'s caller
@@ -120,14 +133,16 @@ export interface BuiltinPanelCatalogEntry {
  * disk. `appId`/`name`/`description` come from each panel's real `AppHandle`
  * (`PANEL_APP_HANDLES`); `toolId`/`resourceUri` come from the actual mounted
  * `AgnoMcpApp` (`app.id`) since those are the real MCP-visible identifiers,
- * not the app-kit handle's. `listSessions`/`httpBaseUrl` below are never
- * invoked — only the static id metadata on each built `AgnoMcpApp` is read.
+ * not the app-kit handle's. `listSessions`/`httpBaseUrl`/`listTasks` below
+ * are never invoked — only the static id metadata on each built `AgnoMcpApp`
+ * is read.
  */
 export function builtinPanelCatalogEntries(): BuiltinPanelCatalogEntry[] {
   const apps = makeBuiltinPanelApps({
     listSessions: () => [],
     httpBaseUrl: "http://127.0.0.1:0",
     isSessionChatInstalled: () => false,
+    listTasks: (boardId) => ({ boardId: boardId ?? "ws:default", tasks: [] }),
   })
   return apps.map((app, i) => {
     const handle = PANEL_APP_HANDLES[i]!

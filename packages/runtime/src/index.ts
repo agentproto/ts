@@ -1921,7 +1921,7 @@ export async function createGateway(
     // (tool-subset.ts, now registerTool-aware) can drop them on scoped/child
     // gateways — they belong only on the full /mcp surface a host connects to.
     registerAppPullTools(server, { registry: sessions })
-    // The six daemon-builtin panels — now house-app-quality code in
+    // The daemon-builtin panels — now house-app-quality code in
     // @agentproto/apps, mounted here without an app_install step (see
     // builtin-apps.ts for why they aren't AppHandles).
     const builtinPanelApps = [
@@ -1941,6 +1941,18 @@ export async function createGateway(
             return false
           }
         },
+        // Work-board widget's read path — the root `/mcp` endpoint has no
+        // scope, so this mount is always the operator caller (default
+        // board `ws:<slug>`); `canAccessBoard` lets the operator read any
+        // board (including a `tree:*` one) when an explicit boardId is
+        // passed in from the panel's board switcher.
+        listTasks: (boardId) => ({
+          boardId: taskLedger.resolveBoardId({ kind: "operator" }, boardId),
+          tasks: taskLedger.list(
+            { ...(boardId ? { boardId } : {}), includeClosed: true },
+            { kind: "operator" },
+          ),
+        }),
       }),
       // Same ptyEnabled gate as terminal_start/terminal_input/… in
       // session-tools.ts — the panel would be able to open the WS but
