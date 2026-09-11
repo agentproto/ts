@@ -2,39 +2,44 @@
 
 ```text
 agentproto sessions                                one-shot table dump
-agentproto sessions --watch [--simple] [--no-color]
+agentproto sessions --watch [--no-color]
 agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
 agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
-                                       [--model <id>] [--base-url <url>]
-                                       [--auth-token <token>]
-                                       [--options-json <json|@file>]
-                                       [--prompt <text>] [--label <text>]
-                                       [--title <text>]
-                                       [--orchestrator | --orchestrator-json <json>]
-                                       [--mcp-servers-json <json|@file>]
-                                       [--sandbox <provider-or-json|@file>]
-                                       [--hold-permissions]
-                                       [--attach] [--json] [--no-color]
-agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
-                                          [--name <slug>] [--label <text>]
-                                          [--cols <n>] [--rows <n>]
-                                          [--attach] [--json] [--no-color]
-agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
+                                        [--model <id>] [--base-url <url>]
+                                        [--auth subscription|api-key]
+                                        [--auth-token <token>]
+                                        [--options-json <json|@file>]
+                                        [--access-profile <ref>]
+                                        [--worktree | --no-worktree]
+                                        [--mode <id>] [--effort <level>]
+                                        [--prompt <text>] [--label <text>]
+                                        [--title <text>]
+                                        [--orchestrator | --orchestrator-json <json>]
+                                        [--mcp-servers-json <json|@file>]
+                                        [--sandbox <provider-or-json|@file>]
+                                        [--hold-permissions]
+                                        [--attach] [--json] [--no-color]
+agentproto sessions terminal [--preset <name>] [-- <argv...>]
+                                           [--cwd <dir>] [--workspace <slug>]
+                                           [--name <slug>] [--label <text>]
+                                           [--cols <n>] [--rows <n>]
+                                           [--attach] [--json] [--no-color]
 agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
-                                          [--force] [--json]
+                                           [--force] [--json]
 agentproto sessions pin      <id-or-name> [--json]
 agentproto sessions unpin    <id-or-name> [--json]
 agentproto sessions mirror   <id-or-name> [--no-color]
 agentproto sessions story    <id-or-name> [--json] [--no-color]
-                                          [--source auto|native|daemon]
+                                           [--source auto|native|daemon]
 agentproto sessions export   <id-or-name> [--json] [-o <file>]
-                                          [--source auto|native|daemon]
-                                          [--adapter <slug>] [--cwd <dir>]
+                                           [--source auto|native|daemon]
 agentproto sessions stop     <id-or-name> [--json]
 agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration>]
-                                          [--policy <policyId>] [--json]
+                                           [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
+agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
+                                           [--drop <n>] [--json]
 ```
 
 Browse and control the daemon's live sessions — terminals, agent CLIs,
@@ -43,9 +48,21 @@ generic commands — from any shell. Requires a running daemon
 
 ## Discovery
 
-Sessions discovers the daemon via `<workspace>/.agentproto/runtime.json`
-written by `serve` at boot. The token in that file is sent as Bearer
-on mutating routes. Override with env:
+Sessions discovers the daemon by trying candidates in this order — the
+first live one wins:
+
+1. `AGENTPROTO_DAEMON_URL` env var (token from
+   `AGENTPROTO_DAEMON_TOKEN`, or looked up from a matching
+   `runtime.json` if unset):
+2. `~/.agentproto/runtime.json`, only if its pid is still alive;
+3. the central registry `~/.agentproto/daemons/<port>.json`, for the
+   port declared in `config.json` (falling back to any other live
+   entry);
+4. each configured workspace's own
+   `<workspace>/.agentproto/runtime.json` (written by `serve` at boot).
+
+A descriptor whose pid is dead is ignored, never trusted. The token
+from whichever candidate wins is sent as Bearer on mutating routes:
 
 ```bash
 AGENTPROTO_DAEMON_URL=http://127.0.0.1:18790 \
@@ -114,19 +131,11 @@ Keys:
 | `R` | Restart selected from history (works on exited/killed too) |
 | `K` | Kill selected (POST `/sessions/:id/kill`) |
 | `d` | Forget selected (DELETE `/sessions/:id`; exited/killed/error only) |
+| `s` | Show the selected session's Story / conversation |
 | `r` | Refresh now |
 | `q` / `Ctrl-C` | Quit |
 
 Non-TTY stdin degrades to a one-shot table dump.
-
-### `--watch --simple`
-
-```bash
-agentproto sessions --watch --simple
-```
-
-The original flat-table picker — same keys minus the detail pane.
-Smaller terminals, piping into a pager, or scripted screen-recording.
 
 ### `--attach <id-or-name>`
 
@@ -170,6 +179,11 @@ reattached later.
 | `--orchestrator-json <json>` | Object form of the above: `{"tools":[…],"maxDepth":N,"maxChildren":N}`. Wins over `--orchestrator` when both are passed. |
 | `--mcp-servers-json <json\|@file>` | Inject MCP servers (`AcpMcpServer[]`) into the session — inline JSON array, or `@path` to read it from a file. |
 | `--sandbox <provider-or-json\|@file>` | Spawn inside an isolated sandbox box instead of the local host. Pass a provider slug (e.g. `e2b` or `box`, configured via `setup_sandbox_provider`) or an inline AIP-36 `SandboxDefinition` JSON object (optionally with `{"reuse":"<sandboxId>"}` for reconnect). `@file` reads the slug or JSON from a file. Mirrors `agent_start.sandbox`. |
+| `--access-profile <ref>` | Bill this spawn through a named auth profile (CLI twin of `agent_start`'s `access.profileRef` — pin endpoint + credential, never silently the default). Overrides the daemon's default profile. See [Config axes](#config-axes-mcphttp). |
+| `--worktree` | Isolate this spawn in its own git worktree (auto-minted slug/branch on `origin/main`) regardless of the daemon's `worktrees.isolation` policy. Mirrors `agent_start.worktree=true`. |
+| `--no-worktree` | Spawn in cwd directly, overriding an isolation policy that would otherwise isolate. Mirrors `agent_start.worktree=false`. |
+| `--mode <id>` | Manifest-declared posture mode id applied at spawn (e.g. claude-code `plan`, codex `read-only`). Mirrors `agent_start.mode`. |
+| `--effort <level>` | Reasoning effort — `low\|medium\|high\|xhigh\|max\|ultracode`, calibrated per model. Mirrors `agent_start.effort`. |
 | `--hold-permissions` | Start in **permission-hold mode**: every tool-permission request the agent raises is parked in the cross-session inbox instead of auto-answered. Approve/deny with [`permissions.md`](./permissions.md). |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
@@ -371,7 +385,7 @@ apply it live:
 - `agent_set_posture { sessionId, posture }`
 
 An axis that can't switch live (e.g. `requires-restart`) can be re-applied
-through [restart-with-override](#restart-id-or-name). `posture` supersedes the
+through [restart-with-override](#restarting-a-session). `posture` supersedes the
 legacy `mode`/`--auth`-only framing for "what the agent may do" and "which
 wallet pays"; use `catalog_models` (see [`models.md`](./models.md)) to discover
 which `(model, route)` pairs are actually runnable given the configured auth
@@ -394,7 +408,7 @@ otherwise be eaten by the verb's parser.
 |------|---------|
 | `--cwd <dir>` | Spawn cwd. |
 | `--workspace <slug>` | Registered workspace to bind to. |
-| `--name <slug>` | Stable session name (alphanumeric + `-`); used as an alias for attach/stop/restart. |
+| `--name <slug>` | Stable session name (alphanumeric + `-`); used as an alias for attach/stop. |
 | `--label <text>` | UI label. |
 | `--cols <n>` / `--rows <n>` | Initial PTY dimensions. Default: current terminal size, fallback `80x24`. |
 | `--attach` / `--json` / `--no-color` | As above. |
@@ -402,23 +416,32 @@ otherwise be eaten by the verb's parser.
 `node-pty` must be installed for PTY routes to work; without it, the
 daemon returns 501 and this verb fails.
 
-### `restart <id-or-name>`
+### Restarting a session — no CLI subverb
 
-```bash
-agentproto sessions restart claude-tui
-agentproto sessions restart ses_abc12 --attach
+There is **no `agentproto sessions restart` subverb** — a command in that
+shape exits with a usage error. Restart exists on two other surfaces:
+
+- **The `R` key inside `agentproto sessions --watch`** — restarts the
+  selected session from history (works on exited/killed sessions too).
+- **The `session_restart` MCP tool**, and the equivalent
+  `POST /sessions/:id/restart` HTTP route — for agent-driven restarts.
+
+```text
+MCP:  session_restart { sessionId }
+HTTP: POST /sessions/:id/restart
 ```
 
-Looks up the (possibly historical) descriptor and spawns a new
-session of the same shape. For agent-CLI sessions, attempts to resume
-the conversation via the prior adapter session id; falls back to a
+Restart looks up the (possibly historical) descriptor and spawns a new
+session of the same shape. For agent-CLI sessions, it attempts to resume
+the conversation via the prior adapter session id; it falls back to a
 fresh shape when the adapter reports the id is unknown ("session
 killed too early to persist"). The banner reports which path was
 taken: `(resumed via claude --resume from ses_abc12)` or
-`(fresh — resume not available)`.
+`(fresh — resume not available)`. The new session gets a freshly minted
+id; `resumedFrom` on the descriptor records the lineage.
 
-**Restart-with-override (MCP/HTTP).** The `session_restart` MCP tool (and the
-`POST /sessions/:id/restart` route) accept per-axis overrides — `model`,
+**Restart-with-override (MCP/HTTP).** `session_restart` and the
+`POST /sessions/:id/restart` route accept per-axis overrides — `model`,
 `effort`, `posture`, `route`, `access.profileRef`, and `contextProfile` (plus a
 legacy `mode`). An omitted axis is carried forward from the prior session; an
 axis set here wins. A restart carrying **any** override is treated as a config
@@ -510,8 +533,11 @@ running ones.
 | `--json` | markdown | Emit the raw `ExportedSession` JSON instead of rendered markdown. |
 | `--output <file>`, `-o` | stdout | Write to a file instead of stdout. |
 | `--source <auto\|native\|daemon>` | `auto` | Which backend to read. `auto` prefers the adapter's own native store (claude-code JSONL, hermes SQLite) and falls back to agentproto's `events.jsonl` capture when there isn't one or it can't be read; `native`/`daemon` force one and surface its own error instead of falling back. |
-| `--adapter <slug>` | from registry | Override the adapter slug — required with `--source native` when exporting a raw adapter-native id that isn't in the registry. |
-| `--cwd <dir>` | from registry | Override the working directory — required for a claude-code native export when the session isn't in the registry (used to locate the JSONL file). |
+
+Note there are **no `--adapter` / `--cwd` CLI flags** on `export` in
+0.20.0 — an export of a session that isn't in the registry (where the
+adapter slug or cwd would need overriding) is only reachable through the
+HTTP route below, which still accepts `adapter` and `cwd` query params.
 
 The `/sessions/:id/export` route accepts the same `format`
 (`markdown`|`json`), `source`, `adapter`, and `cwd` as query params.
@@ -601,6 +627,29 @@ readable/importable) via `POST /sessions/gc`. Pass `--forget` to drop the
 descriptors instead (the native conversation on disk survives). `--older-than-days`
 keeps anything more recent. Live sessions are never touched.
 
+### `queue <id-or-name>`
+
+```bash
+agentproto sessions queue ses_abc12
+agentproto sessions queue claude-tui --json
+agentproto sessions queue claude-tui --deliver 2
+agentproto sessions queue claude-tui --drop 3
+agentproto sessions queue claude-tui --force 2
+```
+
+Inspects — and optionally manipulates — the session's prompt FIFO. With no
+action flag, lists what's queued: each item's position (`1` = next to
+dispatch), origin (`user`/`agent`/`child`), preview, and `queuedAt`.
+
+| Flag | Effect |
+|------|--------|
+| `--force <n>` | Jump position `n` to the **front** of the queue without touching the in-flight turn. |
+| `--deliver <n>` | Interrupt whatever is running and dispatch position `n` now. |
+| `--drop <n>` | Remove the item at position `n` without delivering it. |
+
+Positions are 1-indexed, matching `sessions prompt` output. After any
+action the queue is re-listed to show the result.
+
 ## Interrupting a live session
 
 Use `agentproto sessions prompt <id> --prompt "..." --interrupt`, or call
@@ -628,8 +677,8 @@ This is deliberately narrower than `restart` or `stop`:
 | Action | Effect |
 |--------|--------|
 | `interrupt: true` on `agent_prompt` / prompt route | Cancels the current turn only; session and context survive; next prompt continues the same conversation. |
-| [`stop`](#stop-id-or-name) | Kills the process outright (SIGTERM). Conversation ends unless you `restart`. |
-| [`restart`](#restart-id-or-name) | Re-spawns from history, attempting to resume via the adapter's own session id — a new process, not a redirect of a live one. |
+| [`stop`](#stop-id-or-name) | Kills the process outright (SIGTERM). Conversation ends unless you [restart](#restarting-a-session). |
+| [restart](#restarting-a-session) | Re-spawns from history, attempting to resume via the adapter's own session id — a new process, not a redirect of a live one. MCP tool / HTTP route / `--watch` `R` key only. |
 
 A few edge cases worth knowing:
 

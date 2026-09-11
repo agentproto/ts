@@ -1,12 +1,15 @@
 # `agentproto auth`
 
 ```text
-agentproto auth login   [--host <url>] [--label <name>] [--no-browser] [--scope <s>]
+agentproto auth login   [--host <url>] [--label <name>] [--no-browser]
 agentproto auth status  [--host <url>] [--json]
 agentproto auth logout  [--host <url>]
-agentproto auth cred set <id> <token> --api-base <url> [--audience <aud>] [--description <text>]
-agentproto auth cred list [--json]
-agentproto auth cred rm  <id>
+agentproto auth provider <set|list|rm> …   — LLM provider API keys
+agentproto auth cred     <set|list|rm> …   — broker creds for child-MCP auth
+agentproto auth profile refresh-models <id> [--json]
+                                           — re-sync a named auth profile's
+                                             curated model ids against the
+                                             current catalog
 ```
 
 Manages host-binding tokens — the JWT `agentproto serve --connect <host>`
@@ -55,7 +58,6 @@ Flags:
 |------|---------|
 | `--host <url>` | The tunnel host URL. Most-recently-used wins when omitted. `wss://` and `ws://` are normalised to `https://` / `http://` for the discovery fetch. |
 | `--label <name>` | Friendly device label shown on the host's approval UI. Default `username@hostname`. |
-| `--scope <space-separated>` | OAuth scopes to request. Default `"tunnel:connect agent-cli:dispatch"`. |
 | `--no-browser` | Skip `open` / `xdg-open` of the verification URL. The URL + user code are always printed. |
 
 On success: `~/.agentproto/credentials.json` is created/updated with
@@ -123,6 +125,27 @@ ceremony). Only if that fails does it log a warning and fall back to the
 stale token — the host's 401 then surfaces a clearer error than a silent
 disconnect. Re-run `agentproto auth login --host <host>` if silent
 refresh fails or no refresh token is stored.
+
+## `provider` — LLM provider API keys
+
+Stores provider API keys the `models` verb and adapters resolve at spawn
+time:
+
+```bash
+agentproto auth provider set anthropic sk-ant-…
+agentproto auth provider set openrouter sk-or-… --base-url https://…
+agentproto auth provider list [--json]
+agentproto auth provider rm openai
+```
+
+## `profile refresh-models <id>`
+
+Re-syncs a named auth profile's curated model ids against the current
+catalog:
+
+```bash
+agentproto auth profile refresh-models openrouter-api --json
+```
 
 ## `cred` — broker credentials for child-MCP auth (0.5.0+)
 

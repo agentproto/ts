@@ -99,21 +99,16 @@ Prints the full manifest for one adapter:
 
 ```bash
 agentproto adapters install @guilde/agentproto-bridge
-agentproto adapters install @your-org/agentproto-thing --local         # npm i (no -g)
-agentproto adapters install @your-org/agentproto-thing --skip-npm      # add to config only
 
 agentproto adapters uninstall @guilde/agentproto-bridge
-agentproto adapters uninstall @guilde/agentproto-bridge --skip-npm     # config only
 ```
 
-`install` runs `npm install [-g] <pkg>` then appends `<pkg>` to
+`install` runs `npm install -g <pkg>` then appends `<pkg>` to
 `config.json#adapters`. `uninstall` removes it from the array then
-runs `npm uninstall [-g] <pkg>`. Either side can be skipped:
-
-| Flag | Effect |
-|------|--------|
-| `--local` | Use `npm install` (not `-g`). Useful for project-local adapters. |
-| `--skip-npm` | Don't touch npm — just edit the config. Use after installing the package yourself or in CI. |
+runs `npm uninstall -g <pkg>`. Neither subcommand takes flags — if you
+want the config edit without touching npm (you installed the package
+yourself, or you're in CI), use [`enable`/`disable`](#enable--disable)
+instead.
 
 If `npm install` fails, the config is **not** modified. If `npm
 uninstall` fails after the config edit, the warning is printed but
@@ -128,8 +123,7 @@ agentproto adapters disable @your-org/agentproto-thing
 
 Config-only operations — assume the package is already installed (or
 deliberately keep it installed). Adds/removes from `adapters[]`
-without running npm. Equivalent to `install --skip-npm` /
-`uninstall --skip-npm`.
+without running npm.
 
 ## Overriding a built-in
 

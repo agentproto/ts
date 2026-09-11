@@ -96,7 +96,7 @@ Creates the file if missing before launching the editor.
 
 | Key | Type | Notes |
 |-----|------|-------|
-| `plugins` | `string[]` | Plugin package ids loaded by `run-swarm`. Managed via [`plugins.md`](./plugins.md). |
+| `adapters` | `string[]` | Swarm-kernel adapter package ids loaded by `run-swarm`. Managed via [`adapters.md`](./adapters.md). (Formerly `plugins[]` — the verb was renamed `plugins`→`adapters`.) |
 | `profileAliases` | `Record<string,string>` | Map of `runtime-profile/<name>` → npm package, for third-party profiles. See [`../concepts/runtime-profiles.md`](../concepts/runtime-profiles.md). |
 | `daemon.port` | `number` | Default `18790`. |
 | `daemon.bind` | `string` | Default `127.0.0.1`. |
