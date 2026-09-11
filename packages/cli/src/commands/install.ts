@@ -50,7 +50,59 @@ import {
   KNOWN_INSTALL_COMMANDS,
 } from "../registry/install-hint.js"
 
+const INSTALL_USAGE = `agentproto install <slug> — install an adapter's underlying CLI (AIP-29)
+
+One verb, three flag surfaces — the slug form decides which applies:
+
+  agentproto install <adapter-slug>           install an adapter's underlying CLI
+  agentproto install runtime-profile/<name>   copy a runtime profile into a directory
+  agentproto install skill/<name>             install an AIP-3 skill from a skill pack
+  agentproto install skill/agentproto-pack --list   list a pack's skills and exit
+
+adapter surface flags:
+  --force, -f            reinstall even when version_check already passes
+  --dry-run              print what would run, run nothing
+  --skip-setup           skip the post-install AIP-29 setup[] pipeline
+  --allow-unverified     run a curl/download installer that declares no
+                           verify_sha256 (refused by default in non-interactive
+                           contexts — agents, daemon, CI)
+
+runtime-profile/<name> surface flags:
+  --force, -f            re-apply even when the ledger says the profile is current
+  --dry-run              print what would be written, write nothing
+  --skip-setup           skip the profile's declared setup steps
+  --cwd <dir>            target directory (default: the current directory)
+  --package <name>       npm package providing the profile (default:
+                           @agentproto/runtime-profile-<name>, or the
+                           profile's declared alias)
+
+skill/<name> surface flags:
+  --target <t>…          install into the named target(s) only (repeatable;
+                           e.g. hermes, claude-code, claude-desktop) instead of
+                           fanning out to every adapter with a skills block
+  --pack <pack>          pack source: a path, name[@version], npm:<pkg>[@ver],
+                           or github:<owner>/<repo>[@ver]. Default: the legacy
+                           .skills/ directory → node_modules → npm latest
+  --refresh              bypass the pack cache and re-fetch
+  --list                 list the pack's skills (name + description) and exit
+  --out <dir>            output directory for the built plugin bundle
+                           (default: ./agentproto-skill-plugin)
+  --force                overwrite existing skill files
+  --dry-run              show what would be installed, install nothing
+
+After the adapter surface installs, the manifest's setup[] pipeline runs
+(idempotent — skip_if short-circuits satisfied steps) unless --skip-setup
+is passed.
+`
+
 export async function runInstall(args: readonly string[]): Promise<number> {
+  // Print a combined usage for all three flag surfaces — the slug decides
+  // which parser (and which flag set) actually applies below, so `--help`
+  // must show all of them, labelled by surface.
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(INSTALL_USAGE)
+    return 0
+  }
   // Peek at the slug before parseArgs — it influences which option set is
   // valid. Adapter slugs, runtime-profile/* slugs, and skill/* slugs share
   // the verb but route through separate handlers with different flags.

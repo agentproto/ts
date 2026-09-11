@@ -45,8 +45,10 @@ const USAGE = `agentproto permissions — approve/deny held tool-permission requ
 
 Usage:
   agentproto permissions ls        [--json]
-  agentproto permissions approve   <id> [--always] [--feedback <text>]
-  agentproto permissions deny      <id> [--feedback <text>]
+  agentproto permissions approve   <id> [--always] [--option-id <optionId>]
+                                   [--feedback <text>] [--json]
+  agentproto permissions deny      <id> [--option-id <optionId>]
+                                   [--feedback <text>] [--json]
   agentproto permissions watch     [--allow-tool <pat>]... [--deny-tool <pat>]...
                                    [--session <id>] [--rules-json <json|@file>]
                                    [--always] [--interval <dur>] [--timeout <dur>]
@@ -59,6 +61,10 @@ Usage:
   approve   Grant the request. --always picks the allow-always option when the
             request offers one (otherwise allow-once).
   deny      Reject the request (or cancel it when no reject option is offered).
+  --option-id <id>  When a request offers several options, resolve the named
+            one explicitly instead of the default (allow-once / the first
+            option). The option ids a request carries are in its options
+            list on the daemon side.
   --feedback <text>  Attach free text to the decision (either verb) — e.g.
             "reject, but do X instead". Adapters that support it (mastra-agent
             suspensions) fold it into the tool's resume data.
