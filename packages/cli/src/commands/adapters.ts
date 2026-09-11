@@ -32,13 +32,18 @@ import type {
 const USAGE = `agentproto adapters — manage runtime adapters
 
 Usage:
-  agentproto adapters list                  Show enabled adapters + what they provide
-  agentproto adapters show <pkg>            Print an adapter's manifest
+  agentproto adapters list                  Show enabled adapters + what they provide [--json]
+  agentproto adapters show <pkg>            Print an adapter's manifest [--json]
   agentproto adapters install <pkg>         npm i -g + add to config
+                                            [--local] [--skip-npm]
   agentproto adapters uninstall <pkg>       Remove from config (+ npm rm)
+                                            [--local] [--skip-npm]
   agentproto adapters enable <pkg>          Add to config (assume installed)
   agentproto adapters disable <pkg>         Remove from config (keep installed)
   agentproto adapters --help
+
+  --local     install/uninstall into the local node_modules instead of -g
+  --skip-npm  skip the npm install/remove; only touch the config entry
 
 Adapter list lives in ~/.agentproto/config.json under \`adapters[]\`.
 `

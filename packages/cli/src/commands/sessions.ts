@@ -77,7 +77,9 @@ import type { AcpMcpServer } from "@agentproto/acp"
 const USAGE = `agentproto sessions — browse and control daemon sessions
 
 Usage:
-  agentproto sessions [--watch] [--json]
+  agentproto sessions [--watch] [--simple] [--json]
+                              (--simple: with --watch, the flat-table picker
+                               instead of the 3-pane dashboard)
   agentproto sessions --attach <id-or-name> [--no-color]
   agentproto sessions start <adapter> [--cwd <dir>] [--workspace <slug>]
                                       [--model <id>] [--auth subscription|api-key]
@@ -96,10 +98,10 @@ Usage:
                                             [--workspace <slug>] [--name <slug>]
                                             [--label <text>] [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
-  agentproto sessions export <id-or-name> [--json] [-o <file>]
-                             [--source auto|native|daemon]
+  agentproto sessions export <id-or-name> [--json] [-o|--output <file>]
+                             [--source auto|native|daemon] [--adapter <name>]
   agentproto sessions story <id-or-name> [--json] [--no-color]
-                             [--source auto|native|daemon]
+                             [--source auto|native|daemon] [--adapter <name>]
   agentproto sessions prompt <id-or-name> --prompt <text>
                               [--wait] [--interrupt] [--force] [--json]
                               (default: fire-and-forget, queued behind any
@@ -141,6 +143,19 @@ Usage:
                                without delivering. Positions are 1-indexed here,
                                matching 'sessions prompt' output. After any
                                action the queue is re-listed to show the result.)
+  agentproto sessions restart <id-or-name> [--attach] [--json] [--no-color]
+                              [--prefer-native-terminal]
+                              (respawn from history — clones the old
+                               descriptor's kind/argv/cwd/workspace and starts
+                               a fresh instance, resuming where the adapter
+                               supports it. New id, same freed name. Output
+                               buffers are NOT carried over.
+                               --prefer-native-terminal opts into the adapter's
+                               native-terminal restart path when it has one.)
+  agentproto sessions mirror <id-or-name> [--no-color]
+                              (read-only tail of the session's output — never
+                               takes stdin; Ctrl-C exits without touching the
+                               session)
 
 Discovers the daemon in this order — first live candidate wins:
   1. AGENTPROTO_DAEMON_URL env var (token from AGENTPROTO_DAEMON_TOKEN, or
