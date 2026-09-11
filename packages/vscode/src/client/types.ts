@@ -1348,3 +1348,165 @@ export interface ConfigurationLabRawData {
   profiles: AuthProfileSummary[]
   presets: ProviderPresetEntry[]
 }
+
+// ── Activity projection (mirrors @agentproto/runtime activity-projection.ts
+//    — the client takes no runtime import; keep in sync by hand). A
+//    read-only projection over completion policies, session turns, workflow
+//    steps, and opened PRs — recomputed on every `GET /activities`, nothing
+//    here is stored. ──
+
+export type ActivityState = "active" | "pending" | "done" | "failed" | "cancelled"
+export type ActivityKind =
+  | "turn"
+  | "policy"
+  | "gate"
+  | "commit"
+  | "workflow-step"
+  | "pr"
+  | "cron-run"
+export type ActivitySource = "supervisor" | "workflow" | "session" | "code-host" | "cron"
+
+/** What a `pending` activity is blocked on — the external signal whose
+ *  arrival causes the next transition. `refs` are the ids to poke. */
+export interface ActivityWaitingOn {
+  kind: "session-turn" | "human-ack" | "cap-slot" | "stage-barrier" | "forge" | "timer"
+  refs: string[]
+  /** Optional human sentence naming the blocker. */
+  detail?: string
+}
+
+interface ActivityRecordBase {
+  /** Deterministic, source-derived id (`policy:plc_x`, `turn:sess_y:3`,
+   *  `pr:sess_y:412`) — NOT a uuid; the same owner state always re-projects
+   *  the same id. */
+  id: string
+  kind: ActivityKind
+  /** Subject session (fan-in policies additionally carry the group). */
+  sessionId?: string
+  sessionIds?: string[]
+  /** Structural parent: a gate/commit activity points at its policy. */
+  parentActivityId?: string
+  /** FK into the owner: policyId, `runId#step`, PR url. */
+  sourceRef: string
+  source: ActivitySource
+  /** One human sentence. */
+  title: string
+  startedAt: string
+  endedAt?: string
+  error?: string
+  /** Staleness flag (from the session's `lastActivityAt`) — never
+   *  auto-transitions `state`. */
+  staleSince?: string
+  /** The declared-intent Task this activity is advancing, when the daemon's
+   *  read-time join finds one linking it to the Task ledger. */
+  taskId?: string
+}
+
+/**
+ * One activity. `active ⇄ pending` oscillates freely; `done`/`failed`/
+ * `cancelled` are terminal. `waitingOn` is REQUIRED on a pending record and
+ * absent on every other state (mirrors the runtime's discriminated union).
+ */
+export type ActivityRecord =
+  | (ActivityRecordBase & { state: "pending"; waitingOn: ActivityWaitingOn })
+  | (ActivityRecordBase & { state: Exclude<ActivityState, "pending">; waitingOn?: undefined })
+
+/** Filter for `listActivities` — mirrors `GET /activities`'s query params. */
+export interface ActivityListFilter {
+  /** Match the record's `sessionId` or any member of its `sessionIds`. */
+  sessionId?: string
+  state?: ActivityState
+  kind?: ActivityKind
+  source?: ActivitySource
+  /** Include done/failed/cancelled records. Default false — an explicit
+   *  terminal `state` filter implies inclusion on its own. */
+  includeTerminal?: boolean
+}
+
+// ── Task ledger (mirrors @agentproto/runtime task-ledger.ts — the client
+//    takes no runtime import; keep in sync by hand). Declared-intent
+//    WRITE-model: `pending ⇄ in_progress → done | failed`, either status
+//    → `cancelled`. Board-scoped (`tree:<rootSessionId>` / `ws:<slug>` /
+//    an explicit `boardId`); HTTP callers are always operator context. ──
+
+export type TaskStatus = "pending" | "in_progress" | "done" | "failed" | "cancelled"
+
+/** How a `done` was reached — never absent on a done task, surfaced
+ *  verbatim so a UI can render self-reported done visually distinct from a
+ *  gate-passed one. */
+export type TaskVerification =
+  | { kind: "self-report"; by: string; ts: string }
+  | { kind: "gate"; policyId?: string; exitCode?: number; ts: string }
+  | { kind: "human"; ts: string }
+
+export interface TaskRecord {
+  taskId: string
+  /** Scope — see the board rules in the section doc above. */
+  boardId: string
+  title: string
+  description?: string
+  status: TaskStatus
+  /** sessionId | "human" | "operator"; ABSENT = claimable. */
+  owner?: string
+  /** Caller identity at create time: a sessionId or "operator". */
+  createdBy: string
+  /** INFORMATIONAL in v1 — no scheduler reads it. */
+  blockedBy?: string[]
+  /** Every session that ever claimed this task (append-only). */
+  sessions?: string[]
+  /** OPT-IN done-gate (the supervisor's GateSpec, verbatim) — opaque here,
+   *  only ever round-tripped, never constructed by this client. */
+  verify?: unknown
+  /** How done was reached — never absent on `done`. */
+  verification?: TaskVerification
+  /** Why the last Tier-1 done report did NOT transition. Cleared on a
+   *  successful done. */
+  lastVerifyError?: string
+  /** Optimistic-concurrency token — every write CASes on it. */
+  rev: number
+  createdAt: string
+  updatedAt: string
+  closedAt?: string
+  /** Free-form provenance: prUrl, worktreePath, actionId, release reasons. */
+  meta?: Record<string, string>
+}
+
+/** Filter for `listTasks` — mirrors `GET /tasks`'s query params. */
+export interface TaskListFilter {
+  boardId?: string
+  status?: TaskStatus
+  /** Include done/failed/cancelled. Default false (an explicit closed
+   *  `status` filter implies it). */
+  includeClosed?: boolean
+}
+
+/** Body for `patchTask` — mirrors `PATCH /tasks/:id`'s accepted fields.
+ *  `rev` is the last-read optimistic-concurrency token; a stale one comes
+ *  back as a {@link TaskPatchResult} conflict, never a thrown error. */
+export interface TaskPatchInput {
+  rev: number
+  status?: TaskStatus
+  title?: string
+  description?: string
+  blockedBy?: string[]
+  /** Reassign (a string — creator/operator) or release (`null`) the owner. */
+  owner?: string | null
+  /** Evidence shortcut for `status:"done"`: an already-passed policy. */
+  evidence?: { policyId: string }
+  /** Free-text note, stamped into `meta.note` (last-write-wins). */
+  note?: string
+}
+
+/**
+ * `PATCH /tasks/:id`'s response, modeled without flattening it into one
+ * shape: `verifying` marks the Tier-1 done path (the write was ACCEPTED but
+ * the status hasn't transitioned yet — a background verify gate is running
+ * and announces its outcome later via `task:changed`); `conflict` is a
+ * rev-CAS miss to rebase off `current`; the bare `error` shape is a clean
+ * refusal (bad status transition, wrong owner, …). None of these three are
+ * thrown — only a disabled route or a transport failure is.
+ */
+export type TaskPatchResult =
+  | { task: TaskRecord; verifying?: boolean }
+  | { conflict: true; current: TaskRecord }
+  | { error: string }

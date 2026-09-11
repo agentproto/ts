@@ -3,7 +3,13 @@ import { createServer, type Server } from "node:http"
 import { AddressInfo } from "node:net"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { DaemonClient, NoTranscriptError, WorkspacesRouteMissingError } from "./daemonClient.js"
+import {
+  ActivitiesUnavailableError,
+  DaemonClient,
+  NoTranscriptError,
+  TasksUnavailableError,
+  WorkspacesRouteMissingError,
+} from "./daemonClient.js"
 
 /**
  * Spin a mock daemon on an ephemeral port. Returns base URL + request log.
@@ -58,6 +64,83 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url?.startsWith("/sessions/summaries") && req.method === "GET") return { status: 200, body: { summaries: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }], total: 1 } }
       if (req.url === "/permissions" && req.method === "GET") return { status: 200, body: { permissions: [] } }
       if (req.url?.startsWith("/permissions?sessionId=") && req.method === "GET") return { status: 200, body: { permissions: [] } }
+      if (req.url?.startsWith("/activities") && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            activities: [
+              {
+                id: "policy:plc_1",
+                kind: "policy",
+                sessionId: "s1",
+                sourceRef: "plc_1",
+                source: "supervisor",
+                title: "Completion policy plc_1 on s1",
+                startedAt: "t",
+                state: "pending",
+                waitingOn: {
+                  kind: "session-turn",
+                  refs: ["s1"],
+                  detail: "waiting for the watched session(s) to finish their turn",
+                },
+              },
+            ],
+            counts: { active: 0, pending: 1 },
+          },
+        }
+      }
+      if (req.url === "/tasks" && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            boardId: "ws:ws",
+            tasks: [
+              { taskId: "task_1", boardId: "ws:ws", title: "Do the thing", status: "pending", createdBy: "operator", rev: 0, createdAt: "t", updatedAt: "t" },
+            ],
+          },
+        }
+      }
+      if (req.url?.startsWith("/tasks?") && req.method === "GET") {
+        return { status: 200, body: { boardId: "ws:ws", tasks: [] } }
+      }
+      if (req.url === "/tasks/task_1" && req.method === "GET") {
+        return { status: 200, body: { taskId: "task_1", boardId: "ws:ws", title: "Do the thing", status: "pending", createdBy: "operator", rev: 0, createdAt: "t", updatedAt: "t" } }
+      }
+      if (req.url === "/tasks/missing" && req.method === "GET") {
+        return { status: 404, body: { error: "task_not_found", taskId: "missing" } }
+      }
+      if (req.url === "/tasks/task_1" && req.method === "PATCH") {
+        const patch = req.body as { rev: number; status?: string; note?: string }
+        if (patch.rev === 1) {
+          return {
+            status: 409,
+            body: {
+              conflict: true,
+              current: { taskId: "task_1", boardId: "ws:ws", title: "Do the thing", status: "pending", createdBy: "operator", rev: 3, createdAt: "t", updatedAt: "t" },
+            },
+          }
+        }
+        if (patch.rev === 2) {
+          return { status: 400, body: { error: "cannot transition done -> pending without an explicit reopen" } }
+        }
+        return {
+          status: 200,
+          body: {
+            task: {
+              taskId: "task_1",
+              boardId: "ws:ws",
+              title: "Do the thing",
+              status: patch.status ?? "pending",
+              createdBy: "operator",
+              rev: patch.rev + 1,
+              createdAt: "t",
+              updatedAt: "t",
+              ...(patch.note ? { meta: { note: patch.note } } : {}),
+            },
+            ...(patch.status === "done" ? { verifying: true } : {}),
+          },
+        }
+      }
       if (req.url?.startsWith("/sessions/s1/events") && req.method === "GET") {
         return {
           status: 200,
@@ -691,6 +774,132 @@ describe("DaemonClient — URL + auth header mapping", () => {
       res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "bad args" } }))
     })
     await expect(client().mcpCall("adapter_list")).rejects.toThrow(/bad args/)
+  })
+
+  it("listActivities() unwraps { activities } and forwards the filter as query params", async () => {
+    const activities = await client().listActivities({
+      sessionId: "s1",
+      state: "pending",
+      kind: "policy",
+      source: "supervisor",
+      includeTerminal: true,
+    })
+    expect(activities).toHaveLength(1)
+    expect(activities[0]?.id).toBe("policy:plc_1")
+    expect(activities[0]?.state).toBe("pending")
+    if (activities[0]?.state === "pending") {
+      expect(activities[0].waitingOn.kind).toBe("session-turn")
+    }
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe(
+      "/activities?sessionId=s1&state=pending&kind=policy&source=supervisor&includeTerminal=true",
+    )
+  })
+
+  it("listTasks() unwraps { tasks }", async () => {
+    const tasks = await client().listTasks()
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]?.taskId).toBe("task_1")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/tasks")
+  })
+
+  it("listTasks() forwards boardId/status/includeClosed as query params", async () => {
+    await client().listTasks({ boardId: "ws:ws", status: "pending", includeClosed: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/tasks?boardId=ws%3Aws&status=pending&includeClosed=true")
+  })
+
+  it("getTask() returns a single TaskRecord", async () => {
+    const task = await client().getTask("task_1")
+    expect(task.taskId).toBe("task_1")
+    expect(task.status).toBe("pending")
+  })
+
+  it("getTask() throws a plain error (not TasksUnavailableError) on a genuinely missing task", async () => {
+    const c = client()
+    await expect(c.getTask("missing")).rejects.toThrow(/task_not_found/)
+    await expect(c.getTask("missing")).rejects.not.toBeInstanceOf(TasksUnavailableError)
+  })
+
+  it("patchTask() returns { task, verifying:true } unflattened on the Tier-1 done path", async () => {
+    const result = await client().patchTask("task_1", { rev: 0, status: "done" })
+    expect(result).toEqual({
+      task: expect.objectContaining({ taskId: "task_1", status: "done", rev: 1 }),
+      verifying: true,
+    })
+  })
+
+  it("patchTask() returns a plain { task } with no verifying flag on a Tier-0 write", async () => {
+    const result = await client().patchTask("task_1", { rev: 0, status: "in_progress", note: "claiming" })
+    expect(result).toEqual({
+      task: expect.objectContaining({ status: "in_progress", rev: 1, meta: { note: "claiming" } }),
+    })
+    expect((result as { verifying?: boolean }).verifying).toBeUndefined()
+  })
+
+  it("patchTask() returns the { conflict, current } shape on a stale rev, not a thrown error", async () => {
+    const result = await client().patchTask("task_1", { rev: 1, status: "done" })
+    expect(result).toEqual({
+      conflict: true,
+      current: expect.objectContaining({ taskId: "task_1", rev: 3 }),
+    })
+  })
+
+  it("patchTask() returns the bare { error } shape on a clean refusal, not a thrown error", async () => {
+    const result = await client().patchTask("task_1", { rev: 2, status: "pending" })
+    expect(result).toEqual({ error: expect.stringContaining("reopen") })
+  })
+})
+
+describe("DaemonClient — Activity/Task ledger not wired on the daemon", () => {
+  let daemon: Awaited<ReturnType<typeof mockDaemon>>
+
+  beforeEach(async () => {
+    daemon = await mockDaemon(req => {
+      if (req.url?.startsWith("/activities") && req.method === "GET") {
+        return {
+          status: 501,
+          body: {
+            error: "activities_not_configured",
+            message:
+              "GET /activities is not enabled — the daemon was started without an activity projector.",
+          },
+        }
+      }
+      // No /tasks handler at all — every route under it falls through to the
+      // mock's default 404, standing in for a daemon booted without a task
+      // ledger wired (the whole /tasks family 404s through the dispatcher's
+      // generic fallthrough — there is no dedicated 501 the way /activities
+      // has one).
+      return { status: 404, body: { error: "not_found" } }
+    })
+  })
+
+  afterEach(async () => {
+    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+  })
+
+  function client(): DaemonClient {
+    return new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+  }
+
+  it("listActivities() raises ActivitiesUnavailableError on the 501, not a silent empty array", async () => {
+    await expect(client().listActivities()).rejects.toBeInstanceOf(ActivitiesUnavailableError)
+  })
+
+  it("listTasks() raises TasksUnavailableError on the generic 404 fallthrough, not a silent empty array", async () => {
+    await expect(client().listTasks()).rejects.toBeInstanceOf(TasksUnavailableError)
+  })
+
+  it("getTask() raises TasksUnavailableError on the generic 404 fallthrough", async () => {
+    await expect(client().getTask("task_1")).rejects.toBeInstanceOf(TasksUnavailableError)
+  })
+
+  it("patchTask() raises TasksUnavailableError on the generic 404 fallthrough", async () => {
+    await expect(
+      client().patchTask("task_1", { rev: 0, status: "done" }),
+    ).rejects.toBeInstanceOf(TasksUnavailableError)
   })
 })
 
