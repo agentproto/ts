@@ -73,12 +73,22 @@ SHAPE, not by importance:
 
 - **Sessions** and **Activity** are lists — they belong in the sidebar, where
   the tree nesting and the activity feed read naturally in one column.
-- **Work** is a board. The sidebar keeps a compact vertical task list (grouped
-  by board, status as a chip) that deep-links into the real thing, and the real
-  thing is a wide panel in the editor area.
-- That wide panel should be a **builtin MCP-App** in `@agentproto/apps`
-  (alongside `sessions-panel`, `session-story`, `session-chat`…), with the VS
-  Code side a thin launcher that iframes it — the `#1252`/`#1253` pattern. The
-  payoff is that one implementation then serves VS Code, `app serve` in a
-  browser, and any MCP-App host, instead of a kanban that only exists inside one
-  editor.
+- **Work** is a board: the **work-board** builtin MCP-App
+  (`packages/apps/src/work-board/`, tool id `agentproto_work_board`), mounted
+  unconditionally by the daemon's `makeBuiltinPanelApps`
+  (`packages/runtime/src/builtin-apps.ts`) alongside `sessions-panel`,
+  `session-story`, `session-chat`, and the rest — no `app_install` step, and
+  it reads the Task ledger live rather than off an emitted snapshot.
+  Columns are the ledger's own status enum — Pending / In Progress / Done /
+  Failed — with `cancelled` folded into the Failed column (tagged distinctly)
+  rather than a fifth column for a status v1 treats as terminal scrap. There
+  is deliberately no drag-and-drop: each card carries the explicit status
+  actions valid from its current state (Claim, Start, Done, Fail, Release,
+  Cancel, Reopen), and every action passes the task's CAS `rev` through
+  `task_claim` / `task_update` so a concurrent move loses cleanly instead of
+  clobbering. An unclaimed card reads "Unclaimed", never "pending" — that
+  word stays reserved for Activity's "blocked" meaning. The verification tell
+  is rendered distinctly per kind: a gate-passed done tags green ("✓ gate"),
+  a self-reported one tags amber ("self-report"), a human one tags blue, and
+  a declared-but-unverified `verify` tags grey ("gated") — so an unverified
+  done never reads as gate-passed.
