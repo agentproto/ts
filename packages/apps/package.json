@@ -124,6 +124,16 @@
       "import": "./dist/session-chat/panel.mjs",
       "default": "./dist/session-chat/panel.mjs"
     },
+    "./work-board": {
+      "types": "./dist/work-board/index.d.ts",
+      "import": "./dist/work-board.mjs",
+      "default": "./dist/work-board.mjs"
+    },
+    "./work-board/panel": {
+      "types": "./dist/work-board/panel.d.ts",
+      "import": "./dist/work-board/panel.mjs",
+      "default": "./dist/work-board/panel.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

@@ -21,6 +21,7 @@ import { PANEL_HTML } from "../sessions-panel/panel.js"
 import { SESSION_STORY_PANEL_HTML } from "../session-story/panel.js"
 import { BUREAU_SESSIONS_HTML } from "../bureau-sessions/panel.js"
 import { AGENTS_OVERVIEW_HTML } from "../agents-overview/panel.js"
+import { WORK_BOARD_HTML } from "../work-board/panel.js"
 import { makeLiveSessionApp } from "../live-session/index.js"
 
 const liveSessionApp = makeLiveSessionApp()
@@ -35,6 +36,7 @@ const PANELS: Record<string, string> = {
   "bureau-sessions": BUREAU_SESSIONS_HTML,
   "agents-overview": AGENTS_OVERVIEW_HTML,
   "live-session": liveSessionHtml,
+  "work-board": WORK_BOARD_HTML,
 }
 
 function extractScript(html: string): string {
