@@ -1,7 +1,7 @@
 # `agentproto auth`
 
 ```text
-agentproto auth login   [--host <url>] [--label <name>] [--no-browser]
+agentproto auth login   [--host <url>] [--label <name>] [--no-browser] [--scope <s>]
 agentproto auth status  [--host <url>] [--json]
 agentproto auth logout  [--host <url>]
 agentproto auth provider <set|list|rm> …   — LLM provider API keys
@@ -58,6 +58,7 @@ Flags:
 |------|---------|
 | `--host <url>` | The tunnel host URL. Most-recently-used wins when omitted. `wss://` and `ws://` are normalised to `https://` / `http://` for the discovery fetch. |
 | `--label <name>` | Friendly device label shown on the host's approval UI. Default `username@hostname`. |
+| `--scope <space-separated>` | OAuth scopes to request. Default `"tunnel:connect agent-cli:dispatch"`. |
 | `--no-browser` | Skip `open` / `xdg-open` of the verification URL. The URL + user code are always printed. |
 
 On success: `~/.agentproto/credentials.json` is created/updated with

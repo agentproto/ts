@@ -2,7 +2,7 @@
 
 ```text
 agentproto run-swarm --manifest <path> [--once] [--interval <duration>]
-                                        [--verbose]
+                                        [--verbose] [--adapter <module-id>]…
 ```
 
 Runs a multi-agent swarm. Loads the manifest at `<path>`, resolves
@@ -22,9 +22,7 @@ For port-by-port kernel details see
 | `--once` | off | Run exactly one cycle, then exit. Useful for cron-style polling. |
 | `--interval <duration>` | `2000` | Delay between cycles. Accepts `500ms`, `2s`, `5m`, `2h`; a bare integer is still interpreted as milliseconds, but bare integers `<1000` are rejected as ambiguous. |
 | `--verbose`, `-v` | off | Log each cycle: idle / which participants ran / how many turns appended. Also prints the registered `kind` lists at startup. |
-
-No `--plugin` flag exists — additional swarm-kernel adapters are loaded
-from `config.json#adapters` (see [`adapters.md`](./adapters.md)).
+| `--adapter <module-id>` (repeatable) | – | Additional swarm-kernel adapter to load *for this invocation*. Loaded after `config.json#adapters` so flag-provided adapters can override config-listed ones. |
 
 ## Manifest format
 
@@ -111,7 +109,8 @@ errors.
 
 - **`unknown substrate kind '<x>'`** — the manifest references a kind
   that isn't registered. Either install the providing adapter
-  (`agentproto adapters install <pkg>`) or add it to `config.json#adapters`.
+  (`agentproto adapters install <pkg>`), add it to `config.json#adapters`,
+  or pass `--adapter <pkg>` for one invocation.
   Error message lists currently-registered kinds for context.
 - **`unknown dispatcher kind '<x>'`** / **`unknown executor kind '<x>'`** /
   **`unknown state-store kind '<x>'`** — same pattern.
@@ -137,6 +136,9 @@ agentproto run-swarm --manifest .runtime/multi-agent.md --interval 500ms -v
 # Install a transport adapter persistently
 agentproto adapters install @guilde/agentproto-bridge
 agentproto run-swarm --manifest .runtime/guilde.md --verbose
+
+# Or load an adapter for just this run (without persisting)
+agentproto run-swarm --manifest ./swarm.md --adapter @your-org/agentproto-something
 ```
 
 ## Cleanup

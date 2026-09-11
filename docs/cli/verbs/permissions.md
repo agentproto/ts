@@ -1,9 +1,9 @@
 # `agentproto permissions`
 
 ```text
-agentproto permissions ls        [--json]
-agentproto permissions approve   <id> [--always] [--feedback <text>]
-agentproto permissions deny      <id> [--feedback <text>]
+agentproto permissions ls        [--json] [--session <id>]
+agentproto permissions approve   <id> [--always] [--option-id <id>] [--feedback <text>] [--json]
+agentproto permissions deny      <id> [--option-id <id>] [--feedback <text>] [--json]
 agentproto permissions watch     [--allow-tool <pat>]... [--deny-tool <pat>]...
                                  [--session <id>] [--rules-json <json|@file>]
                                  [--always] [--interval <dur>] [--timeout <dur>]
@@ -51,6 +51,7 @@ mutating `approve`/`deny` routes; `ls` is read-only. Override with
 ```bash
 agentproto permissions ls
 agentproto permissions ls --json
+agentproto permissions ls --session ses_abc123
 ```
 
 GETs `/permissions`. Lists everything currently held, oldest first:
@@ -64,25 +65,23 @@ perm_2      ses_def456      Bash                3s     Allow "Bash"?
 `--json` emits the full records (id, sessionId, toolCallId, toolName, text,
 options, requestedAt, plus the owning session's adapter/title and age).
 The tool's raw input (e.g. the Bash command string) is included as `rawInput`
-and rendered as a truncated preview in the text table.
+and rendered as a truncated preview in the text table. `--session <id>` filters to one session.
 
 ### `approve <id>`
 
 ```bash
 agentproto permissions approve perm_1              # allow-once
 agentproto permissions approve perm_1 --always     # allow-always, if offered
+agentproto permissions approve perm_1 --option-id allow_edits
 ```
 
 POSTs `/permissions/:id` with `{ decision: "approve" }`. Selects an
 allow-flavored option — allow-once by default, or allow-always when the
-request offers one and `--always` is passed. `--feedback <text>`
+request offers one and `--always` is passed. `--option-id` picks an exact
+offered option, overriding the decision→option mapping. `--feedback <text>`
 attaches free-text context to the resolution; adapters that support it
 (e.g. mastra-agent suspensions) fold it into the tool's resume data. The
 agent's turn resumes with the granted tool call.
-
-To pick an exact offered option (an `optionId`), use a `--rules-json` rule
-on [`watch`](#watch) — that is the only surface where `optionId` is
-selectable today; there is no CLI flag for it on `approve`/`deny`.
 
 ### `deny <id>`
 
@@ -145,10 +144,10 @@ the daemon verbatim.
 
 ## Errors
 
-- Unknown or already-resolved id → exit `1`.
-- An `approve` on a request that offers no allow-flavored option fails —
-  check the offered options via `ls --json` first (or pick an explicit
-  `optionId` with a `--rules-json` rule on `watch`).
+- Unknown or already-resolved id → exit `1` with `HTTP 404`.
+- An `approve` on a request that offers no allow-flavored option (and no
+  `--option-id`) → `HTTP 409` — pass an explicit `--option-id` from
+  `ls --json`.
 
 ## Equivalent surfaces
 

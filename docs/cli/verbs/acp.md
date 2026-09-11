@@ -48,6 +48,7 @@ slug.
 | `--desc <text>` | One-line description. |
 | `--env <K=V>…` | Always-on spawn env var. Repeatable. |
 | `--resumable` | Advertise `resumable` + native-resume continuation. |
+| `--install-hint <text>` | Shown in `acp ls` when the bin is missing. |
 | `--json` | Emit the written entry as JSON. |
 
 The slug must be lower-kebab and ≥2 chars (AIP-45 id rule); an invalid
