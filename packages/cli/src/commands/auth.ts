@@ -107,17 +107,25 @@ const USAGE = `agentproto auth — host-binding tokens (RFC 8628 device flow)
 
 Usage:
   agentproto auth login   [--host <url>] [--label <name>] [--no-browser]
+                          [--scope <scopes>]
   agentproto auth status  [--host <url>] [--json]
   agentproto auth logout  [--host <url>]
   agentproto auth provider <set|list|rm> …   — LLM provider API keys
   agentproto auth cred     <set|list|rm> …   — broker creds for child-MCP auth
+                          set <id> <token> --api-base <url> [--audience <aud>]
+                                             [--description <text>]
   agentproto auth profile refresh-models <id> [--json]
                                               — re-sync a named auth profile's
                                                 curated model ids against the
                                                 current catalog
 
 The default host is the one most recently logged into; on first use,
-\`--host\` is required. Examples:
+\`--host\` is required.
+
+  --scope <scopes>  space-separated scopes the device flow requests
+                      (default: "tunnel:connect agent-cli:dispatch")
+
+Examples:
 
   agentproto auth login --host wss://guilde.work
   agentproto auth status

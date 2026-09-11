@@ -2,7 +2,7 @@
 
 ```text
 agentproto run-swarm --manifest <path> [--once] [--interval <duration>]
-                                       [--verbose] [--plugin <module-id>]…
+                                        [--verbose] [--adapter <module-id>]…
 ```
 
 Runs a multi-agent swarm. Loads the manifest at `<path>`, resolves
@@ -22,7 +22,7 @@ For port-by-port kernel details see
 | `--once` | off | Run exactly one cycle, then exit. Useful for cron-style polling. |
 | `--interval <duration>` | `2000` | Delay between cycles. Accepts `500ms`, `2s`, `5m`, `2h`; a bare integer is still interpreted as milliseconds, but bare integers `<1000` are rejected as ambiguous. |
 | `--verbose`, `-v` | off | Log each cycle: idle / which participants ran / how many turns appended. Also prints the registered `kind` lists at startup. |
-| `--plugin <module-id>` (repeatable) | – | Additional plugin to load *for this invocation*. Loaded after `config.json#plugins` so flag-provided plugins can override config-listed ones. |
+| `--adapter <module-id>` (repeatable) | – | Additional swarm-kernel adapter to load *for this invocation*. Loaded after `config.json#adapters` so flag-provided adapters can override config-listed ones. |
 
 ## Manifest format
 
@@ -81,9 +81,9 @@ Registered by default — no plugin needed:
 | `state` | `fs` | One JSON file per participant under `dir` (default `.runtime/state`). |
 | `executor` | `agent-cli` | Spawns an agent-CLI binary. Defaults for `claude` are `--print --output-format=json --permission-mode bypassPermissions` so unattended swarm participants don't hang waiting for interactive tool approval. Override any of this with `config.command` / `config.args`, or set `config.model` to pick a different Claude model for that participant. |
 
-Other `kind`s come from plugins. See
+Other `kind`s come from swarm-kernel adapters. See
 [`../concepts/plugins.md`](../concepts/plugins.md) and
-[`./plugins.md`](./plugins.md).
+[`./adapters.md`](./adapters.md).
 
 ## Verbose output
 
@@ -108,8 +108,9 @@ errors.
 ## Errors
 
 - **`unknown substrate kind '<x>'`** — the manifest references a kind
-  that isn't registered. Either install the providing plugin
-  (`agentproto plugins install <pkg>`) or pass `--plugin <pkg>`.
+  that isn't registered. Either install the providing adapter
+  (`agentproto adapters install <pkg>`), add it to `config.json#adapters`,
+  or pass `--adapter <pkg>` for one invocation.
   Error message lists currently-registered kinds for context.
 - **`unknown dispatcher kind '<x>'`** / **`unknown executor kind '<x>'`** /
   **`unknown state-store kind '<x>'`** — same pattern.
@@ -132,12 +133,12 @@ agentproto run-swarm --manifest .runtime/multi-agent.md --once
 # Tight loop for development iteration
 agentproto run-swarm --manifest .runtime/multi-agent.md --interval 500ms -v
 
-# Override with a transport plugin
-agentproto plugins install @guilde/agentproto-bridge
+# Install a transport adapter persistently
+agentproto adapters install @guilde/agentproto-bridge
 agentproto run-swarm --manifest .runtime/guilde.md --verbose
 
-# Or load a plugin for just this run (without persisting)
-agentproto run-swarm --manifest ./swarm.md --plugin @your-org/agentproto-something
+# Or load an adapter for just this run (without persisting)
+agentproto run-swarm --manifest ./swarm.md --adapter @your-org/agentproto-something
 ```
 
 ## Cleanup

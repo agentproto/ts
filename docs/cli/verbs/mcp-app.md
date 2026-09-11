@@ -6,7 +6,7 @@ agentproto mcp-app <appId>
 
 A stdio MCP server scoped to ONE installed app's tools — the buyer-facing
 distribution path for an app (e.g. a book bundle) that shouldn't hand a
-Codex/Cursor/Windsurf client the full daemon `/mcp` gateway (~100 tools
+Codex/Cursor/Windsurf client the full daemon `/mcp` gateway (~177 core tools
 including `command_execute`, fs, `agent_*`).
 
 Unlike [`mcp-bridge`](./mcp-bridge.md), which proxies every daemon tool

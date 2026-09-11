@@ -2,8 +2,10 @@
 
 ```text
 agentproto serve [--workspace <dir>] [--port <n>] [--bind <ip>]
+                 [--profile <name>]
                  [--connect <url> [--token <jwt>] [--label <name>]]
-                 [--allow-origin <url> …] [--interactive | -i]
+                 [--allow-origin <url> …] [--auth-token <token>]
+                 [--interactive | -i]
 ```
 
 Runs the agentproto daemon in the foreground. Boots a local HTTP
@@ -21,12 +23,14 @@ launchd / systemd.
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--workspace <dir>`, `-w` | `process.cwd()` (or `daemon.workspace` in config) | Workspace directory the daemon binds to. Must exist + be a directory. |
+| `--profile <name>` | — | Load a `profiles[]` bundle from `~/.agentproto/config.json` instead of the top-level keys. |
 | `--port <n>`, `-p` | `18790` | HTTP port. |
 | `--bind <ip>`, `-b` | `127.0.0.1` | Bind address. `0.0.0.0` if you want LAN reachability. |
 | `--connect <wss-url>`, `-c` | _off_ | Tunnel host URL. When set, daemon connects outbound and adopts every cloud-driven spawn into its local registry. |
 | `--token <jwt>`, `-t` | _from credentials.json_ | Tunnel bearer. See resolution order below. |
 | `--label <name>`, `-l` | `username@hostname` | Friendly label sent in tunnel hello frames. |
 | `--allow-origin <url>` (repeatable) | _localhost only_ | Browser origins trusted to drive mutating routes + the PTY WS. Merged with `daemon.allowedOrigins` from config. |
+| `--auth-token <token>` | — | Bearer token gating the gateway itself (or `daemon.authToken` in config). Distinct from `--token`, which is the tunnel bearer for `--connect`. |
 | `--interactive`, `-i` | off | Chain `agentproto sessions --watch` as a child in the same terminal — quit the TUI to tear the daemon down. |
 
 ### Token resolution (`--connect` mode)

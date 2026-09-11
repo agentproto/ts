@@ -11,7 +11,7 @@ This tree is **tool docs** — what the binary does, what flags it takes,
 what files it touches. For the protocol it implements, see the AIPs
 at <https://agentproto.sh/docs>.
 
-> **Status:** alpha. The package is pre-1.0 (`0.14.0`). See
+> **Status:** alpha. The package is pre-1.0 (`0.20.0`). See
 > [`../../VERSIONING.md`](../../VERSIONING.md) for what the alpha
 > guarantees and what may change between minor releases.
 
@@ -84,6 +84,8 @@ Pick whichever matches what you're trying to do:
 ### Guides
 
 - [Use agentproto as an MCP server inside coding CLIs](./guides/mcp-in-coding-cli.md) — register the daemon in Claude Code, Codex, and Hermes
+- [Agent tools inside your app's agent](./guides/app-agent-tools.md) — the daemon MCP tools an app's spawned agents get, and how AGENT.md shapes the spawn
+- [Create an agentproto app](./guides/create-agentproto-app.md) — scaffold, build, and serve an app bundle end to end
 - [Sandboxes and rendezvous: boot-and-drive vs. attach](./guides/sandbox-rendezvous.md) — connection models, keeping a box reachable, and the cost tradeoffs
 
 ### File reference

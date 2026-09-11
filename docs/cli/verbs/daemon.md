@@ -111,7 +111,7 @@ Prints a multi-line summary:
 agentproto daemon status
   plist:     installed (/Users/me/Library/LaunchAgents/sh.agentproto.plist)
   launchd:   loaded · pid=12345 · state=running
-  /health:   ok · v0.14.0 (workspace abc1234, built 2026-08-11T…) · pid 12345 · up 2h  (http://127.0.0.1:18790)
+  /health:   ok · v0.20.0 (workspace abc1234, built 2026-09-11T…) · pid 12345 · up 2h  (http://127.0.0.1:18790)
   bin:       /Users/me/.local/share/fnm/node-versions/v22/bin/node /Users/me/.npm/lib/node_modules/@agentproto/cli/cli.mjs
   config:    /Users/me/.agentproto/config.json
   logs:      /Users/me/.agentproto/daemon.log

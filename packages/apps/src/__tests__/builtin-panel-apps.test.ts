@@ -9,6 +9,7 @@ import { bureauSessionsApp } from "../bureau-sessions/index.js"
 import { sessionStoryApp } from "../session-story/index.js"
 import { liveSessionApp } from "../live-session/index.js"
 import { sessionChatApp } from "../session-chat/index.js"
+import { workBoardApp } from "../work-board/index.js"
 
 const PANELS = [
   { slug: "sessions-panel", handle: sessionsPanelApp },
@@ -17,6 +18,7 @@ const PANELS = [
   { slug: "session-story", handle: sessionStoryApp },
   { slug: "live-session", handle: liveSessionApp },
   { slug: "session-chat", handle: sessionChatApp },
+  { slug: "work-board", handle: workBoardApp },
 ]
 
 describe("builtin panel AppHandles — emit + loadAppHandle round trip", () => {

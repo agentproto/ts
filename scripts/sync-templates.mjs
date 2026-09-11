@@ -377,8 +377,17 @@ const PACKAGE_DESCRIPTION =
 
 // --- Compute the plan ---
 
-const MARKER_START_RE = /^[ \t]*(?:<!--|\/\*) sync-templates:start (?:-->|\*\/)[ \t]*\n/m
-const MARKER_END_RE = /\n[ \t]*(?:<!--|\/\*) sync-templates:end (?:-->|\*\/)/
+// Three comment flavors, one marker vocabulary:
+//   <!-- … -->   HTML, for plain markdown (sandbox-e2b README)
+//   /* … */      JS block, for .ts sources
+//   {/* … */}    MDX expression, for markdown that gets compiled as MDX
+// docs/cli/ is mirrored into cli.agentproto.sh and compiled by
+// fumadocs-mdx, and MDX rejects HTML comments outright — so files under
+// docs/cli/ must use the `{/* … */}` flavor.
+const MARKER_START_RE =
+  /^[ \t]*(?:<!--|\{\/\*|\/\*) sync-templates:start (?:-->|\*\/\}|\*\/)[ \t]*\n/m
+const MARKER_END_RE =
+  /\n[ \t]*(?:<!--|\{\/\*|\/\*) sync-templates:end (?:-->|\*\/\}|\*\/)/
 
 const plans = []
 function planFile(filePath, nextContent) {

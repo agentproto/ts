@@ -60,10 +60,10 @@ panels" above), independent of this file and of `~/.agentproto/apps.json`.
 
 ## Builtin daemon panels
 
-Five of `@agentproto/runtime`'s daemon-builtin MCP-Apps widgets live here too,
-as house-app-quality code — but they are **not** `AppHandle`s (`defineApp`
-requires a non-empty `agents` array, and these are pure read-only viewers with
-no agent of their own):
+Several of `@agentproto/runtime`'s daemon-builtin MCP-Apps widgets live here
+too, as house-app-quality code — but they are **not** `AppHandle`s
+(`defineApp` requires a non-empty `agents` array, and these are pure
+read-only viewers/actuators with no agent of their own):
 
 | Panel | Import | MCP tool id |
 | --- | --- | --- |
@@ -72,15 +72,17 @@ no agent of their own):
 | `bureau-sessions` | `@agentproto/apps/bureau-sessions` | `agentproto_bureau_sessions` |
 | `session-story` | `@agentproto/apps/session-story` | `agentproto_session_story` |
 | `live-session` | `@agentproto/apps/live-session` | `live_session` |
+| `session-chat` | `@agentproto/apps/session-chat` | `agentproto_session_chat` |
+| `work-board` | `@agentproto/apps/work-board` | `agentproto_work_board` |
 
 Each exports a `make<Name>App(ops)` factory producing an `AgnoMcpApp` — the
 shape `@agentproto/runtime`'s `mcp-apps-adapter.ts` mounts on the daemon's MCP
-server. `@agentproto/runtime`'s `builtin-apps.ts` wraps these five with the
-daemon's own session registry and mounts them at boot, unconditionally — no
-`app_install` step, and they're always listed in `app_catalog` under
-`category: "builtin"`. A sixth builtin panel, the terminal, stays in
-`@agentproto/runtime` (`terminal-panel-app.ts`) — it needs a live PTY
-WebSocket, not a portable tool-call-driven `AgnoMcpApp`.
+server. `@agentproto/runtime`'s `builtin-apps.ts` wraps these with the
+daemon's own session registry (and, for `work-board`, its Task ledger) and
+mounts them at boot, unconditionally — no `app_install` step, and they're
+always listed in `app_catalog` under `category: "builtin"`. One more builtin
+panel, the terminal, stays in `@agentproto/runtime` (`terminal-panel-app.ts`)
+— it needs a live PTY WebSocket, not a portable tool-call-driven `AgnoMcpApp`.
 
 ## Generic by design
 

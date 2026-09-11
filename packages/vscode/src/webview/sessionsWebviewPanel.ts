@@ -45,6 +45,7 @@ import {
 } from "@agentproto/runtime/session-presence"
 import {
   buildSessionsWebviewModel,
+  defaultExpandedFor,
   isValidColorIndex,
   subtreeRollup,
   summaryTextFor,
@@ -147,6 +148,11 @@ interface RenderRow {
    *  dot in place of `status` while the row is collapsed, so a busier
    *  descendant still shows through. */
   subtreeStatus: WebviewRow["status"]
+  /** Whether this row starts expanded when the operator has expressed no
+   *  preference — true while its subtree holds live work, so a running
+   *  sub-agent is never invisible at first paint (see
+   *  {@link defaultExpandedFor}). An explicit click always wins over it. */
+  defaultExpanded: boolean
 }
 
 interface RenderGroup {
@@ -252,6 +258,7 @@ function toRenderRow(
     archived: row.archived,
     hasChildren: rollup.hasChildren,
     subtreeStatus: rollup.status,
+    defaultExpanded: defaultExpandedFor(rollup.status),
   }
 }
 
@@ -819,6 +826,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .ghead .tw { font-size: 8px; color: var(--faint); transition: transform 0.12s; }
     .ghead.closed .tw { transform: rotate(-90deg); }
     .ghead .n { color: var(--faint); font-weight: 400; }
+    /* Rows folded under a collapsed parent — quieter than the painted count
+       next to it, so the headline number stays the one you read. */
+    .ghead .n .nested { margin-left: 2px; opacity: 0.65; }
     .ghead .hint { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--faint); }
     .gbody[hidden] { display: none; }
 
@@ -830,8 +840,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .row.open .name > span:first-child { color: var(--fg); }
     .row.archived { opacity: 0.6; }
     .row.gone { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; transition: all 0.25s ease; }
-    /* A descendant of a collapsed row stays in the DOM (so shownCount/footer
-       stay truthful) but is not painted — mirrors .gbody[hidden] below. */
+    /* A descendant of a collapsed row stays in the DOM (so expanding is a
+       class flip, not a re-render) but is not painted — mirrors .gbody[hidden]
+       below. It is NOT counted in its section's headline number: the header
+       reports painted rows plus a dimmer "+N" for these (see groupHTML). */
     .row[hidden] { display: none; }
     .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
     .dot.working { background: var(--ws, var(--working)); animation: agentproto-pulse 2s infinite; }
@@ -880,9 +892,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .row.nested { border-left: 1px solid var(--border); }
     /* Per-row disclosure triangle — only rendered when a row has nested
        children (see subtreeRollup). Same visual language as .ghead .tw:
-       12s rotate transition, -90deg when collapsed. Collapsed is the
-       default (see expandedRows below), so most subagent subtrees start
-       hidden and this glyph starts rotated. */
+       12s rotate transition, -90deg when collapsed. A quiet subtree starts
+       collapsed (so this glyph starts rotated); one holding live work starts
+       expanded — see defaultExpandedFor / isRowExpanded below. */
     .name .rtw { display: inline-flex; font-size: 8px; color: var(--faint); transition: transform 0.12s; cursor: pointer; }
     .name .rtw.closed { transform: rotate(-90deg); }
     .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -999,10 +1011,20 @@ export function buildHtml(nonce: string, cspSource: string): string {
       // frequent live re-renders so a collapsed section stays collapsed.
       const collapsed = {};
       // Row (subagent subtree) collapse is a client-only concern too, keyed by
-      // session id — same lifetime/semantics as the collapsed map above, but
-      // the DEFAULT is the opposite: a row absent from this map is COLLAPSED, so
-      // an empty map (first paint) starts every parent row collapsed.
+      // session id. This map holds EXPLICIT OPERATOR CHOICES ONLY — a row
+      // absent from it falls back to the host-computed defaultExpanded flag
+      // (expanded while its subtree holds live work, collapsed otherwise).
+      // Storing only real clicks is what lets an explicit collapse survive the
+      // frequent live re-renders instead of the default popping it back open.
       const expandedRows = {};
+
+      // Effective expansion for one rendered row: the operator's choice when
+      // there is one, the host's default otherwise.
+      function isRowExpanded(r) {
+        return Object.prototype.hasOwnProperty.call(expandedRows, r.id)
+          ? expandedRows[r.id] === true
+          : r.defaultExpanded === true;
+      }
       // Most recent rendered groups, cached so a row-triangle toggle can
       // redraw the list without waiting for the next 'model' message.
       let lastGroups = [];
@@ -1122,8 +1144,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
         var hasBgWork = (r.childrenBusy > 0 || r.pendingBgTasks > 0) && effectiveStatus !== 'working' && effectiveStatus !== 'awaiting' && effectiveStatus !== 'awaiting-bg';
         var dotClasses = 'dot ' + effectiveStatus + (effectiveStatus === 'done' && r.unread ? ' unread' : '') + (hasBgWork ? ' bg' : '');
         // Disclosure triangle — only on a row with nested children (a leaf
-        // row's rendering is otherwise unchanged). Collapsed by default
-        // (absent from expandedRows).
+        // row's rendering is otherwise unchanged). Open or closed by
+        // isRowExpanded — the operator's own click, else the host default.
         var triangle = r.hasChildren
           ? '<span class="rtw' + (isCollapsedRow ? ' closed' : '') + '" data-row-toggle="' + escapeHtml(r.id) + '" role="button" tabindex="0" aria-expanded="' + (isCollapsedRow ? 'false' : 'true') + '" aria-label="' + (isCollapsedRow ? 'Expand nested sessions' : 'Collapse nested sessions') + '">▾</span>'
           : '';
@@ -1162,28 +1184,43 @@ export function buildHtml(nonce: string, cspSource: string): string {
       // tracking the shallowest depth currently hidden by a collapsed
       // ancestor — reset the instant a row pops back out of that ancestor's
       // subtree (its depth drops back at or below the trigger).
+      // Returns the markup AND the painted/folded split, so the section header
+      // can report what the operator can actually SEE. Counting g.rows.length
+      // there instead printed "Running 4" over two painted rows — the two
+      // missing ones being live sub-agents folded under a collapsed parent.
       function rowsHTML(rows) {
         var html = '';
+        var shown = 0;
+        var hidden = 0;
         var hideFromDepth = null;
         for (var i = 0; i < rows.length; i++) {
           var r = rows[i];
           var depth = typeof r.depth === 'number' ? r.depth : 0;
           if (hideFromDepth !== null && depth < hideFromDepth) hideFromDepth = null;
           var hiddenRow = hideFromDepth !== null;
-          var isCollapsedRow = r.hasChildren && !expandedRows[r.id];
+          var isCollapsedRow = r.hasChildren && !isRowExpanded(r);
           if (isCollapsedRow && hideFromDepth === null) hideFromDepth = depth + 1;
+          if (hiddenRow) hidden += 1; else shown += 1;
           html += rowHTML(r, hiddenRow, isCollapsedRow);
         }
-        return html;
+        return { html: html, shown: shown, hidden: hidden };
       }
 
       function groupHTML(g) {
         var isClosed = collapsed[g.key] === true;
+        var painted = rowsHTML(g.rows);
+        // The headline number never exceeds what is on screen; rows folded
+        // under a collapsed parent ride along as a dimmer "+N".
+        var countTitle = painted.hidden > 0
+          ? painted.shown + ' shown · ' + painted.hidden + ' nested (collapsed)'
+          : painted.shown + ' shown';
+        var count = '<span class="n" title="' + escapeHtml(countTitle) + '">' + painted.shown +
+          (painted.hidden > 0 ? '<span class="nested">+' + painted.hidden + '</span>' : '') + '</span>';
         var head = '<div class="ghead' + (isClosed ? ' closed' : '') + '" data-key="' + escapeHtml(g.key) + '" role="button" tabindex="0" aria-expanded="' + (isClosed ? 'false' : 'true') + '">' +
-          '<span class="tw">▾</span>' + escapeHtml(g.label) + ' <span class="n">' + g.rows.length + '</span>' +
+          '<span class="tw">▾</span>' + escapeHtml(g.label) + ' ' + count +
           (g.hint ? '<span class="hint">' + escapeHtml(g.hint) + '</span>' : '') + '</div>';
         var body = '<div class="gbody" data-body="' + escapeHtml(g.key) + '"' + (isClosed ? ' hidden' : '') + '>' +
-          rowsHTML(g.rows) + '</div>';
+          painted.html + '</div>';
         return head + body;
       }
 
@@ -1395,7 +1432,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
         var rowToggle = e.target.closest('[data-row-toggle]');
         if (rowToggle) {
           var toggleId = rowToggle.getAttribute('data-row-toggle');
-          expandedRows[toggleId] = !expandedRows[toggleId];
+          // Flip the EFFECTIVE state (which may be the host default, not an
+          // earlier click), and record it as an explicit choice from here on.
+          expandedRows[toggleId] = rowToggle.getAttribute('aria-expanded') !== 'true';
           renderList();
           return;
         }

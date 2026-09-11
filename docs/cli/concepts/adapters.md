@@ -241,8 +241,15 @@ These are different things:
   sessions`, and the daemon's `participant.executor = agent-cli`
   swarm executor.
 - **Plugin** extends the swarm kernel with new substrates,
-  dispatchers, executors, or state stores. Goes through `agentproto
-  plugins install <pkg>`. See [`./plugins.md`](./plugins.md).
+  dispatchers, executors, or state stores. Managed with `agentproto
+  adapters install <pkg>` — the verb was renamed from `plugins` in
+  0.20.0 (config key `plugins[]` → `adapters[]`). See
+  [`./plugins.md`](./plugins.md).
+
+> Naming note: the `adapters` *verb* manages these swarm-kernel
+> extensions (formerly "plugins"), not the `@agentproto/adapter-*`
+> CLI-driver packages described above. The two senses of "adapter" are
+> an acknowledged collision kept for continuity with the rename.
 
 Most users only ever install adapters. Plugins matter when you want
 swarms to read/write through a non-default transport (Slack, MCP,

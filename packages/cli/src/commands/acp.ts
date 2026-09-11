@@ -35,6 +35,7 @@ Usage:
   agentproto acp ls  [--json]
   agentproto acp add <slug> --bin <bin> [--args <arg>…] [--name <name>]
                             [--desc <text>] [--env <K=V>…] [--resumable] [--json]
+                            [--install-hint <cmd>]
   agentproto acp rm  <slug> [--json]
   agentproto acp --help
 
@@ -44,6 +45,9 @@ Usage:
   add  Register a generic ACP agent in ~/.agentproto/config.json. Any CLI
        that speaks ACP over stdio works — e.g. --bin gemini --args --experimental-acp.
        A config entry shadows a catalog entry of the same slug.
+       --install-hint <cmd>  shell line that installs the binary when it isn't
+       on PATH (e.g. "npm i -g @scope/pkg", "uv tool install pkg") — the same
+       hint \`agentproto install <slug>\` runs for vendored ACP agents.
   rm   Remove one of your config-defined agents. Catalog entries can't be removed.
 
 Examples:

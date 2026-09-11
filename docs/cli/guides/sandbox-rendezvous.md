@@ -22,11 +22,11 @@ Providers are resolved from a small built-in catalog by slug:
 | `box` | An ascii.dev [Box](https://ascii.dev) cloud computer, behind an always-on systemd unit. | `@agentproto/sandbox-box` |
 | `e2b` | An e2b Firecracker microVM (`agentproto-workstation` template). | `@agentproto/sandbox-e2b` |
 
-<!-- sync-templates:start -->
+{/* sync-templates:start */}
 The `e2b` provider's default template is declared in
 `templates/workstation/versions.json`: `@agentproto/cli@0.17.0`, `@agentproto/adapter-hermes@0.4.10`, `@agentproto/adapter-mastra-agent@0.6.0`, `@agentproto/adapter-opencode@1.1.10`, `opencode-ai@1.18.28`. The on-boot CLI install is skipped only once the
 template's recorded `baked` block proves the image carries the requested pin.
-<!-- sync-templates:end -->
+{/* sync-templates:end */}
 
 (`modal` and `daytona` are catalog placeholders — AIP-36 day-1 provider ids
 with no published package yet.)
@@ -58,8 +58,9 @@ sandbox's daemon, and they are not interchangeable.
 
 ### Boot-and-drive — `agent_start` with a `sandbox` spec
 
-`agent_start` (MCP/HTTP only today — no `sessions start` CLI flag yet)
-accepts a `sandbox` field: a provider slug (`"box"`, `"e2b"`) or an inline
+`agent_start` — or, from a shell, `agentproto sessions start --sandbox
+<provider-or-json>` — accepts a `sandbox` field: a provider slug
+(`"box"`, `"e2b"`) or an inline
 AIP-36 spec. The daemon:
 
 1. boots a **fresh** box (or reconnects to one via `reuse: "<sandboxId>"`),
@@ -112,7 +113,7 @@ shell.
 | | Boot-and-drive (`agent_start.sandbox`) | Attach (`sandbox attach`) |
 |---|---|---|
 | Box lifecycle | Daemon boots it, owns it, may pause/destroy on close | Untouched — never stopped or paused |
-| Requires | The daemon's own `agent_start` call | Nothing local but provider creds — no daemon needed |
+| Requires | A daemon `agent_start` call (or `sessions start --sandbox`) | Nothing local but provider creds — no daemon needed |
 | Use when | You want an agentproto session to *drive* the box | You want to *reach* a box that's already running |
 | Output | A session you `agent_prompt`/`agent_output` like any other | A durable `{mcpUrl, token}` any MCP client can dial into |
 
@@ -198,10 +199,10 @@ check before scripting anything that boots boxes in bulk.
   box, and your attachment to it, alive indefinitely. Reachable 24/7, but
   billed continuously the whole time.
 
-  > `--keep-alive` is landing as a companion flag to `sandbox attach` for
+  > `--keep-alive` is a companion flag to `sandbox attach` for
   > exactly this case — a heartbeat that keeps a long-lived external client's
-  > attachment from going stale. If it's not in your installed CLI version
-  > yet, `attach` still resumes and exposes the box; you'd just re-run it
+  > attachment from going stale. It shipped in 0.20.0; on older CLIs,
+  > `attach` still resumes and exposes the box — you'd just re-run it
   > periodically instead of relying on a background heartbeat.
 
 Default to resume-on-attach unless you genuinely need a 24/7-reachable
@@ -261,8 +262,8 @@ box's daemon directly — no agentproto daemon of its own required.
 If this needs to stay reachable indefinitely rather than just for this
 session, make sure the box is sticky (`box extend bx_abc123 --no-auto-stop`,
 or rely on agentproto's own no-auto-stop default from boot) and reach for
-`agentproto sandbox attach box bx_abc123 --keep-alive` once that flag ships
-in your CLI version, so the attachment itself doesn't go stale either.
+`agentproto sandbox attach box bx_abc123 --keep-alive` (shipped in
+0.20.0), so the attachment itself doesn't go stale either.
 
 ## 6. Exposing app ports (e2b)
 
