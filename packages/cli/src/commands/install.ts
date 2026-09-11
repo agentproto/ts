@@ -93,6 +93,10 @@ skill/<name> surface flags:
 After the adapter surface installs, the manifest's setup[] pipeline runs
 (idempotent — skip_if short-circuits satisfied steps) unless --skip-setup
 is passed.
+
+Examples:
+  agentproto install claude-code
+  agentproto install runtime-profile/standard  # drops .claude/ swarm scaffolding into the cwd
 `
 
 export async function runInstall(args: readonly string[]): Promise<number> {
@@ -120,22 +124,39 @@ export async function runInstall(args: readonly string[]): Promise<number> {
     )
   }
 
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      force: { type: "boolean", short: "f" },
-      "dry-run": { type: "boolean" },
-      "skip-setup": { type: "boolean" },
-      // Opt-in to running a `curl | bash` / `download` installer that
-      // declares no `verify_sha256`. Off by default: in a non-interactive
-      // context (agent, daemon, CI) an unverified installer is refused (see
-      // `shouldRefuseUnverifiedInstaller`), because a silent MITM there
-      // compromises the machine. A human at a TTY still gets warn-and-proceed.
-      "allow-unverified": { type: "boolean" },
-    },
-  })
+  let values: {
+    force?: boolean
+    "dry-run"?: boolean
+    "skip-setup"?: boolean
+    "allow-unverified"?: boolean
+  }
+  let positionals: string[]
+  try {
+    ;({ values, positionals } = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      strict: true,
+      options: {
+        force: { type: "boolean", short: "f" },
+        "dry-run": { type: "boolean" },
+        "skip-setup": { type: "boolean" },
+        // Opt-in to running a `curl | bash` / `download` installer that
+        // declares no `verify_sha256`. Off by default: in a non-interactive
+        // context (agent, daemon, CI) an unverified installer is refused (see
+        // `shouldRefuseUnverifiedInstaller`), because a silent MITM there
+        // compromises the machine. A human at a TTY still gets warn-and-proceed.
+        "allow-unverified": { type: "boolean" },
+      },
+    }))
+  } catch (err) {
+    // A friendly message on an unknown flag/arg instead of a raw parseArgs
+    // stack — point at the help so callers can discover the supported set.
+    process.stderr.write(
+      `agentproto install: ${err instanceof Error ? err.message : String(err)}\n` +
+        "  See: agentproto install --help\n"
+    )
+    return 2
+  }
 
   const slug = positionals[0]
   if (!slug) {

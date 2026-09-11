@@ -6,35 +6,42 @@ agentproto sessions --watch [--simple] [--no-color]
 agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
 agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
-                                       [--model <id>] [--base-url <url>]
-                                       [--auth-token <token>]
-                                       [--options-json <json|@file>]
-                                       [--prompt <text>] [--label <text>]
-                                       [--title <text>]
-                                       [--orchestrator | --orchestrator-json <json>]
-                                       [--mcp-servers-json <json|@file>]
-                                       [--sandbox <provider-or-json|@file>]
-                                       [--hold-permissions]
-                                       [--attach] [--json] [--no-color]
-agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
-                                          [--name <slug>] [--label <text>]
-                                          [--cols <n>] [--rows <n>]
-                                          [--attach] [--json] [--no-color]
+                                        [--model <id>] [--base-url <url>]
+                                        [--auth subscription|api-key]
+                                        [--auth-token <token>]
+                                        [--options-json <json|@file>]
+                                        [--access-profile <ref>]
+                                        [--worktree | --no-worktree]
+                                        [--mode <id>] [--effort <level>]
+                                        [--prompt <text>] [--label <text>]
+                                        [--title <text>]
+                                        [--orchestrator | --orchestrator-json <json>]
+                                        [--mcp-servers-json <json|@file>]
+                                        [--sandbox <provider-or-json|@file>]
+                                        [--hold-permissions]
+                                        [--attach] [--json] [--no-color]
+agentproto sessions terminal [--preset <name>] [-- <argv...>]
+                                           [--cwd <dir>] [--workspace <slug>]
+                                           [--name <slug>] [--label <text>]
+                                           [--cols <n>] [--rows <n>]
+                                           [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
 agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
-                                          [--force] [--json]
+                                           [--force] [--json]
 agentproto sessions pin      <id-or-name> [--json]
 agentproto sessions unpin    <id-or-name> [--json]
 agentproto sessions mirror   <id-or-name> [--no-color]
 agentproto sessions story    <id-or-name> [--json] [--no-color]
-                                          [--source auto|native|daemon]
+                                           [--source auto|native|daemon]
 agentproto sessions export   <id-or-name> [--json] [-o <file>]
-                                          [--source auto|native|daemon]
-                                          [--adapter <slug>] [--cwd <dir>]
+                                           [--source auto|native|daemon]
+                                           [--adapter <slug>] [--cwd <dir>]
 agentproto sessions stop     <id-or-name> [--json]
 agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration>]
-                                          [--policy <policyId>] [--json]
+                                           [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
+agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
+                                           [--drop <n>] [--json]
 ```
 
 Browse and control the daemon's live sessions — terminals, agent CLIs,
@@ -43,9 +50,21 @@ generic commands — from any shell. Requires a running daemon
 
 ## Discovery
 
-Sessions discovers the daemon via `<workspace>/.agentproto/runtime.json`
-written by `serve` at boot. The token in that file is sent as Bearer
-on mutating routes. Override with env:
+Sessions discovers the daemon by trying candidates in this order — the
+first live one wins:
+
+1. `AGENTPROTO_DAEMON_URL` env var (token from
+   `AGENTPROTO_DAEMON_TOKEN`, or looked up from a matching
+   `runtime.json` if unset):
+2. `~/.agentproto/runtime.json`, only if its pid is still alive;
+3. the central registry `~/.agentproto/daemons/<port>.json`, for the
+   port declared in `config.json` (falling back to any other live
+   entry);
+4. each configured workspace's own
+   `<workspace>/.agentproto/runtime.json` (written by `serve` at boot).
+
+A descriptor whose pid is dead is ignored, never trusted. The token
+from whichever candidate wins is sent as Bearer on mutating routes:
 
 ```bash
 AGENTPROTO_DAEMON_URL=http://127.0.0.1:18790 \
@@ -114,6 +133,7 @@ Keys:
 | `R` | Restart selected from history (works on exited/killed too) |
 | `K` | Kill selected (POST `/sessions/:id/kill`) |
 | `d` | Forget selected (DELETE `/sessions/:id`; exited/killed/error only) |
+| `s` | Show the selected session's Story / conversation |
 | `r` | Refresh now |
 | `q` / `Ctrl-C` | Quit |
 
@@ -170,6 +190,11 @@ reattached later.
 | `--orchestrator-json <json>` | Object form of the above: `{"tools":[…],"maxDepth":N,"maxChildren":N}`. Wins over `--orchestrator` when both are passed. |
 | `--mcp-servers-json <json\|@file>` | Inject MCP servers (`AcpMcpServer[]`) into the session — inline JSON array, or `@path` to read it from a file. |
 | `--sandbox <provider-or-json\|@file>` | Spawn inside an isolated sandbox box instead of the local host. Pass a provider slug (e.g. `e2b` or `box`, configured via `setup_sandbox_provider`) or an inline AIP-36 `SandboxDefinition` JSON object (optionally with `{"reuse":"<sandboxId>"}` for reconnect). `@file` reads the slug or JSON from a file. Mirrors `agent_start.sandbox`. |
+| `--access-profile <ref>` | Bill this spawn through a named auth profile (CLI twin of `agent_start`'s `access.profileRef` — pin endpoint + credential, never silently the default). Overrides the daemon's default profile. See [Config axes](#config-axes-mcphttp). |
+| `--worktree` | Isolate this spawn in its own git worktree (auto-minted slug/branch on `origin/main`) regardless of the daemon's `worktrees.isolation` policy. Mirrors `agent_start.worktree=true`. |
+| `--no-worktree` | Spawn in cwd directly, overriding an isolation policy that would otherwise isolate. Mirrors `agent_start.worktree=false`. |
+| `--mode <id>` | Manifest-declared posture mode id applied at spawn (e.g. claude-code `plan`, codex `read-only`). Mirrors `agent_start.mode`. |
+| `--effort <level>` | Reasoning effort — `low\|medium\|high\|xhigh\|max\|ultracode`, calibrated per model. Mirrors `agent_start.effort`. |
 | `--hold-permissions` | Start in **permission-hold mode**: every tool-permission request the agent raises is parked in the cross-session inbox instead of auto-answered. Approve/deny with [`permissions.md`](./permissions.md). |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
@@ -600,6 +625,29 @@ By default it **archives** them (hidden from the default view, still
 readable/importable) via `POST /sessions/gc`. Pass `--forget` to drop the
 descriptors instead (the native conversation on disk survives). `--older-than-days`
 keeps anything more recent. Live sessions are never touched.
+
+### `queue <id-or-name>`
+
+```bash
+agentproto sessions queue ses_abc12
+agentproto sessions queue claude-tui --json
+agentproto sessions queue claude-tui --deliver 2
+agentproto sessions queue claude-tui --drop 3
+agentproto sessions queue claude-tui --force 2
+```
+
+Inspects — and optionally manipulates — the session's prompt FIFO. With no
+action flag, lists what's queued: each item's position (`1` = next to
+dispatch), origin (`user`/`agent`/`child`), preview, and `queuedAt`.
+
+| Flag | Effect |
+|------|--------|
+| `--force <n>` | Jump position `n` to the **front** of the queue without touching the in-flight turn. |
+| `--deliver <n>` | Interrupt whatever is running and dispatch position `n` now. |
+| `--drop <n>` | Remove the item at position `n` without delivering it. |
+
+Positions are 1-indexed, matching `sessions prompt` output. After any
+action the queue is re-listed to show the result.
 
 ## Interrupting a live session
 

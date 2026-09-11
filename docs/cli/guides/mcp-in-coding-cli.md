@@ -8,9 +8,7 @@ events, and orchestrate multi-agent swarms — from within its own tool loop.
 > **The other direction** (host → agentproto) is different: installing
 > `claude-code`, `codex`, or `hermes` as *adapters* inside agentproto so the
 > daemon can spawn and drive them. That uses `agentproto install <slug>` and
-> is documented in [concepts/adapters.md](../concepts/adapters.md). The `codex`
-> adapter is listed in the catalog (`@agentproto/adapter-codex`) but is **not
-> yet published to npm** — installation will fail until the package is released.
+> is documented in [concepts/adapters.md](../concepts/adapters.md).
 
 ---
 
@@ -267,5 +265,5 @@ The scoped `<token>` is minted per-child session; it appears in the
 | Codex registration | Native `agentproto mcp-bridge` stdio entrypoint (no `mcp-remote`); verify `~/.codex/config.toml` keys against your version |
 | `~/.codex/config.toml` key schema | Verify against your `@openai/codex` version |
 | Hermes standalone MCP config file | Unknown; ACP `session/new.mcpServers` is the confirmed path |
-| `@agentproto/adapter-codex` npm release | **Not published** — `agentproto install codex` will fail |
+| `@agentproto/adapter-codex` npm release | Published (npm 2.0.8) — `agentproto install codex` works |
 | Bearer token for MCP tool calls | Not required from localhost; only for mutating `/sessions/*` from remote origins |

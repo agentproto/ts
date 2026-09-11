@@ -41,9 +41,11 @@ function makeFixture() {
     path.join(root, "packages/sandbox-e2b/README.md"),
     "# pkg\n\n<!-- sync-templates:start -->\nstale\n<!-- sync-templates:end -->\n",
   )
+  // MDX comment flavor on purpose — docs/cli/ is mirrored into
+  // cli.agentproto.sh and compiled by fumadocs-mdx, which rejects `<!-- -->`.
   writeFileSync(
     path.join(root, "docs/cli/guides/sandbox-rendezvous.md"),
-    "# guide\n\n<!-- sync-templates:start -->\nstale\n<!-- sync-templates:end -->\n",
+    "# guide\n\n{/* sync-templates:start */}\nstale\n{/* sync-templates:end */}\n",
   )
   writeFileSync(
     path.join(root, "packages/runtime/src/sandbox-providers/registry.ts"),

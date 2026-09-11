@@ -43,19 +43,50 @@ import {
   loadAdaptersFromConfig,
 } from "../registry/adapters.js"
 
+const USAGE = `agentproto run-swarm — run a multi-agent runtime manifest in a loop
+
+Usage:
+  agentproto run-swarm --manifest <path> [--once] [--interval <duration>] [--verbose]
+                       [--adapter <module-id>…]
+
+Examples:
+  agentproto run-swarm --manifest .runtime/local.yaml --verbose
+`
+
 export async function runRunSwarm(args: readonly string[]): Promise<number> {
-  const { values } = parseArgs({
-    args: [...args],
-    allowPositionals: false,
-    strict: true,
-    options: {
-      manifest: { type: "string", short: "m" },
-      once: { type: "boolean" },
-      interval: { type: "string" },
-      verbose: { type: "boolean", short: "v" },
-      adapter: { type: "string", multiple: true },
-    },
-  })
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(USAGE)
+    return 0
+  }
+  let values: {
+    manifest?: string
+    once?: boolean
+    interval?: string
+    verbose?: boolean
+    adapter?: string[]
+  }
+  try {
+    ;({ values } = parseArgs({
+      args: [...args],
+      allowPositionals: false,
+      strict: true,
+      options: {
+        manifest: { type: "string", short: "m" },
+        once: { type: "boolean" },
+        interval: { type: "string" },
+        verbose: { type: "boolean", short: "v" },
+        adapter: { type: "string", multiple: true },
+      },
+    }))
+  } catch (err) {
+    // A friendly message on an unknown flag/arg instead of a raw parseArgs
+    // stack — point at the help so callers can discover the supported set.
+    process.stderr.write(
+      `agentproto run-swarm: ${err instanceof Error ? err.message : String(err)}\n` +
+        "  See: agentproto run-swarm --help\n"
+    )
+    return 2
+  }
 
   if (!values.manifest) {
     process.stderr.write(
