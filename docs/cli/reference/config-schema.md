@@ -2,13 +2,13 @@
 
 The CLI's global config file. Location: `$AGENTPROTO_HOME/config.json`
 (defaults to `~/.agentproto/config.json`). Created lazily — absent
-until first `agentproto config set` or `agentproto plugins install`.
+until first `agentproto config set` or `agentproto adapters install`.
 
 Read/write via [`agentproto config`](../verbs/config.md):
 
 ```bash
 agentproto config show
-agentproto config get plugins
+agentproto config get adapters
 agentproto config set daemon.port 18791
 ```
 
@@ -16,11 +16,11 @@ agentproto config set daemon.port 18791
 
 ```jsonc
 {
-  // Runtime plugins loaded by `agentproto run-swarm`. Each entry is an
+  // Runtime adapters loaded by `agentproto run-swarm`. Each entry is an
   // npm package id resolvable from the cli's install location OR the
   // user's cwd. Loaded in array order; last write wins on duplicate
   // adapter kinds.
-  "plugins": [
+  "adapters": [
     "@guilde/agentproto-bridge",
     "@acme/agentproto-slack"
   ],
@@ -141,15 +141,16 @@ agentproto config set daemon.port 18791
 
 ## Keys
 
-### `plugins: string[]`
+### `adapters: string[]`
 
-npm packages with an `agentproto/plugin/v1` manifest. The CLI walks
-this list at every `run-swarm` invocation, reads each plugin's
+npm packages with an `agentproto/adapter/v1` manifest. The CLI walks
+this list at every `run-swarm` invocation, reads each adapter's
 manifest, dynamic-imports declared adapter factories, and registers
 them.
 
-Managed via [`agentproto plugins`](../verbs/plugins.md). Direct edit
-is fine — the verbs are convenience.
+Managed via [`agentproto adapters`](../verbs/adapters.md) — the verb
+renamed from `plugins` in 0.20.0. Direct edit is fine — the verb is
+convenience.
 
 ### `profileAliases: Record<string, string>`
 
@@ -181,7 +182,7 @@ Defaults for `agentproto daemon` and `agentproto serve`:
 
 | Field            | Type     | Meaning                                                |
 | ---------------- | -------- | ------------------------------------------------------ |
-| `port`           | number   | Listen port (default `18791`).                         |
+| `port`           | number   | Listen port (default `18790`).                         |
 | `bind`           | string   | Bind address (default `127.0.0.1` — loopback-only).    |
 | `allowedOrigins` | string[] | CORS allow-list for browser callers of the daemon API. |
 | `authToken`      | string   | Stable bearer token for `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route — survives restarts, unlike the per-boot `runtime.json` token. Overridden inline by `agentproto serve --auth-token <token>`. Loopback callers with no `X-Forwarded-For` header are still exempt. Unset ⇒ those routes stay open. |
@@ -344,5 +345,5 @@ are not sensitive.
 The config file is unversioned today. New keys may appear in any
 minor release of the CLI; unknown keys are tolerated and preserved
 across reads/writes. Removed keys are still readable but are no-ops.
-See [`../../VERSIONING.md`](../../VERSIONING.md) for the broader
+See [`../../../VERSIONING.md`](../../../VERSIONING.md) for the broader
 policy.

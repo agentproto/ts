@@ -79,4 +79,4 @@ consulted as an allowlist in this path.
 
 - [`create-agentproto-app`](./create-agentproto-app.md) — scaffolding a new
   app, including where its `AGENT.md` lives.
-- [`agentproto app`](../verbs/app.md) — the CLI verb (`install`/`run`/`serve`/...).
+- [`agentproto app`](../verbs/app.md) — the CLI verb (`pack`/`unpack`/`install`/`list`/`serve`/`build`/`dev`/`init`/`validate`). Running an app's agent loop is `app_run`, an MCP tool — not a CLI subcommand.

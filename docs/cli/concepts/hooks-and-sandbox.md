@@ -67,20 +67,22 @@ is recorded for the record but has no enforcement effect at the Plane-1 seam
 
 ## Cross-harness coverage — the three tiers
 
-The catalog has 12 agent-CLI adapters
-(`packages/cli/src/registry/catalog.ts`). `protocol:"acp"` is not, by
+The catalog has 14 agent adapters
+(`packages/cli/src/registry/catalog.ts`) — 12 wrapping third-party
+agent CLIs plus 2 first-party runtimes (claude-sdk, mastra-agent).
+`protocol:"acp"` is not, by
 itself, a reliable signal for Plane-1 reach: two adapters declare it but run
 tools in-process behind a local ACP host and never raise
 `request_permission`. Ranked by what Plane 1 can actually do with each:
 
 | Tier | Adapters | Raises `request_permission`? | Plane 1 reach | Plane 2 reach |
 |---|---|---|---|---|
-| **1 — Blockable** | claude-code, codex, gemini, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
+| **1 — Blockable** | claude-code, codex, gemini, grok-cli, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
 | **2 — Observable only** | claude-sdk, mastra-agent | No — in-process, `bypassPermissions`; ACP is transport only | Log only (after the fact) | Confined (both axes) |
-| **3 — Opaque** | antigravity, pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
+| **3 — Opaque** | antigravity, jcode, pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
 
-**~6/12 harnesses are semantically gateable (tier 1). ~8/12 are loggable
-(tiers 1+2). ~4/12 are opaque to Plane 1 entirely (tier 3).** State this
+**~7/14 harnesses are semantically gateable (tier 1). ~9/14 are loggable
+(tiers 1+2). ~5/14 are opaque to Plane 1 entirely (tier 3).** State this
 loudly on every surface that talks about "a cross-harness hook engine" — a
 silent ~50% cliff reads as 100% coverage, and that's the exact failure mode
 this doc exists to prevent.

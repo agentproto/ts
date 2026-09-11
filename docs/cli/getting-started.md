@@ -118,7 +118,7 @@ Skills teach the agent how to use the tools you just exposed —
 orchestration patterns, session supervision, delegation conventions.
 
 ```bash
-# Preview what would install, no writes:
+# List the skills in the pack, no writes:
 agentproto install skill/agentproto-pack --list
 
 # Install it:
