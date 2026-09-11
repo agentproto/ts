@@ -37,7 +37,7 @@ import {
 import { mentionQueryAt } from "./mentions.logic.js"
 import { commandQueryAt, filterCommands, leadingCommandEnd } from "./commands.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
-import { accessIdentity, contextGauge, contextRingLevel, defaultPostureLabel, formatCostShort, harnessGlyph, postureLabel, projectPlan, titleStatusState } from "./panelChrome.logic.js"
+import { accessIdentity, contextGauge, contextRingLevel, defaultPostureLabel, formatCostShort, harnessGlyph, postureLabel, projectPlan, sandboxGlyph, titleStatusState } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import {
   ASK_LONG_CHARS,
@@ -629,6 +629,7 @@ export function buildHtml(
     // injection so the webview runs the tested source.
     contextRingLevel,
     formatCostShort,
+    sandboxGlyph,
     titleStatusState,
     projectPlan,
     // Book (chapter) segmentation — injected by value so the webview runs the
@@ -2180,6 +2181,7 @@ export function buildHtml(
       </div>
       <div class="header-action metrics-pill">
         <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <span id="sandbox-chip" class="header-btn" aria-hidden="true" title=""></span>
         <span class="metrics-sep" aria-hidden="true">·</span>
         <div id="cost-popover" class="popover" hidden>
           <div class="popover-row"><span class="popover-label">Tokens in</span><span id="popover-tokens-in"></span></div>
@@ -2289,6 +2291,7 @@ export function buildHtml(
       const headerSubtitle = document.getElementById('header-subtitle');
       const openTerminalBtn = document.getElementById('open-terminal-btn');
       const costBtn = document.getElementById('cost-btn');
+      const sandboxChip = document.getElementById('sandbox-chip');
       const costPopover = document.getElementById('cost-popover');
       const popoverTokensIn = document.getElementById('popover-tokens-in');
       const popoverTokensOut = document.getElementById('popover-tokens-out');
@@ -3053,6 +3056,12 @@ export function buildHtml(
         // full precision on hover.
         costBtn.textContent = formatCostShort(session.costUsd);
         costBtn.title = typeof session.costUsd === 'number' ? '$' + session.costUsd.toFixed(4) : 'No cost recorded yet';
+        // Sandbox chip, right of the cost pill — :empty hides it for a
+        // session that isn't running in a sandbox (harnessGlyph/composerRoute
+        // convention).
+        const sandbox = sandboxGlyph(session);
+        sandboxChip.textContent = sandbox ? sandbox.glyph : '';
+        sandboxChip.title = sandbox ? sandbox.label : '';
         renderCostPopover(session);
         renderWatchers(session);
         // Title status dot — the visibility state at a glance.

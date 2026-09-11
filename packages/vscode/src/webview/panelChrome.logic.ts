@@ -31,6 +31,31 @@ export function harnessGlyph(slug?: string): { glyph: string; label: string } {
 }
 
 /**
+ * The sandbox chip's glyph + tooltip, or `null` for a session that isn't
+ * running in a sandbox (`sandboxId` absent) — the caller hides the chip
+ * entirely rather than render an empty state, same contract as `harnessGlyph`
+ * but gated instead of defaulted. Deliberately NOT the solid ▣ (square
+ * containing a smaller square): that shape already reads as a stop/record
+ * control elsewhere in this codebase's own icon set (sessionsWebview's
+ * archive toggle explicitly avoids it for that reason). A dashed square (⬚)
+ * reads as a permeable boundary — contained, but not on this host — without
+ * the stop-lookalike collision, and stays in the same monochrome geometric
+ * register as `harnessGlyph`'s marks. The tooltip names the provider (when
+ * known) alongside the raw id, since the glyph alone is not self-explanatory.
+ */
+export function sandboxGlyph(
+  session: Pick<SessionDescriptor, "sandboxId" | "sandboxProvider"> | undefined,
+): { glyph: string; label: string } | null {
+  const sandboxId = session ? session.sandboxId : undefined
+  if (!sandboxId) return null
+  const provider = session ? session.sandboxProvider : undefined
+  const label = provider
+    ? `Running in a sandbox — ${provider} · ${sandboxId}`
+    : `Running in a sandbox — ${sandboxId}`
+  return { glyph: "⬚", label }
+}
+
+/**
  * The named identity the session's `access` axis is bound to — the wallet, not
  * the credential. Prefers the human `label` of the attached auth profile, then
  * its `profileRef`; falls back to the raw auth METHOD (`subscription`/`api-key`)

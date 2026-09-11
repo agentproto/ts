@@ -8,6 +8,7 @@ import {
   harnessGlyph,
   postureLabel,
   projectPlan,
+  sandboxGlyph,
   titleStatusState,
 } from "./panelChrome.logic.js"
 import type { PlanEntry } from "./conversation.js"
@@ -34,6 +35,27 @@ describe("harnessGlyph", () => {
     expect(harnessGlyph("some-new-harness").glyph).toBe("◆")
     expect(harnessGlyph(undefined)).toEqual({ glyph: "◆", label: "harness" })
     expect(harnessGlyph("")).toEqual({ glyph: "◆", label: "harness" })
+  })
+})
+
+describe("sandboxGlyph", () => {
+  it("returns null for a session with no sandboxId", () => {
+    expect(sandboxGlyph({})).toBeNull()
+    expect(sandboxGlyph(undefined)).toBeNull()
+  })
+
+  it("names the provider and sandbox id in the tooltip", () => {
+    expect(sandboxGlyph({ sandboxId: "abc123", sandboxProvider: "e2b" })).toEqual({
+      glyph: "⬚",
+      label: "Running in a sandbox — e2b · abc123",
+    })
+  })
+
+  it("falls back to just the sandbox id when the provider is unknown", () => {
+    expect(sandboxGlyph({ sandboxId: "abc123" })).toEqual({
+      glyph: "⬚",
+      label: "Running in a sandbox — abc123",
+    })
   })
 })
 
