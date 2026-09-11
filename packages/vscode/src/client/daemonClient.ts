@@ -32,6 +32,8 @@ import { join } from "node:path"
 import { type DaemonConfig, buildAuthHeaders } from "../config.js"
 import { renestCatalog } from "./daemonCompat.js"
 import type {
+  ActivityListFilter,
+  ActivityRecord,
   AdapterInfo,
   AdapterInstallResult,
   AuthProfileSummary,
@@ -59,6 +61,10 @@ import type {
   SessionEventsPage,
   SessionEventsPollResult,
   SessionSummary,
+  TaskListFilter,
+  TaskPatchInput,
+  TaskPatchResult,
+  TaskRecord,
   UserPreset,
   WorkspacesConfig,
   WorktreeGcResult,
@@ -89,6 +95,33 @@ export class WorkspacesRouteMissingError extends Error {
   constructor() {
     super("POST /workspaces is not available on this daemon — update your agentproto install.")
     this.name = "WorkspacesRouteMissingError"
+  }
+}
+
+/** Raised by {@link DaemonClient.listActivities} on the daemon's 501
+ *  `activities_not_configured` — it was started without an activity
+ *  projector wired, not "no activities right now". Callers must not treat
+ *  this the same as an empty list. */
+export class ActivitiesUnavailableError extends Error {
+  constructor() {
+    super(
+      "GET /activities is not enabled on this daemon — it was started without an activity projector.",
+    )
+    this.name = "ActivitiesUnavailableError"
+  }
+}
+
+/** Raised by the task-ledger methods when the daemon was started without a
+ *  task ledger wired. Unlike `/activities`, an unwired `/tasks` has no
+ *  dedicated 501 — every route under it 404s through the generic dispatcher
+ *  fallthrough (`{error:"not_found"}`), which is what this class detects and
+ *  re-raises as a typed, recognisable failure instead of a raw 404. */
+export class TasksUnavailableError extends Error {
+  constructor() {
+    super(
+      "The task ledger is not enabled on this daemon — it was started without a task ledger wired.",
+    )
+    this.name = "TasksUnavailableError"
   }
 }
 
@@ -1237,6 +1270,141 @@ export class DaemonClient {
       since,
       ...(types ? { types } : {}),
     })
+  }
+
+  // ── Activity projection & Task ledger ───────────────────────────────
+
+  /**
+   * GET /activities — the daemon's unified Activity projection (completion
+   * policies, session turns, workflow steps, opened PRs; a read-only
+   * projection recomputed on every call, never stored). Mirrors the MCP
+   * `activities_list` tool's filter and shape.
+   *
+   * Throws {@link ActivitiesUnavailableError} on the daemon's 501
+   * `activities_not_configured` (started without an activity projector
+   * wired) instead of returning a silent empty array — "no activities right
+   * now" and "this daemon can't do that" are different answers.
+   */
+  async listActivities(filter?: ActivityListFilter): Promise<ActivityRecord[]> {
+    const params = new URLSearchParams()
+    if (filter?.sessionId) params.set("sessionId", filter.sessionId)
+    if (filter?.state) params.set("state", filter.state)
+    if (filter?.kind) params.set("kind", filter.kind)
+    if (filter?.source) params.set("source", filter.source)
+    if (filter?.includeTerminal) params.set("includeTerminal", "true")
+    const qs = params.toString()
+    const path = `/activities${qs ? `?${qs}` : ""}`
+    const res = await this.authedFetch(path, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+      timeoutMs: 30_000,
+    })
+    if (res.status === 501) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string }
+      if (body.error === "activities_not_configured") throw new ActivitiesUnavailableError()
+      throw new Error(`GET ${path} failed: HTTP 501 ${body.message ?? body.error ?? "HTTP 501"}`)
+    }
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const body = (await res.json()) as { activities: ActivityRecord[] }
+    return body.activities ?? []
+  }
+
+  /**
+   * GET /tasks — the caller's task board (operator context over HTTP:
+   * `ws:<activeWorkspaceSlug>` by default; pass `boardId` to read another,
+   * e.g. a session tree's `tree:<rootSessionId>` board). Mirrors the MCP
+   * `task_list` tool's filter and shape.
+   *
+   * Throws {@link TasksUnavailableError} on the daemon's generic 404
+   * fallthrough (started without a task ledger wired — this whole route
+   * family 404s, there is no dedicated 501 the way `/activities` has)
+   * instead of returning a silent empty array.
+   */
+  async listTasks(opts?: TaskListFilter): Promise<TaskRecord[]> {
+    const params = new URLSearchParams()
+    if (opts?.boardId) params.set("boardId", opts.boardId)
+    if (opts?.status) params.set("status", opts.status)
+    if (opts?.includeClosed) params.set("includeClosed", "true")
+    const qs = params.toString()
+    const path = `/tasks${qs ? `?${qs}` : ""}`
+    const res = await this.authedFetch(path, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+      timeoutMs: 30_000,
+    })
+    if (res.status === 404) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === "not_found") throw new TasksUnavailableError()
+      throw new Error(`GET ${path} failed: HTTP 404 ${body.error ?? "HTTP 404"}`)
+    }
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const body = (await res.json()) as { boardId: string; tasks: TaskRecord[] }
+    return body.tasks ?? []
+  }
+
+  /**
+   * GET /tasks/:id. A daemon with no task ledger wired and a task that was
+   * simply never created both 404 — distinguished by the `error` field: the
+   * ledger's own per-task miss carries `task_not_found` (surfaced as a
+   * plain thrown Error, same as {@link getSession} on a missing session),
+   * while the route-absent fallthrough carries the generic dispatcher's
+   * `not_found`, raised as {@link TasksUnavailableError} so callers can tell
+   * "no board here at all" from "that task got deleted".
+   */
+  async getTask(taskId: string): Promise<TaskRecord> {
+    const path = `/tasks/${encodeURIComponent(taskId)}`
+    const res = await this.authedFetch(path, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+      timeoutMs: 30_000,
+    })
+    if (res.status === 404) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === "not_found") throw new TasksUnavailableError()
+      throw new Error(`GET ${path} failed: HTTP 404 ${body.error ?? "task_not_found"}`)
+    }
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    return (await res.json()) as TaskRecord
+  }
+
+  /**
+   * PATCH /tasks/:id — the Task ledger's rev-CAS write path (status, owner
+   * reassign/release, title/description/blockedBy edits, a free-text note,
+   * or the `evidence` shortcut for an already-passed verify gate).
+   *
+   * Returns the {@link TaskPatchResult} union UNFLATTENED: a 200 can carry
+   * `verifying: true` (accepted, but a background Tier-1 verify gate hasn't
+   * settled the status yet — watch for `task:changed` or re-fetch), a 409
+   * is a rev-CAS conflict to rebase off `current`, and a 400 is a clean
+   * refusal (bad status transition, wrong owner, …). None of those three
+   * throw — they are legitimate answers the caller must branch on, exactly
+   * like the daemon's own `task_update` tool. Only a disabled route (404,
+   * generic `not_found` → {@link TasksUnavailableError}) or a transport
+   * failure throws.
+   */
+  async patchTask(taskId: string, patch: TaskPatchInput): Promise<TaskPatchResult> {
+    const path = `/tasks/${encodeURIComponent(taskId)}`
+    const res = await this.authedFetch(path, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+      timeoutMs: 30_000,
+    })
+    if (res.status === 404) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === "not_found") throw new TasksUnavailableError()
+      throw new Error(`PATCH ${path} failed: HTTP 404 ${body.error ?? "task_not_found"}`)
+    }
+    if (res.status === 200 || res.status === 409 || res.status === 400) {
+      return (await res.json()) as TaskPatchResult
+    }
+    throw new Error(`PATCH ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
   }
 
   // ── Token resolution (recon §Auth) ─────────────────────────────────

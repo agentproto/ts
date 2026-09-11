@@ -8,6 +8,38 @@
 import type { RouteSpec } from "@agentproto/runtime/catalog-models"
 export type { RouteSpec }
 
+// Activity projection + Task ledger: the runtime's root export already
+// carries these verbatim (packages/runtime/src/index.ts), so re-export
+// rather than hand-mirror — a `type`-only import is fully erased at build
+// time (no runtime cost, no bundle weight), and re-exporting means a new
+// ACTIVITY_KINDS/TASK_STATUSES member reaches this client for free instead
+// of silently drifting the way a hand copy would.
+import type {
+  ActivityKind,
+  ActivityListFilter,
+  ActivityRecord,
+  ActivitySource,
+  ActivityState,
+  ActivityWaitingOn,
+  TaskListFilter,
+  TaskRecord,
+  TaskStatus,
+  TaskUpdateInput,
+  TaskVerification,
+} from "@agentproto/runtime"
+export type {
+  ActivityKind,
+  ActivityListFilter,
+  ActivityRecord,
+  ActivitySource,
+  ActivityState,
+  ActivityWaitingOn,
+  TaskListFilter,
+  TaskRecord,
+  TaskStatus,
+  TaskVerification,
+}
+
 /** Mirrors @agentproto/runtime AcpMcpServer (packages/acp/src/types.ts). */
 export interface AcpMcpServer {
   name: string
@@ -1348,3 +1380,37 @@ export interface ConfigurationLabRawData {
   profiles: AuthProfileSummary[]
   presets: ProviderPresetEntry[]
 }
+
+// ── Activity projection & Task ledger — client-only shapes ──────────────
+//    ActivityRecord/ActivityListFilter/TaskRecord/TaskStatus/etc. are
+//    re-exported above straight off @agentproto/runtime's root export
+//    (activity-projection.ts / task-ledger.ts). Only what's genuinely
+//    DIFFERENT from the runtime's own shape lives here.
+
+/**
+ * Body for `patchTask` — the runtime's own `TaskUpdateInput` minus `taskId`,
+ * which this client passes as `patchTask`'s own parameter instead of folding
+ * it into the body. `rev` is the last-read optimistic-concurrency token; a
+ * stale one comes back as a {@link TaskPatchResult} conflict, never a thrown
+ * error.
+ */
+export type TaskPatchInput = Omit<TaskUpdateInput, "taskId">
+
+/**
+ * `PATCH /tasks/:id`'s response, modeled without flattening it into one
+ * shape: `verifying` marks the Tier-1 done path (the write was ACCEPTED but
+ * the status hasn't transitioned yet — a background verify gate is running
+ * and announces its outcome later via `task:changed`); `conflict` is a
+ * rev-CAS miss to rebase off `current`; the bare `error` shape is a clean
+ * refusal (bad status transition, wrong owner, …). None of these three are
+ * thrown — only a disabled route or a transport failure is.
+ *
+ * This is the HTTP route's own wire shape (`http-server.ts`'s `writeResult`
+ * flattens the ledger's internal `ok`-wrapped `TaskWriteResult` into exactly
+ * these three bodies), not the runtime's `TaskWriteResult` verbatim — hence
+ * hand-written rather than re-exported.
+ */
+export type TaskPatchResult =
+  | { task: TaskRecord; verifying?: boolean }
+  | { conflict: true; current: TaskRecord }
+  | { error: string }
