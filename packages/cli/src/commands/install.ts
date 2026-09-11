@@ -50,7 +50,25 @@ import {
   KNOWN_INSTALL_COMMANDS,
 } from "../registry/install-hint.js"
 
+const USAGE = `agentproto install <slug> — install an adapter (AIP-29 § Install)
+
+Usage:
+  agentproto install   <slug> [--force] [--dry-run] [--skip-setup] [--allow-unverified]
+                       <slug> ∈ { <adapter-slug> | runtime-profile/<name> | skill/<name> }
+                       --allow-unverified: run a curl/download installer that
+                       declares no verify_sha256 (refused by default in
+                       non-interactive contexts)
+
+Examples:
+  agentproto install claude-code
+  agentproto install runtime-profile/standard  # drops .claude/ swarm scaffolding into the cwd
+`
+
 export async function runInstall(args: readonly string[]): Promise<number> {
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(USAGE)
+    return 0
+  }
   // Peek at the slug before parseArgs — it influences which option set is
   // valid. Adapter slugs, runtime-profile/* slugs, and skill/* slugs share
   // the verb but route through separate handlers with different flags.
@@ -68,22 +86,39 @@ export async function runInstall(args: readonly string[]): Promise<number> {
     )
   }
 
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      force: { type: "boolean", short: "f" },
-      "dry-run": { type: "boolean" },
-      "skip-setup": { type: "boolean" },
-      // Opt-in to running a `curl | bash` / `download` installer that
-      // declares no `verify_sha256`. Off by default: in a non-interactive
-      // context (agent, daemon, CI) an unverified installer is refused (see
-      // `shouldRefuseUnverifiedInstaller`), because a silent MITM there
-      // compromises the machine. A human at a TTY still gets warn-and-proceed.
-      "allow-unverified": { type: "boolean" },
-    },
-  })
+  let values: {
+    force?: boolean
+    "dry-run"?: boolean
+    "skip-setup"?: boolean
+    "allow-unverified"?: boolean
+  }
+  let positionals: string[]
+  try {
+    ;({ values, positionals } = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      strict: true,
+      options: {
+        force: { type: "boolean", short: "f" },
+        "dry-run": { type: "boolean" },
+        "skip-setup": { type: "boolean" },
+        // Opt-in to running a `curl | bash` / `download` installer that
+        // declares no `verify_sha256`. Off by default: in a non-interactive
+        // context (agent, daemon, CI) an unverified installer is refused (see
+        // `shouldRefuseUnverifiedInstaller`), because a silent MITM there
+        // compromises the machine. A human at a TTY still gets warn-and-proceed.
+        "allow-unverified": { type: "boolean" },
+      },
+    }))
+  } catch (err) {
+    // A friendly message on an unknown flag/arg instead of a raw parseArgs
+    // stack — point at the help so callers can discover the supported set.
+    process.stderr.write(
+      `agentproto install: ${err instanceof Error ? err.message : String(err)}\n` +
+        "  See: agentproto install --help\n"
+    )
+    return 2
+  }
 
   const slug = positionals[0]
   if (!slug) {
