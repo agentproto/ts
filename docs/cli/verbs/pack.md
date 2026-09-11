@@ -1,7 +1,7 @@
 # `agentproto pack`
 
 ```text
-agentproto pack skill --manifest <path> [--source <dir>]
+agentproto pack skill --manifest <path> [--source <dir>] [--version <semver>]
                       [--bump patch|minor|major] [--dry-run] [--out <dir>]
 agentproto pack build [dir]
 ```
@@ -25,6 +25,7 @@ hand-declared manifest version.
 |------|---------|-------------|
 | `--manifest <path>` | *(required)* | Path to the pack manifest JSON, resolved against the cwd. |
 | `--source <dir>` | *(manifest `sourceDir`)* | Absolute source-skills dir. Wins over the manifest. `~` is expanded. |
+| `--version <semver>` | *(manifest `version`)* | Explicit version for the pack, overriding the manifest's own `version`. |
 | `--bump <kind>` | — | `patch`, `minor`, or `major` — bumps from the highest existing pack version in `--out`. Anything else exits `2`. |
 | `--dry-run` | `false` | Print the plan (version transition, output dir, per-skill copy/overwrite/missing) and write nothing. |
 | `--out <dir>` | `.skills` | Where pack directories are written, resolved against the cwd. |
@@ -71,7 +72,8 @@ For each listed skill, `<sourceDir>/<skill>/` is copied wholesale to
 The README is regenerated, not overwritten blind: the previous version's
 "How it works" prose and existing changelog entries are carried forward, and a
 `--bump` prepends a `- **<version>** — TODO: describe changes` entry for you to
-fill in. Without `--bump`, the manifest's own `version` is used — re-running on
+fill in. Without `--bump`, the manifest's own `version` is used (unless
+`--version <semver>` overrides it) — re-running on
 an existing version dir is an in-place resync.
 
 ## Examples

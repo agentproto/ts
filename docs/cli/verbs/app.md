@@ -5,7 +5,9 @@ agentproto app install <appDir> [--data-dir <path>]
 agentproto app list
 agentproto app pack   <appDir> [--out <path.agentapp>] [--json]
 agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
-agentproto app serve  [appDir] [--port <n>] [--remote-mcp-url <url>] [--json]
+agentproto app serve  [appDir] [--port <n>] [--app <appId>] [--json]
+                      [--remote-mcp-url <url>] [--remote-mcp-auth <token>]
+                      [--remote-app-id <appId>]
 agentproto app build  <appDir> [--json]
 agentproto app dev    <appDir> [--port <n>] [--json] [-- <viteArgs...>]
 agentproto app init   <template> [dir]
@@ -73,7 +75,7 @@ How paths resolve against it (the daemon's rule, `packages/runtime/src/app-data.
 Print every registered app as `id -> dir`, each followed by its data dir
 (entries written before the field existed show `<dir>/data`).
 
-### `serve [appDir] [--port <n>] [--json]`
+### `serve [appDir] [--port <n>] [--app <appId>] [--json]`
 
 Serve an agentproto app's `.agentproto/ui/` as a standalone webapp with a
 working `window.McpApp` bridge wired to the daemon's `/mcp` endpoint. The same
@@ -83,6 +85,7 @@ browser tab with full MCP connectivity.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `appDir` | current directory | Directory holding `.agentproto/APP.md` + `.agentproto/ui/`. Ignored in remote mode (see below). |
+| `--app <appId>` | unset | Serve an installed app by its registered id (from `~/.agentproto/apps.json`, written by [`install`](#install-appdir---data-dir-path)) instead of a directory path. Mutually exclusive with `appDir`. |
 | `--port <n>` | `PORT` env, then `ui.port` in `APP.md`, else OS-assigned | Port to bind. Resolution order: explicit `--port` > `PORT` env var > `APP.md` `ui.port` > OS-assigned. A declared `ui.port` that is already taken falls back to auto-assign; an explicit `--port` that is taken is a hard error. Not read in remote mode (no `APP.md`) — there `--port` or `PORT` env or auto-assign applies. |
 | `--remote-mcp-url <url>` | unset | Streamable-HTTP MCP endpoint of a remote server (e.g. `https://api.example.com/mcp`). Setting this enables **remote mode** (see below). Env: `AGENTPROTO_REMOTE_MCP_URL`. |
 | `--remote-mcp-auth <token>` | unset | Bearer token sent as the `Authorization` header on every MCP request to the remote server. Env: `AGENTPROTO_REMOTE_MCP_AUTH`. |

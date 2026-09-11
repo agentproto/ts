@@ -1,9 +1,11 @@
 # `agentproto rendezvous`
 
 ```text
-agentproto rendezvous serve [--port <n>] [--host <ip>]
+agentproto rendezvous serve [--port <n>] [--host <ip>] [--path <p>]
                             [--park-timeout-ms <n>] [--idle-timeout-ms <n>]
                             [--max-message-bytes <n>]
+                            [--rate-limit-max <n>] [--rate-limit-window-ms <n>]
+                            [--debug]
 ```
 
 Run your own **rendezvous broker** — the untrusted ciphertext splicer that
@@ -49,6 +51,17 @@ localhost, terminate TLS in front of it (`wss://`) with your usual reverse proxy
 | `--park-timeout-ms <n>` | `120000` | How long a lone socket waits for its peer before it's recycled. |
 | `--idle-timeout-ms <n>` | `900000` | Idle teardown after a splice (15 min). |
 | `--max-message-bytes <n>` | `1048576` | Max WS message size (1 MiB). |
+| `--path <p>` | `/v1` | Upgrade path the broker listens on. |
+| `--rate-limit-max <n>` | `120` | Max upgrade attempts per IP per rate-limit window. |
+| `--rate-limit-window-ms <n>` | `60000` | Rate-limit window length. |
+| `--debug` | off | Print the effective config at startup. |
+
+Every flag also has a `RENDEZVOUS_*` environment-variable twin
+(`RENDEZVOUS_PORT`, `RENDEZVOUS_HOST`, `RENDEZVOUS_PATH`,
+`RENDEZVOUS_PARK_TIMEOUT_MS`, `RENDEZVOUS_IDLE_TIMEOUT_MS`,
+`RENDEZVOUS_MAX_MESSAGE_BYTES`, `RENDEZVOUS_RATE_LIMIT_MAX`,
+`RENDEZVOUS_RATE_LIMIT_WINDOW_MS`, `RENDEZVOUS_DEBUG`); CLI args take
+precedence over env vars.
 
 The broker also rate-limits token attempts per IP, enforces single-use tokens (a
 token that has already spliced is dead), and compares tokens in constant time.

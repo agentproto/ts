@@ -1,7 +1,7 @@
 # `agentproto brain`
 
 ```text
-agentproto brain query "<query>" [--workspace <slug>] [--topk <n>] [--json]
+agentproto brain query "<query>" [--workspace <slug|all>] [--topk <n>] [--json]
 ```
 
 Fuzzy (BM25) keyword search over a workspace's **ingested session
@@ -31,7 +31,7 @@ agentproto brain query "flaky test" --json
 | Flag | Default | Description |
 |------|---------|-------------|
 | `<query>` | — | **Required.** Natural-language / keyword search string. |
-| `--workspace <slug>` | daemon's own resolution | Workspace bucket to search. Omit to use whatever the daemon resolves as default (no caller session on this surface, so it's always the registry's default-bucket fallback — never a "current session's workspace"). |
+| `--workspace <slug>` | `"all"` | Workspace bucket to search. `"all"` (default) federates every registered workspace brain plus the implicit `"default"` bucket; a named slug scopes the search to just that one brain. |
 | `--topk <n>` | `10` | Max hits to return, `1..50`. |
 | `--json` | off | Print the raw `{ workspace, hits }` JSON instead of the human table. |
 
