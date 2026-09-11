@@ -233,6 +233,45 @@ export function printNoDaemonError(report: DaemonDiscoveryReport, verb: string):
   process.stderr.write(lines.join("\n") + "\n")
 }
 
+/** Cap for the raw HTTP error body when it doesn't parse as JSON with a
+ *  `message` field. High enough that the daemon's bounded, hand-authored
+ *  error messages (auth hints, etc.) survive intact — see the
+ *  `missing_auth_credential` hint this was raised for. */
+const MAX_RAW_ERROR_BODY_LENGTH = 2000
+
+/**
+ * Build the Error a failed daemon HTTP call rejects with.
+ *
+ * The daemon's JSON error bodies carry an already-bounded, human-authored
+ * `message` — when the body parses as JSON with one, keep the body intact
+ * (not just the `message` field) so it survives in full AND callers like
+ * `describeSpawnFailure` (sessions.ts) that key off the JSON `error` code
+ * keep working unchanged. Only fall back to a capped raw-body slice (with
+ * a visible truncation marker) when the body isn't JSON, or has no usable
+ * `message`.
+ *
+ * Shared by httpPostJson / httpGetJson / httpDelete so a fix here reaches
+ * every daemon HTTP error the CLI surfaces.
+ */
+export function formatHttpError(status: number, raw: string): Error {
+  const trimmed = raw.trim()
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed) as { message?: unknown }
+      if (typeof parsed.message === "string" && parsed.message.length > 0) {
+        return new Error(`HTTP ${status}: ${trimmed}`)
+      }
+    } catch {
+      // not JSON, or no usable `message` — fall through to the raw-body cap
+    }
+  }
+  const body =
+    raw.length > MAX_RAW_ERROR_BODY_LENGTH
+      ? `${raw.slice(0, MAX_RAW_ERROR_BODY_LENGTH)}…[truncated]`
+      : raw
+  return new Error(`HTTP ${status}: ${body}`)
+}
+
 export function httpPostJson<T>(url: string, body: unknown, token?: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
@@ -250,7 +289,7 @@ export function httpPostJson<T>(url: string, body: unknown, token?: string): Pro
       res.on("end", () => {
         const status = res.statusCode ?? 0
         if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
+          reject(formatHttpError(status, raw))
           return
         }
         try {
@@ -278,7 +317,7 @@ export function httpGetJson<T = unknown>(url: string): Promise<T> {
         res.on("end", () => {
           const status = res.statusCode ?? 0
           if (status < 200 || status >= 300) {
-            reject(new Error(`HTTP ${status}: ${body.slice(0, 200)}`))
+            reject(formatHttpError(status, body))
             return
           }
           try {
@@ -312,7 +351,7 @@ export function httpDelete<T>(url: string, token?: string): Promise<T> {
       res.on("end", () => {
         const status = res.statusCode ?? 0
         if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
+          reject(formatHttpError(status, raw))
           return
         }
         try {
