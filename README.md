@@ -8,7 +8,7 @@ one's work — with your tests or a reviewer model — before anything is
 committed. No more babysitting terminal windows.
 
 - **Run them all the same way.** Start, message, watch, and stop any agent
-  with the same commands. Thirteen adapters today.
+  with the same commands. Fourteen agents under one lifecycle today.
 - **Work checked before it lands.** Attach a check — your tests, or a stronger
   model reviewing the change — and it runs each time the agent finishes.
   Commits wait for the check and your OK, even after you close your laptop.
@@ -26,8 +26,8 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 0.14.0-alpha.** APIs are stabilising; expect minor breaking changes
-> between alpha releases.
+> **Status: 0.20.0.** APIs are stabilising; expect minor breaking changes
+> between releases.
 
 ## Quick start
 
@@ -52,7 +52,7 @@ This repo ships two very different things under one name:
   adapters (Claude Code, Claude SDK, Codex, Gemini, Grok CLI, Hermes, jcode, opencode, Mastra Code +
   in-process, Mastra Agent, OpenClaw, browser-as-agent, Antigravity, pi), durable policy gates,
   nested orchestration with role gating, fan-in monitoring, workflows/cron,
-  and an MCP surface (~90 tools) on the daemon itself.
+  and an MCP surface (~175 tools) on the daemon itself.
 - **Tier 2 — the wider AIP spec family:** ~52 numbered specs live in
   [agentproto/agentproto](https://github.com/agentproto/agentproto). Most
   reference-implementation packages beyond Tier 1 are `0.1.0-alpha`
@@ -67,7 +67,8 @@ contract.
 The adapter contract is small: declare `models[]` and `modes[]` via an
 AIP-45 manifest, implement the lifecycle verbs, and reuse the shared
 `provider-kit` primitives (creds, catalog entry, setup/status tools). Obvious
-gaps: gemini-cli, aider, goose, cline, Continue. See `adapters/claude-code`
+gaps: Cursor (`agent` CLI, ACP-capable — not verified end to end), aider,
+goose, cline, Continue. See `adapters/claude-code`
 for a complete reference implementation, and look for `good first issue`
 labels in the tracker.
 
