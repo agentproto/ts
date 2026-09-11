@@ -6,6 +6,7 @@ import {
   buildSessionsWebviewModel,
   collapseCronRuns,
   cronJobIdOf,
+  defaultExpandedFor,
   formatCost,
   gateApproved,
   isSystemPreviewLine,
@@ -189,6 +190,20 @@ describe("subtreeRollup (row disclosure triangle + collapsed-dot rollup)", () =>
     // grandchild below it, "other-root" (a separate top-level row) sees nothing.
     expect(subtreeRollup(rows, 1)).toEqual({ hasChildren: true, status: "awaiting" })
     expect(subtreeRollup(rows, 3)).toEqual({ hasChildren: false, status: "working" })
+  })
+})
+
+describe("defaultExpandedFor (a live subtree is never folded out of sight)", () => {
+  it("opens a subtree that holds live work", () => {
+    for (const status of ["working", "delegating", "awaiting", "stalled"] as const) {
+      expect(defaultExpandedFor(status)).toBe(true)
+    }
+  })
+
+  it("keeps a quiet or finished subtree folded", () => {
+    for (const status of ["idle", "parked", "awaiting-bg", "failed", "stopped", "done"] as const) {
+      expect(defaultExpandedFor(status)).toBe(false)
+    }
   })
 })
 

@@ -194,6 +194,33 @@ export function busierRowStatus(a: WebviewRowStatus, b: WebviewRowStatus): Webvi
 }
 
 /**
+ * Subtree states that mean "something is happening down there" — a parent
+ * holding one of these must NOT hide it behind a collapsed triangle on first
+ * paint. `parked`/`awaiting-bg`/`idle` and the terminal states stay folded:
+ * they're the bulk, and nothing in them is moving.
+ */
+const LIVE_SUBTREE_STATUSES: readonly WebviewRowStatus[] = [
+  "working",
+  "delegating",
+  "awaiting",
+  "stalled",
+]
+
+/**
+ * Whether a parent row starts EXPANDED when the operator has expressed no
+ * preference for it. Keyed off the row's rolled-up subtree status
+ * ({@link subtreeRollup}), so a supervisor with a working sub-agent opens by
+ * default while a supervisor whose children are all done stays folded.
+ *
+ * Collapsed-by-default used to be unconditional, which made live sub-agents
+ * invisible at first paint — the operator saw a "Running 4" header over two
+ * painted rows and read it as the panel losing sessions.
+ */
+export function defaultExpandedFor(subtreeStatus: WebviewRowStatus): boolean {
+  return LIVE_SUBTREE_STATUSES.includes(subtreeStatus)
+}
+
+/**
  * The row's presented status. Starts from the shared `activityFor` (which
  * already resolves "ended its turn with bg tasks still pending" to its own
  * `awaiting-bg` row status — see {@link ACTIVITY_TO_ROW_STATUS}), then refines

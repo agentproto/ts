@@ -116,14 +116,24 @@ const CRON_ROW = {
   action: "archive",
 }
 
-// A parent row with a nested child in the group's row list — hasChildren +
-// subtreeStatus are host-computed (subtreeRollup), same as the panel ships.
+// A parent row with a nested child in the group's row list — hasChildren,
+// subtreeStatus and defaultExpanded are host-computed (subtreeRollup +
+// defaultExpandedFor), same as the panel ships. This one's subtree is LIVE,
+// so it arrives expanded.
 const PARENT_ROW = {
   ...ROW_A,
   id: "p1",
   status: "idle",
   hasChildren: true,
   subtreeStatus: "working",
+  defaultExpanded: true,
+}
+
+// Same shape, quiet subtree — the collapsed-by-default case.
+const QUIET_PARENT_ROW = {
+  ...PARENT_ROW,
+  subtreeStatus: "idle",
+  defaultExpanded: false,
 }
 
 const CHILD_ROW = {
@@ -133,6 +143,7 @@ const CHILD_ROW = {
   status: "idle",
   hasChildren: false,
   subtreeStatus: "idle",
+  defaultExpanded: false,
 }
 
 function group(key: string, label: string, rows: unknown[], hint?: string) {
@@ -619,9 +630,9 @@ describe("sessions webview — row disclosure triangle (subtree collapse)", () =
     expect(el(panel, "list").querySelector('[data-id="s1"] .rtw')).toBeNull()
   })
 
-  it("renders a collapsed-by-default triangle on a row with nested children, hiding the descendant", () => {
+  it("renders a collapsed triangle on a QUIET row with nested children, hiding the descendant", () => {
     const panel = renderPanel()
-    send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
+    send(panel, modelMessage({ groups: [group("running", "Running", [QUIET_PARENT_ROW, CHILD_ROW])] }))
     const parent = el(panel, "list").querySelector('[data-id="p1"]')!
     const child = el(panel, "list").querySelector('[data-id="c2"]')!
     const triangle = htmlEl(parent.querySelector(".rtw"))
@@ -629,14 +640,24 @@ describe("sessions webview — row disclosure triangle (subtree collapse)", () =
     expect(triangle.className).toContain("closed")
     expect(triangle.getAttribute("aria-expanded")).toBe("false")
     expect(htmlEl(child).hidden).toBe(true)
-    // Collapsed dot rolls up to the busiest subtree state, not the parent's own idle status.
-    expect(parent.querySelector(".dot.working")).toBeTruthy()
-    expect(parent.querySelector(".dot.idle")).toBeNull()
   })
 
-  it("clicking the triangle expands the row, revealing its child and flipping the dot back to its own status", () => {
+  it("arrives EXPANDED when the subtree holds live work, so a running child is never invisible", () => {
     const panel = renderPanel()
     send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
+    const parent = el(panel, "list").querySelector('[data-id="p1"]')!
+    const triangle = htmlEl(parent.querySelector(".rtw"))
+    expect(triangle.className).not.toContain("closed")
+    expect(triangle.getAttribute("aria-expanded")).toBe("true")
+    expect(htmlEl(el(panel, "list").querySelector('[data-id="c2"]')!).hidden).toBe(false)
+  })
+
+  it("clicking the triangle expands a quiet row, revealing its child and flipping the dot back to its own status", () => {
+    const panel = renderPanel()
+    const liveSubtreeParent = { ...QUIET_PARENT_ROW, subtreeStatus: "working" }
+    send(panel, modelMessage({ groups: [group("running", "Running", [liveSubtreeParent, CHILD_ROW])] }))
+    // Collapsed dot rolls up to the busiest subtree state, not the parent's own idle status.
+    expect(el(panel, "list").querySelector('[data-id="p1"] .dot.working')).toBeTruthy()
     click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!)
     const parent = el(panel, "list").querySelector('[data-id="p1"]')!
     const child = el(panel, "list").querySelector('[data-id="c2"]')!
@@ -650,7 +671,7 @@ describe("sessions webview — row disclosure triangle (subtree collapse)", () =
 
   it("clicking the triangle toggles the row, not the session (no 'open' message posted)", () => {
     const panel = renderPanel()
-    send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
+    send(panel, modelMessage({ groups: [group("running", "Running", [QUIET_PARENT_ROW, CHILD_ROW])] }))
     panel.posted.length = 0
     click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!)
     expect(panel.posted).toEqual([])
@@ -658,11 +679,50 @@ describe("sessions webview — row disclosure triangle (subtree collapse)", () =
 
   it("keeps a row's expand/collapse state across a live re-render of the same rows", () => {
     const panel = renderPanel()
-    const payload = modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] })
+    const payload = modelMessage({ groups: [group("running", "Running", [QUIET_PARENT_ROW, CHILD_ROW])] })
     send(panel, payload)
     click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!) // expand
     send(panel, payload) // a live status tick re-renders the same rows
     expect(htmlEl(el(panel, "list").querySelector('[data-id="c2"]')!).hidden).toBe(false)
+  })
+
+  it("an explicit collapse of a LIVE subtree survives re-render — the default never re-opens it", () => {
+    const panel = renderPanel()
+    const payload = modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] })
+    send(panel, payload)
+    click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!) // collapse, against the default
+    expect(htmlEl(el(panel, "list").querySelector('[data-id="c2"]')!).hidden).toBe(true)
+    send(panel, payload)
+    expect(htmlEl(el(panel, "list").querySelector('[data-id="c2"]')!).hidden).toBe(true)
+  })
+})
+
+describe("sessions webview — section header counts painted rows", () => {
+  function headCount(panel: Panel): string {
+    return htmlEl(el(panel, "list").querySelector('.ghead[data-key="running"] .n')).textContent ?? ""
+  }
+
+  it("counts only painted rows, with folded descendants as a separate +N", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [QUIET_PARENT_ROW, CHILD_ROW])] }))
+    // Two rows in the group, one folded under the collapsed parent.
+    expect(headCount(panel)).toBe("1+1")
+    const count = htmlEl(el(panel, "list").querySelector('.ghead[data-key="running"] .n'))
+    expect(count.getAttribute("title")).toBe("1 shown · 1 nested (collapsed)")
+  })
+
+  it("counts every row and shows no +N once nothing is folded", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
+    expect(headCount(panel)).toBe("2")
+    expect(el(panel, "list").querySelector('.ghead[data-key="running"] .n .nested')).toBeNull()
+  })
+
+  it("follows the operator's own collapse — the count drops as rows fold away", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
+    click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!)
+    expect(headCount(panel)).toBe("1+1")
   })
 })
 
