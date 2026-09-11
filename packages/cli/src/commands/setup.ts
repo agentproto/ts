@@ -329,21 +329,50 @@ export async function runSetup(opts: RunSetupOptions): Promise<number> {
   return code
 }
 
+const USAGE = `agentproto setup <slug> — re-run an adapter's setup pipeline (AIP-29)
+
+Usage:
+  agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
+
+Examples:
+  agentproto setup openclaw                # re-run setup (idempotent via skip_if + ledger)
+`
+
 /**
  * `agentproto setup <slug>` — re-run the setup pipeline for an
  * already-installed bundle.
  */
 export async function runSetupCommand(args: readonly string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      force: { type: "boolean", short: "f" },
-      "dry-run": { type: "boolean" },
-      only: { type: "string", multiple: true },
-    },
-  })
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(USAGE)
+    return 0
+  }
+  let values: {
+    force?: boolean
+    "dry-run"?: boolean
+    only?: string[]
+  }
+  let positionals: string[]
+  try {
+    ;({ values, positionals } = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      strict: true,
+      options: {
+        force: { type: "boolean", short: "f" },
+        "dry-run": { type: "boolean" },
+        only: { type: "string", multiple: true },
+      },
+    }))
+  } catch (err) {
+    // A friendly message on an unknown flag/arg instead of a raw parseArgs
+    // stack — point at the help so callers can discover the supported set.
+    process.stderr.write(
+      `agentproto setup: ${err instanceof Error ? err.message : String(err)}\n` +
+        "  See: agentproto setup --help\n"
+    )
+    return 2
+  }
   const slug = positionals[0]
   if (!slug) {
     process.stderr.write(
