@@ -30,6 +30,7 @@ export {
   createSandboxAgentSessionHost,
   exposePort,
   SandboxPortExposureUnsupportedError,
+  SandboxHostBootFailedError,
   type SandboxSpec,
   type BootedSandbox,
   type SandboxBootOpts,

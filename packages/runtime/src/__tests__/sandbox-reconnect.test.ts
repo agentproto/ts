@@ -336,8 +336,14 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     if (result.ok) return
     expect(result.code).toBe("sandbox_reconnect_failed")
     expect(box.connectSpy).toHaveBeenCalledTimes(1)
-    // The box `connect()` resumed must not outlive the failed spawn.
-    await vi.waitFor(() => expect(box.stopSpy).toHaveBeenCalledTimes(1))
+    // The box `connect()` resumed must not outlive the failed spawn — but
+    // for a REUSE the reap is a pause, not a kill: the box pre-existed this
+    // spawn, so killing it would destroy something this spawn never owned.
+    // `createSandboxAgentSessionHost` picks pause whenever the provider
+    // offers one (this fake does), and the paused box stays accounted for
+    // via the ledger stamp on `SandboxHostBootFailedError`.
+    await vi.waitFor(() => expect(box.pauseSpy).toHaveBeenCalledTimes(1))
+    expect(box.stopSpy).not.toHaveBeenCalled()
   })
 
   it("returns sandbox_reconnect_failed when connect() itself throws", async () => {
