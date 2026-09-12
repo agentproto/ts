@@ -80,9 +80,10 @@ said — quiet usually means mid-turn, not stuck.
 
 ### 6. Follow up, or tear down
 
-Send corrections with `agent_prompt({sessionId, prompt})` — it rejects while
-a turn is still in flight. When the deliverable is verified and no more turns
-are needed: `agent_kill({sessionId})`.
+Send corrections with `agent_prompt({sessionId, prompt})` — a prompt sent
+while a turn is still in flight is queued (FIFO) and dispatched automatically
+once the turn ends, rather than rejected. When the deliverable is verified
+and no more turns are needed: `agent_kill({sessionId})`.
 
 For a scripted wait outside the daemon API, the CLI
 `agentproto sessions wait <id> --until turn-end` runs as a background terminal
