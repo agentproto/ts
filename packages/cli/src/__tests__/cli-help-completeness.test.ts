@@ -24,6 +24,7 @@ import { runInstall } from "../commands/install.js"
 import { runPermissions } from "../commands/permissions.js"
 import { runAdapters } from "../commands/adapters.js"
 import { runAcp } from "../commands/acp.js"
+import { runWorkflow } from "../commands/workflow.js"
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -72,6 +73,7 @@ const CASES: Array<{
   { verb: "permissions", file: "../commands/permissions.ts", help: () => runPermissions(["--help"]) },
   { verb: "adapters", file: "../commands/adapters.ts", help: () => runAdapters(["--help"]) },
   { verb: "acp", file: "../commands/acp.ts", help: () => runAcp(["--help"]) },
+  { verb: "workflow", file: "../commands/workflow.ts", help: () => runWorkflow(["--help"]) },
 ]
 
 describe("help completeness (every implemented flag appears in --help)", () => {

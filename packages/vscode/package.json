@@ -81,6 +81,11 @@
           "when": "config.agentproto.sessionsView == 'webview'"
         },
         {
+          "id": "agentproto.activity",
+          "name": "Activity",
+          "type": "webview"
+        },
+        {
           "id": "agentproto.permissions",
           "name": "Permissions"
         },

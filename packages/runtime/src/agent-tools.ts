@@ -453,7 +453,11 @@ export function registerAgentTools(
             "`dedupe: false` to opt this ONE spawn out of implicit derivation " +
             "regardless of policy — the escape hatch, mirroring `attach: false` / " +
             "`worktree: false`. `dedupe: true` forces derivation even under an " +
-            "`\"on-request\"` daemon policy, mirroring `attach: true`."
+            "`\"on-request\"` daemon policy, mirroring `attach: true`. Unrelated and " +
+            "NOT covered by this flag: a `worktree` spawn that lands in a worktree " +
+            "another LIVE session already occupies under the same `label` is always " +
+            "refused (`dedupeSource: \"worktree-cwd\"`) — a shared worktree, unlike a " +
+            "shared plain cwd, is never a legitimate fan-out."
         ),
       permissionHold: mcpBool
         .optional()
@@ -943,8 +947,11 @@ export function registerAgentTools(
                     "sits in \"starting\" forever). Any `prompt` is held and dispatched " +
                     "only once the tree and the driver session both exist. Incompatible " +
                     "with `wait` (there is no first-turn output to block on yet) — " +
-                    "combining the two is rejected. Default false (synchronous, today's " +
-                    "behaviour)."
+                    "combining the two is rejected. Defaults to true for any spawn that " +
+                    "provisions a worktree, UNLESS this call also sets `wait` (which falls " +
+                    "back to the old synchronous path instead of conflicting). Pass `false` " +
+                    "explicitly to force the old blocking ok/fail contract even without " +
+                    "`wait`."
                 ),
             })
             .strict(),
