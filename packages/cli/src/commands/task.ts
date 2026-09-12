@@ -33,13 +33,12 @@
 import { parseArgs } from "node:util"
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
-import http from "node:http"
-import https from "node:https"
 import {
   discoverDaemon,
   printNoDaemonError,
   httpGetJson,
   httpPostJson,
+  httpPatchRaw,
 } from "./_daemon-helpers.js"
 
 const TASK_STATUSES = ["pending", "in_progress", "done", "failed", "cancelled"] as const
@@ -153,43 +152,6 @@ async function withDaemon(
     return { ok: false, code: 3 }
   }
   return { ok: true, endpoint: report.found }
-}
-
-/** Minimal PATCH that returns status + parsed body without throwing on
- *  non-2xx — a rev-CAS conflict (409) is a FIRST-CLASS reply here
- *  (`{conflict:true, current}`), not an error. */
-function rawPatch(
-  url: string,
-  body: unknown,
-  token?: string,
-): Promise<{ status: number; body: unknown }> {
-  return new Promise((resolveP, rejectP) => {
-    const u = new URL(url)
-    const payload = Buffer.from(JSON.stringify(body), "utf8")
-    const lib = u.protocol === "https:" ? https : http
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      "content-length": payload.byteLength.toString(),
-    }
-    if (token) headers.authorization = `Bearer ${token}`
-    const req = lib.request(u, { method: "PATCH", headers }, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", c => (raw += c))
-      res.on("end", () => {
-        let parsed: unknown = {}
-        try {
-          parsed = raw ? JSON.parse(raw) : {}
-        } catch {
-          parsed = { raw }
-        }
-        resolveP({ status: res.statusCode ?? 0, body: parsed })
-      })
-    })
-    req.on("error", rejectP)
-    req.write(payload)
-    req.end()
-  })
 }
 
 type TaskWriteReply = {
@@ -456,7 +418,7 @@ async function patch(
   if (!daemon.ok) return daemon.code
   const ep = daemon.endpoint
   const body = { rev, ...extraBody }
-  const res = await rawPatch(
+  const res = await httpPatchRaw(
     `${ep.url}/tasks/${encodeURIComponent(taskId)}`,
     body,
     ep.token,
@@ -487,9 +449,5 @@ async function patch(
     return 1
   }
   const reply = res.body as TaskWriteReply
-  if (reply.error !== undefined) {
-    process.stderr.write(`agentproto task ${verb}: ${String(reply.error)}\n`)
-    return 1
-  }
   return printWrite(verb, reply, json)
 }
