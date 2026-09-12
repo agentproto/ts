@@ -30,7 +30,7 @@
  */
 
 import { readFile } from "node:fs/promises"
-import { isAbsolute, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 import matter from "gray-matter"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent/manifest"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
@@ -97,6 +97,43 @@ interface AppFrontmatter {
 
 function resolveRef(dir: string, path: string): string {
   return isAbsolute(path) ? path : join(dir, path)
+}
+
+/**
+ * Resolve the UI ROOT directory an app's UI should be served from — the
+ * same resolution `app_install`/`loadAppHandle` uses for `ui.path`, so
+ * `app serve` and install agree on where the UI lives.
+ *
+ * Reads `<appDir>/.agentproto/APP.md` frontmatter: when a `ui.path` is
+ * declared, the UI root is the directory CONTAINING that entry file (e.g.
+ * `ui.path: ui/index.html` → `<appDir>/ui`); when `ui` is absent, returns
+ * `undefined` and callers fall back to the legacy `<appDir>/.agentproto/ui/`.
+ * Throws {@link AppLoadError} on a `ui` that isn't an object or whose `path`
+ * isn't a non-empty string — the same shape `loadAppHandle` would reject.
+ * Returns `undefined` (not a throw) when APP.md itself is unreadable, since
+ * callers check APP.md existence separately.
+ */
+export async function resolveAppUIRoot(appDir: string): Promise<string | undefined> {
+  const appMdPath = join(appDir, ".agentproto", "APP.md")
+  let source: string
+  try {
+    source = await readFile(appMdPath, "utf8")
+  } catch {
+    return undefined
+  }
+  const data = matter(source).data as Record<string, unknown>
+  const ui = data.ui
+  if (ui === undefined) return undefined
+  if (typeof ui !== "object" || ui === null || Array.isArray(ui)) {
+    throw new AppLoadError(`'${appMdPath}': frontmatter 'ui' must be an object.`)
+  }
+  const path = (ui as Record<string, unknown>).path
+  if (typeof path !== "string" || path.trim() === "") {
+    throw new AppLoadError(
+      `'${appMdPath}': frontmatter 'ui.path' must be a non-empty string.`,
+    )
+  }
+  return dirname(resolveRef(appDir, path))
 }
 
 function isRefArray(v: unknown): v is AppRef[] {
