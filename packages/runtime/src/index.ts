@@ -342,6 +342,16 @@ export {
   type SandboxLedgerEntry,
   type SandboxLedgerState,
 } from "./sandbox-ledger.js"
+export {
+  collectGcCandidates,
+  reapGcEntry,
+  DEAD_SESSION_STATUSES,
+  GC_REAPABLE_STATES,
+  type SandboxGcCandidate,
+  type SandboxGcReapDeps,
+  type SandboxGcProviderHandle,
+  type SandboxGcReapResult,
+} from "./sandbox-gc.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,

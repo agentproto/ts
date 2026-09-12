@@ -791,6 +791,16 @@ export interface SessionDescriptor {
   command: string
   pid: number | null
   status: SessionStatus
+  /** Unambiguous liveness signal, stamped at read time (list()/get()/
+   *  findByIdOrName) — true iff `status` is "running" or "starting", the
+   *  same test the daemon uses internally (validateAgentTurn). Ephemeral:
+   *  never persisted, always recomputed from the row's status. Exists
+   *  because `status` alone is NOT liveness: a terminal row ("killed",
+   *  "exited", "error") is a record that exists, and HTTP 200 on
+   *  GET /sessions/:id only means the record exists — consumers that
+   *  treat res.ok as liveness must read `alive` (or GET /sessions/:id/alive)
+   *  instead. */
+  alive?: boolean
   startedAt: string
   endedAt?: string
   exitCode?: number
@@ -2106,9 +2116,18 @@ const HISTORY_CAP = 200
  *  real value instead of a hardcoded duplicate. */
 export const INTERRUPT_SETTLE_TIMEOUT_MS = 60_000
 
+/** Stamp the derived `desc.alive` liveness signal (§SessionDescriptor.alive):
+ *  true iff the row's status counts as alive — the same "running" or
+ *  "starting" test `validateAgentTurn` (and every internal isAlive check)
+ *  uses. Mutates `desc` in place; called at read time, never persisted. */
+function stampAlive(desc: SessionDescriptor): void {
+  desc.alive = desc.status === "running" || desc.status === "starting"
+}
+
 /** Read-time liveness projection for BOTH planes: the local OS process
- *  (`stampProcessAlive`) and, for remote sandbox sessions, the box's
- *  provider-liveness ledger verdict (`stampSandboxLiveness`). */
+ *  (`stampProcessAlive`, which also stamps the status-derived `alive`
+ *  above) and, for remote sandbox sessions, the box's provider-liveness
+ *  ledger verdict (`stampSandboxLiveness`). */
 function stampReadLiveness(desc: SessionDescriptor): void {
   stampProcessAlive(desc)
   stampSandboxLiveness(desc)
@@ -2120,8 +2139,11 @@ function stampReadLiveness(desc: SessionDescriptor): void {
  *  dead, and is a no-op (no actual signal delivered) when it succeeds.
  *  Mutates `desc` in place; called at read time (list()/get()) rather
  *  than persisted, since it's a live OS query that goes stale the
- *  instant it's written to disk. */
+ *  instant it's written to disk. Also stamps the status-derived
+ *  `alive` signal, so every read path that refreshes processAlive
+ *  refreshes liveness too. */
 function stampProcessAlive(desc: SessionDescriptor): void {
+  stampAlive(desc)
   if (desc.pid === null || desc.pid === undefined) {
     delete desc.processAlive
     return

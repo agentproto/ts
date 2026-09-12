@@ -20,6 +20,29 @@ import type { SandboxHandle } from "./types.js"
 export type SandboxSpec = SandboxHandle
 
 /**
+ * Thrown when the box booted (or reconnected to) but the daemon MCP
+ * connection on top of it failed. The box itself already existed at that
+ * point, so `createSandboxAgentSessionHost` reaped it (paused when the
+ * provider supports it, killed otherwise) before throwing — `cleanedUp`
+ * records which. Callers use this to stamp the sandbox ledger instead of
+ * leaving a live box with no owner.
+ */
+export class SandboxHostBootFailedError extends Error {
+  readonly sandboxId: string
+  /** What the cleanup did to the box: "paused" or "stopped". Always set —
+   *  the cleanup itself is best-effort, so a failed cleanup still records
+   *  the attempt. */
+  readonly cleanedUp: "paused" | "stopped"
+
+  constructor(message: string, info: { sandboxId: string; cleanedUp: "paused" | "stopped" }) {
+    super(message)
+    this.name = "SandboxHostBootFailedError"
+    this.sandboxId = info.sandboxId
+    this.cleanedUp = info.cleanedUp
+  }
+}
+
+/**
  * Thrown when a caller requests port exposure on a `BootedSandbox` whose
  * provider does not support it — i.e. the sandbox handle has no `expose()`
  * method. Callers should check for `expose` before calling it, or catch
@@ -247,8 +270,22 @@ export async function createSandboxAgentSessionHost(
   try {
     host = await connectDaemonAgentSessionHost({ url: booted.mcpUrl })
   } catch (err) {
-    await booted.stop()
-    throw err
+    // The box EXISTS at this point — the daemon connection on top of it
+    // failed. Reap it so a failed boot never leaves a live box behind:
+    // pause when the provider supports it (keeps a reconnected box
+    // reconnectable — it was already there before this spawn), kill
+    // otherwise. Then rethrow annotated so the caller can stamp the
+    // ledger with the actual outcome.
+    const cleanedUp = booted.pause ? "paused" : "stopped"
+    if (booted.pause) {
+      await booted.pause().catch(() => undefined)
+    } else {
+      await booted.stop().catch(() => undefined)
+    }
+    throw new SandboxHostBootFailedError(
+      err instanceof Error ? err.message : String(err),
+      { sandboxId: booted.sandboxId, cleanedUp },
+    )
   }
   return {
     ...host,

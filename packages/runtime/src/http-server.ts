@@ -676,7 +676,9 @@ export interface RuntimeHttpServerOptions {
   /** Optional — MCP proxy registry. When wired, exposes
    *  `/mcps/proxy/*` routes that let the browser drive imported MCPs
    *  without going through the MCP wire protocol (useful for the
-   *  /providers/mcp page's "Local" tab). */
+   *  /providers/mcp page's "Local" tab). Mutating proxy routes
+   *  (`POST /mcps/proxy/call`) are gated by the same per-boot token
+   *  as the other mutating routes; read-only GETs stay open. */
   mcpProxy?: McpProxyRegistry
   /** Per-boot bearer token. When set, mutating /sessions/* routes
    *  + the /sessions/:id/pty WebSocket upgrade require either
@@ -2114,11 +2116,11 @@ export async function startHttpServer(
         // add/remove/use` reachable off the CLI (e.g. the VS Code
         // "create workspace here" CTA). Same per-boot token gate as
         // other local mutating routes (POST /files/upload,
-        // POST /permissions/:id): these edit ~/.agentproto/workspaces.json
+        // POST /permissions/:id, the /mcps/imports writes): these edit
+        // ~/.agentproto/workspaces.json
         // and register directories the daemon will later use as a
         // session cwd, so they get the same protection as other
-        // filesystem-mutating routes, not the ungated /mcps/imports
-        // precedent.
+        // filesystem-mutating routes.
         //
         // NOTE: this is hand-wired REST, not a `defineTool` isomorphic
         // verb — there's no existing machinery in this repo that
@@ -2262,6 +2264,13 @@ export async function startHttpServer(
           return
         }
         if (path === "/mcps/imports" && req.method === "POST") {
+          // Writes ~/.agentproto/imported-mcps.json — same per-boot token
+          // gate as the other mutating routes (see /workspaces above).
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
           const body = (await readJsonBody(req)) as {
             sourceMcpId?: string
             alias?: string
@@ -2295,6 +2304,13 @@ export async function startHttpServer(
         }
         const importMatch = path.match(/^\/mcps\/imports\/(.+)$/)
         if (importMatch && req.method === "DELETE") {
+          // Writes ~/.agentproto/imported-mcps.json — same per-boot token
+          // gate as the other mutating routes (see /workspaces above).
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
           // The id is URL-encoded since it contains colons + slashes
           // (e.g. claude-code:project:/path:name).
           const id = decodeURIComponent(importMatch[1] ?? "")
@@ -2371,6 +2387,16 @@ export async function startHttpServer(
           return
         }
         if (path === "/mcps/proxy/call" && req.method === "POST") {
+          // Invokes a tool on an imported MCP server, which may hold
+          // third-party credentials — same per-boot token gate as the
+          // other mutating routes (see /workspaces above), so a
+          // browser drive-by can't reach the proxy without a token or
+          // trusted Origin.
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
           if (!opts.mcpProxy) {
             res.writeHead(501, { "content-type": "application/json" })
             res.end(JSON.stringify({ error: "mcp_proxy_not_configured" }))
@@ -3634,9 +3660,21 @@ export function buildSpawnSessionHttpArgs(
  * stays scannable. Returns `true` when it handled the request, so
  * the dispatcher knows to skip the 404 path.
  *
- *   GET    /sessions              → list of SessionDescriptor[]
- *   GET    /sessions/summaries    → paginated SessionSummary[] (lightweight panel projection)
- *   GET    /sessions/:id          → one SessionDescriptor
+*   GET    /sessions              → list of SessionDescriptor[]
+  *   GET    /sessions/summaries    → paginated SessionSummary[] (lightweight panel projection)
+  *   GET    /sessions/:id          → one SessionDescriptor
+  *                                    NOTE: 200 means the RECORD exists — a
+  *                                    dead session still returns 200 with
+  *                                    status "killed"/"exited"/"error".
+  *                                    Liveness is the descriptor's `alive`
+  *                                    field (or /sessions/:id/alive below).
+  *   GET    /sessions/:id/alive    → liveness probe: {alive, status}. 200 when
+  *                                    alive (status "running"/"starting"),
+  *                                    410 Gone when the record exists but
+  *                                    the session is dead, 404 when no
+  *                                    record. The unambiguous signal for
+  *                                    consumers that must not treat
+  *                                    res.ok on /sessions/:id as liveness.
  *   GET    /sessions/:id/stream   → SSE stream {line,stream} events
  *   GET    /sessions/:id/export   → ExportAgentSessionResult (transcript as markdown or JSON)
  *   GET    /sessions/:id/events   → raw structured events.jsonl records for a session.
@@ -5053,7 +5091,7 @@ async function handleSessions(
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -5525,7 +5563,27 @@ async function handleSessions(
     return true
   }
 
+  if (suffix === "/alive" && req.method === "GET") {
+    // Unambiguous liveness probe. 200 = the session is alive (status
+    // "running" or "starting"); 410 Gone = the record exists but the
+    // session is dead (exited/killed/error); 404 = no record. The
+    // distinction matters because a plain GET /sessions/:id always
+    // returns 200 for an existing record — res.ok there means "record
+    // exists", never "session alive".
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const alive = resolvedDesc.status === "running" || resolvedDesc.status === "starting"
+    json(alive ? 200 : 410, { alive, status: resolvedDesc.status })
+    return true
+  }
+
   if (!suffix && req.method === "GET") {
+    // 200 means the RECORD exists — even for a dead session
+    // (status: "killed"/"exited"/"error"). Liveness is the `alive`
+    // field on the descriptor (or GET /sessions/:id/alive, which
+    // escalates to 410 when dead).
     if (!resolvedDesc) {
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true

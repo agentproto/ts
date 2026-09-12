@@ -1,5 +1,5 @@
 /**
- * `agentproto sandbox list|attach|rm`
+ * `agentproto sandbox list|attach|rm|gc`
  *
  * Phase 1 `sandbox attach` — connect to an ALREADY-EXISTING sandbox
  * (Box/e2b) without tearing it down. Pure local shell over
@@ -26,13 +26,16 @@ import { parseArgs } from "node:util"
 import {
   attachSandbox,
   buildMcpConfigSnippet,
+  collectGcCandidates,
   makeSandboxCredsStore,
   makeSandboxResolver,
   readSandboxLedger,
   recordSandboxLiveness,
   removeSandboxLedgerEntry,
+  reapGcEntry,
   type SandboxLedgerEntry,
 } from "@agentproto/runtime"
+import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
 
 const USAGE = `agentproto sandbox — connect to sandbox providers
 
@@ -40,6 +43,7 @@ Usage:
   agentproto sandbox list [--json]
   agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
   agentproto sandbox rm <sandboxId|label|id-prefix> [--box] [--yes] [--json]
+  agentproto sandbox gc [--apply] [--pause] [--json]
 
 list   Show the sandbox ledger — every box the daemon booted, reconnected
        to, paused, or stopped, with its current state and idle-expiry.
@@ -75,11 +79,23 @@ rm     Removes the LEDGER ENTRY for the given box (resolved by exact label,
        sandboxId, or unique id prefix) — non-destructive, the box itself is
        left alone.
 
-  --box  ALSO stop the box on its provider (DESTRUCTIVE — the sandbox and
-         everything in it is torn down). Without --yes, an interactive
-         terminal is asked to confirm; a non-interactive shell must pass
-         --yes explicitly.
-  --json Print the outcome as JSON.
+--box  ALSO stop the box on its provider (DESTRUCTIVE — the sandbox and
+          everything in it is torn down). Without --yes, an interactive
+          terminal is asked to confirm; a non-interactive shell must pass
+          --yes explicitly.
+   --json Print the outcome as JSON.
+
+gc     Reap ORPHAN boxes: ledger entries whose origin session ended in a
+       failure state (error / killed / exited) — the session can never come
+       back to its box, so the box is just money. Dry run by default; it
+       prints what WOULD be torn down.
+
+  --apply  Actually tear the boxes down (kill on the provider) and stamp
+           the ledger rows "stopped".
+  --pause  With --apply: PAUSE the boxes instead of killing them (keeps
+           them attachable later) — note a paused e2b box still bills, so
+           the default kill is usually what you want for orphans.
+  --json   Print the plan / outcomes as JSON.
 
 Credentials: provider API keys (e.g. BOX_API_KEY, E2B_API_KEY) must be set
 in this process's environment — same as \`agent_start.sandbox\` uses.
@@ -93,7 +109,20 @@ Examples:
   agentproto sandbox rm bx_abc123 --box --yes
 `
 
-export async function runSandbox(args: readonly string[]): Promise<number> {
+export interface SandboxGcCliDeps {
+  /** Origin-session id → daemon status ("error"/"killed"/"exited"/…).
+   *  Defaults to the live daemon's `GET /sessions`. */
+  fetchSessionStatuses?: () => Promise<Map<string, string>>
+  /** Resolves a ledger row's provider to its handle. Defaults to the
+   *  local sandbox-creds store (same as `attach`). */
+  resolveProvider?: SandboxGcProviderHandleResolver
+}
+
+type SandboxGcProviderHandleResolver = (
+  slug: string,
+) => Promise<import("@agentproto/runtime").SandboxGcProviderHandle | null>
+
+export async function runSandbox(args: readonly string[], gcDeps?: SandboxGcCliDeps): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(USAGE)
     return 0
@@ -103,13 +132,14 @@ export async function runSandbox(args: readonly string[]): Promise<number> {
   if (sub === "attach") return runAttach(args.slice(1))
   if (sub === "list") return runList(args.slice(1))
   if (sub === "rm") return runRm(args.slice(1))
+  if (sub === "gc") return runGc(args.slice(1), gcDeps)
 
   if (!sub) {
     process.stdout.write(USAGE)
     return 0
   }
   process.stderr.write(
-    `agentproto sandbox: unknown subcommand "${sub}"\n` + `  Known: list, attach, rm\n`,
+    `agentproto sandbox: unknown subcommand "${sub}"\n` + `  Known: list, attach, rm, gc\n`,
   )
   return 2
 }
@@ -345,6 +375,157 @@ async function stopLedgerBox(entry: SandboxLedgerEntry): Promise<string | undefi
   } catch (err) {
     return `stopping sandbox "${entry.sandboxId}" failed — ${err instanceof Error ? err.message : String(err)}`
   }
+}
+
+/** Default session-status source: the daemon's `GET /sessions` (read-only,
+ *  no bearer needed on the loopback default). */
+async function defaultFetchSessionStatuses(): Promise<Map<string, string>> {
+  const report = await discoverDaemon()
+  if (!report.found) {
+    throw new Error(
+      "no live daemon found — sandbox gc needs the daemon to read origin-session " +
+        "statuses (start one with `agentproto serve`, or set AGENTPROTO_DAEMON_URL).",
+    )
+  }
+  const body = await httpGetJson<{ sessions?: Array<{ id?: unknown; status?: unknown }> }>(
+    `${report.found.url}/sessions`,
+  )
+  const map = new Map<string, string>()
+  for (const s of body.sessions ?? []) {
+    if (typeof s.id === "string" && typeof s.status === "string") map.set(s.id, s.status)
+  }
+  return map
+}
+
+const defaultResolveProvider: SandboxGcProviderHandleResolver = async slug => {
+  const resolver = makeSandboxResolver(makeSandboxCredsStore())
+  const handle = await resolver(slug)
+  if (!handle) return null
+  return handle as unknown as import("@agentproto/runtime").SandboxGcProviderHandle
+}
+
+async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      apply: { type: "boolean" },
+      pause: { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+  const deps = cliDeps ?? {}
+
+  let statuses: Map<string, string>
+  try {
+    statuses = await (deps.fetchSessionStatuses ?? defaultFetchSessionStatuses)()
+  } catch (err) {
+    process.stderr.write(
+      `agentproto sandbox gc: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+
+  const candidates = collectGcCandidates(readSandboxLedger(), statuses)
+
+  if (!values.apply) {
+    if (values.json) {
+      process.stdout.write(
+        JSON.stringify(
+          {
+            candidates: candidates.map(c => ({
+              sandboxId: c.entry.sandboxId,
+              provider: c.entry.provider,
+              state: c.entry.state,
+              originSessionId: c.entry.originSessionId,
+              sessionStatus: c.sessionStatus,
+            })),
+            applied: false,
+            results: [],
+          },
+          null,
+          2,
+        ) + "\n",
+      )
+      return 0
+    }
+    if (candidates.length === 0) {
+      process.stdout.write(
+        "no orphan sandboxes — no ledger entries have an origin session in " +
+          "error/killed/exited\n",
+      )
+      return 0
+    }
+    const rows: Array<string[]> = [["ID", "PROVIDER", "STATE", "SESSION", "STATUS"]]
+    for (const c of candidates) {
+      const id =
+        c.entry.sandboxId.length > 20 ? `${c.entry.sandboxId.slice(0, 17)}…` : c.entry.sandboxId
+      rows.push([
+        id,
+        c.entry.provider,
+        c.entry.state,
+        c.entry.originSessionId ?? "—",
+        c.sessionStatus,
+      ])
+    }
+    const header = rows[0]
+    if (!header) return 0
+    const widths = header.map((_, i) => Math.max(...rows.map(r => r[i]?.length ?? 0)))
+    for (const [i, row] of rows.entries()) {
+      process.stdout.write(row.map((cell, j) => cell.padEnd(widths[j] ?? 0)).join("  ") + "\n")
+    }
+    process.stdout.write(
+      `\n${candidates.length} orphan sandbox(es) — dry run only. Re-run with --apply to tear them down` +
+        `${values.pause ? "" : " (kill is the default; pass --pause to pause instead)"}.\n`,
+    )
+    return 0
+  }
+
+  const resolveProvider = deps.resolveProvider ?? defaultResolveProvider
+  const results: Array<{ sandboxId: string; ok: boolean; action?: string; error?: string }> = []
+  let failures = 0
+  for (const c of candidates) {
+    const res = await reapGcEntry(c.entry, {
+      ...(values.pause ? { pause: true } : {}),
+      resolveProvider: resolveProvider as unknown as (
+        slug: string,
+      ) => Promise<import("@agentproto/runtime").SandboxGcProviderHandle | null>,
+    })
+    const record = res.ok
+      ? { sandboxId: c.entry.sandboxId, ok: true, action: res.action }
+      : { sandboxId: c.entry.sandboxId, ok: false, error: res.error }
+    results.push(record)
+    if (!res.ok) {
+      failures++
+      if (!values.json) process.stderr.write(`agentproto sandbox gc: ${res.error}\n`)
+    } else if (!values.json) {
+      process.stdout.write(
+        `sandbox ${c.entry.sandboxId} ${res.action === "paused" ? "paused" : "stopped"} (session ${c.entry.originSessionId} ${c.sessionStatus})\n`,
+      )
+    }
+  }
+  if (values.json) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          candidates: candidates.map(c => ({
+            sandboxId: c.entry.sandboxId,
+            provider: c.entry.provider,
+            state: c.entry.state,
+            originSessionId: c.entry.originSessionId,
+            sessionStatus: c.sessionStatus,
+          })),
+          applied: true,
+          results,
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+    return failures > 0 ? 1 : 0
+  }
+  return failures > 0 ? 1 : 0
 }
 
 async function runAttach(args: readonly string[]): Promise<number> {

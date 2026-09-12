@@ -47,15 +47,28 @@ export type WorktreeField = boolean | { slug?: string; base?: string; async?: bo
 export interface WorktreeRequest {
   slug?: string
   base?: string
-  /** Opt-in: return a real, registered session as soon as it's minted,
-   *  provisioning the worktree in the BACKGROUND instead of blocking
-   *  `agent_start`'s response on `git worktree add` + the repo's setup
-   *  hooks (which can run minutes — see `session-spawn.ts`'s async-provision
-   *  branch). Deliberately opt-in, not the default: existing callers that
-   *  built on a synchronous ok/fail result (this package's own
-   *  `worktree_provision_failed` test coverage among them) keep exactly
-   *  today's behaviour unless they ask for the early return. Default
-   *  false. */
+  /** Return a real, registered session as soon as it's minted, provisioning
+   *  the worktree in the BACKGROUND instead of blocking `agent_start`'s
+   *  response on `git worktree add` + the repo's setup hooks (which can run
+   *  minutes — see `session-spawn.ts`'s async-provision branch).
+   *
+   *  DEFAULTS TO TRUE for any spawn that provisions a worktree, UNLESS this
+   *  spawn also carries `wait` (which needs a first turn to block on — see
+   *  `worktree_async_wait_conflict` — so the presence of `wait` alone falls
+   *  back to the synchronous path rather than conflicting by default). That
+   *  default is applied by `session-spawn.ts` itself (WP-H), not by this
+   *  field or `normalizeWorktreeField` — the normalizer leaves `async`
+   *  exactly as the caller sent it (`undefined` when omitted; see its own
+   *  test), so a caller inspecting the normalized request never sees a
+   *  value it didn't write. WP-H incident: the synchronous contract this
+   *  field opts OUT of — hold the RPC open for however long setup hooks
+   *  take, routinely minutes — is exactly what let a client's own request
+   *  timeout retry into a second live agent sharing the first one's
+   *  worktree (closed on the other side too — see `session-spawn.ts`'s
+   *  `findWorktreeLabelCwdCollision`, which now refuses that retry outright
+   *  rather than merely warning). Pass `false` explicitly to keep the old
+   *  blocking ok/fail contract (this package's own `worktree_provision_failed`
+   *  test coverage exercises it deliberately synchronous). */
   async?: boolean
 }
 

@@ -67,6 +67,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto setup`](./verbs/setup.md) — re-run an adapter's post-install pipeline
 - [`agentproto tunnel`](./verbs/tunnel.md) — manage public Cloudflare/Ngrok tunnels
 - [`agentproto usage`](./verbs/usage.md) — local-derived, provider-agnostic spend estimate over a rolling window
+- [`agentproto workflow`](./verbs/workflow.md) — start, inspect, and cancel background workflow runs on the daemon
 - [`agentproto workspace`](./verbs/workspace.md) — register local workspaces
 - [`agentproto worktree`](./verbs/worktree.md) — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal, `gc`)
 
