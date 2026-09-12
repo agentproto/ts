@@ -1113,8 +1113,10 @@ export function registerAgentTools(
     "Send a follow-up prompt to a live agent session — multi-turn continuity " +
       "without re-spawning. The session id comes from `agent_start` " +
       "(or `agent_sessions_list`). Returns immediately; tail output via " +
-      "`agent_output` or the SSE /sessions/:id/stream endpoint. By default, " +
-      "a session mid-turn rejects the new prompt — pass `interrupt: true` to " +
+      "`agent_output` or the SSE /sessions/:id/stream endpoint. If the " +
+      "session is mid-turn, the prompt is queued (FIFO) and dispatched " +
+      "automatically when the current turn ends — so fan-in bursts are " +
+      "delivered in order instead of rejected. Pass `interrupt: true` to " +
       "cancel the in-flight turn and redirect the SAME session onto this " +
       "prompt instead, without losing its context (unlike `agent_kill`, " +
       "which ends the session entirely). `interrupt` is a no-op on an " +
@@ -1131,6 +1133,15 @@ export function registerAgentTools(
             "turn and deliver this prompt on the same session instead of " +
             "rejecting. No-op when the session is already idle. Default false " +
             "(mid-turn rejects, as today)."
+        ),
+      queue: z
+        .boolean()
+        .optional()
+        .describe(
+          "When the session is mid-turn, queue this prompt (FIFO) and " +
+            "dispatch it automatically once the current turn ends instead " +
+            "of rejecting. Default true. Explicit false restores the old " +
+            "reject-when-busy behavior."
         ),
     },
     async input => {
@@ -1156,6 +1167,11 @@ export function registerAgentTools(
         const promptSource = callerScope?.ownerSessionId ?? callerSessionId
         await registry.enqueuePrompt(sessionId, input.prompt, {
           interrupt: input.interrupt,
+          // Queue by default: a mid-turn session holds the prompt in its
+          // FIFO queue and dispatches it at turn end, so callers never
+          // lose a prompt to the busy rejection. Explicit `queue: false`
+          // restores the old reject-when-busy behavior.
+          queue: input.queue ?? true,
           ...(promptSource ? { source: `agent:${promptSource}` } : {}),
         })
         return {
@@ -1171,11 +1187,21 @@ export function registerAgentTools(
           ],
         }
       } catch (err) {
+        // With `queue: false` explicitly set, a mid-turn rejection must
+        // name the caller's alternatives verbatim — the old bare
+        // "wait for it to finish or cancel" gave no actionable path.
+        let message = err instanceof Error ? err.message : String(err)
+        if (input.queue === false && message.includes("is mid-turn")) {
+          message = message.replace(
+            "wait for it to finish or cancel",
+            "pass queue: true, or use `agentproto sessions prompt`"
+          )
+        }
         return {
           content: [
             {
               type: "text",
-              text: `agent_prompt: ${err instanceof Error ? err.message : String(err)}`,
+              text: `agent_prompt: ${message}`,
             },
           ],
           isError: true,
