@@ -46,6 +46,7 @@ import { runPack } from "./commands/pack.js"
 import { runApp } from "./commands/app.js"
 import { runWorktree } from "./commands/worktree.js"
 import { runPolicy } from "./commands/policy.js"
+import { runWorkflow } from "./commands/workflow.js"
 import { runTask } from "./commands/task.js"
 import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
@@ -133,6 +134,12 @@ Usage:
   agentproto policy    ack    <policyId> (--approve|--reject) [--json]
   agentproto policy    ls     [--json]
   agentproto policy    cancel <policyId> [--json]
+  agentproto workflow  start --workflow-id <id> --stages-json <json|@file> [--cwd <dir>] [--json]
+  agentproto workflow  run-file <path> [--input-json <json|@file>] [--cwd <dir>] [--json]
+  agentproto workflow  status <runId> [--json]
+  agentproto workflow  list [--json]
+  agentproto workflow  cancel <runId>
+  agentproto workflow  resolve <runId> (--approve|--reject) [--who <name>] [--note <text>]
   agentproto task      create <title> [--description <text>] [--board-id <id>] [--json]
   agentproto task      list [--board-id <id>] [--status <s>] [--include-closed] [--json]
   agentproto task      claim <taskId> --rev <n>
@@ -148,7 +155,7 @@ Usage:
   agentproto pair      revoke <fingerprint|name>
   agentproto pair      exec   <fingerprint|name> -- <verb> [args…]
   agentproto rendezvous serve [--port <n>] [--host <ip>]
-  agentproto sandbox   list [--json] | attach <provider> <sandboxId> | rm <id|label> [--box]
+  agentproto sandbox   list [--json] | attach <provider> <sandboxId> | rm <id|label> [--box] | gc [--apply]
   agentproto app       pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app       unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app       install <appDir>
@@ -213,6 +220,7 @@ const VERBS = new Set([
   "pack",
   "worktree",
   "policy",
+  "workflow",
   "task",
   "permissions",
   "app",
@@ -327,6 +335,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runWorktree(rest)
     case "policy":
       return runPolicy(rest)
+    case "workflow":
+      return runWorkflow(rest)
     case "task":
       return runTask(rest)
     case "permissions":

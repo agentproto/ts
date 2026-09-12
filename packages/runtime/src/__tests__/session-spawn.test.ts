@@ -2721,9 +2721,12 @@ describe("spawnAgentSession — worktree isolation", () => {
   it("on-request + worktree:true → provisions and lands the session in the worktree, never auto-reclaimable (explicit request)", async () => {
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
+    // async:false — this test is about the policy/auto-reclaim resolution,
+    // not sync-vs-async timing (that's WP-H's own describe block below); pin
+    // the old synchronous contract so the cwd lands before we assert on it.
     const result = await spawnAgentSession(
       { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
-      { adapter: "mock", cwd: ORIGINAL, worktree: true, label: "fix login" },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: false }, label: "fix login" },
     )
     expect(result.ok).toBe(true)
     expect(calls).toHaveLength(1)
@@ -2749,12 +2752,24 @@ describe("spawnAgentSession — worktree isolation", () => {
   it("always → provisions even with no field, and marks the descriptor auto-provisioned (implicit)", async () => {
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
+    // No explicit `worktree` field at all — the ONLY way to exercise the
+    // truly-implicit ("always" policy minted it, caller asked for nothing")
+    // path, so it can't also pin `async: false` (that would itself make the
+    // request explicit). Defaults to async instead — the cwd lands once the
+    // background provisioning settles, so wait for it rather than asserting
+    // immediately.
     const result = await spawnAgentSession(
       { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
       { adapter: "mock", cwd: ORIGINAL },
     )
     expect(result.ok).toBe(true)
     expect(calls).toHaveLength(1)
+    // Stamped on the descriptor synchronously, at registration — no need to
+    // wait for it.
+    expect(registry.list()[0]?.worktreeAutoProvisioned).toBe(true)
+    await vi.waitFor(() => {
+      expect(registry.list()[0]?.status).toBe("running")
+    })
     expect(registry.list()[0]?.cwd).toBe(WORKTREE)
     // No explicit `worktree` field — the "always" policy minted this one on
     // its own, so it's a candidate for exit-time auto-reclaim.
@@ -2911,9 +2926,13 @@ describe("spawnAgentSession — worktree isolation", () => {
     const { provisionWorktree } = spyProvisioner(async () => {
       throw new Error("git worktree add exploded")
     })
+    // async:false — pins the synchronous ok/fail contract this test is
+    // actually about (the async equivalent, "a provisioning failure ends the
+    // session in status 'error'", already has its own coverage in the WP-F
+    // describe block below).
     const result = await spawnAgentSession(
       { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
-      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: false } },
     )
     expect(result.ok).toBe(false)
     if (result.ok) throw new Error("expected failure")
@@ -2973,6 +2992,78 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(result.code).toBe("sandbox_provider_not_found")
     expect(calls).toHaveLength(0)
     expect(registry.list()).toHaveLength(0)
+  })
+
+  // ── WP-H: label+cwd collision refuses (synchronous path) ────────────────
+  it("two SYNCHRONOUS worktree spawns, same label+cwd, different prompts (the incident retry) — the second is refused, handed back the FIRST session's descriptor, never forks a second process", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree } = spyProvisioner(isolated)
+    const shared = { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") }
+    const input = {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { slug: "retry", async: false } as const,
+      label: "fix login",
+    }
+
+    const first = await spawnAgentSession(shared, { ...input, prompt: "do the thing" })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected success")
+
+    const second = await spawnAgentSession(shared, {
+      ...input,
+      prompt: "you are already in an isolated git worktree, continue from there",
+    })
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.deduped).toBe(true)
+    expect(second.dedupeSource).toBe("worktree-cwd")
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+  })
+
+  it("does NOT refuse when the two worktree spawns landing in the same cwd carry DIFFERENT labels — that's the exercised parallel-fan-out shape, not the incident", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree } = spyProvisioner(isolated)
+    const shared = { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") }
+
+    const first = await spawnAgentSession(shared, {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { async: false },
+      label: "worker-a",
+    })
+    const second = await spawnAgentSession(shared, {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { async: false },
+      label: "worker-b",
+    })
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.deduped).toBeUndefined()
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(registry.list()).toHaveLength(2)
+  })
+
+  it("does NOT refuse when NEITHER worktree spawn carries a label, even landing in the same cwd — cwd alone stays too noisy to key off, same boundary as the general backstop", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree } = spyProvisioner(isolated)
+    const shared = { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") }
+
+    const first = await spawnAgentSession(shared, { adapter: "mock", cwd: ORIGINAL, worktree: { async: false } })
+    const second = await spawnAgentSession(shared, { adapter: "mock", cwd: ORIGINAL, worktree: { async: false } })
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.deduped).toBeUndefined()
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(registry.list()).toHaveLength(2)
   })
 })
 
@@ -3185,17 +3276,18 @@ describe("spawnAgentSession — async worktree provisioning (WP-F)", () => {
     expect(registry.list()).toHaveLength(1)
   })
 
-  it("a plain (synchronous) worktree spawn is completely unaffected by the async branch", async () => {
-    // No `async: true` on the request ⇒ takes the pre-existing synchronous
-    // path verbatim: `spawnAgentSession` still blocks on provisioning and
-    // the descriptor is "running" (never "starting") by the time it returns.
+  it("an explicit `async: false` still takes the old synchronous path, even under the new async-by-default policy", async () => {
+    // WP-H flipped the default to async; `async: false` is the escape hatch
+    // back to the pre-existing synchronous contract: `spawnAgentSession`
+    // still blocks on provisioning and the descriptor is "running" (never
+    // "starting") by the time it returns.
     const startSession = vi.fn(async () => fakeAgentSession())
     const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
     const { provisionWorktree, calls } = spyProvisioner(isolated)
 
     const result = await spawnAgentSession(
       { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
-      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: false } },
     )
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected success")
@@ -3203,6 +3295,105 @@ describe("spawnAgentSession — async worktree provisioning (WP-F)", () => {
     expect(calls).toHaveLength(1)
     expect(startSession).toHaveBeenCalledTimes(1)
     expect(registry.get(result.descriptor.id)?.cwd).toBe(WORKTREE)
+  })
+
+  // ── WP-H: async is now the DEFAULT ─────────────────────────────────────
+  it("default (no `async` field at all, no `wait`) now takes the async path — returns \"starting\" before the provisioner settles", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls, resolve } = deferredProvisioner()
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { slug: "my-feature" }, label: "fix login" },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(calls).toHaveLength(1)
+    expect(startSession).not.toHaveBeenCalled()
+    expect(result.descriptor.status).toBe("starting")
+
+    resolve(isolated)
+    await vi.waitFor(() => {
+      expect(registry.get(result.descriptor.id)?.status).toBe("running")
+    })
+    expect(registry.get(result.descriptor.id)?.cwd).toBe(WORKTREE)
+  })
+
+  it("`wait` with no explicit `async` falls back to the synchronous path by default — no worktree_async_wait_conflict", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true, wait: true, prompt: "hi" },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(calls).toHaveLength(1)
+    expect(result.descriptor.status).toBe("running")
+    expect(registry.get(result.descriptor.id)?.cwd).toBe(WORKTREE)
+  })
+
+  it("`wait` + an EXPLICIT `async: true` is still rejected outright (unchanged) — the default fallback never masks a deliberate conflicting request", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: true }, wait: true, prompt: "hi" },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_async_wait_conflict")
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  // ── WP-H: label+cwd collision refuses instead of warning, for a spawn
+  // that actually landed in an isolated worktree ─────────────────────────
+  it("two ASYNC worktree spawns, same label+cwd, different prompts (the exact incident retry) — only one goes live; the retry settles as an error pointing at it, never a second live agent", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree } = spyProvisioner(isolated)
+    const shared = { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") }
+    const input = {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { slug: "retry", async: true } as const,
+      label: "fix login",
+    }
+
+    const first = await spawnAgentSession(shared, { ...input, prompt: "do the thing" })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected success")
+    await vi.waitFor(() => {
+      expect(registry.get(first.descriptor.id)?.status).toBe("running")
+    })
+
+    // The retry: same label+cwd, DIFFERENT prompt (the caller now knows the
+    // worktree exists) — the implicit dedupe key differs, so it reaches this
+    // spawn's own worktree provisioning, lands in the SAME worktree, and
+    // must be refused there instead of becoming a second live agent.
+    const second = await spawnAgentSession(shared, {
+      ...input,
+      prompt: "you are already in an isolated git worktree, continue from there",
+    })
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+
+    await vi.waitFor(() => {
+      expect(registry.get(second.descriptor.id)?.status).toBe("error")
+    })
+    expect(registry.get(second.descriptor.id)?.lastError).toContain(first.descriptor.id)
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list().filter(s => s.status === "running")).toHaveLength(1)
   })
 })
 
@@ -3368,9 +3559,10 @@ describe("spawnAgentSession — worktree explicit-repo guard", () => {
     }
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
+    // async:false — this test is about repo resolution, not sync/async timing.
     const result = await spawnAgentSession(
       { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
-      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+      { adapter: "mock", cwd: ORIGINAL, worktree: { async: false } },
     )
     expect(result.ok).toBe(true)
     expect(calls).toHaveLength(1)
@@ -3399,9 +3591,10 @@ describe("spawnAgentSession — worktree explicit-repo guard", () => {
     }
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
+    // async:false — this test is about repo resolution, not sync/async timing.
     const result = await spawnAgentSession(
       { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
-      { adapter: "mock", workspaceSlug: "intended-repo", worktree: true },
+      { adapter: "mock", workspaceSlug: "intended-repo", worktree: { async: false } },
     )
     expect(result.ok).toBe(true)
     expect(calls).toHaveLength(1)

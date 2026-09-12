@@ -367,6 +367,9 @@ export interface SessionListCompactItem {
   name?: string
   label?: string
   status: SessionDescriptor["status"]
+  /** Liveness (stamped at read time by the registry) — the unambiguous
+   *  signal; `status` alone is a lifecycle classification, not liveness. */
+  alive?: boolean
   pty?: boolean
   /** What was actually run — quoted joined, same string the full record carries. */
   command: string
@@ -397,6 +400,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   name: s.name,
   label: s.label,
   status: s.status,
+  alive: s.alive,
   pty: s.pty,
   command: s.command,
   cwd: s.cwd,

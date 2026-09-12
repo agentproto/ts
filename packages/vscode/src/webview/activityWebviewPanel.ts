@@ -238,6 +238,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
     #unavailable[hidden] { display: none; }
     #error { padding: 6px 12px; color: var(--vscode-errorForeground, #f14c4c); font-size: 11px; flex: 0 0 auto; }
     #error[hidden] { display: none; }
+    #foot { display: flex; align-items: center; padding: 4px 12px 6px; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2)); flex: 0 0 auto; }
+    #refresh { background: transparent; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); color: var(--vscode-descriptionForeground, #9d9d9d); font-size: 11px; padding: 2px 10px; cursor: pointer; border-radius: 4px; font-family: inherit; }
+    #refresh:hover { color: var(--vscode-foreground, #cccccc); border-color: var(--vscode-descriptionForeground, #9d9d9d); }
   </style>
 </head>
 <body class="daemon-state">
@@ -245,12 +248,14 @@ export function buildHtml(nonce: string, cspSource: string): string {
   <div id="list" role="list"></div>
   <div id="error" hidden></div>
   <div id="unavailable" hidden>This daemon has no activity projector wired — live activity is unavailable. Shell sessions still appear below.</div>
+  <div id="foot"><button id="refresh" type="button" title="Re-fetch activities" aria-label="Re-fetch activities">Refresh</button></div>
   <script nonce="${nonce}">
     (function () {
       var vscode = acquireVsCodeApi();
       var listEl = document.getElementById('list');
       var unavailableEl = document.getElementById('unavailable');
       var errorEl = document.getElementById('error');
+      var refreshEl = document.getElementById('refresh');
       var collapsed = {};
 
       function escapeHtml(text) {
@@ -316,6 +321,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
         if (head) { e.preventDefault(); head.click(); return; }
         var row = e.target.closest('.row[data-clickable="1"]');
         if (row) { e.preventDefault(); vscode.postMessage({ type: 'open', id: row.getAttribute('data-id') }); }
+      });
+
+      refreshEl.addEventListener('click', function () {
+        vscode.postMessage({ type: 'refresh' });
       });
 
       window.addEventListener('message', function (event) {
