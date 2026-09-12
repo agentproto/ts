@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { hermes, hermesRuntime } from "../index.js"
+import { probeHermesBin } from "./hermes-bin-capability.js"
 
 describe("@agentproto/adapter-hermes", () => {
   it("exposes a validated AIP-45 handle", () => {
@@ -66,10 +67,17 @@ describe("@agentproto/adapter-hermes", () => {
     expect(typeof runtime.start).toBe("function")
   })
 
-  // Smoke test gated on HERMES_BIN — only runs on a developer's box
-  // with hermes installed locally. Keeps CI green without skipping
-  // the load-bearing real-spawn coverage.
-  it.skipIf(!process.env.HERMES_BIN)(
+  // Smoke test gated on a runtime probe of HERMES_BIN — the binary must
+  // exist AND execute (a `--version` spawn), not merely be named in the env.
+  // A stale path skips loudly instead of failing on every local run; any
+  // ambiguous probe outcome keeps the test running so it can fail honestly.
+  // Only runs on a developer's box with hermes installed locally. Keeps CI
+  // green without skipping the load-bearing real-spawn coverage.
+  const hermesBin = probeHermesBin()
+  if (!hermesBin.supported) {
+    console.log(`[skip] hermes smoke (real spawn): ${hermesBin.reason}`)
+  }
+  it.skipIf(!hermesBin.supported)(
     "spawns hermes and completes a turn",
     async () => {
       const runtime = hermesRuntime()
