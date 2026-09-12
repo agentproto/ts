@@ -350,6 +350,41 @@ export function gcSpawnClaims(claims: Map<string, SpawnClaim>, now: number): voi
   for (const [k] of resolved.slice(0, excess)) claims.delete(k)
 }
 
+/**
+ * WP-H: does a LIVE (running/starting) session other than `excludeId`
+ * already sit at `cwd` under `label`? Shared by the sync and async
+ * worktree-provisioning branches, which call this ONLY once a spawn has
+ * actually landed in an isolated worktree (`outcome.isolated`) — never for a
+ * plain shared cwd, which stays covered by the general no-key backstop
+ * further down (the `desc.label && desc.cwd` check), a WARNING, not a
+ * refusal. That's a deliberate, narrower boundary than the general check:
+ * an unlabelled parallel fan-out into one shared cwd is a real, exercised
+ * pattern here (see `spawn-dedupe.ts`'s module docblock) and must stay
+ * merely warned about at most — but a git worktree is provisioned FOR one
+ * logical spawn, so two LIVE sessions sharing both its label and its cwd is
+ * never that pattern; it's the retry-forked-a-duplicate incident this
+ * module exists to close. Requires a non-blank `label` for the same reason
+ * the implicit dedupe key does — unlabelled worktree fan-out (same slug,
+ * no label) stays outside this check too.
+ */
+function findWorktreeLabelCwdCollision(
+  registry: SessionsRegistry,
+  excludeId: string,
+  label: string | undefined,
+  cwd: string,
+): SessionDescriptor | undefined {
+  if (!label) return undefined
+  return registry
+    .list()
+    .find(
+      s =>
+        s.id !== excludeId &&
+        s.label === label &&
+        s.cwd === cwd &&
+        (s.status === "running" || s.status === "starting"),
+    )
+}
+
 function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key" {
   return method === "oauth-bearer" ? "subscription" : "api-key"
 }
@@ -1082,20 +1117,24 @@ export type SpawnAgentSessionResult =
        *  warn about. The spawn still succeeded; these are advisory. */
       warnings?: string[]
       /** Set when this result was returned to a duplicate call recognized
-       *  via `idempotencyKey` OR a derived implicit key — no new process was
-       *  spawned; `descriptor` is the ORIGINAL spawn's. Absent on the
-       *  original (non-duplicate) call. */
+       *  via `idempotencyKey`, a derived implicit key, or the worktree
+       *  label+cwd collision guard — no new process was spawned; `descriptor`
+       *  is the ORIGINAL spawn's. Absent on the original (non-duplicate)
+       *  call. */
       deduped?: boolean
       /** Set alongside `deduped` to say WHICH kind of dedup matched:
        *  `"explicit"` for a caller-supplied `idempotencyKey`, `"implicit"`
-       *  for a daemon-derived key (see `spawn-dedupe.ts`). An implicit match
-       *  is a GUESS, not a promise the caller made — surfacing which one
-       *  fired lets a caller tell "you got back the session you thought you
-       *  started" from "the daemon merged this into an unrelated-looking
-       *  earlier spawn because it looked similar", instead of silently
-       *  returning a different session than the one someone thought they
-       *  started. Absent when `deduped` is absent. */
-      dedupeSource?: "explicit" | "implicit"
+       *  for a daemon-derived key (see `spawn-dedupe.ts`), `"worktree-cwd"`
+       *  for the WP-H label+cwd collision refusal (`findWorktreeLabelCwdCollision`
+       *  above) — a spawn that landed in an already-live worktree under the
+       *  same label. Both `"implicit"` and `"worktree-cwd"` are GUESSES, not
+       *  a promise the caller made — surfacing which one fired lets a caller
+       *  tell "you got back the session you thought you started" from "the
+       *  daemon merged this into an unrelated-looking earlier spawn because
+       *  it looked similar", instead of silently returning a different
+       *  session than the one someone thought they started. Absent when
+       *  `deduped` is absent. */
+      dedupeSource?: "explicit" | "implicit" | "worktree-cwd"
     }
   | {
       ok: false
@@ -1566,6 +1605,16 @@ export async function spawnAgentSession(
         }
       }
       worktreeRequest = decision.request
+      // WP-H: default a provisioning spawn to ASYNC — see
+      // `WorktreeRequest.async`'s doc for the full incident/reasoning — unless
+      // the caller pinned `async` explicitly (either value always wins) or
+      // this spawn also carries `wait`, which needs a first turn to block on
+      // and so falls back to the synchronous path by default rather than
+      // conflicting (`worktree_async_wait_conflict` still fires if the caller
+      // asks for BOTH `wait` and an explicit `async: true`, unchanged below).
+      if (worktreeRequest.async === undefined) {
+        worktreeRequest = { ...worktreeRequest, async: !input.wait }
+      }
       worktreeAutoProvisioned = decision.implicit
     }
   }
@@ -2478,8 +2527,10 @@ export async function spawnAgentSession(
     // WP-F: `git worktree add` + the repo's `agentproto.json` setup hooks
     // can run minutes, and every prior guard (PR #803's claim window, #805's
     // implicit dedup) only treats the RETRY that provokes — this treats the
-    // wait. Opt-in only (`worktree: { async: true }` — see
-    // `WorktreeRequest.async`'s doc for why default stays synchronous):
+    // wait. WP-H made this the DEFAULT (see `WorktreeRequest.async`'s doc and
+    // the defaulting above, right after `worktreeRequest = decision.request`)
+    // — reached whenever `worktreeRequest.async` resolved truthy, whether the
+    // caller asked for it explicitly or the default supplied it:
     // register a real, stable session NOW (status "starting"), settle the
     // retry-safety claim with THIS early result so a caller retry arriving
     // mid-provision dedupes against this row instead of forking a second
@@ -2595,6 +2646,27 @@ export async function spawnAgentSession(
           return
         }
         const finalCwd = outcome.isolated ? outcome.cwd : baseCwd
+        if (outcome.isolated) {
+          // WP-H: same refusal as the synchronous branch, timed to run
+          // BEFORE the driver process is forked — the caller already holds
+          // its own (early) descriptor for THIS session, so unlike the sync
+          // path we can't hand back the other one instead; refusing here
+          // means never starting a second live agent in the worktree, and
+          // settling this pending session as a readable error pointing at
+          // the one that's already live, rather than promoting it to a
+          // real duplicate. See `findWorktreeLabelCwdCollision`'s doc.
+          const dupe = findWorktreeLabelCwdCollision(registry, pendingDesc.id, input.label, finalCwd)
+          if (dupe) {
+            registry.settlePendingAgent(pendingDesc.id, {
+              ok: false,
+              message:
+                `agent_start: refused — another LIVE session ("${dupe.id}") already has the ` +
+                `same label ("${input.label}") and cwd ("${finalCwd}") as this worktree spawn. ` +
+                "Not starting a second agent in the same worktree.",
+            })
+            return
+          }
+        }
         try {
           const agentSession = await resolved!.startSession({
             cwd: finalCwd,
@@ -2630,29 +2702,6 @@ export async function spawnAgentSession(
           const readUsage = resolved!.readUsage
             ? () => resolved!.readUsage!(agentSession.sessionId)
             : undefined
-          // Best-effort duplicate-live-session advisory — see the sync
-          // path's "no-key backstop" for the full rationale. Console-only:
-          // the caller already got its (early) response, so there is no
-          // `warnings` array left to attach this to.
-          if (pendingDesc.label) {
-            const dupe = registry
-              .list()
-              .find(
-                s =>
-                  s.id !== pendingDesc.id &&
-                  s.label === pendingDesc.label &&
-                  s.cwd === finalCwd &&
-                  (s.status === "running" || s.status === "starting"),
-              )
-            if (dupe) {
-              console.warn(
-                `[agent_start] another LIVE session ("${dupe.id}") already has the same ` +
-                  `label ("${pendingDesc.label}") and cwd ("${finalCwd}") as this one. If ` +
-                  "this is a retried spawn rather than a deliberate parallel run, both are " +
-                  "now editing the same working directory concurrently — check before proceeding.",
-              )
-            }
-          }
           registry.settlePendingAgent(pendingDesc.id, {
             ok: true,
             agentSession,
@@ -2703,7 +2752,25 @@ export async function spawnAgentSession(
           }`,
         })
       }
-      if (outcome.isolated) cwd = outcome.cwd
+      if (outcome.isolated) {
+        cwd = outcome.cwd
+        // WP-H: refuse rather than fork a second driver process into a
+        // worktree another LIVE session already occupies under the same
+        // label — see `findWorktreeLabelCwdCollision`'s doc. Runs BEFORE
+        // `startSession` below, so the duplicate is never actually started;
+        // the caller gets the existing session's descriptor back instead,
+        // exactly like an idempotency-key dedupe.
+        const dupe = findWorktreeLabelCwdCollision(registry, mintedSessionId, input.label, cwd)
+        if (dupe) {
+          return finish({
+            ok: true,
+            descriptor: dupe,
+            deduped: true,
+            dedupeSource: "worktree-cwd",
+            ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
+          })
+        }
+      }
     }
     // The registry doesn't assign a session id until `spawnAgent`
     // returns below, but `onActivity` can start firing as soon as

@@ -138,11 +138,17 @@ agentproto worktree gc --apply --salvage-dirty
 `agent_start` takes a `worktree` field so a spawn isolates itself without a
 separate `worktree new` first: `worktree: true` provisions one (branch
 `wt/<slug>` cut from `origin/main`, slug auto-minted from the session label)
-and lands the session in it; `worktree: { slug, base }` pins either. For a
-fast-return registration that provisions in the background, use
-`worktree: { async: true }` — the session descriptor is returned immediately
-with status `"starting"` and the resolved `cwd` is backfilled once the tree is
-ready (this cannot be combined with `wait: true`). It bites only for a **root**
+and lands the session in it; `worktree: { slug, base }` pins either.
+Provisioning (`git worktree add` plus the repo's own setup hooks, which can
+run minutes) now returns immediately by default — the session descriptor
+comes back right away with status `"starting"`, and the resolved `cwd` is
+backfilled once the tree is ready. Poll the session's status: it flips to
+`"running"` on success, or `"error"` with a readable `lastError` on failure —
+it never sits in `"starting"` forever. Pass `worktree: { async: false }` for
+the old blocking contract (wait for the tree before `agent_start` returns);
+`wait: true` falls back to that same synchronous path automatically (there's
+no first-turn output to block on otherwise), and combining `wait: true` with
+an *explicit* `async: true` is rejected outright. It bites only for a **root**
 spawn whose cwd is inside a git repo — a spawn made through an orchestrator
 inherits its parent's tree, and a cwd outside any repo spawns plain.
 
