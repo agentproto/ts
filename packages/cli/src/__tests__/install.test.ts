@@ -339,3 +339,104 @@ describe("agentproto install — vendored (generic ACP) step", () => {
     io.restore()
   })
 })
+
+/** A claude-code-shaped first-party handle: one `npm -g` install step and a
+ *  LOCAL presence probe (`npm ls -g … --depth=0`), matching the fixed
+ *  manifest. The old `npm view … version` registry query can never fail, so
+ *  it reported "already installed" on machines with nothing installed. */
+function fakeClaudeCodeHandle() {
+  return {
+    slug: "claude-code",
+    handle: {
+      name: "claude-code",
+      install: [
+        {
+          method: "npm" as const,
+          package: "@agentclientprotocol/claude-agent-acp",
+          global: true,
+        },
+      ],
+      version_check: {
+        cmd: "npm ls -g @agentclientprotocol/claude-agent-acp --depth=0",
+        parse: "(\\d+\\.\\d+\\.\\d+)",
+      },
+    },
+    source: "npm" as const,
+    packageName: "@agentproto/adapter-claude-code",
+  }
+}
+
+/** spawn stub dispatching on the invoked command: the version_check probe
+ *  runs `bash -lc <cmd>` (stdio pipes); the install step runs `npm install`.
+ */
+function spawnDispatch(bash: { code: number; stdout?: string }) {
+  spawnMock.mockImplementation((cmd: string) => {
+    if (cmd === "bash") {
+      return {
+        on: () => {},
+        once: (event: string, cb: (c: number) => void) => {
+          if (event === "exit") queueMicrotask(() => cb(bash.code))
+          return undefined
+        },
+        stdout: {
+          on: (_e: string, cb: (c: Buffer) => void) =>
+            cb(Buffer.from(bash.stdout ?? "")),
+        },
+        stderr: { on: () => {} },
+        unref: () => {},
+      }
+    }
+    const child = {
+      on: () => {},
+      once: (event: string, cb: (c: number) => void) => {
+        if (event === "exit") queueMicrotask(() => cb(0))
+        return child
+      },
+      stdout: { on: () => {} },
+      stderr: { on: () => {} },
+      unref: () => {},
+    }
+    return child
+  })
+}
+
+describe("agentproto install — version_check presence gating", () => {
+  it("a failing (missing-binary) presence check does NOT short-circuit to already-installed", async () => {
+    // `npm ls -g <pkg> --depth=0` exits 1 when the package is absent — the
+    // virgin-machine case the registry query (`npm view`) lied about.
+    resolveAdapterMock.mockResolvedValue(fakeClaudeCodeHandle())
+    spawnDispatch({ code: 1 })
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code"])
+
+    expect(code).toBe(0)
+    // The install step ran: the planner did NOT take the already-installed
+    // exit.
+    const npmCall = spawnMock.mock.calls.find(([c]) => c === "npm")
+    expect(npmCall).toBeDefined()
+    expect(npmCall![1]).toEqual([
+      "install",
+      "-g",
+      "@agentclientprotocol/claude-agent-acp",
+    ])
+    expect(io.out.join("")).not.toMatch(/already installed/)
+    io.restore()
+  })
+
+  it("a passing presence check still short-circuits to already-installed", async () => {
+    resolveAdapterMock.mockResolvedValue(fakeClaudeCodeHandle())
+    spawnDispatch({
+      code: 0,
+      stdout: "`-- @agentclientprotocol/claude-agent-acp@0.75.1\n",
+    })
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code"])
+
+    expect(code).toBe(0)
+    expect(spawnMock.mock.calls.find(([c]) => c === "npm")).toBeUndefined()
+    expect(io.out.join("")).toMatch(/already installed \(version 0\.75\.1\)/)
+    io.restore()
+  })
+})
