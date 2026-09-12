@@ -27,6 +27,7 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
+import { readSandboxLedger } from "./sandbox-ledger.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
 import { readUsageSnapshots as readUsageSnapshotLines } from "./usage-snapshot-log.js"
 import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
@@ -1643,6 +1644,16 @@ export interface SessionDescriptor {
    *  serve port, and the provider-resolved public URL. See
    *  `sandbox-app-serve.ts`. */
   appServe?: SessionAppServeInfo
+  /** Last PROVIDER liveness verdict for this session's box (`sandboxId`'s
+   *  ledger row, stamped by `recordSandboxLiveness` — the route / the CLI /
+   *  a reconnect-not-found). Ephemeral read-time projection of the sandbox
+   *  ledger, same convention as `processAlive`: a remote session has no
+   *  local PID, so this is the only box-death signal the descriptor can
+   *  carry. Absent when the box was never probed (or the provider can't) —
+   *  and absent is NOT "alive". */
+  sandboxAlive?: boolean
+  /** ISO instant `sandboxAlive` was computed (see its doc). */
+  sandboxCheckedAt?: string
 }
 
 /**
@@ -1750,6 +1761,10 @@ export interface SessionSummary {
   sandboxTeardown?: "kill" | "pause"
   sandboxPorts?: Record<number, string>
   appServe?: SessionAppServeInfo
+  /** Read-time projection of the box's ledger liveness verdict — see
+   *  `SessionDescriptor.sandboxAlive`. */
+  sandboxAlive?: boolean
+  sandboxCheckedAt?: string
 }
 
 /** Project a full SessionDescriptor down to the panel summary shape. */
@@ -1824,6 +1839,8 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     sandboxTeardown: desc.sandboxTeardown,
     sandboxPorts: desc.sandboxPorts,
     appServe: desc.appServe,
+    sandboxAlive: desc.sandboxAlive,
+    sandboxCheckedAt: desc.sandboxCheckedAt,
   }
 }
 
@@ -2107,6 +2124,15 @@ function stampAlive(desc: SessionDescriptor): void {
   desc.alive = desc.status === "running" || desc.status === "starting"
 }
 
+/** Read-time liveness projection for BOTH planes: the local OS process
+ *  (`stampProcessAlive`, which also stamps the status-derived `alive`
+ *  above) and, for remote sandbox sessions, the box's provider-liveness
+ *  ledger verdict (`stampSandboxLiveness`). */
+function stampReadLiveness(desc: SessionDescriptor): void {
+  stampProcessAlive(desc)
+  stampSandboxLiveness(desc)
+}
+
 /** Compute `desc.processAlive` from `desc.pid` via the standard POSIX
  *  "signal 0" check — `process.kill(pid, 0)` throws `ESRCH` (or
  *  `EPERM`, treated as "exists but not ours") when the process is
@@ -2128,6 +2154,30 @@ function stampProcessAlive(desc: SessionDescriptor): void {
   } catch {
     desc.processAlive = false
   }
+}
+
+/** Project the sandbox ledger's provider-liveness verdict
+ *  (`sandboxAlive`/`sandboxCheckedAt`, stamped by the `GET /sandboxes/:id/
+ *  alive` route, `sandbox list`'s probe, or a reconnect that hit the
+ *  provider's not-found) onto a REMOTE session's descriptor at read time —
+ *  same convention as `stampProcessAlive`: ephemeral, never persisted, and
+ *  the descriptor's only box-death signal since a remote session has no
+ *  local PID. No-op (fields deleted) for local sessions or boxes never
+ *  probed — absent must never be read as "alive". */
+function stampSandboxLiveness(desc: SessionDescriptor): void {
+  if (!desc.sandboxId) {
+    delete desc.sandboxAlive
+    delete desc.sandboxCheckedAt
+    return
+  }
+  const row = readSandboxLedger().find(e => e.sandboxId === desc.sandboxId)
+  if (!row || row.sandboxAlive === undefined) {
+    delete desc.sandboxAlive
+    delete desc.sandboxCheckedAt
+    return
+  }
+  desc.sandboxAlive = row.sandboxAlive
+  desc.sandboxCheckedAt = row.sandboxCheckedAt
 }
 
 /** SIGTERM/SIGKILL a session's OS child, but ONLY if it actually
@@ -7280,7 +7330,7 @@ export function createSessionsRegistry(opts?: {
         .sort((a, b) => b.desc.startedAt.localeCompare(a.desc.startedAt))
         .map(rt => {
           const desc = rt.desc
-          stampProcessAlive(desc)
+          stampReadLiveness(desc)
           stampInterrupted(desc)
           stampCurrentStatus(rt)
           stampWatchers(desc)
@@ -7300,7 +7350,7 @@ export function createSessionsRegistry(opts?: {
       const slice = all.slice(offset, offset + limit)
       const summaries = slice.map(rt => {
         const desc = rt.desc
-        stampProcessAlive(desc)
+        stampReadLiveness(desc)
         stampInterrupted(desc)
         stampCurrentStatus(rt)
         stampWatchers(desc)
@@ -7314,7 +7364,7 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       const desc = rt?.desc
       if (rt && desc) {
-        stampProcessAlive(desc)
+        stampReadLiveness(desc)
         stampInterrupted(desc)
         stampCurrentStatus(rt)
         stampWatchers(desc)
@@ -7404,14 +7454,14 @@ export function createSessionsRegistry(opts?: {
     findByIdOrName(query) {
       const direct = sessions.get(query)
       if (direct) {
-        stampProcessAlive(direct.desc)
+        stampReadLiveness(direct.desc)
         stampInterrupted(direct.desc)
         stampCurrentStatus(direct)
         return direct.desc
       }
       for (const rt of sessions.values()) {
         if (rt.desc.name === query) {
-          stampProcessAlive(rt.desc)
+          stampReadLiveness(rt.desc)
           stampInterrupted(rt.desc)
           stampCurrentStatus(rt)
           return rt.desc
@@ -7678,7 +7728,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.desc.archived = true
       schedulePersist()
-      stampProcessAlive(rt.desc)
+      stampReadLiveness(rt.desc)
       return rt.desc
     },
     unarchiveSession(id) {
@@ -7686,7 +7736,7 @@ export function createSessionsRegistry(opts?: {
       if (!rt) throw new Error(`unarchiveSession: no session "${id}"`)
       rt.desc.archived = false
       schedulePersist()
-      stampProcessAlive(rt.desc)
+      stampReadLiveness(rt.desc)
       return rt.desc
     },
     gcSessions(opts) {
@@ -7751,7 +7801,7 @@ export function createSessionsRegistry(opts?: {
         renamedByUser: true,
         ts: new Date().toISOString(),
       })
-      stampProcessAlive(rt.desc)
+      stampReadLiveness(rt.desc)
       return rt.desc
     },
     setKeepAlive(id, keepAlive) {
@@ -7759,7 +7809,7 @@ export function createSessionsRegistry(opts?: {
       if (!rt) throw new Error(`setKeepAlive: no session "${id}"`)
       rt.desc.keepAlive = keepAlive
       schedulePersist()
-      stampProcessAlive(rt.desc)
+      stampReadLiveness(rt.desc)
       return rt.desc
     },
     setPinned(id, pinned) {
@@ -7773,7 +7823,7 @@ export function createSessionsRegistry(opts?: {
         pinned,
         ts: new Date().toISOString(),
       })
-      stampProcessAlive(rt.desc)
+      stampReadLiveness(rt.desc)
       return rt.desc
     },
     flagAwaitingInput(id, patch) {
@@ -7810,7 +7860,7 @@ export function createSessionsRegistry(opts?: {
         ...(rt.desc.label ? { label: rt.desc.label } : {}),
         ts: new Date().toISOString(),
       })
-      stampProcessAlive(rt.desc)
+      stampReadLiveness(rt.desc)
       return rt.desc
     },
     listPendingPermissions(filter) {

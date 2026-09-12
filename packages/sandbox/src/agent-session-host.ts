@@ -146,6 +146,39 @@ export interface SandboxBootOpts {
 }
 
 /**
+ * Thrown by a provider's `connect()` when the provider answers that the
+ * sandbox id no longer exists (e2b's `"Sandbox Not Found"` 404) — the box
+ * died out from under the session while the local ledger still shows it
+ * paused/connected. Distinct from a generic connect failure so callers
+ * (session-spawn's reconnect path, the ledger) can mark the row GONE
+ * instead of leaving a phantom paused box on the books.
+ */
+export class SandboxBoxGoneError extends Error {
+  constructor(sandboxId: string, cause?: unknown) {
+    super(
+      `sandbox "${sandboxId}" no longer exists on its provider — the box is gone ` +
+        "(the session descriptor and ledger can outlive a provider-reaped box).",
+    )
+    this.name = "SandboxBoxGoneError"
+    this.cause = cause
+  }
+}
+
+/** Structural check (name-based, so it works across package boundaries and
+ *  with mocked errors) — true when the error means "the box is gone". */
+export function isSandboxBoxGoneError(err: unknown): boolean {
+  return err instanceof Error && err.name === "SandboxBoxGoneError"
+}
+
+/** What a `SandboxProvider.probe` liveness check reports about a box. */
+export interface SandboxProbeResult {
+  /** False means the provider answers the id is gone (404 / not-found). */
+  alive: boolean
+  /** Provider-reported box state (e.g. "running", "paused"), when available. */
+  state?: string
+}
+
+/**
  * Backend-agnostic sandbox lifecycle. Concrete implementations (e2b, modal,
  * daytona, blaxel, …) live in their own packages so this one stays free of
  * vendor SDK dependencies — see `@agentproto/sandbox-e2b`.
@@ -158,6 +191,17 @@ export interface SandboxProvider {
    *  which tears down its temp workspace on `stop()`) omit it; the runtime
    *  errors clearly when reuse is requested against such a provider. */
   connect?(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox>
+  /**
+   * Liveness probe against the PROVIDER (not the box's daemon): answers
+   * whether the sandbox id still exists at all — the signal a box death
+   * needs, distinct from a session dying. Polling the provider's control
+   * plane (`GET /sandboxes/:id`, 404 ⇒ gone) is deliberately cheap.
+   * `{ alive: false }` means the provider answered the id is gone; a THROWN
+   * error means the check itself failed (callers treat a throw as
+   * "unknown", never as death). Optional: providers with no such API omit
+   * it; a caller reading `sandboxAlive` then reports "unknown".
+   */
+  probe?(sandboxId: string): Promise<SandboxProbeResult>
 }
 
 /** Which secrets to resolve into the sandbox's env, and how. */

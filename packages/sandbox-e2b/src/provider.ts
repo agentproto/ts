@@ -27,8 +27,9 @@
  * overrides either way.
  */
 
-import { Sandbox } from "e2b"
-import type { BootedSandbox, SandboxBootOpts, SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
+import { Sandbox, SandboxNotFoundError } from "e2b"
+import type { BootedSandbox, SandboxBootOpts, SandboxProvider, SandboxProbeResult, SandboxSpec } from "@agentproto/sandbox"
+import { SandboxBoxGoneError } from "@agentproto/sandbox"
 import { DEFAULT_TEMPLATE, TEMPLATES } from "./template-versions.generated.js"
 
 /** Re-exported from the generated module (single source:
@@ -318,7 +319,17 @@ export const e2bSandboxProvider: SandboxProvider = {
     const port = config.port ?? DEFAULT_PORT
     const workspace = config.workspace ?? DEFAULT_WORKSPACE
 
-    const sandbox = await Sandbox.connect(sandboxId, { apiKey: process.env.E2B_API_KEY })
+    let sandbox
+    try {
+      sandbox = await Sandbox.connect(sandboxId, { apiKey: process.env.E2B_API_KEY })
+    } catch (err) {
+      // A vanished box must surface as the portability sentinel, not a raw
+      // SDK error — the reconnect path (session-spawn) and the ledger rely
+      // on `isSandboxBoxGoneError` to flip the ledger row to "gone" instead
+      // of leaving a phantom paused/connected entry advertising an app URL.
+      if (err instanceof SandboxNotFoundError) throw new SandboxBoxGoneError(sandboxId, err)
+      throw err
+    }
     // A resumed box keeps its ORIGINAL lifetime deadline — re-arm it so the
     // reconnected session gets the same runway a fresh boot gets (same
     // 5-minute-default trap as `boot`, see DEFAULT_SANDBOX_TIMEOUT_MS).
@@ -334,6 +345,28 @@ export const e2bSandboxProvider: SandboxProvider = {
       return finishConnect(sandbox, host, opts, spec)
     } catch (err) {
       await sandbox.kill().catch(() => undefined)
+      throw err
+    }
+  },
+
+  /**
+   * Poll the provider control plane (`GET /sandboxes/:id` via the SDK's
+   * `Sandbox.getInfo`) — cheap (one authed HTTP call, no box contact),
+   * exactly the liveness signal a vanished box needs while the session
+   * descriptor and ledger still say paused/connected. `{alive:false}` on
+   * e2b's 404 ("Sandbox Not Found"); rethrows anything else so callers
+   * read "check failed", never "box died". NOTE (operator guidance): e2b
+   * also offers sandbox lifecycle webhooks, which would push death instead
+   * of forcing a poll — the SDK in-tree exposes no webhook/event API, so
+   * polling stays the implemented probe; switch to (or augment with) the
+   * webhook if/when the SDK surfaces one.
+   */
+  async probe(sandboxId: string): Promise<SandboxProbeResult> {
+    try {
+      const info = await Sandbox.getInfo(sandboxId, { apiKey: process.env.E2B_API_KEY })
+      return { alive: true, ...(info.state !== undefined ? { state: String(info.state) } : {}) }
+    } catch (err) {
+      if (err instanceof SandboxNotFoundError) return { alive: false }
       throw err
     }
   },

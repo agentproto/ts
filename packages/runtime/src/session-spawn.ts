@@ -127,6 +127,7 @@ function additionalReadPathsForAgentsMd(
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
+  isSandboxBoxGoneError,
   resolveLifecyclePolicy,
   SandboxHostBootFailedError,
   type SandboxAgentSessionHost,
@@ -137,6 +138,7 @@ import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js
 import {
   readSandboxLedger,
   recordSandboxBoot,
+  recordSandboxLiveness,
   recordSandboxOrigin,
   recordSandboxState,
   upsertSandboxLedger,
@@ -3529,6 +3531,21 @@ async function bootSandboxAgentSession(opts: {
       secrets: { slugs, resolver: resolveSandboxSecret },
     })
   } catch (err) {
+    // Two DISJOINT failure shapes, both needing a ledger stamp — see
+    // `createSandboxAgentSessionHost`: it raises `SandboxHostBootFailedError`
+    // only once `connect()`/`boot()` has already SUCCEEDED (the box exists,
+    // the daemon connection on top of it didn't), whereas a box-gone
+    // sentinel comes out of `connect()` itself. They can never both hold,
+    // so these stay two independent checks rather than a precedence order.
+
+    // A provider not-found on reconnect is a BOX DEATH, not a flaky
+    // transport error: flip the ledger row to "gone" (via the liveness
+    // stamp) instead of leaving the phantom paused/connected entry —
+    // `isSandboxBoxGoneError` is the portability sentinel providers raise
+    // (e2b: SandboxNotFoundError → SandboxBoxGoneError). Best-effort.
+    if (reuseSandboxId !== undefined && isSandboxBoxGoneError(err)) {
+      recordSandboxLiveness(reuseSandboxId, false)
+    }
     // The box existed at failure time — `@agentproto/sandbox` reaped it
     // (paused for a reuse whose provider supports pause, killed
     // otherwise) before throwing. Stamp the ledger with the outcome so
