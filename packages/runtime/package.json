@@ -76,6 +76,11 @@
       "import": "./dist/providers-store.mjs",
       "default": "./dist/providers-store.mjs"
     },
+    "./credential-discovery": {
+      "types": "./dist/credential-discovery.d.ts",
+      "import": "./dist/credential-discovery.mjs",
+      "default": "./dist/credential-discovery.mjs"
+    },
     "./release-check": {
       "types": "./dist/release-check.d.ts",
       "import": "./dist/release-check.mjs",
