@@ -22,8 +22,10 @@
  *     a tiny ochre dot when that project holds a session awaiting the human),
  *   - an `Agents | Auto` SEGMENTED CONTROL. Agents = human-origin sessions
  *     (the default); Auto = machine-origin sessions, reusing
- *     `isMachineOrigin` (sessionsGroups.logic.ts) plus the cron-origin /
- *     command-kind tells, grouped into Gate reviews / Crons / Commands.
+ *     `isMachineOrigin` (sessionsGroups.logic.ts) plus the cron-origin tell,
+ *     grouped into Gate reviews / Crons / Tasks. Shell sessions (PTY
+ *     terminals, raw command executions) are NOT carried here — they moved
+ *     to the Activity panel (activityWebview.logic.ts).
  *
  * Deliberately thin: activity classification, isolation labels, cost/context
  * formatting, workspace resolution, and resume-chain collapsing are all
@@ -349,7 +351,7 @@ export interface WebviewWorkspace {
 export type SessionLane = "agents" | "auto"
 
 /** Auto-lane subgroups, in display order. */
-export type AutoGroupKind = "gate" | "cron" | "command" | "task"
+export type AutoGroupKind = "gate" | "cron" | "task"
 
 /** The lineage fields lane classification reads — a subset of SessionSummary. */
 type LaneSubject = Pick<SessionSummary, "id" | "origin" | "kind" | "parentSessionId">
@@ -358,7 +360,6 @@ type LaneSubject = Pick<SessionSummary, "id" | "origin" | "kind" | "parentSessio
 function ownAutoGroupOf(session: Pick<SessionSummary, "origin" | "kind">): Exclude<AutoGroupKind, "task"> | undefined {
   if (isMachineOrigin(session.origin)) return "gate"
   if (session.origin === "cron") return "cron"
-  if (session.kind === "command") return "command"
   return undefined
 }
 
@@ -368,6 +369,9 @@ function ownAutoGroupOf(session: Pick<SessionSummary, "origin" | "kind">): Exclu
  * loaded / archived / retired by a resume chain) or a cycle counts as NOT
  * human — the child then falls back to the Auto lane's Tasks group, where it
  * at least stays visible instead of nesting under a row that isn't there.
+ * A shell root (PTY terminal / raw command session) counts as NOT human too:
+ * it lives in the Activity panel now, so its children must not nest under a
+ * Sessions row that isn't there.
  */
 function lineageRootIsHuman(session: LaneSubject, byId: ReadonlyMap<string, LaneSubject>): boolean {
   const seen = new Set<string>([session.id])
@@ -375,6 +379,7 @@ function lineageRootIsHuman(session: LaneSubject, byId: ReadonlyMap<string, Lane
   while (cur.parentSessionId) {
     const parent = byId.get(cur.parentSessionId)
     if (!parent || seen.has(parent.id)) return false
+    if (parent.kind === "terminal" || parent.kind === "command") return false
     seen.add(parent.id)
     cur = parent
   }
@@ -413,11 +418,10 @@ export function laneOf(session: LaneSubject, byId?: ReadonlyMap<string, LaneSubj
 const AUTO_GROUP_LABELS: Readonly<Record<AutoGroupKind, string>> = {
   gate: "Gate reviews",
   cron: "Crons",
-  command: "Commands",
   task: "Tasks",
 }
 
-export const AUTO_GROUP_ORDER: readonly AutoGroupKind[] = ["gate", "cron", "command", "task"]
+export const AUTO_GROUP_ORDER: readonly AutoGroupKind[] = ["gate", "cron", "task"]
 
 /**
  * The cron job id a cron session runs under, extracted from its
@@ -453,8 +457,6 @@ function nameIdentityFor(session: SessionSummary): { name: string; idMono: strin
       const jobId = cronJobIdOf(session)
       return { name: "cron", idMono: jobId ? shortCronId(jobId) : shortSessionId(session.id) }
     }
-    case "command":
-      return { name: "command", idMono: shortSessionId(session.id) }
     case "task":
       return { name: labelFor(session), idMono: undefined }
     default:
@@ -813,10 +815,12 @@ function buildRowPool(
   // additive merge: OFF shows ONLY active rows, ON shows ONLY archived rows
   // (an archive action slides a row from the active view into the archived
   // one, never both). Resume-chain predecessors collapse to their live tail,
-  // same as the tree.
-  const pool = opts.includeArchived
+  // same as the tree. Shell sessions (PTY terminals, raw command executions)
+  // live in the Activity panel now — Sessions stops carrying them.
+  const pool = (opts.includeArchived
     ? sessions.filter(s => s.archived === true)
     : sessions.filter(s => s.archived !== true)
+  ).filter(s => s.kind !== "terminal" && s.kind !== "command")
   const visible = collapseResumeChains(pool)
 
   // Lane identity is intrinsic, so lineage is resolved over EVERY loaded
