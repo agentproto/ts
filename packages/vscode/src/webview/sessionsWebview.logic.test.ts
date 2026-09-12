@@ -3,14 +3,18 @@ import { describe, expect, it } from "vitest"
 import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
 import {
   autoGroupOf,
+  buildFocusViewModel,
   buildSessionsWebviewModel,
   collapseCronRuns,
   cronJobIdOf,
   defaultExpandedFor,
+  focusTreeRows,
   formatCost,
   gateApproved,
   isSystemPreviewLine,
   laneOf,
+  missionCountsText,
+  missionSummaryFor,
   nestByLineage,
   previewTextFor,
   relativeLuminance,
@@ -874,6 +878,123 @@ describe("buildSessionsWebviewModel — filtering + totals", () => {
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts({ serverTotal: 283 }))
     expect(model.loadedCount).toBe(2)
     expect(model.serverTotal).toBe(283)
+  })
+})
+
+// ─── Mission view (focus mode) ──────────────────────────────────────────────
+describe("focusTreeRows", () => {
+  const row = (id: string, status: WebviewRowStatus, parentSessionId?: string): WebviewRow =>
+    ({ id, depth: 0, status, name: id, session: session({ id, status: "running", parentSessionId }) }) as unknown as WebviewRow
+
+  it("keeps an exited child in its parent's tree — every status included", () => {
+    const rows = [row("root", "idle"), row("live-child", "working", "root"), row("dead-child", "done", "root")]
+    const tree = focusTreeRows(rows, "root")
+    expect(tree.map(r => r.id)).toEqual(["root", "live-child", "dead-child"])
+    expect(tree.map(r => r.depth)).toEqual([0, 1, 1])
+  })
+
+  it("nests a grandchild under its parent, depth-first", () => {
+    const rows = [row("root", "idle"), row("child", "idle", "root"), row("grandchild", "failed", "child")]
+    const tree = focusTreeRows(rows, "root")
+    expect(tree.map(r => [r.id, r.depth])).toEqual([
+      ["root", 0],
+      ["child", 1],
+      ["grandchild", 2],
+    ])
+  })
+
+  it("never leaks an unrelated root into the tree", () => {
+    const rows = [row("root", "idle"), row("other", "working"), row("other-child", "idle", "other")]
+    expect(focusTreeRows(rows, "root").map(r => r.id)).toEqual(["root"])
+  })
+
+  it("yields an empty list for an unknown rootId, not a throw", () => {
+    expect(focusTreeRows([row("root", "idle")], "nope")).toEqual([])
+    expect(focusTreeRows([], "nope")).toEqual([])
+  })
+
+  it("focuses a mid-tree row and a lineage cycle can't loop the walk", () => {
+    const rows = [row("root", "idle"), row("mid", "idle", "root"), row("leaf", "done", "mid")]
+    expect(focusTreeRows(rows, "mid").map(r => r.id)).toEqual(["mid", "leaf"])
+    const a = row("a", "idle", "b")
+    const b = row("b", "idle", "a")
+    expect(focusTreeRows([a, b], "a").map(r => r.id)).toEqual(["a", "b"])
+  })
+})
+
+describe("missionSummaryFor / missionCountsText", () => {
+  const row = (id: string, status: WebviewRowStatus, name = id): WebviewRow =>
+    ({ id, depth: 0, status, name, session: session({ id }) }) as unknown as WebviewRow
+
+  it("carries the root's id + label, the total, and the per-status breakdown", () => {
+    const tree = [
+      row("root", "idle", "supervisor"),
+      row("a", "working"),
+      row("b", "working"),
+      row("c", "done"),
+      row("d", "done"),
+      row("e", "done"),
+      row("f", "done"),
+      row("g", "failed"),
+    ]
+    expect(missionSummaryFor(tree)).toEqual({
+      rootId: "root",
+      rootLabel: "supervisor",
+      total: 8,
+      byStatus: {
+        working: 2,
+        delegating: 0,
+        awaiting: 0,
+        "awaiting-bg": 0,
+        parked: 0,
+        idle: 1,
+        stalled: 0,
+        failed: 1,
+        stopped: 0,
+        done: 4,
+      },
+    })
+    expect(missionCountsText(missionSummaryFor(tree)!)).toBe("8 sessions · 2 running · 1 idle · 4 done · 1 failed")
+  })
+
+  it("is undefined for an empty tree and handles the singular", () => {
+    expect(missionSummaryFor([])).toBeUndefined()
+    expect(missionCountsText({ rootId: "r", rootLabel: "x", total: 1, byStatus: { working: 1, delegating: 0, awaiting: 0, "awaiting-bg": 0, parked: 0, idle: 0, stalled: 0, failed: 0, stopped: 0, done: 0 } })).toBe(
+      "1 session · 1 running",
+    )
+  })
+})
+
+describe("buildFocusViewModel / focusable", () => {
+  it("renders the whole tree regardless of the section each status buckets into", () => {
+    const sessions = [
+      session({ id: "sup", cwd: "/Code/studio", busy: false }),
+      session({ id: "exec-live", cwd: "/Code/studio", busy: true, parentSessionId: "sup" }),
+      session({ id: "exec-done", cwd: "/Code/studio", status: "exited", parentSessionId: "sup" }),
+      session({ id: "stranger", cwd: "/Code/studio", busy: true }),
+    ]
+    const focus = buildFocusViewModel(sessions, studioConfig, opts(), "sup")!
+    expect(focus.rows.map(r => r.id)).toEqual(["sup", "exec-live", "exec-done"])
+    expect(focus.rows.map(r => r.depth)).toEqual([0, 1, 1])
+    expect(focus.summary.rootId).toBe("sup")
+    expect(focus.countsText).toBe("3 sessions · 1 running · 1 idle · 1 done")
+    // An unknown root yields undefined, not a throw.
+    expect(buildFocusViewModel(sessions, studioConfig, opts(), "nope")).toBeUndefined()
+  })
+
+  it("marks a root with even an EXITED child focusable, in the sectioned model", () => {
+    const sessions = [
+      session({ id: "sup", cwd: "/Code/studio", busy: false }),
+      session({ id: "exec-done", cwd: "/Code/studio", status: "exited", parentSessionId: "sup" }),
+      session({ id: "lone", cwd: "/Code/studio", busy: true }),
+    ]
+    const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
+    const rows = model.groups.flatMap(g => g.rows)
+    // The exited child lands in Earlier, flat — but the supervisor row is
+    // still flagged as a focusable mission root.
+    expect(rows.find(r => r.id === "sup")!.focusable).toBe(true)
+    expect(rows.find(r => r.id === "exec-done")!.focusable).toBe(false)
+    expect(rows.find(r => r.id === "lone")!.focusable).toBe(false)
   })
 })
 

@@ -165,6 +165,7 @@ function modelMessage(
     showArchived?: boolean
     palette?: string[]
     paletteNames?: string[]
+    focus?: unknown
   } = {},
 ) {
   return {
@@ -179,6 +180,7 @@ function modelMessage(
     ],
     laneCounts: overrides.laneCounts ?? { agents: 2, auto: 0 },
     groups: overrides.groups ?? [group("running", "Running", [ROW_A])],
+    focus: overrides.focus,
     loading: overrides.loading ?? false,
     hasMore: overrides.hasMore ?? false,
     loadError: overrides.loadError ?? undefined,
@@ -723,6 +725,86 @@ describe("sessions webview — section header counts painted rows", () => {
     send(panel, modelMessage({ groups: [group("running", "Running", [PARENT_ROW, CHILD_ROW])] }))
     click(panel, el(panel, "list").querySelector('[data-id="p1"] .rtw')!)
     expect(headCount(panel)).toBe("1+1")
+  })
+})
+
+describe("sessions webview — mission view (focus mode)", () => {
+  // The exited child sits in "Earlier" outside focus mode; in focus mode the
+  // whole tree renders, terminated rows included (dimmed but legible).
+  const FOCUS_PAYLOAD = {
+    rootId: "p1",
+    rootLabel: "openagentik-migration-lead",
+    counts: "3 sessions · 1 running · 1 done",
+    rows: [
+      PARENT_ROW,
+      { ...ROW_DONE, depth: 1, hasChildren: false, subtreeStatus: "done", defaultExpanded: false },
+      { ...ROW_A, hasChildren: false, subtreeStatus: "working", defaultExpanded: false },
+    ],
+  }
+
+  it("offers the mission-view affordance on a focusable depth-0 row only, in the shared .acts slot", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...QUIET_PARENT_ROW, focusable: true }, CHILD_ROW, ROW_A])] }))
+    const parentBtn = htmlEl(el(panel, "list").querySelector('[data-id="p1"] [data-focus="p1"]'))
+    expect(parentBtn.getAttribute("aria-label")).toContain("mission view")
+    expect(parentBtn.className).toContain("abtn")
+    // A child row and a childless root get no affordance.
+    expect(el(panel, "list").querySelector('[data-id="c2"] [data-focus]')).toBeNull()
+    expect(el(panel, "list").querySelector('[data-id="s1"] [data-focus]')).toBeNull()
+  })
+
+  it("clicking the affordance posts focus (not open) and keeps the row unopened", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...QUIET_PARENT_ROW, focusable: true }])] }))
+    panel.posted.length = 0
+    click(panel, el(panel, "list").querySelector('[data-id="p1"] [data-focus="p1"]')!)
+    expect(panel.posted).toEqual([{ type: "focus", id: "p1" }])
+  })
+
+  it("entering focus paints the header + whole tree, no sections, and dims the exited child", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ focus: FOCUS_PAYLOAD, groups: [] }))
+    const list = el(panel, "list")
+    expect(list.querySelector(".mtitle")!.textContent).toContain("Mission · openagentik-migration-lead")
+    expect(list.querySelector(".mcounts")!.textContent).toBe("3 sessions · 1 running · 1 done")
+    expect([...list.querySelectorAll(".ghead")]).toHaveLength(0)
+    expect([...list.querySelectorAll(".row")]).toHaveLength(3)
+    // Terminated child rows render dimmed but fully legible (present, not .gone).
+    const doneRow = htmlEl(list.querySelector('[data-id="s2"]')!)
+    expect(doneRow.className).toContain(" ended")
+    expect(doneRow.hidden).toBe(false)
+    // Rail, lane control, filter and footer are suspended while focused.
+    expect((panel.document as DomDocument & { body: DomElement }).body.className).toContain("focus-mode")
+  })
+
+  it("the breadcrumb posts unfocus and leaving focus restores the sections and clears the dimming", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ focus: FOCUS_PAYLOAD, groups: [] }))
+    panel.posted.length = 0
+    click(panel, el(panel, "list").querySelector("[data-unfocus]")!)
+    expect(panel.posted).toEqual([{ type: "unfocus" }])
+    send(panel, modelMessage({ groups: [group("earlier", "Earlier", [ROW_DONE])] }))
+    const list = el(panel, "list")
+    expect(list.querySelector(".mhead")).toBeNull()
+    expect([...list.querySelectorAll(".ghead")]).toHaveLength(1)
+    expect(htmlEl(list.querySelector('[data-id="s2"]')!).className).not.toContain(" ended")
+    expect((panel.document as DomDocument & { body: DomElement }).body.className).not.toContain("focus-mode")
+  })
+
+  it("survives a live re-render while focused, like the sectioned list does", () => {
+    const panel = renderPanel()
+    const payload = modelMessage({ focus: FOCUS_PAYLOAD, groups: [] })
+    send(panel, payload)
+    send(panel, payload)
+    expect([...el(panel, "list").querySelectorAll(".row")]).toHaveLength(3)
+  })
+
+  it("leaves the #1262 painted-row counters untouched — focus adds no +N or header of its own", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [QUIET_PARENT_ROW, CHILD_ROW])] }))
+    expect((htmlEl(el(panel, "list").querySelector('.ghead[data-key="running"] .n')).textContent ?? "")).toBe("1+1")
+    send(panel, modelMessage({ focus: { ...FOCUS_PAYLOAD, counts: "2 sessions" }, groups: [] }))
+    expect(el(panel, "list").querySelector(".ghead .n")).toBeNull()
   })
 })
 

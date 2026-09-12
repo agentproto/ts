@@ -44,6 +44,7 @@ import {
   resolveAttentionDelaySec,
 } from "@agentproto/runtime/session-presence"
 import {
+  buildFocusViewModel,
   buildSessionsWebviewModel,
   defaultExpandedFor,
   isValidColorIndex,
@@ -139,6 +140,9 @@ interface RenderRow {
   action: RowAction | undefined
   workspace: (WebviewWorkspace & { css: string }) | undefined
   archived: boolean
+  /** True when some loaded session names this one as its parent — the
+   *  mission-view affordance renders only on such depth-0 roots. */
+  focusable: boolean
   /** True when this row has at least one nested descendant in the group's
    *  rendered row list — drives whether a collapse triangle is rendered at
    *  all (a leaf row gets none). */
@@ -162,6 +166,15 @@ interface RenderGroup {
   rows: RenderRow[]
 }
 
+/** The mission view (focus mode) payload — the whole tree under one root, every status included. */
+interface RenderFocus {
+  rootId: string
+  rootLabel: string
+  /** Pre-rendered count line, e.g. "7 sessions · 2 running · 4 done · 1 failed". */
+  counts: string
+  rows: RenderRow[]
+}
+
 interface ModelMessage {
   type: "model"
   connection: DaemonConnectionState
@@ -170,6 +183,9 @@ interface ModelMessage {
   rail: RailEntry[]
   laneCounts: Record<SessionLane, number>
   groups: RenderGroup[]
+  /** Set while the mission view is focused — sections are suspended and only
+   *  the focused tree renders. Undefined in the normal sectioned list. */
+  focus: RenderFocus | undefined
   summary: string
   loading: boolean
   hasMore: boolean
@@ -198,6 +214,10 @@ type WebviewToHostMessage =
   | { type: "pin"; id: string; pinned: boolean }
   | { type: "loadMore" }
   | { type: "toggleArchived" }
+  /** Enter the mission view: drill into one root session's whole tree. */
+  | { type: "focus"; id: string }
+  /** Leave the mission view — back to the sectioned list. */
+  | { type: "unfocus" }
   /** From the rail chip's swatch popover — `index: null` resets to the hash default. */
   | { type: "setColor"; slug: string; index: number | null }
 
@@ -256,6 +276,7 @@ function toRenderRow(
       ? { ...row.workspace, css: workspaceColorFor(row.workspace.slug, colorOverrides).css }
       : undefined,
     archived: row.archived,
+    focusable: row.focusable,
     hasChildren: rollup.hasChildren,
     subtreeStatus: rollup.status,
     defaultExpanded: defaultExpandedFor(rollup.status),
@@ -309,6 +330,11 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private lane: SessionLane = "agents"
   private project: string | null = null
   private search = ""
+  /** Focused root session id while the mission view is open (persisted across
+   *  re-renders like the webview's own expandedRows state); undefined = the
+   *  normal sectioned list. Cleared implicitly when the root leaves the
+   *  loaded pool (the next paint sends focus: undefined). */
+  private focusRootId: string | undefined
 
   private summaries: SessionSummary[] = []
   private serverTotal = 0
@@ -437,6 +463,14 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         return
       case "loadMore":
         void this.loadMore()
+        return
+      case "focus":
+        this.focusRootId = msg.id
+        this.post()
+        return
+      case "unfocus":
+        this.focusRootId = undefined
+        this.post()
         return
       case "toggleArchived":
         this.showArchived = !this.showArchived
@@ -620,27 +654,34 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
 
   private post(): void {
     if (!this.view) return
-    const model = buildSessionsWebviewModel(
-      visibleRows(this.store.sessions, this.summaries),
-      this.filter.workspaces,
-      {
-        lane: this.lane,
-        project: this.project,
-        search: this.search,
-        now: Date.now(),
-        serverTotal: this.serverTotal,
-        includeArchived: this.showArchived,
-        attentionDelaySec: this.attentionDelaySec,
-        // Footer counts server-paged rows only — pending + pinned live rows are
-        // live extras, not paged results.
-        loadedCount: this.summaries.length,
-        colorOverrides: this.colorOverrides,
-        watchedIds: this.watched?.watchedIds,
-      },
-    )
+    const pool = visibleRows(this.store.sessions, this.summaries)
+    const modelOpts = {
+      lane: this.lane,
+      project: this.project,
+      search: this.search,
+      now: Date.now(),
+      serverTotal: this.serverTotal,
+      includeArchived: this.showArchived,
+      attentionDelaySec: this.attentionDelaySec,
+      // Footer counts server-paged rows only — pending + pinned live rows are
+      // live extras, not paged results.
+      loadedCount: this.summaries.length,
+      colorOverrides: this.colorOverrides,
+      watchedIds: this.watched?.watchedIds,
+    }
+    const model = buildSessionsWebviewModel(pool, this.filter.workspaces, modelOpts)
     const activeSessionId = this.transcriptPanels.activeSessionId()
     const filterActive = this.search.trim().length > 0 || this.project !== null
     const hasMore = this.summaries.length < this.serverTotal
+    // Mission view — the same pool refocused on one root's whole tree (the
+    // lane/project/search axes are deliberately ignored there). A root that
+    // left the pool drops the panel back out of focus.
+    const focus = this.focusRootId
+      ? this.renderFocus(
+          buildFocusViewModel(pool, this.filter.workspaces, modelOpts, this.focusRootId),
+          activeSessionId,
+        )
+      : undefined
     const message: ModelMessage = {
       type: "model",
       connection: this.store.connectionState,
@@ -651,6 +692,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       groups: model.groups.map(g =>
         toRenderGroup(g, activeSessionId, this.seen, this.colorOverrides, this.view!.webview, this.extensionUri),
       ),
+      focus,
       summary: summaryTextFor(model, filterActive),
       loading: this.loading,
       hasMore,
@@ -660,6 +702,25 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
       paletteNames: [...WORKSPACE_PALETTE_NAMES, "Unassigned gray"],
     }
     void this.view.webview.postMessage(message satisfies HostMessage)
+  }
+
+  private renderFocus(
+    focusModel: ReturnType<typeof buildFocusViewModel>,
+    activeSessionId: string | undefined,
+  ): RenderFocus | undefined {
+    if (!focusModel) {
+      this.focusRootId = undefined
+      return undefined
+    }
+    const webview = this.view!.webview
+    return {
+      rootId: focusModel.summary.rootId,
+      rootLabel: focusModel.summary.rootLabel,
+      counts: focusModel.countsText,
+      rows: focusModel.rows.map((r, i) =>
+        toRenderRow(r, activeSessionId, this.seen, this.colorOverrides, webview, this.extensionUri, subtreeRollup(focusModel.rows, i)),
+      ),
+    }
   }
 }
 
@@ -831,6 +892,24 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .ghead .n .nested { margin-left: 2px; opacity: 0.65; }
     .ghead .hint { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--faint); }
     .gbody[hidden] { display: none; }
+
+    /* ── Mission view (focus mode) ─────────────────────────────────── */
+    /* Focused on one root session's whole tree: the project rail, lane
+       control, filter and footer are suspended — sections are exactly what
+       this view exists to bypass. */
+    body.focus-mode > #rail,
+    body.focus-mode > .brow2,
+    body.focus-mode > #footer { display: none !important; }
+    .mhead { padding: 8px 12px 10px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+    .mhead .mback { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--dim); font-size: 11px; font-family: inherit; cursor: pointer; }
+    .mhead .mback:hover { color: var(--fg); background: var(--hover); }
+    .mhead .mtitle { margin-top: 7px; font-size: 13px; font-weight: 600; color: var(--fg); }
+    .mhead .mcounts { margin-top: 2px; font-size: 11px; color: var(--dim); }
+    /* Terminated child sessions in the mission tree — dimmed but fully
+       legible: reading them IS the point of the view, so this is a mild
+       opacity dip, not the .gone treatment. */
+    .row.ended { opacity: 0.55; }
+    .row.ended:hover { opacity: 1; }
 
     /* ── Rows ──────────────────────────────────────────────────────── */
     .row { display: flex; gap: 9px; padding: 8px 10px 8px 12px; cursor: pointer; position: relative; border-left: 2px solid transparent; }
@@ -1029,6 +1108,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
       // redraw the list without waiting for the next 'model' message.
       let lastGroups = [];
       let lastShowArchived = false;
+      // Mission view (focus mode) — the host keeps the focused root id and
+      // re-posts the whole focused tree on every render, so this survives
+      // like lastGroups does. Null = the normal sectioned list.
+      let lastFocus = null;
 
       const STOP_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.4" y="5.4" width="5.2" height="5.2" rx="1" fill="currentColor"/></svg>';
       const ARCH_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5h11M3.5 5v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5M6 7.5h4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 2.8h6l1 2.2H4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -1063,8 +1146,16 @@ export function buildHtml(nonce: string, cspSource: string): string {
       // unarchive slot (a live session can be both stoppable AND pinnable),
       // so it's a SEPARATE button always present in .acts, not folded into
       // actionButton's exclusive branches.
-      function pinButton(r) {
-        if (r.pinned) {
+      // Mission-view affordance — one focus button per focusable ROOT row,
+      // living in the same hover-revealed .acts slot as pin/stop (with
+      // stopPropagation), so it never competes with the row's click-to-open.
+      // Only rendered outside focus mode; inside it, the tree is the view.
+      function focusButton(r, depth) {
+        if (lastFocus || !r.focusable || depth > 0) return '';
+        return '<button class="abtn focus" type="button" title="Mission view — focus this tree" aria-label="Open mission view for this tree" data-focus="' + escapeHtml(r.id) + '" data-action>⌖</button>';
+      }
+
+      function pinButton(r) {        if (r.pinned) {
           return '<button class="abtn pin on" type="button" title="Unpin session" aria-label="Unpin session" data-unpin="' + escapeHtml(r.id) + '" data-action>' + PIN_FILLED_SVG + '</button>';
         }
         return '<button class="abtn pin" type="button" title="Pin session" aria-label="Pin session" data-pin="' + escapeHtml(r.id) + '" data-action>' + PIN_SVG + '</button>';
@@ -1132,7 +1223,12 @@ export function buildHtml(nonce: string, cspSource: string): string {
 
       function rowHTML(r, hiddenRow, isCollapsedRow) {
         var depth = typeof r.depth === 'number' && r.depth > 0 ? r.depth : 0;
-        var classes = 'row' + (r.open ? ' open' : '') + (r.archived ? ' archived' : '') + (depth > 0 ? ' nested' : '');
+        // Inside the mission view a terminated child session (done/stopped/
+        // archived) is dimmed but fully legible — reading the dead children is
+        // the point of the view. Outside focus mode the section placement
+        // already says it all, so no extra dimming.
+        var ended = !!lastFocus && (r.status === 'done' || r.status === 'stopped' || r.archived === true);
+        var classes = 'row' + (r.open ? ' open' : '') + (r.archived ? ' archived' : '') + (depth > 0 ? ' nested' : '') + (ended ? ' ended' : '');
         // While collapsed, the dot shows the busiest state in the now-hidden
         // subtree (r.subtreeStatus, host-computed via subtreeRollup) rather
         // than this row's own status — a busier descendant must still show
@@ -1161,7 +1257,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠</span>' : '') +
           (r.approved ? '<span class="ok">✓</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + '</span>' : '');
-        var acts = pinButton(r) + actionButton(r);
+        var acts = (lastFocus ? '' : focusButton(r, depth)) + pinButton(r) + actionButton(r);
         // Indent nested subagents; base padding-left is 12px (see .row CSS).
         var indent = depth > 0 ? ' style="padding-left:' + (12 + depth * 16) + 'px"' : '';
         var wsStyle = r.workspace ? ' style="--ws:' + escapeHtml(r.workspace.css) + '"' : '';
@@ -1297,15 +1393,36 @@ export function buildHtml(nonce: string, cspSource: string): string {
         popoverTrigger = null;
       }
 
+      // The mission view's header: breadcrumb back to the sectioned list,
+      // the focused root's label, and the pre-rendered count line — the
+      // panel never recomputes anything.
+      function missionHTML(f) {
+        return '<div class="mhead">' +
+          '<button class="mback" type="button" data-unfocus aria-label="Back to all sessions">&larr; All sessions</button>' +
+          '<div class="mtitle">Mission · ' + escapeHtml(f.rootLabel) + '</div>' +
+          (f.counts ? '<div class="mcounts">' + escapeHtml(f.counts) + '</div>' : '') +
+        '</div>';
+      }
+
       // Redraws just the list from the last rendered groups — used both by
       // render() and by a row-triangle toggle, which changes what's visible
       // without waiting for the next 'model' message from the host.
       function renderList() {
-        listEl.innerHTML = lastGroups.map(groupHTML).join('');
+        if (lastFocus) {
+          // Mission view: one header + the whole tree. No group headers, no
+          // section hints — sections are suspended while focused.
+          listEl.innerHTML = missionHTML(lastFocus) + rowsHTML(lastFocus.rows).html;
+        } else {
+          listEl.innerHTML = lastGroups.map(groupHTML).join('');
+        }
         var svgs = listEl.querySelectorAll('.logo.svg');
         for (var s = 0; s < svgs.length; s++) loadSvg(svgs[s]);
         var shown = 0;
-        for (var g = 0; g < lastGroups.length; g++) shown += lastGroups[g].rows.length;
+        if (lastFocus) {
+          shown = lastFocus.rows.length;
+        } else {
+          for (var g = 0; g < lastGroups.length; g++) shown += lastGroups[g].rows.length;
+        }
         emptyEl.hidden = shown !== 0;
         emptyEl.textContent = lastShowArchived ? 'No archived sessions.' : 'No sessions match.';
       }
@@ -1333,6 +1450,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
         var showArchived = payload.showArchived === true;
         lastGroups = payload.groups || [];
         lastShowArchived = showArchived;
+        lastFocus = payload.focus || null;
+        document.body.classList.toggle('focus-mode', !!lastFocus);
         renderList();
         summaryEl.textContent = payload.summary;
         archToggleEl.classList.toggle('on', showArchived);
@@ -1417,8 +1536,13 @@ export function buildHtml(nonce: string, cspSource: string): string {
         vscode.postMessage({ type: 'lane', lane: btn.getAttribute('data-lane') });
       });
 
-      // ── List: row open / lifecycle actions / section collapse ──
+      // ── List: row open / lifecycle actions / section collapse / mission ──
       listEl.addEventListener('click', function (e) {
+        var back = e.target.closest('[data-unfocus]');
+        if (back) {
+          vscode.postMessage({ type: 'unfocus' });
+          return;
+        }
         var head = e.target.closest('.ghead');
         if (head) {
           var key = head.getAttribute('data-key');
@@ -1458,6 +1582,8 @@ export function buildHtml(nonce: string, cspSource: string): string {
             vscode.postMessage({ type: 'pin', id: action.getAttribute('data-pin'), pinned: true });
           } else if (action.hasAttribute('data-unpin')) {
             vscode.postMessage({ type: 'pin', id: action.getAttribute('data-unpin'), pinned: false });
+          } else if (action.hasAttribute('data-focus')) {
+            vscode.postMessage({ type: 'focus', id: action.getAttribute('data-focus') });
           }
           return;
         }

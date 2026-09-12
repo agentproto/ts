@@ -564,6 +564,11 @@ export interface WebviewRow {
   workspace: WebviewWorkspace | undefined
   /** Mirrors `session.archived` so the UI can style archived rows. */
   archived: boolean
+  /** True when at least one loaded session names this one as its
+   *  parentSessionId — the depth-0 "open mission view" affordance renders
+   *  only on such roots (the whole tree is rendered there, every status
+   *  included, so a child that exited stays findable under its parent). */
+  focusable: boolean
 }
 
 /** The five attention sections, in fixed priority order. */
@@ -758,6 +763,7 @@ function toRow(
       ? { slug: ws.slug, label: ws.label, colorIndex: workspaceColorFor(ws.slug, colorOverrides).index }
       : undefined,
     archived: session.archived === true,
+    focusable: false,
   }
 }
 
@@ -791,18 +797,18 @@ export function collapseCronRuns(rows: readonly WebviewRow[]): WebviewRow[] {
 }
 
 /**
- * The webview's single entry point. Filtering (archived-hidden, resume-chain
- * collapse, search, project) is applied first; the survivors are split into
- * the two lanes for the segmented-control counts and the project rail, then
- * the selected lane's scope is sorted and organized — into the six attention
- * sections (Agents) or the three Auto subgroups (Auto), the latter with
- * consecutive cron runs collapsed.
+ * The shared front half of the model pipeline: the archived/archived-only
+ * pool, resume-chain collapse, recency sort, and the flat {@link WebviewRow}
+ * map (with `focusable` stamped from the pool's own lineage). Both the
+ * sectioned list ({@link buildSessionsWebviewModel}) and the mission view
+ * ({@link buildFocusViewModel}) consume it so they can never disagree about
+ * what a session IS.
  */
-export function buildSessionsWebviewModel(
+function buildRowPool(
   sessions: readonly SessionSummary[],
   workspaces: WorkspacesConfig,
   opts: BuildSessionsWebviewModelOptions,
-): SessionsWebviewModel {
+): WebviewRow[] {
   // The "show archived" toggle switches between two disjoint views, not an
   // additive merge: OFF shows ONLY active rows, ON shows ONLY archived rows
   // (an archive action slides a row from the active view into the archived
@@ -818,32 +824,64 @@ export function buildSessionsWebviewModel(
   // archived or collapsed away still knows which lane it belongs to.
   const byId: ReadonlyMap<string, LaneSubject> = new Map(sessions.map(s => [s.id, s]))
 
-  // 1. Search filter (reused predicate).
+  // Focus-affordance roots: every id some loaded row names as its parent.
+  // A parent whose child has EXITED is still a root — that is exactly the
+  // post-mortem case the mission view exists for.
+  const parentIds = new Set<string>()
+  for (const s of visible) {
+    const p = s.parentSessionId
+    if (p && p !== s.id) parentIds.add(p)
+  }
+
+  const rows = visible
+    .slice()
+    .sort((a, b) => compareSessions(a, b))
+    .map(s => toRow(s, opts.now, workspaces, opts.colorOverrides, opts.watchedIds, byId, opts.attentionDelaySec))
+  return rows.map(r => (parentIds.has(r.id) ? { ...r, focusable: true } : r))
+}
+
+/**
+ * The webview's single entry point. Filtering (archived-hidden, resume-chain
+ * collapse, search, project) is applied first; the survivors are split into
+ * the two lanes for the segmented-control counts and the project rail, then
+ * the selected lane's scope is sorted and organized — into the six attention
+ * sections (Agents) or the three Auto subgroups (Auto), the latter with
+ * consecutive cron runs collapsed.
+ */
+export function buildSessionsWebviewModel(
+  sessions: readonly SessionSummary[],
+  workspaces: WorkspacesConfig,
+  opts: BuildSessionsWebviewModelOptions,
+): SessionsWebviewModel {
+  const allRows = buildRowPool(sessions, workspaces, opts)
+
+  // 1. Search filter (reused predicate, on the rows' sessions).
   const baseState: SessionFilterState = { ...EMPTY_FILTER, search: opts.search }
-  const searchSurvivors = filterSessions(visible, baseState, workspaces)
+  const searchSurvivors = filterSessions(
+    allRows.map(r => r.session),
+    baseState,
+    workspaces,
+  )
+  const searchIds = new Set(searchSurvivors.map(s => s.id))
+  const searchRows = allRows.filter(r => searchIds.has(r.id))
 
   // 2. Project rail — counts per project within the CURRENT lane, independent
   //    of the current project selection (the rail IS the selector). A chip
   //    lights its ochre dot when it holds a session awaiting the human.
-  const railScope = searchSurvivors.filter(s => laneOf(s, byId) === opts.lane)
-  const rail = buildRail(railScope, workspaces, opts.now, opts.colorOverrides)
+  const byId: ReadonlyMap<string, LaneSubject> = new Map(sessions.map(s => [s.id, s]))
+  const railScope = searchRows.filter(r => laneOf(r.session, byId) === opts.lane)
+  const rail = buildRail(railScope.map(r => r.session), workspaces, opts.now, opts.colorOverrides)
 
   // 3. Segmented-control counts — within the selected project.
-  const projectSurvivors =
+  const projectRows =
     opts.project === null
-      ? searchSurvivors
-      : searchSurvivors.filter(s => projectSlugOf(workspaces, s) === opts.project)
+      ? searchRows
+      : searchRows.filter(r => projectSlugOf(workspaces, r.session) === opts.project)
   const laneCounts: Record<SessionLane, number> = { agents: 0, auto: 0 }
-  for (const s of projectSurvivors) laneCounts[laneOf(s, byId)] += 1
+  for (const r of projectRows) laneCounts[laneOf(r.session, byId)] += 1
 
-  // 4. The list itself — selected lane, sorted recency-first.
-  const scope = projectSurvivors
-    .filter(s => laneOf(s, byId) === opts.lane)
-    .slice()
-    .sort((a, b) => compareSessions(a, b))
-  const rows = scope.map(s =>
-    toRow(s, opts.now, workspaces, opts.colorOverrides, opts.watchedIds, byId, opts.attentionDelaySec),
-  )
+  // 4. The list itself — selected lane, already recency-sorted.
+  const rows = projectRows.filter(r => laneOf(r.session, byId) === opts.lane)
 
   // Pinned rows are lifted into their own dedicated group at the very top of
   // the list, ahead of every attention section / Auto subgroup — "stays
@@ -990,6 +1028,153 @@ export function subtreeRollup(rows: readonly WebviewRow[], rootIndex: number): S
     status = busierRowStatus(status, row.status)
   }
   return { hasChildren, status }
+}
+
+// ─── Mission view (focus mode) ──────────────────────────────────────────────
+// The attention sections bucket a row by its OWN status, so a child session
+// that exits drops out of its parent's subtree and reappears flat in
+// "Earlier" — the lineage is lost exactly when a post-mortem needs it. The
+// focus mode renders ONE root session's whole tree instead, every status
+// included, sections suspended. "Mission" here is only the view's LABEL —
+// never an id, never a record.
+
+/**
+ * The whole tree under `rootId`, root first, then depth-first in the same
+ * order {@link nestByLineage} produces — regardless of which attention
+ * section each row's own status would bucket into. Terminated child sessions
+ * (done/stopped/failed/archived) are included, not filtered: keeping the dead
+ * children visible under their parent is the point. An unknown `rootId`
+ * yields an empty list, not a throw.
+ */
+export function focusTreeRows(rows: readonly WebviewRow[], rootId: string): WebviewRow[] {
+  const root = rows.find(r => r.id === rootId)
+  if (!root) return []
+  const byId = new Map(rows.map(r => [r.id, r]))
+  const childrenOf = new Map<string, WebviewRow[]>()
+  for (const row of rows) {
+    const parentId = row.session.parentSessionId
+    if (!parentId || parentId === row.id || !byId.has(parentId)) continue
+    const bucket = childrenOf.get(parentId)
+    if (bucket) bucket.push(row)
+    else childrenOf.set(parentId, [row])
+  }
+  const out: WebviewRow[] = []
+  const walked = new Set<string>([rootId]) // a lineage cycle can't loop the walk
+  const walk = (row: WebviewRow, depth: number): void => {
+    out.push(row.depth === depth ? row : { ...row, depth })
+    for (const child of childrenOf.get(row.id) ?? []) {
+      if (walked.has(child.id)) continue
+      walked.add(child.id)
+      walk(child, depth + 1)
+    }
+  }
+  walk(root, 0)
+  return out
+}
+
+/** Per-status breakdown for one mission view's header — see {@link missionCountsText}. */
+export interface MissionSummary {
+  /** The focused root session's id. */
+  rootId: string
+  /** The focused root row's display name. */
+  rootLabel: string
+  /** Total rows in the tree (the root included). */
+  total: number
+  /** Per-status counts across the tree ({@link missionCountsText} skips the zeros). */
+  byStatus: Readonly<Record<WebviewRowStatus, number>>
+}
+
+/**
+ * Summarize a focused tree for its header — the panel renders
+ * {@link missionCountsText}'s output verbatim and never recomputes anything.
+ * Undefined for an empty tree.
+ */
+export function missionSummaryFor(tree: readonly WebviewRow[]): MissionSummary | undefined {
+  const root = tree[0]
+  if (!root) return undefined
+  const byStatus: Record<WebviewRowStatus, number> = {
+    working: 0,
+    delegating: 0,
+    awaiting: 0,
+    "awaiting-bg": 0,
+    parked: 0,
+    idle: 0,
+    stalled: 0,
+    failed: 0,
+    stopped: 0,
+    done: 0,
+  }
+  for (const row of tree) byStatus[row.status] += 1
+  return { rootId: root.id, rootLabel: root.name, total: tree.length, byStatus }
+}
+
+const MISSION_STATUS_LABELS: Readonly<Record<WebviewRowStatus, string>> = {
+  working: "running",
+  delegating: "delegating",
+  awaiting: "needs you",
+  stalled: "stalled",
+  "awaiting-bg": "bg pending",
+  parked: "parked",
+  idle: "idle",
+  failed: "failed",
+  stopped: "stopped",
+  done: "done",
+}
+
+/**
+ * The mission header's count line, e.g. "7 sessions · 2 running · 4 done ·
+ * 1 failed" — fixed display order (live states first, done before the other
+ * terminals), zero-count statuses omitted, singular handled ("1 session").
+ */
+export function missionCountsText(summary: MissionSummary): string {
+  const order: readonly WebviewRowStatus[] = [
+    "working",
+    "delegating",
+    "awaiting",
+    "stalled",
+    "awaiting-bg",
+    "parked",
+    "idle",
+    "done",
+    "stopped",
+    "failed",
+  ]
+  const parts = [`${summary.total} session${summary.total === 1 ? "" : "s"}`]
+  for (const status of order) {
+    const n = summary.byStatus[status]
+    if (n > 0) parts.push(`${n} ${MISSION_STATUS_LABELS[status]}`)
+  }
+  return parts.join(" · ")
+}
+
+/** Everything the panel needs to paint the mission view — see {@link buildFocusViewModel}. */
+export interface FocusViewModel {
+  summary: MissionSummary
+  /** Pre-rendered count line for the header ({@link missionCountsText}). */
+  countsText: string
+  /** The whole tree, depth-first, root at depth 0 — every status included. */
+  rows: WebviewRow[]
+}
+
+/**
+ * The mission view's model: the SAME row pool the sectioned list renders
+ * from ({@link buildRowPool}), refocused on one root session's whole tree.
+ * Deliberately ignores the lane/project/search axes — a focus drill-in shows
+ * the tree, not the current filter. Undefined when `rootId` is not in the
+ * loaded pool (the panel then drops out of focus rather than painting a
+ * phantom tree).
+ */
+export function buildFocusViewModel(
+  sessions: readonly SessionSummary[],
+  workspaces: WorkspacesConfig,
+  opts: BuildSessionsWebviewModelOptions,
+  rootId: string,
+): FocusViewModel | undefined {
+  const pool = buildRowPool(sessions, workspaces, opts)
+  const tree = focusTreeRows(pool, rootId)
+  const summary = missionSummaryFor(tree)
+  if (!summary) return undefined
+  return { summary, countsText: missionCountsText(summary), rows: tree }
 }
 
 function buildSections(rows: readonly WebviewRow[]): WebviewGroup[] {
