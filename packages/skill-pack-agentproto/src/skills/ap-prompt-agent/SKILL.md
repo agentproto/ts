@@ -25,9 +25,10 @@ on the fly, or manage a backlog of prompts queued while it was busy.
 ```
 
 By default, `interrupt:false` and a prompt sent while the session is
-mid-turn is **rejected** with a `mid-turn` error — it does not queue itself
-automatically. Pass `interrupt:true` to cancel the in-flight turn and
-redirect the same session immediately:
+mid-turn is **queued** (FIFO) and dispatched automatically once the current
+turn ends — fan-in bursts are delivered in order instead of rejected. Pass
+`interrupt:true` to cancel the in-flight turn and redirect the same session
+immediately instead of waiting for the queue:
 
 ```json
 {
@@ -52,7 +53,9 @@ No restart needed — these apply to the session in place:
 
 ## Queue family (prompts that arrive mid-turn)
 
-A FIFO queue holds prompts sent while a session is busy:
+A FIFO queue holds prompts sent while a session is busy — `agent_prompt`
+queues by default (`queue:true` implicitly); pass `queue:false` explicitly
+to restore the old reject-with-`mid-turn`-error behavior instead:
 
 ```json
 { "tool": "session_queue_list", "args": { "sessionId": "sess_5f9a3c38" } }
