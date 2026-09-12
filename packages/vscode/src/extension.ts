@@ -64,6 +64,7 @@ import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
+import { registerActivityWebview } from "./webview/activityWebviewPanel.js"
 import { registerAppPanels } from "./webview/appPanel.js"
 import { registerChatPanels } from "./webview/chatPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
@@ -156,6 +157,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // sidebar). Uses its own lightweight summary endpoint for progressive loading
   // while sharing the store's live-update signal and the transcriptPanels path.
   registerSessionsWebview(ctx, client, store, filter, transcriptPanels, seen, watched)
+  // The read-only Activity sidebar: the daemon's Activity projection plus the
+  // shell sessions (PTY terminals, parentless commands) Sessions no longer
+  // carries. Rides the same SessionStore signal — no second polling timer.
+  registerActivityWebview(ctx, client, store)
   // Opt-in webview alternatives for Harnesses and Auth Profiles, gated by
   // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
   registerHarnessesWebview(ctx, client, harnessesProvider)
