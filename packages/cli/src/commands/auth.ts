@@ -23,6 +23,7 @@
  * file as the source of truth when no `--token` is supplied.
  */
 
+import { readFile } from "node:fs/promises"
 import { hostname, userInfo } from "node:os"
 import { parseArgs } from "node:util"
 import {
@@ -41,16 +42,29 @@ import {
   KeychainStore,
   resolveStoreRef,
   addAuthProfile,
+  authProfilesPath,
+  createAuthProfile,
+  credentialIdentity,
+  deleteAuthProfile,
   getAuthProfile,
   listAuthProfiles,
   refreshAuthProfileModels,
   removeAuthProfile,
+  setAuthProfileEnabled,
+  setAuthProfileModels,
   AuthProfileValidationError,
   type AuthProviderHandle,
+  type AuthProfile,
   type CredentialStore,
   type ProfileProvisionDeps,
 } from "@agentproto/auth"
 import { getModelsByProvider } from "@agentproto/model-catalog"
+import {
+  discoverCredentials,
+  importDiscoveredCredential,
+  CredentialImportError,
+  type DiscoveredCredential,
+} from "@agentproto/runtime/credential-discovery"
 import {
   authProvidersPath,
   buildBrokerProvider,
@@ -90,6 +104,8 @@ export async function runAuth(args: readonly string[]): Promise<number> {
       return runAuthCred(rest)
     case "profile":
       return runAuthProfile(rest)
+    case "discover":
+      return runAuthDiscover(rest)
     case undefined:
     case "--help":
     case "-h":
@@ -114,10 +130,24 @@ Usage:
   agentproto auth cred     <set|list|rm> …   — broker creds for child-MCP auth
                           set <id> <token> --api-base <url> [--audience <aud>]
                                              [--description <text>]
-  agentproto auth profile refresh-models <id> [--json]
-                                              — re-sync a named auth profile's
-                                                curated model ids against the
-                                                current catalog
+  agentproto auth profile <create|list|rm|import|set-models|
+                           set-enabled|refresh-models> …
+                          — named auth profiles (subscriptions / API keys)
+                          create <id> <endpoint> --method <oauth-bearer|api-key>
+                                 [--label <text>] [--source <name>]
+                                 [--credential-file <path>] [--credential-env <VAR>]
+                                 [--credential-ref <slot>] [--json]
+                          list [--endpoint <e>] [--json]
+                          rm <id>
+                          import <origin> <endpoint> [--id <id>] [--label <text>]
+                          set-models <id> <all|allow> [<ids…>]
+                          set-enabled <id> <true|false>
+                          refresh-models <id> [--json]
+                          (the credential itself is NEVER a command-line
+                           argument — pipe it on stdin, or name a file or
+                           env var with --credential-file/--credential-env)
+  agentproto auth discover [--endpoint <e>] [--json]
+                          — scan this host for credentials you can import
 
 The default host is the one most recently logged into; on first use,
 \`--host\` is required.
@@ -135,6 +165,16 @@ Examples:
   agentproto auth provider set openrouter sk-or-… --base-url https://…
   agentproto auth provider list [--json]
   agentproto auth provider rm openai
+
+  agentproto auth discover
+  op paste | agentproto auth profile create work-anthropic anthropic \
+      --method oauth-bearer --label "work sub"
+  agentproto auth profile create gateway-or --method api-key --credential-env OR_API_KEY
+  agentproto auth profile list
+  agentproto auth profile import claude-code anthropic
+  agentproto auth profile set-enabled work-anthropic false
+  agentproto auth profile set-models work-anthropic allow claude-code/claude-sonnet-4
+  agentproto auth profile rm work-anthropic
 `
 
 const PROVIDER_USAGE = `agentproto auth provider — LLM provider API keys
@@ -506,23 +546,64 @@ async function runCredRm(args: readonly string[]): Promise<number> {
 
 // ── named auth profiles: curation refresh ──────────────────────────────
 
-const PROFILE_USAGE = `agentproto auth profile — named auth-profile maintenance
+const PROFILE_USAGE = `agentproto auth profile — named auth-profile management
 
-Named auth profiles (~/.agentproto/auth-profiles.json + OS keychain) are
-otherwise created/curated through the daemon's MCP tools (auth_profile_create,
-auth_profile_set_models, …) or the VS Code auth explorer — this is the one
-maintenance verb that's useful straight from the CLI.
+Named auth profiles (~/.agentproto/auth-profiles.json + OS keychain) attach a
+subscription or API key to a stable id you bill spawns through
+(\`agentproto sessions start <adapter> --access-profile <id>\`). These verbs
+talk to the same on-disk store + keychain the daemon's MCP tools
+(auth_profile_create, auth_profile_set_models, …) do — no running daemon
+required, same as \`auth provider\` / \`auth cred\`.
 
 Usage:
+  agentproto auth profile create <id> <endpoint> --method <oauth-bearer|api-key>
+                                 [--label <text>] [--source <name>]
+                                 [--credential-file <path>] [--credential-env <VAR>]
+                                 [--credential-ref <slot>] [--json]
+  agentproto auth profile list|ls [--endpoint <e>] [--json]
+  agentproto auth profile rm|remove|delete <id>
+  agentproto auth profile import <origin> <endpoint> [--id <id>] [--label <text>]
+  agentproto auth profile set-models <id> <all|allow> [<ids…>]
+  agentproto auth profile set-enabled <id> <true|false>
   agentproto auth profile refresh-models <id> [--json]
 
-A profile curated with mode:"allow" pins its \`ids\` to whatever the model
-catalog looked like when it was created/imported — new models the catalog
-adds later never become usable through it, and retired ones linger. This
-re-syncs \`ids\` against the CURRENT catalog for the profile's endpoint.
-Explicit and opt-in only: nothing runs this automatically, and it refuses a
-mode:"all" profile (nothing to refresh — that mode already tracks the live
-catalog on every read).
+🔒 The credential NEVER goes on the command line — a bare argument lands in
+shell history and in \`ps\` output for every user on this machine. \`create\`
+reads it from STDIN (pipe it in; on a TTY you get a hidden prompt), or from a
+file / env var via --credential-file <path> / --credential-env <VAR_NAME>.
+Those flags take the PATH or the VARIABLE NAME — never the secret itself.
+
+create:
+  --method oauth-bearer  a subscription bearer. With --source claude-code-oauth
+                         the profile stores NO secret at all — the credential
+                         is re-resolved from the local Claude Code login at
+                         every spawn (exactly one of a piped credential or
+                         --source).
+  --method api-key       a vendor/gateway key — requires a credential.
+
+  --credential-ref       explicit keychain slot; omitted ⇒ derived from
+                         endpoint + method (qualified with <id> on collision).
+
+list shows non-secret metadata only — plus, like auth_profile_list, a read-only
+key identity per profile: keyStatus (stored / self-refreshing / unavailable)
+and, for a stored secret, a one-way fingerprint + last4. Never the secret.
+
+import <origin> materializes a credential discovered by
+\`agentproto auth discover\` (origins: claude-code, hermes-config, env, codex,
+gemini) into a named profile — source-backed where the origin self-refreshes,
+a keychain COPY otherwise. The method is fixed by the origin.
+
+set-models "all" services every eligible model and clears any allowlist;
+"allow" narrows the profile to exactly the listed model ids (space- or
+comma-separated catalog vendor/product or route-qualified refs).
+
+set-enabled toggles a whole profile: a disabled one is skipped by the
+eligibility predicate entirely (every model it would bill drops to
+non-runnable). Metadata-only; the keychain credential is untouched.
+
+refresh-models re-syncs a mode:"allow" allowlist against the CURRENT model
+catalog for the profile's endpoint (new models ship, old ones retire).
+Explicit and opt-in; refuses a mode:"all" profile (nothing to refresh).
 `
 
 /** Local, filesystem/keychain-only provisioning deps — mirrors
@@ -544,6 +625,21 @@ async function runAuthProfile(args: readonly string[]): Promise<number> {
   const sub = args[0]
   const rest = args.slice(1)
   switch (sub) {
+    case "create":
+      return runProfileCreate(rest)
+    case "list":
+    case "ls":
+      return runProfileList(rest)
+    case "rm":
+    case "remove":
+    case "delete":
+      return runProfileRm(rest)
+    case "import":
+      return runProfileImport(rest)
+    case "set-models":
+      return runProfileSetModels(rest)
+    case "set-enabled":
+      return runProfileSetEnabled(rest)
     case "refresh-models":
       return runProfileRefreshModels(rest)
     case undefined:
@@ -557,6 +653,553 @@ async function runAuthProfile(args: readonly string[]): Promise<number> {
       )
       return 2
   }
+}
+
+// ── named auth profiles: create / list / rm / import / curate ───────────
+
+/** The DISCOVER_ORIGINS `import` accepts — mirrors the MCP
+ *  `auth_profile_import` tool's z.enum and `@agentproto/runtime`'s
+ *  `CredentialOrigin`. Kept as strings (not imported) so the CLI usage text
+ *  can render them without touching runtime for the common help path. */
+const IMPORT_ORIGINS = ["claude-code", "hermes-config", "env", "codex", "gemini"]
+
+/** The stream a piped credential is read from — `process.stdin`, except in
+ *  unit tests, where `process.stdin` is a getter that cannot be swapped. */
+let secretInputStream: NodeJS.ReadableStream = process.stdin
+
+/** Test seam for {@link secretInputStream}: point the piped-credential read
+ *  at an in-memory stream. Pass `undefined` to restore `process.stdin`. */
+export function setSecretInputStream(
+  stream: NodeJS.ReadableStream | undefined,
+): void {
+  secretInputStream = stream ?? process.stdin
+}
+
+/** Read the credential from stdin. Piped stdin is read to EOF; a TTY gets a
+ *  hidden prompt (raw mode, no echo) so the pasted secret never lands in
+ *  terminal scrollback. The secret is returned trimmed — never logged, never
+ *  echoed back. */
+async function readSecretFromStdin(what: string): Promise<string> {
+  const stdin = process.stdin
+  if (stdin.isTTY) {
+    return await promptHidden(`${what}, then press Enter (input hidden): `)
+  }
+  const chunks: Buffer[] = []
+  for await (const chunk of secretInputStream) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks).toString("utf8").trim()
+}
+
+/** Hidden TTY prompt — raw-mode byte loop so the terminal does not echo.
+ *  Supports backspace; Ctrl-C / Ctrl-D abort. */
+function promptHidden(promptText: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin
+    if (!stdin.isTTY || typeof stdin.setRawMode !== "function") {
+      reject(
+        new Error(
+          "no TTY available for a hidden prompt — pipe the credential on stdin " +
+            "or use --credential-file / --credential-env",
+        ),
+      )
+      return
+    }
+    let secret = ""
+    let settled = false
+    const done = (err: Error | null) => {
+      if (settled) return
+      settled = true
+      stdin.setRawMode(false)
+      stdin.pause()
+      stdin.removeListener("data", onData)
+      stdin.removeListener("error", onError)
+      process.stdout.write("\n")
+      if (err) reject(err)
+      else resolve(secret)
+    }
+    const onData = (ch: Buffer) => {
+      const s = ch.toString("utf8")
+      if (s === "\r" || s === "\n") done(null)
+      else if (s === "\u0003" || s === "\u0004") done(new Error("cancelled"))
+      else if (s === "\u007f" || s === "\b") secret = secret.slice(0, -1)
+      else secret += s
+    }
+    const onError = (err: Error) => done(err)
+    process.stdout.write(promptText)
+    stdin.setRawMode(true)
+    stdin.resume()
+    stdin.on("data", onData)
+    stdin.on("error", onError)
+  })
+}
+
+/** Resolve the credential for `create` from exactly one source — a piped
+ *  stdin (default), --credential-file <path>, or --credential-env <VAR_NAME>.
+ *  The flags take a PATH or a VARIABLE NAME, never the secret value: anything
+ *  on the command line lands in shell history and `ps`. Returns undefined
+ *  (after writing a usage error to stderr) when the caller should stop. */
+async function readCreateCredential(
+  values: {
+    "credential-file"?: string
+    "credential-env"?: string
+  },
+): Promise<string | undefined> {
+  const file = values["credential-file"]
+  const envName = values["credential-env"]
+  if (file && envName) {
+    process.stderr.write(
+      `agentproto auth profile create: give ONE of --credential-file / --credential-env (or pipe the credential on stdin)\n`,
+    )
+    return undefined
+  }
+  if (file) {
+    try {
+      const text = (await readFile(file, "utf8")).trim()
+      if (!text) {
+        process.stderr.write(
+          `agentproto auth profile create: --credential-file "${file}" is empty\n`,
+        )
+        return undefined
+      }
+      return text
+    } catch (err) {
+      process.stderr.write(
+        `agentproto auth profile create: could not read --credential-file "${file}": ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      )
+      return undefined
+    }
+  }
+  if (envName) {
+    const value = process.env[envName]?.trim()
+    if (!value) {
+      process.stderr.write(
+        `agentproto auth profile create: --credential-env "${envName}" is unset or empty in this shell\n`,
+      )
+      return undefined
+    }
+    return value
+  }
+  const piped = (await readSecretFromStdin("paste the credential")).trim()
+  if (!piped) {
+    process.stderr.write(
+      `agentproto auth profile create: no credential on stdin — pipe it in, or use --credential-file / --credential-env\n`,
+    )
+    return undefined
+  }
+  return piped
+}
+
+const CREATE_USAGE_LINE =
+  `agentproto auth profile create: usage: create <id> <endpoint> ` +
+  `--method <oauth-bearer|api-key> [--label <text>] [--source <name>] ` +
+  `[--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
+
+async function runProfileCreate(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    strict: true,
+    allowPositionals: true,
+    options: {
+      method: { type: "string" },
+      label: { type: "string" },
+      source: { type: "string" },
+      "credential-file": { type: "string" },
+      "credential-env": { type: "string" },
+      "credential-ref": { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const [id, endpoint] = positionals
+  // Exactly two positionals. A third one is almost always someone pasting the
+  // secret as an argument (the `auth cred set` anti-pattern) — refuse it
+  // loudly rather than silently ignoring it.
+  if (!id || !endpoint || positionals.length > 2) {
+    process.stderr.write(CREATE_USAGE_LINE)
+    if (positionals.length > 2) {
+      process.stderr.write(
+        `  (the credential must NEVER be a command-line argument — it lands in ` +
+          `shell history and ps output. Pipe it on stdin or use ` +
+          `--credential-file / --credential-env.)\n`,
+      )
+    }
+    return 2
+  }
+  const method = values.method
+  if (method !== "oauth-bearer" && method !== "api-key") {
+    process.stderr.write(
+      `agentproto auth profile create: --method must be "oauth-bearer" or "api-key"${method ? ` (got "${method}")` : " (none given)"}\n\n${CREATE_USAGE_LINE}`,
+    )
+    return 2
+  }
+
+  let credential: string | undefined
+  let source: string | undefined
+  if (values.source) {
+    if (method !== "oauth-bearer") {
+      process.stderr.write(
+        `agentproto auth profile create: --source is only supported for --method oauth-bearer\n`,
+      )
+      return 2
+    }
+    source = values.source
+  } else {
+    credential = await readCreateCredential(values)
+    if (credential === undefined) return 2
+  }
+
+  try {
+    const created = await createAuthProfile(
+      {
+        id,
+        endpoint,
+        method,
+        ...(credential !== undefined ? { credential } : {}),
+        ...(source !== undefined ? { source } : {}),
+        ...(values.label ? { label: values.label } : {}),
+        ...(values["credential-ref"]
+          ? { credentialRef: values["credential-ref"] }
+          : {}),
+      },
+      localProfileProvisionDeps(),
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify({ profile: created }, null, 2) + "\n")
+      return 0
+    }
+    process.stdout.write(
+      `agentproto auth: ✓ created auth profile "${created.id}" (${created.endpoint}, ${created.method})\n` +
+        (created.source
+          ? `  source-backed — no stored secret; credential re-resolved from "${created.source}" at every spawn\n`
+          : `  credential → OS keychain (${created.credentialRef})\n` +
+            `  fingerprint ${created.fingerprint} (one-way — confirms which secret landed)\n`) +
+        `  bill spawns through it: agentproto sessions start <adapter> --access-profile ${created.id}\n`,
+    )
+    return 0
+  } catch (err) {
+    if (err instanceof AuthProfileValidationError) {
+      process.stderr.write(`agentproto auth profile create: ${err.message}\n`)
+      return 2
+    }
+    throw err
+  }
+}
+
+async function runProfileList(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: { json: { type: "boolean" }, endpoint: { type: "string" } },
+  })
+  const profiles = await listAuthProfiles(values.endpoint)
+  // Mirror auth_profile_list's server-side key-identity enrichment: read the
+  // stored secret ONLY to fingerprint it — never emitted (see
+  // credentialIdentity's fail-closed last4 rule).
+  const store: CredentialStore = new KeychainStore()
+  const rows = await Promise.all(
+    profiles.map(async (p: AuthProfile) => {
+      if (p.credentialRef === undefined) {
+        return { ...p, keyStatus: "self-refreshing" as const }
+      }
+      try {
+        const stored = await store.read({ path: p.credentialRef })
+        if (!stored || stored.value === "") {
+          return { ...p, keyStatus: "unavailable" as const }
+        }
+        const identity = credentialIdentity(stored.value)
+        return {
+          ...p,
+          keyStatus: "stored" as const,
+          fingerprint: identity.fingerprint,
+          ...(identity.last4 !== undefined ? { last4: identity.last4 } : {}),
+        }
+      } catch {
+        return { ...p, keyStatus: "unavailable" as const }
+      }
+    }),
+  )
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ profiles: rows }, null, 2) + "\n")
+    return 0
+  }
+  if (rows.length === 0) {
+    process.stdout.write(
+      `agentproto auth profile: no profiles. Create one:\n` +
+        `  op paste | agentproto auth profile create <id> <endpoint> --method api-key\n` +
+        `  agentproto auth discover   — see what's importable on this host\n`,
+    )
+    return 0
+  }
+  process.stdout.write(`Auth profiles (${authProfilesPath()}):\n`)
+  for (const p of rows) {
+    const flag = p.disabled ? "✗ disabled" : "✓"
+    const key = (() => {
+      if (p.keyStatus === "self-refreshing") return `self-refreshing (source: ${p.source})`
+      if (p.keyStatus === "unavailable") return `key UNAVAILABLE at ${p.credentialRef}`
+      return `key ${p.fingerprint}${p.last4 ? ` …${p.last4}` : ""} @ ${p.credentialRef}`
+    })()
+    const models = p.models
+      ? p.models.mode === "all"
+        ? "models: all"
+        : `models: allow[${p.models.ids.length}]`
+      : null
+    process.stdout.write(
+      `  ${flag}  ${p.id}  ${p.endpoint}  ${p.method}` +
+        (p.label ? `  "${p.label}"` : "") +
+        `  ${key}\n` +
+        (models ? `       ${models}\n` : ""),
+    )
+  }
+  return 0
+}
+
+async function runProfileRm(args: readonly string[]): Promise<number> {
+  const id = args[0]
+  if (!id) {
+    process.stderr.write(`agentproto auth profile rm: usage: rm <id>\n`)
+    return 2
+  }
+  try {
+    const result = await deleteAuthProfile(id, localProfileProvisionDeps())
+    process.stdout.write(
+      result.deleted
+        ? `agentproto auth: ✓ removed auth profile "${result.id}"${
+            result.credentialRef ? ` (keychain slot ${result.credentialRef} cleared when no other profile references it)` : " (source-backed — no stored secret to clear)"
+          }\n`
+        : `agentproto auth: no auth profile with id "${id}"\n`,
+    )
+    return 0
+  } catch (err) {
+    if (err instanceof AuthProfileValidationError) {
+      process.stderr.write(`agentproto auth profile rm: ${err.message}\n`)
+      return 2
+    }
+    throw err
+  }
+}
+
+async function runProfileImport(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    strict: true,
+    allowPositionals: true,
+    options: { id: { type: "string" }, label: { type: "string" }, json: { type: "boolean" } },
+  })
+  const [origin, endpoint] = positionals
+  if (!origin || !endpoint || positionals.length > 2) {
+    process.stderr.write(
+      `agentproto auth profile import: usage: import <origin> <endpoint> [--id <id>] [--label <text>]\n` +
+        `  origins: ${IMPORT_ORIGINS.join(", ")} (run \`agentproto auth discover\` to see what's present)\n`,
+    )
+    return 2
+  }
+  if (!IMPORT_ORIGINS.includes(origin)) {
+    process.stderr.write(
+      `agentproto auth profile import: unknown origin "${origin}" — must be one of ${IMPORT_ORIGINS.join(", ")}\n`,
+    )
+    return 2
+  }
+  try {
+    const created = await importDiscoveredCredential(
+      {
+        origin,
+        endpoint,
+        ...(values.id ? { id: values.id } : {}),
+        ...(values.label ? { label: values.label } : {}),
+      },
+      localProfileProvisionDeps(),
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify({ profile: created }, null, 2) + "\n")
+      return 0
+    }
+    process.stdout.write(
+      `agentproto auth: ✓ imported "${created.id}" (${created.endpoint}, ${created.method}, origin ${created.origin})\n` +
+        (created.fingerprint
+          ? `  credential fingerprint ${created.fingerprint}\n`
+          : `  source-backed — no stored secret\n`) +
+        `  bill spawns through it: agentproto sessions start <adapter> --access-profile ${created.id}\n`,
+    )
+    return 0
+  } catch (err) {
+    if (err instanceof CredentialImportError || err instanceof AuthProfileValidationError) {
+      process.stderr.write(`agentproto auth profile import: ${err.message}\n`)
+      return 2
+    }
+    throw err
+  }
+}
+
+async function runProfileSetModels(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    strict: true,
+    allowPositionals: true,
+    options: { json: { type: "boolean" } },
+  })
+  const [id, mode, ...idsRaw] = positionals
+  if (!id || !mode) {
+    process.stderr.write(
+      `agentproto auth profile set-models: usage: set-models <id> <all|allow> [<ids…>]\n` +
+        `  ids are space- or comma-separated model identities (catalog vendor/product\n` +
+        `  or route-qualified ref). "all" clears the allowlist.\n`,
+    )
+    return 2
+  }
+  if (mode !== "all" && mode !== "allow") {
+    process.stderr.write(
+      `agentproto auth profile set-models: mode must be "all" or "allow" (got "${mode}")\n`,
+    )
+    return 2
+  }
+  const ids = idsRaw.flatMap(s => s.split(",")).map(s => s.trim()).filter(Boolean)
+  if (mode === "allow" && ids.length === 0) {
+    process.stderr.write(
+      `agentproto auth profile set-models: mode "allow" needs at least one model id\n`,
+    )
+    return 2
+  }
+  try {
+    const profile = await setAuthProfileModels(
+      id,
+      { mode, ids: mode === "all" ? [] : ids },
+      localProfileProvisionDeps(),
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify({ profile }, null, 2) + "\n")
+      return 0
+    }
+    const curated = profile.models
+    process.stdout.write(
+      `agentproto auth: ✓ set models for "${profile.id}"\n` +
+        `  ${
+          curated
+            ? `allow (${curated.ids.length} id${curated.ids.length === 1 ? "" : "s"})`
+            : "all — every eligible model, allowlist cleared"
+        }\n`,
+    )
+    return 0
+  } catch (err) {
+    if (err instanceof AuthProfileValidationError) {
+      process.stderr.write(`agentproto auth profile set-models: ${err.message}\n`)
+      return 2
+    }
+    throw err
+  }
+}
+
+async function runProfileSetEnabled(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    strict: true,
+    allowPositionals: true,
+    options: { json: { type: "boolean" } },
+  })
+  const [id, state] = positionals
+  const enabled =
+    state === "true" || state === "enable" || state === "enabled"
+      ? true
+      : state === "false" || state === "disable" || state === "disabled"
+        ? false
+        : undefined
+  if (!id || enabled === undefined) {
+    process.stderr.write(
+      `agentproto auth profile set-enabled: usage: set-enabled <id> <true|false>\n` +
+        `  (also accepts enable/disable/enabled/disabled)\n`,
+    )
+    return 2
+  }
+  try {
+    const profile = await setAuthProfileEnabled(id, enabled, localProfileProvisionDeps())
+    if (values.json) {
+      process.stdout.write(JSON.stringify({ profile }, null, 2) + "\n")
+      return 0
+    }
+    process.stdout.write(
+      `agentproto auth: ✓ ${enabled ? "enabled" : "DISABLED"} auth profile "${profile.id}"${
+        enabled ? "" : " — every model it would bill is now non-runnable"
+      }\n`,
+    )
+    return 0
+  } catch (err) {
+    if (err instanceof AuthProfileValidationError) {
+      process.stderr.write(`agentproto auth profile set-enabled: ${err.message}\n`)
+      return 2
+    }
+    throw err
+  }
+}
+
+// ── discover local credentials ─────────────────────────────────────────
+
+const DISCOVER_USAGE = `agentproto auth discover — scan this host for importable credentials
+
+Probes the well-known local locations where the CLIs and gateways you already
+use write their credentials (Claude Code's OAuth item, Codex/Gemini login
+files, ~/.hermes/config.yaml, provider API-key env vars) and reports what it
+FINDS — so you can import what you have instead of pasting it again.
+
+Read-only, and never prints a secret value — each hit is a provenance + a
+non-secret locator (WHERE the credential is, never WHAT it is).
+
+Usage:
+  agentproto auth discover [--endpoint <e>] [--json]
+
+Import a hit into a named profile:
+  agentproto auth profile import <origin> <endpoint> [--id <id>] [--label <text>]
+`
+
+/** Test seam: override the discovery scanner (a real scan probes the live
+ *  home dir / env, which a unit test must not do). `undefined` restores the
+ *  real scanner from `@agentproto/runtime/credential-discovery`. */
+let discoverCredentialsImpl = discoverCredentials
+export function setDiscoverCredentialsForTests(
+  impl: typeof discoverCredentials | undefined,
+): void {
+  discoverCredentialsImpl = impl ?? discoverCredentials
+}
+
+async function runAuthDiscover(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: { json: { type: "boolean" }, endpoint: { type: "string" } },
+  })
+  let found: DiscoveredCredential[]
+  try {
+    found = discoverCredentialsImpl({
+      warn: msg =>
+        process.stderr.write(`agentproto auth discover: ⚠ ${msg}\n`),
+    })
+  } catch (err) {
+    process.stderr.write(
+      `agentproto auth discover: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+  if (values.endpoint) {
+    found = found.filter(c => c.endpoint === values.endpoint)
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ credentials: found }, null, 2) + "\n")
+    return 0
+  }
+  if (found.length === 0) {
+    process.stdout.write(
+      `agentproto auth discover: no local credentials found.\n` +
+        `  Create one from scratch: op paste | agentproto auth profile create <id> <endpoint> --method api-key\n`,
+    )
+    return 0
+  }
+  process.stdout.write(`Discovered credentials on this host:\n`)
+  for (const c of found) {
+    process.stdout.write(
+      `  ✓ ${c.endpoint}  ${c.method}  from ${c.origin}\n` +
+        `     ${c.hint}\n` +
+        `     import: agentproto auth profile import ${c.origin} ${c.endpoint}\n`,
+    )
+  }
+  return 0
 }
 
 async function runProfileRefreshModels(args: readonly string[]): Promise<number> {
