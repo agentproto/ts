@@ -128,12 +128,21 @@ import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
   resolveLifecyclePolicy,
+  SandboxHostBootFailedError,
   type SandboxAgentSessionHost,
   type SandboxLifecyclePolicy,
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
-import { readSandboxLedger, recordSandboxBoot, recordSandboxOrigin, resolveReuseFromLedger } from "./sandbox-ledger.js"
+import {
+  readSandboxLedger,
+  recordSandboxBoot,
+  recordSandboxOrigin,
+  recordSandboxState,
+  upsertSandboxLedger,
+  resolveReuseFromLedger,
+  type SandboxLedgerEntry,
+} from "./sandbox-ledger.js"
 import {
   DEFAULT_APP_SERVE_PORT,
   startSandboxAppServe,
@@ -3453,6 +3462,20 @@ async function bootSandboxAgentSession(opts: {
       secrets: { slugs, resolver: resolveSandboxSecret },
     })
   } catch (err) {
+    // The box existed at failure time — `@agentproto/sandbox` reaped it
+    // (paused for a reuse whose provider supports pause, killed
+    // otherwise) before throwing. Stamp the ledger with the outcome so
+    // the box never outlives this failed spawn unaccounted-for
+    // (`sandbox gc` selects on exactly these rows).
+    if (err instanceof SandboxHostBootFailedError) {
+      markFailedBootLedger({
+        sandboxId: err.sandboxId,
+        provider: providerSlug,
+        state: err.cleanedUp,
+        ...(opts.label ? { label: opts.label } : {}),
+        ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      })
+    }
     return reuseSandboxId !== undefined
       ? {
           ok: false,
@@ -3500,7 +3523,11 @@ async function bootSandboxAgentSession(opts: {
     })
     remoteSessionId = remoteDesc.id
   } catch (err) {
+    // The box was fully booted but its own `agent_start` failed — reap the
+    // box (kill: it holds nothing of value) and mark the ledger so the
+    // failure is never a silent orphan.
     await host.stop().catch(() => undefined)
+    recordSandboxState(host.sandboxId, "stopped")
     return {
       ok: false,
       code: "sandbox_proxy_failed",
@@ -3517,6 +3544,7 @@ async function bootSandboxAgentSession(opts: {
     const serve = await startSandboxAppServe(host, opts.appServe)
     if (!serve.ok) {
       await host.stop().catch(() => undefined)
+      recordSandboxState(host.sandboxId, "stopped")
       return {
         ok: false,
         code: "sandbox_app_serve_failed",
@@ -3578,6 +3606,42 @@ function sandboxAuthFromResolved(auth: ResolvedAuthSpec): DefaultsAdapterAuthCon
       : auth.credential !== undefined
         ? { token: auth.credential }
         : {}),
+  }
+}
+
+/**
+ * Stamp a FAILED boot/reconnect into the sandbox ledger with the actual
+ * teardown outcome (`paused`/`stopped`). Preserves the existing row's
+ * metadata when one is already on disk (a reconnect failure's row predates
+ * this spawn); upserts a fresh row when the failure happened before the
+ * boot-time stamp ran. Best-effort — never throws.
+ */
+function markFailedBootLedger(opts: {
+  sandboxId: string
+  provider: string
+  state: "paused" | "stopped"
+  label?: string
+  cwd?: string
+}): void {
+  try {
+    const ts = new Date().toISOString()
+    const prior = readSandboxLedger().find(e => e.sandboxId === opts.sandboxId)
+    if (prior) {
+      recordSandboxState(opts.sandboxId, opts.state)
+      return
+    }
+    const entry: SandboxLedgerEntry = {
+      sandboxId: opts.sandboxId,
+      provider: opts.provider,
+      state: opts.state,
+      createdAt: ts,
+      updatedAt: ts,
+      ...(opts.label ? { label: opts.label } : {}),
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    }
+    upsertSandboxLedger(entry)
+  } catch {
+    // Best-effort, always — a ledger failure must not mask the spawn error.
   }
 }
 
