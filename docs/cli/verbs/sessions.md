@@ -19,6 +19,8 @@ agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                         [--mcp-servers-json <json|@file>]
                                         [--sandbox <provider-or-json|@file>]
                                         [--hold-permissions]
+                                        [--max-cost-usd <n>]
+                                        [--cost-budget <spec>]
                                         [--attach] [--json] [--no-color]
 agentproto sessions terminal [--preset <name>] [-- <argv...>]
                                            [--cwd <dir>] [--workspace <slug>]
@@ -196,6 +198,8 @@ reattached later.
 | `--mode <id>` | Manifest-declared posture mode id applied at spawn (e.g. claude-code `plan`, codex `read-only`). Mirrors `agent_start.mode`. |
 | `--effort <level>` | Reasoning effort — `low\|medium\|high\|xhigh\|max\|ultracode`, calibrated per model. Mirrors `agent_start.effort`. |
 | `--hold-permissions` | Start in **permission-hold mode**: every tool-permission request the agent raises is parked in the cross-session inbox instead of auto-answered. Approve/deny with [`permissions.md`](./permissions.md). |
+| `--max-cost-usd <n>` | HARD spend ceiling in USD for this session: the daemon kills the session at the next turn-end once cumulative cost exceeds `n`. A positive number; rejected client-side if non-numeric or ≤ 0. Mirrors `agent_start.maxCostUsd`. |
+| `--cost-budget <spec>` | Windowed governance cap that **never kills** the session — raises a notification when the window's cumulative cost exceeds the cap, leaving the decision to an orchestrator or human. Two spellings: compact `<usd>:<window>[:<scope>]` (e.g. `20:5h:profile`, `15:7d`) or full JSON `{"maxCostUsd":20,"window":"5h","scope":"session"}`. `scope` is `session` (default) or `profile`. Mirrors `agent_start.costBudget`. |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
 
@@ -661,10 +665,10 @@ MCP:  agent_prompt { sessionId, prompt, interrupt: true }
 HTTP: POST /sessions/:id/prompt?wait=false  { "prompt": "...", "interrupt": true }
 ```
 
-By default, sending a prompt to a session that's still mid-turn is
-rejected (see [`chat.md`](./chat.md#prompt-delivery) — `409
-send_prompt_failed`, "...is mid-turn — wait for it to finish or
-cancel"). Passing `interrupt: true` changes that: the daemon cancels
+By default, sending a prompt to a session that's still mid-turn
+**queues it** (FIFO) — the prompt is dispatched automatically when the
+current turn ends, so fan-in bursts are delivered in order instead of
+dropped. Passing `interrupt: true` changes that: the daemon cancels
 the in-flight turn (the adapter's own soft Ctrl-C — ACP
 `session/cancel`, or an adapter-specific SIGINT), waits for it to
 actually settle, then delivers the new prompt on the **same** live

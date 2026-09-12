@@ -1,9 +1,10 @@
 # `agentproto sandbox`
 
 ```text
-agentproto sandbox list   [--json]
+agentproto sandbox list   [--no-probe] [--json]
 agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 agentproto sandbox rm     <sandboxId|label|id-prefix> [--box] [--yes] [--json]
+agentproto sandbox gc     [--apply] [--pause] [--json]
 ```
 
 Browse the daemon's **sandbox ledger** (every box the daemon has booted,
@@ -22,14 +23,24 @@ environment.
 ```bash
 agentproto sandbox list
 agentproto sandbox list --json
+agentproto sandbox list --no-probe
 ```
 
 Prints the sandbox ledger — every box the daemon has booted, reconnected
 to, paused, or stopped — with its current state, idle-expiry, and the
 origin session that spawned it.
 
+The table includes a **LIVE** column showing the result of a per-row
+provider liveness probe (`yes` / `no` / `?` probe-errored / `—`
+provider can't probe). The LIVE column is the only reliable signal that
+a box still exists on its provider: the STATE column reflects what the
+daemon last did and may lag reality (a provider-reaped box still shows
+`paused` until probed). Probes are network calls; pass `--no-probe` to
+skip them.
+
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--no-probe` | `false` | Skip the per-row provider liveness probes (no network calls). The LIVE column shows `—` for every row. |
 | `--json` | `false` | Print the raw `{ sandboxes: […] }` JSON instead of the human table. |
 
 ### `rm <sandboxId|label|id-prefix>`
@@ -63,6 +74,28 @@ insecure URL). Prints the connection descriptor and a paste-ready
 | `--keep-alive` | `false` | Keep the sandbox awake indefinitely for an always-on rendezvous. |
 | `--json` | `false` | Print only `{"descriptor":…,"mcpConfig":…}` as JSON. |
 
+### `gc`
+
+```bash
+agentproto sandbox gc              # dry run — print what would be torn down
+agentproto sandbox gc --apply      # actually kill orphan boxes on the provider
+agentproto sandbox gc --apply --pause   # pause instead of kill (stays reattachable)
+agentproto sandbox gc --json       # machine-readable plan / outcomes
+```
+
+Reaps **orphan** boxes: ledger entries whose origin session ended in a
+failure state (`error` / `killed` / `exited`) — the session can never
+return to its box, so the box is wasted spend. Dry run by default;
+nothing is torn down until `--apply` is passed.
+
+Requires a running daemon to look up origin-session statuses.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--apply` | `false` | Actually tear down (or pause) the orphan boxes and stamp their ledger rows `stopped`. Without this, the command only prints the plan. |
+| `--pause` | `false` | With `--apply`: pause the boxes instead of killing them, keeping them reattachable via `sandbox attach`. Note: a paused e2b box still bills, so the default kill is usually preferable for orphans. |
+| `--json` | `false` | Print the plan / outcomes as JSON instead of the human summary. |
+
 ### The always-on model (`--keep-alive`)
 
 `--keep-alive` is for a sandbox meant to stay reachable indefinitely rather
@@ -80,9 +113,12 @@ concept (e.g. e2b).
 ## Examples
 
 ```bash
-# Browse all boxes the daemon has touched
+# Browse all boxes the daemon has touched (with liveness probes)
 agentproto sandbox list
 agentproto sandbox list --json
+
+# Browse without network calls (skip liveness probes)
+agentproto sandbox list --no-probe
 
 # Remove a ledger entry (box stays running/paused on the provider)
 agentproto sandbox rm my-task-label
@@ -90,6 +126,12 @@ agentproto sandbox rm bx_abc123
 
 # Remove ledger entry AND stop the box (destructive)
 agentproto sandbox rm bx_abc123 --box --yes
+
+# Dry-run GC — see which orphan boxes would be reaped
+agentproto sandbox gc
+
+# Actually reap orphan boxes (sessions that errored/were killed)
+agentproto sandbox gc --apply
 
 # Attach to a Box sandbox booted by an earlier agent_start sandbox spawn
 agentproto sandbox attach box bx_abc123
