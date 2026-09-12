@@ -301,7 +301,9 @@ describe("agentproto task", () => {
         note: "tests green",
         evidence: { policyId: "pol_1" },
       })
-      expect(stdoutChunks.join("")).toContain("verifying:true")
+      const out = stdoutChunks.join("")
+      expect(out).toContain("verifying:true")
+      expect(out).toContain("Updated task_7")
     })
   })
 })

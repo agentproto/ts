@@ -194,6 +194,9 @@ async function runCreate(args: readonly string[]): Promise<number> {
   if (meta !== undefined && (typeof meta !== "object" || meta === null || Array.isArray(meta))) {
     return fail("--meta-json must be a JSON object (a string → string map)")
   }
+  // --verify-json gets no analogous client-side shape check: its gate shape
+  // (command|judge) is richer than a flat string map, and the server
+  // validates it anyway — forwarded as-is.
 
   const daemon = await withDaemon("agentproto task create")
   if (!daemon.ok) return daemon.code
@@ -226,8 +229,14 @@ async function runCreate(args: readonly string[]): Promise<number> {
   return printWrite("create", reply, false)
 }
 
+const WRITE_VERB_LABEL: Record<"create" | "claim" | "update", string> = {
+  create: "Created",
+  claim: "Claimed",
+  update: "Updated",
+}
+
 function printWrite(
-  verb: string,
+  verb: "create" | "claim" | "update",
   reply: TaskWriteReply,
   json: boolean,
 ): number {
@@ -237,7 +246,7 @@ function printWrite(
   }
   const task = reply.task ?? {}
   process.stdout.write(
-    `\u2713 ${verb === "claim" ? "Claimed" : "Created"} ${String(task["taskId"] ?? "")} ` +
+    `\u2713 ${WRITE_VERB_LABEL[verb]} ${String(task["taskId"] ?? "")} ` +
       `[${String(task["status"])}] on board ${String(task["boardId"])}` +
       `${task["verify"] !== undefined ? " · verify-gated" : ""}` +
       `${reply.verifying ? " (verify gate running — verifying:true)" : ""}\n` +
