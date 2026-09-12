@@ -203,7 +203,14 @@ export async function createSandboxAgentSessionHost(
   try {
     host = await connectDaemonAgentSessionHost({ url: booted.mcpUrl })
   } catch (err) {
-    await booted.stop()
+    // The box EXISTS here (boot/connect already returned) and the daemon
+    // MCP connect on top of it failed — reap the box before propagating,
+    // exactly like the runtime's sibling failure paths around `host.start()`
+    // and `startSandboxAppServe` do with `host.stop().catch(...)`. Best
+    // effort: a failing teardown must never mask the original connect
+    // error (or a half-killed box would surface as a bogus "daemon
+    // unreachable" and the caller would lose the real signal).
+    await booted.stop().catch(() => undefined)
     throw err
   }
   return {

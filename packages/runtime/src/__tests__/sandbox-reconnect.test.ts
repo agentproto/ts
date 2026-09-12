@@ -312,6 +312,34 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     expect(result.message).toContain("no connect()")
   })
 
+  it("reaps the reconnected box when the daemon MCP connect fails after connect() succeeded", async () => {
+    // Upstream finding 3 — the failure one step AFTER a successful
+    // `provider.connect()`: the box is resumed and billed, then the MCP
+    // transport connect on top of it throws. Whatever `connect()` resumed
+    // must be reaped before `sandbox_reconnect_failed` is returned — a
+    // failed reconnect must never leave a live box with no session
+    // tracking it.
+    const deadPort = await freePort()
+    box.connectSpy.mockImplementationOnce(async (sandboxId: string) => ({
+      mcpUrl: `http://127.0.0.1:${deadPort}/mcp`,
+      sandboxId,
+      stop: box.stopSpy,
+      pause: box.pauseSpy,
+    }))
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: { provider: "fake", config: {}, reuse: "sbx_dead_mcp" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("sandbox_reconnect_failed")
+    expect(box.connectSpy).toHaveBeenCalledTimes(1)
+    // The box `connect()` resumed must not outlive the failed spawn.
+    await vi.waitFor(() => expect(box.stopSpy).toHaveBeenCalledTimes(1))
+  })
+
   it("returns sandbox_reconnect_failed when connect() itself throws", async () => {
     box.connectSpy.mockRejectedValueOnce(new Error("box is gone"))
 
