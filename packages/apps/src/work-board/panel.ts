@@ -38,6 +38,28 @@
 
 import { panelBridgeScript } from "../panel-bridge.js"
 
+/** The builtin's app id — how `app_catalog` reports the panel. Lives in this
+ *  html-only entry (not ./index.ts) so a consumer that must NOT pull the
+ *  app-kit dependency graph — the VS Code extension bundles with esbuild and
+ *  chokes on its transitive native `.node` deps — can still name the panel
+ *  from source. */
+export const WORK_BOARD_APP_ID = "@agentproto/work-board"
+
+/** The MCP tool the panel is registered under (./index.ts `makeWorkBoardApp`),
+ *  hence its resource uri `ui://agentproto_work_board/view`. */
+export const WORK_BOARD_TOOL_ID = "agentproto_work_board"
+
+/** The daemon tools this panel's html calls, in order of use. Consumed as
+ *  `ui.tools` by ./index.ts and as the client-side allowlist by any host that
+ *  dispatches the panel's `tools/call` directly — a builtin is not an
+ *  installed app, so `app_tool_call` cannot route for it. */
+export const WORK_BOARD_UI_TOOLS = [
+  "task_list",
+  "task_claim",
+  "task_update",
+  "task_create",
+] as const
+
 export const WORK_BOARD_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>

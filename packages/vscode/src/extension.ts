@@ -67,6 +67,7 @@ import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
 import { registerActivityWebview } from "./webview/activityWebviewPanel.js"
 import { registerWorkWebview } from "./webview/workWebviewPanel.js"
 import { registerAppPanels } from "./webview/appPanel.js"
+import { builtinViewResourceUri } from "./webview/appPanel.logic.js"
 import { registerChatPanels } from "./webview/chatPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
 import { registerBrowserPanels } from "./webview/browserPanel.js"
@@ -75,6 +76,14 @@ import { registerAuthModelMindmap, type AuthModelFocusTarget } from "./webview/a
 import { registerAuthExplorer } from "./webview/authExplorerPanel.js"
 import { defaultOpenTarget } from "./commands/sessionOpen.logic.js"
 import { openSessionInChat, openSessionInChatPanel, openSessionViaChat } from "./commands/sessionView.js"
+import type { AppCatalogEntry } from "./client/types.js"
+// The builtin's own module is the single source of truth for its id and its
+// UI tool allowlist, so neither is copied here to drift. Import the
+// `/work-board/panel` subpath specifically, NOT `@agentproto/apps` — the
+// package root pulls in app-kit, whose transitive native `.node` deps esbuild
+// refuses to bundle ("No loader is configured for '.node' files"). Same
+// reason storyPanel.ts imports `/session-story/panel`.
+import { WORK_BOARD_APP_ID, WORK_BOARD_UI_TOOLS } from "@agentproto/apps/work-board/panel"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -322,29 +331,41 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         if (session) storyPanels.open(session)
       },
     ),
-    // agentproto.openWorkBoard — the work-board app's launcher. Resolves the
-    // installed app (id `@agentproto/work-board`) and opens it via the same
-    // appPanels host every installed app UI uses. When it isn't installed,
-    // one actionable message naming the app — never a dead panel, never a
-    // thrown rejection (openSessionInChat's fallback discipline).
+    // agentproto.openWorkBoard — the work-board panel's launcher.
+    //
+    // The work board is a daemon BUILTIN (packages/apps/src/work-board,
+    // compiled in and registered as the `agentproto_work_board` tool), NOT an
+    // installable app: there is no directory with an `.agentproto/APP.md` for
+    // `app_install` to take, and it never appears in `app_list`. Resolving it
+    // through `listApps()` therefore always missed and told the user to
+    // install something uninstallable. Resolve through `app_catalog`, which
+    // merges builtins in, and hand the panel host the catalog's own
+    // `resourceUri` plus the builtin tool allowlist — the board's html calls
+    // `task_list`/`task_update` directly, which `app_tool_call` can't route.
+    // When the catalog can't be read, one actionable message — never a dead
+    // panel, never a thrown rejection (openSessionInChat's fallback
+    // discipline).
     vscode.commands.registerCommand("agentproto.openWorkBoard", async () => {
-      let apps: Awaited<ReturnType<DaemonClient["listApps"]>> = []
+      let entry: AppCatalogEntry | undefined
       let listed = true
       try {
-        apps = await client.listApps()
+        entry = (await client.appCatalog()).find(a => a.appId === WORK_BOARD_APP_ID)
       } catch {
         listed = false
       }
-      const app = apps.find(a => a.appId === "@agentproto/work-board")
-      if (!app) {
+      const resourceUri = entry ? builtinViewResourceUri(entry) : undefined
+      if (!entry || !resourceUri) {
         void vscode.window.showInformationMessage(
           listed
-            ? "The Work Board app (@agentproto/work-board) is not installed on the daemon — install it to open the board."
-            : "Couldn't list installed apps — the Work Board app (@agentproto/work-board) can't be opened.",
+            ? `This daemon doesn't serve the Work Board panel (${WORK_BOARD_APP_ID}). It ships with the daemon rather than being installed, so this means the daemon is older than the panel — upgrade it.`
+            : `Couldn't read the daemon's app catalog — the Work Board panel (${WORK_BOARD_APP_ID}) can't be opened.`,
         )
         return
       }
-      appPanels.open(app)
+      appPanels.open(
+        { appId: entry.appId, name: entry.name, description: entry.description },
+        { resourceUri, builtinTools: WORK_BOARD_UI_TOOLS },
+      )
     }),
   )
 }

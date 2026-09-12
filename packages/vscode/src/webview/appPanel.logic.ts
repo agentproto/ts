@@ -20,6 +20,28 @@ export function appViewResourceUri(appId: string): string {
   return `ui://${appUiToolId(appId)}/view`
 }
 
+/**
+ * The `resources/read` uri for a BUILTIN panel (`app_catalog` entries with
+ * `category: "builtin"` — work-board, sessions-panel, …).
+ *
+ * A builtin registers under its own tool id (`agentproto_work_board`), NOT
+ * the `app_ui_<slug>` an installed app gets, so {@link appViewResourceUri}
+ * derives the wrong uri for one. Prefer the catalog's own `resourceUri`;
+ * fall back to building it from `toolId` for a daemon that reports the tool
+ * but not the uri. Returns undefined when the entry carries neither — the
+ * caller then has nothing to read and must say so rather than open a dead
+ * panel.
+ */
+export function builtinViewResourceUri(entry: {
+  toolId?: string
+  resourceUri?: string
+}): string | undefined {
+  const uri = entry.resourceUri?.trim()
+  if (uri) return uri
+  const toolId = entry.toolId?.trim()
+  return toolId ? `ui://${toolId}/view` : undefined
+}
+
 /** The standalone HTTP url (`GET /apps/<appId>/ui` — http-server.ts's
  *  standalone app host) that renders the SAME app UI in a plain browser tab,
  *  with a REST `window.McpApp` bridge injected instead of the postMessage one.

@@ -32,7 +32,12 @@
 
 import { z } from "zod"
 import { defineApp, type AppHandle } from "@agentproto/app-kit"
-import { WORK_BOARD_HTML } from "./panel.js"
+import {
+  WORK_BOARD_APP_ID,
+  WORK_BOARD_HTML,
+  WORK_BOARD_TOOL_ID,
+  WORK_BOARD_UI_TOOLS,
+} from "./panel.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 
 export const workBoardInputSchema = z.object({
@@ -81,7 +86,7 @@ export function makeWorkBoardApp<TTask = unknown>(
   ops: WorkBoardOps<TTask>,
 ): AgnoMcpApp<WorkBoardInput, WorkBoardOutput<TTask>> {
   return {
-    id: "agentproto_work_board",
+    id: WORK_BOARD_TOOL_ID,
     title: "Work Board",
     description:
       "Open the agentproto work board — a kanban over the daemon's Task " +
@@ -97,7 +102,7 @@ export function makeWorkBoardApp<TTask = unknown>(
 }
 
 export const workBoardApp: AppHandle = defineApp({
-  id: "@agentproto/work-board",
+  id: WORK_BOARD_APP_ID,
   name: "Work Board",
   description:
     "Open the agentproto work board — a kanban over the daemon's Task ledger, scoped by board id " +
@@ -106,6 +111,6 @@ export const workBoardApp: AppHandle = defineApp({
   ui: {
     html: WORK_BOARD_HTML,
     title: "Work Board",
-    tools: ["task_list", "task_claim", "task_update", "task_create"],
+    tools: [...WORK_BOARD_UI_TOOLS],
   },
 })

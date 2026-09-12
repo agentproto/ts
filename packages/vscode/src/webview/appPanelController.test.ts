@@ -11,12 +11,24 @@ function createHost() {
 function stubDaemon(over: Partial<AppDaemon> = {}): AppDaemon {
   return {
     appToolCall: vi.fn().mockResolvedValue({ ok: true }),
+    mcpCall: vi.fn().mockResolvedValue({ ok: true }),
     ...over,
   }
 }
 
 function controller(daemon: AppDaemon, post: (msg: unknown) => void): AppPanelController {
   return new AppPanelController({ appId: "mail-triage", daemon, post })
+}
+
+/** A builtin panel's controller — the work board, whose html calls daemon
+ *  tools by their real names rather than wrapping them in `app_tool_call`. */
+function builtinController(daemon: AppDaemon, post: (msg: unknown) => void): AppPanelController {
+  return new AppPanelController({
+    appId: "@agentproto/work-board",
+    daemon,
+    post,
+    builtinTools: ["task_list", "task_claim", "task_update", "task_create"],
+  })
 }
 
 /** Unwrap the panel's callTool envelope: content[0].text JSON-parsed. */
@@ -155,6 +167,68 @@ describe("AppPanelController", () => {
     expect(host.posts[0]).toMatchObject({
       id: 8,
       error: { message: expect.stringContaining("tool required") },
+    })
+  })
+
+  it("dispatches a builtin panel's tools/call straight to the daemon, not app_tool_call", async () => {
+    const host = createHost()
+    const mcpCall = vi.fn().mockResolvedValue({ boardId: "ws:agentproto", tasks: [] })
+    const appToolCall = vi.fn()
+    const ctrl = builtinController(stubDaemon({ mcpCall, appToolCall }), host.post)
+
+    await ctrl.handleMessage({
+      jsonrpc: "2.0",
+      id: 20,
+      method: "tools/call",
+      params: { name: "task_list", arguments: { boardId: "ws:agentproto", full: true } },
+    })
+
+    // app_tool_call would reject a builtin's appId — it has no app record.
+    expect(appToolCall).not.toHaveBeenCalled()
+    expect(mcpCall).toHaveBeenCalledWith("task_list", { boardId: "ws:agentproto", full: true })
+    expect(unwrap((host.posts[0] as { result: unknown }).result)).toEqual({
+      boardId: "ws:agentproto",
+      tasks: [],
+    })
+  })
+
+  it("refuses a builtin tool outside the panel's allowlist without hitting the daemon", async () => {
+    const host = createHost()
+    const mcpCall = vi.fn()
+    const ctrl = builtinController(stubDaemon({ mcpCall }), host.post)
+
+    await ctrl.handleMessage({
+      jsonrpc: "2.0",
+      id: 21,
+      method: "tools/call",
+      params: { name: "session_gc", arguments: {} },
+    })
+
+    expect(mcpCall).not.toHaveBeenCalled()
+    expect(host.posts[0]).toMatchObject({
+      id: 21,
+      error: { code: -32000, message: expect.stringContaining("is not allowed") },
+    })
+  })
+
+  it("does not let a builtin panel smuggle a tool through app_tool_call", async () => {
+    const host = createHost()
+    const mcpCall = vi.fn()
+    const appToolCall = vi.fn()
+    const ctrl = builtinController(stubDaemon({ mcpCall, appToolCall }), host.post)
+
+    await ctrl.handleMessage({
+      jsonrpc: "2.0",
+      id: 22,
+      method: "tools/call",
+      params: { name: "app_tool_call", arguments: { tool: "session_gc", args: {} } },
+    })
+
+    expect(mcpCall).not.toHaveBeenCalled()
+    expect(appToolCall).not.toHaveBeenCalled()
+    expect(host.posts[0]).toMatchObject({
+      id: 22,
+      error: { message: expect.stringContaining("is not allowed") },
     })
   })
 
