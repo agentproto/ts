@@ -86,6 +86,11 @@
           "type": "webview"
         },
         {
+          "id": "agentproto.work",
+          "name": "Work",
+          "type": "webview"
+        },
+        {
           "id": "agentproto.permissions",
           "name": "Permissions"
         },
@@ -321,6 +326,12 @@
         "title": "agentproto: Open Session in Chat Panel",
         "category": "agentproto",
         "icon": "$(comment)"
+      },
+      {
+        "command": "agentproto.openWorkBoard",
+        "title": "agentproto: Open Work Board",
+        "category": "agentproto",
+        "icon": "$(checklist)"
       },
       {
         "command": "agentproto.openBrowser",

@@ -65,6 +65,7 @@ import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
 import { registerActivityWebview } from "./webview/activityWebviewPanel.js"
+import { registerWorkWebview } from "./webview/workWebviewPanel.js"
 import { registerAppPanels } from "./webview/appPanel.js"
 import { registerChatPanels } from "./webview/chatPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
@@ -161,6 +162,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // shell sessions (PTY terminals, parentless commands) Sessions no longer
   // carries. Rides the same SessionStore signal — no second polling timer.
   registerActivityWebview(ctx, client, store)
+  // The compact Work list: the Task ledger as a narrow read-only sidebar
+  // column below Activity. Rides the same SessionStore signal — no second
+  // polling timer; claiming/status moves stay in the board app.
+  registerWorkWebview(ctx, client, store)
   // Opt-in webview alternatives for Harnesses and Auth Profiles, gated by
   // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
   registerHarnessesWebview(ctx, client, harnessesProvider)
@@ -317,6 +322,30 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         if (session) storyPanels.open(session)
       },
     ),
+    // agentproto.openWorkBoard — the work-board app's launcher. Resolves the
+    // installed app (id `@agentproto/work-board`) and opens it via the same
+    // appPanels host every installed app UI uses. When it isn't installed,
+    // one actionable message naming the app — never a dead panel, never a
+    // thrown rejection (openSessionInChat's fallback discipline).
+    vscode.commands.registerCommand("agentproto.openWorkBoard", async () => {
+      let apps: Awaited<ReturnType<DaemonClient["listApps"]>> = []
+      let listed = true
+      try {
+        apps = await client.listApps()
+      } catch {
+        listed = false
+      }
+      const app = apps.find(a => a.appId === "@agentproto/work-board")
+      if (!app) {
+        void vscode.window.showInformationMessage(
+          listed
+            ? "The Work Board app (@agentproto/work-board) is not installed on the daemon — install it to open the board."
+            : "Couldn't list installed apps — the Work Board app (@agentproto/work-board) can't be opened.",
+        )
+        return
+      }
+      appPanels.open(app)
+    }),
   )
 }
 
