@@ -91,6 +91,7 @@ Usage:
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
                                       [--access-profile <ref>]
+                                      [--max-cost-usd <n>] [--cost-budget <spec>]
                                       [--worktree | --no-worktree]
                                       [--sandbox <provider-or-json>]
                                       [--hold-permissions] [--no-color]
@@ -196,10 +197,32 @@ sessions start flags:
                                  (wins over --orchestrator when both are given)
   --mcp-servers-json <json>     JSON array of {name, transport, ref?} servers
   --mcp-servers-json @<file>    same, read from a file instead of inline JSON
-  --access-profile <ref>        bill this spawn through the named auth profile
-                                 (CLI twin of the MCP agent_start access.profileRef
-                                 — pin endpoint + credential, never silently the
-                                 default). Overrides the daemon's default profile.
+--access-profile <ref>        bill this spawn through the named auth profile
+                                  (CLI twin of the MCP agent_start access.profileRef
+                                  — pin endpoint + credential, never silently the
+                                  default). Overrides the daemon's default profile.
+  --max-cost-usd <n>            HARD spend ceiling in USD for THIS session: the
+                                  daemon KILLS the session at the next turn end
+                                  once its cost crosses n. This is the kill
+                                  switch — a session stopped here is stopped.
+                                  (If you want a warning/governance trip rather
+                                  than a kill, use --cost-budget instead.)
+                                  Mirrors MCP agent_start.maxCostUsd.
+  --cost-budget <spec>          windowed spend cap that NEVER kills the session —
+                                  crossing it trips a governance policy
+                                  (policy:failed on the completion-policy bus)
+                                  for a supervisor/policy to act on. THIS IS THE
+                                  OTHER THING: do not reach for it expecting the
+                                  session to stop at the ceiling.
+                                  spec: '<usd>:<window>[:<scope>]' — e.g.
+                                  20:5h:profile or 15:7d (scope defaults to
+                                  'session'; 'profile' caps the AGGREGATE spend
+                                  of every session billed through the spawn's
+                                  --access-profile). window is a rolling spec
+                                  ('5h', '7d', ISO 'P7D'). A full JSON object —
+                                  '{"maxCostUsd":20,"window":"5h","scope":"profile"}'
+                                  — is also accepted. Mirrors MCP
+                                  agent_start.costBudget.
   --worktree                    isolate this spawn in its OWN git worktree (auto-
                                  minted slug/branch on origin/main) regardless of
                                  the daemon's worktrees.isolation policy. Mirrors
@@ -332,6 +355,27 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   return 0
 }
 
+/** Validate the JSON-object spelling of --cost-budget. Returns a short error
+ *  message, or null when the value is a well-formed CostBudget
+ *  `{ maxCostUsd: positive number, window: string, scope: "session"|"profile" }`. */
+function costBudgetShapeError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "expected a JSON object {maxCostUsd, window, scope}"
+  }
+  const obj = value as Record<string, unknown>
+  const usd = obj.maxCostUsd
+  if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) {
+    return "maxCostUsd must be a positive number"
+  }
+  if (typeof obj.window !== "string" || obj.window.length === 0) {
+    return 'window must be a rolling-window spec string (e.g. "5h", "7d", "P7D")'
+  }
+  if (obj.scope !== undefined && obj.scope !== "session" && obj.scope !== "profile") {
+    return 'scope must be "session" or "profile"'
+  }
+  return null
+}
+
 async function runStart(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -357,6 +401,8 @@ async function runStart(args: readonly string[]): Promise<number> {
       "mcp-servers-json": { type: "string" },
       "hold-permissions": { type: "boolean" },
       "access-profile": { type: "string" },
+      "max-cost-usd": { type: "string" },
+      "cost-budget": { type: "string" },
       worktree: { type: "boolean" },
       "no-worktree": { type: "boolean" },
       mode: { type: "string" },
@@ -525,6 +571,81 @@ async function runStart(args: readonly string[]): Promise<number> {
     return 2
   }
 
+  // Parse --max-cost-usd client-side, before any network activity: a
+  // malformed number should fail here, not as an opaque daemon-side 400.
+  let maxCostUsd: number | undefined
+  if (values["max-cost-usd"] !== undefined) {
+    const n = Number(values["max-cost-usd"])
+    if (!Number.isFinite(n) || n <= 0) {
+      process.stderr.write(
+        `agentproto sessions start: invalid --max-cost-usd "${values["max-cost-usd"]}" — expected a positive USD amount, e.g. --max-cost-usd 5\n`
+      )
+      return 2
+    }
+    maxCostUsd = n
+  }
+
+  // Parse --cost-budget client-side. Two spellings:
+  //   compact   <usd>:<window>[:<scope>]   e.g. 20:5h:profile, 15:7d
+  //   JSON      {"maxCostUsd":20,"window":"5h","scope":"profile"}
+  // The compact form covers the common case without JSON typing; the JSON
+  // form is the honest pass-through when a caller is scripting the full
+  // CostBudget shape. `window` specs never contain ':' and a USD amount never
+  // does either, so ':' is an unambiguous separator.
+  let costBudget: unknown
+  if (values["cost-budget"] !== undefined) {
+    const raw = values["cost-budget"].trim()
+    if (raw.startsWith("{")) {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(raw)
+      } catch (err) {
+        process.stderr.write(
+          `agentproto sessions start: invalid --cost-budget JSON: ${err instanceof Error ? err.message : String(err)}\n`
+        )
+        return 2
+      }
+      const err = costBudgetShapeError(parsed)
+      if (err) {
+        process.stderr.write(`agentproto sessions start: invalid --cost-budget: ${err}\n`)
+        return 2
+      }
+      // The daemon's schema requires `scope`; default it exactly like the
+      // compact spelling does.
+      costBudget = { scope: "session", ...(parsed as Record<string, unknown>) }
+    } else {
+      const parts = raw.split(":")
+      if (parts.length < 2 || parts.length > 3) {
+        process.stderr.write(
+          `agentproto sessions start: invalid --cost-budget "${raw}" — expected <usd>:<window>[:<scope>], e.g. 20:5h:profile\n`
+        )
+        return 2
+      }
+      const [usdRaw, window, scopeRaw] = parts
+      const usd = Number(usdRaw)
+      if (!Number.isFinite(usd) || usd <= 0) {
+        process.stderr.write(
+          `agentproto sessions start: invalid --cost-budget "${raw}" — the USD amount must be a positive number\n`
+        )
+        return 2
+      }
+      if (!window) {
+        process.stderr.write(
+          `agentproto sessions start: invalid --cost-budget "${raw}" — the rolling window is required (e.g. 5h, 7d, P7D)\n`
+        )
+        return 2
+      }
+      const scope = scopeRaw ?? "session"
+      if (scope !== "session" && scope !== "profile") {
+        process.stderr.write(
+          `agentproto sessions start: invalid --cost-budget scope "${scope}" — expected "session" or "profile"\n`
+        )
+        return 2
+      }
+      costBudget = { maxCostUsd: usd, window, scope }
+    }
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -562,6 +683,15 @@ async function runStart(args: readonly string[]): Promise<number> {
   // `resolveAccessProfileAuth`. Mutation-free: the secret itself is resolved
   // daemon-side, never carried over HTTP/on the command line.
   if (values["access-profile"]) body.access = { profileRef: values["access-profile"] }
+  // Spend caps — the CLI twins of the MCP `agent_start` tool's `maxCostUsd`
+  // and `costBudget` fields. DIFFERENT things (the help must not blur them):
+  //   maxCostUsd  the HARD ceiling — the daemon KILLS the session at the next
+  //               turn end once its cost crosses it.
+  //   costBudget  a windowed governance cap that NEVER kills the session —
+  //               crossing it trips a policy (policy:failed) for a supervisor
+  //               to act on. `{ maxCostUsd, window, scope }` as parsed above.
+  if (maxCostUsd !== undefined) body.maxCostUsd = maxCostUsd
+  if (costBudget !== undefined) body.costBudget = costBudget
   // Worktree isolation — the CLI twin of the MCP `agent_start` tool's
   // `worktree` field. `--worktree` requests True (auto-mint a slug/branch on
   // `origin/main`); `--no-worktree` forces False even when the daemon's
