@@ -24,8 +24,21 @@ import { appLabel } from "../views/appsTree.logic.js"
 import { appViewResourceUri } from "./appPanel.logic.js"
 import { AppPanelController } from "./appPanelController.js"
 
+/** Per-open overrides. Both are set together for a BUILTIN panel (an
+ *  `app_catalog` entry with `category: "builtin"`), which is served at its
+ *  own `ui://<toolId>/view` and dispatches daemon tools directly instead of
+ *  through `app_tool_call` — see appPanelController.ts's builtin mode. An
+ *  installed app passes neither. */
+export interface AppPanelOptions {
+  /** Override the `resources/read` uri, instead of deriving
+   *  `ui://app_ui_<slug>/view` from the appId. */
+  resourceUri?: string
+  /** Builtin tool allowlist; its presence selects builtin dispatch. */
+  builtinTools?: readonly string[]
+}
+
 export interface AppPanels {
-  open(app: InstalledAppInfo): void
+  open(app: InstalledAppInfo, opts?: AppPanelOptions): void
 }
 
 export function registerAppPanels(
@@ -35,7 +48,7 @@ export function registerAppPanels(
   const panels = new Map<string, vscode.WebviewPanel>()
 
   return {
-    open(app: InstalledAppInfo): void {
+    open(app: InstalledAppInfo, opts: AppPanelOptions = {}): void {
       const existing = panels.get(app.appId)
       if (existing) {
         existing.reveal(vscode.ViewColumn.One, false)
@@ -57,6 +70,7 @@ export function registerAppPanels(
         appId: app.appId,
         daemon: client,
         post: msg => void panel.webview.postMessage(msg),
+        builtinTools: opts.builtinTools,
       })
 
       panel.webview.onDidReceiveMessage(
@@ -71,7 +85,9 @@ export function registerAppPanels(
 
       void (async () => {
         try {
-          const html = await client.readResource(appViewResourceUri(app.appId))
+          const html = await client.readResource(
+            opts.resourceUri ?? appViewResourceUri(app.appId),
+          )
           panel.webview.html = buildAppHostHtml(html, appLabel(app))
         } catch (err) {
           panel.dispose()

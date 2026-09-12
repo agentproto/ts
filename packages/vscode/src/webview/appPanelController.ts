@@ -25,6 +25,10 @@
 export interface AppDaemon {
   /** `app_tool_call` — dispatch a UI-allowlisted tool for an installed app. */
   appToolCall(appId: string, tool: string, args?: Record<string, unknown>): Promise<unknown>
+  /** Direct tool dispatch. Only used in builtin mode (see
+   *  {@link AppPanelControllerOptions.builtinTools}): a builtin panel has no
+   *  installed-app record for `app_tool_call` to resolve against. */
+  mcpCall(tool: string, args?: Record<string, unknown>): Promise<unknown>
 }
 
 interface RpcMessage {
@@ -39,6 +43,21 @@ export interface AppPanelControllerOptions {
   daemon: AppDaemon
   /** Send a message to the webview (relayed on into the panel iframe). */
   post: (msg: unknown) => void
+  /**
+   * Builtin mode: the panel's declared tool allowlist. Set it for a builtin
+   * panel (`app_catalog` `category: "builtin"`), leave it undefined for an
+   * installed app.
+   *
+   * A builtin's html calls daemon tools by their REAL names — the work board
+   * calls `task_list` / `task_claim` / `task_update` / `task_create`
+   * (packages/apps work-board/index.ts `ui.tools`) — because it is compiled
+   * into the daemon rather than installed, so `app_tool_call` has no app
+   * record to resolve its appId against and would reject every call. In
+   * builtin mode the bridge therefore dispatches straight to the daemon, and
+   * THIS list is what keeps that from being an open tool proxy for html the
+   * panel fetched: a name outside it is refused here, client-side.
+   */
+  builtinTools?: readonly string[]
 }
 
 /** JSON-RPC "method not found" — mapped to error code -32601. */
@@ -48,11 +67,13 @@ export class AppPanelController {
   private readonly appId: string
   private readonly daemon: AppDaemon
   private readonly post: (msg: unknown) => void
+  private readonly builtinTools?: ReadonlySet<string>
 
   constructor(opts: AppPanelControllerOptions) {
     this.appId = opts.appId
     this.daemon = opts.daemon
     this.post = opts.post
+    this.builtinTools = opts.builtinTools ? new Set(opts.builtinTools) : undefined
   }
 
   /**
@@ -103,6 +124,17 @@ export class AppPanelController {
   }
 
   private async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    if (this.builtinTools) {
+      // Builtin panel: no app record, so route to the daemon tool itself,
+      // gated by the panel's declared allowlist. A builtin never wraps its
+      // calls in `app_tool_call`, so that name is not special-cased here —
+      // it would simply fail the allowlist like any other unlisted tool.
+      if (!name) throw new Error("tools/call: name required")
+      if (!this.builtinTools.has(name)) {
+        throw new Error(`tool '${name}' is not allowed for builtin panel '${this.appId}'`)
+      }
+      return jsonContent(await this.daemon.mcpCall(name, args))
+    }
     if (name === "app_tool_call") {
       // The panels' own routing: callTool("app_tool_call", { appId, tool,
       // args }). Unpack it so the daemon call carries the real tool name;

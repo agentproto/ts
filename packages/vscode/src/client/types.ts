@@ -718,6 +718,15 @@ export interface AppCatalogEntry {
   category?: string
   installed: boolean
   hasUi: boolean
+  /** `category: "builtin"` only — the MCP tool the daemon registered the
+   *  panel under, and the `resources/read` uri it serves the panel html at.
+   *  A builtin is compiled into the daemon (`packages/apps/src/<slug>`), so
+   *  it is ALWAYS `installed: true`, never appears in `app_list`, and is
+   *  served at `ui://<toolId>/view` — not the `ui://app_ui_<slug>/view` that
+   *  webview/appPanel.logic.ts derives for an installed app. Absent on
+   *  daemons predating the fields, and on non-builtin entries. */
+  toolId?: string
+  resourceUri?: string
 }
 
 /** `workflow_run_file` acknowledgement — the run was accepted and is
