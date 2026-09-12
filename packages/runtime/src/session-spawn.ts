@@ -2706,6 +2706,7 @@ export async function spawnAgentSession(
     let commandPreview: string | undefined
     let readUsage: (() => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
     let sandboxId: string | undefined
+    let sandboxProvider: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
     let sandboxPorts: Record<number, string> | undefined
     let appServe: SessionAppServeInfo | undefined
@@ -2743,6 +2744,7 @@ export async function spawnAgentSession(
       agentSession = booted.agentSession
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
+      sandboxProvider = booted.provider
       sandboxTeardown = booted.sandboxTeardown
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
@@ -2940,6 +2942,7 @@ export async function spawnAgentSession(
           }
         : {}),
       ...(sandboxId ? { remote: true, sandboxId } : {}),
+      ...(sandboxProvider ? { sandboxProvider } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
       ...(appServe ? { appServe } : {}),
@@ -3156,6 +3159,9 @@ type SandboxBootResult =
       agentSession: AgentSessionLike
       commandPreview: string
       sandboxId: string
+      /** Provider slug (e.g. `"e2b"`, `"local"`) — stamped onto the
+       *  descriptor's `sandboxProvider` by the caller. */
+      provider: string
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
       sandboxPorts?: Record<number, string>
       /** WP3 — the in-box app-serve outcome (`input.appServe`), stamped onto
@@ -3530,6 +3536,7 @@ async function bootSandboxAgentSession(opts: {
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
+    provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
     ...(appServe ? { appServe } : {}),

@@ -451,6 +451,9 @@ export interface SessionDescriptor {
   browserLocation?: "local" | "cloud"
   remote?: boolean
   sandboxId?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.sandboxProvider — the
+   *  sandbox provider slug (e.g. "e2b", "local"), when `remote` is true. */
+  sandboxProvider?: string
   sandboxTeardown?: "kill" | "pause"
   /** Mirrors `@agentproto/runtime` SessionDescriptor.availableCommands — the
    *  slash-commands/skills the active harness/adapter currently advertises

@@ -1698,6 +1698,19 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
     expect(el(panel, "cost-btn").textContent).not.toContain("in ")
   })
 
+  it("shows the sandbox chip right of the cost pill, tooltipped with the provider and id", () => {
+    const panel = renderPanel()
+    init(panel, { sandboxId: "sbx_123", sandboxProvider: "e2b" })
+    expect(el(panel, "sandbox-chip").textContent).toBe("⬚")
+    expect(el(panel, "sandbox-chip").title).toBe("Running in a sandbox — e2b · sbx_123")
+  })
+
+  it("hides the sandbox chip entirely for a session that isn't sandboxed", () => {
+    const panel = renderPanel()
+    init(panel, {})
+    expect(el(panel, "sandbox-chip").textContent).toBe("")
+  })
+
   it("paints the title status dot from the visibility state (#conversation-chrome)", () => {
     const panel = renderPanel()
     init(panel, { status: "running", busy: true })

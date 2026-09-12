@@ -1615,6 +1615,11 @@ export interface SessionDescriptor {
   remote?: boolean
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`), when `remote` is true. */
   sandboxId?: string
+  /** Sandbox provider slug (`agent_start.sandbox`'s provider, e.g. `"e2b"`,
+   *  `"local"`), when `remote` is true. Identifies WHERE the box lives, not
+   *  just THAT one exists — the VS Code panel's sandbox chip names it in its
+   *  tooltip alongside `sandboxId`. */
+  sandboxProvider?: string
   /** What session close does to the box (PR3 lifecycle) — `"kill"` (the
    *  default, ephemeral) or `"pause"` (keeps `sandboxId` reconnectable via
    *  `agent_start.sandbox.reuse`). Only set when `remote` is true. */
@@ -3301,6 +3306,9 @@ export interface SpawnAgentInput {
   remote?: boolean
   /** Provider-assigned sandbox id, when `remote` is true. */
   sandboxId?: string
+  /** Sandbox provider slug, when `remote` is true — see
+   *  `SessionDescriptor.sandboxProvider`. */
+  sandboxProvider?: string
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
@@ -6214,6 +6222,7 @@ export function createSessionsRegistry(opts?: {
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
+        ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
@@ -6348,6 +6357,7 @@ export function createSessionsRegistry(opts?: {
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
+        ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),

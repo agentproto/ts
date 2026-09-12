@@ -1061,6 +1061,7 @@ export async function restartAgentSession(
         : {}),
       remote: true,
       sandboxId: host.sandboxId,
+      sandboxProvider: providerSlug,
       sandboxTeardown: lifecyclePolicy.teardown,
       ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
       commandPreview: `sandbox:${providerSlug} → ${adapterSlug}`,
