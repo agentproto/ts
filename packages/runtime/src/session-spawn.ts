@@ -133,7 +133,8 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
-import { readSandboxLedger, recordSandboxBoot, recordSandboxOrigin, resolveReuseFromLedger } from "./sandbox-ledger.js"
+import { readSandboxLedger, recordSandboxBoot, recordSandboxLiveness, recordSandboxOrigin, resolveReuseFromLedger } from "./sandbox-ledger.js"
+import { isSandboxBoxGoneError } from "@agentproto/sandbox"
 import {
   DEFAULT_APP_SERVE_PORT,
   startSandboxAppServe,
@@ -3453,6 +3454,14 @@ async function bootSandboxAgentSession(opts: {
       secrets: { slugs, resolver: resolveSandboxSecret },
     })
   } catch (err) {
+    // A provider not-found on reconnect is a BOX DEATH, not a flaky
+    // transport error: flip the ledger row to "gone" (via the liveness
+    // stamp) instead of leaving the phantom paused/connected entry —
+    // `isSandboxBoxGoneError` is the portability sentinel providers raise
+    // (e2b: SandboxNotFoundError → SandboxBoxGoneError). Best-effort.
+    if (reuseSandboxId !== undefined && isSandboxBoxGoneError(err)) {
+      recordSandboxLiveness(reuseSandboxId, false)
+    }
     return reuseSandboxId !== undefined
       ? {
           ok: false,

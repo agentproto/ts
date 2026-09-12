@@ -24,6 +24,7 @@ import {
   removeSandboxLedgerEntry,
   resolveReuseFromLedger,
   sandboxLedgerPath,
+  recordSandboxLiveness,
   type SandboxLedgerEntry,
 } from "../sandbox-ledger.js"
 
@@ -257,5 +258,38 @@ describe("proxy close() stamps the ledger (PLAN-D1 §1)", () => {
     })
     await expect(proxy.close()).rejects.toThrow("box already gone")
     expect(readSandboxLedger(path)[0]?.state).toBe("stopped")
+  })
+})
+
+describe("sandbox liveness fields", () => {
+  it("accepts 'gone' as a state and round-trips it", () => {
+    const path = newLedgerPath()
+    recordSandboxBoot({ sandboxId: "bx_g", provider: "e2b", state: "booted", path })
+    recordSandboxState("bx_g", "gone", path)
+    expect(readSandboxLedger(path)[0]?.state).toBe("gone")
+  })
+
+  it("recordSandboxLiveness stamps sandboxAlive/sandboxCheckedAt and flips a dead row to gone", () => {
+    const path = newLedgerPath()
+    recordSandboxBoot({ sandboxId: "bx_p", provider: "e2b", state: "booted", path })
+    recordSandboxState("bx_p", "paused", path)
+
+    recordSandboxLiveness("bx_p", true, path)
+    const alive = readSandboxLedger(path)[0]
+    expect(alive?.state).toBe("paused")
+    expect(alive?.sandboxAlive).toBe(true)
+    expect(typeof alive?.sandboxCheckedAt).toBe("string")
+
+    recordSandboxLiveness("bx_p", false, path)
+    const dead = readSandboxLedger(path)[0]
+    expect(dead?.state).toBe("gone")
+    expect(dead?.sandboxAlive).toBe(false)
+    expect(typeof dead?.sandboxCheckedAt).toBe("string")
+  })
+
+  it("recordSandboxLiveness is a no-op for an unknown id and never throws", () => {
+    const path = newLedgerPath()
+    expect(() => recordSandboxLiveness("bx_never", false, path)).not.toThrow()
+    expect(readSandboxLedger(path)).toHaveLength(0)
   })
 })

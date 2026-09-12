@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { SandboxSpec } from "@agentproto/sandbox"
 
-const { sandboxCreateMock } = vi.hoisted(() => ({ sandboxCreateMock: vi.fn() }))
+const { sandboxCreateMock, sandboxGetInfoMock } = vi.hoisted(() => ({
+  sandboxCreateMock: vi.fn(),
+  sandboxGetInfoMock: vi.fn(),
+}))
 
 vi.mock("e2b", () => ({
-  Sandbox: { create: sandboxCreateMock },
+  Sandbox: { create: sandboxCreateMock, getInfo: sandboxGetInfoMock },
+  SandboxNotFoundError: class SandboxNotFoundError extends Error {
+    constructor(message?: string) {
+      super(message)
+      this.name = "SandboxNotFoundError"
+    }
+  },
 }))
 
 function fakeSandbox(overrides: Partial<Record<string, unknown>> = {}) {

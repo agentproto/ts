@@ -36,8 +36,12 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 
-/** Lifecycle states a ledger row can carry. */
-export type SandboxLedgerState = "booted" | "paused" | "connected" | "stopped"
+/** Lifecycle states a ledger row can carry. `"gone"` is stamped when the
+ *  PROVIDER answers the box no longer exists (liveness probe 404 / a
+ *  reconnect failing with the provider's not-found error) — distinct from
+ *  `"stopped"` (WE tore it down) and from `"paused"` (the last thing WE
+ *  did, which a vanished box makes a lie). */
+export type SandboxLedgerState = "booted" | "paused" | "connected" | "stopped" | "gone"
 
 export interface SandboxLedgerEntry {
   sandboxId: string
@@ -52,6 +56,13 @@ export interface SandboxLedgerEntry {
   /** ISO instant the box is expected to idle-expire — stamped only when the
    *  boot knew a window (`lifecycle.pause_after_idle`). */
   expiresAt?: string
+  /** Last PROVIDER liveness probe verdict (`SandboxProvider.probe`) — the
+   *  only signal that distinguishes box death from session death. Absent
+   *  when never probed (or the provider can't probe): the ledger's `state`
+   *  alone is NOT trustworthy — a dead box looks paused until probed. */
+  sandboxAlive?: boolean
+  /** ISO instant `sandboxAlive` was computed. */
+  sandboxCheckedAt?: string
 }
 
 export interface SandboxLedgerSnapshot {
@@ -75,7 +86,11 @@ const serialize = (snapshot: SandboxLedgerSnapshot): string =>
   JSON.stringify(snapshot, null, 2) + "\n"
 
 const isLedgerState = (value: unknown): value is SandboxLedgerState =>
-  value === "booted" || value === "paused" || value === "connected" || value === "stopped"
+  value === "booted" ||
+  value === "paused" ||
+  value === "connected" ||
+  value === "stopped" ||
+  value === "gone"
 
 const isEntry = (value: unknown): value is SandboxLedgerEntry => {
   if (typeof value !== "object" || value === null) return false
@@ -201,11 +216,11 @@ export function recordSandboxBoot(opts: {
   }
 }
 
-/** Stamp a state transition ("paused"/"stopped") for an existing row.
+/** Stamp a state transition ("paused"/"stopped"/"gone") for an existing row.
  *  Best-effort: never throws. */
 export function recordSandboxState(
   sandboxId: string,
-  state: "paused" | "stopped",
+  state: "paused" | "stopped" | "gone",
   path?: string,
 ): void {
   try {
@@ -214,6 +229,34 @@ export function recordSandboxState(
     if (!prior) return // Nothing boot recorded — no row to transition.
     upsertSandboxLedger(
       { ...prior, state, updatedAt: nowIso() },
+      target,
+    )
+  } catch {
+    // Best-effort, always.
+  }
+}
+
+/** Stamp a PROVIDER liveness verdict onto an existing row — `sandboxAlive`
+ *  + `sandboxCheckedAt`, and when the verdict is death ALSO flip the row to
+ *  `"gone"` (the state alone was never evidence of death; the probe is).
+ *  Best-effort: never throws. */
+export function recordSandboxLiveness(
+  sandboxId: string,
+  alive: boolean,
+  path?: string,
+): void {
+  try {
+    const target = path ?? sandboxLedgerPath()
+    const prior = readSandboxLedger(target).find(e => e.sandboxId === sandboxId)
+    if (!prior) return
+    upsertSandboxLedger(
+      {
+        ...prior,
+        ...(alive ? {} : { state: "gone" as const }),
+        sandboxAlive: alive,
+        sandboxCheckedAt: nowIso(),
+        updatedAt: nowIso(),
+      },
       target,
     )
   } catch {

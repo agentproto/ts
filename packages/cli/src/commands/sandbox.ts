@@ -29,6 +29,7 @@ import {
   makeSandboxCredsStore,
   makeSandboxResolver,
   readSandboxLedger,
+  recordSandboxLiveness,
   removeSandboxLedgerEntry,
   type SandboxLedgerEntry,
 } from "@agentproto/runtime"
@@ -42,6 +43,13 @@ Usage:
 
 list   Show the sandbox ledger — every box the daemon booted, reconnected
        to, paused, or stopped, with its current state and idle-expiry.
+       Columns:
+         LIVE  provider liveness probe result (yes/no) — the ONLY signal
+               that the box still exists on its provider. STATE is what the
+               daemon LAST DID and is NOT trustworthy: a provider-reaped
+               box still shows paused/connected (and its app URL) until
+               probed. "—" when the provider can't probe, "?" when the
+               probe errored. Pass --no-probe to skip the network calls.
        --json prints the raw ledger rows.
 
 attach Connects to an ALREADY-EXISTING sandbox (e.g. a Box or e2b sandbox
@@ -161,7 +169,10 @@ async function runList(args: readonly string[]): Promise<number> {
     args: [...args],
     allowPositionals: true,
     strict: true,
-    options: { json: { type: "boolean" } },
+    options: {
+      json: { type: "boolean" },
+      "no-probe": { type: "boolean" },
+    },
   })
   const entries = readSandboxLedger()
   if (values.json) {
@@ -172,8 +183,9 @@ async function runList(args: readonly string[]): Promise<number> {
     process.stdout.write("no sandboxes in the ledger (~/.agentproto/sandboxes.json)\n")
     return 0
   }
+  const live = values["no-probe"] ? [] : await probeLedgerLiveness(entries)
   const rows: Array<string[]> = [
-    ["ID", "PROVIDER", "LABEL", "STATE", "AGE", "EXPIRES", "ORIGIN SESSION"],
+    ["ID", "PROVIDER", "LABEL", "STATE", "LIVE", "AGE", "EXPIRES", "ORIGIN SESSION"],
   ]
   for (const e of entries) {
     const id = e.sandboxId.length > 20 ? `${e.sandboxId.slice(0, 17)}…` : e.sandboxId
@@ -185,6 +197,7 @@ async function runList(args: readonly string[]): Promise<number> {
       e.provider,
       e.label ?? "—",
       e.state,
+      live.find(r => r.sandboxId === e.sandboxId)?.verdict ?? "—",
       relative(e.updatedAt),
       expires,
       e.originSessionId ?? "—",
@@ -198,6 +211,35 @@ async function runList(args: readonly string[]): Promise<number> {
     process.stdout.write(`${line}\n`)
   }
   return 0
+}
+
+/**
+ * Probe each ledger row's provider for box liveness (`SandboxProvider.probe`
+ * — the provider control plane, not the box) and stamp the verdict back into
+ * the ledger (`recordSandboxLiveness`, which flips a dead row to "gone").
+ * Verdicts: "yes" alive · "no" gone · "?" probe failed · "—" provider can't
+ * probe. Best-effort per row — one broken box never fails the listing.
+ */
+async function probeLedgerLiveness(
+  entries: readonly SandboxLedgerEntry[],
+): Promise<Array<{ sandboxId: string; verdict: string }>> {
+  const resolver = makeSandboxResolver(makeSandboxCredsStore())
+  const out: Array<{ sandboxId: string; verdict: string }> = []
+  for (const e of entries) {
+    let verdict = "—"
+    try {
+      const handle = await resolver(e.provider)
+      if (handle?.provider?.probe) {
+        const probe = await handle.provider.probe(e.sandboxId)
+        verdict = probe.alive ? "yes" : "no"
+        recordSandboxLiveness(e.sandboxId, probe.alive)
+      }
+    } catch {
+      verdict = "?"
+    }
+    out.push({ sandboxId: e.sandboxId, verdict })
+  }
+  return out
 }
 
 async function runRm(args: readonly string[]): Promise<number> {

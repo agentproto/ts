@@ -1,13 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { SandboxSpec } from "@agentproto/sandbox"
+import { isSandboxBoxGoneError, SandboxBoxGoneError } from "@agentproto/sandbox"
 
-const { sandboxCreateMock, sandboxConnectMock } = vi.hoisted(() => ({
+const { sandboxCreateMock, sandboxConnectMock, sandboxGetInfoMock } = vi.hoisted(() => ({
   sandboxCreateMock: vi.fn(),
   sandboxConnectMock: vi.fn(),
+  sandboxGetInfoMock: vi.fn(),
 }))
 
 vi.mock("e2b", () => ({
-  Sandbox: { create: sandboxCreateMock, connect: sandboxConnectMock },
+  Sandbox: { create: sandboxCreateMock, connect: sandboxConnectMock, getInfo: sandboxGetInfoMock },
+  SandboxNotFoundError: class SandboxNotFoundError extends Error {
+    constructor(message?: string) {
+      super(message)
+      this.name = "SandboxNotFoundError"
+    }
+  },
 }))
 
 function fakeSandbox(overrides: Partial<Record<string, unknown>> = {}) {
@@ -158,5 +166,63 @@ describe("e2bSandboxProvider.connect", () => {
       const booted = await e2bSandboxProvider.connect!("sbx_abc", spec, { env: {}, expose: "private" })
       expect(booted.token).toBeUndefined()
     })
+  })
+})
+
+describe("e2bSandboxProvider liveness (probe + gone-on-reconnect)", () => {
+  beforeEach(() => {
+    sandboxCreateMock.mockReset()
+    sandboxConnectMock.mockReset()
+    sandboxGetInfoMock.mockReset()
+    vi.stubGlobal("fetch", vi.fn())
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const spec: SandboxSpec = { provider: "e2b", config: {} }
+
+  it("probe reports alive with the provider state on GET /sandboxes/:id", async () => {
+    const { Sandbox } = await import("e2b")
+    const getInfo = Sandbox.getInfo as ReturnType<typeof vi.fn>
+    getInfo.mockResolvedValue({ sandboxId: "sbx_abc", state: "running" })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const probe = await e2bSandboxProvider.probe!("sbx_abc")
+
+    expect(getInfo).toHaveBeenCalledWith("sbx_abc", expect.objectContaining({ apiKey: process.env.E2B_API_KEY }))
+    expect(probe).toEqual({ alive: true, state: "running" })
+  })
+
+  it("probe reports NOT FOUND (alive: false) on the provider's 404, and never treats a probe error as death", async () => {
+    const { Sandbox, SandboxNotFoundError } = await import("e2b")
+    const getInfo = Sandbox.getInfo as ReturnType<typeof vi.fn>
+    getInfo.mockRejectedValueOnce(new SandboxNotFoundError("Sandbox sbx_abc not found"))
+    getInfo.mockRejectedValueOnce(new Error("e2b API 503"))
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    await expect(e2bSandboxProvider.probe!("sbx_abc")).resolves.toEqual({ alive: false })
+    await expect(e2bSandboxProvider.probe!("sbx_abc")).rejects.toThrow(/503/)
+  })
+
+  it("connect on a vanished box throws SandboxBoxGoneError (the portability sentinel), not the raw SDK error", async () => {
+    const { SandboxNotFoundError } = await import("e2b")
+    sandboxConnectMock.mockRejectedValue(new SandboxNotFoundError("Sandbox sbx_gone not found"))
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const err = await e2bSandboxProvider.connect!("sbx_gone", spec, { env: {} }).catch(e => e)
+    expect(isSandboxBoxGoneError(err)).toBe(true)
+    expect(err).toBeInstanceOf(SandboxBoxGoneError)
+    expect(err.message).toContain("sbx_gone")
+    expect(err.cause).toBeInstanceOf(SandboxNotFoundError)
+  })
+
+  it("connect still rethrows unrelated connect failures verbatim (not box-gone)", async () => {
+    sandboxConnectMock.mockRejectedValue(new Error("network reset"))
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const err = await e2bSandboxProvider.connect!("sbx_abc", spec, { env: {} }).catch(e => e)
+    expect(isSandboxBoxGoneError(err)).toBe(false)
+    expect(err.message).toBe("network reset")
   })
 })

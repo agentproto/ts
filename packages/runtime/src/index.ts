@@ -330,9 +330,14 @@ export {
 } from "./sandbox-adapters.js"
 export {
   readSandboxLedger,
+  recordSandboxBoot,
+  recordSandboxLiveness,
+  recordSandboxOrigin,
+  recordSandboxState,
   removeSandboxLedgerEntry,
   resolveReuseFromLedger,
   sandboxLedgerPath,
+  upsertSandboxLedger,
   type ReuseResolution,
   type SandboxLedgerEntry,
   type SandboxLedgerState,

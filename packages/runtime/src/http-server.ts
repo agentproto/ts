@@ -146,6 +146,8 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
+import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
+import { readSandboxLedger, recordSandboxLiveness } from "./sandbox-ledger.js"
 import { parseJsonRecordText, DEFAULT_APP_SERVE_PORT, type SandboxAppServeSpec } from "./sandbox-app-serve.js"
 import { listPresets } from "./preset-tools.js"
 import {
@@ -2746,6 +2748,24 @@ export async function startHttpServer(
           if (handled) return
         }
 
+        // Sandbox ledger routes — GET /sandboxes/:id/alive probes the box's
+        // PROVIDER for liveness and stamps the verdict into the ledger. The
+        // ledger `state` alone is not trustworthy (an e2b box can vanish
+        // while the row still says paused/connected and still advertises its
+        // app URL) — this route is the box-death signal, distinct from any
+        // session-death signal. GET is read-only-but-probing, ungated.
+        if (path.startsWith("/sandboxes")) {
+          if ((req.method ?? "GET") !== "GET") {
+            const gate = checkSessionsToken(req)
+            if (gate !== "ok") {
+              rejectUnauthorizedSession(req, res, gate)
+              return
+            }
+          }
+          const handled = await handleSandboxes(req, res, path, opts.resolveSandboxProvider)
+          if (handled) return
+        }
+
         // Permission inbox routes — GET /permissions (list pending across all
         // permission-hold sessions), POST /permissions/:id (approve/deny).
         // Mirrors the MCP `permissions_list` / `permissions_respond` tools —
@@ -3900,6 +3920,79 @@ async function resolveSlugFromCwd(cwd: string): Promise<string | undefined> {
   } catch {
     return undefined
   }
+}
+
+/**
+ * Sandbox ledger routes. `GET /sandboxes/:id/alive` — probe the box's
+ * provider (`SandboxProvider.probe`) and stamp `sandboxAlive`/
+ * `sandboxCheckedAt` into the ledger (also flipping a dead row to "gone").
+ *
+ * Statuses: 200 `{alive:true,state,checkedAt}` · 410 `{alive:false,...}`
+ * when the provider answers the box is gone · 404 when the id is not in
+ * the ledger · 501 when the provider can't probe · 502 when the provider
+ * itself (resolution or probe call) failed — "unknown", never "dead".
+ */
+async function handleSandboxes(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+  const match = path.match(/^\/sandboxes\/([^/]+)\/alive$/)
+  if (!match || _req.method !== "GET") return false
+  const sandboxId = decodeURIComponent(match[1]!)
+  const row = readSandboxLedger().find(e => e.sandboxId === sandboxId)
+  if (!row) {
+    json(404, {
+      error: `sandbox "${sandboxId}" is not in the sandbox ledger (~/.agentproto/sandboxes.json)`,
+    })
+    return true
+  }
+  const resolver = resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore())
+  let handle: Awaited<ReturnType<typeof resolver>>
+  try {
+    handle = await resolver(row.provider)
+  } catch (err) {
+    json(502, {
+      alive: null,
+      state: row.state,
+      error: `sandbox provider "${row.provider}" could not be resolved — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    })
+    return true
+  }
+  if (!handle?.provider?.probe) {
+    json(501, {
+      alive: null,
+      state: row.state,
+      error: `sandbox provider "${row.provider}" has no probe() — liveness unknown`,
+    })
+    return true
+  }
+  let probe: { alive: boolean; state?: string }
+  try {
+    probe = await handle.provider.probe(row.sandboxId)
+  } catch (err) {
+    json(502, {
+      alive: null,
+      state: row.state,
+      error: `liveness probe failed — ${err instanceof Error ? err.message : String(err)}`,
+    })
+    return true
+  }
+  recordSandboxLiveness(row.sandboxId, probe.alive)
+  const checkedAt = new Date().toISOString()
+  if (!probe.alive) {
+    json(410, { alive: false, state: "gone", checkedAt })
+    return true
+  }
+  json(200, { alive: true, ...(probe.state ? { state: probe.state } : { state: row.state }), checkedAt })
+  return true
 }
 
 async function handleSessions(
