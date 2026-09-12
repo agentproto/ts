@@ -6694,6 +6694,8 @@ async function handleNativeInbound(
     alias?: unknown
     source?: unknown
     contact_ref?: unknown
+    display_name?: unknown
+    surface?: unknown
     text?: unknown
     messages?: unknown
     mode?: unknown
@@ -6716,6 +6718,16 @@ async function handleNativeInbound(
   if (typeof body.text !== "string" || !body.text) {
     res.writeHead(400, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: "missing_text" }))
+    return
+  }
+  if (body.display_name !== undefined && typeof body.display_name !== "string") {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "invalid_display_name" }))
+    return
+  }
+  if (body.surface !== undefined && typeof body.surface !== "string") {
+    res.writeHead(400, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "invalid_surface" }))
     return
   }
   let mode: InboundRouteMode = "route-or-spawn"
@@ -6750,6 +6762,10 @@ async function handleNativeInbound(
     source: body.source,
     contactRef: body.contact_ref,
     text: body.text,
+    // Attribution is opt-in — an absent field must not exist on the message
+    // at all, or attributeInboundText would prefix every 1:1 turn.
+    ...(typeof body.display_name === "string" ? { displayName: body.display_name } : {}),
+    ...(typeof body.surface === "string" ? { surface: body.surface } : {}),
     ...(Array.isArray(body.messages)
       ? { messages: body.messages }
       : {}),
