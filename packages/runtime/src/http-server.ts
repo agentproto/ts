@@ -674,7 +674,9 @@ export interface RuntimeHttpServerOptions {
   /** Optional — MCP proxy registry. When wired, exposes
    *  `/mcps/proxy/*` routes that let the browser drive imported MCPs
    *  without going through the MCP wire protocol (useful for the
-   *  /providers/mcp page's "Local" tab). */
+   *  /providers/mcp page's "Local" tab). Mutating proxy routes
+   *  (`POST /mcps/proxy/call`) are gated by the same per-boot token
+   *  as the other mutating routes; read-only GETs stay open. */
   mcpProxy?: McpProxyRegistry
   /** Per-boot bearer token. When set, mutating /sessions/* routes
    *  + the /sessions/:id/pty WebSocket upgrade require either
@@ -2112,11 +2114,11 @@ export async function startHttpServer(
         // add/remove/use` reachable off the CLI (e.g. the VS Code
         // "create workspace here" CTA). Same per-boot token gate as
         // other local mutating routes (POST /files/upload,
-        // POST /permissions/:id): these edit ~/.agentproto/workspaces.json
+        // POST /permissions/:id, the /mcps/imports writes): these edit
+        // ~/.agentproto/workspaces.json
         // and register directories the daemon will later use as a
         // session cwd, so they get the same protection as other
-        // filesystem-mutating routes, not the ungated /mcps/imports
-        // precedent.
+        // filesystem-mutating routes.
         //
         // NOTE: this is hand-wired REST, not a `defineTool` isomorphic
         // verb — there's no existing machinery in this repo that
@@ -2260,6 +2262,13 @@ export async function startHttpServer(
           return
         }
         if (path === "/mcps/imports" && req.method === "POST") {
+          // Writes ~/.agentproto/imported-mcps.json — same per-boot token
+          // gate as the other mutating routes (see /workspaces above).
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
           const body = (await readJsonBody(req)) as {
             sourceMcpId?: string
             alias?: string
@@ -2293,6 +2302,13 @@ export async function startHttpServer(
         }
         const importMatch = path.match(/^\/mcps\/imports\/(.+)$/)
         if (importMatch && req.method === "DELETE") {
+          // Writes ~/.agentproto/imported-mcps.json — same per-boot token
+          // gate as the other mutating routes (see /workspaces above).
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
           // The id is URL-encoded since it contains colons + slashes
           // (e.g. claude-code:project:/path:name).
           const id = decodeURIComponent(importMatch[1] ?? "")
@@ -2369,6 +2385,16 @@ export async function startHttpServer(
           return
         }
         if (path === "/mcps/proxy/call" && req.method === "POST") {
+          // Invokes a tool on an imported MCP server, which may hold
+          // third-party credentials — same per-boot token gate as the
+          // other mutating routes (see /workspaces above), so a
+          // browser drive-by can't reach the proxy without a token or
+          // trusted Origin.
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
           if (!opts.mcpProxy) {
             res.writeHead(501, { "content-type": "application/json" })
             res.end(JSON.stringify({ error: "mcp_proxy_not_configured" }))
