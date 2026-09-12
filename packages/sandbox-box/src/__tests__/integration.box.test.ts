@@ -9,8 +9,20 @@
 import { describe, it, expect } from "vitest"
 import { createSandboxAgentSessionHost } from "@agentproto/sandbox"
 import { boxSandboxProvider } from "../provider.js"
+import { probeBoxCredential } from "./box-credential-probe.js"
 
-describe.skipIf(!process.env.BOX_API_KEY)("box sandbox agent host (integration)", () => {
+// Preflight credential probe (an auth check ONLY — never a Box boot or any
+// billable resource). A key that is present but DEAD (invalid / expired)
+// skips loudly; an ambiguous probe outcome (network error, 5xx, transient
+// 429) keeps the suite running so it can fail honestly.
+const boxCredential = probeBoxCredential()
+if (!boxCredential.supported) {
+  console.log(`[skip] box sandbox agent host (integration): ${boxCredential.reason}`)
+}
+
+describe.skipIf(
+  !process.env.BOX_API_KEY || !boxCredential.supported,
+)("box sandbox agent host (integration)", () => {
   it(
     "boots a Box and completes one hermes/openrouter turn",
     async () => {
