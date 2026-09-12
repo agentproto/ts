@@ -43,7 +43,9 @@ export const codex: AgentCliHandle = defineAgentCli({
     },
   ],
   version_check: {
-    cmd: "npm view @agentclientprotocol/codex-acp@1.10.0 version",
+    // PRESENCE probe — local (global npm tree), not a registry query. See
+    // claude-code's version_check note for the npm-view trap this replaces.
+    cmd: "npm ls -g @agentclientprotocol/codex-acp --depth=0",
     parse: "(\\d+\\.\\d+\\.\\d+)",
     range: "=1.10.0",
     timeout_ms: 15_000,

@@ -81,7 +81,10 @@ export const opencode: AgentCliHandle = defineAgentCli({
     { method: "curl", url: "https://opencode.ai/install" },
   ],
   version_check: {
-    cmd: "npm view opencode-ai version",
+    // PRESENCE probe — local binary check, not a registry query. Covers BOTH
+    // install methods: the npm -g package and the curl installer both put an
+    // `opencode` executable on PATH, and it runs `--version` fully offline.
+    cmd: "opencode --version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
     range: ">=1.0.0",
     timeout_ms: 15_000,

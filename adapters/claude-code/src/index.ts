@@ -62,7 +62,14 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     },
   ],
   version_check: {
-    cmd: "npm view @agentclientprotocol/claude-agent-acp version",
+    // PRESENCE probe — must be local, not a registry query. `npm view` would
+    // succeed on every networked machine, installed or not, making `install`
+    // report "already installed" forever on a virgin box. This probes exactly
+    // what install[] creates (the global npm package): exit 1 when absent.
+    // npx wrinkle: the adapter also runs via `npx -y …` without any global
+    // install, but that path doesn't need this verb — and this probe can
+    // never report "installed" when nothing is on the machine.
+    cmd: "npm ls -g @agentclientprotocol/claude-agent-acp --depth=0",
     parse: "(\\d+\\.\\d+\\.\\d+)",
     range: ">=0.30.0",
     timeout_ms: 15_000,

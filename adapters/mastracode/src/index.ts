@@ -72,7 +72,8 @@ export const mastracode: AgentCliHandle = defineAgentCli({
   bin_args: ["-y", "mastracode"],
   install: [{ method: "npm", package: "mastracode", global: true }],
   version_check: {
-    cmd: "npm view mastracode version",
+    // PRESENCE probe — local (global npm tree), not a registry query.
+    cmd: "npm ls -g mastracode --depth=0",
     parse: "(\\d+\\.\\d+\\.\\d+)",
     range: ">=0.26.0",
     timeout_ms: 15_000,

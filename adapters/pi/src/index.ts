@@ -98,7 +98,10 @@ export const pi: AgentCliHandle = defineAgentCli({
     { method: "curl", url: "https://pi.dev/install.sh" },
   ],
   version_check: {
-    cmd: "npm view @earendil-works/pi-coding-agent version",
+    // PRESENCE probe — local binary check, not a registry query. Covers BOTH
+    // install methods: the npm -g package and the curl installer both put a
+    // `pi` executable on PATH, and it runs `--version` fully offline.
+    cmd: "pi --version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
     range: ">=0.80.0",
     timeout_ms: 15_000,

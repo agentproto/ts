@@ -70,6 +70,31 @@ load time via `run-swarm --verbose`'s `registered: …` line.
 
 `--json` emits the full manifests for scripting.
 
+### `outdated`
+
+```bash
+agentproto adapters outdated
+agentproto adapters outdated --json
+```
+
+Read-only freshness report for the installed agent-CLI adapter packages
+(`claude-code`, `opencode`, …): the version actually in the global npm
+tree vs the latest version published to the registry. Nothing is
+installed, updated, or written — this only reports.
+
+```text
+• claude-code  @agentclientprotocol/claude-agent-acp 0.75.1 → 0.76.0  → update available
+• opencode     opencode-ai 1.18.18 → 1.18.18  ✓ up to date
+```
+
+Both probes are time-bounded; offline or on a slow/404 registry a row
+degrades to `freshness unknown` instead of guessing, and the verb still
+exits 0. Packages not installed globally report `(not global — version
+unknown)`.
+
+`--json` emits `{ slug, package, installed, latest, status }` rows where
+`status` is `current` | `behind` | `unknown`.
+
 ### `show`
 
 ```bash
