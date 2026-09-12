@@ -48,6 +48,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import matter from "gray-matter"
 
 import { loadConfig } from "@agentproto/runtime/config"
+import { resolveAppUIRoot } from "@agentproto/app-kit"
 import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { pathExists } from "./commands/skill-install/shared.js"
 import { expandHome } from "./commands/skill-install/pack-resolve.js"
@@ -507,6 +508,54 @@ export function resolveRequestedPort(
     return { value: fromEnv.trim(), source: "PORT env" }
   }
   return undefined
+}
+
+/**
+ * The `app serve` request handler, extracted so the standalone server and
+ * tests share one route table. `uiRoot` is the RESOLVED UI root (APP.md
+ * `ui.path`'s directory, or the legacy `.agentproto/ui/` fallback) — the
+ * caller owns the resolution; this handler only serves from it.
+ */
+export function createAppServeRequestHandler(opts: {
+  uiRoot: string
+  appDir: string
+  bridgeScript: string
+  allowedTools: string[] | undefined
+  getClient: () => Promise<Client>
+}): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    // CORS `*` lets a page from a different origin (e.g. file:// or a Vite
+    // dev port) reach the tool-call bridge — without it the browser blocks
+    // the cross-origin fetch. The safety gate is NOT "no session credentials":
+    // tools like command_execute need no cookie to be dangerous. Safety here
+    // comes from the loopback-only default bind and the ui.tools allowlist.
+    applyCors(req, res)
+    if (req.method === "OPTIONS") {
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
+    const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
+    if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
+      handleToolCallRequest(req, res, opts.getClient, opts.allowedTools)
+      return
+    }
+    if (urlPath === UPLOAD_PATH) {
+      if (req.method !== "POST") {
+        res.writeHead(405, { "content-type": "application/json" })
+        res.end(JSON.stringify({ error: "method_not_allowed" }))
+        return
+      }
+      void handleUpload(req, res, opts.appDir)
+      return
+    }
+    if (req.method === "GET" && urlPath === STAGEBOARD_JS_PATH) {
+      void serveStageboard(res, urlPath)
+      return
+    }
+    void serveStatic(opts.uiRoot, req.url ?? "/", opts.bridgeScript, res)
+  }
 }
 
 /**
@@ -1073,9 +1122,18 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
     )
   }
 
-  // 1. Require a valid .agentproto/APP.md + .agentproto/ui/
+  // 1. Require a valid .agentproto/APP.md, then resolve the UI root the same
+  // way app_install does (APP.md frontmatter ui.path, falling back to the
+  // legacy .agentproto/ui/) — both code paths must agree, or an app whose
+  // frontmatter points elsewhere installs fine and serves nothing.
   const appMdPath = join(appDir, ".agentproto", "APP.md")
-  const uiRoot = join(appDir, ".agentproto", "ui")
+  let uiRoot: string
+  try {
+    uiRoot = (await resolveAppUIRoot(appDir)) ?? join(appDir, ".agentproto", "ui")
+  } catch (err) {
+    process.stderr.write(`agentproto app serve: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 2
+  }
   if (!(await pathExists(appMdPath))) {
     process.stderr.write(
       `agentproto app serve: ${appDir} is not an agentproto app ` +
@@ -1085,8 +1143,10 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
   }
   if (!(await pathExists(uiRoot))) {
     process.stderr.write(
-      `agentproto app serve: ${appDir} has no UI to serve ` +
-        `(missing ${uiRoot}).\n${USAGE}\n`,
+      `agentproto app serve: ${appDir} has no UI to serve: the resolved UI ` +
+        `root '${uiRoot}' does not exist. It comes from APP.md frontmatter ` +
+        `'ui.path' (or the default '.agentproto/ui/' when 'ui' is absent) — ` +
+        `fix the frontmatter or create the directory.\n${USAGE}\n`,
     )
     return 2
   }
@@ -1127,39 +1187,15 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
   const runJson = values.json === true
 
   // 4. Build the HTTP server.
-  const server = createServer((req, res) => {
-    // CORS `*` lets a page from a different origin (e.g. file:// or a Vite
-    // dev port) reach the tool-call bridge — without it the browser blocks
-    // the cross-origin fetch. The safety gate is NOT "no session credentials":
-    // tools like command_execute need no cookie to be dangerous. Safety here
-    // comes from the loopback-only default bind and the ui.tools allowlist.
-    applyCors(req, res)
-    if (req.method === "OPTIONS") {
-      res.writeHead(204)
-      res.end()
-      return
-    }
-
-    const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
-    if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
-      handleToolCallRequest(req, res, getClient, allowedTools)
-      return
-    }
-    if (urlPath === UPLOAD_PATH) {
-      if (req.method !== "POST") {
-        res.writeHead(405, { "content-type": "application/json" })
-        res.end(JSON.stringify({ error: "method_not_allowed" }))
-        return
-      }
-      void handleUpload(req, res, appDir)
-      return
-    }
-    if (req.method === "GET" && urlPath === STAGEBOARD_JS_PATH) {
-      void serveStageboard(res, urlPath)
-      return
-    }
-    void serveStatic(uiRoot, req.url ?? "/", bridgeScript, res)
-  })
+  const server = createServer(
+    createAppServeRequestHandler({
+      uiRoot,
+      appDir,
+      bridgeScript,
+      allowedTools,
+      getClient,
+    }),
+  )
 
   // 5. Bind. Resolves once listening; rejects on a non-EADDRINUSE error.
   const bind = (port: number): Promise<{ port: number } | { inUse: boolean }> =>

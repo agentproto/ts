@@ -16,10 +16,12 @@ import { tmpdir } from "node:os"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { IncomingMessage, ServerResponse } from "node:http"
+import { createServer } from "node:http"
 import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import {
   applyCors,
   buildBridgeScript,
+  createAppServeRequestHandler,
   injectBridge,
   readDeclaredUIPort,
   resolveRequestedPort,
@@ -28,6 +30,7 @@ import {
   readDeclaredLibraryBookIds,
   callDaemonTool,
   resolveListenHost,
+  runAppServe,
   sanitizeUploadName,
   resolveInboxTarget,
   UploadSizeTracker,
@@ -730,5 +733,92 @@ describe("createDaemonMcpClientGetter", () => {
     expect((StreamableHTTPClientTransport as unknown as { lastOpts: unknown }).lastOpts).toEqual({
       requestInit: { headers: { Authorization: "Bearer gld_abc123" } },
     })
+  })
+})
+describe("app serve UI-root resolution (regression: ui.path was ignored)", () => {
+  async function writeApp(dir: string, frontmatter: string | null) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    if (frontmatter !== null) {
+      await writeFile(join(dir, ".agentproto", "APP.md"), `---\n${frontmatter}---\n`, "utf8")
+    }
+  }
+
+  it("serves an app whose ui.path points at ui/index.html (not .agentproto/ui)", async () => {
+    const dir = await mktmp()
+    await writeApp(dir, "schema: app/v1\nui:\n  path: ui/index.html\n")
+    await mkdir(join(dir, "ui"), { recursive: true })
+    await writeFile(join(dir, "ui", "index.html"), "<html><body>UIPATH-MARKER</body></html>", "utf8")
+
+    // Mirror runAppServe's exact resolution, then serve from the resolved
+    // root through the same handler factory runAppServe uses.
+    const { resolveAppUIRoot } = await import("@agentproto/app-kit")
+    const uiRoot = (await resolveAppUIRoot(dir)) ?? join(dir, ".agentproto", "ui")
+    expect(uiRoot).toBe(join(dir, "ui"))
+
+    const handler = createAppServeRequestHandler({
+      uiRoot,
+      appDir: dir,
+      bridgeScript: buildBridgeScript("/__agentproto/tool-call"),
+      allowedTools: undefined,
+      getClient: async () => {
+        throw new Error("no daemon in this test")
+      },
+    })
+    const server = createServer(handler)
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))
+    const addr = server.address()
+    const port = addr && typeof addr === "object" ? addr.port : 0
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/`)
+      expect(res.ok).toBe(true)
+      const html = await res.text()
+      expect(html).toContain("UIPATH-MARKER")
+      expect(html).toContain("window.McpApp")
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
+
+  it("fails loudly (exit 2) naming the resolved path and ui.path when the UI dir is missing", async () => {
+    const dir = await mktmp()
+    await writeApp(dir, "schema: app/v1\nui:\n  path: ui/index.html\n")
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      const code = await runAppServe([dir])
+      expect(code).toBe(2)
+      const out = errSpy.mock.calls.map(c => String(c[0])).join("")
+      expect(out).toContain(join(dir, "ui"))
+      expect(out).toContain("'ui.path'")
+      expect(out).toContain("does not exist")
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it("fails loudly (exit 2) naming the .agentproto/ui fallback when no ui frontmatter exists", async () => {
+    const dir = await mktmp()
+    await writeApp(dir, "schema: app/v1\nagents: []\nworkflows: []\n")
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      const code = await runAppServe([dir])
+      expect(code).toBe(2)
+      const out = errSpy.mock.calls.map(c => String(c[0])).join("")
+      expect(out).toContain(join(dir, ".agentproto", "ui"))
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it("fails with exit 2 when APP.md is missing entirely", async () => {
+    const dir = await mktmp()
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      const code = await runAppServe([dir])
+      expect(code).toBe(2)
+      const out = errSpy.mock.calls.map(c => String(c[0])).join("")
+      expect(out).toContain("not an agentproto app")
+    } finally {
+      errSpy.mockRestore()
+    }
   })
 })

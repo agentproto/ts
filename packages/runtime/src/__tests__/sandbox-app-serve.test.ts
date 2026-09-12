@@ -9,10 +9,12 @@ import { describe, expect, it } from "vitest"
 
 import {
   buildServeLaunchScript,
+  extractServeError,
   mergeAllowlistForAppServe,
   parseJsonRecordText,
   parseToolJson,
   pollServeReady,
+  serveLogPath,
   startSandboxAppServe,
   BOX_ALLOWLIST_REL,
   type BoxToolClient,
@@ -117,6 +119,28 @@ describe("pollServeReady", () => {
   })
 })
 
+describe("serveLogPath / extractServeError", () => {
+  it("mirrors the launcher's log redirect path", () => {
+    expect(serveLogPath("/home/user/apps/job-kit")).toBe("/home/user/apps/job-kit/.agentproto/app-serve.log")
+    expect(serveLogPath("/home/user/apps/job-kit/")).toBe("/home/user/apps/job-kit/.agentproto/app-serve.log")
+  })
+
+  it("extracts the last agentproto app serve error line", () => {
+    const log =
+      "agentproto app: serving /x at http://127.0.0.1:3210/\n" +
+      "agentproto app serve: /home/user/apps/job-kit has no UI to serve: the resolved UI root " +
+      "'/home/user/apps/job-kit/ui' does not exist. It comes from APP.md frontmatter 'ui.path'.\n"
+    const err = extractServeError(log)
+    expect(err).toContain("has no UI to serve")
+    expect(err).toContain("'ui.path'")
+  })
+
+  it("returns undefined for a log without an error line", () => {
+    expect(extractServeError("agentproto app: serving /x at http://127.0.0.1:3210/\n")).toBeUndefined()
+    expect(extractServeError("")).toBeUndefined()
+  })
+})
+
 describe("startSandboxAppServe", () => {
   const DIR = "/home/user/apps/job-kit"
   const PUBLIC_URL = "https://3210-sbx.example.e2b.app"
@@ -207,6 +231,40 @@ describe("startSandboxAppServe", () => {
     if (!result.ok) return
     expect(result.appServe.ready).toBe(false)
     expect(result.appServe.url).toBe(PUBLIC_URL)
+    // No recognizable error in the log → no message is attached.
+    expect(result.appServe.message).toBeUndefined()
+  })
+
+  it("surfaces the serve log's error text with ready:false when the server died on boot", async () => {
+    const ERR_LINE =
+      "agentproto app serve: /home/user/apps/job-kit has no UI to serve: the resolved UI root " +
+      "'/home/user/apps/job-kit/ui' does not exist. It comes from APP.md frontmatter 'ui.path'."
+    const client = makeFakeClient((name, args) => {
+      if (name === "app_install") return textResult({ appId: "acme/job-kit", dir: DIR })
+      if (name === "command_execute") {
+        return textResult({ exitCode: 0, signal: null, stdout: "1234\n", stderr: "" })
+      }
+      if (name === "file_read" && String(args.path).includes("app-serve.log")) {
+        return textResult({ content: ERR_LINE })
+      }
+      return textResult({ ok: true })
+    })
+    // The launcher backgrounds app serve, so a non-zero exit never reaches
+    // command_execute — the failure is only visible in the log, and the
+    // launcher must carry it out on the result.
+    const result = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => false,
+      timeoutMs: 20,
+      intervalMs: 1,
+      connect: async () => client,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.appServe.ready).toBe(false)
+    expect(result.appServe.message).toContain("has no UI to serve")
+    expect(result.appServe.message).toContain("'ui.path'")
+    const logRead = client.calls.find(c => c.name === "file_read" && String(c.args.path).endsWith("app-serve.log"))
+    expect(logRead?.args.path).toBe(serveLogPath(DIR))
   })
 
   it("fails cleanly when the provider offers neither ports nor expose", async () => {

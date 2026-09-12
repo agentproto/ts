@@ -85,6 +85,10 @@ export interface SessionAppServeInfo {
    *  window. False means the URL is the right address but the server had
    *  not answered yet — retry the fetch rather than re-spawning. */
   ready: boolean
+  /** Error text from the in-box serve log when `ready` is false (e.g. the
+   *  server exited immediately because the UI root is missing). Absent when
+   *  the log holds no recognizable error or could not be read. */
+  message?: string
 }
 
 /** The wire shape a daemon MCP tool reply carries — the subset this module
@@ -303,6 +307,35 @@ async function installApp(client: BoxToolClient, dir: string): Promise<string> {
   return appId
 }
 
+/** The log `app serve` appends to inside the box (mirrors the path the
+ *  launcher script redirects to: `<dir>/.agentproto/app-serve.log`). */
+export function serveLogPath(dir: string): string {
+  return `${dir.replace(/\/+$/, "")}/.agentproto/app-serve.log`
+}
+
+/** Read the in-box serve log and pull out the `agentproto app serve:` error
+ *  line(s), if any. Returns undefined when the log is absent/unreadable or
+ *  holds no error line — never throws. */
+export function extractServeError(logText: string): string | undefined {
+  const lines = logText
+    .split("\n")
+    .map(l => l.trimEnd())
+    .filter(l => l.includes("agentproto app serve:") && !l.includes("serving "))
+  if (lines.length === 0) return undefined
+  return lines[lines.length - 1]
+}
+
+async function readServeError(client: BoxToolClient, dir: string): Promise<string | undefined> {
+  try {
+    const res = await client.callTool("file_read", { path: serveLogPath(dir) })
+    const text = firstText(res)
+    if (text === undefined) return undefined
+    return extractServeError(text)
+  } catch {
+    return undefined
+  }
+}
+
 /** Launch `agentproto app serve` detached inside the box via the box
  *  daemon's `command_execute` (sh -c + nohup backgrounding — see module
  *  docs). Throws when the launcher itself fails (non-zero sh exit). */
@@ -394,9 +427,18 @@ export async function startSandboxAppServe(
       ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       ...(opts?.intervalMs !== undefined ? { intervalMs: opts.intervalMs } : {}),
     })
+    let message: string | undefined
+    if (!ready) {
+      // The launcher backgrounds `app serve`, so a server that dies
+      // immediately (e.g. the resolved UI root is missing) surfaces nowhere
+      // on its own — pull the error out of the serve log and carry it on
+      // the result so the caller sees WHY the URL is dead, not just a
+      // bare ready:false.
+      message = await readServeError(client, req.dir)
+    }
     return {
       ok: true,
-      appServe: { appId, dir: req.dir, port, url, ready },
+      appServe: { appId, dir: req.dir, port, url, ready, ...(message !== undefined ? { message } : {}) },
     }
   } catch (err) {
     return {
