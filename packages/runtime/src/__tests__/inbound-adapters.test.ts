@@ -80,6 +80,7 @@ describe("normalizeInbound", () => {
         source: "telegram",
         contactRef: "6371794295",
         text: "hello",
+        surface: "telegram",
       },
       providerMessageId: "42",
     })
@@ -139,6 +140,63 @@ describe("normalizeInbound", () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error).toBe("no_text")
+  })
+
+  it("populates displayName from telegram from.first_name", () => {
+    const result = normalizeInbound(
+      "telegram",
+      {
+        message: {
+          from: { id: 1, is_bot: false, first_name: "Ada" },
+          chat: { id: 10 },
+          text: "hi",
+          message_id: 1,
+        },
+      },
+      { alias: "tg" },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok || "challenge" in result) return
+    expect(result.msg.displayName).toBe("Ada")
+    expect(result.msg.surface).toBe("telegram")
+  })
+
+  it("falls back to telegram from.username when first_name is absent", () => {
+    const result = normalizeInbound(
+      "telegram",
+      {
+        message: {
+          from: { id: 1, is_bot: false, username: "ada_l" },
+          chat: { id: 10 },
+          text: "hi",
+          message_id: 1,
+        },
+      },
+      { alias: "tg" },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok || "challenge" in result) return
+    expect(result.msg.displayName).toBe("ada_l")
+    expect(result.msg.surface).toBe("telegram")
+  })
+
+  it("omits displayName entirely when telegram from carries neither first_name nor username", () => {
+    const result = normalizeInbound(
+      "telegram",
+      {
+        message: {
+          from: { id: 1, is_bot: false },
+          chat: { id: 10 },
+          text: "hi",
+          message_id: 1,
+        },
+      },
+      { alias: "tg" },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok || "challenge" in result) return
+    expect("displayName" in result.msg).toBe(false)
+    expect(result.msg.surface).toBe("telegram")
   })
 })
 

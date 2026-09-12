@@ -147,6 +147,75 @@ describe("POST /inbound — push ingress", () => {
     )
   })
 
+  it("accepts display_name/surface and passes them through to the router", async () => {
+    const TOKEN = "test-secret-token"
+    const routeInboundMessage = vi.fn(async () => ({
+      action: "routed" as const,
+      sessionId: "s1",
+    }))
+    await withServer(
+      async base => {
+        const res = await fetch(`${base}/inbound`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${TOKEN}`,
+          },
+          body: JSON.stringify({
+            alias: "tg",
+            source: "phone1",
+            contact_ref: "user1",
+            text: "hi",
+            display_name: "Alice",
+            surface: "telegram",
+          }),
+        })
+        expect(res.status).toBe(200)
+        expect(routeInboundMessage).toHaveBeenCalledWith(
+          {
+            alias: "tg",
+            source: "phone1",
+            contactRef: "user1",
+            text: "hi",
+            displayName: "Alice",
+            surface: "telegram",
+          },
+          "route-or-spawn",
+        )
+      },
+      { token: TOKEN, routeInboundMessage },
+    )
+  })
+
+  it("400s on a non-string display_name", async () => {
+    const TOKEN = "test-secret-token"
+    const routeInboundMessage = vi.fn()
+    await withServer(
+      async base => {
+        const res = await fetch(`${base}/inbound`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${TOKEN}`,
+          },
+          body: JSON.stringify({
+            alias: "tg",
+            source: "phone1",
+            contact_ref: "user1",
+            text: "hi",
+            display_name: 42,
+          }),
+        })
+        expect(res.status).toBe(400)
+        expect((await res.json()) as { error: string }).toMatchObject({
+          error: "invalid_display_name",
+        })
+        expect(routeInboundMessage).not.toHaveBeenCalled()
+      },
+      { token: TOKEN, routeInboundMessage },
+    )
+  })
+
   it("501s when routeInboundMessage isn't wired", async () => {
     const TOKEN = "test-secret-token"
     await withServer(
