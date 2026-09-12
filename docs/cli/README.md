@@ -65,6 +65,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto serve`](./verbs/serve.md) — daemon mode (local-only or tunnelled)
 - [`agentproto sessions`](./verbs/sessions.md) — browse/start/attach/stop daemon sessions
 - [`agentproto setup`](./verbs/setup.md) — re-run an adapter's post-install pipeline
+- [`agentproto task`](./verbs/task.md) — create/list/claim/update tasks on the daemon's Task ledger
 - [`agentproto tunnel`](./verbs/tunnel.md) — manage public Cloudflare/Ngrok tunnels
 - [`agentproto usage`](./verbs/usage.md) — local-derived, provider-agnostic spend estimate over a rolling window
 - [`agentproto workflow`](./verbs/workflow.md) — start, inspect, and cancel background workflow runs on the daemon

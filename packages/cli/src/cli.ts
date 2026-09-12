@@ -47,6 +47,7 @@ import { runApp } from "./commands/app.js"
 import { runWorktree } from "./commands/worktree.js"
 import { runPolicy } from "./commands/policy.js"
 import { runWorkflow } from "./commands/workflow.js"
+import { runTask } from "./commands/task.js"
 import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
 import { runPair } from "./commands/pair.js"
@@ -139,6 +140,10 @@ Usage:
   agentproto workflow  list [--json]
   agentproto workflow  cancel <runId>
   agentproto workflow  resolve <runId> (--approve|--reject) [--who <name>] [--note <text>]
+  agentproto task      create <title> [--description <text>] [--board-id <id>] [--json]
+  agentproto task      list [--board-id <id>] [--status <s>] [--include-closed] [--json]
+  agentproto task      claim <taskId> --rev <n>
+  agentproto task      update <taskId> --rev <n> [--status <s>] [--owner <id>] [--release]
   agentproto permissions ls    [--json]                   held tool-permission requests
   agentproto permissions <approve|deny> <id> [--always]   resolve a held request
   agentproto acp       ls      [--json]
@@ -216,6 +221,7 @@ const VERBS = new Set([
   "worktree",
   "policy",
   "workflow",
+  "task",
   "permissions",
   "app",
   "acp",
@@ -331,6 +337,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runPolicy(rest)
     case "workflow":
       return runWorkflow(rest)
+    case "task":
+      return runTask(rest)
     case "permissions":
       return runPermissions(rest)
     case "acp":

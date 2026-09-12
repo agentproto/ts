@@ -338,6 +338,48 @@ export function humaniseDelta(ms: number): string {
   return `${Math.floor(ms / 86_400_000)}d`
 }
 
+/**
+ * Minimal PATCH that returns status + parsed body without throwing on a
+ * non-2xx response — used by callers where a non-2xx reply (e.g. a
+ * rev-CAS 409 conflict, or a 404) is a FIRST-CLASS reply to render, not
+ * an error to unwind through a rejected promise. Shares the same
+ * request-building shape as `httpPostJson`; only the method and the
+ * throw-vs-resolve behaviour differ.
+ */
+export function httpPatchRaw(
+  url: string,
+  body: unknown,
+  token?: string,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const payload = Buffer.from(JSON.stringify(body), "utf8")
+    const lib = u.protocol === "https:" ? https : http
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "content-length": payload.byteLength.toString(),
+    }
+    if (token) headers.authorization = `Bearer ${token}`
+    const req = lib.request(u, { method: "PATCH", headers }, res => {
+      let raw = ""
+      res.setEncoding("utf8")
+      res.on("data", c => (raw += c))
+      res.on("end", () => {
+        let parsed: unknown = {}
+        try {
+          parsed = raw ? JSON.parse(raw) : {}
+        } catch {
+          parsed = { raw }
+        }
+        resolve({ status: res.statusCode ?? 0, body: parsed })
+      })
+    })
+    req.on("error", reject)
+    req.write(payload)
+    req.end()
+  })
+}
+
 export function httpDelete<T>(url: string, token?: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
