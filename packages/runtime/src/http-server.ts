@@ -3438,6 +3438,22 @@ export function buildSpawnSessionHttpArgs(
   adapter: string,
   preset?: UserPreset,
 ): SpawnAgentSessionInput {
+  // Spend caps — the HTTP twins of the MCP `agent_start` tool's `maxCostUsd`
+  // (hard turn-end kill) and `costBudget` (windowed governance cap, never
+  // kills) fields, so `sessions start --max-cost-usd / --cost-budget` reaches
+  // the same spawn core. Tolerant of a JSON-stringified costBudget like the
+  // other object fields; a malformed value is dropped here rather than
+  // misbehaving daemon-side. Built as a typed `Pick` and merged into the
+  // literal below — inline conditional spreads here blow past TS2590's
+  // union-type complexity limit.
+  const maxCostUsdCap =
+    b.maxCostUsd !== undefined ? parseMaxCostUsdField(b.maxCostUsd) : undefined
+  const costBudgetCap =
+    b.costBudget !== undefined ? parseCostBudgetField(b.costBudget) : undefined
+  const spendCaps: Pick<SpawnAgentSessionInput, "maxCostUsd" | "costBudget"> = {
+    ...(maxCostUsdCap !== undefined ? maxCostUsdCap : {}),
+    ...(costBudgetCap !== undefined ? { costBudget: costBudgetCap } : {}),
+  }
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -3483,6 +3499,8 @@ export function buildSpawnSessionHttpArgs(
           return parsed !== undefined ? { auth: parsed } : {}
         })()
       : {}),
+    // Spend caps (parsed above) — see `spendCaps`.
+    ...spendCaps,
     ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
     ...(typeof b.label === "string" ? { label: b.label } : {}),
     // Explicit title override (SPEC-3 FIX C, `--title`) — wins over the
@@ -3844,6 +3862,34 @@ function parseRouteField(raw: unknown): { gateway: string; baseUrl?: string } | 
     gateway: obj.gateway,
     ...(typeof obj.baseUrl === "string" && obj.baseUrl.length > 0 ? { baseUrl: obj.baseUrl } : {}),
   }
+}
+
+/** Parse the `maxCostUsd` body field — the HTTP twin of the MCP `agent_start`
+ *  tool's scalar hard-cost ceiling. Tolerates a numeric string; only a finite
+ *  positive number survives (anything else is dropped, never guessed). */
+function parseMaxCostUsdField(raw: unknown): { maxCostUsd: number } | undefined {
+  const n = typeof raw === "string" ? Number(raw) : raw
+  return typeof n === "number" && Number.isFinite(n) && n > 0
+    ? { maxCostUsd: n }
+    : undefined
+}
+
+/** Parse the `costBudget` body field — the HTTP twin of the MCP `agent_start`
+ *  tool's windowed governance cap `{ maxCostUsd, window, scope }`. Tolerant
+ *  of a JSON-stringified object (see `parseOrchestratorField`). All three
+ *  fields must be well-formed or the whole field is dropped — never a partial
+ *  budget that would silently misbehave. */
+function parseCostBudgetField(
+  raw: unknown,
+): { maxCostUsd: number; window: string; scope: "session" | "profile" } | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  const usd = typeof obj.maxCostUsd === "string" ? Number(obj.maxCostUsd) : obj.maxCostUsd
+  if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) return undefined
+  if (typeof obj.window !== "string" || obj.window.length === 0) return undefined
+  if (obj.scope !== "session" && obj.scope !== "profile") return undefined
+  return { maxCostUsd: usd, window: obj.window, scope: obj.scope }
 }
 
 function parseAccessField(raw: unknown): { profileRef?: string } | undefined {
