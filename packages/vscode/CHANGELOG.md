@@ -1,5 +1,32 @@
 # agentproto-vscode
 
+## 0.15.0
+
+### Minor Changes
+
+- f70f0bb: Add `agentproto.openSessionInChat` command and `agentproto.sessionView` setting (`chat` | `builtin`), routing session opens to the daemon's Session Chat app UI with silent fallback to the builtin transcript panel.
+- c8ee004: Add a `chat-panel` session view: a new `agentproto.openSessionInChatPanel` command and a `chat-panel` option for `agentproto.sessionView` that opens sessions in a webview panel embedding the Session Chat app in an iframe (with a CSP pinned to the daemon origin).
+- 9d40066: Add a read-only Activity sidebar webview (`agentproto.activity`) showing the daemon's Activity projection plus PTY terminals and raw command sessions; the Sessions panel no longer carries shell sessions.
+- 23eeeed: Adds a compact read-only Work sidebar webview (`agentproto.work`) over the daemon's Task ledger, plus an `agentproto.openWorkBoard` launcher command that opens the installed `@agentproto/work-board` app via the shared app-panels host.
+
+### Patch Changes
+
+- b0e27d1: Adapt DaemonClient to daemon 0.20+ compact-by-default projections: request `{ full: true }` for adapter_list/app_list/catalog_models and renest flat catalog rows into the legacy nested shape via a total client-side compat shim.
+- 5734bef: Add a Refresh control to the Activity webview footer (posting the already-handled `refresh` webview-to-host message) and add DOM-level jsdom coverage that executes the real `buildHtml` output.
+- Updated dependencies [264c4c7]
+- Updated dependencies [2125685]
+- Updated dependencies [daf1d09]
+- Updated dependencies [764dd75]
+- Updated dependencies [39b0ac5]
+- Updated dependencies [f81bd81]
+- Updated dependencies [5c0acd2]
+- Updated dependencies [d3f0e0d]
+- Updated dependencies [48a1201]
+- Updated dependencies [79991e7]
+- Updated dependencies [2f57feb]
+  - @agentproto/apps@0.10.0
+  - @agentproto/runtime@3.2.0
+
 ## 0.14.2
 
 ### Patch Changes

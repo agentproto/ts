@@ -1,5 +1,45 @@
 # @agentproto/cli
 
+## 0.21.0
+
+### Minor Changes
+
+- 66e636b: Fix `version_check` to probe local presence (`npm ls -g` / binary `--version`) instead of the npm registry, so `install` no longer reports "already installed" on machines with nothing installed; add read-only freshness tooling: `agentproto adapters outdated` and `agentproto --version --check-updates` (new exported `registry/freshness` module).
+- 5c0acd2: Reap sandboxes left behind by failed boots and add `sandbox gc`
+- d3f0e0d: Expose sandbox liveness separately from session liveness: optional `SandboxProvider.probe()` with `SandboxProbeResult`, a portable `SandboxBoxGoneError` sentinel (e2b maps provider 404s to it), a `GET /sandboxes/:id/alive` runtime route, a new `"gone"` sandbox-ledger state with `sandboxAlive`/`sandboxCheckedAt` projected onto session summaries, and a LIVE column plus `--no-probe` flag for `sandbox list`.
+- 79991e7: `app serve` now honours APP.md frontmatter `ui.path` when resolving the UI root (falling back to the legacy `.agentproto/ui/`), fails with a clear exit-2 error when the resolved UI root is missing, and sandbox app serves carry the in-box serve-log error text on `SessionAppServeInfo.message`. Adds exported `resolveAppUIRoot` (app-kit), `createAppServeRequestHandler` (cli), and `serveLogPath`/`extractServeError` (runtime).
+- ae84459: Add `agentproto auth profile` verb set (create/list/rm/import/set-models/set-enabled) and `agentproto auth discover`, operating daemon-less via `@agentproto/auth` provisioning helpers.
+
+  ***
+
+  "@agentproto/runtime": minor
+  ---
+
+  Export existing credential-discovery module as new public subpath `@agentproto/runtime/credential-discovery`.
+
+- d3b4485: Add `agentproto workflow` verb (start/run-file/status/list/cancel/resolve) over the daemon's workflow_* MCP domain
+- 6f8537a: Add `agentproto task` verb (create/list/claim/update) over the daemon's /tasks routes
+- 589b2d6: `sessions start` gains `--max-cost-usd` (hard turn-end spend ceiling, the CLI twin of the MCP `agent_start.maxCostUsd` kill switch) and `--cost-budget` (windowed governance cap `{maxCostUsd, window, scope}` that never kills the session, the twin of `agent_start.costBudget`), accepting both a compact `<usd>:<window>[:<scope>]` spelling and a full JSON object.
+
+  ***
+
+  "@agentproto/runtime": minor
+  ---
+
+  `POST /sessions/agent` (and the create-variant chat route) now forwards `maxCostUsd` and `costBudget` from the JSON body onto the spawn input via `buildSpawnSessionHttpArgs`, so HTTP spawns carry the same spend caps as MCP `agent_start`. Malformed values are dropped rather than guessed.
+
+### Patch Changes
+
+- 66a0b71: Fix --help crashing on install, setup, and run-swarm verbs
+- 05e42a9: Document every implemented CLI flag/subverb in --help output
+- 44eb515: Replace registry-query version checks (`npm view`) with local presence probes (`npm ls -g` / binary `--version`) so `install` no longer reports "already installed" on machines with nothing installed.
+- Updated dependencies [264c4c7]
+- Updated dependencies [d3f0e0d]
+- Updated dependencies [79991e7]
+  - @agentproto/app-kit@1.2.0
+  - @agentproto/sandbox-e2b@0.5.0
+  - @agentproto/sandbox-box@0.2.10
+
 ## 0.20.0
 
 ### Minor Changes

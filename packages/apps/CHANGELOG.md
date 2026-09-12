@@ -1,5 +1,26 @@
 # @agentproto/apps
 
+## 0.10.0
+
+### Minor Changes
+
+- 264c4c7: Add a builtin `session-chat` panel: a thin launcher widget that deep-links/frames the installed `@agentik/session-chat` app's standalone UI (install notice when not installed), plus a new `csp.frameDomains` field on `AgnoMcpApp`.
+
+  ***
+
+  "@agentproto/runtime": minor
+  ---
+
+  Mount the `agentproto_session_chat` builtin panel and add an `?embed=1` trusted-embedder opt-out for the standalone app-UI host's anti-framing headers.
+
+- 2125685: Add work-board builtin kanban panel over the Task ledger
+
+### Patch Changes
+
+- Updated dependencies [264c4c7]
+- Updated dependencies [79991e7]
+  - @agentproto/app-kit@1.2.0
+
 ## 0.9.3
 
 ### Patch Changes
