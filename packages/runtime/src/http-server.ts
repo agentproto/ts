@@ -3640,9 +3640,21 @@ export function buildSpawnSessionHttpArgs(
  * stays scannable. Returns `true` when it handled the request, so
  * the dispatcher knows to skip the 404 path.
  *
- *   GET    /sessions              → list of SessionDescriptor[]
- *   GET    /sessions/summaries    → paginated SessionSummary[] (lightweight panel projection)
- *   GET    /sessions/:id          → one SessionDescriptor
+*   GET    /sessions              → list of SessionDescriptor[]
+  *   GET    /sessions/summaries    → paginated SessionSummary[] (lightweight panel projection)
+  *   GET    /sessions/:id          → one SessionDescriptor
+  *                                    NOTE: 200 means the RECORD exists — a
+  *                                    dead session still returns 200 with
+  *                                    status "killed"/"exited"/"error".
+  *                                    Liveness is the descriptor's `alive`
+  *                                    field (or /sessions/:id/alive below).
+  *   GET    /sessions/:id/alive    → liveness probe: {alive, status}. 200 when
+  *                                    alive (status "running"/"starting"),
+  *                                    410 Gone when the record exists but
+  *                                    the session is dead, 404 when no
+  *                                    record. The unambiguous signal for
+  *                                    consumers that must not treat
+  *                                    res.ok on /sessions/:id as liveness.
  *   GET    /sessions/:id/stream   → SSE stream {line,stream} events
  *   GET    /sessions/:id/export   → ExportAgentSessionResult (transcript as markdown or JSON)
  *   GET    /sessions/:id/events   → raw structured events.jsonl records for a session.
@@ -4986,7 +4998,7 @@ async function handleSessions(
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/pin|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -5458,7 +5470,27 @@ async function handleSessions(
     return true
   }
 
+  if (suffix === "/alive" && req.method === "GET") {
+    // Unambiguous liveness probe. 200 = the session is alive (status
+    // "running" or "starting"); 410 Gone = the record exists but the
+    // session is dead (exited/killed/error); 404 = no record. The
+    // distinction matters because a plain GET /sessions/:id always
+    // returns 200 for an existing record — res.ok there means "record
+    // exists", never "session alive".
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const alive = resolvedDesc.status === "running" || resolvedDesc.status === "starting"
+    json(alive ? 200 : 410, { alive, status: resolvedDesc.status })
+    return true
+  }
+
   if (!suffix && req.method === "GET") {
+    // 200 means the RECORD exists — even for a dead session
+    // (status: "killed"/"exited"/"error"). Liveness is the `alive`
+    // field on the descriptor (or GET /sessions/:id/alive, which
+    // escalates to 410 when dead).
     if (!resolvedDesc) {
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true
