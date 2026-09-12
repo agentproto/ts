@@ -51,6 +51,7 @@ import { runAcp } from "./commands/acp.js"
 import { runPair } from "./commands/pair.js"
 import { runRendezvous } from "./commands/rendezvous.js"
 import { runSandbox } from "./commands/sandbox.js"
+import { cliFreshnessLine } from "./registry/freshness.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -63,7 +64,7 @@ Usage:
                        --allow-unverified: run a curl/download installer that
                        declares no verify_sha256 (refused by default in
                        non-interactive contexts)
-  agentproto adapters  <list|show|install|uninstall|enable|disable> [args]
+  agentproto adapters  <list|show|outdated|install|uninstall|enable|disable> [args]
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
   agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
@@ -151,6 +152,10 @@ Usage:
                      serve an app's .agentproto/ui/ with an MCP bridge
   agentproto --help
   agentproto --version
+  agentproto --version --check-updates
+                                           also compare against the published
+                                           @agentproto/cli on npm (network;
+                                           prints nothing extra when offline)
 
 Examples:
   agentproto auth login --host wss://guilde.work     # device flow → ~/.agentproto/credentials.json
@@ -223,6 +228,15 @@ async function main(argv: readonly string[]): Promise<number> {
         ? ` (${__CLI_BUILD_SHA__}, built ${__CLI_BUILT_AT__})`
         : ""
       process.stdout.write(`agentproto ${__CLI_VERSION__}${build}\n`)
+      // Freshness is strictly opt-in (--check-updates): --version runs in
+      // scripts and CI everywhere, so it must stay instant and offline.
+      // The probe is read-only, time-bounded, and on ANY failure (offline,
+      // slow registry, 404) prints nothing extra — the version line above
+      // is byte-identical to the pre-flag output either way.
+      if (argv.includes("--check-updates")) {
+        const line = await cliFreshnessLine(__CLI_VERSION__)
+        if (line) process.stdout.write(line)
+      }
       return 0
     }
     if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) {

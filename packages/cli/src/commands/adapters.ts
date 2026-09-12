@@ -3,6 +3,8 @@
  *
  *   adapters list                  Show enabled adapters + what they provide
  *   adapters show <pkg>            Print an adapter's manifest summary
+ *   adapters outdated              Read-only freshness report: installed
+ *                                  adapter-package version vs latest published
  *   adapters install <pkg>         `npm i -g <pkg>` + add to config
  *   adapters uninstall <pkg>       Remove from config (+ optional npm rm)
  *   adapters enable <pkg>          Add to config (assumes installed)
@@ -34,6 +36,8 @@ const USAGE = `agentproto adapters — manage runtime adapters
 Usage:
   agentproto adapters list                  Show enabled adapters + what they provide [--json]
   agentproto adapters show <pkg>            Print an adapter's manifest [--json]
+  agentproto adapters outdated              Installed adapter version vs latest
+                                            published on npm [--json] (read-only)
   agentproto adapters install <pkg>         npm i -g + add to config
                                             [--local] [--skip-npm]
   agentproto adapters uninstall <pkg>       Remove from config (+ npm rm)
@@ -59,6 +63,8 @@ export async function runAdapters(args: readonly string[]): Promise<number> {
       return 0
     case "list":
       return runList(rest)
+    case "outdated":
+      return runOutdated(rest)
     case "show":
       return runShow(rest)
     case "install":
@@ -144,6 +150,82 @@ function printAdapterSummary(
   if (entries.length === 0) return
   const kinds = entries.map((e) => e.kind).join(", ")
   process.stdout.write(`    ${label}: ${kinds}\n`)
+}
+
+// ── outdated ──────────────────────────────────────────────────────────
+
+/**
+ * Read-only freshness report for the installed agent-CLI adapter packages:
+ * installed version (from the local global-npm tree) vs latest published
+ * (`npm view` — the registry query the presence fix relocated out of the
+ * manifests; here it is answering the question it was always right for).
+ *
+ * Bounded, read-only, writes nothing: no installs, no config, no
+ * `~/.agentproto`. Each probe degrades to `null` on failure → the row
+ * reports "unknown" rather than guessing, and the verb still exits 0.
+ */
+async function runOutdated(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    options: { json: { type: "boolean" } },
+    strict: true,
+  })
+
+  const { listInstalledAdapters } = await import("../registry/resolve.js")
+  const { npmLatestVersion, npmInstalledVersion, freshnessVerdict } =
+    await import("../registry/freshness.js")
+
+  let installed
+  try {
+    installed = await listInstalledAdapters()
+  } catch (err) {
+    process.stderr.write(
+      `agentproto adapters outdated: could not enumerate installed adapters: ` +
+        `${err instanceof Error ? err.message : String(err)}\n`
+    )
+    return 1
+  }
+
+  const rows = await Promise.all(
+    installed.map(async (info) => {
+      const [have, latest] = await Promise.all([
+        npmInstalledVersion(info.packageName),
+        npmLatestVersion(info.packageName),
+      ])
+      return {
+        slug: info.slug,
+        package: info.packageName,
+        installed: have,
+        latest,
+        status: freshnessVerdict(have, latest),
+      }
+    })
+  )
+
+  if (values.json) {
+    process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`)
+    return 0
+  }
+
+  if (rows.length === 0) {
+    process.stdout.write(
+      "agentproto adapters: no adapter packages installed (resolvable) on this machine.\n"
+    )
+    return 0
+  }
+
+  for (const r of rows) {
+    const have = r.installed ?? "(not global — version unknown)"
+    const latest = r.latest ?? "(unresolvable — offline?)"
+    const mark =
+      r.status === "behind"
+        ? "→ update available"
+        : r.status === "current"
+          ? "✓ up to date"
+          : "(freshness unknown)"
+    process.stdout.write(`• ${r.slug}  ${have} → ${latest}  ${mark}\n`)
+  }
+  return 0
 }
 
 // ── show ──────────────────────────────────────────────────────────────
