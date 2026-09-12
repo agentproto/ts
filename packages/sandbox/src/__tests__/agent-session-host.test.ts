@@ -135,6 +135,47 @@ describe("createSandboxAgentSessionHost", () => {
     expect(stopBox).toHaveBeenCalledTimes(1)
   })
 
+  it("reaps the box when the daemon MCP connect fails after boot/connect succeeded — and surfaces the CONNECT error, not a teardown error", async () => {
+    // Upstream finding 3 — the failure one step AFTER a successful
+    // `provider.boot()`/`provider.connect()`: the box exists (resumed and
+    // billed, for a reconnect) and the MCP transport connect on top of it
+    // throws. The box must be reaped before the error propagates, and a
+    // teardown that itself fails must never mask the original connect
+    // error (the caller would otherwise see a bogus "daemon unreachable"
+    // and lose the real signal).
+    process.env[FAKE_SLUG] = "or-key-123"
+    const stopBox = vi.fn(async () => {
+      throw new Error("e2b kill API 503 — teardown failed")
+    })
+    const provider = fakeProvider({
+      // Reuse path — this is the reconnect (`sandbox.reuse`) shape the
+      // finding was written against; a fresh boot shares the same catch.
+      boot: vi.fn(async () => {
+        throw new Error("boot should not be called for a reuse request")
+      }),
+      connect: vi.fn(async (sandboxId: string) => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId,
+        stop: stopBox,
+      })),
+    })
+    connectDaemonAgentSessionHostMock.mockImplementation(async () => {
+      throw new Error("could not reach the agentproto daemon's MCP endpoint")
+    })
+
+    await expect(
+      createSandboxAgentSessionHost({
+        provider,
+        spec,
+        sandboxId: "sbx_reconnect",
+        secrets: { slugs: [FAKE_SLUG] },
+      }),
+    ).rejects.toThrow("could not reach the agentproto daemon's MCP endpoint")
+    expect(connectDaemonAgentSessionHostMock).toHaveBeenCalledTimes(1)
+    // The resumed box must not outlive the failed connect.
+    expect(stopBox).toHaveBeenCalledTimes(1)
+  })
+
   it("delegates spawn/sendPromptAndWait/resolveByLabel to the connected daemon host", async () => {
     process.env[FAKE_SLUG] = "or-key-123"
     const inner = fakeHost()
