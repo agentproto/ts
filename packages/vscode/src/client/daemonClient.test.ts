@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:http"
-import { AddressInfo } from "node:net"
+import { type AddressInfo } from "node:net"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import {
@@ -10,6 +10,20 @@ import {
   TasksUnavailableError,
   WorkspacesRouteMissingError,
 } from "./daemonClient.js"
+import { probeLoopbackBind, TEST_OVERRIDE as BIND_TEST_OVERRIDE } from "./loopbackBindCapability.js"
+
+/**
+ * Runtime capability gate: this suite stands up real HTTP servers on
+ * 127.0.0.1 ephemeral ports. Where socket bind is denied (confined
+ * containers/sandboxes) every test would fail for environmental, not code,
+ * reasons — so probe the capability once (a throwaway listen(0)) and skip
+ * the whole suite when it's absent, loudly naming the reason.
+ */
+const bindProbe = probeLoopbackBind()
+const canBindLoopback = bindProbe.supported
+if (!canBindLoopback) {
+  console.warn(`[skip] DaemonClient suites: ${bindProbe.reason}`)
+}
 
 /**
  * Spin a mock daemon on an ephemeral port. Returns base URL + request log.
@@ -53,7 +67,25 @@ async function mockDaemon(handler: (req: {
   return { url: `http://127.0.0.1:${port}`, server, requests }
 }
 
-describe("DaemonClient — URL + auth header mapping", () => {
+describe("probeLoopbackBind", () => {
+  it("honours the test-only override verbatim (the hook used to exercise the skip path on a capable host)", () => {
+    const forced = { supported: false, reason: "forced-false (test-only override)" }
+    const prev = BIND_TEST_OVERRIDE.value
+    BIND_TEST_OVERRIDE.value = forced
+    try {
+      expect(probeLoopbackBind()).toBe(forced)
+    } finally {
+      BIND_TEST_OVERRIDE.value = prev
+    }
+  })
+
+  it("caches the verdict per process — the second call returns the same object without re-probing", () => {
+    const first = probeLoopbackBind()
+    expect(probeLoopbackBind()).toBe(first)
+  })
+})
+
+describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", () => {
   let daemon: Awaited<ReturnType<typeof mockDaemon>>
 
   beforeEach(async () => {
@@ -271,7 +303,9 @@ describe("DaemonClient — URL + auth header mapping", () => {
   })
 
   afterEach(async () => {
-    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+    // Guard: if beforeEach failed (e.g. the mock daemon could not bind),
+    // daemon is undefined — don't turn one root failure into a cascade.
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
   })
 
   function client(tokenPath = ""): DaemonClient {
@@ -852,7 +886,7 @@ describe("DaemonClient — URL + auth header mapping", () => {
   })
 })
 
-describe("DaemonClient — Activity/Task ledger not wired on the daemon", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient — Activity/Task ledger not wired on the daemon", () => {
   let daemon: Awaited<ReturnType<typeof mockDaemon>>
 
   beforeEach(async () => {
@@ -877,7 +911,9 @@ describe("DaemonClient — Activity/Task ledger not wired on the daemon", () => 
   })
 
   afterEach(async () => {
-    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+    // Guard: if beforeEach failed (e.g. the mock daemon could not bind),
+    // daemon is undefined — don't turn one root failure into a cascade.
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
   })
 
   function client(): DaemonClient {
@@ -903,7 +939,7 @@ describe("DaemonClient — Activity/Task ledger not wired on the daemon", () => 
   })
 })
 
-describe("DaemonClient.addWorkspace — old daemon (no POST /workspaces route)", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient.addWorkspace — old daemon (no POST /workspaces route)", () => {
   let daemon: Awaited<ReturnType<typeof mockDaemon>>
 
   beforeEach(async () => {
@@ -914,7 +950,9 @@ describe("DaemonClient.addWorkspace — old daemon (no POST /workspaces route)",
   })
 
   afterEach(async () => {
-    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+    // Guard: if beforeEach failed (e.g. the mock daemon could not bind),
+    // daemon is undefined — don't turn one root failure into a cascade.
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
   })
 
   it("raises WorkspacesRouteMissingError, not a generic HTTP error", async () => {
@@ -960,7 +998,7 @@ async function uploadMock(
   return { url: `http://127.0.0.1:${port}`, server, requests }
 }
 
-describe("DaemonClient.uploadFile — raw binary transport", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient.uploadFile — raw binary transport", () => {
   let daemon: Awaited<ReturnType<typeof uploadMock>>
 
   afterEach(async () => {
@@ -1064,7 +1102,7 @@ async function gatedMock(state: GatedState): Promise<{
   return { url: `http://127.0.0.1:${port}`, port, server, requests }
 }
 
-describe("DaemonClient — bearer refresh across a daemon restart", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient — bearer refresh across a daemon restart", () => {
   let home: string
   let workspace: string
   let daemon: Awaited<ReturnType<typeof gatedMock>>
@@ -1083,7 +1121,9 @@ describe("DaemonClient — bearer refresh across a daemon restart", () => {
   })
 
   afterEach(async () => {
-    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+    // Guard: if beforeEach failed (e.g. the mock daemon could not bind),
+    // daemon is undefined — don't turn one root failure into a cascade.
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
     const { rm } = await import("node:fs/promises")
     await rm(home, { recursive: true, force: true })
     await rm(workspace, { recursive: true, force: true })
@@ -1193,7 +1233,7 @@ describe("DaemonClient — bearer refresh across a daemon restart", () => {
   })
 })
 
-describe("DaemonClient — llmEndpointReloadPacks", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient — llmEndpointReloadPacks", () => {
   it("reads the status baseUrl, POSTs /v1/packs/reload directly, and returns the result", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
@@ -1326,7 +1366,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
   })
 })
 
-describe("DaemonClient — llmEndpointTestUpstream", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient — llmEndpointTestUpstream", () => {
   it("reads the status baseUrl, POSTs /v1/upstreams/:p/test directly, and returns the verdict", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
