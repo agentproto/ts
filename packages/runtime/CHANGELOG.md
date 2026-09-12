@@ -1,5 +1,32 @@
 # @agentproto/runtime
 
+## 3.2.0
+
+### Minor Changes
+
+- 2125685: Add work-board builtin kanban panel over the Task ledger
+- daf1d09: Add sandboxProvider to SessionDescriptor/SpawnAgentInput for sandboxed sessions
+- 764dd75: Add unambiguous session liveness signal: `alive` field + GET /sessions/:id/alive probe
+- 39b0ac5: Queue agent_prompt/inbound routing by default instead of rejecting mid-turn
+- 5c0acd2: Reap sandboxes left behind by failed boots and add `sandbox gc`
+- d3f0e0d: Expose sandbox liveness separately from session liveness: optional `SandboxProvider.probe()` with `SandboxProbeResult`, a portable `SandboxBoxGoneError` sentinel (e2b maps provider 404s to it), a `GET /sandboxes/:id/alive` runtime route, a new `"gone"` sandbox-ledger state with `sandboxAlive`/`sandboxCheckedAt` projected onto session summaries, and a LIVE column plus `--no-probe` flag for `sandbox list`.
+- 48a1201: Worktree spawns now default to async provisioning, and label+cwd worktree collisions are refused instead of warned about. Provisioning spawns return immediately with status `"starting"` (resolved `cwd` backfilled when ready); `worktree: { async: false }` restores the old blocking contract, and `wait: true` falls back to the synchronous path by default (explicit `wait` + `async: true` remains rejected). A spawn landing in a worktree already occupied by a live session under the same label is refused — the sync path returns the existing session's descriptor (`dedupeSource: "worktree-cwd"`), the async path settles as a readable error — instead of forking a second live agent. `dedupeSource` gains the new `"worktree-cwd"` value.
+- 79991e7: `app serve` now honours APP.md frontmatter `ui.path` when resolving the UI root (falling back to the legacy `.agentproto/ui/`), fails with a clear exit-2 error when the resolved UI root is missing, and sandbox app serves carry the in-box serve-log error text on `SessionAppServeInfo.message`. Adds exported `resolveAppUIRoot` (app-kit), `createAppServeRequestHandler` (cli), and `serveLogPath`/`extractServeError` (runtime).
+- 2f57feb: Opt-in inbound sender attribution: new `displayName`/`surface` fields on `InboundMessage`, new exported `attributeInboundText` helper prefixing routed turns as `[Name · surface]`, HTTP `display_name`/`surface` pass-through with validation, and Telegram `from.first_name`/`username` extraction. 1:1 bindings keep receiving raw text.
+
+### Patch Changes
+
+- f81bd81: Gate /mcps/proxy/call and /mcps/imports mutating routes behind the per-boot token
+- Updated dependencies [264c4c7]
+- Updated dependencies [264c4c7]
+- Updated dependencies [2125685]
+- Updated dependencies [5c0acd2]
+- Updated dependencies [d3f0e0d]
+- Updated dependencies [79991e7]
+  - @agentproto/app-kit@1.2.0
+  - @agentproto/apps@0.10.0
+  - @agentproto/sandbox@0.5.0
+
 ## 3.1.0
 
 ### Minor Changes

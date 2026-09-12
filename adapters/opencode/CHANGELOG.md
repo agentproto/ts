@@ -1,5 +1,12 @@
 # @agentproto/adapter-opencode
 
+## 1.2.3
+
+### Patch Changes
+
+- 44eb515: Replace registry-query version checks (`npm view`) with local presence probes (`npm ls -g` / binary `--version`) so `install` no longer reports "already installed" on machines with nothing installed.
+- 66e636b: Fix `version_check` to probe local presence (`npm ls -g` / binary `--version`) instead of the npm registry, so `install` no longer reports "already installed" on machines with nothing installed; add read-only freshness tooling: `agentproto adapters outdated` and `agentproto --version --check-updates` (new exported `registry/freshness` module).
+
 ## 1.2.2
 
 ### Patch Changes

@@ -1,5 +1,21 @@
 # @agentproto/adapter-claude-code
 
+## 2.1.13
+
+### Patch Changes
+
+- 8eb0eb4: Bump pinned ACP wrapper CLI `@agentclientprotocol/claude-agent-acp` from 0.67.0 to 0.75.1.
+
+  ***
+
+  "@agentproto/adapter-codex": patch
+  ---
+
+  Bump pinned ACP wrapper CLI `@agentclientprotocol/codex-acp` from 1.1.14 to 1.10.0.
+
+- 44eb515: Replace registry-query version checks (`npm view`) with local presence probes (`npm ls -g` / binary `--version`) so `install` no longer reports "already installed" on machines with nothing installed.
+- 66e636b: Fix `version_check` to probe local presence (`npm ls -g` / binary `--version`) instead of the npm registry, so `install` no longer reports "already installed" on machines with nothing installed; add read-only freshness tooling: `agentproto adapters outdated` and `agentproto --version --check-updates` (new exported `registry/freshness` module).
+
 ## 2.1.12
 
 ### Patch Changes

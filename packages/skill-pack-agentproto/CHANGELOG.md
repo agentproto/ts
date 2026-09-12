@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.8.3
+
+### Patch Changes
+
+- 39b0ac5: Queue agent_prompt/inbound routing by default instead of rejecting mid-turn
+
 ## 0.8.2
 
 ### Patch Changes
