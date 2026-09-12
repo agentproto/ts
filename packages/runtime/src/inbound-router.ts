@@ -30,7 +30,7 @@ export interface InboundMessage {
 export type InboundEnqueuePrompt = (
   sessionId: string,
   text: string,
-  opts?: { interrupt?: boolean },
+  opts?: { interrupt?: boolean; queue?: boolean },
 ) => Promise<void> | void
 
 /** Whether `sessionId` is currently live enough to route into without a
@@ -89,7 +89,10 @@ export async function routeInboundMessage(
   }
 
   const routeInto = async (sessionId: string): Promise<{ action: InboundRouteAction; sessionId: string }> => {
-    await deps.enqueuePrompt(sessionId, msg.text)
+    // Queue when the session is mid-turn instead of rejecting — an
+    // inbound message must never be dropped just because the bound
+    // session is still working on its previous turn.
+    await deps.enqueuePrompt(sessionId, msg.text, { queue: true })
     deps.bindings.upsert({
       alias: binding.alias,
       source: binding.source,

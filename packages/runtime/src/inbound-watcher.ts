@@ -160,7 +160,7 @@ export function createInboundWatcher(opts: {
   enqueuePrompt?: (
     sessionId: string,
     text: string,
-    opts?: { interrupt?: boolean },
+    opts?: { interrupt?: boolean; queue?: boolean },
   ) => Promise<void> | void
   isSessionAlive?: (sessionId: string) => boolean
   restartSession?: (sessionId: string) => Promise<string>

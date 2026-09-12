@@ -105,7 +105,7 @@ describe("routeInboundMessage", () => {
 
     expect(result).toEqual({ action: "routed", sessionId: "sess_1" })
     expect(isSessionAlive).toHaveBeenCalledWith("sess_1")
-    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1", msg.text)
+    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1", msg.text, { queue: true })
     expect(restartSession).not.toHaveBeenCalled()
     expect(upsert).toHaveBeenCalledWith({
       alias: "agentpush",
@@ -165,7 +165,7 @@ describe("routeInboundMessage", () => {
 
     expect(result).toEqual({ action: "restarted-routed", sessionId: "sess_1-restarted" })
     expect(restartSession).toHaveBeenCalledWith("sess_1")
-    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1-restarted", msg.text)
+    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1-restarted", msg.text, { queue: true })
     expect(upsert).toHaveBeenCalledWith({
       alias: "agentpush",
       source: "+33600000000",
