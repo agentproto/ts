@@ -1,5 +1,12 @@
 # @agentproto/adapter-hermes
 
+## 0.4.14
+
+### Patch Changes
+
+- 750839b: Test-only: replace presence-only env gates for live e2e suites (moonshot, hermes bin, Box, e2b/OpenRouter) with runtime preflight credential/capability probes that skip loudly on definitively dead credentials and run honestly on ambiguity.
+  - @agentproto/driver-agent-cli@2.4.3
+
 ## 0.4.13
 
 ### Patch Changes

@@ -1,5 +1,17 @@
 # @agentproto/cli
 
+## 0.21.1
+
+### Patch Changes
+
+- e759d6d: Classify a prunable worktree without crashing the gc plan
+- Updated dependencies [750839b]
+- Updated dependencies [e759d6d]
+  - @agentproto/sandbox-box@0.2.11
+  - @agentproto/sandbox-e2b@0.5.1
+  - @agentproto/worktree@0.7.0
+  - @agentproto/driver-agent-cli@2.4.3
+
 ## 0.21.0
 
 ### Minor Changes
