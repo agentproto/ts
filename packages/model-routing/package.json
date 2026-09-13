@@ -1,0 +1,58 @@
+{
+  "name": "@agentproto/model-routing",
+  "version": "0.1.0",
+  "description": "@agentproto/model-routing — AIP-57 MODEL-ROUTING reference implementation. A pure primitive for resolving an AIP-42 ModelRef to a concrete served model: packs over a declared keyspace, ordered override>env>pack layers that report which one won, null as a non-overridable capability gate, and deterministic sticky selection over a chain. No I/O, no clock, no randomness.",
+  "keywords": [
+    "agentproto",
+    "aip-57",
+    "model-routing",
+    "llm",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-57",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/model-routing"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.9.5",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
