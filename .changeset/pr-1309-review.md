@@ -1,12 +1,12 @@
 ---
-"@agentproto/model-catalog": patch
-"@agentproto/catalog-sync": patch
-"@agentproto/provider-presets": patch
+"@agentproto/model-catalog": minor
+"@agentproto/catalog-sync": minor
+"@agentproto/provider-presets": minor
 "@agentproto/providers-store": patch
 "@agentproto/runtime": patch
-"@agentproto/adapter-claude-code": patch
-"@agentproto/adapter-claude-sdk": patch
-"@agentproto/adapter-opencode": patch
+"@agentproto/adapter-claude-code": minor
+"@agentproto/adapter-claude-sdk": minor
+"@agentproto/adapter-opencode": minor
 ---
 
 Add OpenCode's two hosted endpoints as first-class billing providers: `opencode-go` (OpenCode Go, the flat subscription, 36 models) and `opencode` (OpenCode Zen, pay-as-you-go, 102 models). Two new catalog-sync generators (`llm:opencode-go`, `llm:opencode-zen`) source both from models.dev and emit `OPENCODE_GO_ROUTES` / `OPENCODE_ZEN_ROUTES`, each with a pruned per-provider snapshot rather than the 4.6 MB whole-ecosystem payload. Prices are used verbatim (models.dev already publishes USD per 1M tokens); zero-priced `-free` variants are kept, and cache multipliers are omitted where the base input price is 0.
