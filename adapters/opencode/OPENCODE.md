@@ -36,11 +36,14 @@ models:
     - openai/gpt-5
     - openai/gpt-5-mini
     - openrouter/anthropic/claude-sonnet-4-6
+    - opencode-go/glm-5.3
+    - opencode/claude-sonnet-4-6
   env:
     anthropic: ANTHROPIC_API_KEY
     openai: OPENAI_API_KEY
     openrouter: OPENROUTER_API_KEY
     opencode: OPENCODE_API_KEY
+    opencode-go: OPENCODE_API_KEY
     groq: GROQ_API_KEY
 capabilities:
   streaming: true
@@ -90,4 +93,37 @@ provider the operator's `models.default` is pinned to:
 | OpenAI       | `OPENAI_API_KEY`      |
 | OpenRouter   | `OPENROUTER_API_KEY`  |
 | Groq         | `GROQ_API_KEY`        |
-| OpenCode SaaS| `OPENCODE_API_KEY`    |
+| OpenCode Zen | `OPENCODE_API_KEY`    |
+| OpenCode Go  | `OPENCODE_API_KEY`    |
+
+## OpenCode Go / OpenCode Zen
+
+OpenCode's own two hosted endpoints are first-class billing routes in the
+catalog, so the generated model menu offers them directly:
+
+| Route | Endpoint | Models | Billing |
+|-------|----------|--------|---------|
+| `opencode-go` | `https://opencode.ai/zen/go/v1` | 36 | Flat **OpenCode Go** subscription ($10/mo), metered against dollar caps at each model's own per-token price |
+| `opencode` | `https://opencode.ai/zen/v1` | 102 | **OpenCode Zen**, pay-as-you-go (includes the whole Claude family, the gpt-5.x/codex family, Gemini, and many `-free` variants at a real $0) |
+
+Model ids are `opencode-go/<id>` / `opencode/<id>` — opencode's own config
+spelling, and exactly what goes on the wire. For these two the route IS the
+id's leading segment, so there is no `@route` suffix; the runtime derives the
+billing endpoint from that prefix and injects `OPENCODE_API_KEY`, the same
+`modelDerivedApiKey` path the other providers use.
+
+```bash
+agentproto auth provider set opencode-go <key>    # or: opencode, for Zen
+agentproto sessions start --adapter opencode --model opencode-go/glm-5.3
+```
+
+Both routes read the **same** env var (`OPENCODE_API_KEY`) — opencode's own
+convention. A Zen key and a Go key are different secrets sharing one name, so a
+host that stores both can only inject one; pin the rail you mean with an auth
+profile whose `endpoint` is `opencode` or `opencode-go` (`--access-profile`),
+which is what the spawn-time eligibility check joins on.
+
+Neither endpoint is a login: **Go and Zen are API keys, not OAuth**. The
+adapter's two `authSubscription` surfaces remain opencode's own
+`opencode auth login` flows for Claude Pro/Max and ChatGPT, untouched by these
+routes.

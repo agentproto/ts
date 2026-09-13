@@ -11,6 +11,8 @@
  *   - :pin grammar (variant vs inferenceProvider) and the legacy route: prefix
  *   - tryParseModelRef (never-throw)
  *   - HuggingFace route resolution (pinned provider vs cheapest-live pricing)
+ *   - OpenCode Go / Zen route resolution (`<provider>/<bare-id>` keys, whose
+ *     route IS the leading segment) and the no-spread pricing guard
  */
 
 import { describe, it, expect, beforeEach } from "vitest"
@@ -403,6 +405,75 @@ describe("resolveLlmModelRoute", () => {
   it("returns undefined for unknown Requesty route", () => {
     const route = resolveLlmModelRoute("openai/nonexistent-model@requesty")
     expect(route).toBeUndefined()
+  })
+
+  it("resolves an OpenCode Go ref whose route IS its leading segment", () => {
+    // The Go tables are keyed `<provider>/<bare-id>`, so `route === vendor`
+    // for every ref — which is why the OpenCode branch has to run BEFORE the
+    // direct-vendor branch. `glm-5.3` has no direct vendor route at all.
+    const route = resolveLlmModelRoute("opencode-go/glm-5.3")
+    expect(route).toBeDefined()
+    expect(route!.route).toBe("opencode-go")
+    expect(route!.transport.flavor).toBe("opencode-go")
+    expect(route!.transport.baseUrl).toBe("https://opencode.ai/zen/go/v1")
+    expect(route!.pricing.provider).toBe("opencode-go")
+    // `vendor` is the model's BUILDER, independent of the billing rail.
+    expect(route!.pricing.vendor).toBe("z-ai")
+    // An explicit `@opencode-go` suffix is redundant but must resolve the same.
+    expect(resolveLlmModelRoute("opencode-go/glm-5.3@opencode-go")?.pricing).toBe(
+      route!.pricing,
+    )
+  })
+
+  it("prices the SAME Claude model differently on Zen than direct Anthropic", () => {
+    const direct = resolveLlmModelRoute("claude-sonnet-4-6")
+    const zen = resolveLlmModelRoute("opencode/claude-sonnet-4-6")
+    expect(direct).toBeDefined()
+    expect(zen).toBeDefined()
+    expect(direct!.route).toBe("anthropic")
+    expect(zen!.route).toBe("opencode")
+    expect(zen!.transport.baseUrl).toBe("https://opencode.ai/zen/v1")
+    expect(zen!.pricing.provider).toBe("opencode")
+    expect(zen!.pricing.vendor).toBe("anthropic")
+    // Two distinct billing rails → two distinct pricing objects.
+    expect(zen!.pricing).not.toBe(direct!.pricing)
+  })
+
+  it("keeps the direct vendor route unchanged by the OpenCode tables", () => {
+    // Regression guard, same class as the Requesty one: OPENCODE_ZEN_ROUTES
+    // carries `claude-sonnet-5`, `gpt-5.4` and `kimi-k3` under BARE product
+    // ids. Spread into LLM_PRICING_CATALOG, those would silently repoint
+    // every first-party bare id at OpenCode's router pricing — and that map
+    // feeds credit cost. The route lives in the key's leading segment
+    // instead, so a bare id keeps meaning direct-vendor.
+    for (const [bare, provider] of [
+      ["claude-sonnet-5", "anthropic"],
+      ["gpt-5.4", "openai"],
+      ["kimi-k3", "moonshot"],
+    ] as const) {
+      const direct = resolveLlmModelRoute(bare)
+      expect(direct, bare).toBeDefined()
+      expect(direct!.pricing.provider).toBe(provider)
+    }
+  })
+
+  it("returns undefined for an id the OpenCode endpoint does not serve", () => {
+    // Go-only and Zen-only ids do NOT leak across the two endpoints.
+    expect(resolveLlmModelRoute("opencode-go/nonexistent-model")).toBeUndefined()
+    expect(resolveLlmModelRoute("opencode/ox-alpha-free")).toBeUndefined()
+    expect(resolveLlmModelRoute("opencode-go/claude-sonnet-4-6")).toBeUndefined()
+  })
+
+  it("enumerates each OpenCode endpoint's full surface with bare, spawnable ids", () => {
+    const go = listRouterLlmRoutes("opencode-go")
+    const zen = listRouterLlmRoutes("opencode")
+    expect(go).toHaveLength(36)
+    expect(zen).toHaveLength(102)
+    // No `@route` annotation: route === vendor, so `formatModelRef` drops it
+    // and the enumerated id is exactly what a caller passes to `agent_start`.
+    expect(go.map(r => formatModelRef(r.ref))).toContain("opencode-go/glm-5.3")
+    expect(go.every(r => !formatModelRef(r.ref).includes("@"))).toBe(true)
+    expect(zen.map(r => formatModelRef(r.ref))).toContain("opencode/claude-opus-5")
   })
 
   it("resolves registered custom route", () => {

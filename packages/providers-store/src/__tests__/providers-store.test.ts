@@ -133,6 +133,44 @@ describe("providers store", () => {
     expect(injected).toEqual(["google"])
   })
 
+  // ── two providers, one env name (OpenCode Zen vs OpenCode Go) ───────────
+
+  it("resolves a shared env name DETERMINISTICALLY, not by providers.json order", async () => {
+    // `opencode` (Zen) and `opencode-go` both read OPENCODE_API_KEY, but the
+    // two keys are DIFFERENT secrets — so exactly one can be injected, and
+    // which one must not depend on the order the operator ran
+    // `auth provider set`. Sorted provider order makes `opencode` the winner.
+    expect(providerEnvVar("opencode")).toBe("OPENCODE_API_KEY")
+    expect(providerEnvVar("opencode-go")).toBe("OPENCODE_API_KEY")
+
+    await setProviderKey("opencode-go", "sk-go-first")
+    await setProviderKey("opencode", "sk-zen-second")
+    const goFirst: NodeJS.ProcessEnv = {}
+    const injectedGoFirst = await injectProviderKeysIntoEnv(goFirst)
+    expect(goFirst.OPENCODE_API_KEY).toBe("sk-zen-second")
+    // Only the winner is reported — nothing was injected for the other.
+    expect(injectedGoFirst).toEqual(["opencode"])
+
+    // Same two keys written in the OPPOSITE order → same resolved value.
+    await removeProviderKey("opencode")
+    await removeProviderKey("opencode-go")
+    await setProviderKey("opencode", "sk-zen-second")
+    await setProviderKey("opencode-go", "sk-go-first")
+    const zenFirst: NodeJS.ProcessEnv = {}
+    const injectedZenFirst = await injectProviderKeysIntoEnv(zenFirst)
+    expect(zenFirst.OPENCODE_API_KEY).toBe("sk-zen-second")
+    expect(injectedZenFirst).toEqual(["opencode"])
+  })
+
+  it("injects a lone OpenCode Go key when no Zen key is stored", async () => {
+    // The collision only bites when BOTH are stored; one key alone always wins.
+    await setProviderKey("opencode-go", "sk-go-only")
+    const env: NodeJS.ProcessEnv = {}
+    const injected = await injectProviderKeysIntoEnv(env)
+    expect(env.OPENCODE_API_KEY).toBe("sk-go-only")
+    expect(injected).toEqual(["opencode-go"])
+  })
+
   it("skips a provider whose canonical AND every alias are already set", async () => {
     await setProviderKey("google", "sk-goog-from-store")
     const env: NodeJS.ProcessEnv = {

@@ -24,7 +24,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
-import { listModels } from "@agentproto/model-catalog"
+import { getModelsByProvider, listModels } from "@agentproto/model-catalog"
 
 /**
  * Build OpenCode's model menu from the shared provider catalog instead of a
@@ -35,24 +35,41 @@ import { listModels } from "@agentproto/model-catalog"
  * Only providers OpenCode genuinely supports today are included:
  *   - Anthropic and OpenAI (direct vendor prefixes)
  *   - OpenRouter (`openrouter/<vendor>/<id>` router prefix)
+ *   - OpenCode's own two hosted endpoints — `opencode-go/<id>` (the flat Go
+ *     subscription) and `opencode/<id>` (Zen, pay-as-you-go), both matching
+ *     opencode's own config spelling
  *
- * Groq and OpenCode-hosted are omitted from the generated menu because they
- * are not represented in the shared catalog / profile system today. The
- * `models.env` map still carries their key env vars, so free-form `model`
- * overrides and manually-curated profiles continue to work.
+ * Groq is still omitted: it is not a billing/auth `CatalogProvider` (no
+ * pricing generator), so there is nothing in the shared catalog to enumerate.
+ * The `models.env` map carries its key env var, so a free-form `model`
+ * override and a manually-curated profile continue to work. (The two OpenCode
+ * endpoints USED to be omitted for the same reason — they are now first-class
+ * catalog providers with their own generated route tables, which is what makes
+ * them enumerable here.)
+ *
+ * `router: true` marks a provider whose surface lives ONLY in its generated
+ * route table and is deliberately not spread into `LLM_PRICING_CATALOG` (a
+ * bare `claude-sonnet-5` must keep meaning direct Anthropic, not a Zen-priced
+ * route). `listModels` returns nothing for those, so they are read through
+ * `getModelsByProvider`, which folds the route table in.
  */
 function buildOpencodeModelMenu(): Array<{ id: string; provider: string }> {
   const supported = [
-    { provider: "anthropic", prefix: "anthropic" },
-    { provider: "openai", prefix: "openai" },
-    { provider: "openrouter", prefix: "openrouter" },
+    { provider: "anthropic", prefix: "anthropic", router: false },
+    { provider: "openai", prefix: "openai", router: false },
+    { provider: "openrouter", prefix: "openrouter", router: false },
+    { provider: "opencode-go", prefix: "opencode-go", router: true },
+    { provider: "opencode", prefix: "opencode", router: true },
   ] as const
 
   const seen = new Set<string>()
   const out: Array<{ id: string; provider: string }> = []
 
-  for (const { provider, prefix } of supported) {
-    for (const model of listModels({ kind: "llm", provider })) {
+  for (const { provider, prefix, router } of supported) {
+    const models = router
+      ? getModelsByProvider(provider).filter(model => model.kind === "llm")
+      : listModels({ kind: "llm", provider })
+    for (const model of models) {
       const bareId = model.id
       const canonicalId = bareId.includes("/") ? bareId : `${prefix}/${bareId}`
       const id = provider === "openrouter" ? `openrouter/${bareId}` : canonicalId
@@ -153,15 +170,22 @@ export const opencode: AgentCliHandle = defineAgentCli({
     default: "anthropic/claude-sonnet-4-5",
     // Generated from the shared provider catalog so the Configuration Lab /
     // harness picker shows genuinely runnable Anthropic / OpenAI / OpenRouter
-    // models instead of a hardcoded 3-item list. Groq and OpenCode-hosted are
-    // omitted because they are not represented in the catalog/profile system
-    // today; the free-form `model` option and `models.env` still support them.
+    // / OpenCode Go / OpenCode Zen models instead of a hardcoded 3-item list.
+    // Groq stays omitted — it is not a billing/auth CatalogProvider, so there
+    // is nothing to enumerate; the free-form `model` option and `models.env`
+    // still support it.
     allowed: buildOpencodeModelMenu(),
     env: {
       anthropic: "ANTHROPIC_API_KEY",
       openai: "OPENAI_API_KEY",
       openrouter: "OPENROUTER_API_KEY",
+      // Both OpenCode endpoints read the SAME var — opencode's own convention
+      // (models.dev records `env: ["OPENCODE_API_KEY"]` for each), mirrored in
+      // the catalog's `PROVIDER_KEY_ENV`. Two DIFFERENT secrets share the name,
+      // so which balance a spawn bills is decided by the resolved auth profile's
+      // endpoint (`opencode` vs `opencode-go`), not by this map.
       opencode: "OPENCODE_API_KEY",
+      "opencode-go": "OPENCODE_API_KEY",
       groq: "GROQ_API_KEY",
     },
   },

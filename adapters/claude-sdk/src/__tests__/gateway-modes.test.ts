@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { AgentCliModelEntry } from "@agentproto/driver-agent-cli"
+import { listOpencodeAnthropicModelRefs } from "@agentproto/model-catalog/llm"
 import { claudeSdk } from "../index.js"
 
 describe("claude-sdk modes", () => {
@@ -81,5 +82,38 @@ describe("claude-sdk model routing", () => {
       id: "sference/glm-5.2@requesty",
       provider: "requesty",
     })
+  })
+
+  it("curates ONLY the Anthropic-surface OpenCode ids, derived from the catalog", () => {
+    const allowed = claudeSdk.models?.allowed ?? []
+    const entries = allowed.filter((m): m is AgentCliModelEntry => typeof m !== "string")
+    const ids = (provider: string) =>
+      entries.filter((e) => e.provider === provider).map((e) => e.id)
+
+    // Both OpenCode endpoints serve three wire surfaces behind one base URL;
+    // only the `/v1/messages` subset is reachable from this SDK. The menu is
+    // derived from the catalog's generated per-model surface discriminator, so
+    // it can never drift into offering an id the endpoint won't answer.
+    expect(ids("opencode-go").sort()).toEqual(
+      listOpencodeAnthropicModelRefs("opencode-go"),
+    )
+    expect(ids("opencode").sort()).toEqual(listOpencodeAnthropicModelRefs("opencode"))
+
+    // Zen's Anthropic subset is the whole Claude family — the point of the route.
+    expect(ids("opencode")).toContain("opencode/claude-sonnet-4-6")
+    expect(ids("opencode")).toContain("opencode/claude-opus-5")
+    // Go's is four ids, and the OpenAI-flavored majority must stay out.
+    expect(ids("opencode-go")).toEqual([
+      "opencode-go/minimax-m2.5",
+      "opencode-go/minimax-m2.7",
+      "opencode-go/minimax-m3",
+      "opencode-go/qwen3.8-flash",
+    ])
+    expect(ids("opencode-go")).not.toContain("opencode-go/glm-5.3")
+
+    // No `@route` suffix: for these endpoints the route IS the leading segment.
+    expect([...ids("opencode"), ...ids("opencode-go")].every((id) => !id.includes("@"))).toBe(
+      true,
+    )
   })
 })

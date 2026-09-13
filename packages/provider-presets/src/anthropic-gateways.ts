@@ -70,6 +70,70 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
     homepage: "https://requesty.ai",
   },
+  // ── OpenCode's two hosted endpoints ──────────────────────────────────────
+  // Each preset id is deliberately the SAME string as the catalog provider /
+  // route id it serves (`opencode-go`, `opencode`), because that is what makes
+  // the route join work end to end: `resolveAuthSpec` looks a spawn's
+  // `route.gateway` up with `findAnthropicGatewayPreset(routeGateway)`
+  // (spawn-defaults.ts), and the route id itself comes from the model ref's
+  // own leading segment (`opencode-go/minimax-m3` ⇒ route `opencode-go`). A
+  // prettier preset id (`opencode-zen`) would leave the Zen route with no
+  // resolvable base URL.
+  //
+  // Both endpoints serve THREE wire surfaces behind one base
+  // (`/chat/completions`, `/messages`, `/responses`), discriminated per model;
+  // only the `/messages` subset is reachable from an Anthropic client, which is
+  // what each description spells out. The generated
+  // `OPENCODE_{GO,ZEN}_ANTHROPIC_MODELS` lists in `@agentproto/model-catalog`
+  // are the authoritative, synced version of those id lists.
+  "opencode-go": {
+    id: "opencode-go",
+    label: "OpenCode Go",
+    description:
+      "OpenCode Go's Anthropic-compatible surface — the flat $10/mo OpenCode " +
+      "subscription, billed against dollar-denominated caps at each model's " +
+      "own per-token price. ONLY the four Anthropic-surface model ids work " +
+      "here: minimax-m2.5, minimax-m2.7, minimax-m3, qwen3.8-flash. The other " +
+      "32 Go models are OpenAI chat/completions- or Responses-flavored and are " +
+      "NOT reachable from an Anthropic client — run those through the " +
+      "`opencode` adapter instead (`opencode-go/<id>`). Base URL carries NO " +
+      "/v1 suffix: the client appends /v1/messages itself.",
+    schemaFlavor: "anthropic",
+    // NOT ".../zen/go/v1": models.dev records the endpoint as
+    // https://opencode.ai/zen/go/v1 and the Anthropic surface lives at
+    // .../zen/go/v1/messages, but the claude binary and the Agent SDK append
+    // `/v1/messages` themselves — so a /v1 here yields /zen/go/v1/v1/messages
+    // → 404 (the same trap the openrouter entry documents).
+    baseUrl: "https://opencode.ai/zen/go",
+    keyEnv: "OPENCODE_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "minimax-m3",
+    homepage: "https://opencode.ai/go",
+  },
+  opencode: {
+    id: "opencode",
+    label: "OpenCode Zen",
+    description:
+      "OpenCode Zen's Anthropic-compatible surface — the pay-as-you-go " +
+      "sibling of OpenCode Go, and the more valuable of the two here: its " +
+      "Anthropic-surface subset is the ENTIRE Claude family (claude-opus-5, " +
+      "claude-sonnet-5, claude-sonnet-4-6, claude-fable-5/5-1, " +
+      "claude-haiku-4-5, …) plus qwen3.5/3.6-plus and the minimax-*-free " +
+      "variants, so a Zen balance can drive claude-code / claude-sdk on real " +
+      "Claude models. Zen's gpt-5.x / gemini / glm / kimi ids are " +
+      "OpenAI-Responses- or Gemini-flavored and are NOT reachable from an " +
+      "Anthropic client — run those through the `opencode` adapter instead " +
+      "(`opencode/<id>`). Base URL carries NO /v1 suffix: the client appends " +
+      "/v1/messages itself.",
+    schemaFlavor: "anthropic",
+    // See the opencode-go note: models.dev's endpoint is
+    // https://opencode.ai/zen/v1, the client supplies the /v1.
+    baseUrl: "https://opencode.ai/zen",
+    keyEnv: "OPENCODE_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "claude-sonnet-4-6",
+    homepage: "https://opencode.ai/docs/zen",
+  },
   deepseek: {
     id: "deepseek",
     label: "DeepSeek",
