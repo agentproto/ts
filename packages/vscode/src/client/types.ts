@@ -1216,8 +1216,11 @@ export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
  *  `hold` by the dep-bump exemption — absent for an ordinary merged/fresh
  *  reclaim. `orphan` is set on an entry/outcome the orphan scan found: a
  *  directory physically present under the repo's worktree pool with no `git
- *  worktree list` entry at all (see `WorktreeGcPlanEntryView.orphan`). */
-export type WorktreeGcReclaimReason = "dep-bump" | "orphan"
+ *  worktree list` entry at all (see `WorktreeGcPlanEntryView.orphan`).
+ *  `prunable` is the mirror image: `git worktree list --porcelain` itself
+ *  already reported the entry dead (registration intact, working directory
+ *  gone) — see `WorktreeGcPlanEntryView.prunable`. */
+export type WorktreeGcReclaimReason = "dep-bump" | "orphan" | "prunable"
 
 export interface WorktreeGcPlanEntryView {
   path: string
@@ -1228,6 +1231,10 @@ export interface WorktreeGcPlanEntryView {
   /** `true` only for an orphan-scan entry — `tree`/`integration`/`liveness`
    *  carry the literal `"orphan"` placeholder rather than a real axis read. */
   orphan?: boolean
+  /** `true` only for a linked entry git itself already reported `prunable` —
+   *  `tree`/`integration`/`liveness` carry the literal `"prunable"`
+   *  placeholder rather than a real axis read. */
+  prunable?: boolean
   tree: string
   integration: { state: string; pr?: number }
   liveness: { state: string; sessionCount: number }

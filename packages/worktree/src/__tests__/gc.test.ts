@@ -190,6 +190,67 @@ describe("gc — the 84f4c06 regression: an unmerged commit ahead of a merged PR
   })
 })
 
+// ── the prunable regression: a worktree git already knows is dead ─────────
+//
+// Distinct from the orphan case below: here `git worktree list` still HAS a
+// registration for the path — it just marks it `prunable` because the
+// working directory itself is gone (removed by something other than `git
+// worktree remove`/`prune`, e.g. `rm -rf` on the directory, or the external
+// volume it lived on going away). `linkedWorktreesOf` therefore still hands
+// this entry to `computeWorktreeStatus`, which spawns `git status
+// --porcelain=v2 -C <gone path>` and gets `fatal: cannot change to '...':
+// No such file or directory` (exit 128) — a thrown error that, before this
+// fix, escaped `planGc`'s loop and took the whole plan down with it.
+
+describe("gc — a worktree git already reports prunable must not crash the whole plan", () => {
+  it("planGc must not throw when one linked worktree's directory has been deleted out from under git", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "wt/session-liveness"])
+    await execGit(repo, ["checkout", "main"])
+
+    const deadPath = join(repo, "..", `dead-${Math.random().toString(36).slice(2)}`)
+    await addWorktree(repo, deadPath, [], "wt/session-liveness")
+    // Simulates exactly the reported failure: the directory vanishes without
+    // `git worktree remove`/`prune` ever running — e.g. the external volume
+    // it lived on going away, or a plain `rm -rf`.
+    await rm(deadPath, { recursive: true, force: true })
+
+    // Sanity check: git itself already calls this prunable, unprompted.
+    const rawList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(rawList.stdout).toContain("prunable gitdir file points to non-existent location")
+
+    const forge = new UnreachableForgeClient("must not be called — a prunable entry is never classified via git status")
+    const memo = new InMemoryVerdictMemoStore()
+
+    // This is the regression: on main, this call throws
+    // `git status --porcelain=v2 failed in <deadPath> (exit 128): fatal:
+    // cannot change to '...': No such file or directory` instead of
+    // returning a plan.
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+
+    const entry = plan.find((e) => e.path === deadPath)
+    expect(entry).toBeDefined()
+    expect(entry?.class).toBe("reclaim")
+    expect(entry?.reclaimReason).toBe("prunable")
+
+    // The branch is unmerged (never touched main) — reclaiming this must
+    // never take the `deleteBranch: true` path a normal reclaim does, since
+    // nothing can be inspected on a directory that's already gone.
+    const outcomes = await applyGc([entry!], { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const outcome = outcomes.find((o) => o.path === deadPath)
+    expect(outcome?.result).toBe("reclaimed")
+
+    // git's own registration is gone (the point of `git worktree prune`)...
+    const listAfter = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(listAfter.stdout).not.toContain(deadPath)
+    // ...but the branch survives. Deleting it would have been irreversible:
+    // this branch was never merged to main.
+    const branches = await execGit(repo, ["branch", "--list", "wt/session-liveness"])
+    expect(branches.stdout.trim()).not.toBe("")
+  })
+})
+
 // ── the 2026-07-15 incident: a fresh, zero-commit branch must never salvage ──
 
 describe("gc — the 2026-07-15 incident: a fresh worktree with uncommitted work must never be reclaimed or salvaged", () => {

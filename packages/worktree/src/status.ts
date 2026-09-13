@@ -307,14 +307,22 @@ export interface GitWorktreeRef {
   /** `null` for a detached HEAD. */
   branch: string | null
   head: string
+  /**
+   * Set to git's own reason string (e.g. `"gitdir file points to
+   * non-existent location"`) when `git worktree list --porcelain` itself
+   * marks this entry prunable — its working directory is gone, so no git
+   * command can be run with it as `-C` target. `undefined` for every
+   * ordinary, live entry. This is git's own signal, not re-derived via
+   * `existsSync` or any other filesystem check of our own.
+   */
+  prunable?: string
 }
 
-/** Parses `git worktree list --porcelain` — every linked worktree of `repoRoot`, wherever it lives. */
-export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeRef[]> {
-  const res = await execGit(repoRoot, ["worktree", "list", "--porcelain"])
+/** Pure parser for `git worktree list --porcelain` output — split out so the line format can be unit-tested without a real repo. */
+export function parseGitWorktreePorcelain(stdout: string): GitWorktreeRef[] {
   const entries: GitWorktreeRef[] = []
-  let current: { path: string; branch: string | null; head: string } | null = null
-  for (const line of res.stdout.split("\n")) {
+  let current: GitWorktreeRef | null = null
+  for (const line of stdout.split("\n")) {
     if (line.startsWith("worktree ")) {
       if (current) entries.push(current)
       current = { path: line.slice("worktree ".length), branch: null, head: "" }
@@ -324,10 +332,18 @@ export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeRef
       current.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "")
     } else if (current && line === "detached") {
       current.branch = null
+    } else if (current && line.startsWith("prunable ")) {
+      current.prunable = line.slice("prunable ".length)
     }
   }
   if (current) entries.push(current)
   return entries
+}
+
+/** Parses `git worktree list --porcelain` — every linked worktree of `repoRoot`, wherever it lives. */
+export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeRef[]> {
+  const res = await execGit(repoRoot, ["worktree", "list", "--porcelain"])
+  return parseGitWorktreePorcelain(res.stdout)
 }
 
 // ── the reconciliation rule (PLAN.md §1.3) ──────────────────────────────

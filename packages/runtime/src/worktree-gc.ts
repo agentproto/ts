@@ -46,8 +46,12 @@ export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
  * `orphan` is set on an entry/outcome the orphan scan found — a directory
  * physically present under the repo's worktree pool with no `git worktree
  * list` entry at all (see `WorktreeGcPlanEntryView.orphan`).
+ * `prunable` is set on an entry/outcome `git worktree list --porcelain`
+ * itself already reported dead — the mirror image of `orphan`: the
+ * registration is still there, but the working directory is gone (see
+ * `WorktreeGcPlanEntryView.prunable`).
  */
-export type WorktreeGcReclaimReason = "dep-bump" | "orphan"
+export type WorktreeGcReclaimReason = "dep-bump" | "orphan" | "prunable"
 
 /**
  * One entry of the dry-run plan — a runtime-local projection of a
@@ -60,7 +64,7 @@ export interface WorktreeGcPlanEntryView {
   branch: string | null
   head: string
   class: WorktreeGcClass
-  /** Set only when `class === "reclaim"` via the dep-bump exemption or the orphan scan. */
+  /** Set only when `class === "reclaim"` via the dep-bump exemption, the orphan scan, or the prunable signal. */
   reclaimReason?: WorktreeGcReclaimReason
   /**
    * `true` only for an orphan-scan entry: a directory physically present
@@ -71,6 +75,13 @@ export interface WorktreeGcPlanEntryView {
    * literal `"orphan"` placeholder below rather than a fabricated value.
    */
   orphan?: boolean
+  /**
+   * `true` only for a linked worktree `git worktree list --porcelain` itself
+   * already marked `prunable`. Same reasoning as `orphan` above — no
+   * tree/integration/liveness axis was ever read for a working directory
+   * that's gone — projected as the literal `"prunable"` placeholder below.
+   */
+  prunable?: boolean
   tree: string
   integration: { state: string; pr?: number }
   liveness: { state: string; sessionCount: number }
