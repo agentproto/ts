@@ -1,0 +1,7 @@
+{
+  "extends": "@agentproto/tooling/typescript/bundler.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["*.ts", "vite.config.ts"]
+}
