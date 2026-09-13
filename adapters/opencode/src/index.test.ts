@@ -42,13 +42,44 @@ describe("@agentproto/adapter-opencode", () => {
 
     // Only supported providers are represented in the generated menu.
     expect(new Set(providers)).toEqual(
-      new Set(["anthropic", "openai", "openrouter"]),
+      new Set(["anthropic", "openai", "openrouter", "opencode", "opencode-go"]),
     )
 
-    // Groq and OpenCode-hosted are not in the shared catalog today, so they do
-    // not appear in the generated menu (free-form `model` still accepts them).
+    // Groq is still not a billing/auth CatalogProvider (no pricing generator),
+    // so there is nothing in the shared catalog to enumerate for it — the
+    // free-form `model` option and `models.env` still accept it.
     expect(providers).not.toContain("groq")
-    expect(providers).not.toContain("opencode")
+  })
+
+  it("offers OpenCode's OWN two hosted endpoints in opencode's reference form", () => {
+    const allowed = opencode.models?.allowed ?? []
+    const byProvider = (provider: string) =>
+      allowed
+        .filter(
+          (entry): entry is { id: string; provider: string } =>
+            typeof entry !== "string" && entry.provider === provider,
+        )
+        .map((entry) => entry.id)
+
+    // The verified models.dev lineups: Go 36, Zen 102. These live only in the
+    // generated route tables (deliberately not spread into
+    // LLM_PRICING_CATALOG), so they reach the menu via getModelsByProvider.
+    const go = byProvider("opencode-go")
+    const zen = byProvider("opencode")
+    expect(go).toHaveLength(36)
+    expect(zen).toHaveLength(102)
+
+    // `<provider>/<bare-id>` — exactly how opencode's own config addresses
+    // them, which is also what `modelIdPrefixProvider` reads to derive the
+    // billing endpoint and what opencode expects on the wire. No `@route`
+    // annotation may leak into a menu id.
+    expect(go).toContain("opencode-go/glm-5.3")
+    expect(zen).toContain("opencode/claude-sonnet-4-6")
+    expect([...go, ...zen].every((id) => !id.includes("@"))).toBe(true)
+    expect(go.every((id) => id.startsWith("opencode-go/"))).toBe(true)
+    // A Zen id is never mislabelled as Go: `opencode` must not swallow the
+    // `opencode-go/` prefix, or the menu would bill the wrong balance.
+    expect(zen.every((id) => id.startsWith("opencode/"))).toBe(true)
   })
 
   it("keeps a canonical catalog model as the default", () => {

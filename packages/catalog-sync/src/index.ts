@@ -19,6 +19,10 @@ export { runGenerators } from "./runner.js"
 export type { RunGeneratorsOptions, RunGeneratorsResult } from "./runner.js"
 export { llmOpenRouterGenerator } from "./generators/llm-openrouter.js"
 export { llmRequestyGenerator } from "./generators/llm-requesty.js"
+export {
+  llmOpencodeGoGenerator,
+  llmOpencodeZenGenerator,
+} from "./generators/llm-opencode.js"
 export { llmHuggingfaceGenerator } from "./generators/llm-huggingface.js"
 export { voiceElevenlabs } from "./generators/voice-elevenlabs.js"
 export { voiceMinimax } from "./generators/voice-minimax.js"

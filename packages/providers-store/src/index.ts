@@ -186,13 +186,31 @@ export async function removeProviderKey(provider: string): Promise<boolean> {
  * satisfied too. Returns the list of provider names actually injected (for a
  * boot log that names providers, never values) — one entry per provider, not
  * per env name.
+ *
+ * Providers are visited in SORTED name order, never `providers.json` key
+ * order. Two providers can legitimately map to the same env name, and when
+ * their keys are DIFFERENT secrets only one of them can win: `opencode`
+ * (OpenCode Zen) and `opencode-go` both read `OPENCODE_API_KEY`, so whichever
+ * is injected first takes the var and the other's "explicit env wins" check
+ * sees it already set. Iterating the file's own key order made that outcome
+ * depend on which `auth provider set` the operator happened to run first —
+ * two hosts with the same two keys could inject different secrets. Sorting
+ * makes the winner a stable, documentable fact (`opencode` < `opencode-go`,
+ * so Zen wins). It does NOT make the collision harmless: a host that holds
+ * both keys can still only inject one, and the per-spawn auth profile
+ * (`accessProfile`, whose endpoint is `opencode` or `opencode-go`) is the
+ * real disambiguator — see the note on `PROVIDER_KEY_ENV` in
+ * `@agentproto/model-catalog`. The same-secret pairs this also covers
+ * (`openai`/`openai-realtime`, `google`/`gemini-live`) were never affected,
+ * because either order injects the same value.
  */
 export async function injectProviderKeysIntoEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string[]> {
   const file = await loadProviders()
   const injected: string[] = []
-  for (const [provider, entry] of Object.entries(file.providers)) {
+  for (const provider of Object.keys(file.providers).sort()) {
+    const entry = file.providers[provider]
     if (!entry?.apiKey) continue
     // Canonical name first, then any verified aliases the same key satisfies.
     // De-dupe defends against an alias that equals the canonical name.

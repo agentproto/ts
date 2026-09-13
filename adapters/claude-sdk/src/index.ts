@@ -24,7 +24,10 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
-import { listNativeModelIds } from "@agentproto/model-catalog/llm"
+import {
+  listNativeModelIds,
+  listOpencodeAnthropicModelRefs,
+} from "@agentproto/model-catalog/llm"
 import { DEFAULT_MODEL } from "./options.js"
 
 // Native-Anthropic model menu, derived from the catalog's own synced
@@ -39,6 +42,26 @@ const NATIVE_ANTHROPIC_DENYLIST = new Set<string>([])
 const NATIVE_ANTHROPIC_MODELS = listNativeModelIds("anthropic")
   .filter(id => !NATIVE_ANTHROPIC_DENYLIST.has(id))
   .map(id => ({ id, provider: "anthropic" as const }))
+
+// OpenCode Go / OpenCode Zen, via their Anthropic-compatible gateway presets
+// (`opencode-go` / `opencode`). Same derivation as claude-code's: each
+// endpoint serves three wire surfaces behind one base URL and only the
+// `/v1/messages` subset is reachable from the SDK, so the menu comes from the
+// catalog's generated per-model surface discriminator, never a hand-typed
+// list. Zen's Anthropic subset is the whole Claude family, which is what makes
+// this route worth having: the SDK's own harness on real Claude models against
+// a Zen balance. No `@route` suffix — for these endpoints the route IS the
+// id's leading segment.
+const OPENCODE_ANTHROPIC_MODELS = [
+  ...listOpencodeAnthropicModelRefs("opencode-go").map(id => ({
+    id,
+    provider: "opencode-go" as const,
+  })),
+  ...listOpencodeAnthropicModelRefs("opencode").map(id => ({
+    id,
+    provider: "opencode" as const,
+  })),
+]
 
 // Self-locating: the built handle spawns `node <this-dist>/cli.mjs acp`.
 // import.meta.url resolves into dist/ at runtime, where cli.mjs sits next to
@@ -171,6 +194,8 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
       // descriptor as the claude-code spawn on the same model.
       { id: "sference/thinkingcap-qwen3.6-27b@requesty", provider: "requesty" },
       { id: "sference/glm-5.2@requesty", provider: "requesty" },
+      // OpenCode Go + OpenCode Zen — see OPENCODE_ANTHROPIC_MODELS above.
+      ...OPENCODE_ANTHROPIC_MODELS,
       // Local llm-endpoint proxy — the `@llm-endpoint` suffix pins the catalog
       // join to the runtime-registered custom route (Anthropic surface at
       // localhost:18090). A SMALL curated set from the proxy's own `default`

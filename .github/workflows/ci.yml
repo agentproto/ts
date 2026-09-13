@@ -260,13 +260,28 @@ jobs:
         run: node scripts/sync-templates.mjs --check
 
       # work-board's panel.generated.ts (committed) must stay in sync with
-      # its Vite UI sources (packages/apps/src/work-board/ui/**) — same
-      # drift-check pattern as the two steps above, scoped to that package
-      # since the Vite toolchain (vite, vite-plugin-singlefile) is a
-      # devDependency there, not at the repo root. A UI change that forgot
-      # to run `build:ui`, or a hand-edit of the generated file, would
-      # otherwise ship stale/drifted html silently — panel.ts just
-      # re-exports the string with no further validation.
+      # everything Vite actually inlines into it — not just the UI sources
+      # (packages/apps/src/work-board/ui/**), but also ../panel-bridge.ts,
+      # which vite.config.ts imports directly and injects as a literal
+      # <script> block (see injectPanelBridge there). build-work-board-ui.mjs
+      # enforces this by fully rebuilding from whatever is on disk and
+      # diffing the result — a live rebuild, not an enumerated file list — so
+      # it already fails on drift from panel-bridge.ts (or any future import
+      # it or the UI sources pick up) with no separate watch list to
+      # maintain or forget to extend. Scoped to this package rather than the
+      # repo root since the Vite toolchain (vite, vite-plugin-singlefile) is
+      # a devDependency here, not at the root. A UI or bridge change that
+      # forgot to run `build:ui`, or a hand-edit of the generated file, would
+      # otherwise ship stale/drifted html silently — panel.ts just re-exports
+      # the string with no further validation.
+      #
+      # This step alone does not guarantee a merged main stays in sync: it
+      # only re-validates the tree it's given. #1302 merged a bundle built
+      # against the pre-#1303 panel-bridge.ts because its branch predated
+      # #1303 and was never brought up to date before `auto-merge` (job
+      # below) armed it — main has no branch protection, so nothing forced a
+      # re-check against the post-#1303 base first. That race is closed in
+      # the `auto-merge` job's `mergeStateStatus` check, not here.
       - name: Check work-board UI drift
         run: pnpm --filter @agentproto/apps run build:ui:check
 
@@ -1962,6 +1977,43 @@ jobs:
           echo "skip=$MERGED" >> "$GITHUB_OUTPUT"
           if [ "$MERGED" = "true" ]; then echo "PR no longer open — skipping branch-dependent steps."; fi
 
+      # `main` has no branch protection (confirmed: `gh api
+      # repos/:owner/:repo/branches/main/protection` → 404 "Branch not
+      # protected"), so nothing native to GitHub ever requires a PR to be
+      # caught up with its base before merging — "auto-merge" here just means
+      # "merge as soon as mergeable", and a branch is mergeable while BEHIND.
+      # That is exactly how #1302 shipped a stale `packages/apps` generated
+      # bundle 84 seconds after #1303 fixed the source it was built from:
+      # #1302's branch predated #1303, was never updated, and its own
+      # `Build + test` run was legitimately green against its own
+      # (self-consistent, but stale) tree — `needs.build-and-test.result`
+      # below could not have caught this, same shape as #379's red-build gap.
+      # `mergeStateStatus` briefly reads "UNKNOWN" right after a push while
+      # GitHub computes it — poll a few times, but don't hold indefinitely on
+      # a value GitHub hasn't produced yet: an arm delayed one run is safe, an
+      # arm blocked forever on a `gh` hiccup is a new problem of its own.
+      - name: Skip if PR is behind its base branch
+        id: behind
+        if: steps.prstate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS=unknown
+          for _ in 1 2 3 4 5; do
+            STATUS=$(gh pr view "${{ github.event.pull_request.number }}" \
+              --repo "${{ github.repository }}" --json mergeStateStatus \
+              --jq '.mergeStateStatus')
+            [ "$STATUS" != "UNKNOWN" ] && break
+            sleep 3
+          done
+          echo "mergeStateStatus=$STATUS"
+          if [ "$STATUS" = "BEHIND" ]; then
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+            echo "PR is behind ${{ github.base_ref }} — holding until it is updated and re-validated."
+          else
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: ./.github/actions/agent-setup
         id: setup
         if: steps.prstate.outputs.skip != 'true'
@@ -1978,7 +2030,9 @@ jobs:
       # merged) and pins it to /tmp/merge-policy.json for the maintainer step.
       - name: Compute merge-gate decision
         id: gate
-        if: steps.prstate.outputs.skip != 'true'
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.behind.outputs.behind != 'true'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -2002,6 +2056,7 @@ jobs:
       - name: Hold / disabled — no action
         if: |
           steps.prstate.outputs.skip != 'true' &&
+          steps.behind.outputs.behind != 'true' &&
           (steps.gate.outputs.action == 'hold' || steps.gate.outputs.action == 'disabled')
         # ACTION/REASON via env, not inline `${{ }}` — reason can echo back a
         # changed filename from the PR branch (see the changeset-check step's
@@ -2018,6 +2073,7 @@ jobs:
         id: escalate
         if: |
           steps.prstate.outputs.skip != 'true' &&
+          steps.behind.outputs.behind != 'true' &&
           steps.gate.outputs.action == 'escalate'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
@@ -2038,6 +2094,7 @@ jobs:
       - name: Maintainer judgment + arm
         if: |
           steps.prstate.outputs.skip != 'true' &&
+          steps.behind.outputs.behind != 'true' &&
           steps.gate.outputs.action == 'arm'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
