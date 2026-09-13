@@ -94,6 +94,24 @@ declare module "jsdom" {
     takeRecords(): unknown[]
   }
 
+  /** The MCP-Apps standalone shim's shape (`window.McpApp`, injected by
+   *  packages/runtime's `injectStandaloneAppBridge` for `GET
+   *  /apps/:appId/ui`) — just enough of `connect()`'s resolved surface for
+   *  panelBridge.standalone.dom.test.ts to stand a fake in for it. */
+  export interface DomMcpAppTool {
+    content?: { type: string; text: string }[]
+    isError?: boolean
+  }
+
+  export interface DomMcpApp {
+    connect: () => Promise<{
+      callTool: (
+        name: string,
+        args: Record<string, string | number | boolean | null | undefined>,
+      ) => Promise<DomMcpAppTool>
+    }>
+  }
+
   export interface DomWindow {
     readonly document: DomDocument
     Date: DateConstructor
@@ -105,6 +123,9 @@ declare module "jsdom" {
       getState: () => unknown
       setState: (state: unknown) => void
     }
+    /** Set (or left undefined) by a test's `beforeParse` to stand in for the
+     *  daemon-injected standalone bridge — see {@link DomMcpApp}. */
+    McpApp?: DomMcpApp
     dispatchEvent(event: DomEvent): boolean
     Event: new (type: string, init?: { cancelable?: boolean; bubbles?: boolean }) => DomEvent
     MessageEvent: new (type: string, init?: { data?: unknown }) => DomEvent
