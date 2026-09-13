@@ -3794,7 +3794,14 @@ function parseWorktreeField(raw: unknown): WorktreeField | undefined {
 /** Parse the `mcpServers` body field — the same `AcpMcpServer[]` shape
  *  the MCP tool accepts, tolerant of a JSON-stringified array (see
  *  `parseOrchestratorField`). Entries missing a valid `name`/`transport`
- *  are dropped rather than failing the whole array. */
+ *  are dropped rather than failing the whole array. `headers` and
+ *  `credentialRef` MUST survive this parse: they carry the mount's
+ *  credentials, and a parser that rebuilds only `name`/`transport`/`ref`
+ *  silently turns a credentialed mount into an anonymous one (observed
+ *  live 2026-09-13: every `POST /sessions/agent` mcpServers entry lost
+ *  its Authorization header here, while the same payload through the MCP
+ *  `agent_start` tool — whose zod schema keeps both fields — reached the
+ *  agent authenticated). */
 function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
   const value = typeof raw === "string" ? tryParseJson(raw) : raw
   if (!Array.isArray(value)) return undefined
@@ -3808,6 +3815,8 @@ function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
       name: o.name,
       transport: o.transport,
       ...(typeof o.ref === "string" ? { ref: o.ref } : {}),
+      ...(isStringRecord(o.headers) ? { headers: o.headers } : {}),
+      ...(typeof o.credentialRef === "string" ? { credentialRef: o.credentialRef } : {}),
     })
   }
   return servers

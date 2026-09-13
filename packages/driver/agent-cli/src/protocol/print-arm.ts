@@ -421,7 +421,24 @@ function setupMcpConfigFile(
   opts: PrintArmOptions,
   eventSchema: PrintEventSchema,
 ): (() => void) | undefined {
-  if (eventSchema !== "mastra-jsonl") return undefined
+  if (eventSchema !== "mastra-jsonl") {
+    // A credentialed mount that reaches an arm which cannot mount it at all
+    // must not fail silently: the caller believes the server will see the
+    // Authorization header, the server instead sees an anonymous caller.
+    // Warn with the mount names so the loss is attributable (the mcpServers
+    // feature itself is mastra-jsonl-only — see the doc block above).
+    const credentialed = (opts.mcpServers ?? [])
+      .filter(s => s.transport !== "stdio" && s.headers !== undefined && Object.keys(s.headers).length > 0)
+      .map(s => s.name)
+    if (credentialed.length > 0) {
+      console.error(
+        `[agentproto] WARNING: mcpServers ${credentialed.map(n => `"${n}"`).join(", ")} declare ` +
+          `headers but the "${eventSchema}" print adapter has no MCP mounting path — ` +
+          "the mounts (and their credentials) will NOT reach the agent.",
+      )
+    }
+    return undefined
+  }
   if (!opts.mcpServers || opts.mcpServers.length === 0) return undefined
 
   const dir = join(opts.cwd, ".mastracode")
