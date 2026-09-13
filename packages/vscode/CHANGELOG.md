@@ -1,5 +1,18 @@
 # agentproto-vscode
 
+## 0.16.0
+
+### Minor Changes
+
+- 75c050d: Add `agentproto.appPanelMode` setting: render app panels as a direct HTTP iframe at the daemon's standalone app host (`iframe`, for installed apps with a `ui` block) or the existing self-contained srcdoc relay (`srcdoc`, default, works for every app). Apps without a `ui` block silently fall back to srcdoc.
+
+### Patch Changes
+
+- fee0522: Test-only: add runtime capability probes (Seatbelt nesting, loopback bind) so environment-dependent suites skip with a clear reason instead of failing in confined environments.
+- Updated dependencies [f83a177]
+- Updated dependencies [e759d6d]
+  - @agentproto/runtime@3.3.0
+
 ## 0.15.0
 
 ### Minor Changes

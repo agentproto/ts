@@ -1,5 +1,11 @@
 # @agentproto/command-sandbox
 
+## 0.2.2
+
+### Patch Changes
+
+- fee0522: Test-only: add runtime capability probes (Seatbelt nesting, loopback bind) so environment-dependent suites skip with a clear reason instead of failing in confined environments.
+
 ## 0.2.1
 
 ### Patch Changes

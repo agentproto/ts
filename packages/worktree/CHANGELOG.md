@@ -1,5 +1,11 @@
 # @agentproto/worktree
 
+## 0.7.0
+
+### Minor Changes
+
+- e759d6d: Classify a prunable worktree without crashing the gc plan
+
 ## 0.6.2
 
 ### Patch Changes

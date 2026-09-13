@@ -1,5 +1,19 @@
 # @agentproto/runtime
 
+## 3.3.0
+
+### Minor Changes
+
+- f83a177: Serve builtin panels at GET /apps/:appId/ui and POST /apps/:appId/tool-call
+- e759d6d: Classify a prunable worktree without crashing the gc plan
+
+### Patch Changes
+
+- Updated dependencies [fee0522]
+  - @agentproto/command-sandbox@0.2.2
+  - @agentproto/driver-agent-cli@2.4.3
+  - @agentproto/sandbox@0.5.1
+
 ## 3.2.0
 
 ### Minor Changes
